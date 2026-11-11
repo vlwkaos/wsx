@@ -111,3 +111,53 @@ Baseline: 23 runs $12.86. Memory arm: 20 runs at about +10% for the start set, $
 2. `python3 -B scripts/memory-eval.py run --arm memory --wsx <t380 binary>`, then `--arm memory-cheap`, then `judge` and `report`; add the table and the verdict to this file.
 3. Run `live --cutoff-task 380` again after #380 lands.
 4. If the verdict is no gain, a section "Alternative design" follows here: where it failed per task (wrong records retrieved, right records ignored, start set too big, recall not called), the design and its estimate.
+
+## Manager rotation (memory instead of a long conversation)
+
+Question (owner): if the manager starts a fresh conversation at a much smaller context (150k or 60k instead of 400k) and gets old context back through `wsx memory recall`, does the answer hold, and how much does manager spend fall? The thread feature is not built; memory is the way back.
+
+`python3 -B scripts/memory-eval.py mpick|mproject|mrun|mjudge|mreport`. Same cap of $40 and the same `spend.jsonl` as above.
+
+### Data now (free; the 7 days of `manager/log.jsonl` up to the last reply, 740 replies)
+
+Real spend $155.25; the price model (in $4, out $20, read $0.20, write $8 per million, Opus 5.5) gives $154.30, 0.6% off, so the model reproduces the log. Context median 140k. The log's own size rotations happen at a median of 164k (108k, 150k and 256k are common), so the manager already rotates near 150k and not at 400k. A fresh conversation's first reply has a context of 55k (the median of the 55 rotations; the minimum seen is 45k). An empty start with the manager instructions and no tools measured 16.6k tokens (one call, $0.17), so the rest of the 55k is tools, notes, overview, ledger and the first turn's reads: what fills it is not measured. A turn adds a median 4.4k tokens.
+
+Projection (`mproject`): each logged reply keeps its output, new tokens and calls; its cache reads scale with the simulated context; a rotation costs a cold write of the start. Size rotations of the log are replaced by the simulated limit, idle rotations (18) are kept. One `wsx memory` call per reply is assumed until a replay measures it. (est.)
+
+| rotation limit | start tokens | rotations | weekly $ | per reply $ | vs logged |
+|---|---|---|---|---|---|
+| as logged | 55k | 33 | 153 | 0.207 | |
+| 400k | 55k | 22 | 165 | 0.224 | +8% |
+| 150k + recall | 55k | 47 | 151 | 0.205 | -1% |
+| 60k + recall | 55k | 358 | 259 | 0.350 | +69% |
+| 60k + recall, lean start (est.) | 54k | 326 | 241 | 0.326 | +57% |
+| 100k + recall, lean start (est.) | 54k | 88 | 151 | 0.205 | -1% |
+
+Reading: the manager is already near 150k, so 150k saves about 1%. At 60k the limit is 5k above the fresh start, so the conversation rotates about every second reply, and each rotation pays a cold write of 55k tokens ($0.44): spend rises by 69%. The lean start row removes only the notes (about 2k tokens); a lower limit pays only if the start itself falls, and what fills it is the lever. These rows do not need the paid replay; the replay measures only quality and the calls recall adds.
+
+### Replay (paid; runs with the memory half, after steps 4 and 5)
+
+| Part | Rule |
+|---|---|
+| Messages | 15 owner turns of the last 7 days that quote a reply or name a task last mentioned more than the 60k window ago (`mpick`, seed 385). The 60k window is the last 1 turn and the 150k window the last 21 (growth 4.4k per turn from a start of 55k). Only 2 of the 19 candidates reach beyond the 150k window (3 picks at 21, 22 and 30 turns); 12 reach beyond the 60k window only. A noisy test of 150k, a clear one of 60k |
+| Reference (a) | the real reply and its real cost from the log, with the commands it ran. It is not replayed: the real context is not kept, and a replay of it would cost $10 |
+| Candidate (b) | a fresh Opus conversation with the manager instructions (`bench-manager.py instructions`), a start of `decisions.md` and `context.md` cut to the message's time, the last K turns as text (messages, commands, replies), then the new messages. `wsx task ledger\|show\|search` and `wsx memory recall\|search\|status` answer from the state cut at that time; other `wsx task` commands are only recorded. K = (limit - start) / growth: `cut150` K=21, `cut60` K=1, `lean60` (no start notes) K=1 |
+| Store | the memory arm's store (step 5 capture on tasks landed before the message), the project transcripts cut at the message; the same gate as the memory arm |
+| Judge | Sonnet, one candidate against the reference, not told the limit. Score 2 = same question answered with the same facts and decisions, 1 = same decision but facts missing or changed, 0 = different answer or decision; it lists the facts lost and wrong ones |
+| Noise | 3 replies run twice in `cut150` |
+| Cost per reply | (a) the log; (b) the CLI result of the replay. The text-only context of (b) is smaller than a real one, so (b)'s cost is read as a floor; the weekly projection above (with the recall calls (b) measured) is the spend figure |
+| Spend (est.) | 15 + 3 runs of `cut150` about $3.6, 15 of `cut60` about $2.3, judge about $1.4: about $7.3. With the rest the total is about $34 before the cheap-recall arm, which then gets about $6 of the cap. `lean60` ($2.3) runs last and only if the cap is left; raise the cap to run all |
+
+### Verdict rule (fixed before the replay)
+
+Quality holds at an arm if the mean score is at least **1.6** of 2 and at most **2** of the 15 replies score 0. If the rerun spread of the score in `cut150` is above **0.4**, the quality verdict is unreliable and not used.
+
+Spend counts if the projected weekly spend, with the recall calls per reply that the replay measured, falls by at least **15%** (about $23 a week) against the logged week.
+
+| Verdict | Condition |
+|---|---|
+| Rotate at this limit with recall | quality holds and spend counts |
+| Not worth it | spend does not fall by 15%, whatever the quality (the current data say this for 150k and 60k) |
+| Quality fails | spend counts but quality does not hold: recall does not bring back what the cut lost; the lost facts list says which |
+
+What would change the answer is a smaller start (the 55k), not the limit. If the replay shows quality holds at `lean60`, the next step is to measure what fills the start and cut it, then run `mproject` again.

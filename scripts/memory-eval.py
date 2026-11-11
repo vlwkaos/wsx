@@ -16,6 +16,7 @@ the task's start. The real store, the real memory and the real config are only r
 import argparse
 import collections
 import concurrent.futures as cf
+import importlib.util
 import json
 import os
 import random
@@ -363,9 +364,9 @@ def memory_gate(args):
                      'the paid memory arm does not run on a stub')
 
 
-def memory_cut(t, tasks, home, args, ctx):
+def capture_store(t, tasks, home, args):
     """The with-memory store of one run: step 5's capture rule on every task landed before t.t0.
-    Returns (start set text, store records, store bytes)."""
+    Returns (records, store bytes). `t` needs t0 only."""
     env = clean_env(XDG_STATE_HOME=str(home), XDG_CONFIG_HOME=str(home / 'config'))
     wsx = [args.wsx]
     records = 0
@@ -388,6 +389,14 @@ def memory_cut(t, tasks, home, args, ctx):
     # ^ The rules: decisions dated before t0, already cut into the notes of the state.
     store = home / 'wsx' / 'tasks' / PID / 'memory'
     size = sum(f.stat().st_size for f in store.rglob('*') if f.is_file()) if store.exists() else 0
+    return records, size
+
+
+def memory_cut(t, tasks, home, args, ctx):
+    """capture_store plus the start set of the task's files. Returns (start set text, records, store bytes)."""
+    env = clean_env(XDG_STATE_HOME=str(home), XDG_CONFIG_HOME=str(home / 'config'))
+    wsx = [args.wsx]
+    records, size = capture_store(t, tasks, home, args)
     files = t.rec.get('files') or []
     if args.dry_run:
         words = ' '.join(file_words(files))
@@ -477,14 +486,19 @@ def agent_turn(argv, env, cwd, text, secs):
 
 
 def analyse(events):
-    msgs, subs, tools, plan = set(), set(), [], None
+    msgs, subs, tools, plan, said, first_ctx = set(), set(), [], None, [], 0
     result = next((e for e in events if e.get('type') == 'result'), {})
     for e in events:
         if e.get('type') != 'assistant':
             continue
         m = e.get('message') or {}
         (subs if e.get('parent_tool_use_id') else msgs).add(m.get('id') or id(e))
+        mu = m.get('usage') or {}
+        if not first_ctx and not e.get('parent_tool_use_id'):
+            first_ctx = sum(mu.get(k, 0) for k in ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'))
         for c in m.get('content') or []:
+            if c.get('type') == 'text' and c.get('text', '').strip() and not e.get('parent_tool_use_id'):
+                said.append(c['text'].strip())
             if c.get('type') == 'tool_use' and not e.get('parent_tool_use_id'):
                 tools.append((c['name'], c.get('input') or {}))
                 if c['name'] == 'StructuredOutput':
@@ -501,7 +515,8 @@ def analyse(events):
     return {'cost': result.get('total_cost_usd') or 0.0, 'calls': len(msgs), 'sub_calls': len(subs),
             'input': u.get('input_tokens', 0), 'output': u.get('output_tokens', 0),
             'cache_read': u.get('cache_read_input_tokens', 0), 'cache_write': u.get('cache_creation_input_tokens', 0),
-            'explore': explore_count(tools), 'tool_counts': dict(collections.Counter(n for n, _ in tools)),
+            'said': said, 'memory_uses': sum(1 for n, i in tools if n == 'Bash' and 'wsx memory' in i.get('command', '')),
+            'ctx_first': first_ctx, 'explore': explore_count(tools), 'tool_counts': dict(collections.Counter(n for n, _ in tools)),
             'plan_text': text.strip(), 'is_error': bool(result.get('is_error')) or not result}
 
 
@@ -660,7 +675,7 @@ Answer JSON only: {{"cause": 0|1|2, "why": "<one sentence>", "traps": [{{"messag
 
 def ask_judge(prompt, args):
     if args.dry_run:
-        return {'traps': [], 'cause': 1, 'why': 'dry run'}, 0.0
+        return {'traps': [], 'cause': 1, 'score': 1, 'lost': [], 'wrong': [], 'why': 'dry run'}, 0.0
     done = sh(['claude', '-p', '--model', JUDGE_MODEL, '--output-format', 'json', '--setting-sources', 'project,local',
                '--tools', '', '--system-prompt', 'You are a strict, terse evaluator. Answer JSON only.', prompt], cwd=tempfile.gettempdir())
     res = json.loads(done.stdout)
@@ -804,6 +819,357 @@ def cmd_live(args):
     print('\nConfounded: the groups are different tasks with different work. Use as support only.')
 
 
+# ---- manager: does a small rotation limit hold quality, and what does it save? --------------------
+# Method and verdict rule: docs/design/memory-eval.md "Manager rotation".
+
+MANAGER_LOG = REAL / 'manager' / 'log.jsonl'
+# ^ Opus 5.5, API-equivalent dollars per token (docs/design/manager-efficiency.md): the logged cost of a reply is
+# exactly in*4 + out*20 + cache_read*0.2 + cache_write*8 per million.
+PRICE = {'in': 4e-6, 'out': 20e-6, 'read': 0.2e-6, 'write': 8e-6}
+ARMS = {'cut150': (150_000, True), 'cut60': (60_000, True), 'lean60': (60_000, False)}  # (rotation limit, start notes)
+NOTE_CHARS_PER_TOKEN = 3.5
+TURN_TEXT_CLIP = 1500
+
+
+class At:
+    """The moment a replayed manager turn starts: what build_state needs of a task."""
+    def __init__(self, t0, tasks):
+        self.t0 = t0
+        self.n = max([n for n, o in tasks.items() if o.t0 < t0] or [0]) + 1
+        self.rec = {'project_path': next(iter(tasks.values())).rec['project_path'], 'files': [], 'title': ''}
+
+
+def manager_turns():
+    """Every manager reply of the log with its messages, the commands it ran and whether the conversation was
+    rotated just before it (a `rotated` line after the previous reply: tokens 0 is the idle rotation)."""
+    log = [json.loads(x) for x in MANAGER_LOG.read_text().splitlines()]
+    msgs = {e['id']: e for e in log if e['kind'] == 'message'}
+    turns, cmds, rot, prev = [], [], None, 0
+    for e in log:
+        if e['kind'] == 'agent' and not e.get('said'):
+            cmds.append(e['text'])
+        elif e['kind'] == 'rotated':
+            rot = e['tokens']
+        elif e['kind'] == 'reply':
+            turns.append({'ms': e['unix_ms'], 'id': e['id'], 'msgs': [msgs[i] for i in e['to'] if i in msgs], 'reply': e['text'],
+                          'cmds': cmds, 'usage': e.get('usage'), 'rotated': rot})
+            cmds, rot = [], None
+    return log, turns
+
+
+def week(turns):
+    last = turns[-1]['ms']
+    return [i for i, t in enumerate(turns) if t['ms'] >= last - 7 * 86400 * 1000 and t['usage']]
+
+
+def turn_cost(u):
+    return u['input_tokens'] * PRICE['in'] + u['output_tokens'] * PRICE['out'] + u['cache_read_tokens'] * PRICE['read'] + u['cache_creation_tokens'] * PRICE['write']
+
+
+def conv_stats(turns, idx):
+    """Growth of the context per turn and the size of a fresh conversation's first reply, from the log."""
+    growth, starts = [], []
+    for a, b in zip(idx, idx[1:]):
+        if b != a + 1:
+            continue
+        if turns[b]['rotated'] is not None:
+            starts.append(turns[b]['usage']['context_tokens'])
+        elif 0 < (d := turns[b]['usage']['context_tokens'] - turns[a]['usage']['context_tokens']) < 60_000:
+            growth.append(d)
+    return statistics.median(growth), statistics.median(starts)
+
+
+def project(turns, idx, limit, start, recall_uses=0.0):
+    """Manager dollars of the week if the conversation rotated at `limit` tokens and a fresh one starts at `start` tokens.
+    The reads of a reply scale with the context it ran in; new tokens (cache writes), output and calls stay as logged.
+    A rotation costs a cold write of `start` tokens. (est.) Size rotations of the log are replaced, idle ones kept."""
+    g, s_log = conv_stats(turns, idx)
+    total, rotations, ctx, fresh = 0.0, 0, 0, True
+    for k, i in enumerate(idx):
+        t, u = turns[i], turns[i]['usage']
+        idle = t['rotated'] == 0
+        real_size_rotation = t['rotated'] is not None and t['rotated'] != 0
+        if limit is None:  # ^ the log as it was
+            total += turn_cost(u)
+            continue
+        if fresh or idle or ctx + g >= limit:
+            ctx, rotations = start, rotations + 1
+            cold = start * PRICE['write']
+        else:
+            ctx += min(max(u['context_tokens'] - turns[idx[k - 1]]['usage']['context_tokens'], 0), 60_000) if not real_size_rotation else g
+            cold = 0.0
+        write = u['cache_creation_tokens']
+        if real_size_rotation or t['rotated'] == 0:
+            write = max(write - max(u['context_tokens'] - g, 0), 0)  # ^ the log's cold start is replaced by the simulated one
+        reads = u['cache_read_tokens'] * ctx / max(u['context_tokens'], 1)
+        extra = recall_uses * (ctx * PRICE['read'] + 600 * PRICE['write'])
+        total += u['input_tokens'] * PRICE['in'] + u['output_tokens'] * PRICE['out'] + reads * PRICE['read'] + write * PRICE['write'] + cold + extra
+        fresh = ctx >= limit
+    return total, rotations
+
+
+def cmd_mproject(args):
+    log, turns = manager_turns()
+    idx = week(turns)
+    g, s_now = conv_stats(turns, idx)
+    notes = sum(len(p.read_text()) for p in [REAL / 'manager' / 'notes' / 'decisions.md', REAL / 'manager' / 'notes' / 'context.md'] if p.exists())
+    s_lean = s_now - notes / NOTE_CHARS_PER_TOKEN + 1000  # ^ (est.) no notes in the start, a start set of about 1k tokens instead
+    logged = sum(turn_cost(turns[i]['usage']) for i in idx)
+    real = sum(turns[i]['usage']['cost_micro_usd'] for i in idx) / 1e6
+    runs = list(WORK.glob('manager-runs/*/*.json'))
+    uses = [json.loads(f.read_text())['memory_uses'] for f in runs] if runs else []
+    ru = statistics.mean(uses) if uses else args.recall_uses
+    print(f'Week: {len(idx)} replies, ${real:.2f} logged (price model ${logged:.2f}), context median {statistics.median(turns[i]["usage"]["context_tokens"] for i in idx):.0f}, '
+          f'growth {g:.0f} tokens per turn, fresh start {s_now:.0f} tokens (lean start (est.) {s_lean:.0f}), recall uses per turn {ru:.2f}'
+          f'{" (measured)" if uses else " (assumed, no replay yet)"}\n')
+    print('| rotation limit | start tokens | rotations | weekly $ | per reply $ | vs logged |\n|---|---|---|---|---|---|')
+    print(f'| as logged (size rotations at {statistics.median([t["rotated"] for t in turns if t["rotated"]]):.0f} median, idle ones) | {s_now:.0f} | {sum(turns[i]["rotated"] is not None for i in idx)} | {logged:.0f} | {logged / len(idx):.3f} | |')
+    rows = {}
+    for name, limit, start, ru_ in [('400k', 400_000, s_now, 0), ('150k + recall', 150_000, s_now, ru), ('60k + recall', 60_000, s_now, ru),
+                                    ('60k + recall, lean start (est.)', 60_000, s_lean, ru), ('100k + recall, lean start (est.)', 100_000, s_lean, ru)]:
+        cost, rot = project(turns, idx, limit, start, ru_)
+        rows[name] = cost
+        print(f'| {name} | {start:.0f} | {rot} | {cost:.0f} | {cost / len(idx):.3f} | {cost / logged - 1:+.0%} |')
+    return logged, rows
+
+
+# ---- manager: pick, run, judge, report --------------------------------------------------------
+
+ASKS = re.compile(r'earlier|before|last time|you said|again|same|that one|those|이전|아까|전에|그때|말한', re.I)
+
+
+def cmd_mpick(args):
+    log, turns = manager_turns()
+    idx = week(turns)
+    g, s_now = conv_stats(turns, idx)
+    k150, k60 = int((150_000 - s_now) // g), int((60_000 - s_now) // g)
+    where = {m['id']: i for i, t in enumerate(turns) for m in t['msgs']}
+    where.update({t['id']: i for i, t in enumerate(turns)})  # ^ an owner quote names a message or a reply
+    cands = []
+    for i in idx:
+        t = turns[i]
+        owner = [m for m in t['msgs'] if m['from'] == 'owner']
+        if not owner or sum(len(m['text']) for m in owner) > 1500 or 'attached image' in ' '.join(m['text'] for m in owner):
+            continue
+        dist = None
+        for m in owner:
+            q = where.get(m.get('quote'))
+            if q is not None and q < i:
+                dist = i - q
+            for ref in re.findall(r'#(\d+)', m['text']):
+                last = max((j for j in range(i) if f'#{ref}' in turns[j]['reply'] or any(f'#{ref}' in x['text'] for x in turns[j]['msgs'])), default=None)
+                if last is not None and (dist is None or i - last > dist):
+                    dist = i - last
+        if dist and dist > k60 and (ASKS.search(' '.join(m['text'] for m in owner)) or any(m.get('quote') for m in owner) or dist > k150):
+            cands.append((i, dist))
+    rng = random.Random(385)
+    far = [c for c in cands if c[1] > k150]
+    near = [c for c in cands if c[1] <= k150]
+    rng.shuffle(far), rng.shuffle(near)
+    picks = sorted(far[:8] + near[:15 - len(far[:8])])  # ^ every far one (at most 8), the rest near; few messages reach beyond 150k
+    rows = [{'turn': i, 'reply': turns[i]['id'], 'distance': d, 'beyond': 'beyond 150k window' if d > k150 else 'beyond 60k window',
+             'text': ' / '.join(m['text'][:120] for m in turns[i]['msgs'] if m['from'] == 'owner'), 'logged_cost': turns[i]['usage']['cost_micro_usd'] / 1e6,
+             'repeat': j < 3} for j, (i, d) in enumerate(picks)]
+    WORK.mkdir(parents=True, exist_ok=True)
+    (WORK / 'manager-picks.json').write_text(json.dumps({'k150': k150, 'k60': k60, 'picks': rows}, indent=1))
+    print(f'window: 150k = last {k150} turns, 60k = last {k60} turns (growth {g:.0f} tokens per turn, fresh start {s_now:.0f}); {len(cands)} candidates, {len(far)} beyond 150k')
+    for r in rows:
+        print(f'reply {r["reply"]} dist {r["distance"]:>3} ${r["logged_cost"]:.2f} {r["text"][:100]!r}')
+
+
+def manager_shim(run, home, args):
+    """`wsx` for the replayed manager: read verbs of `task` and `wsx memory recall|search|status` run on the cut state;
+    the others only record their command (the replay changes nothing)."""
+    bin_dir = run / 'bin'
+    bin_dir.mkdir()
+    real = shlex.quote(args.wsx)
+    (bin_dir / 'wsx').write_text(f'''#!/bin/sh
+unset WSX_TASK_BROKER WSX_AGENT_TREE
+export XDG_STATE_HOME={shlex.quote(str(home))} XDG_CONFIG_HOME={shlex.quote(str(home / 'config'))}
+case "$1 $2" in
+  "task ledger"|"task show"|"task search"|"task log"|"task status"|"task list") exec {real} "$@" ;;
+  "memory recall") shift 2; exec {real} memory recall --scope {PID} "$@" ;;
+  "memory search"|"memory status") sub=$2; shift 2; exec {real} memory "$sub" --scope {PID} "$@" ;;
+  "task "*) echo "$@" >> {shlex.quote(str(run / 'commands.txt'))}; echo '{{"ok":true,"note":"replay: not run"}}'; exit 0 ;;
+esac
+echo "wsx: only wsx task and wsx memory recall|search|status run here" >&2
+exit 2
+''')
+    (bin_dir / 'wsx').chmod(0o755)
+    return bin_dir
+
+
+def handover(turns, i, k, notes):
+    """The text a fresh manager conversation starts with: the notes, the last k turns, then the new messages."""
+    out = []
+    if notes:
+        out.append('Your notes files (read at the start of this conversation):\n' + notes)
+    if k:
+        out.append(f'The last {min(k, i)} turns of the earlier conversation, oldest first:')
+        for t in turns[max(0, i - k):i]:
+            for m in t['msgs']:
+                out.append(f'{"Owner" if m["from"] == "owner" else "Events"} (message {m["id"]}): {m["text"][:TURN_TEXT_CLIP]}')
+            out += [f'You ran: {c[:200]}' for c in t['cmds'][:6]]
+            out.append(f'You: {t["reply"][:TURN_TEXT_CLIP]}')
+    out.append('The new messages (answer them):')
+    for m in turns[i]['msgs']:
+        out.append(f'{"Owner" if m["from"] == "owner" else "Events"} (message {m["id"]}): {m["text"][:3000]}')
+    return '\n\n'.join(out)
+
+
+def manager_run(pick, arm, rep, turns, tasks, args):
+    out = WORK / 'manager-runs' / arm / f'{pick["reply"]}-{rep}.json'
+    if out.exists() and not args.force:
+        return json.loads(out.read_text())
+    if spent() + 1.0 > args.cap:
+        print(f'cap {args.cap} reached ({spent():.2f}); skip {arm} reply {pick["reply"]}')
+        return None
+    limit, with_notes = ARMS[arm]
+    g_s = conv_stats(turns, week(turns))  # ^ (growth per turn, fresh start) of the log
+    i = pick['turn']
+    t0 = min(m['unix_ms'] for m in turns[i]['msgs'])
+    at = At(t0, tasks)
+    run = Path(tempfile.mkdtemp(prefix=f'm-{arm}-{pick["reply"]}-', dir=WORK / 'tmp'))
+    home, wc = run / 'state', run / 'wc'
+    try:
+        ctx = build_state(at, tasks, home)
+        notes_dir = home / 'wsx' / 'tasks' / PID / 'manager' / 'notes'
+        notes = ''
+        if with_notes:
+            notes = '\n\n'.join(f'{name}:\n{(notes_dir / name).read_text()}' for name in ('decisions.md', 'context.md') if (notes_dir / name).exists())
+        s_start = g_s[1] if with_notes else g_s[1] - len(notes_of_log(tasks, at)) / NOTE_CHARS_PER_TOKEN + 1000
+        k = max(0, int((limit - s_start) // g_s[0]))
+        rec, size = capture_store(at, tasks, home, args)
+        base = max((o for o in tasks.values() if o.t0 < t0), key=lambda o: o.t0).rec['base']
+        sh(['git', '-C', str(ROOT), 'worktree', 'add', '--detach', str(wc), base], check=True)
+        spec = importlib.util.spec_from_file_location('bench_manager', ROOT / 'scripts' / 'bench-manager.py')
+        bm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bm)
+        system = bm.instructions((ROOT / 'crates/wsx/src/task/instructions.rs').read_text(), 'wsx', str(notes_dir), str(home / 'overview.md'))
+        system += '\n\nOld conversation is not in your context. Find it with `wsx memory recall "<question>"` or `wsx memory search <words>`: the best records and past messages of this project.'
+        text = handover(turns, i, k, notes)
+        bin_dir = manager_shim(run, home, args)
+        env = clean_env(XDG_STATE_HOME=str(home), XDG_CONFIG_HOME=str(home / 'config'), PATH=f'{bin_dir}:{os.environ["PATH"]}',
+                        FAKE_CLAUDE_TRACE=str(run / 'fake.trace'))
+        argv = shlex.split(args.agent) + ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
+                                          '--setting-sources', 'project,local', '--permission-mode', 'bypassPermissions', '--model', 'opus',
+                                          '--append-system-prompt', system, '--session-id', str(uuid.uuid4()), '--max-budget-usd', '3']
+        started = time.time()
+        events = agent_turn(argv, env, wc, text, RUN_SECS)
+        info = {'reply': pick['reply'], 'arm': arm, 'rep': rep, 'k_turns': k, 'handover_bytes': len(text), 'store_records': rec,
+                'wall_s': round(time.time() - started, 1), 'logged_cost': pick['logged_cost']}
+        info.update(analyse(events))
+        info['reply_text'] = '\n\n'.join(info['said']) or info['plan_text']
+        info['commands'] = (run / 'commands.txt').read_text().splitlines() if (run / 'commands.txt').exists() else []
+        info['cost_total'] = info['cost']
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(info, indent=1))
+        spend('manager', f'{arm}-{pick["reply"]}-{rep}', info['cost_total'])
+        print(f'{arm:<7}reply {pick["reply"]} r{rep} ${info["cost_total"]:.2f} (logged ${pick["logged_cost"]:.2f}) k {k} first ctx {info["ctx_first"]} calls {info["calls"]} memory uses {info["memory_uses"]} {info["wall_s"]}s', flush=True)
+        return info
+    finally:
+        sh(['git', '-C', str(ROOT), 'worktree', 'remove', '--force', str(wc)])
+        shutil.rmtree(run, ignore_errors=True)
+
+
+def notes_of_log(tasks, at):
+    # ^ Today's notes files, for the size of a start without them (est.).
+    return ''.join(p.read_text() for p in [REAL / 'manager' / 'notes' / 'decisions.md', REAL / 'manager' / 'notes' / 'context.md'] if p.exists())
+
+
+def cmd_mrun(args):
+    memory_gate(args)  # ^ the paid manager arms run on the memory code of steps 4 and 5, like the memory arm
+    meta = json.loads((WORK / 'manager-picks.json').read_text())
+    picks = meta['picks'][:2] if args.dry_run else meta['picks']
+    log, turns = manager_turns()
+    tasks = real_tasks()
+    (WORK / 'tmp').mkdir(parents=True, exist_ok=True)
+    jobs = [(p, 0) for p in picks] + [(p, 1) for p in picks if p['repeat'] and args.arm == 'cut150']
+    print(f'manager arm {args.arm}: {len(jobs)} runs, spent so far ${spent():.2f}, cap ${args.cap}', flush=True)
+    with cf.ThreadPoolExecutor(args.jobs) as pool:
+        list(pool.map(lambda j: manager_run(j[0], args.arm, j[1], turns, tasks, args), jobs))
+    print(f'spent ${spent():.2f}')
+
+
+MJUDGE_PROMPT = """You compare two answers of a project manager to the same owner messages. REFERENCE is the real answer, CANDIDATE a new one made from less context. Judge only the content, not style.
+Owner messages (and events) of the turn:
+{messages}
+
+REFERENCE answer:
+{ref}
+REFERENCE commands run: {ref_cmds}
+
+CANDIDATE answer:
+{cand}
+CANDIDATE commands run: {cand_cmds}
+
+Score: 2 = the candidate answers the same question with the same facts and decisions; 1 = the same decision or answer, but facts the reference gives are missing or changed; 0 = a different answer, a wrong decision, or it misses what the owner asked.
+List "lost": each concrete fact, name, number or decision of the reference that the candidate lacks (short). List "wrong": candidate statements that contradict the reference.
+Answer JSON only: {{"score": 0|1|2, "lost": ["..."], "wrong": ["..."], "why": "<one sentence>"}}"""
+
+
+def cmd_mjudge(args):
+    log, turns = manager_turns()
+    by_reply = {t['id']: t for t in turns}
+    path = WORK / 'manager-judged.json'
+    judged = json.loads(path.read_text()) if path.exists() else {}
+    for f in sorted((WORK / 'manager-runs').glob('*/*.json')):
+        r = json.loads(f.read_text())
+        rid = f'{f.parent.name}/{f.name}'
+        if rid in judged and not args.force:
+            continue
+        t = by_reply[r['reply']]
+        ans, usd = ask_judge(MJUDGE_PROMPT.format(
+            messages='\n'.join(f'{"Owner" if m["from"] == "owner" else "Events"}: {m["text"][:1500]}' for m in t['msgs']),
+            ref=t['reply'][:3000], ref_cmds='; '.join(c[:160] for c in t['cmds'][:12]) or 'none',
+            cand=r['reply_text'][:3000], cand_cmds='; '.join(c[:160] for c in r['commands'][:12]) or 'none'), args)
+        spend('judge', f'manager-{rid}', usd)
+        judged[rid] = {'score': ans.get('score'), 'lost': ans.get('lost', []), 'wrong': ans.get('wrong', []), 'why': ans.get('why')}
+        print(f'judged {rid}: {ans.get("score")}', flush=True)
+        path.write_text(json.dumps(judged, indent=1))
+    print(f'spent ${spent():.2f}')
+
+
+def cmd_mreport(args):
+    meta = json.loads((WORK / 'manager-picks.json').read_text())
+    judged = json.loads((WORK / 'manager-judged.json').read_text()) if (WORK / 'manager-judged.json').exists() else {}
+    runs = collections.defaultdict(dict)
+    for f in sorted((WORK / 'manager-runs').glob('*/*.json')):
+        r = json.loads(f.read_text())
+        r.update({f'judge_{k}': v for k, v in judged.get(f'{f.parent.name}/{f.name}', {}).items()})
+        runs[r['arm']][(r['reply'], r['rep'])] = r
+    arms = list(runs)
+    print(f'Spend so far: ${spent():.2f} of ${CAP_USD:.0f}. Windows: 150k = last {meta["k150"]} turns, 60k = last {meta["k60"]} turns.\n')
+    print('| reply | distance | $ real | ' + ' | '.join(f'$ {a} | calls | memory | k | score {a}' for a in arms) + ' |\n|' + '---|' * (3 + 5 * len(arms)))
+    for p in meta['picks']:
+        cells = []
+        for a in arms:
+            r = runs[a].get((p['reply'], 0))
+            cells.append(f'{r["cost_total"]:.2f} | {r["calls"]} | {r["memory_uses"]} | {r["k_turns"]} | {r.get("judge_score", "-")}' if r else '- | - | - | - | -')
+        print(f'| {p["reply"]} | {p["distance"]} ({p["beyond"].split()[1]}) | {p["logged_cost"]:.2f} | ' + ' | '.join(cells) + ' |')
+    print()
+    for a in arms:
+        rs = [r for (reply, rep), r in runs[a].items() if rep == 0]
+        sc = [r['judge_score'] for r in rs if r.get('judge_score') is not None]
+        if not sc:
+            continue
+        print(f'`{a}`: {len(sc)} replies, score mean {statistics.mean(sc):.2f} of 2, same (2) {sum(s == 2 for s in sc)}, different (0) {sum(s == 0 for s in sc)}; '
+              f'cost median ${statistics.median(r["cost_total"] for r in rs):.2f} against real ${statistics.median(r["logged_cost"] for r in rs):.2f}; '
+              f'memory uses per reply {statistics.mean(r["memory_uses"] for r in rs):.2f}')
+    pairs = [(runs['cut150'][(p['reply'], 0)], runs['cut150'][(p['reply'], 1)]) for p in meta['picks'] if 'cut150' in runs and (p['reply'], 1) in runs['cut150'] and (p['reply'], 0) in runs['cut150']]
+    pairs = [(a, b) for a, b in pairs if a.get('judge_score') is not None and b.get('judge_score') is not None]
+    if pairs:
+        print(f'\nRerun spread (cut150, {len(pairs)} replies run twice): score {statistics.mean(abs(a["judge_score"] - b["judge_score"]) for a, b in pairs):.2f}, '
+              f'cost {statistics.mean(abs(a["cost_total"] - b["cost_total"]) / max((a["cost_total"] + b["cost_total"]) / 2, 1e-9) for a, b in pairs):.2f}')
+    print('\nLost facts (score below 2):')
+    for a in arms:
+        for (reply, rep), r in sorted(runs[a].items()):
+            if rep == 0 and r.get('judge_score') is not None and r['judge_score'] < 2:
+                print(f'- {a} reply {reply} (score {r["judge_score"]}): ' + '; '.join(r.get('judge_lost', [])[:4]))
+    print()
+    cmd_mproject(args)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -828,6 +1194,25 @@ def main():
     lv.add_argument('--cutoff-ms', type=int, default=0)
     lv.add_argument('--cutoff-task', type=int, default=0, help='split at the landing of this task (#384 or #380)')
     lv.set_defaults(fn=cmd_live)
+    sub.add_parser('mpick').set_defaults(fn=cmd_mpick)
+    mp = sub.add_parser('mproject')
+    mp.add_argument('--recall-uses', type=float, default=1.0, help='memory calls per reply when no replay ran')
+    mp.set_defaults(fn=cmd_mproject)
+    mr = sub.add_parser('mrun')
+    mr.add_argument('--arm', choices=list(ARMS), required=True)
+    for a, kw in (('--agent', {'default': 'claude'}), ('--wsx', {'default': str(ROOT / 'target/debug/wsx')}), ('--cap', {'type': float, 'default': CAP_USD}),
+                  ('--jobs', {'type': int, 'default': 3})):
+        mr.add_argument(a, **kw)
+    mr.add_argument('--dry-run', action='store_true')
+    mr.add_argument('--force', action='store_true')
+    mr.set_defaults(fn=cmd_mrun)
+    mj = sub.add_parser('mjudge')
+    mj.add_argument('--dry-run', action='store_true')
+    mj.add_argument('--force', action='store_true')
+    mj.set_defaults(fn=cmd_mjudge)
+    mrep = sub.add_parser('mreport')
+    mrep.add_argument('--recall-uses', type=float, default=1.0)
+    mrep.set_defaults(fn=cmd_mreport)
     rc = sub.add_parser('recall-cheap')
     rc.add_argument('--wsx', required=True)
     rc.add_argument('--home', required=True)
