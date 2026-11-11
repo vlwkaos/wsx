@@ -1171,7 +1171,7 @@ impl Manager {
                     let memo = memo.split_whitespace().collect::<Vec<_>>().join(" ");
                     if !memo.is_empty() {
                         let memo = clip(&memo, ledger::MEMO_CHARS);
-                        self.fold_memo(record.id, &memo);
+                        self.fold_memo(&record, &dir, &memo);
                         summary.push_str(&format!("; memo: {memo}"));
                     }
                 }
@@ -1247,9 +1247,12 @@ impl Manager {
         )?)
     }
 
-    /// Add a finished task's memo to the manager's notes: a record, then `notes/context.md`
-    /// from the records. A role's notes stay files. ref: docs/tasks.md "Memo"
-    fn fold_memo(&self, task: u32, memo: &str) {
+    /// Add a finished task's memo to the manager's notes: a record (a landed task's fact holds
+    /// its landed commit and the paths of its diff), then `notes/context.md` from the records.
+    /// A role's notes stay files. ref: docs/tasks.md "Memo", docs/memory.md "Capture"
+    fn fold_memo(&self, record: &TaskRecord, dir: &wsx_core::task::store::TaskDir, memo: &str) {
+        let task = record.id;
+        let landed = wsx_core::memory::manage::landed_commit(dir, record);
         let Ok(notes) = self.dir.notes() else {
             return;
         };
@@ -1257,7 +1260,16 @@ impl Manager {
             Some(_) => notes::fold_memo(&notes, task, memo),
             None => self
                 .memory_store()
-                .and_then(|store| notes::record_memo(&store, task, memo))
+                .and_then(|store| {
+                    notes::record_memo(
+                        &store,
+                        task,
+                        memo,
+                        landed
+                            .as_deref()
+                            .map(|commit| (commit, record.paths.as_slice())),
+                    )
+                })
                 .map(|drift| self.say_drift(&drift)),
         };
         if let Err(error) = done {
@@ -2639,7 +2651,9 @@ impl Manager {
                 self.state.turn_seen = None;
                 self.state.session_cost_micro_usd = 0;
                 if self.state.handover {
-                    text = self.handover() + &text;
+                    let handover = self.handover();
+                    self.remember_handover(&handover);
+                    text = handover + &text;
                     self.state.handover = false;
                 }
                 text = self.notes_preamble() + &text;
@@ -3108,6 +3122,26 @@ impl Manager {
              ledger for the state):\n{}\n{routines}\n",
             lines.join("\n")
         )
+    }
+
+    /// The handover as an episode of the project's memory, in the turn that carries it: no turn
+    /// of its own. A role's notes stay files. ref: docs/memory.md "Capture"
+    fn remember_handover(&self, handover: &str) {
+        if self.dir.role.is_some() {
+            return;
+        }
+        let done = self.memory_store().and_then(|store| {
+            Ok(wsx_core::memory::manage::add_episode(
+                &store.without_rules(),
+                "handover",
+                "path:manager/log.jsonl",
+                handover,
+                &self.dir.path.join(wsx_core::task::store::LOG_FILE),
+            )?)
+        });
+        if let Err(error) = done {
+            self.say(&format!("cannot remember the handover: {error:#}"));
+        }
     }
 
     fn save(&mut self) {

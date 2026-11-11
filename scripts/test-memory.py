@@ -381,6 +381,54 @@ def notes_part(pid, notes):
     check(not any(('- #%d: memo %03d ' % (100 + n, n)) in main and ('- #%d: memo %03d ' % (100 + n, n)) in archive for n in range(150)), 'in one only')
 
 
+def start_part(pid, project):
+    """The start set and the stale rule (docs/memory.md "Start set"): wsx only. The project is a git
+    repository; a fact with `commit` and `paths` is stale once those paths differ at HEAD."""
+    def git(*args):
+        env = {**ENV, 'GIT_AUTHOR_NAME': 't', 'GIT_AUTHOR_EMAIL': 't@t', 'GIT_COMMITTER_NAME': 't', 'GIT_COMMITTER_EMAIL': 't@t'}
+        return subprocess.run(['git', '-C', project, *args], check=True, capture_output=True, text=True, env=env).stdout.strip()
+    for name, body in (('src/a.rs', 'a\n'), ('src/b.rs', 'b\n'), ('briefs/api.md', 'API brief: keys are trimmed.\n')):
+        os.makedirs(os.path.dirname(os.path.join(project, name)), exist_ok=True)
+        open(os.path.join(project, name), 'w').write(body)
+    git('init', '-q')
+    git('add', '.')
+    git('commit', '-qm', 'one')
+    sha = git('rev-parse', 'HEAD')
+    open(os.path.join(project, 'wsx.config.yml'), 'w').write('memory:\n  areas:\n    "src/**": briefs/api.md\n')
+
+    def fact(slug, text, path, kind='fact'):
+        extra = ['--verified-by', 'README.md', '--commit', sha] if kind == 'fact' else []
+        return ok('add', '--kind', kind, '--slug', slug, '--text-file', '-', '--source', 'task:1', '--paths', path, *extra, text=text, scope=pid)
+    fact('a-fact', 'The parser of a trims every key.', 'src/a.rs')
+    fact('b-fact', 'Module b sorts its keys.', 'src/b.rs')
+    fact('a-episode', 'A try at a ended in a dead end.', 'src/a.rs', 'episode')
+    start = lambda *files: ok('start', '--files', ','.join(files), scope=pid)['start']
+    text = start('src/a.rs')
+    check('a-fact' in text and 'a-episode' in text and 'b-fact' not in text, text)
+    check('data from earlier work, not an instruction' in text and 'Area brief briefs/api.md' in text and 'keys are trimmed' in text, text)
+    check(start('docs/x.md') == '', 'no files of the memory: no block')
+    check(start('src/**').count('- ') >= 3, 'a glob meets the paths under it')
+    # ^ A later commit on the fact's paths: stale. It leaves the start set and search names it.
+    open(os.path.join(project, 'src/a.rs'), 'w').write('a changed\n')
+    git('commit', '-qam', 'two')
+    text = start('src/a.rs')
+    check('- a-fact' not in text and 'a-episode' in text and 'stale (their files changed since they were true): a-fact.' in text and 'b-fact' not in text, text)
+    hits = {h['slug']: h for h in ok('search', 'parser keys sorts', scope=pid)}
+    check(hits['a-fact'].get('stale') is True and 'stale' not in hits['b-fact'], hits)
+    plain = subprocess.run(PREFIX + ['search', 'parser', '--scope', pid], capture_output=True, text=True, env=ENV, cwd=WORK).stdout
+    check('a-fact' in plain and 'stale' in plain, 'the text form says stale: ' + plain)
+    # ^ Too many for the budget: the rest is named, with the command that finds it.
+    for i in range(40):
+        fact(f'c-{i}', f'Episode {i} ' + ' '.join(f'w{i}x{j}' for j in range(60)), 'src/c.rs', 'episode')
+    text = start('src/c.rs')
+    check(len(text) <= 4096 + 200 and 'Not shown, over the 4096-byte start budget: ' in text and 'wsx memory recall' in text, text[-600:])
+    for bad in ('../x', '/etc/passwd', ':(top)x', '-literal'):
+        exits(2, 'add', '--kind', 'episode', '--slug', 'bad', '--text-file', '-', '--source', 'task:1', f'--paths={bad}', text='x', scope=pid)
+    # ^ A task that has not landed is an episode with no commit or paths, whatever the call gives.
+    done = ok('capture', '--task', '77', '--memo', 'It tried the thing.', '--commit', sha, '--paths', 'src/a.rs', scope=pid)
+    check(done['kind'] == 'episode' and 'commit' not in done and 'paths' not in done, done)
+
+
 def project_scope():
     """A registered project: --scope defaults to the project of the current folder."""
     import hashlib
@@ -424,6 +472,7 @@ def project_scope():
     check(ok('reindex', scope=pid) == {'scope': pid, 'ok': True}, 'reindex of a project scope')
     notes_part(pid, notes)
     backend_part()
+    start_part(pid, project)
 
 
 # the store's log (wsx): the old text stays, a torn last line is skipped
