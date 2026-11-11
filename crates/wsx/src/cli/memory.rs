@@ -331,7 +331,7 @@ fn show_hits(answer: backend::Answer, json: bool) -> MemResult<()> {
             hit.slug,
             hit.kind,
             hit.status,
-            if hit.extra.get("stale").is_some() {
+            if hit.extra.contains_key("stale") {
                 ", stale"
             } else {
                 ""
