@@ -806,6 +806,7 @@ def manager_up(created):
     picked_dir = Path([t for t in traces() if t.get('launch') and not t.get('manager')][-1]['plugin_dir']) / 'skills'
     assert sorted(os.listdir(picked_dir)) == ['other'], os.listdir(picked_dir)
     js('task', 'close', picked, '--discard')
+    assert 'is not a skill name' in cli('task', 'new', 'WORK bad.txt', '--skills', 'owner:../x', ok=False).stderr
     configure(unrestricted, 'skills all')
     added = js('task', 'say', 'RUN wsx task add %d "WORK s2.txt" -p demo --json' % running)
     assert '-> 0' in reply_to(added['id'])['text']
