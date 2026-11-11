@@ -4383,7 +4383,7 @@ merge_seconds = 3
         # --- To check (docs/tasks.md "To check"): pass one, fail one with no note (it only closes), fail one
         # with a note (a linked fix task starts), pass the rest; the owner's alone.
         made = []
-        for prompt in ('WORK h.txt HV', 'WORK i.txt HV', 'WORK j.txt HV'):
+        for prompt in ('WORK h.txt HV', 'WORK i.txt HV', 'WORK f.txt HV'):
             made.append(js('task', 'new', prompt, '-p', 'demo')['id'])
             wait(lambda: task_state(made[-1]) == 'ready', 'demo #%d' % made[-1])
             assert js('task', 'land', made[-1], '-p', 'demo')['state'] == 'landed'
