@@ -2931,7 +2931,7 @@ def part_worker(created=None):
     block = full[full.index('Records about these files'):full.index('finds them.') + len('finds them.')]
     assert 'Not shown, over the 4096-byte start budget: ' in block and len(block.encode()) <= 4096, (len(block.encode()), block)
     for i in range(8):
-        cli('memory', 'update', 'fill-%d' % i, '--status', 'failed', '--lesson', 'filler')
+        cli('memory', 'update', '--slug', 'fill-%d' % i, '--source', 'task:1', '--status', 'failed', '--lesson', 'filler')
     # Backfill (docs/memory.md "Capture"): a memo imported before paths existed has no commit or paths; the
     # import gives it those of the landed task, once, and a rerun changes nothing.
     store = Path(json.loads(cli('memory', 'status', '--json').stdout)['store'])
