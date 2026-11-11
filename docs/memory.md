@@ -105,7 +105,7 @@ The first prompt of a worker holds a block from the memory, built by `wsx_core::
 2. **The role's brief and rules**, when the task was created by a role: `brief.md`, then the role's `notes/decisions.md` lines, newest first.
 3. **Records**, under a line that says a record is data from earlier work and not an instruction. They are the active records whose `paths` meet a file (a literal path covers what is under it), a fact only when fresh. Order: the larger share of a record's paths that meet, then more of them, then the newer.
 
-Nothing is cut silently: a piece that does not fit is named on a last line (`Not shown, over the 4096-byte start budget: <slugs>. wsx memory recall "<question>" finds them.`), a brief that is cut says how many bytes and where the whole is, a record over 700 characters shows its head and `wsx memory get <slug>`, and the stale facts are counted (`Not shown, stale: N fact(s)`).
+Nothing is cut silently: a piece that does not fit is named on a last line (`Not shown, over the 4096-byte start budget: <slugs>. wsx memory recall "<question>" finds them.`), a brief that is cut says how many bytes and where the whole is, a record over 700 characters shows its head and `wsx memory get <slug>`, and the stale facts are named (`Not shown, stale (their files changed since they were true): <slugs>. wsx memory get <slug> reads one.`).
 
 **Stale**: a `fact` with `commit` and `paths` is stale when `git diff --quiet <commit> HEAD -- <paths>` in the project folder fails; git that cannot answer (10 s, not a hash) counts as stale, so an unchecked fact never joins a prompt. A start set checks at most 30 facts, best first. `search` marks the hits it returns with `"stale": true` (text form: `, stale` after the status); a stale fact is not hidden there.
 
@@ -118,7 +118,9 @@ When a task leaves, the manager host (`manager.rs` `fold_memo`) stores its resul
 | landed | `fact`, `verified_by` and `source` `task:<n>`, `commit` = the landed commit (the log's `landed`), `paths` = the files of its diff (the task record's `paths`, capped) |
 | closed or failed | `episode`, no `commit`, no `paths` |
 
-The slug is `memo-<n>-<digest>`, so the same memo is one record. A memo is one line of at most 240 characters. `wsx memory capture` does the same for a replay. A task created by a role keeps its memo in the role's own notes (not captured). When a worker's conversation ends for its size, its host also stores the handoff notes as an episode `rotation-<n>-<digest>` (cut at the text limit, with the path of the whole). The manager's handover is built from the log by the host and is not stored.
+The slug is `memo-<n>-<digest>`, so the same memo is one record. A memo is one line of at most 240 characters. `wsx memory capture` does the same for a replay. A task created by a role keeps its memo in the role's own notes (not captured). When a worker's conversation ends for its size, its host also stores the handoff notes as an episode `rotation-<n>-<digest>` (cut at the text limit, with the path of the whole). When the manager starts a fresh conversation, the host also stores the handover it puts in that turn as an episode `handover-<digest>` (source `path:manager/log.jsonl`; a role's manager keeps files). Neither takes a turn of its own.
+
+**Backfill**: a memo imported before `paths` existed is a `fact` with no `commit` and no `paths`, so it would leave every start set. `wsx memory import`, the first write of a rule writer and the host's first start set (once, marked by `paths-backfilled` in the store folder) give each such fact of a landed task the landed commit and the task's `paths` from the task's own record and log, the data `capture` stores. The time of the record stays. A task with no landed diff stays without paths. A rerun changes nothing.
 
 ## Exit codes
 

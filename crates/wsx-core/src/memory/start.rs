@@ -103,9 +103,9 @@ pub fn block(store: &Store, start: &Start, budget: usize) -> String {
             None => left.push(piece.name),
         }
     }
-    let stale_skipped = records(store, start.files, &mut room, &mut out, &mut left);
-    if !left.is_empty() || stale_skipped > 0 {
-        out.push(not_shown(&left, stale_skipped, budget));
+    let stale = records(store, start.files, &mut room, &mut out, &mut left);
+    if !left.is_empty() || !stale.is_empty() {
+        out.push(not_shown(&left, &stale, budget));
     }
     out.join("\n")
 }
@@ -210,16 +210,16 @@ fn role_pieces(project_id: &str, role: &str) -> Vec<Piece> {
 
 /// The active records whose paths meet `files`, the best first: the larger share of a
 /// record's paths that meet, then more of them, then the newer. A fact is checked for
-/// staleness as it is reached, so a stale one never takes room. Returns how many were stale.
+/// staleness as it is reached, so a stale one never takes room. Returns the slugs that were stale.
 fn records(
     store: &Store,
     files: &[String],
     room: &mut usize,
     out: &mut Vec<String>,
     left: &mut Vec<String>,
-) -> usize {
+) -> Vec<String> {
     let Ok(all) = store.records() else {
-        return 0;
+        return Vec::new();
     };
     let mut found: Vec<(f64, usize, &Record)> = all
         .iter()
@@ -240,7 +240,7 @@ fn records(
             .then(a.2.slug.cmp(&b.2.slug))
     });
     let mut lines = Vec::new();
-    let (mut stale_skipped, mut checks, mut unknown) = (0, 0, false);
+    let (mut stale, mut checks, mut unknown) = (Vec::new(), 0, false);
     for (.., r) in found {
         let line = record_line(r);
         let fits = line.len() < room.saturating_sub(DATA_NOTE.len() + 2);
@@ -256,7 +256,7 @@ fn records(
                 *room = room.saturating_sub(line.len() + 1);
                 lines.push(line);
             }
-            Some(true) => stale_skipped += 1,
+            Some(true) => stale.push(r.slug.clone()),
             None => {
                 unknown = true;
                 left.push(r.slug.clone());
@@ -267,7 +267,7 @@ fn records(
         out.push(format!("{DATA_NOTE}\n{}", lines.join("\n")));
         *room = room.saturating_sub(DATA_NOTE.len() + 1);
     }
-    stale_skipped
+    stale
 }
 
 fn stale_of_needs_git(r: &Record) -> bool {
@@ -292,30 +292,34 @@ fn record_line(r: &Record) -> String {
     )
 }
 
-fn not_shown(left: &[String], stale: usize, budget: usize) -> String {
+/// The names of up to `NAMES_SHOWN` of `slugs`, and how many more there are.
+fn names(slugs: &[String]) -> String {
+    let shown = slugs
+        .iter()
+        .take(NAMES_SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    match slugs.len().saturating_sub(NAMES_SHOWN) {
+        0 => shown,
+        more => format!("{shown} and {more} more"),
+    }
+}
+
+fn not_shown(left: &[String], stale: &[String], budget: usize) -> String {
     let mut parts = Vec::new();
     if !left.is_empty() {
-        let names = left
-            .iter()
-            .take(NAMES_SHOWN)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
-        let more = left.len().saturating_sub(NAMES_SHOWN);
         parts.push(format!(
-            "Not shown, over the {budget}-byte start budget: {names}{}. \
+            "Not shown, over the {budget}-byte start budget: {}. \
              `wsx memory recall \"<question>\"` finds them.",
-            if more > 0 {
-                format!(" and {more} more")
-            } else {
-                String::new()
-            }
+            names(left)
         ));
     }
-    if stale > 0 {
+    if !stale.is_empty() {
         parts.push(format!(
-            "Not shown, stale (their files changed since they were true): {stale} fact(s); \
-             `wsx memory search` lists them."
+            "Not shown, stale (their files changed since they were true): {}. \
+             `wsx memory get <slug>` reads one.",
+            names(stale)
         ));
     }
     parts.join("\n")

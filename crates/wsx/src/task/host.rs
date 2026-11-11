@@ -1950,8 +1950,8 @@ impl Host {
         .and_then(|store| {
             memory_manage::add_episode(
                 &store.without_rules(),
-                "rotation",
-                self.record.id,
+                &format!("rotation-{}", self.record.id),
+                &format!("task:{}", self.record.id),
                 notes,
                 &self.dir.file(ROTATE_NOTES),
             )
@@ -2060,6 +2060,10 @@ impl Host {
             &self.record.project,
             &self.record.project_path,
         ) {
+            // ^ Memos imported before paths existed get theirs once, so they stay in the start set.
+            if let Err(error) = memory_manage::backfill_once(&store) {
+                self.say(&format!("cannot backfill the memo paths: {error}"));
+            }
             let start = Start {
                 files: &self.record.files,
                 areas: &areas,

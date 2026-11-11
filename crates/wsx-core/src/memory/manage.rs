@@ -8,9 +8,10 @@ use super::record::{Kind, Record, Status};
 use super::store::{Error, NewRecord, Patch, Store, MAX_KEYWORD_BYTES};
 use crate::task::chat::{read_chat, Window};
 use crate::task::manager::{Author, ManagerEvent};
-use crate::task::store::{read_bounded_if_exists, write_note, ManagerDir};
+use crate::task::store::{read_bounded_if_exists, write_note, ManagerDir, TaskDir};
 use crate::task::text::day_of;
 use crate::task::view::clip;
+use crate::task::{LogEvent, TaskRecord, TaskState};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -32,6 +33,8 @@ const COPY_SUFFIX: &str = ".pre-memory";
 const DRIFT_SUFFIX: &str = ".drift";
 /// The hash of each view as rendered, in the store's folder.
 const HASHES_FILE: &str = "views.json";
+/// Present once the imported memos have had their commit and paths (`backfill`).
+const BACKFILLED_FILE: &str = "paths-backfilled";
 /// Past this many bytes the oldest memos of `context.md` show in `context-archive.md` only.
 const CONTEXT_CEILING_BYTES: usize = 32 * 1024;
 const MAX_VIEW_BYTES: u64 = 4 << 20;
@@ -541,6 +544,7 @@ pub fn import(store: &Store) -> Result<(Imported, Vec<Drift>), Error> {
         class.entry(r.slug.clone()).or_insert(*c);
     }
     let added = store.import(found.into_iter().map(|(r, _)| r).collect())?;
+    backfill(store)?;
     let mut counts = Imported::default();
     for slug in added {
         match class[&slug] {
@@ -553,6 +557,51 @@ pub fn import(store: &Store) -> Result<(Imported, Vec<Drift>), Error> {
     Ok((counts, render(store)?))
 }
 
+/// The commit a task landed with, when it has landed: what `capture` stores with the paths of
+/// its diff (the record's `paths`).
+pub fn landed_commit(dir: &TaskDir, record: &TaskRecord) -> Option<String> {
+    if record.state != TaskState::Landed {
+        return None;
+    }
+    dir.last_event(|event| match event {
+        LogEvent::Landed { commit } => Some(commit.clone()),
+        _ => None,
+    })
+    .ok()
+    .flatten()
+}
+
+/// Give the imported facts of landed tasks the landed commit and the paths of the diff, from
+/// the task's own record and log: the same data `capture` stores. A task with no landed
+/// diff stays without paths. Idempotent; `import` runs it. ref: docs/memory.md "Capture"
+pub fn backfill(store: &Store) -> Result<usize, Error> {
+    let Some((project, _)) = store.project_ids() else {
+        return Ok(0);
+    };
+    let changed = store.backfill(|r| {
+        let task = r
+            .verified_by
+            .as_deref()?
+            .strip_prefix("task:")?
+            .parse()
+            .ok()?;
+        let dir = TaskDir::open(project, task).ok()?;
+        let record = dir.read_record().ok()?;
+        Some((landed_commit(&dir, &record)?, record.paths))
+    })?;
+    io(write_note(&store.dir().join(BACKFILLED_FILE), "done\n"))?;
+    Ok(changed.len())
+}
+
+/// `backfill` for a store that has not had it: the host runs it before the first start set
+/// and the first write, so the memos imported before paths existed join the start sets.
+pub fn backfill_once(store: &Store) -> Result<(), Error> {
+    if !store.dir().join(BACKFILLED_FILE).exists() {
+        backfill(store)?;
+    }
+    Ok(())
+}
+
 fn ensure_imported(store: &Store) -> Result<(), Error> {
     let waits = store
         .notes_dir()
@@ -561,7 +610,7 @@ fn ensure_imported(store: &Store) -> Result<(), Error> {
     if waits && store.may_write(Kind::Rule).is_ok() {
         import(store)?;
     }
-    Ok(())
+    backfill_once(store)
 }
 
 // ^ The write path: the records first, then the views. A view that cannot be written is a
@@ -714,13 +763,13 @@ pub fn capture(
     )
 }
 
-/// What a task wrote down when its conversation was dropped, as an episode (`<slug>-<task>-`
-/// and a digest of the text, so one set of notes is one record). Text over the store's limit
-/// keeps its head and says where the whole is: `whole`.
+/// What a conversation carried when it was dropped (a task's handoff notes, the manager's
+/// handover), as an episode: `<slug>-` and a digest of the text, so one text is one record.
+/// Text over the store's limit keeps its head and says where the whole is: `whole`.
 pub fn add_episode(
     store: &Store,
     slug: &str,
-    task: u32,
+    source: &str,
     text: &str,
     whole: &Path,
 ) -> Result<Added, Error> {
@@ -740,10 +789,10 @@ pub fn add_episode(
         store,
         NewRecord {
             kind: Kind::Episode,
-            slug: format!("{slug}-{task}-{}", digest(&text)),
+            slug: format!("{slug}-{}", digest(&text)),
             text,
             title: None,
-            source: format!("task:{task}"),
+            source: source.into(),
             verified_by: None,
             commit: None,
             description: None,

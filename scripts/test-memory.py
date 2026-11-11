@@ -412,7 +412,7 @@ def start_part(pid, project):
     open(os.path.join(project, 'src/a.rs'), 'w').write('a changed\n')
     git('commit', '-qam', 'two')
     text = start('src/a.rs')
-    check('a-fact' not in text and 'a-episode' in text and 'stale' in text and 'b-fact' not in text, text)
+    check('- a-fact' not in text and 'a-episode' in text and 'stale (their files changed since they were true): a-fact.' in text and 'b-fact' not in text, text)
     hits = {h['slug']: h for h in ok('search', 'parser keys sorts', scope=pid)}
     check(hits['a-fact'].get('stale') is True and 'stale' not in hits['b-fact'], hits)
     plain = subprocess.run(PREFIX + ['search', 'parser', '--scope', pid], capture_output=True, text=True, env=ENV, cwd=WORK).stdout
