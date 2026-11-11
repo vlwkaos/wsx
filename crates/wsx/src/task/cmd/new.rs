@@ -3,7 +3,7 @@
 use crate::cli::{load_full_workspace, resolve_project};
 use crate::task::agent;
 use crate::task::args::NewArgs;
-use crate::task::{actor, ask_host, ask_host_ok, print_json, wait_for_host};
+use crate::task::{ask_host, ask_host_ok, creator, print_json, wait_for_host};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use wsx_core::config::project::load_task_config;
@@ -285,7 +285,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
                 if record.hold.is_none() {
                     let hold = HostRequest::Hold {
                         reason: Some(format!("parent of #{id}")),
-                        by: actor(),
+                        by: crate::task::actor(),
                     };
                     ask_host_ok(parent_dir, &hold)?;
                 }
@@ -351,7 +351,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         files,
         title,
         fixes,
-        created_by: actor(),
+        created_by: creator(&project.name),
         hold: hold.clone(),
         after: wait.clone(),
         parent: into,
@@ -412,6 +412,16 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         return Err(error.context(format!(
             "task t{id} did not start; its working copy and branch were removed"
         )));
+    }
+    // ^ The events of a task another project's manager created are forwarded by this project's
+    // manager host, so it must run. ref: docs/tasks.md "Managers talk"
+    if record.created_by.origin().is_some() {
+        if let Err(error) = super::chat::ensure_manager(Some(&project.name)) {
+            eprintln!(
+                "wsx: the manager of {} did not start: {error:#}",
+                project.name
+            );
+        }
     }
     // ^ A host that never answers is replaced once by `call_task_host` (a deploy can break the
     // start); `new` then reports the state it has, or that the host has not answered.

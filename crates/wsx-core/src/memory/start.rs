@@ -7,7 +7,7 @@
 
 use super::manage::clip_to;
 use super::record::{Kind, Record};
-use super::store::Store;
+use super::store::{foreign_task, registered, Store};
 use crate::git::{git_cmd, output_with_timeout_limit};
 use crate::task::store::{read_bounded_if_exists, ManagerDir};
 use crate::task::view::meet;
@@ -63,7 +63,16 @@ pub fn stale(store: &Store, r: &Record) -> bool {
 
 fn stale_of(store: &Store, r: &Record) -> Option<bool> {
     match &r.commit {
-        Some(commit) if stale_of_needs_git(r) => changed(store.root(), commit, &r.paths),
+        Some(commit) if stale_of_needs_git(r) => {
+            // ^ The paths of a fact verified by another project's task (`task:<project>#<n>`) name
+            // that project's files: git runs in its folder. A project that is no longer
+            // registered cannot answer.
+            let root = match r.verified_by.as_deref().and_then(foreign_task) {
+                Some((name, _)) => registered(name)?.1,
+                None => store.root().to_path_buf(),
+            };
+            changed(&root, commit, &r.paths)
+        }
         _ => Some(false),
     }
 }

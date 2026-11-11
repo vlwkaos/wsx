@@ -435,6 +435,16 @@ fn actor() -> Actor {
     Actor::from_env()
 }
 
+/// Who a task created in `project` is by: the acting actor, or, for a manager that the broker
+/// of another project's manager host runs here (`WSX_TASK_FROM`), that project's manager.
+/// ref: docs/tasks.md "Managers talk"
+fn creator(project: &str) -> Actor {
+    match (actor(), std::env::var(broker::FROM_ENV)) {
+        (Actor::Manager, Ok(from)) if !from.is_empty() && from != project => Actor::ManagerOf(from),
+        (actor, _) => actor,
+    }
+}
+
 /// Whether the manager's agent must ask the owner for an outward command: its configured
 /// `tasks.*.approve`, or always when the agent is untrusted (`WSX_TASK_TRUST`, set by its
 /// broker). ref: docs/tasks.md "Permissions"
