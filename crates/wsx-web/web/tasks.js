@@ -915,7 +915,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
       <${Back} fallback=${role ? `#/p/${id}` : "#/"} />
       <div class="bar-title">
         <span class="bar-label">${role ? `${project.name} · ${role}` : project.name}</span>
-        ${!role && !managerWord && chat?.manager.agent && html`<span class="bar-model" title="Model">${agentWords(chat.manager.agent)}</span>`}
+        ${!managerWord && chat?.manager.agent && html`<span class="bar-model" title="Model">${agentWords(chat.manager.agent)}</span>`}
         ${managerWord && html`<span class="bar-state" key=${managerWord} data-tone=${typing ? "working" : "danger"}>${typing
           ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><${Dots} /></span>`
           : managerWord}</span>`}

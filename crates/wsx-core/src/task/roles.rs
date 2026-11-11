@@ -6,6 +6,7 @@ use super::manager::{ApprovalAction, ApprovalLine};
 use super::now_unix_ms;
 use super::store::{self, ManagerDir};
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The role's instructions, besides the manager's; a new brief starts a fresh conversation.
@@ -13,6 +14,8 @@ pub const BRIEF_FILE: &str = "brief.md";
 /// Written by `role close` and by wsx after `tasks.roles.closeDays` without a turn; the
 /// notes and the log stay.
 pub const CLOSED_FILE: &str = "closed";
+/// Who opened the role and the agent it runs on: `{by, adapter?, model?}`.
+pub const ROLE_FILE: &str = "role.json";
 pub const MAX_BRIEF_BYTES: usize = 8 * 1024;
 const MAX_NAME_CHARS: usize = 24;
 /// After the owner denies a role, `role new` of that name refuses for this long.
@@ -97,10 +100,82 @@ pub fn checked_brief(brief: &str) -> Result<&str> {
     Ok(brief)
 }
 
+/// Who opened a role. The owner's own `role new` opens a role that wsx never closes by
+/// itself; the manager's request opens one that `tasks.roles.closeDays` closes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Opener {
+    Owner,
+    #[default]
+    Manager,
+}
+
+/// A role's own agent, `role new --adapter --model`; a role with none runs the manager's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleAgent {
+    pub adapter: String,
+    pub model: String,
+}
+
+impl RoleAgent {
+    /// `--adapter` (default `claude`) and `--model`, as `task new --model` checks them. The
+    /// adapter needs its model: a claude model name does not fit pi.
+    pub fn checked(adapter: Option<&str>, model: Option<&str>) -> Result<Option<Self>> {
+        let Some(model) = model else {
+            if adapter.is_some() {
+                bail!("--adapter needs --model: a model of the manager's adapter does not fit another");
+            }
+            return Ok(None);
+        };
+        let adapter = adapter.unwrap_or("claude");
+        if !crate::config::global::TASK_ADAPTERS.contains(&adapter) {
+            bail!(
+                "--adapter must be one of: {}",
+                crate::config::global::TASK_ADAPTERS.join(", ")
+            );
+        }
+        Ok(Some(Self {
+            adapter: adapter.to_string(),
+            model: super::view::checked_model(model)?,
+        }))
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct RoleFile {
+    #[serde(default)]
+    by: Opener,
+    #[serde(default, flatten, skip_serializing_if = "Option::is_none")]
+    agent: Option<RoleAgent>,
+}
+
+fn role_file(dir: &ManagerDir) -> RoleFile {
+    store::read_bounded_if_exists(&dir.path.join(ROLE_FILE), 4096)
+        .ok()
+        .flatten()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// The role's own agent, none for a role that runs the manager's.
+pub fn agent(dir: &ManagerDir) -> Option<RoleAgent> {
+    role_file(dir).agent
+}
+
 /// Open the role with this brief: a new folder, or a closed one again with its notes.
-pub fn create(project_id: &str, name: &str, brief: &str) -> Result<ManagerDir> {
+pub fn create(
+    project_id: &str,
+    name: &str,
+    brief: &str,
+    by: Opener,
+    agent: Option<RoleAgent>,
+) -> Result<ManagerDir> {
     let dir = ManagerDir::open_as(project_id, Some(checked_name(name)?))?;
     store::write_atomic(&dir.path.join(BRIEF_FILE), checked_brief(brief)?.as_bytes())?;
+    store::write_atomic(
+        &dir.path.join(ROLE_FILE),
+        &serde_json::to_vec(&RoleFile { by, agent })?,
+    )?;
     match std::fs::remove_file(dir.path.join(CLOSED_FILE)) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
             return Err(error).context("cannot open the closed role again")
@@ -132,11 +207,13 @@ fn modified_ms(path: &Path) -> u64 {
         .map_or(0, |since| since.as_millis() as u64)
 }
 
-/// Close each open role with no turn for `close_secs`; their names. ref: docs/tasks.md "Roles"
+/// Close each open role the manager opened with no turn for `close_secs`; their names. A role
+/// the owner opened stays open until `role close`. ref: docs/tasks.md "Roles"
 pub fn close_idle(project_id: &str, close_secs: u64) -> Vec<String> {
     let now = now_unix_ms();
     open_roles(project_id)
         .into_iter()
+        .filter(|dir| role_file(dir).by == Opener::Manager)
         .filter(|dir| last_active_ms(dir) + close_secs * 1000 <= now)
         .filter(|dir| close(dir, "closed by wsx: no turn for tasks.roles.closeDays").is_ok())
         .map(|dir| dir.name().to_string())
@@ -159,9 +236,36 @@ pub fn asked(lines: &[ApprovalLine]) -> Vec<(&str, &str)> {
         .collect()
 }
 
+/// The asked roles as rows; the agent the request names shows as an open role's does.
+fn asked_rows(lines: &[ApprovalLine]) -> Vec<serde_json::Value> {
+    super::manager::pending_approvals(lines)
+        .into_iter()
+        .filter_map(|line| match line {
+            ApprovalLine::Request {
+                id,
+                action: ApprovalAction::Role,
+                role: Some(role),
+                adapter,
+                model,
+                ..
+            } => {
+                let mut row = serde_json::json!({ "name": role, "state": "asked", "approval": id });
+                if let (Some(adapter), Some(model)) = (adapter, model) {
+                    row["adapter"] = adapter.as_str().into();
+                    row["model"] = model.as_str().into();
+                }
+                Some(row)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// The roles as rows for the ledger, `role list` and the views: each folder with a brief,
 /// open or closed, by name, then each one asked for: `{name, state, brief, last_unix_ms}` or
-/// `{name, state: "asked", approval}`. `brief` is the brief's first line.
+/// `{name, state: "asked", approval, adapter?, model?}`. `brief` is the brief's first line;
+/// `by` is `owner` or `manager`; `adapter` and `model` are the role's own agent, left out for
+/// a role on the manager's.
 pub fn rows(project_id: &str, lines: &[ApprovalLine]) -> Vec<serde_json::Value> {
     let mut rows: Vec<serde_json::Value> = names(project_id)
         .iter()
@@ -169,19 +273,22 @@ pub fn rows(project_id: &str, lines: &[ApprovalLine]) -> Vec<serde_json::Value> 
         .filter(|dir| dir.path.join(BRIEF_FILE).is_file())
         .map(|dir| {
             let brief = brief(&dir);
-            serde_json::json!({
+            let file = role_file(&dir);
+            let mut row = serde_json::json!({
                 "name": dir.name(),
                 "state": if is_open(&dir) { "open" } else { "closed" },
                 "brief": brief.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
                 "last_unix_ms": last_active_ms(&dir),
-            })
+                "by": file.by,
+            });
+            if let Some(agent) = file.agent {
+                row["adapter"] = agent.adapter.into();
+                row["model"] = agent.model.into();
+            }
+            row
         })
         .collect();
-    rows.extend(
-        asked(lines).into_iter().map(
-            |(id, name)| serde_json::json!({ "name": name, "state": "asked", "approval": id }),
-        ),
-    );
+    rows.extend(asked_rows(lines));
     rows
 }
 

@@ -4714,7 +4714,7 @@ merge_seconds = 3
             # A role in ui with a reply, for the page's Roles contact and chat.
             role_brief = work / 'role-brief.md'
             role_brief.write_text('Write the release notes.\n')
-            js('task', 'role', 'new', 'billing', '--brief', role_brief, '-p', 'ui')
+            js('task', 'role', 'new', 'billing', '--brief', role_brief, '--model', 'haiku', '-p', 'ui')
             assert steady(owner, 'POST', '/api/tasks/%d/say' % ids['ui'], {'text': 'STATUS', 'role': 'billing'})[0] == 200
             wait(lambda: any(manager_said(r) for r in steady(owner, 'GET', '/api/tasks/%d/chat?role=billing' % ids['ui'])[1]['rows']),
                  'the ui role reply', 60)

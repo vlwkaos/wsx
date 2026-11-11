@@ -134,6 +134,7 @@ pub fn approval_label(request: &ApprovalLine) -> String {
         action,
         task,
         role,
+        model,
         commit,
         lease,
         tasks,
@@ -154,7 +155,11 @@ pub fn approval_label(request: &ApprovalLine) -> String {
         (Some(task), ..) => format!("Approve {verb} #{task}"),
         // ^ A project add names the folder; the URL is the card's second line.
         _ if path.is_some() => format!("Approve {verb} {}", path.as_deref().unwrap_or_default()),
-        (None, Some(role), ..) => format!("Approve {verb} {role}"),
+        // ^ A role on its own model names it: "Approve role qa (sonnet)".
+        (None, Some(role), ..) => match model {
+            Some(model) => format!("Approve {verb} {role} ({model})"),
+            None => format!("Approve {verb} {role}"),
+        },
         // ^ A push with no landed task names the commit: "Approve force push 1a2b3c4d5e6f".
         (None, None, ApprovalAction::Push, Some(commit)) if tasks.is_empty() => {
             format!("Approve {verb} {}", super::view::short_commit(commit))
@@ -286,6 +291,8 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
         commit,
         role,
         brief,
+        adapter,
+        model,
         lease,
         path,
         url,
@@ -297,11 +304,19 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
     // ^ A role is store files only: no command to run.
     if action == ApprovalAction::Role {
         let role = role.unwrap_or_default();
-        let (ok, outcome) =
-            match super::roles::create(&project_id, &role, brief.as_deref().unwrap_or_default()) {
-                Ok(_) => (true, format!("done: role {role} is open")),
-                Err(error) => (false, format!("failed: {error:#}")),
-            };
+        let agent = adapter
+            .zip(model)
+            .map(|(adapter, model)| super::roles::RoleAgent { adapter, model });
+        let (ok, outcome) = match super::roles::create(
+            &project_id,
+            &role,
+            brief.as_deref().unwrap_or_default(),
+            super::roles::Opener::Manager,
+            agent,
+        ) {
+            Ok(_) => (true, format!("done: role {role} is open")),
+            Err(error) => (false, format!("failed: {error:#}")),
+        };
         decide(&project_id, id, true, None, &outcome)?;
         return Ok(Approved {
             ok,

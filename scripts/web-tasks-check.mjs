@@ -33,7 +33,7 @@ const { file: mobilePath, source: mobileSource } = mobileAudit();
 if (!mobileSource) await fail(`no mobile audit at ${mobilePath}; set WSX_MOBILE_AUDIT`);
 // The main screens that get the design lint (scripts/design-lint.js), at 390x844 and 1280x800 only.
 const linter = designLint({ evaluate, captures, file: "tasks" });
-const LINTED = new Set(["role-chat", "role-chat-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
+const LINTED = new Set(["roles-home", "roles-home-wide", "role-chat", "role-chat-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
 let size = [390, 844, 2];
 const phone = () => size[0] < 600;
 const audits = [];
@@ -421,13 +421,13 @@ async function motion() {
     globalThis.motionKept = { tasks: state.tasks, projects: state.projects };
     const ui = state.projects.find((project) => project.name === 'ui').id;
     const calm = state.projects.find((project) => project.name === 'calm');
-    const rows = () => [...document.querySelectorAll('.home-rows > .row')];
+    const rows = () => [...document.querySelectorAll('.home-rows > .row:not(.row-role)')];
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     // The manager of ui runs a turn: typing dots on its row. ^ Only ui's row: another fixture
     // manager may run a real turn at the same time.
     update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], busy: true } } });
     await frames();
-    const typing = document.querySelectorAll('.home-rows > .row[data-key="' + ui + '"] .row-typing .typing-dot').length;
+    const typing = document.querySelectorAll('.home-rows > .row:not(.row-role)[data-key="' + ui + '"] .row-typing .typing-dot').length;
     toast('Saved the page');
     await frames();
     const notice = !!document.querySelector('.notice .notice-timer');
@@ -436,7 +436,7 @@ async function motion() {
     update({ tasks: { ...state.tasks, [calm.id]: { ...state.tasks[calm.id], last_unix_ms: Date.now() + 1e7 } } });
     await frames();
     const moved = rows().map((row) => row.dataset.key).join() !== before.join();
-    const glides = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row')
+    const glides = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row:not(.row-role)')
       && String(animation.effect.getKeyframes()[0].transform ?? '').startsWith('translateY')).length;
     const projects = state.projects;
     update({ projects: projects.filter((project) => project !== calm) });
@@ -473,7 +473,7 @@ async function motion() {
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     update({ tasks: { ...state.tasks, [calm.id]: { ...state.tasks[calm.id], last_unix_ms: 1 } } });
     await frames();
-    const rows = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row')).length;
+    const rows = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row:not(.row-role)')).length;
     update(globalThis.motionKept);
     return rows;
   })()`);
@@ -555,8 +555,8 @@ async function homeUnread() {
     // ^ calm has a message nobody read here; gone and quiet are read, and gone is newer by activity.
     localStorage.setItem('wsx-read', JSON.stringify(Object.fromEntries([calm, gone, quiet].map((project) => ['project-' + project.id, { read: T - 1000, place: null }]))));
     const overview = (project, extra) => ({ ...state.tasks[project.id], ...extra });
-    const names = () => [...document.querySelectorAll('.home-rows > .row')].map((row) => row.querySelector('.row-label').textContent).filter((name) => ['calm', 'gone', 'quiet'].includes(name));
-    const marked = (project) => document.querySelector('.home-rows > .row[data-key="' + project.id + '"]').hasAttribute('data-news');
+    const names = () => [...document.querySelectorAll('.home-rows > .row:not(.row-role)')].map((row) => row.querySelector('.row-label').textContent).filter((name) => ['calm', 'gone', 'quiet'].includes(name));
+    const marked = (project) => document.querySelector('.home-rows > .row:not(.row-role)[data-key="' + project.id + '"]').hasAttribute('data-news');
     update({ tasks: { ...state.tasks,
       [calm.id]: overview(calm, { news: { unix_ms: T, text: 'new' }, last_unix_ms: T - 9e6 }),
       [gone.id]: overview(gone, { news: null, last_unix_ms: T + 9e6 }),
@@ -1245,7 +1245,7 @@ await until(`(() => { const bubbles = [...document.querySelectorAll('.log .bubbl
 if ((await evaluate(`${askTags}.length`)) !== 1) await fail("a later report dropped the chat's Asks you");
 if ((await overviewAsks())?.length !== 1) await fail("a later report dropped the overview's asks");
 const askingChat = await evaluate("location.hash");
-const homeAskRows = "[...document.querySelectorAll('.home-rows > .row')].filter((row) => row.querySelector('.row-label[data-tone=accent]') && /Asks you/.test(row.querySelector('.row-label').textContent) && !row.querySelector('.row-asks, .row-label .icon')).map((row) => row.dataset.key).sort().join()";
+const homeAskRows = "[...document.querySelectorAll('.home-rows > .row:not(.row-role)')].filter((row) => row.querySelector('.row-label[data-tone=accent]') && /Asks you/.test(row.querySelector('.row-label').textContent) && !row.querySelector('.row-asks, .row-label .icon')).map((row) => row.dataset.key).sort().join()";
 // ^ plans may still hold an open question of its log (test-web-client.py): the rows that ask are
 // the projects whose overview lists one, ui among them.
 const askingNow = async () => (await evaluate(`Promise.all([${project}, ${plansArg}].map((id) => fetch('api/tasks/' + id).then((r) => r.json()).then((view) => view.asks.length ? String(id) : '')))`)).filter(Boolean).sort().join();
@@ -1270,7 +1270,7 @@ await go("#/");
 const askingLeft = await askingNow();
 // ^ ui's question is answered; plans' older questions (test-web-client.py) are not, so only plans may still ask.
 if (askingLeft.split(",").includes(String(project))) await fail(`ui still asks after the owner wrote: ${askingLeft}`);
-await until(`!!document.querySelector('.home-rows > .row') && ${homeAskRows} === ${JSON.stringify(askingLeft)}`, "Asks you stayed on the Home row after the owner wrote", 100);
+await until(`!!document.querySelector('.home-rows > .row:not(.row-role)') && ${homeAskRows} === ${JSON.stringify(askingLeft)}`, "Asks you stayed on the Home row after the owner wrote", 100);
 await go(askingChat);
 await until(`!!${asking}`, "the chat did not come back after Home", 100);
 await openReservoir();
@@ -2311,7 +2311,7 @@ if (await count(".task-sheet textarea, .task-message, .task-steer")) await fail(
 await closeSheet("#4", chat);
 await typeInto(".composer-field", "see the logs");
 await go("#/");
-await until("!!document.querySelector('.home-rows > .row')", "Home did not open");
+await until("!!document.querySelector('.home-rows > .row:not(.row-role)')", "Home did not open");
 await go(page(4));
 await until("!!document.querySelector('.task-next button[aria-label^=\"Answer #4\"]')", "#4's sheet has no Answer");
 await click(".task-next button[aria-label^=\"Answer #4\"]");
@@ -2691,13 +2691,13 @@ await closeReservoir();
 // mark and the message's first line; opening the chat clears it (docs/web-client-tasks.md "Home").
 await go("#/");
 await until("!!document.querySelector('.home-row')", "home did not open for the new message");
-const newsRow = `document.querySelector('.home-rows > .row[data-key="${project}"]')`;
+const newsRow = `document.querySelector('.home-rows > .row:not(.row-role)[data-key="${project}"]')`;
 if (await evaluate(`!!${newsRow}.querySelector('.news-mark')`)) await fail("a project whose chat was read is marked new");
 await evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'STATUS for home' }) })`);
 await until(`!!${newsRow}?.querySelector('.news-mark') && /^open: /.test(${newsRow}.querySelector('.row-news')?.textContent ?? '')`, "the new reply did not mark the project's home row", 300);
 const marked = await evaluate(`(() => { const mark = getComputedStyle(${newsRow}.querySelector('.news-mark')).backgroundColor;
   const probe = document.createElement('span'); probe.style.color = 'var(--color-accent)'; document.body.append(probe); const accent = getComputedStyle(probe).color; probe.remove();
-  return { mark, accent, others: [...document.querySelectorAll('.home-rows > .row:not([data-news]) .news-mark')].length }; })()`);
+  return { mark, accent, others: [...document.querySelectorAll('.home-rows > .row:not(.row-role):not([data-news]) .news-mark')].length }; })()`);
 if (marked.mark !== marked.accent || marked.others) await fail(`the new message's mark is not the accent alone: ${JSON.stringify(marked)}`);
 await shot("home-news");
 await go(chat);
@@ -3476,6 +3476,15 @@ for (const wide of [false, true]) {
   await until("!!document.querySelector('.composer-field')", "the chat did not open for Roles");
   const projectName = (await text(".bar-label"))[0];
   const shownName = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((data) => data.manager.name)`);
+  // ^ Home lists the open role under its project: its name and the line of its last reply, no dot
+  // before this device opened its chat; a click opens the room.
+  await go("#/");
+  await until("!!document.querySelector('.home-rows .role-row')", "Home lists no role under its project");
+  const listed = await evaluate(`(() => { const row = document.querySelector('.home-rows .role-row'); const before = row.closest('li').previousElementSibling; return { name: row.querySelector('.row-label').textContent, line: row.querySelector('.row-context').textContent, dots: row.querySelectorAll('.news-mark').length, under: before && !before.classList.contains('row-role') ? before.querySelector('.row-label').firstChild.textContent : before?.className }; })()`);
+  if (listed.name !== "billing" || !listed.line.startsWith("open: ") || listed.dots || listed.under !== projectName) await fail(`Home lists the role as ${JSON.stringify(listed)}, not billing under ${projectName}`);
+  await shot(`roles-home${wide ? "-wide" : ""}`);
+  await go(chat);
+  await until("!!document.querySelector('.composer-field')", "the chat did not open again for Roles");
   await click(".more-button");
   await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lists no role");
   // ^ The role's reply is news, but this device never opened its chat: as for a project, nothing is new.
@@ -3486,6 +3495,8 @@ for (const wide of [false, true]) {
   await until(`location.hash === '#/p/${project}/r/billing' && !!document.querySelector('.log .bubble[data-side=in]')`, "the role chat did not open with its reply");
   if (await count(".reservoir")) await fail("a role's chat shows the manager's reservoir");
   if ((await text(".bar-label"))[0] !== `${projectName} · billing`) await fail(`the role chat's title is ${await text(".bar-label")}`);
+  // ^ The room shows the role's own model, as the manager's chat shows the manager's (billing opened with --model haiku).
+  if (!/^haiku\b/.test((await text(".bar-model"))[0] ?? "")) await fail(`the role chat's bar shows the model ${JSON.stringify(await text(".bar-model"))}, not haiku`);
   // ^ The room holds the role's own log: none of the project's resolutions ("#5 was closed") is in it.
   if (await count(".log .status-line, .log .fold")) await fail(`a role chat shows the project's events: ${await text(".log .status-line, .log .fold")}`);
   // ^ The speakers: the manager's message is under its name with the word manager, the role's reply under the role's.
