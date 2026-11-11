@@ -52,8 +52,8 @@ export function TaskChip({ project, id, name = "", plain = false }) {
     </a>`;
 }
 
-// A ready task or a plan waits for the manager's review: it is under Running, but nothing runs.
-const awaitsManager = (task) => task.state === "ready" || task.waiting?.on === "plan";
+// A ready task, a plan or a paused worker waits for the manager: it is under Running, but nothing runs.
+const awaitsManager = (task) => task.state === "ready" || ["plan", "paused"].includes(task.waiting?.on);
 
 // A task's state dot. A task that stops running settles its dot once instead of snapping from the pulse.
 function StateMark({ task }) {

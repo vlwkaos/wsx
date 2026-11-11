@@ -4209,6 +4209,17 @@ merge_seconds = 3
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         kinds = [(item['kind'], item.get('task')) for item in overview['needs']]
         assert kinds == [('land', 3), ('land', 1)], kinds  # oldest first within a kind; landed #2 is no need
+        # ^ A worker whose turn ends on a status, not a question, is paused: no need, no Answer, one
+        # word in the row and the sheet; the manager's add ends it (docs/tasks.md "Status").
+        js('task', 'add', 1, 'PAUSE NOOP', '-p', 'demo')
+        wait_state(1, 'waiting')
+        overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
+        assert [item.get('task') for item in overview['needs']] == [3], overview['needs']
+        paused = next(row for row in overview['tasks'] if row['id'] == 1)
+        assert paused['stage'] == 'working' and paused['waiting']['on'] == 'paused' and paused['status']['kind'] == 'paused', paused
+        assert paused['status']['label'] == 'Paused, the manager continues it' and 'nothing is asked of you' in paused['status']['sentence'], paused['status']
+        js('task', 'add', 1, 'NOOP', '-p', 'demo')
+        wait_state(1, 'ready')
         # A steer reaches the running turn.
         assert js('task', 'new', 'SLOW WORK s.txt', '-p', 'demo')['id'] == 4
         wait_state(4, 'working')

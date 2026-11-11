@@ -264,7 +264,9 @@ fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: boo
          secrets, wsx's config and state, other tasks' copies and the default branch's ref \
          (wsx lands). Keep your work in this working copy. \
          When you cannot continue, return status blocked and say what you need; when the \
-         boundary refuses something the task needs, name it. \
+         boundary refuses something the task needs, name it. When your turn must end while \
+         something outside goes on (a run you started) and you ask nobody anything, return \
+         status paused with what runs and what is left: the manager continues you. \
          {steps}Write the summary and the report by this rule. {presentation}",
         record.branch,
         steps = steps_note(record),

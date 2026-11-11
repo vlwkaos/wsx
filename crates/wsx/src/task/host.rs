@@ -1743,6 +1743,12 @@ impl Host {
         if let Some((_, newer)) = &mut self.gate {
             *newer = true;
         }
+        // ^ A status is no question: the task waits for the manager, who continues it. No checks
+        // run. ref: docs/tasks.md "Status"
+        if result.status == "paused" {
+            self.wait(WaitOn::Paused, first_line(&result.summary).to_string());
+            return;
+        }
         // ^ Only the worker's own word blocks a task. Denials it worked around are evidence.
         if result.status == "blocked" {
             self.log(LogEvent::Blocked {
@@ -2389,8 +2395,12 @@ impl Host {
             );
         };
         match serde_json::from_str::<serde_json::Value>(&text).map(|value| {
-            let valid = serde_json::from_value::<WorkerResult>(value.clone())
-                .map(|result| matches!(result.status.as_str(), "done" | "blocked" | "failed"));
+            let valid = serde_json::from_value::<WorkerResult>(value.clone()).map(|result| {
+                matches!(
+                    result.status.as_str(),
+                    "done" | "blocked" | "paused" | "failed"
+                )
+            });
             (value, valid)
         }) {
             Ok((value, Ok(true))) => {
@@ -2401,7 +2411,9 @@ impl Host {
                     code: 0,
                 }
             }
-            Ok((_, Ok(false))) => broker::refused("status must be done, blocked or failed".into()),
+            Ok((_, Ok(false))) => {
+                broker::refused("status must be done, blocked, paused or failed".into())
+            }
             Ok((_, Err(error))) | Err(error) => {
                 broker::refused(format!("the result is not valid: {error}"))
             }
@@ -2938,7 +2950,7 @@ impl Host {
             let blocked = self
                 .last_result
                 .as_ref()
-                .is_some_and(|r| r.status == "blocked");
+                .is_some_and(|r| matches!(r.status.as_str(), "blocked" | "paused"));
             if blocked || self.turn_active {
                 self.log(LogEvent::Checks {
                     results: results.to_vec(),

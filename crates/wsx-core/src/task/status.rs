@@ -298,6 +298,15 @@ pub fn owner_waits_after(dir: &TaskDir, record: &TaskRecord) -> bool {
         && stop_reason(dir).is_none()
 }
 
+/// The word for a task's state in a line or a count: "paused" for a worker that ended its turn
+/// with a status (`WaitOn::Paused`), else the state's own. ref: docs/tasks.md "Status"
+pub fn state_word(record: &TaskRecord) -> &'static str {
+    match record.waits_on(WaitOn::Paused) {
+        true => "paused",
+        false => record.state.as_str(),
+    }
+}
+
 /// A task that waits on `waiting`: the owner, its plan reviewed, the owner's hand, disk,
 /// the usage limit, a slot for its checks or a check run.
 fn waiting_on(
@@ -339,6 +348,14 @@ fn waiting_on(
                 ),
             }
         }
+        WaitOn::Paused => words(
+            "paused",
+            "Paused, the manager continues it",
+            Some(entered),
+            &waiting.reason,
+            "The turn ended with a status, not a question: nothing is asked of you.",
+            now_ms,
+        ),
         WaitOn::Plan => words(
             "plan",
             "Plan ready, waiting for the manager's review",

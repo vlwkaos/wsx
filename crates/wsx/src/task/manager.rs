@@ -1224,7 +1224,7 @@ impl Manager {
             let line = format!(
                 "#{} {} r{}: {}; {}",
                 record.id,
-                record.state.as_str(),
+                wsx_core::task::status::state_word(&record),
                 record.revision,
                 clip(&title, EVENT_TITLE_CHARS),
                 summary,
@@ -1232,7 +1232,7 @@ impl Manager {
             // ^ The chat says `done` for a landing (docs/web-client-tasks.md "Project screen").
             let words = match record.state {
                 TaskState::Landed => "done",
-                state => state.as_str(),
+                _ => wsx_core::task::status::state_word(&record),
             };
             let mut short = Short::task(record.id, words);
             short.wakes = state_wakes(&dir, &record);
@@ -2513,7 +2513,9 @@ impl Manager {
                 .collect();
         let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
         for (_, record) in tasks.iter().filter(|(_, record)| record.state.is_open()) {
-            *counts.entry(record.state.as_str()).or_default() += 1;
+            *counts
+                .entry(wsx_core::task::status::state_word(record))
+                .or_default() += 1;
         }
         let open = match counts.is_empty() {
             true => "none".to_string(),
@@ -2540,7 +2542,7 @@ impl Manager {
                 format!(
                     "#{} {} r{}: {}",
                     record.id,
-                    record.state.as_str(),
+                    wsx_core::task::status::state_word(record),
                     record.revision,
                     clip(
                         &view::title(dir, record).unwrap_or_default(),

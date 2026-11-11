@@ -387,6 +387,16 @@ impl TaskList {
     }
 }
 
+/// The state word of a ledger entry: "paused" for a worker whose turn ended with a status
+/// (`status.kind`), else its state (docs/tasks.md "Status").
+pub fn state_word(task: &Value) -> String {
+    match task["status"]["kind"].as_str() {
+        Some("paused") => "paused",
+        _ => task["state"].as_str().unwrap_or_default(),
+    }
+    .to_string()
+}
+
 /// Open tasks first, waiting on the owner, failed, ready, checking, then working; then the
 /// open and asked roles; then the recent landed and closed tasks, newest first as the
 /// ledger has them.
@@ -400,11 +410,11 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
     };
     let list = |key: &str| ledger[key].as_array().cloned().unwrap_or_default();
     let mut open = list("open");
-    open.sort_by_key(|task| rank(task["state"].as_str().unwrap_or_default()));
+    open.sort_by_key(|task| rank(&state_word(task)));
     let row = |task: &Value, section| TaskRow {
         id: task["id"].as_u64().unwrap_or_default(),
         title: task["title"].as_str().unwrap_or_default().to_string(),
-        state: task["state"].as_str().unwrap_or_default().to_string(),
+        state: state_word(task),
         // ^ The words of wsx-core `task::status` (docs/tasks.md "Status").
         // ^ With the reason of a wait for another task (`status.wait`), as the web's row.
         status: [&task["status"]["label"], &task["status"]["wait"]]
