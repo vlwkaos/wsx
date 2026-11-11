@@ -285,6 +285,7 @@ pub fn run(cmd: Command) -> Result<()> {
             RuntimeCmd::Status { json } => cmd_runtime_status(json),
         },
         Command::Daemon { subcommand } => match subcommand {
+            DaemonCmd::Status { json } => cmd_runtime_status(json),
             DaemonCmd::Stop { force, json } => cmd_daemon_stop(force, json),
             DaemonCmd::Restart { json } => cmd_daemon_restart(json),
             DaemonCmd::Recover => cmd_daemon_recover(),
@@ -295,7 +296,7 @@ pub fn run(cmd: Command) -> Result<()> {
             scope,
             json,
         } => cmd_memory(subcommand, scope, json),
-        Command::Task { subcommand } => crate::task::run(subcommand),
+        Command::Task { common, subcommand } => crate::task::run(subcommand, common),
         Command::Web { subcommand } => match subcommand {
             WebCmd::Serve { site } => wsx_web::serve(site.named()),
             WebCmd::Pair { site } => wsx_web::pair(site.named()),

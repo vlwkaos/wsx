@@ -1164,7 +1164,7 @@ impl Host {
 
     fn by_hand_refusal(&self) -> anyhow::Error {
         anyhow::anyhow!(
-            "the owner works on task t{} by hand; run `wsx task handback {}` first",
+            "the owner works on task t{} by hand; run `wsx task hand {} --back` first",
             self.record.id,
             self.record.id
         )
@@ -1221,7 +1221,7 @@ impl Host {
         let changes = copy::tracked_changes(&self.record.working_copy)?;
         if !changes.is_empty() {
             bail!(
-                "the working copy has uncommitted changes: {}; commit them, then run `wsx task handback {}` again",
+                "the working copy has uncommitted changes: {}; commit them, then run `wsx task hand {} --back` again",
                 changes.join(", "),
                 self.record.id
             );

@@ -56,7 +56,7 @@ fn main() -> Result<()> {
                     subcommand: cli::SessionCmd::Current { .. },
                 }
         )
-    ) || matches!(&args.command, Some(cli::Command::Task { subcommand }) if subcommand.without_daemon())
+    ) || matches!(&args.command, Some(cli::Command::Task { subcommand, .. }) if subcommand.without_daemon())
     {
         return cli::run(args.command.expect("matched Some"));
     }
@@ -150,8 +150,11 @@ mod tests {
 
     #[test]
     fn managed_terminal_allows_explicit_subcommands() {
-        let args = cli::Args::try_parse_from(["wsx", "runtime", "status"]).unwrap();
-        assert!(reject_nested_tui(args.command.as_ref(), Some(OsStr::new("42"))).is_ok());
+        // ^ `runtime status` is the hidden old name of `daemon status`.
+        for argv in [["wsx", "daemon", "status"], ["wsx", "runtime", "status"]] {
+            let args = cli::Args::try_parse_from(argv).unwrap();
+            assert!(reject_nested_tui(args.command.as_ref(), Some(OsStr::new("42"))).is_ok());
+        }
     }
 
     #[test]

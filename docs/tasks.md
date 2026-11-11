@@ -13,8 +13,7 @@ wsx task land <n> [--tried] [--owner-said <id>] --json   # rebase, check, fast-f
 wsx task hold <n> "<why>" | --off --json         # the owner tries it before it lands; see Hold and trial
 wsx task after <n> <m> "<then>" --because needs|files|check | <n> --off --json   # park <n> until <m> lands, then add <then>; see After another task
 wsx task trial <n> [--end] --json                # its revision on the live site before it lands
-wsx task hand <n> --json                         # owner only: work on the task by hand; see By hand
-wsx task handback <n> --json                     # owner only: its commits are checked as the next revision
+wsx task hand <n> [--back] --json                # owner only: work on the task by hand (see By hand); --back: its commits are checked as the next revision
 wsx task preview <n> [--stop] --json             # a link to try the task (tasks.preview); see Preview
 wsx task check-run [<n>...]                      # from a worker: run the checks as after its result
 wsx task check -p <project> [--json]             # the open "To check" items
@@ -24,7 +23,7 @@ wsx task check fail <id> [--note <text>] --json    # owner only; closes it as fa
 wsx task close <n> [--discard] [--owner-said <id>] --json
 ```
 
-`-p` may be left out inside a project folder or when one project is registered. A task number is `3` or `t3`. `new --model <name>` picks the worker's model (one word, at most 256 bytes, not starting with `-`); without it the task uses `tasks.agent.model` (default `opus`). The record keeps it.
+`-p <project>` and `--json` are global: every `wsx task` command takes them, before or after the subcommand (`digest`, `checkin` and `post` ignore `--json`; `ledger` always prints JSON). `-p` may be left out inside a project folder or when one project is registered. A task number is `3` or `t3`. `new --model <name>` picks the worker's model (one word, at most 256 bytes, not starting with `-`); without it the task uses `tasks.agent.model` (default `opus`). The record keeps it.
 
 ## Store
 
@@ -188,7 +187,7 @@ Everything else is open, the main checkout's working tree (the project folder) i
 
 **One rule: role, agent, trust.** What an agent may do is decided outside the model, in one place: `wsx_core::task::policy`. `Policy::of(trust, role, agent)` is the role's group of capabilities cut down to what the agent's `[[agents]]` entry passed, and the brokers refuse the rest (exit 2), whatever the prompt says.
 
-*Capability* (one enum, `Capability`): `read` (`list`, `show`, `ledger`, `deployed`, `chat`, `search`, `check`, `manager`, `routine list|show|logs`, `role list`), `notify` (`post`, `digest`, `say`), `answer` (reply text to the owner), `backlog` (`after`, `hold`), `note` (write the manager's notes), `handoff` (write a rotation's handoff notes), `create_task` (`new`), `direct` (`add`, `steer`, `stop`, `preview`), `close` (`close`), `discard` (`close --discard`), `land_child` and `land` (`land` into a parent task, onto the default branch), `deploy` (`deploy`, `release`, `push`, `trial`, `project add`), `routine` (`routine add|edit|delete|enable|disable|run|cancel|fire`, `checkin`), `role_admin` (`role new|close`), `approve` (`approve`, `deny`, `hand`, `handback`, `dismiss` and the hidden host commands, which the CLI judges itself for a manager) `result` (a worker's `result` and `check-run`), `recall` (`wsx memory search|recall|status|list`), `remember` (`wsx memory add|update|supersede|reindex`) and `decide` (a `rule` record). `recall` is every role's, whatever `may` lists; an untrusted agent has neither `remember` nor `decide`. `MemoryCmd::needs` names the one each memory subcommand needs. `TaskCmd::needs` names the capability each subcommand needs, in a match that does not compile for a new subcommand; `answer`, `note` and `handoff` are checked by the jobs that use them.
+*Capability* (one enum, `Capability`): `read` (`list`, `show`, `ledger`, `deployed`, `chat`, `search`, `check`, `manager`, `routine list|show|logs`, `role list`), `notify` (`post`, `digest`, `say`), `answer` (reply text to the owner), `backlog` (`after`, `hold`), `note` (write the manager's notes), `handoff` (write a rotation's handoff notes), `create_task` (`new`), `direct` (`add`, `steer`, `stop`, `preview`), `close` (`close`), `discard` (`close --discard`), `land_child` and `land` (`land` into a parent task, onto the default branch), `deploy` (`deploy`, `release`, `push`, `trial`, `project add`), `routine` (`routine add|edit|delete|enable|disable|run|cancel|fire`, `checkin`), `role_admin` (`role new|close`), `approve` (`approve`, `deny`, `hand` with or without `--back`, the old `handback`, `dismiss` and the hidden host commands, which the CLI judges itself for a manager) `result` (a worker's `result` and `check-run`), `recall` (`wsx memory search|recall|status|list`), `remember` (`wsx memory add|update|supersede|reindex`) and `decide` (a `rule` record). `recall` is every role's, whatever `may` lists; an untrusted agent has neither `remember` nor `decide`. `MemoryCmd::needs` names the one each memory subcommand needs. `TaskCmd::needs` names the capability each subcommand needs, in a match that does not compile for a new subcommand; `answer`, `note` and `handoff` are checked by the jobs that use them.
 
 *Role* (a built-in table in `policy.rs`, no group in config; the same names are an entry's `roles` in Agents):
 
@@ -320,14 +319,14 @@ The owner can take a build over and work on it directly, with the worker's conte
    - `--fork-session` copies the conversation under a new id, so the worker's own transcript stays as it was; the next `add` resumes it, and it sees the owner's commits in git.
    - Claude records a conversation's system prompt on its first request and reuses it after `--resume` until the conversation is compacted (https://code.claude.com/docs/en/cli-reference, "System prompt flags in resumed conversations"). `--system-prompt-snapshot off` rebuilds it, so the owner gets Claude's own prompt with their user settings and CLAUDE.md, not the headless worker rules. The worker's boundary, `--settings` and `--permission-mode` are launch flags and do not carry over.
    - Nothing is written into the working copy. `hand --json` gives `session` and `context`: the working copy, branch, HEAD, a short `git status` and the paths of `report.md` and `result.json` (its `memo`); `show --json` gives the same under `hand` while the task waits on `hand`.
-3. While it waits on `hand` nothing else writes the copy or its conversation: `add`, `steer` and `land` are refused with a message that names `handback`; every path that starts a turn (a check retry, queued messages, a disk-wait resume) starts none; no checks run, a worker's `check-run` is refused, and nothing lands by itself. The manager reads it from the ledger and leaves the task alone. `close` keeps its rules.
-4. `wsx task handback <n>` (the web's *Hand back*) refuses while tracked changes are uncommitted, and the session stays. Otherwise the host logs `handback{by: owner, commits}` (the commits after the last revision), writes a `done` result that keeps the worker's Human Verify items and memo, and runs `tasks.checks` on the next revision: the task becomes `ready` or `failed` as after a worker result, and the manager's review and the close after a land apply. A failed check is not sent back to the worker; the owner adds a message or hands again. The CLI then closes `task-<n>-hand`; the forked transcript stays in Claude's store.
+3. While it waits on `hand` nothing else writes the copy or its conversation: `add`, `steer` and `land` are refused with a message that names `hand <n> --back`; every path that starts a turn (a check retry, queued messages, a disk-wait resume) starts none; no checks run, a worker's `check-run` is refused, and nothing lands by itself. The manager reads it from the ledger and leaves the task alone. `close` keeps its rules.
+4. `wsx task hand <n> --back` (the web's *Hand back*; `wsx task handback <n>` is its hidden old name) refuses while tracked changes are uncommitted, and the session stays. Otherwise the host logs `handback{by: owner, commits}` (the commits after the last revision), writes a `done` result that keeps the worker's Human Verify items and memo, and runs `tasks.checks` on the next revision: the task becomes `ready` or `failed` as after a worker result, and the manager's review and the close after a land apply. A failed check is not sent back to the worker; the owner adds a message or hands again. The CLI then closes `task-<n>-hand`; the forked transcript stays in Claude's store.
 
 ## Landing
 
 `wsx task land <n>` asks the host to:
 
-1. refuse unless the task is `ready` (a task worked by hand names `handback`);
+1. refuse unless the task is `ready` (a task worked by hand names `hand <n> --back`);
 2. refuse when the worker left uncommitted tracked changes;
 3. when the branch contains the default branch tip and HEAD has the ready revision's tree, keep its check results and go to 4; when HEAD moved past it (a child landed, see Parent tasks), run the checks as a new revision and come back to 3; otherwise rebase it there in the working copy:
    - a conflict aborts the rebase, logs `conflict{onto, paths}`, and starts a worker turn that rebases and resolves (the task is `working`); the normal checks then make it `ready`, and it lands again by itself under auto land, without a second review;
@@ -489,7 +488,7 @@ Measured on this machine's store (2026-11-07, release build, copy of the store: 
 ```sh
 wsx task manager -p <project> --json             # start the manager, or report the running one
 wsx task say -p <project> "<text>" --json        # or `-` or --prompt-file; returns {id} at once
-wsx task chat -p <project> [--after <id> | --find <words>] --json # messages, replies, rotations; asks
+wsx task chat -p <project> [--after <id> | --around <id>] --json # messages, replies, rotations; asks
 wsx task search -p <project> [--all] <words> --json # ranked earlier messages, decisions, task history ("Search")
 wsx task search -p <project> --task <n> --json   # one task's dated history, open or closed ("Search")
 wsx task dismiss -p <project> <reply id> --json  # the owner's: an open question asks no more
@@ -620,7 +619,7 @@ wsx task approve a3 -p <project> --json            # run the action as the owner
 wsx task deny a3 [--note <text>] -p <project> --json
 ```
 
-Both refuse when `WSX_TASK_ACTOR=manager`, and so do `hand` and `handback`: the manager may tell the owner to run them. In the web a second Approve while the action runs, or after it was decided, answers what happened instead of an error. `approve` refuses a land or discard for a task that moved past the requested revision (recorded as not run; ask again). Otherwise it runs the action as its own `wsx task ... --json` command without the actor mark and records `decision{id, approved, note, outcome}`. Decisions reach the manager as events (`approval a3 (land #5) approved; done: ...`). Writers lock the file; requests are numbered under that lock.
+Both refuse when `WSX_TASK_ACTOR=manager`, and so do `hand` and `hand --back` (and its old name `handback`): the manager may tell the owner to run them. In the web a second Approve while the action runs, or after it was decided, answers what happened instead of an error. `approve` refuses a land or discard for a task that moved past the requested revision (recorded as not run; ask again). Otherwise it runs the action as its own `wsx task ... --json` command without the actor mark and records `decision{id, approved, note, outcome}`. Decisions reach the manager as events (`approval a3 (land #5) approved; done: ...`). Writers lock the file; requests are numbered under that lock.
 
 This is a guard against the manager's mistakes, not a security boundary: the manager's tools allow every `wsx task` command, and anything running as the owner can leave out `WSX_TASK_ACTOR`. 
 

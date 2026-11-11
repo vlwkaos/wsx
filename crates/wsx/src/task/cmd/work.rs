@@ -196,7 +196,7 @@ pub(crate) fn hand(dir: &TaskDir, json: bool) -> Result<()> {
             ops::create_session_launch(&runtime::Client::local(), &load_config()?, &record.working_copy, label.clone(), argv, None)
                 .with_context(|| {
                     format!(
-                        "task t{} is worked by hand, but session {label} did not open; work in {} or run `wsx task handback {}`",
+                        "task t{} is worked by hand, but session {label} did not open; work in {} or run `wsx task hand {} --back`",
                         record.id,
                         record.working_copy.display(),
                         record.id
@@ -226,16 +226,16 @@ pub(crate) fn hand(dir: &TaskDir, json: bool) -> Result<()> {
         }
     }
     println!(
-        "when the work is committed: wsx task handback {}",
+        "when the work is committed: wsx task hand {} --back",
         record.id
     );
     Ok(())
 }
 
-/// `wsx task handback`: the host refuses uncommitted tracked changes, and the hand session
+/// `wsx task hand --back`: the host refuses uncommitted tracked changes, and the hand session
 /// stays; otherwise the session closes and the commits are checked as the next revision.
 pub(crate) fn handback(dir: &TaskDir, json: bool) -> Result<()> {
-    owner_only("handback")?;
+    owner_only("hand --back")?;
     let response = ask_host_ok(dir, &HostRequest::Handback)?;
     let record = dir.read_record()?;
     let mut closed = Vec::new();

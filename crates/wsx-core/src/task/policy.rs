@@ -65,7 +65,7 @@ pub enum Capability {
     /// `role new`, `role close`.
     RoleAdmin,
     /// The owner's commands, which the CLI judges itself for a manager: `approve`, `deny`,
-    /// `hand`, `handback`, `dismiss`, and the hidden host commands.
+    /// `hand` (also `--back`, and its old name `handback`), `dismiss`, and the hidden host commands.
     Approve,
     /// A worker's `result` and `check-run`.
     Result,

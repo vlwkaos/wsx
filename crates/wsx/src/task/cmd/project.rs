@@ -11,21 +11,15 @@ use wsx_core::task::policy::Capability;
 use wsx_core::task::store;
 use wsx_core::{ops, runtime};
 
-pub(crate) fn project(action: ProjectCmd) -> Result<()> {
-    let ProjectCmd::Add {
-        path,
-        clone,
-        said,
-        project,
-        json,
-    } = action;
+pub(crate) fn project(action: ProjectCmd, project: Option<&str>, json: bool) -> Result<()> {
+    let ProjectCmd::Add { path, clone, said } = action;
     need(Capability::Deploy, "project add")?;
     let mut config = load_config()?;
     // ^ The refusals come first, so the manager hears them and the owner is never asked for
     // what would be refused.
     let folder = ops::check_add_project(&config, &path, clone.as_deref())?;
     if acting_as_manager() {
-        let (name, main) = project_entry(project.as_deref())?;
+        let (name, main) = project_entry(project)?;
         let mut request = request_of(ApprovalAction::Project, None, None, None, None);
         if let ApprovalLine::Request { path, url, .. } = &mut request {
             *path = Some(folder.display().to_string());

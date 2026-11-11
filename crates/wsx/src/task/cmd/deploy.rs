@@ -38,17 +38,14 @@ pub(crate) const PUSH_REMOTE: &str = "origin";
 /// `--force-with-lease` on origin's tip seen when it was asked (`lease`). The manager always
 /// asks the owner (or names the owner's message); its broker runs this in the manager host,
 /// outside the boundary, so the owner's ssh setup applies. ref: docs/tasks.md "Push"
-pub(crate) fn push(args: PushArgs) -> Result<()> {
+pub(crate) fn push(args: PushArgs, project: Option<&str>, json: bool) -> Result<()> {
     let PushArgs {
         commit,
         force,
         lease,
         said,
-        project,
-        json,
     } = args;
-    let (project, commit, lease, owner_said) = (
-        project.as_deref(),
+    let (commit, lease, owner_said) = (
         commit.as_deref(),
         lease.as_deref(),
         crate::task::owner_said(said.owner_said),
@@ -198,17 +195,20 @@ pub(crate) fn push(args: PushArgs) -> Result<()> {
 /// One by hand checks, takes the lock and answers at once: a detached `wsx task` holding the
 /// lock (`run_locked`) runs and records it, so no caller's time limit (the manager's broker)
 /// cuts a long release.
-pub(crate) fn deploy(kind: DeployKind, args: DeployArgs) -> Result<()> {
+pub(crate) fn deploy(
+    kind: DeployKind,
+    args: DeployArgs,
+    project: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let DeployArgs {
         commit,
         if_new,
         trial,
         run,
         said,
-        project,
-        json,
     } = args;
-    let (project, commit) = (project.as_deref(), commit.as_deref());
+    let commit = commit.as_deref();
     let (run_locked, owner_said) = (run.run_locked, crate::task::owner_said(said.owner_said));
     let by_hand = !if_new && trial.is_none() && run_locked.is_none();
     let name = kind_name(kind);

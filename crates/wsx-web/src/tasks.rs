@@ -1094,14 +1094,21 @@ pub fn dismiss(scope: &Scope, id: u64) -> Outcome<Value> {
 }
 
 /// `wsx task <command> <task>`: `preview` starts a preview or answers the running one
-/// (`{url, port, until_unix_ms}`); `hand` and `handback` open and close the hand session the
+/// (`{url, port, until_unix_ms}`); `hand` and `handback` (`hand --back`) open and close the hand session the
 /// way the CLI does (docs/tasks.md "By hand"); `trial` and `trial_end` take and free the
 /// trial slot (docs/tasks.md "Hold and trial").
 pub fn run_task(scope: &Scope, command: &str, task: u32) -> Outcome<Value> {
     let mut argv = vec!["task".into(), command.into(), task.to_string()];
-    if command == "trial_end" {
-        argv[1] = "trial".into();
-        argv.push("--end".into());
+    match command {
+        "trial_end" => {
+            argv[1] = "trial".into();
+            argv.push("--end".into());
+        }
+        "handback" => {
+            argv[1] = "hand".into();
+            argv.push("--back".into());
+        }
+        _ => {}
     }
     run_wsx(scope, argv)
 }

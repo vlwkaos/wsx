@@ -123,12 +123,11 @@ pub(crate) fn say(
     Ok(())
 }
 
-/// The conversation after message `after`, around message `around`, or from the oldest entry that
-/// shows `find`: messages, replies, rotations and stops; `asks`, the open questions (docs/tasks.md "Log window").
+/// The conversation after message `after` or around message `around`: messages, replies, rotations and stops; `asks`, the open questions (docs/tasks.md "Log window").
 pub(crate) fn chat(
     project: Option<&str>,
     role: Option<&str>,
-    (after, find, around): (Option<u64>, Option<&str>, Option<u64>),
+    (after, around): (Option<u64>, Option<u64>),
     json: bool,
 ) -> Result<()> {
     let (name, main) = project_entry(project)?;
@@ -138,7 +137,7 @@ pub(crate) fn chat(
         Some(role) => ManagerDir::existing_as(&project_id, Some(role))?
             .with_context(|| format!("the project has no role {role}"))?,
     };
-    let window = Window::new(find, after, around);
+    let window = Window::new(None, after, around);
     let now = wsx_core::task::now_unix_ms();
     let shown = load_task_config(&main)
         .unwrap_or_default()
@@ -309,7 +308,7 @@ pub(crate) fn dismiss(project: Option<&str>, id: u64, json: bool) -> Result<()> 
 }
 
 /// `wsx task role new|list|close`. ref: docs/tasks.md "Roles"
-pub(crate) fn role(action: RoleCmd) -> Result<()> {
+pub(crate) fn role(action: RoleCmd, project: Option<&str>, json: bool) -> Result<()> {
     let open_project = |project: Option<&str>| -> Result<(String, String, PathBuf)> {
         let (name, main) = project_entry(project)?;
         let project_id = store::project_id(&name, &main);
@@ -326,12 +325,10 @@ pub(crate) fn role(action: RoleCmd) -> Result<()> {
             model,
             adapter,
             said,
-            project,
-            json,
         } => {
             need(Capability::RoleAdmin, "role new")?;
             let agent = RoleAgent::checked(adapter.as_deref(), model.as_deref())?;
-            let (_, project_id, main) = open_project(project.as_deref())?;
+            let (_, project_id, main) = open_project(project)?;
             let settings = load_task_config(&main)
                 .map_err(|error| anyhow::anyhow!("{error}; no role was opened"))?;
             roles::may_create(&project_id, &name, settings.roles_max)?;
@@ -365,8 +362,8 @@ pub(crate) fn role(action: RoleCmd) -> Result<()> {
             println!("{message}");
             Ok(())
         }
-        RoleCmd::List { project, json } => {
-            let (_, project_id, _) = open_project(project.as_deref())?;
+        RoleCmd::List => {
+            let (_, project_id, _) = open_project(project)?;
             let lines = store::read_approvals(&project_id)?;
             let mut rows = roles::rows(&project_id, &lines);
             for row in rows.iter_mut().filter(|row| row["state"] != "asked") {
@@ -396,13 +393,9 @@ pub(crate) fn role(action: RoleCmd) -> Result<()> {
             }
             Ok(())
         }
-        RoleCmd::Close {
-            name,
-            project,
-            json,
-        } => {
+        RoleCmd::Close { name } => {
             need(Capability::RoleAdmin, "role close")?;
-            let (_, project_id, _) = open_project(project.as_deref())?;
+            let (_, project_id, _) = open_project(project)?;
             let dir = roles::open_role(&project_id, &name)?;
             roles::close(&dir, &format!("closed by the {}", String::from(actor())))?;
             let message = format!("role {name} is closed; its notes stay");
