@@ -162,6 +162,7 @@ wsx session create|current|delete|restart|list|send-keys|send-text|prompt|peek|r
 wsx session current [--json]
 wsx group ls|create|rename|add|remove
 wsx routine ...
+wsx memory search|add|update|supersede|reindex|status|list [--scope <id>] [--json]   # docs/memory.md
 wsx agent install <target>
 wsx agent detach
 wsx agent report <pane> --provider <name> --state <state> [--session-id <id>|--session-path <path>]
