@@ -22,7 +22,7 @@ const HANDOFF_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(unix)]
 const OWNED_POLL: Duration = Duration::from_millis(100);
 #[cfg(unix)]
-pub(super) const MAX_HANDOFF_PANES: usize = 64;
+pub(super) use wsx_core::runtime::MAX_HANDOFF_PANES;
 #[cfg(unix)]
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 

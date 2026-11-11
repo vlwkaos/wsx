@@ -9,7 +9,7 @@ import { Capture } from "./viewer.js";
 import { markFound } from "./reply.js";
 import { SheetPage, useSheetRead } from "./ui.js";
 
-// Pass or skip item `id` as the owner; the project's overview is read again.
+// Pass, fail or skip item `id` as the owner; the project's overview is read again.
 export async function decideCheck(project, id, decision) {
   const answer = await api(`api/tasks/${project}/checks/${id}/${decision}`, { method: "POST", json: {} });
   loadTasks(project);
@@ -18,7 +18,8 @@ export async function decideCheck(project, id, decision) {
 
 // The first line of an item's check as a chat quote of it, cut as the server cuts a message's
 // (wsx-core `quote_of`): what the item's bubble carries as `data-quote`, and what a reply to the
-// item shows over the composer. A reply of only "x" skips the item (`item_reply`, wsx-core).
+// item shows over the composer. A reply of only "x" skips an open item; words to a passed or failed
+// one are its note (`item_reply`, wsx-core).
 export function checkQuote(item) {
   const line = item.check.split("\n").map((each) => each.trim()).find(Boolean) ?? "";
   const chars = [...line];
@@ -63,32 +64,34 @@ function Place({ where }) {
 // One item: the task chip with what the task did as its title, then the check, where to look,
 // its capture and when it passes as labeled lines. Try, Fail, Skip and Pass are icons in one place on
 // every item: the bottom right on a phone, a column right of the words on a wide screen.
-// Fail puts the item into the manager's composer (`onMention`, as the Fail of tasks.js `NeedRow`
-// does); the item stays open and the manager starts the fix. Pass and Skip show their result at once.
+// Each decision shows its result at once and closes the item. Pass and Fail then open the manager's
+// composer as a reply to the item (`onReply`, the quote `> check <id>`): what the owner writes is
+// their note on the verdict, and a failed item's note starts the fix. Skip opens nothing.
 // `revision` is the task's current one: an item of an older revision names its own.
 // `tag`: an `li` in the list, a `div` in its chat bubble (bubbles.js `CheckBubble`).
-export function CheckRow({ project, item: listed, revision, onChanged, onMention, tag = "li" }) {
+export function CheckRow({ project, item: listed, revision, onChanged, onReply, tag = "li" }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // ^ The decision answers with the item's new state; a chat bubble has no list to read again.
   const [decided, setDecided] = useState(null);
   const item = decided?.id === listed.id && listed.state === "open" ? decided : listed;
-  const decide = async (decision) => {
+  const decide = async (decision, event) => {
+    const dialog = event.currentTarget.closest("dialog");
     setBusy(true);
     setError("");
     try {
       const answer = await decideCheck(project, item.id, decision);
-      setDecided({ ...item, ...answer.changed?.find((changed) => changed.id === item.id), state: decision === "pass" ? "passed" : "skipped" });
+      setDecided({ ...item, ...answer.changed?.find((changed) => changed.id === item.id), state: { pass: "passed", fail: "failed", skip: "skipped" }[decision] });
       onChanged?.();
+      // ^ The dialog closes first, as the Answer of task.js does, so the composer can take the focus.
+      if (decision !== "skip" && onReply) {
+        dialog?.close();
+        onReply(checkQuote(item), item.id);
+      }
     } catch (failure) {
       setError(failure.message);
     }
     setBusy(false);
-  };
-  // ^ The dialog closes in the tap, as the Answer of task.js does, so the composer can take the focus.
-  const fail = (event) => {
-    event.currentTarget.closest("dialog")?.close();
-    onMention(item.task, `To check ${item.id} failed: `);
   };
   const acting = can("task_act") && item.state === "open";
   const older = revision != null && item.revision !== revision ? ` (r${item.revision})` : "";
@@ -111,19 +114,19 @@ export function CheckRow({ project, item: listed, revision, onChanged, onMention
           ${item.capture && !item.capture_removed && html`
             <${Capture} href=${capture} download=${`${capture}?download=1`} video=${video} poster=${poster} size=${item.capture_size}
               label=${`${video ? "Video" : "Capture"} of: ${item.check}`} />`}
-          ${item.state === "failed" && html`<p class="check-state">Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
-          ${item.state === "passed" && html`<p class="check-state">Passed</p>`}
+          ${item.state === "failed" && html`<p class="check-state">Failed${item.note ? `: ${item.note}` : ""}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
+          ${item.state === "passed" && html`<p class="check-state">Passed${item.note ? `: ${item.note}` : ""}</p>`}
           ${item.state === "skipped" && html`<p class="check-state">Skipped</p>`}
         </div>
         ${acting && html`
           <span class="check-acts">
             <${TryButton} project=${project} task=${item.task} icon />
-            ${onMention && html`<button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy}
-              title="Fail: tell the manager" aria-label=${`Fail: tell the manager what is wrong with: ${item.check}`} onClick=${fail}><${Icon} name="fail" /></button>`}
+            <button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy}
+              title="Fail: close it, then tell the manager" aria-label=${`Fail: close it, then tell the manager what is wrong with: ${item.check}`} onClick=${(event) => decide("fail", event)}><${Icon} name="fail" /></button>
             <button class="icon-button check-act" type="button" disabled=${busy} title="Not checking: close it without a verdict"
-              aria-label=${`Skip, not checking: close it without a verdict: ${item.check}`} onClick=${() => decide("skip")}><${Icon} name="skip" /></button>
+              aria-label=${`Skip, not checking: close it without a verdict: ${item.check}`} onClick=${(event) => decide("skip", event)}><${Icon} name="skip" /></button>
             <button class="icon-button check-act" type="button" data-tone="accent" disabled=${busy} title="Works: close this check"
-              aria-label=${`Pass, works: close this check: ${item.check}`} onClick=${() => decide("pass")}><${Icon} name="pass" /></button>
+              aria-label=${`Pass, works: close this check: ${item.check}`} onClick=${(event) => decide("pass", event)}><${Icon} name="pass" /></button>
           </span>`}
       </div>
       ${error && html`<p class="error need-error" role="alert">${error}</p>`}
@@ -132,7 +135,7 @@ export function CheckRow({ project, item: listed, revision, onChanged, onMention
 
 // Every open item of the project in its sheet, oldest first, with All passed in the top bar.
 // `item`: the item a reservoir row opened, scrolled to and marked once the list is in.
-export function ChecksPage({ project, item = null, onClose, onMention, grip }) {
+export function ChecksPage({ project, item = null, onClose, onReply, grip }) {
   const store = useStore();
   // ^ The overview counts the open items; a change anywhere reads the list again.
   const count = store.tasks[project]?.to_check;
@@ -182,7 +185,7 @@ export function ChecksPage({ project, item = null, onClose, onMention, grip }) {
       ${!items?.length ? html`<p class="empty">Nothing to check.</p>`
         : html`
           <ul class="check-list" aria-label="Items to check">
-            ${items.map((item) => html`<${CheckRow} key=${item.id} project=${project} item=${item} onChanged=${read} onMention=${onMention} />`)}
+            ${items.map((item) => html`<${CheckRow} key=${item.id} project=${project} item=${item} onChanged=${read} onReply=${onReply} />`)}
           </ul>`}
     </${SheetPage}>`;
 }

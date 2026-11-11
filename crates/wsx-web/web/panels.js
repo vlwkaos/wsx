@@ -5,7 +5,7 @@
 // is done and when the panel's `refresh` is due.
 import { api } from "./api.js";
 import { html, Icon, Loading, useEffect, useNow, useState } from "./lib.js";
-import { can, goBack, useStore } from "./store.js";
+import { can, goBack, shows, state, useStore } from "./store.js";
 import { SheetPage, useSheetRead } from "./ui.js";
 
 // `base`: a project's panels, or the machine card (api/machine).
@@ -51,33 +51,83 @@ const Stat = ({ item }) => html`
     ${item.note && html`<span class="panel-note">${item.note}</span>`}<${Level} level=${item.level} />
   </div>`;
 
-const Table = ({ item }) => html`
+// Where a link goes (docs/panels.md "Links"): an https address in a new tab; a project page in the
+// files view of that project, which shows it in the sandboxed frame (docs/web-client.md "Files").
+// A site that may not read files cannot follow a page, so it gets null and shows the text alone.
+// The machine card names the project of a path (`owner`, a project's name); a project's page does not.
+function destination(url, owner, project) {
+  if (/^https?:\/\//.test(url)) return { href: url, web: true };
+  const id = owner ? state.projects.find((candidate) => candidate.name === owner)?.id : project;
+  if (id === undefined || !shows("files") || !can("files_read")) return null;
+  return { href: `#/p/${id}/files/${url.split("/").map(encodeURIComponent).join("/")}`, web: false };
+}
+
+// A table cell or list entry: its text, and a link when the document gave one and the site can follow it.
+function Linked({ text, link, project }) {
+  const to = link && destination(link.url, link.project, project);
+  if (!to) return text;
+  return html`<a class="panel-link" href=${to.href} target=${to.web ? "_blank" : null} rel=${to.web ? "noopener noreferrer" : null} title=${link.url}>${text}</a>`;
+}
+
+const linkAt = (links, row, col) => links?.find((link) => link.row === row && link.col === col);
+
+const Table = ({ item, project }) => html`
   <div class="panel-table"><table>
     <thead><tr>${item.columns.map((column, at) => html`<th key=${at} scope="col">${column}</th>`)}</tr></thead>
-    <tbody>${item.rows.map((row, at) => html`<tr key=${at}>${row.map((cell, index) => html`<td key=${index}>${cell}</td>`)}</tr>`)}</tbody>
+    <tbody>${item.rows.map((row, at) => html`<tr key=${at}>${row.map((cell, index) => html`<td key=${index}><${Linked} text=${cell} link=${linkAt(item.links, at, index)} project=${project} /></td>`)}</tr>`)}</tbody>
   </table></div>`;
 
-const List = ({ item }) => html`
+const List = ({ item, project }) => html`
   <div class="panel-list" data-level=${item.level ?? null}>
-    <ul>${item.items.map((entry, at) => html`<li key=${at}>${entry}</li>`)}</ul><${Level} level=${item.level} />
+    <ul>${item.items.map((entry, at) => html`<li key=${at}><${Linked} text=${entry} link=${linkAt(item.links, at, 0)} project=${project} /></li>`)}</ul><${Level} level=${item.level} />
   </div>`;
 
-const ITEMS = { gauge: Gauge, stat: Stat, table: Table, list: List };
+// A card's picture comes from the files path (`api/file/image`, the right to read files); a site without it shows the card
+// without the picture. It loads when it scrolls near and sits in a box of fixed shape, so the grid does not jump.
+const imageOf = (card, project) => {
+  if (!card.image || !shows("files") || !can("files_read")) return null;
+  const id = card.project ? state.projects.find((candidate) => candidate.name === card.project)?.id : project;
+  return id === undefined ? null : `api/file/image?project=${id}&path=${encodeURIComponent(card.image)}`;
+};
+
+function Tile({ card, project }) {
+  const to = card.url ? destination(card.url, card.project, project) : null;
+  const src = imageOf(card, project);
+  const body = html`
+    ${src && html`<div class="panel-tile-image"><img src=${src} alt="" loading="lazy" decoding="async" onError=${(event) => { event.target.parentElement.hidden = true; }} /></div>`}
+    <div class="panel-tile-text">
+      <strong class="panel-tile-title">${card.title}</strong>
+      ${card.subtitle && html`<span class="panel-tile-subtitle">${card.subtitle}</span>`}
+      ${(card.value || card.level) && html`<span class="panel-tile-value">${card.value && html`<strong>${card.value}</strong>`}<${Level} level=${card.level} /></span>`}
+      ${card.note && html`<span class="panel-tile-note">${card.note}</span>`}
+    </div>`;
+  return to
+    ? html`<a class="panel-tile" data-level=${card.level ?? null} href=${to.href} target=${to.web ? "_blank" : null} rel=${to.web ? "noopener noreferrer" : null} title=${card.url}>${body}</a>`
+    : html`<div class="panel-tile" data-level=${card.level ?? null}>${body}</div>`;
+}
+
+const Cards = ({ item, project }) => html`
+  <div class="panel-cards-block">
+    ${item.title && html`<h4 class="panel-cards-title">${item.title}</h4>`}
+    <div class="panel-cards">${item.items.map((card, at) => html`<${Tile} key=${at} card=${card} project=${project} />`)}</div>
+  </div>`;
+
+const ITEMS = { gauge: Gauge, stat: Stat, table: Table, list: List, cards: Cards };
 
 // A good document: its title, then a card per section.
 // ^ `doc.level` is set only on the machine card: the worst warn or bad of its items.
-const Doc = ({ doc }) => html`
+const Doc = ({ doc, project }) => html`
   <div class="panel-doc">
     ${doc.title && html`<h2 class="panel-title" data-level=${doc.level ?? null}>${doc.title}<${Level} level=${doc.level} /></h2>`}
     ${doc.sections.map((section, at) => html`
       <section class="panel-card" key=${at}>
         ${section.title && html`<h3>${section.title}</h3>`}
-        ${section.items.map((item, index) => { const Item = ITEMS[item.kind]; return html`<${Item} key=${index} item=${item} />`; })}
+        ${section.items.map((item, index) => { const Item = ITEMS[item.kind]; return html`<${Item} key=${index} item=${item} project=${project} />`; })}
       </section>`)}
   </div>`;
 
 // One panel: its last result, kept fresh while it is shown.
-function Panel({ base, name }) {
+function Panel({ base, name, project }) {
   const [view, setView] = useState(null);
   const [failure, setFailure] = useState("");
   const [again, setAgain] = useState(0);
@@ -124,7 +174,7 @@ function Panel({ base, name }) {
       ${failure && html`<p class="error" role="alert">${failure}</p>`}
       ${run.truncated && html`<p class="note">The start of the output is cut.</p>`}
       ${run.notice && html`<p class="note panel-notice">${run.notice}</p>`}
-      ${run.doc ? html`<${Doc} doc=${run.doc} />`
+      ${run.doc ? html`<${Doc} doc=${run.doc} project=${project} />`
         : html`<pre class="panel-output" aria-label=${`Output of ${name || "the machine"}`}>${run.output || (run.status === "pending" ? "" : "(no output)")}</pre>`}
     </div>`;
 }
@@ -144,7 +194,7 @@ export function PanelsPage({ project, onClose, grip }) {
           ${panels.length > 1 && html`<div class="panel-tabs" role="tablist" aria-label="Panels">
             ${panels.map((panel) => html`<button type="button" role="tab" key=${panel.name} aria-selected=${shown === panel.name} onClick=${() => setOpen(panel.name)}>${panel.name}</button>`)}
           </div>`}
-          ${shown && html`<${Panel} key=${shown} base=${projectPanels(project)} name=${shown} />`}`}
+          ${shown && html`<${Panel} key=${shown} base=${projectPanels(project)} name=${shown} project=${project} />`}`}
     </${SheetPage}>`;
 }
 

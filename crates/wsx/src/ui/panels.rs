@@ -12,7 +12,7 @@ use ratatui::{
     widgets::{Clear, Paragraph},
     Frame,
 };
-use wsx_core::panel::{Item, Level, PanelDoc, PanelStatus};
+use wsx_core::panel::{Card, Item, Level, Link, PanelDoc, PanelStatus};
 
 /// "12 s ago", "3 min ago".
 fn age(ms: u64) -> String {
@@ -59,6 +59,18 @@ fn level_look(level: Option<Level>) -> (&'static str, Color) {
 fn number(value: f64) -> String {
     let text = format!("{value:.1}");
     text.strip_suffix(".0").map_or(text.clone(), str::to_string)
+}
+
+/// A link's look: the accent and an underline, with `↗` and the target after the text, so it is
+/// marked by more than colour and reachable where no terminal link is made (docs/panels.md "Links").
+fn link_style() -> Style {
+    Style::default()
+        .fg(theme::ACCENT)
+        .add_modifier(Modifier::UNDERLINED)
+}
+
+fn link_text(text: &str, link: &Link) -> String {
+    format!("{text} ↗ {}", link.url)
 }
 
 /// One section's rows (without the box), `width` cells wide at most.
@@ -152,11 +164,17 @@ fn item_rows(items: &[Item], width: usize) -> Vec<Vec<Span<'static>>> {
             Item::Table {
                 columns,
                 rows: body,
+                links,
             } => {
+                // ^ A link cell reads `text ↗ target`; the cut below takes the target's end first.
+                let cell = |r: usize, c: usize| match Link::at(links, r, c) {
+                    Some(link) => (link_text(&body[r][c], link), true),
+                    None => (body[r][c].clone(), false),
+                };
                 let mut widths: Vec<usize> = (0..columns.len())
                     .map(|c| {
-                        body.iter()
-                            .map(|row| cells(&row[c]))
+                        (0..body.len())
+                            .map(|r| cells(&cell(r, c).0))
                             .chain([cells(&columns[c])])
                             .max()
                             .unwrap_or(0)
@@ -169,37 +187,135 @@ fn item_rows(items: &[Item], width: usize) -> Vec<Vec<Span<'static>>> {
                     };
                     *widest -= 1;
                 }
-                let line = |texts: &[String], style: Style| {
-                    let text: Vec<String> = texts
-                        .iter()
-                        .zip(&widths)
-                        .map(|(text, w)| fit(text, *w))
-                        .collect();
-                    vec![Span::styled(text.join("  "), style)]
+                let line = |texts: Vec<(String, bool)>, style: Style| {
+                    let mut spans = Vec::new();
+                    for (index, ((text, linked), w)) in texts.iter().zip(&widths).enumerate() {
+                        if index > 0 {
+                            spans.push(Span::raw("  "));
+                        }
+                        let shown = fit(text, *w);
+                        if *linked {
+                            let body = shown.trim_end();
+                            spans.push(Span::styled(body.to_string(), link_style()));
+                            spans.push(Span::raw(shown[body.len()..].to_string()));
+                        } else {
+                            spans.push(Span::styled(shown, style));
+                        }
+                    }
+                    spans
                 };
-                rows.push(line(columns, muted.add_modifier(Modifier::BOLD)));
-                rows.extend(body.iter().map(|row| line(row, Style::default())));
+                rows.push(line(
+                    columns.iter().map(|c| (c.clone(), false)).collect(),
+                    muted.add_modifier(Modifier::BOLD),
+                ));
+                rows.extend((0..body.len()).map(|r| {
+                    line(
+                        (0..columns.len()).map(|c| cell(r, c)).collect(),
+                        Style::default(),
+                    )
+                }));
             }
             Item::List {
                 items: entries,
                 level,
+                links,
             } => {
                 let (word, color) = level_look(*level);
                 for (index, entry) in entries.iter().enumerate() {
-                    let mut row = vec![
-                        Span::styled("• ", Style::default().fg(color)),
-                        Span::raw(entry.clone()),
-                    ];
-                    if index == 0 && !word.is_empty() {
-                        row.push(Span::styled(
-                            format!("  {word}"),
-                            Style::default().fg(color),
-                        ));
+                    let mut row = vec![Span::styled("• ", Style::default().fg(color))];
+                    let tail = if index == 0 && !word.is_empty() {
+                        format!("  {word}")
+                    } else {
+                        String::new()
+                    };
+                    match Link::at(links, index, 0) {
+                        Some(link) => row.push(Span::styled(
+                            truncate_to_width(
+                                &link_text(entry, link),
+                                width.saturating_sub(2 + cells(&tail)),
+                            ),
+                            link_style(),
+                        )),
+                        None => row.push(Span::raw(entry.clone())),
+                    }
+                    if !tail.is_empty() {
+                        row.push(Span::styled(tail, Style::default().fg(color)));
                     }
                     rows.push(row);
                 }
             }
+            Item::Cards { title, items } => {
+                if let Some(title) = title {
+                    rows.push(vec![Span::styled(
+                        truncate_to_width(title, width),
+                        muted.add_modifier(Modifier::BOLD),
+                    )]);
+                }
+                for card in items {
+                    rows.extend(card_rows(card, width));
+                }
+            }
         }
+    }
+    rows
+}
+
+/// One card as a row of title, subtitle and value (the image is the web's), with its level word.
+/// A link marks the title with `↗` and shows its target at the row's end where it fits whole.
+/// The note is dimmed below, cut to the width.
+fn card_rows(card: &Card, width: usize) -> Vec<Vec<Span<'static>>> {
+    let muted = Style::default().fg(theme::TEXT_MUTED);
+    let (word, color) = level_look(card.level);
+    let value = card
+        .value
+        .as_deref()
+        .map_or(String::new(), |v| format!("  {v}"));
+    let word = if word.is_empty() {
+        String::new()
+    } else {
+        format!("  {word}")
+    };
+    let marker = if card.url.is_some() { " ↗" } else { "" };
+    // ^ Title and subtitle give way first; the value and the level word stay.
+    let title = truncate_to_width(
+        &card.title,
+        width.saturating_sub(cells(&value) + cells(&word) + cells(marker)),
+    );
+    let mut left =
+        width.saturating_sub(cells(&title) + cells(marker) + cells(&value) + cells(&word));
+    let subtitle = match card.subtitle.as_deref() {
+        Some(text) if left > 4 => {
+            let text = truncate_to_width(text, left - 2);
+            left -= cells(&text) + 2;
+            format!("  {text}")
+        }
+        _ => String::new(),
+    };
+    let accent = Style::default().fg(theme::ACCENT);
+    let mut row = vec![Span::styled(
+        title,
+        if card.url.is_some() {
+            link_style()
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        },
+    )];
+    row.push(Span::styled(marker.to_string(), accent));
+    row.push(Span::styled(subtitle, muted));
+    row.push(Span::styled(
+        value,
+        Style::default().add_modifier(Modifier::BOLD).fg(color),
+    ));
+    row.push(Span::styled(word, Style::default().fg(color)));
+    if let Some(url) = card.url.as_deref().filter(|url| cells(url) + 2 <= left) {
+        row.push(Span::styled(format!("  {url}"), accent));
+    }
+    let mut rows = vec![row];
+    if let Some(note) = card.note.as_deref().and_then(|note| note.lines().next()) {
+        rows.push(vec![Span::styled(
+            format!("  {}", truncate_to_width(note, width.saturating_sub(2))),
+            muted.add_modifier(Modifier::DIM),
+        )]);
     }
     rows
 }

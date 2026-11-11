@@ -101,7 +101,10 @@ The start path is the path the shell resolved, for example the Homebrew link in 
 | --- | --- |
 | Advertises `Capabilities::daemon_restart` (revision 25 and later) | Handoff. PTYs, shells and agents keep running. |
 | Older, installed `wsxd` is the same build | Refused with one sentence. Nothing is stopped. |
-| A TUI blocks the handoff | Pending. It continues when that TUI quits. |
+| A TUI blocks the handoff | Pending. It continues when that TUI quits. The command answers `deferred` at once. |
+| The daemon is still recovering its saved sessions (`HandoffUnavailable` alone, at most 64 panes) | Pending. The command waits for the handoff the daemon starts by itself when recovery ends, up to 35 seconds, then answers `restarted`; after that it answers `deferred`. |
+
+`wsx daemon restart` gives one answer for every caller (CLI, deploy script, release, test): `restarted`, `deferred` (the owner must act, or recovery outlasted the wait; the restart still continues by itself), `unsupported`, `not_running` or an error that names a handoff that rolled back. A caller does not ask again on `deferred`. A handoff can begin under the command, for example the pending one of an earlier `deferred`: it closes the listener, so a call reads EOF, `ECONNRESET`, a missing socket or `daemon_replacing`. `restart_with_binary` then waits for the marker (see "Transition marker") and asks once more, because `PrepareHandoff` for one target is idempotent. Test: `a_restart_asked_while_wsxd_recovers_its_sessions_waits_and_answers_restarted` in `crates/wsx/tests/routine_wsxd_lifecycle.rs` restarts three times at once during the recovery of 30 saved sessions.
 
 `wsx daemon stop` ends every program in every session. It refuses while a session has a running terminal, prints the number, and names `wsx daemon restart`. `--force` stops anyway. A daemon that cannot report its sessions also needs `--force`.
 

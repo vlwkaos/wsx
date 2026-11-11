@@ -125,6 +125,7 @@ pub fn router(app: Shared) -> Router {
                     .layer(DefaultBodyLimit::max(3 * 1024 * 1024)),
             )
             .route("/api/file/page", get(file_page))
+            .route("/api/file/image", get(file_image))
             .route("/api/terminal/{session}/ws", get(terminal_socket))
             .route(
                 "/api/push",
@@ -1819,6 +1820,58 @@ async fn file_page(
         .mint(&device.id, query.project, folder)
         .map_err(|error| Fault::new(500, "randomness", format!("{error:#}")))?;
     Ok(Json(json!({ "token": token })))
+}
+
+/// A picture of a project file for a panel card (docs/panels.md "Cards"): the files path's rule
+/// (`files_read`, the pinned root, no symbolic link), the card picture types (jpg, jpeg, png,
+/// webp, gif; never svg, which runs script under the app's origin), the bytes of that type by
+/// content signature, and at most 2 MiB.
+async fn file_image(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    Query(query): Query<PathQuery>,
+) -> Outcome<Response> {
+    need(&app, Panel::Files)?;
+    allow(&app, Capability::FilesRead, "reading files")?;
+    let path = Path::new(&query.path);
+    let kind = match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        _ => {
+            return Err(Fault::new(
+                400,
+                "not_an_image",
+                "only a jpg, png, webp or gif file opens as an image",
+            ))
+        }
+    };
+    let bytes = blocking(|| {
+        project_root(&app, query.project)?
+            .read(path, wsx_core::panel::MAX_IMAGE_BYTES)
+            .map_err(sandbox_fault)
+    })?;
+    if crate::media::sniff(&bytes).map(|(_, mime)| mime) != Some(kind) {
+        return Err(Fault::new(
+            415,
+            "not_an_image",
+            "the file is not the picture its name says",
+        ));
+    }
+    Ok((
+        [
+            (header::CONTENT_TYPE, kind),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 /// One file of a page's folder. The token is the only right: the frame sends no cookie.

@@ -159,15 +159,17 @@ const RunningRow = ({ project, task, leaving }) => html`
     href=${taskLink(project, task.id)} />`;
 
 // An open To check item: its check, what passes it, Reply (`onReply` quotes it in the composer,
-// where "x" skips it), Fail (tells the manager) and Pass as the sheet has them (checks.js
-// `CheckRow`). The text opens the sheet at the item.
-function CheckingRow({ project, item, index, onActing, onFailed, onMention, onReply, leaving }) {
+// where "x" skips it), Fail and Pass as the sheet has them (checks.js `CheckRow`): each closes the
+// item, then quotes it in the composer for the owner's note. The text opens the sheet at the item.
+function CheckingRow({ project, item, index, onActing, onFailed, onReply, leaving }) {
   const [status, run] = useRowAction(`${project}/check-${item.id}`, item.id, index, onActing, onFailed);
   const button = (...args) => rowButton(status.busy, ...args);
+  // ^ The row leaves with the decision; the composer then quotes the item for the owner's note.
+  const decideAndReply = (decision) => run(async () => { await decideCheck(project, item.id, decision); onReply(checkQuote(item), item.id); });
   const actions = can("task_act") && html`
     ${button("Reply", "reply", null, () => onReply(checkQuote(item), item.id), { "aria-label": `Reply: ${item.check}` })}
-    ${button("Fail: tell the manager", "fail", "danger", () => onMention(item.task, `To check ${item.id} failed: `), { "aria-label": `Fail: tell the manager what is wrong with: ${item.check}` })}
-    ${button("Works: close this check", "pass", "accent", () => run(() => decideCheck(project, item.id, "pass")), { "aria-label": `Pass, works: close this check: ${item.check}` })}`;
+    ${button("Fail: close it, then tell the manager", "fail", "danger", () => decideAndReply("fail"), { "aria-label": `Fail: close it, then tell the manager what is wrong with: ${item.check}` })}
+    ${button("Works: close this check", "pass", "accent", () => decideAndReply("pass"), { "aria-label": `Pass, works: close this check: ${item.check}` })}`;
   return html`
     <${ListRow} rowKey=${item.id} leaving=${leaving} project=${project} task=${item.task} label=${item.check}
       context=${`Passes if ${item.pass_if}`} href=${`#/p/${project}/checks/${item.id}`} actions=${actions} error=${status.error} />`;
@@ -302,7 +304,7 @@ function Reservoir({ project, open, items, tasks, checks, routines, onRoutines, 
               </ul>` : null}
             ${open === "check" ? html`
               <ul class="reservoir-list" aria-label="To check">
-                ${checkRows.map(({ item, key, leaving }) => html`<${CheckingRow} key=${key} project=${project} item=${item} index=${checks.indexOf(item)} onActing=${onActing} onFailed=${onFailed} onMention=${onMention} onReply=${onReply} leaving=${leaving} />`)}
+                ${checkRows.map(({ item, key, leaving }) => html`<${CheckingRow} key=${key} project=${project} item=${item} index=${checks.indexOf(item)} onActing=${onActing} onFailed=${onFailed} onReply=${onReply} leaving=${leaving} />`)}
               </ul>` : null}
             ${open === "routines" ? html`
               ${routines.error ? html`<p class="error empty" role="alert">${routines.error}</p>` : null}
@@ -648,7 +650,7 @@ function Sheet({ label, fit = false, onClose, children }) {
 
 // ^ The sheets over the chat, by the route's `sheet` (store.js parseRoute): the page, its label, `fit` (only
 // as high as its content) and `refocus` (closing it gives the composer the focus). A page takes the
-// props `project`, `task`, `item`, `onClose`, `onMention` and `grip`, and uses the ones it needs.
+// props `project`, `task`, `item`, `onClose`, `onMention`, `onReply` and `grip`, and uses the ones it needs.
 const SHEETS = {
   task: { Page: TaskPage, label: "Task", refocus: true },
   overview: { Page: ProjectOverview, label: "Overview", refocus: true },
@@ -784,12 +786,14 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   // count changes (a new item, a pass or a fail).
   const [checkItems, setCheckItems] = useState(role ? [] : null);
   const toCheck = overview?.to_check;
+  // ^ A reply to a decided item is its note: read again when one more reply names an item.
+  const noted = chat?.rows?.filter((row) => row.quoted_check).map((row) => row.id).join();
   useEffect(() => {
     if (role) return undefined;
     let live = true;
     api(`api/tasks/${id}/checks`).then((value) => { if (live) setCheckItems(value.items); }, () => { if (live) setCheckItems((now) => now ?? []); });
     return () => { live = false; };
-  }, [id, toCheck]);
+  }, [id, toCheck, noted]);
   const ready = Boolean(chat) && checkItems !== null;
   const [sent, setSent] = useState(null);
   const place = role ? `project-${id}-r-${role}` : `project-${id}`;
@@ -891,7 +895,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
     : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} row=${row} fresh=${isNew} />`
     : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} fresh=${isNew} />`
     : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} all=${finding} want=${wanted} />`
-    : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${isNew} onMention=${mention} />`
+    : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${isNew} onReply=${replyTo} />`
     : html`<${Note} key=${row.key} row=${row} />`;
   // ^ What the rows read besides their own fields: a new day (a row's time says its day once it is
   // not today's, lib.js `clock`) and the project names (what `<project> #n` reads, `withChips`).
@@ -901,6 +905,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   const leave = () => goBack(`#/p/${id}`);
   // ^ A sheet's Answer goes to this chat, also when another screen is under the sheet.
   const answer = (n, words) => { mention(n, words); leaveFor(`#/p/${id}`); };
+  const replyFrom = (line, check) => { replyTo(line, check); leaveFor(`#/p/${id}`); };
   const header = html`
     <header class="bar">
       <${Back} fallback=${role ? `#/p/${id}` : "#/"} />
@@ -955,7 +960,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
       ${menu}
       ${over && html`
         <${Sheet} key=${`${sheet}${task ?? ""}`} label=${task != null ? `${over.label} #${task}` : over.label} fit=${over.fit} onClose=${leave}>
-          ${(grip) => html`<${over.Page} project=${id} task=${task} item=${item} onClose=${leave} onMention=${answer} grip=${grip} />`}
+          ${(grip) => html`<${over.Page} project=${id} task=${task} item=${item} onClose=${leave} onMention=${answer} onReply=${replyFrom} grip=${grip} />`}
         </${Sheet}>`}
     </div>`;
 }

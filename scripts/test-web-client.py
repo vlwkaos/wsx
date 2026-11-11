@@ -3447,7 +3447,8 @@ PANEL_CONFIG = '''panels:
     format: json
 '''
 # ^ docs/panels.md "JSON panels": every kind, a bad level and an unknown kind (each skipped with a
-# notice), and a number cell; `badjson` is not a document.
+# notice), a number cell, and the links of docs/panels.md "Links" (an https one, a project page, a bad one
+# dropped with a notice); `badjson` is not a document.
 PANEL_DOC = {
     'title': 'This Mac',
     'sections': [
@@ -3458,12 +3459,26 @@ PANEL_DOC = {
             {'kind': 'stat', 'label': 'Disk', 'value': 'full', 'level': 'red'},
         ]},
         {'title': 'Storage', 'items': [
-            {'kind': 'table', 'columns': ['Volume', 'Used', 'Free'], 'rows': [['Macintosh HD', '412 GB', '88 GB'], ['Data', 12, 3]]},
-            {'kind': 'list', 'items': ['Time Machine: 2 days ago', 'Spotlight idle'], 'level': 'bad'},
+            {'kind': 'table', 'columns': ['Volume', 'Used', 'Free'], 'rows': [
+                [{'text': 'Macintosh HD', 'url': 'https://example.com/hd'}, '412 GB', '88 GB'], [{'text': 'Data', 'url': 'javascript:alert(1)'}, 12, 3]]},
+            {'kind': 'list', 'items': [{'text': 'Time Machine: 2 days ago', 'url': 'trends/board/index.html'}, 'Spotlight idle'], 'level': 'bad'},
+            {'kind': 'cards', 'title': 'Trending', 'items': [
+                {'title': 'Cat video', 'subtitle': 'Channel A', 'value': '1.2M', 'note': 'Rising fast. ' * 12, 'image': 'media/a.png', 'url': 'https://example.com/cat', 'level': 'ok'},
+                {'title': 'Board', 'subtitle': 'Channel B', 'value': '800k', 'image': 'media/b.png', 'url': 'trends/board/index.html'},
+                {'title': 'Gone', 'image': 'media/missing.png'},
+            ]},
             {'kind': 'chart', 'label': 'x'},
         ]},
     ],
 }
+
+
+def png_bytes(width, height, rgb):
+    # ^ A real picture: a browser checks each chunk's CRC.
+    import struct, zlib
+    chunk = lambda kind, data: struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+    rows = b''.join(b'\x00' + bytes(rgb) * width for _ in range(height))
+    return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b'')
 LONG_NAME = 'notes-about-jumping-between-projects-from-the-keyboard-and-back.txt'
 TASK_CONFIG = '''tasks:
   minFreeGb: 0
@@ -3511,14 +3526,22 @@ def task_journey(args):
         checks.append(label)
         timed(label)
 
-    def wait(test, label, timeout=20):
+    def wait(test, label, timeout=20, retry=False):
+        # ^ `retry`: an AssertionError of `test` (a CLI call that fails before its file exists) waits for the next try; the last one ends the wait.
         deadline = time.monotonic() + timeout
+        failure = None
         while time.monotonic() < deadline:
-            value = test()
+            try:
+                value = test()
+            except AssertionError as error:
+                if not retry:
+                    raise
+                failure = error
+                value = None
             if value:
                 return value
             time.sleep(0.1)
-        raise AssertionError(label + ' timeout')
+        raise AssertionError(label + ' timeout') from failure
 
     try:
         # ^ Its own TMPDIR: the task host sockets' folder goes away with the run.
@@ -3584,6 +3607,15 @@ def task_journey(args):
                         (folder / 'scripts/gauges.json').write_text(json.dumps(PANEL_DOC))
                         (folder / 'scripts/gauges.sh').write_text('#!/bin/sh\ncat scripts/gauges.json\n')
                         (folder / 'scripts/badjson.sh').write_text("#!/bin/sh\necho '{oops'\n")
+                        (folder / 'media').mkdir()
+                        (folder / 'media/a.png').write_bytes(png_bytes(64, 36, (200, 60, 60)))
+                        (folder / 'media/b.png').write_bytes(png_bytes(36, 64, (60, 60, 200)))
+                        # ^ api/file/image: a real jpg is served; an svg and a jpg whose bytes are HTML are refused.
+                        (folder / 'media/real.jpg').write_bytes(b'\xff\xd8\xff\xe0' + b'\x00' * 32)
+                        (folder / 'media/fake.jpg').write_text('<!doctype html><script>alert(1)</script>\n')
+                        (folder / 'media/vector.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>\n')
+                        (folder / 'trends/board').mkdir(parents=True)
+                        (folder / 'trends/board/index.html').write_text('<!doctype html><title>Board</title><h1>Trend board page</h1>\n')
                         for script in ('device.sh', 'broken.sh', 'gauges.sh', 'badjson.sh'):
                             (folder / 'scripts' / script).chmod(0o755)
                     (folder / 'README').write_text('fixture\n')
@@ -3735,7 +3767,7 @@ def task_journey(args):
             # #6: works until the run ends; its prompt opens as the manager's prompts do.
             long_report = 'WORK c.txt\n' + '\n\n'.join('line %d of the report' % n for n in range(1, 41))
             assert js('task', 'new', long_report, '-p', 'ui')['id'] == 5
-            wait(lambda: js('task', 'show', 5, '-p', 'ui')['state'] == 'ready', 'ui #5')
+            wait(lambda: js('task', 'show', 5, '-p', 'ui')['state'] == 'ready', 'ui #5', retry=True)
             wait(lambda: any('#5 ready r1' in e.get('text', '') for e in js('task', 'chat', '-p', 'ui')['entries']),
                  'the manager heard of #5', timeout=30)
             js('task', 'close', 5, '--discard', '-p', 'ui')
@@ -3851,9 +3883,9 @@ def task_journey(args):
         push_origin = 'http://127.0.0.1:%d' % receiver['port']
         vapid = cli('web', 'vapid').stdout
         private_key = next(line.split('"')[1] for line in vapid.splitlines() if line.startswith('private_key'))
-        ports = {name: free_port() for name in ('owner', 'viewer', 'plain', 'admin', 'scoped', 'relay')}
+        ports = {name: free_port() for name in ('owner', 'viewer', 'plain', 'admin', 'scoped', 'pager', 'relay')}
         # ^ The browser reaches the owner's site through `Relay`, so its public origin is the relay's.
-        public = {name: 'http://127.0.0.1:%d' % ports['relay' if name == 'owner' else name] for name in ('owner', 'viewer', 'plain', 'admin', 'scoped')}
+        public = {name: 'http://127.0.0.1:%d' % ports['relay' if name == 'owner' else name] for name in ('owner', 'viewer', 'plain', 'admin', 'scoped', 'pager')}
         grants = {
             'owner': ('"all"', '"task_view", "task_act", "push", "media_upload", "media_download", "files_read"'),
             'viewer': (json.dumps([str(project)]), '"task_view", "push"'),
@@ -3862,9 +3894,11 @@ def task_journey(args):
             'admin': ('"all"', '"task_view", "terminal_view", "terminal_input", "push"'),
             # ^ Reads panels, but only of `other`, which declares none (docs/panels.md "Machine panels").
             'scoped': (json.dumps([str(other)]), '"task_view", "terminal_view", "terminal_input", "push"'),
+            # ^ Runs panels and reads files: a project page link in a panel opens (docs/panels.md "Links").
+            'pager': ('"all"', '"task_view", "terminal_view", "terminal_input", "files_read", "push"'),
         }
         # ^ The owner reads files too: a `files/<path>` link in a manager message opens that file's page.
-        panels = {'owner': '"chat", "files"', 'admin': '"chat", "terminal"', 'scoped': '"chat", "terminal"'}
+        panels = {'owner': '"chat", "files"', 'admin': '"chat", "terminal"', 'scoped': '"chat", "terminal"', 'pager': '"chat", "files", "terminal"'}
         files, sites, servers = {}, {}, {}
         for name, (projects_value, capabilities) in grants.items():
             files[name] = work / (name + '.toml')
@@ -3959,7 +3993,10 @@ merge_seconds = 3
             gauges = panel_shown('gauges', run=True)['run']
             assert gauges['doc']['title'] == 'This Mac' and [i['kind'] for i in gauges['doc']['sections'][0]['items']] == ['gauge', 'gauge', 'stat'], gauges
             assert gauges['doc']['sections'][1]['items'][0]['rows'][1] == ['Data', '12', '3'], gauges
-            assert gauges['notice'].count('\n') == 1 and '`red`' in gauges['notice'] and '`chart`' in gauges['notice'], gauges['notice']
+            assert gauges['notice'].count('\n') == 3 and 'card 3 image dropped: the image file is missing' in gauges['notice'] and '`red`' in gauges['notice'] and '`chart`' in gauges['notice'] and 'link at row 2, column 1 dropped' in gauges['notice'], gauges['notice']
+            # ^ The links: the text stays in the cell, the good targets are in `links`, the bad one is gone.
+            storage = gauges['doc']['sections'][1]['items']
+            assert storage[0]['links'] == [{'row': 0, 'col': 0, 'url': 'https://example.com/hd'}] and storage[1]['links'] == [{'row': 0, 'col': 0, 'url': 'trends/board/index.html'}], storage
             badjson = panel_shown('badjson', run=True)['run']
             assert badjson['doc'] is None and badjson['output'] == '{oops\n' and badjson['notice'].startswith('not a panel document'), badjson
             # The admin site is granted `calm`: its device (text), broken (fails) and gauges (document) joined This Mac's.
@@ -3981,6 +4018,19 @@ merge_seconds = 3
             # ^ A failing project panel is one line, level bad, in its place; the card's state is the worst level.
             assert sections[-3]['items'] == [{'kind': 'list', 'items': ['broken: failed (exit 2)'], 'level': 'bad'}], sections[-3]
             assert [item['kind'] for item in sections[-2]['items']] == ['gauge', 'gauge', 'stat'] and card['run']['doc']['level'] == 'bad', card['run']['doc']
+            # ^ The card keeps the links; a project page names its project, an https one does not.
+            assert sections[-1]['items'][0]['links'] == [{'row': 0, 'col': 0, 'url': 'https://example.com/hd'}], sections[-1]
+            assert sections[-1]['items'][1]['links'] == [{'row': 0, 'col': 0, 'url': 'trends/board/index.html', 'project': 'calm'}], sections[-1]
+            # ^ A card with a picture or a page names its project in the card; the missing picture is gone.
+            tiles = sections[-1]['items'][2]['items']
+            assert [(t['title'], t['image'], t['project']) for t in tiles[:2]] == [('Cat video', 'media/a.png', 'calm'), ('Board', 'media/b.png', 'calm')] and tiles[2]['image'] is None and 'project' not in tiles[2], tiles
+            # ^ The card picture route takes only the card types, by content signature, and sends nosniff.
+            image_of = '/api/file/image?project=%d&path=media/' % calm_id
+            status, headers, body = steady(sites['pager'], 'GET', image_of + 'real.jpg', raw=True)
+            assert status == 200 and headers['content-type'] == 'image/jpeg' and headers['x-content-type-options'] == 'nosniff' and body.startswith(b'\xff\xd8\xff'), (status, headers)
+            for name in ('vector.svg', 'fake.jpg'):
+                status, body = steady(sites['pager'], 'GET', image_of + name)
+                assert 400 <= status < 500 and body['error']['code'] == 'not_an_image', (name, status, body)
             assert 'level' not in mac['run']['doc'] or mac['run']['doc']['level'] in ('warn', 'bad'), mac['run']['doc']
             assert not any(str(title).startswith('calm') for title in [section['title'] for section in mac['run']['doc']['sections']]), 'a project outside the grant is in the card'
             status, body = steady(admin, 'GET', panel_url + '/missing')
@@ -3991,7 +4041,8 @@ merge_seconds = 3
                 checked = check(work, [node, str(ROOT / 'scripts/web-panels-check.mjs'), admin.origin + '/', cli('web', 'pair', '--site', files['admin']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                        owner.origin + '/', cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                        str(args.captures), str(calm_id),
-                                       sites['scoped'].origin + '/', cli('web', 'pair', '--site', files['scoped']).stdout.splitlines()[0].rsplit(' ', 1)[1]], timeout=240)
+                                       sites['scoped'].origin + '/', cli('web', 'pair', '--site', files['scoped']).stdout.splitlines()[0].rsplit(' ', 1)[1],
+                                       sites['pager'].origin + '/', cli('web', 'pair', '--site', files['pager']).stdout.splitlines()[0].rsplit(' ', 1)[1]], timeout=240)
                 assert checked.returncode == 0, checked.stdout + checked.stderr
                 ok('real browser, ' + checked.stdout.strip().splitlines()[-1])
         panels_journey(sites['admin'])
@@ -4380,14 +4431,14 @@ merge_seconds = 3
         assert json.loads(logged[1])['text'].startswith('Owner report (UX failures: how a task asks):'), logged[1]
         ok('project overview: written by the manager host, none without a manager, 404 outside the grant; titles: --title, its refusals, "Owner <words>:" left out when shown and kept on disk, on the web the first sentence of the summary')
 
-        # --- To check (docs/tasks.md "To check"): pass one, fail one with a note (a linked fix
-        # task starts), pass the rest; the owner's alone.
+        # --- To check (docs/tasks.md "To check"): pass one, fail one with no note (it only closes), fail one
+        # with a note (a linked fix task starts), pass the rest; the owner's alone.
         made = []
-        for prompt in ('WORK h.txt HV', 'WORK i.txt HV'):
+        for prompt in ('WORK h.txt HV', 'WORK i.txt HV', 'WORK f.txt HV'):
             made.append(js('task', 'new', prompt, '-p', 'demo')['id'])
             wait(lambda: task_state(made[-1]) == 'ready', 'demo #%d' % made[-1])
             assert js('task', 'land', made[-1], '-p', 'demo')['state'] == 'landed'
-        assert [i['id'] for i in steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open']] == ['c1', 'c2', 'c3']
+        assert [i['id'] for i in steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open']] == ['c1', 'c2', 'c3', 'c4']
 
         def decide(item, decision, body=None, site=owner):
             return steady(site, 'POST', '/api/tasks/%d/checks/%s/%s' % (demo, item, decision), body or {})
@@ -4396,26 +4447,28 @@ merge_seconds = 3
         assert steady(viewer, 'GET', '/api/tasks/%d/routines' % ids['ui'])[0] == 404
         assert steady(viewer, 'POST', '/api/tasks/%d/routines/nightly/run' % ids['ui'], {})[0] == 403  # no task_act, as for a check
         assert decide('c1', 'maybe')[0] == 404 and decide('x1', 'pass')[0] == 404 and decide('all', 'fail')[0] == 404
-        status, body = decide('c1', 'fail')
-        assert status == 400 and body['error']['code'] == 'note_required', body
         status, body = decide('c9', 'pass')
         assert status == 409 and 'no item c9' in body['error']['message'], body
         status, body = decide('c1', 'pass')
-        assert status == 200 and body['open'] == 2 and body['changed'][0]['state'] == 'passed', body
+        assert status == 200 and body['open'] == 3 and body['changed'][0]['state'] == 'passed', body
         assert decide('c1', 'pass')[0] == 409
+        # ^ The web's Fail sends no note: the item closes as failed with no task, and the owner's reply is its note.
+        status, body = decide('c3', 'fail')
+        assert status == 200 and body['open'] == 2 and body['changed'][0]['state'] == 'failed' and 'fix_task' not in body['changed'][0], body
+        assert decide('c3', 'fail')[0] == 409
         status, body = decide('c2', 'fail', {'note': 'the text is cut off'})
         assert status == 200, body
         fix = body['changed'][0]['fix_task']
         fixing = steady(owner, 'GET', '/api/tasks/%d/t/%d' % (demo, fix))[1]
         assert fixing['title'] == 'Fix: open the file' and fixing['fixes']['id'] == 'c2' and fixing['fixes']['note'] == 'the text is cut off', fixing
         status, body = decide('all', 'pass')
-        assert status == 200 and body['open'] == 0 and [c['id'] for c in body['changed']] == ['c3'], body
+        assert status == 200 and body['open'] == 0 and [c['id'] for c in body['changed']] == ['c4'], body
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         assert overview['to_check'] == 0 and '#%d failed a check; #%d fixes it' % (made[0], fix) in [
             row['text'] for row in overview['resolutions']], overview['resolutions']
         wait(lambda: task_state(fix) in ('ready', 'failed'), 'the fix task')
         js('task', 'close', fix, '--discard', '-p', 'demo')
-        ok('to check: listed with titles, pass, fail needs a note and starts a linked fix task, all passed, refusals (viewer, grant, unknown id or decision)')
+        ok('to check: listed with titles, pass, fail with no note only closes, fail with a note starts a linked fix task, all passed, refusals (viewer, grant, unknown id or decision)')
 
         # --- A reply of only "x" (or "ㅌ", the same key on a Korean keyboard) to a To check item skips it
         # with no manager turn (docs/tasks.md "To check"); other words, a closed item and an "x" to a

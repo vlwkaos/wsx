@@ -39,14 +39,19 @@ export function markFound(target) {
 // A quote as a button that goes to the quoted message. `id`: the quoted message's id, when the
 // log stored it; the message is found by it, and when it is not among the rows the page asks
 // for the chat around it (`quote-jump`, tasks.js). Without an id the newest message above with
-// that first line.
-export function Quote({ quote, id = null }) {
+// that first line. `check`: the To check item (`c<n>`) the quote is the check of; its bubble has
+// that `data-id`, and when it is not among the rows the To check list opens at it.
+export function Quote({ quote, id = null, check = null, project = null }) {
   const go = (event) => {
     const row = event.currentTarget.closest("[data-quote]");
     const rows = row && [...row.parentElement.children];
-    const target = id != null
-      ? rows?.find((other) => other.dataset.id === String(id))
+    const target = check != null || id != null
+      ? rows?.find((other) => other.dataset.id === String(check ?? id))
       : rows?.filter((other) => other.dataset.quote === quote && (other.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING)).at(-1);
+    if (!target && check != null) {
+      location.hash = `#/p/${project}/checks/${check}`;
+      return;
+    }
     if (!target && id != null) {
       dispatchEvent(new CustomEvent("quote-jump", { detail: id }));
       return;
