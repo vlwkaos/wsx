@@ -1,6 +1,6 @@
 # Memory evaluation (step 6)
 
-Status: baseline half measured on 2026-11-11 ("Baseline"); offline retrieval measured the same day with a stub start set ("Offline retrieval"). The memory half runs after build steps 4 and 5 (`docs/design/memory-system.md`). Question: does memory make a wsx task better and cheaper? Owner decisions: the vault stays in dotfiles `memory.py`; plain Claude chats get no start-up memory load unless this shows a measured gain; step 8 waits for the verdict.
+Status: baseline half measured on 2026-11-11 ("Baseline"); offline retrieval measured the same day on the real `wsx memory start` with a stale rule ablation ("Offline retrieval"). The memory half runs after build steps 4 and 5 (`docs/design/memory-system.md`). Question: does memory make a wsx task better and cheaper? Owner decisions: the vault stays in dotfiles `memory.py`; plain Claude chats get no start-up memory load unless this shows a measured gain; step 8 waits for the verdict.
 
 ## Method
 
@@ -107,67 +107,65 @@ Baseline: 23 runs $12.86. Memory arm: 20 runs at about +10% for the start set, $
 
 ## Offline retrieval (free, all landed tasks with a plan step)
 
-Question: does the start set hold the files a plan step reads? Target set by the owner: at least 60%. `python3 -B scripts/memory-eval.py offline [--final] [--show N...]` (no model call; about 8 minutes on 6 jobs). It reads the task store, the git history and `wsx memory`, and writes `.work/memory-eval/offline/rows.json` (`--rows` scores it again). Run on a copy of the store (`MEMORY_EVAL_STORE`), 136 landed tasks #133 to #387 that have a plan result. Split by start time: the first 91 tune, the last 45 are held out; the script prints the held-out third only with `--final`, and it was shown once, after the rules below were fixed.
+Question: does the start set hold the files a plan step reads? Target set by the owner: at least 60% of them. `python3 -B scripts/memory-eval.py offline [--wsx BIN] [--final] [--show N...]` (no model call; about 15 minutes on 6 jobs, `--rows` scores the saved `.work/memory-eval/offline/rows.json` again). It runs on a copy of the task store (`MEMORY_EVAL_STORE`): 137 landed tasks (#133 on) with a plan result. Per task: a git worktree at its base, the task store cut at its start, the capture rule of #386 (`wsx memory capture`) on every task landed before it, and the real `wsx memory start --files <its --files>`. Split by start time: the first 92 tune, the last 45 are held out; the script prints the held-out third only with `--final` (shown once, after the rules below were fixed).
 
-**Start set used here is a stub.** `wsx memory start` and `capture` (#386) are not on this branch. The stub is the design's rule (`memory-system.md`): the capture rule of the dry run (memo plus all landed paths, commit = landed commit) on every task landed before the start, then the records that have a path matching the task's `--files` and are not stale (`git diff --quiet <commit> <base> -- <paths>`, base = the task's own base, any path counts), most matching paths first, 4 KiB. When #386 lands, the script uses `wsx memory start` by itself and reads its slugs; the stale and ranking columns then describe the real code. The area-brief part is empty by construction: wsx declares no `memory.areas`.
+**Labels.** (a) files the plan step read: `Read` paths and every repo file that a `rg grep sed cat head tail awk wc` Bash line names, in the agent lines before the plan result, kept only if the file exists at the task's base; directories count apart. (b) files of the landed diff. (c) trap: an earlier landed task's memo names a file of this task (not one most tasks change) and a send-back (`add` after the plan, not a land notice) shares at least 2 rare words (used by at most 6 memos) with it; rare (3 pairs tuned, 4 held out; a hand check of the 3 tuned: 2 real, 1 weak), read it as a sign, not a rate. **The log loses reads, so (a) is a lower bound**: 2499 of 3846 Bash lines (65%) end in a clip mark and their last word is dropped, the 35 `Agent` calls (Explore) carry no arguments, `Grep` and `Glob` are not logged.
 
-**Labels.** (a) files the plan step read: `Read` paths and every repo file a `rg grep sed cat head tail awk wc` Bash line names, in the agent lines before the plan result, kept only if the file exists at the task's base; a directory argument counts apart (not a file). (b) files of the landed diff. (c) trap: an earlier landed task's memo names a file of this task (not a file most tasks change) and a send-back (`add` after the plan, not a land notice) shares at least 2 rare words (used by at most 6 memos) with it. (c) is rare: 3 pairs in the tuned third, 4 in the held-out one; hand check of the 3 (tuned): 2 are real (#182 effort, #265 tab bar), 1 is weak (#197). Read it as a sign, not a rate.
+**Measures.** Recall and precision of the start set's record paths against (a) and (b). A caveat on them: a record's line in the block is `- <slug> (<kind>, <date>): <memo>` and shows no path list; the paths count as the set's paths, but the worker only reads the files the memo's words name. That score is the column "from the words of the block": it is 0.01 to 0.23 in every row below. "Records useful" is the share of shown records with a path that the plan read or the diff changed; a record that is not is a wrong fact in the budget.
 
-**What the log loses (so (a) is a lower bound).** Of 3827 Bash lines before a plan result, 2481 (65%) end in a clip mark, and their last word is dropped; the 35 `Agent` calls (Explore) are logged without arguments, and `Grep` and `Glob` are not logged at all. 1508 files read in 136 plan steps (11 per task).
+### The start set today
 
-### Result (mean over tasks; start = stub)
-
-| arm | recall (a) tuned / held out | precision (a) | recall (b) | tasks with an empty set (held out) | traps in set (held out) |
-|---|---|---|---|---|---|
-| start (stub) | 0.15 / **0.13** | 0.16 / 0.07 | 0.21 / 0.16 | 17 of 45 | 1/4 |
-| paths, each record cut to the paths unchanged since its commit | 0.50 / 0.43 | 0.09 / 0.12 | 0.50 / 0.44 | 7 | 2/4 |
-| same, ranked by BM25 of the title | 0.39 / 0.40 | 0.09 / 0.13 | 0.38 / 0.44 | 7 | 3/4 |
-| BM25 of the title only (top 5 facts, no paths) | 0.49 / 0.48 | 0.17 / 0.20 | 0.54 / 0.47 | 0 | 3/4 |
-| same, cut to unchanged paths | 0.09 / 0.18 | 0.10 / 0.15 | 0.08 / 0.14 | 0 | 3/4 |
-| paths, stale ignored | **0.74 / 0.65** | 0.08 / 0.07 | 0.71 / 0.67 | 7 | 2/4 |
-| `wsx memory recall "<title>"` (top 5) | 0.03 / 0.08 | 0.07 / 0.11 | 0.04 / 0.09 | 26 | 1/4 |
-
-Paired per task, recall (a), mean and seeded bootstrap 95% interval (tuned / held out): start minus recall +0.118 [+0.068, +0.169] / +0.052 [-0.041, +0.149]; unchanged paths minus start +0.357 [+0.300, +0.421] / +0.302 [+0.200, +0.398]; stale ignored minus start +0.595 [+0.526, +0.660] / +0.521 [+0.398, +0.632].
-
-Per area, recall (a), tuned / held out (tasks: tuned / held out). Terminal: no landed plan task.
-
-| area | tasks | start (stub) | unchanged paths | stale ignored | recall |
-|---|---|---|---|---|---|
-| cli_tui | 28 / 18 | 0.16 / 0.16 | 0.52 / 0.51 | 0.84 / 0.79 | 0.01 / 0.08 |
-| core | 12 / 9 | 0.21 / 0.18 | 0.49 / 0.53 | 0.78 / 0.79 | 0.05 / 0.06 |
-| daemon | 4 / 0 | 0.03 / - | 0.46 / - | 0.72 / - | 0.03 / - |
-| scripts_docs | 18 / 12 | 0.11 / 0.10 | 0.21 / 0.18 | 0.42 / 0.30 | 0.09 / 0.06 |
-| web | 29 / 6 | 0.15 / 0.00 | 0.67 / 0.53 | 0.83 / 0.72 | 0.00 / 0.11 |
-
-Why a file read is not in the start set (share of the files read; tuned 958 files / held out 550):
-
-| cause | tuned | held out |
+| | tuned (92) | held out (45) |
 |---|---|---|
-| in the start set | 0.14 | 0.10 |
-| stale record, the file itself unchanged since the commit | 0.60 | 0.66 |
-| stale record, the file itself changed | 0.16 | 0.17 |
-| never in an earlier landed diff | 0.07 | 0.02 |
-| no record (the earlier task left no memo) | 0.02 | 0.02 |
-| declared `--files` do not reach it | 0.01 | 0.03 |
-| cut by the 4 KiB budget | 0.00 | 0.00 |
+| recall (a) / precision (a) of `wsx memory start` | 0.07 / 0.09 | 0.06 / 0.06 |
+| tasks whose block holds no record | 55 | 31 |
+| facts with a commit and paths that are stale at the base of the task that reads them | 0.94 (9105) | 0.93 (8899) |
+| files read, by why they are missing: stale record / declared `--files` do not reach it / no record / never in an earlier diff / cut by the budget | 0.52 / 0.23 / 0.11 / 0.07 / 0.03 | 0.40 / 0.43 / 0.07 / 0.02 / 0.05 |
 
-**Verdict: the stub start set MISSES the 60% target: 0.13 held out (0.15 tuned).** This is the design's stale rule, not `wsx memory start`; read the line again with the real code.
+**The start set misses the 60% target by a long way: 0.06 held out.** The cause is the stale rule: a fact is stale when any of its paths changed since its commit, a record holds the paths of the whole landed diff (median 8 files), and `CHANGELOG.md`, `docs/tasks.md` or `scripts/test-task.py` are in nearly every one. Hidden stale facts are only named by slug.
 
-From the data: (1) The cause is staleness, not missing paths, ranking or budget. A record carries every path of the landed diff (median 8, mean 11, and `CHANGELOG.md`, `docs/tasks.md` or `scripts/test-task.py` among them), and the rule drops the whole record when any one path changed; 76% to 83% of the files read are in such a record. 60% to 66% of them are files that did not change themselves. (2) Cutting each record to its unchanged paths lifts recall to 0.50 tuned and 0.43 held out: better, still short. (3) Keeping stale records in the set, marked `stale`, reaches 0.74 tuned and 0.65 held out; that is the change that meets 60%, chosen on the tuned third and confirmed once on the held-out one. It is a pointer, not a claim: the record says which files an earlier task touched, and the worker reads them. Precision stays near 0.1 (about a dozen paths per set). (4) The budget never binds (0.00), and the path-first ranking beats BM25 order among the same records (0.50 against 0.39 tuned, 0.43 against 0.40 held out). (5) The title alone finds 0.48 to 0.49 with no path at all, and `recall` finds 0.03 to 0.08, because its top 5 are all transcript hits (a task's story), which carry no paths; a union of both was not measured. (6) `scripts_docs` stays at 0.30 to 0.42 even then: those plans read many files of code that the docs task does not change (17.8 files read, 2.1 landed per task).
+### Stale rule ablation
 
-**Hand check (3 tuned tasks, labels against the raw `log.jsonl` lines).** `python3 -B scripts/memory-eval.py offline --rows --show 135 141 170` prints the same.
+Rule fixed before the run (2026-11-11): a variant reaches the target if the tuned mean recall (a) is at least 0.60; among those the winner has the most useful records (a tie within 0.03 goes to fewer stale records shown); the held-out third confirms once and is never used to choose. Variants, same 4 KiB budget and order of records: `hidden` today (a port of the scan in the script; it shows the same records as `wsx memory start` in 137 of 137 tasks); `marked` stale facts after the fresh ones with `[stale: files changed since <commit>, N commits]`; `symbols` stale only if the diff since the commit touches a symbol the fact's text names (no symbol: today's rule); `churn K` stale only if the fact's paths changed by at least K lines since the commit; `none` no stale rule.
+
+| variant | recall (a) tuned / held | precision (a) | records useful | records shown | stale shown | recall (a) from the words of the block |
+|---|---|---|---|---|---|---|
+| `wsx memory start` = hidden | 0.07 / 0.06 | 0.09 / 0.06 | 0.22 / 0.13 | 1.2 / 1.4 | 0 | 0.01 / 0.03 |
+| marked | 0.52 / 0.41 | 0.21 / 0.18 | 0.83 / 0.74 | 9.4 / 9.0 | 0.88 / 0.84 | 0.12 / 0.18 |
+| symbols | 0.39 / 0.25 | 0.17 / 0.21 | 0.73 / 0.59 | 5.1 / 4.2 | 0 | 0.04 / 0.06 |
+| churn 100 | 0.20 / 0.18 | 0.16 / 0.21 | 0.49 / 0.49 | 2.6 / 3.1 | 0 | 0.03 / 0.05 |
+| churn 400 | 0.36 / 0.29 | 0.20 / 0.17 | 0.68 / 0.61 | 5.1 / 5.2 | 0 | 0.07 / 0.08 |
+| churn 1600 | 0.52 / 0.44 | 0.19 / 0.16 | 0.79 / 0.74 | 9.3 / 8.6 | 0 | 0.12 / 0.15 |
+| none | 0.53 / 0.44 | 0.19 / 0.17 | 0.87 / 0.81 | 10.9 / 10.6 | 0 | 0.14 / 0.21 |
+| title BM25, top 5 facts (no files) | 0.50 / 0.46 | 0.18 / 0.18 | 0.71 / 0.71 | 5.0 / 5.0 | 0 | 0.06 / 0.09 |
+| `wsx memory recall "<title>"` | 0.05 / 0.06 | 0.05 / 0.10 | 0.52 / 0.59 | 0.2 / 0.4 | 0 | 0.01 / 0.01 |
+| exploratory: none + title BM25 | 0.62 / 0.63 | 0.15 / 0.16 | 0.81 / 0.77 | 14.9 / 15.0 | 0 | 0.16 / 0.23 |
+| exploratory: marked + title BM25 | 0.62 / 0.59 | 0.16 / 0.16 | 0.78 / 0.72 | 13.5 / 13.5 | 0.61 / 0.56 | 0.14 / 0.20 |
+
+Paired per task, recall (a) minus hidden, mean and seeded bootstrap 95% interval (tuned / held out): marked +0.450 [+0.389, +0.516] / +0.353 [+0.267, +0.446]; symbols +0.324 [+0.268, +0.384] / +0.194 [+0.120, +0.272]; churn 1600 +0.453 [+0.391, +0.516] / +0.382 [+0.299, +0.468]; none +0.465 [+0.402, +0.531] / +0.388 [+0.295, +0.480]. Marked, churn 1600 and none are within each other's interval.
+
+Per area, recall (a) tuned (tasks): `wsx memory start` / marked / symbols / none: cli_tui (28) 0.05 / 0.63 / 0.47 / 0.64; core (13) 0.09 / 0.56 / 0.37 / 0.59; web (29) 0.09 / 0.55 / 0.49 / 0.56; daemon (4) 0.00 / 0.21 / 0.17 / 0.25; scripts_docs (18) 0.06 / 0.32 / 0.17 / 0.33. Held out: cli_tui (18) 0.06 / 0.45 / 0.21 / 0.50; core (9) 0.05 / 0.39 / 0.12 / 0.40; web (6) 0.00 / 0.45 / 0.44 / 0.55; scripts_docs (12) 0.08 / 0.34 / 0.31 / 0.34. No terminal task has a plan step.
+
+**Verdict: no stale rule reaches 60%.** The best, `none` and `marked`, give 0.53 and 0.52 tuned and 0.44 and 0.41 held out. The pre-set rule names no winner. From the data:
+
+1. **Hiding is the loss.** Any rule that stops dropping a fact gains +0.45 recall (tuned) on a start of 0.07, and no task gets worse. This is 94% of the facts, so it is the rule that decides the block, not the ranking or the budget (cut 0.03 to 0.05 of the files read).
+2. **The finer rules do not pay.** `symbols` loses 0.13 recall against `marked` and has no better precision (0.73 against 0.83 useful); `churn` gives the recall of `marked` only at K = 1600 lines, where it hides almost nothing, and loses 0.16 (K = 400) to 0.32 (K = 100). A fact that names a symbol that the diff did not touch is not the ones the worker needs, and a line count is mostly noise from `CHANGELOG.md` and the docs.
+3. **The rule to start from is `marked`.** Keep the predicate (any path changed since the commit), but a stale fact is not dropped: it comes after all fresh ones, with `[stale: files changed since <7 characters of the commit>, <N> commits that touch its paths]`, within the same 4 KiB. It has the same recall as `none` (0.52 against 0.53) and the same useful share within 0.04 (0.83 against 0.87), and the worker learns that the fact may be out of date. Cost: 88% of the records shown are stale, so the first prompt carries many old lines; whether that helps a worker is for the paid replay.
+4. **The stale rule alone does not reach 60%.** After it, 0.23 to 0.43 of the files read are not reached by the declared `--files` of the task (the plan reads code that the task does not name), 0.07 to 0.11 have no record, 0.02 to 0.07 were never in an earlier diff. The title alone (BM25 over the facts, no file) finds 0.50 tuned and 0.46 held out; joined with `none` or `marked` it gives 0.62 tuned and 0.63 or 0.59 held out. That join is exploratory (chosen after seeing the tuned run, the byte budget is not applied: 15 records are about 4.5 KiB (est.), it needs about 5 KiB of the budget or shorter lines) and it fills the block with more records that do not match a file (precision 0.15 to 0.16).
+5. **The paths must reach the worker.** Every number above counts a record's paths, but the line shows the memo's words only; by those words `none` finds 0.21 held out. A start line that lists the record's paths (a capped `files:` part) is the change this table assumes, and it costs about 40 bytes a path (est.); it was not measured, so the budget effect of it is open.
+6. `wsx memory recall` finds 0.05: its top 5 are transcript hits (a task's story), which have no paths.
+
+**The exact rule to change in `wsx_core::memory::start`** (the owner starts it): in `records`, a stale fact is no longer pushed to the `stale` list and dropped; it is kept in a second list, and after the fresh ones it is shown with the mark above while `room` lasts (the check of `MAX_CHECKS` stays). `not_shown` then names only what the budget cut. The predicate `changed` does not change.
+
+**Hand check (3 tuned tasks, labels against the raw `log.jsonl` lines).** `offline --rows --show 135 141 170` prints the same.
 
 | task | files read by the script | raw lines (plan result at line 11, 18, 32) |
 |---|---|---|
 | #135 cli_tui | `host.rs`, `slot.rs`, `test-task.py` | line 5 `sed -n 80,210p crates/wsx/src/task/host.rs`; line 6 `cat crates/wsx/src/task/slot.rs`, `sed -n 2270,2400p scripts/test-task.py`. The `grep ... -r crates/wsx/src scripts` of line 4 names directories only; the glob `crates/wsx/src/task/*.rs` of line 7 is not expanded: both lost |
 | #141 web | `http.rs`, `lib.js`, `viewer.js`, `web-tasks-check.mjs` | line 5 `sed -n 1175,1230p crates/wsx-web/src/http.rs` and `cat crates/wsx-web/web/viewer.js`; line 7 `sed -n 1,40p crates/wsx-web/web/lib.js`; lines 6 and 15 `scripts/web-tasks-check.mjs`. Line 5 also has `sed -n 85,110p crates/wsx-web/web/che…` (clipped): `checks.js` is a landed file the label misses |
-| #170 scripts_docs | `config/global.rs`, `config/project.rs`, `plugins.rs`, `http.rs`, `docs/plugins.md` | line 5 `cat docs/plugins.md`; line 19 `crates/wsx-daemon/src/plugins.rs`; line 20 `crates/wsx-web/src/http.rs`; line 22 `sed -n 280,300p crates/wsx-core/src/config/global.rs` and `head -15 .../project.rs`. `docs/web-client…` of line 5 is clipped: lost. Knowledge files outside the repo (`dgv3/notes/...`) are not labels |
+| #170 scripts_docs | `config/global.rs`, `config/project.rs`, `plugins.rs`, `http.rs`, `docs/plugins.md` | line 5 `cat docs/plugins.md`; line 19 `crates/wsx-daemon/src/plugins.rs`; line 20 `crates/wsx-web/src/http.rs`; line 22 `sed -n 280,300p crates/wsx-core/src/config/global.rs` and `head -15 .../project.rs`. `docs/web-client…` of line 5 is clipped: lost. Knowledge files outside the repo are not labels |
 
-**Next.** When #386 lands: `python3 -B scripts/memory-eval.py offline --wsx <t380 binary> --final` (the cause table and the verdict then describe `wsx memory start`; capture's own `paths` field is read when it has one, else the `Files:` line). The real branch of the script (a worktree at the task's base as the project path) ran only as a probe on one task.
-
-### Stale rule ablation: how the winner is picked (fixed on 2026-11-11, before the run on the real `wsx memory start`)
-
-Variants of the stale rule of `wsx_core::memory::start`, same 4 KiB budget, same order of records: (a) `hidden`: today, a stale fact is only named; (b) `marked`: a stale fact is shown after the fresh ones with `[stale: files changed since <commit>, N commits]`; (c) a fact is stale only if the diff since its commit touches a symbol its text names (`symbols`; a text with no symbol keeps today's rule), or the files of the fact changed by at least K lines (`churn K`, K in 100, 400, 1600); (d) `none`: no stale rule. `hidden` is a port of the scan, checked against `wsx memory start` in every task. A variant **reaches the target** if the tuned mean recall (a) is at least 0.60. Among those, the **winner** has the highest share of shown records that are useful (a record is useful if one of its paths was read in the plan step or changed by the landed diff: a record that is not is a wrong fact in the budget); a tie within 0.03 goes to the variant with fewer stale records shown. The held-out third confirms once (`--final`) and is never used to choose.
+An earlier run on a stub of the start set (before #386) found the same cause: stale hid 76% to 83% of the files read, and ignoring it gave 0.74 tuned and 0.65 held out; the real capture keeps a 240-character memo and its own list of paths, so the real numbers are lower.
 
 ## What runs next
 
