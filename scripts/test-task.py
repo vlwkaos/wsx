@@ -9,6 +9,7 @@ WSX_SCENARIO_PART) runs one part; none runs all. ref: docs/tasks.md
 """
 import argparse
 import atexit
+import datetime
 import fcntl
 import hashlib
 import urllib.request
@@ -2370,7 +2371,9 @@ def part_core(created=None):
     mark('21a3')
 
     def rules(count, first=0):
-        return ['- 2026-10-%02d rule %03d: %s' % (1 + n % 28, n, 'owner words ' * 6) for n in range(first, first + count)]
+        # ^ One day per rule, oldest first: the views order the rules by their date.
+        day = lambda n: datetime.date(2026, 10, 1) + datetime.timedelta(days=n)
+        return ['- %s rule %03d: %s' % (day(n), n, 'owner words ' * 6) for n in range(first, first + count)]
 
     old_rules = rules(90)
     old_rules[3] = '- 2026-10-04 rule 003: never render the 3d scene with tessellation'
