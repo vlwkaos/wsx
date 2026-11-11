@@ -191,9 +191,9 @@ Files read by the plan, by why they are not in the block (tuned / held out): new
 
 **Verdict: the target is missed, 0.53 tuned and 0.42 held out against 0.60.** From the data:
 
-1. Hiding was the loss and it is fixed: +0.46 tuned and +0.37 held out over the old 0.07 and 0.06, no task worse.
+1. Hiding was the loss and it is fixed: +0.46 tuned and +0.37 held out over the old 0.07 and 0.05 (hidden, same run).
 2. The change adds nothing over `marked` of the ablation (0.52 / 0.42, same budget): the block carries fewer records (8.2 and 8.0 against 9.4 and 8.8) because the `(files: ...)` parts and the stale marks take 0.12 of the 4096 bytes each (0.24 together). The words of the task add facts, but after the path matches, so they are the first the budget cuts.
-3. The part that misses is the budget and the reach. The exploratory join without a budget scored 0.62 / 0.63 (`none + bm25 title`, 15 records); the real block holds 8, and the files read that the budget cut rose from 0.03 and 0.05 (the ablation) to 0.18 and 0.23. The second part is reach: on the held-out third 0.36 of the files read are in no record that the declared `--files` or the words of the title find (the plan reads code the task does not name).
+3. The part that misses is the budget and the reach. The exploratory join without a budget scored 0.62 / 0.63 (`none + bm25 title`, 15 records); the real block holds 8, and the files read that the budget cut rose from 0.03 and 0.05 (the old block) to 0.18 and 0.23. The second part is reach: on the held-out third 0.36 of the files read are in no record that the declared `--files` or the words of the title find (the plan reads code the task does not name).
 4. The `(files: ...)` part was meant to carry the paths the score assumes. By the words of the block the recall is 0.29 / 0.23 (before: 0.01 / 0.03), so the paths reach the worker, at the price in point 2.
 
 Stopped here, as set: nothing is tuned on the held-out third. What the data point to, for the owner to decide and not tried: a shorter line (a clip under 700 characters, the mark as `[stale <7>, N]`, fewer paths) buys back up to 0.24 of the budget; the joint use with `wsx memory recall` mid-task is what the paid replay measures. The held-out third is spent for any new choice; a new rule needs a new split.
