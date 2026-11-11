@@ -1,5 +1,5 @@
 // Canonical per-project configuration and legacy .gtrconfig migration.
-// ref: README.md#project-configuration
+// ref: docs/configuration.md "Project configuration"
 
 use crate::fs_util::{write_atomic, AtomicWrite, Publish};
 use crate::model::workspace::{DefaultSessionConfig, ProjectConfig, TaskConfig};

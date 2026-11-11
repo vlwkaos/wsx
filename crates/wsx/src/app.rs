@@ -1157,7 +1157,7 @@ pub struct App {
     pub mode: Mode,
     pub config: GlobalConfig,
     pub active_group: GroupKey,
-    /// None without `[[profiles]]`: every project shows. ref: README "Profiles"
+    /// None without `[[profiles]]`: every project shows. ref: docs/configuration.md "Profiles"
     pub active_profile: Option<String>,
     pub group_header_scroll: usize,
     pub group_header_area: Rect,
@@ -2085,7 +2085,7 @@ fn initial_active_group(config: &GlobalConfig, stored: Option<GroupKey>) -> Grou
 }
 
 /// The stored profile while the config declares it, else the first; None without
-/// `[[profiles]]`. ref: README "Profiles"
+/// `[[profiles]]`. ref: docs/configuration.md "Profiles"
 fn initial_active_profile(config: &GlobalConfig, stored: Option<String>) -> Option<String> {
     if config.profiles.is_empty() {
         return None;

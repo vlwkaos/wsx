@@ -292,7 +292,7 @@ def run(wsx, wsxd, work, owned, part):
     config_dir = (home / 'Library/Application Support/wsx' if sys.platform == 'darwin'
                   else work / 'c/wsx')
     config_dir.mkdir(parents=True)
-    # ^ README "Profiles": demo is in profile work, whose agents use its own config root.
+    # ^ docs/configuration.md "Profiles": demo is in profile work, whose agents use its own config root.
     profile_root = home / 'claude-work'
     profile_root.mkdir()
     registry_text = ('resume_agents_on_restore = false\n[[profiles]]\nname = "work"\n'
@@ -538,7 +538,7 @@ def run(wsx, wsxd, work, owned, part):
         refused = cli('task', 'new', 'WORK a.txt', ok=False).stderr
         assert word in refused, refused
     (project / 'wsx.config.yml').write_text(CONFIG)
-    # ^ README "Profiles": a profile error is named, and no task starts under another account.
+    # ^ docs/configuration.md "Profiles": a profile error is named, and no task starts under another account.
     for old, bad, word in (('profile = "work"', 'profile = "ghost"', 'names profile ghost, which no [[profiles]] declares'),
                            ('[[projects]]', '[[profiles]]\nname = "work"\n[[projects]]', 'profile work is declared twice'),
                            ('"~/claude-work"', '"claude-work"', 'claude_config_dir must be absolute or start with ~/'),
@@ -622,7 +622,7 @@ def manager_up(created):
               + '  skills: owner\n  workflow:\n    build: "Run the fixture rule."\n'
                 '    review: "Check the fixture rule."\n', 'manager config')
     # ^ The owner's skills folder: the manager gets it as the `owner` plugin. It is the one of
-    # demo's profile (README "Profiles"), not ~/.claude.
+    # demo's profile (docs/configuration.md "Profiles"), not ~/.claude.
     owner_skills = profile_root / 'skills'
     (owner_skills / 'scribe').mkdir(parents=True)
     (owner_skills / 'scribe/SKILL.md').write_text('---\nname: scribe\ndescription: fixture\n'
@@ -729,7 +729,7 @@ def manager_up(created):
     assert len({t['pid'] for t in retries}) == len(retries) >= 2 and all(t['resume'] for t in retries), retries
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
     assert launch['git_optional_locks'] == '0', launch
-    # ^ README "Profiles": the manager and every Claude worker so far run under demo's profile
+    # ^ docs/configuration.md "Profiles": the manager and every Claude worker so far run under demo's profile
     # root. Part 13t's Pi worker reads no CLAUDE_CONFIG_DIR.
     demo_launches = [t for t in traces() if t.get('launch') and t.get('adapter') != 'pi']
     assert demo_launches and all(t['claude_config_dir'] == str(profile_root) for t in demo_launches), \
@@ -5870,7 +5870,7 @@ def part_host(created=None):
     answered = wait(lambda: next((e for e in other_entries() if e['kind'] == 'reply' and received['id'] in e['to']), None),
                     'the other manager answers', 60)
     assert "--reply 'first answer' -> 0" in answered['text'] and 'waits for an answer' in answered['text'], answered
-    # ^ README "Profiles": other is in the default profile, so its manager keeps the host's account.
+    # ^ docs/configuration.md "Profiles": other is in the default profile, so its manager keeps the host's account.
     other_launch = next(t for t in traces() if t.get('launch') and Path(t['cwd']).resolve() == other.resolve())
     assert other_launch['claude_config_dir'] is None, other_launch
     # The TUI heads the Workspace with the active profile; P switches it, and the choice is kept

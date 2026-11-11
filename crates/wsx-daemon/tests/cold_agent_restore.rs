@@ -238,7 +238,7 @@ fn cold_recovery_resumes_claude_with_its_own_config_root_and_cwd() {
     assert!(status.success(), "wsxd exited unsuccessfully: {status}");
 }
 
-/// README "Profiles": a session the owner starts in a profile's project (the TUI's `s`, here
+/// docs/configuration.md "Profiles": a session the owner starts in a profile's project (the TUI's `s`, here
 /// `wsx session create`, both `ops::create_session`) runs its shell under the profile's
 /// `CLAUDE_CONFIG_DIR`. The agent typed in it reports that root, and a crash restore resumes
 /// it there, not under the root of the restarted wsxd.

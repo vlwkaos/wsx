@@ -9,7 +9,7 @@ use super::theme;
 pub const WORKSPACE_HEADER_TITLE: &str = " workspace ";
 
 /// The header's title: the active profile when the config has `[[profiles]]`, which a click
-/// or `P` switches. ref: README "Profiles"
+/// or `P` switches. ref: docs/configuration.md "Profiles"
 pub fn header_title(profile: Option<&str>) -> String {
     match profile {
         Some(profile) => format!(" {profile} ▾ "),

@@ -288,7 +288,7 @@ fn legacy_cache_path(canonical: &Path) -> PathBuf {
     canonical.with_file_name("workspace-v2.toml")
 }
 
-/// The TUI's active group and, beside it, its active profile (README "Profiles").
+/// The TUI's active group and, beside it, its active profile (docs/configuration.md "Profiles").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupSelection {
     pub selected: GroupKey,

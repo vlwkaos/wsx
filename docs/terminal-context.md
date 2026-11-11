@@ -30,6 +30,8 @@ In Terminal mode, use the configured prefix followed by `h/l` for previous/next 
 
 Bare keys always reach the terminal application. An explicitly configured `h` or `l` escape suffix wins over its navigation alias; hints advertise the remaining working keys. Existing configuration is not guessed or rewritten.
 
+Terminal mode uses the configured prefix, `Ctrl+A` by default. Other prefixed commands are `{`/`}` for the previous or next group, `i/I` for idle, `a/A` for active, `n/N` for attention, `B` to toggle the desktop sidebar, `W` for Workspace, or `Q` to quit only the TUI. While wsx waits for the next key after the prefix, it can temporarily show the expanded sidebar without leaving Terminal mode. Attention navigation defaults to Blocked sessions before other attention states and can restore Workspace order in Global Settings. Group navigation keeps Workspace order, selecting the first session needing attention and then the first idle agent session; if neither exists, the current terminal stays active. `Ctrl+A Ctrl+A` sends a literal prefix.
+
 `Prefix+n/N` attention navigation and its preference remain separate and unchanged. Workspace `j/k`, `h/l`, Enter, group navigation and file/diff review keep their existing behavior.
 
 ## Workspace search

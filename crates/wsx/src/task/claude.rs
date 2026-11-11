@@ -56,7 +56,7 @@ pub(super) const SKILLS_PLUGIN_NAME: &str = "owner";
 
 /// The agent account of the project at `project`: its profile's `CLAUDE_CONFIG_DIR`, None
 /// for the host's own. A config wsx cannot read stops the start: a guess could pick the
-/// wrong account. ref: README "Profiles"
+/// wrong account. ref: docs/configuration.md "Profiles"
 pub(super) fn config_root(project: &Path) -> Result<Option<PathBuf>> {
     let (config, warning) = GlobalConfig::load()?;
     if let Some(warning) = warning {

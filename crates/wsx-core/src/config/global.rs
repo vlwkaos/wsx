@@ -225,7 +225,7 @@ pub(crate) fn normalize_project_path(path: &Path) -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GlobalConfig {
     pub groups: Vec<String>,
-    /// Empty: one implicit `default` profile holds every project. ref: README "Profiles"
+    /// Empty: one implicit `default` profile holds every project. ref: docs/configuration.md "Profiles"
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub profiles: Vec<ProfileEntry>,
     /// The agents a new session or a task may run, in order of preference. ref: docs/tasks.md "Agents"
@@ -954,7 +954,7 @@ impl GlobalConfig {
 
     /// The `CLAUDE_CONFIG_DIR` of the project's profile; None keeps the caller's environment.
     /// A configured folder that is missing is an error, never a fallback to another account.
-    /// ref: README "Profiles"
+    /// ref: docs/configuration.md "Profiles"
     pub fn claude_config_dir(&self, project: &Path) -> Result<Option<PathBuf>> {
         let name = self.project_profile(project);
         let Some(dir) = self

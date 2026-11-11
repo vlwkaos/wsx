@@ -24,6 +24,25 @@ reporter at publication time. Package cleanup can remove that target before hand
 or while a compatible older daemon remains in use. Updated adapters recover this
 transition without copying an executable or assuming one global install prefix.
 
+## Integrations
+
+At startup, wsx offers to update installed integrations whose embedded version is outdated. Declining defers that update until the next launch. Missing integrations remain demand-driven: wsx offers setup only after you explicitly choose an installed agent that needs it, and declining suppresses that agent until you install it from **Global Settings → Runtime → Agent integrations**. PATH detection and residual config files alone never trigger a missing-integration prompt.
+
+Install directly when needed:
+
+```bash
+wsx agent install pi
+wsx agent install claude
+```
+
+Installers preserve unrelated hooks and honor standard config-directory overrides. Restart the affected agent after installation. Codex authoritative lifecycle reporting requires Codex 0.150.0 or newer. Pi reports standard blocking dialogs as blocked without extension-specific wiring. Claude status combines lifecycle hooks with bounded OSC and live prompt evidence so interrupted turns can settle without treating arbitrary terminal text as agent identity. When Pi, OMP, Claude, Codex, Copilot, Devin, Droid, Kimi, Hermes, Qoder, Qwen, Cursor, MastraCode, or Grok exits back to the shell, wsx hides its live agent label but keeps bounded native resume metadata. OpenCode, Kilo, and Antigravity do not currently expose a trustworthy CLI-exit hook, so their identity may remain visible after exit.
+
+A foreground command appears as a running job without an agent name until an integration report is accepted for that pane's runtime. Shell-hook report failures show a short reason instead of disappearing silently. Update the installed integration and restart the agent to get the new hook. A newly launched WSX pane also drops a Claude child-session marker inherited by the daemon; this lets independently started Claude sessions persist their transcripts without changing sessions already running inside Claude.
+
+## Presence
+
+Updated Pi and OMP integrations renew pane-bound presence while their processes run, including while idle. If renewals stop for 30 seconds, wsxd hides the agent label and Working indicator while retaining resumable identity. A stalled adapter or failed local reports can also cause expiry; a later lifecycle report can reattach it. Install the updated integration and restart that agent to enable this behavior. New panes use a daemon-owned stable reporter path (see "Stable entry point"). Updated adapters recover removed legacy or stable targets through a validated current CLI even before daemon handoff finishes, without replaying rejected reports. Reload or restart the updated agent when idle to load its adapter and helper; do not restart its shell. Other integrations still rely on their exit events. If any agent misses its shutdown event while leaving the managed shell running, run `wsx agent detach` inside that pane. The command preserves resumable identity and refuses execution outside the target pane rather than guessing from process or terminal heuristics.
+
 ## Multi-device hook configuration
 
 Shared provider configuration stores environment references, not the installing machine's absolute hook path. For example, Claude hooks resolve `CLAUDE_CONFIG_DIR` at execution time, or use `$HOME/.claude` when it is unset or empty. Codex uses `CODEX_HOME`; other supported shell-hook providers use their existing root variables or `HOME`. Installation and hook generation share one root declaration, including `~/` expansion and provider subdirectories.

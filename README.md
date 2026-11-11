@@ -2,22 +2,42 @@
 
 [![CI](https://github.com/vlwkaos/wsx/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vlwkaos/wsx/actions/workflows/ci.yml)
 
-Project-first terminal workspace manager for Git worktrees.
-
-wsx presents **Project → Worktree → Session → Pane** in a keyboard-first TUI. The adjacent `wsxd` daemon owns PTYs and terminal state, so sessions continue while clients and SSH connections disconnect.
+Project-first terminal workspace manager for Git worktrees, with a manager that runs coding tasks for you.
 
 ![wsx Workspace with a running agent and terminal preview](docs/screenshots/01-workspace-overview.png)
 
 ## Features
 
-- Git project and worktree discovery, groups, status, aliases, creation, and confirmed deletion
-- Persistent sessions with optional horizontal and vertical pane splits
-- Writable Ghostty-based terminal viewport with keyboard, mouse, selection, clipboard, and cursor support
-- Provider-neutral agent states, native conversation resume, and project routines
-- Typed, versioned, bounded same-user local protocol
-- Trusted executable plugins with bounded passive Terminal sidecars
-- Optional hosted web client: paired devices chat with the agents of the projects a site grants, exchange files, and receive push notifications
-- macOS and Linux support
+- **Project → Worktree → Session → Pane** in a keyboard-first TUI
+- Persistent sessions: the `wsxd` daemon owns PTYs and terminal state, so sessions survive client and SSH disconnects
+- Ghostty-based terminal with splits, mouse, selection and clipboard
+- Agent states, native resume, routines and a [manager](#manager-flow) per project
+- Optional hosted web client: chat, files, push notifications ([docs](docs/web-client.md))
+- Executable [plugins](docs/plugins.md); macOS and Linux
+
+## Manager flow
+
+```mermaid
+flowchart LR
+  O[You] -->|say| M[Manager]
+  M -->|new| W[Worker on wsx/t n]
+  W -->|checks pass| M
+  M -->|review, land| D[Default branch]
+  D -->|deploy if set| S[Site]
+  M -.->|approval, to check| O
+```
+
+- Talk to a project's manager with `wsx task say`, the web chat, or `t` then `m` in the TUI.
+- The manager plans and starts tasks. A task is a headless worker on branch `wsx/t<n>` in its own working copy.
+- The host runs the project's checks. The manager reviews the diff and lands the task.
+- A deploy follows a land by itself where `tasks.deploy.auto` is set.
+- Deploy, release, discard, push and project add wait for you in **Needs you**.
+- **To check** holds only what a person must look at or feel.
+- A role is a second chat with its own brief and model, for one area of work.
+- A manager can run tasks in another registered project. It gets their events and memo back.
+- Routines (cron or event) and check-ins wake the manager. `wsx memory` keeps its records.
+
+Details: [tasks](docs/tasks.md), [orchestration](docs/agent-orchestration.md), [memory](docs/memory.md).
 
 ## Product tour
 
@@ -33,211 +53,47 @@ wsx presents **Project → Worktree → Session → Pane** in a keyboard-first T
 
 Release archives and the Homebrew formula install adjacent `wsx` and `wsxd` executables.
 
-Build requirements are Rust 1.96.1 and Zig 0.15.2. Development tests use `cargo-nextest` 0.9.143.
+To build, you need Rust 1.96.1 and Zig 0.15.2. Tests use `cargo-nextest` 0.9.143.
 
 ```bash
 cargo install cargo-nextest --version 0.9.143 --locked
 git clone https://github.com/vlwkaos/wsx.git
 cd wsx
 cargo +1.96.1 build --workspace --locked
-cargo xtask run
+cargo xtask run      # or `cargo xtask build` for a bundle in target/wsx-dev/
 ```
 
-Create a host-native bundle in `target/wsx-dev/`:
+Set up agent hooks with `wsx agent install claude` (or `pi`). See [integrations](docs/agent-reporting.md#integrations).
 
-```bash
-cargo xtask build
-```
-
-## Agent integrations and routines
-
-Press `u` to create a routine. Choose a documented one-shot agent template or Custom. A template replaces the command argv shown in the next form. The argv remains editable; Custom starts empty. The shipped `wsxd` binary runs the routines; at its first start it takes over the routines and run history of an earlier asched scheduler.
-
-At startup, wsx offers to update installed integrations whose embedded version is outdated. Declining defers that update until the next launch. Missing integrations remain demand-driven: wsx offers setup only after you explicitly choose an installed agent that needs it, and declining suppresses that agent until you install it from **Global Settings → Runtime → Agent integrations**. PATH detection and residual config files alone never trigger a missing-integration prompt.
-
-Install directly when needed:
-
-```bash
-wsx agent install pi
-wsx agent install claude
-```
-
-Installers preserve unrelated hooks and honor standard config-directory overrides. Restart the affected agent after installation. Codex authoritative lifecycle reporting requires Codex 0.150.0 or newer. Pi reports standard blocking dialogs as blocked without extension-specific wiring. Claude status combines lifecycle hooks with bounded OSC and live prompt evidence so interrupted turns can settle without treating arbitrary terminal text as agent identity. When Pi, OMP, Claude, Codex, Copilot, Devin, Droid, Kimi, Hermes, Qoder, Qwen, Cursor, MastraCode, or Grok exits back to the shell, wsx hides its live agent label but keeps bounded native resume metadata. OpenCode, Kilo, and Antigravity do not currently expose a trustworthy CLI-exit hook, so their identity may remain visible after exit.
-
-A foreground command appears as a running job without an agent name until an integration report is accepted for that pane's runtime. Shell-hook report failures now show a short reason instead of disappearing silently. Update the installed integration and restart the agent to get the new hook. A newly launched WSX pane also drops a Claude child-session marker inherited by the daemon; this lets independently started Claude sessions persist their transcripts without changing sessions already running inside Claude.
-
-## Navigation
+## Keys
 
 | Context | Keys |
 |---|---|
-| Workspace | `j/k` move, `h/l` collapse/expand, `Enter` select, `m` reorder, `i/I` idle, `a/A` active, `n/N` attention |
-| Project | `p` add project, `d` unregister it (`H` also halts its sessions), `w` add worktree, `u` add routine, `e` config, `g` assign group, `v` its panels, `M` this Mac with the projects' machine panels, `t` tasks, then `m` the manager chat, `S` a shell, `o` the overview, `u` the usage day rows (cost or tokens) and `a` the agent counted ([TUI](docs/tasks.md#tui)) |
-| Worktree | `s` add session, `r` alias, `m` reorder, `d` delete |
-| Session or pane | `Enter` Terminal, `x` acknowledge or mute, `C` interrupt |
-| Pane | `|` split right, `-` split down, `d` close |
-| Groups | `T` manage, `{`/`}` switch, `g` assign, `P` next profile ([Profiles](#profiles)) |
+| Workspace | `j/k` move, `h/l` fold, `Enter` select, `m` reorder, `i/I` idle, `a/A` active, `n/N` attention |
+| Project | `p` add, `d` unregister, `w` worktree, `u` routine, `e` config, `g` group, `v` panels, `t` tasks (then `m` manager chat) |
+| Worktree | `s` session, `r` alias, `d` delete |
+| Session or pane | `Enter` terminal, `x` acknowledge or mute, `C` interrupt, `\|` split right, `-` split down |
+| Groups and profiles | `T` manage, `{`/`}` switch, `P` next profile |
 | Global | `/` search, `,` settings, `R` refresh, `?` help, `q` quit TUI, `Q` stop wsxd and quit |
 
-Terminal mode uses the configured prefix, `Ctrl+A` by default. Follow it with `h/l` for the previous/next session in the current project in Workspace order. Left/Right, `k/j` and Up/Down remain aliases. Other prefixed commands are `{`/`}` for the previous or next group, `i/I` for idle, `a/A` for active, `n/N` for attention, `B` to toggle the desktop sidebar, `W` for Workspace, or `Q` to quit only the TUI. While wsx waits for the next key after the prefix, it can temporarily show the expanded sidebar without leaving Terminal mode. Attention navigation defaults to Blocked sessions before other attention states and can restore Workspace order in Global Settings. Group navigation keeps Workspace order, selecting the first session needing attention and then the first idle agent session; if neither exists, the current terminal stays active. `Ctrl+A Ctrl+A` sends a literal prefix. The title previews the same order with the current session highlighted, worktree attribution and hidden-session counts. Bare keys remain terminal input. An explicitly configured `h` or `l` escape suffix takes priority over navigation.
-
-Groups are ordered project filters. The default **ungrouped** anti-group matches projects with no memberships. Trusted agent work, terminal activity, session entry, and expansion changes update each project's inactivity window. The default adaptive policy starts at 24 hours, adds 12 hours on the first trusted activity of each new UTC day, and stops growing at 28 days. If inactivity exceeds the earned window, the next active period starts again at the configured base. When the timer auto-collapses an open project, wsx marks the project `stale` as the cause of its last collapse. The marker survives restart but clears as soon as you interact with the project. wsx never infers agent identity or state from process trees. For an adapter-identified Claude session only, bounded live terminal evidence may reconcile incomplete lifecycle events.
-
-The terminal title groups same-project sessions by worktree in stable Workspace order. The project is a filled chip, each worktree is an accent heading followed by `›`, and each session is a chip that starts with its state icon; a dim rule separates two worktree groups. The current session is emphasized, with counts for off-screen peers and no ports. Worktree previews place ports beside their owning sessions. `/` search highlights visible matches, counts folded descendants without unfolding them, and reports the total in the footer. See [terminal context](docs/terminal-context.md) for ordering, search and viewport boundaries.
-
-## Configuration
-
-Open typed Global Settings with `,`. The platform configuration file is `~/.config/wsx/config-v2.toml` on Linux and the equivalent application-support path on macOS.
-
-```toml
-terminal_escape_chord = "ctrl+a w"
-terminal_prefix_shows_sidebar = true
-resume_agents_on_restore = true
-wake_mode = true
-auto_collapse = { mode = "adaptive", base_hours = 24 }
-notification_timeout_seconds = 4
-show_release_status = true
-terminal_sidebar = "compact"
-terminal_title_position = "bottom"
-port_visibility = "non_agentic"
-attention_priority = "blocked_first"
-```
-
-### Profiles
-
-A profile owns projects and, through them, their manager, roles and tasks. It chooses the agents' Claude account and is a web site's grant ([web client](docs/web-client.md) "Site file"). Groups stay filters inside the active profile.
-
-```toml
-[[profiles]]
-name = "work"
-claude_config_dir = "~/.claude-work"   # optional; absolute or ~/; absent keeps wsxd's environment
-
-[[projects]]
-name = "api"
-path = "/abs/api"
-profile = "work"                       # absent: the default profile
-```
-
-With no `[[profiles]]` there is one implicit `default` profile that holds every project and uses wsxd's environment; wsx rewrites no file. A project names exactly one profile. An unknown profile, a name declared twice or a relative `claude_config_dir` makes the file invalid, and wsx names the error. A `claude_config_dir` that is missing stops each agent start in that profile with that reason; no agent falls back to another account.
-
-The account is the agent's `CLAUDE_CONFIG_DIR`. Task workers, the manager and roles get it in the environment their host builds ([tasks](docs/tasks.md) "Permissions"), and their `owner` skills come from `<root>/skills`. A session or split pane started from the TUI, `wsx session create`, `wsx task hand` or a web site runs its shell or agent as `env CLAUDE_CONFIG_DIR=<root> ...`, so an agent typed in it uses the account and a restore resumes it there. Such an agent reports to wsx through the hooks of its own root: `wsx agent install claude` and the TUI's integration install put them in each profile's `claude_config_dir` as well as in the default root. A project that moves to another profile keeps its open tasks; their next turns use the new root.
-
-The Workspace header shows the active profile (`work ▾`) when the config has `[[profiles]]`. `P` or a click on it switches to the next profile. The choice is kept beside the active group in the cache file `group-selection-v1.toml`.
-
-With `wake_mode` enabled on macOS, generation-authorized Working reports keep a bounded idle-sleep assertion active. Claude starts an asynchronous heartbeat for each prompt so a long streamed response remains protected beyond the base 30-minute lease. The heartbeat is bound to the exact prompt and runtime generation and renews every 5 seconds; completion, blocking, errors, detachment, runtime replacement, a later prompt, a closed pane or a stopped wsxd ends it within seconds.
-
-Set `auto_collapse` to `{ mode = "disabled" }` to turn automatic collapse off, or `{ mode = "flat", hours = 72 }` for a fixed window. Legacy numeric `auto_collapse_after_hours` values remain compatible and migrate to flat mode; zero migrates to disabled.
-
-Project interaction clears the persisted `stale` marker and restarts its inactivity window. Other wsx windows cannot reverse that change by refreshing or quitting. Repaired clients import existing UI state once into `workspace-v3.toml`; older clients keep their separate cache. Open windows do not automatically synchronize their presentation. Folded projects and worktrees retain dominant descendant status and an active-session count; `stale` is separate stored provenance, not a pause command. Active projects hide that marker and do not auto-collapse; manual folds remain unchanged. Session rows reserve reported provider labels before truncating long names. See [UI state ownership](docs/ui-state-ownership.md).
-
-After an unplanned daemon loss, wsx restores ordinary shells first and resumes lifecycle-capable saved agents one at a time after reporting becomes available. This limits startup pressure from large histories and keeps each saved agent identity detached until the resumed runtime confirms it.
-
-The project-root file is `wsx.config.yml`:
-
-```yaml
-hooks:
-  postCreate: cargo build
-copy:
-  include: [.env.example]
-  exclude: [target]
-git:
-  subtrees: [vendor/portable-pty]
-worktree:
-  branchPrefix: feature/
-  defaultSession:
-    enabled: true
-    command: cargo watch
-```
-
-`branchPrefix` preloads the editable TUI branch prompt; CLI branch arguments remain exact. An explicit `defaultSession` controls both TUI and CLI worktree creation. Omit `command` to open a shell. When the block is absent, existing behavior remains: TUI creates only the worktree and CLI also creates a shell session. The command is entered into the new shell automatically, so review project configuration before creating a worktree from an untrusted repository.
-
-wsx validates files, rejects wrong types and values, oversized worktree defaults, and unsafe subtree paths, and migrates legacy `.gtrconfig` only when no canonical YAML exists. Unknown keys are ignored with a warning that names them, so an older wsx still reads a file that a newer one extended.
+In a terminal, the prefix is `Ctrl+A`. Prefix then `h/l` moves between the project's sessions. More keys: [terminal context](docs/terminal-context.md). The `?` help lists the rest.
 
 ## CLI
 
 ```text
-wsx status [--json]
-wsx worktree list|create|delete
-wsx worktree create <branch> [--from <ref>] [--json] [-p <project>]
-wsx session create|current|delete|restart|list|send-keys|send-text|prompt|peek|rename
-wsx session current [--json]
-wsx group ls|create|rename|add|remove
-wsx routine ...
-wsx memory search|add|update|supersede|reindex|status|list [--scope <id>] [--json]   # docs/memory.md
-wsx agent install <target>
-wsx agent detach
-wsx agent report <pane> --provider <name> --state <state> [--session-id <id>|--session-path <path>]
-wsx agent context [session|pane|label] [--metadata-only] --json [-p <project>] [-w <worktree>]
-wsx agent start <branch> -p <project> (<prompt>|-|--prompt-file <path>) [--key <text>] [--json]
-wsx agent request|inspect|wait|continue|cancel|exchanges
-wsx plugin list|reload
-wsx runtime status [--json]
-wsx daemon restart [--json]
-wsx daemon stop [--force] [--json]
-wsx daemon recover
-wsx web serve|pair|devices [<site>]
-wsx web vapid
+wsx status | worktree | session | group | routine | memory | plugin | runtime | daemon
+wsx agent install|context|start|request|wait|...     # docs/agent-orchestration.md
+wsx task new|say|list|show|land|check|...             # docs/tasks.md
+wsx web serve|pair|devices                            # docs/web-client.md
 ```
 
-`wsx web serve [<site>]` hosts one web site for one or more granted projects on a loopback port: chat through the agent exchange broker and the agent's own saved conversation, file upload and download, and optional files and live terminal (xterm.js on the pane's own byte stream) panels. The home screen is an inbox of sessions by what they need. Agent messages are rendered as markdown with tables, code and Mermaid diagrams, and a blocked agent's dialog can be answered from the chat (`chat_answer`). A site file sets the public origin, theme, panels, capability bits, media limits and push keys. Themes are token-based: `default` is built in, and a deployer can supply a theme directory ([Web client themes](docs/web-themes.md)). `wsx web pair` prints a one-time code that pairs one device (a paired device on a site with `terminal_input` can also show the next code in Settings); `wsx web devices` lists and revokes devices. Without `<site>` the commands use the only site file in `~/.config/wsx/web/`; with several, name one by its id or file name (`wsx web pair wsx`). The page is an installable PWA with an offline shell and opt-in Web Push for "needs input", "finished" and "error". The default deployment is one Tailscale Service hostname per site; an alt-port root and a sub-path such as `/app/wsx/` work from the same build. wsx does not run Tailscale for you: see [Hosted web client](docs/web-client.md) and [Deploying on a tailnet](docs/web-deploy.md).
-
-`wsx worktree create` starts a new branch from the project's default branch, or from `--from <ref>`. A branch that already exists is checked out as it is, and `--from` is then refused. When git fails, wsx prints git's own error. `--json` prints `worktree`, `branch`, `project`, `session_id` and `pane_id`; the two IDs are `null` when no initial session was created.
-
-`wsx session current --json` reports the managed pane that runs the command, read from `WSX_PANE_ID`: `pane_id`, `session_id`, `label`, `project`, `worktree`, `branch`, `agent` and `agent_status`. It never starts wsxd and fails outside a managed pane. Commands called with `--json` print no runtime notice on stderr; other commands print it on one line.
-
-Create a session directly in the current worktree, the only known worktree, or an explicit target:
-
-```text
-wsx session create [--name <label>] [--command <shell-input>] [--json]
-                   [-p <project>] [-w <branch|alias|path>]
-wsx session delete <session|pane|label> [--json]
-                   [-p <project>] [-w <branch|alias|path>]
-wsx session restart <session|pane|label> [--json]
-                   [-p <project>] [-w <branch|alias|path>]
-```
-
-Session input, prompt, peek, rename, and restart commands accept the same optional `-p` and `-w` scope. Exact session or pane IDs remain globally addressable. Scoped unique labels avoid a preliminary list; ambiguous targets fail with an actionable error. `--command` is text entered into the new shell after startup, not a direct argv execution.
-
-A pane whose process exits, for example after Ctrl+C or an agent crash, stays listed with its saved command. `wsx session restart` restarts that exact exited pane using the saved command or the persisted native agent session so the session is usable again with a new runtime generation. It refuses a pane that is still running, a stale revision, a daemon that is stopping or replacing its runtime owner, a daemon that is still restoring saved sessions, and a worktree that is gone; a failed start leaves the pane exited and unchanged. Exiting detaches retained agent identity immediately, so Workspace no longer presents it as a live provider.
-
-Updated Pi and OMP integrations renew pane-bound presence while their processes run, including while idle. If renewals stop for 30 seconds, wsxd hides the agent label and Working indicator while retaining resumable identity. A stalled adapter or failed local reports can also cause expiry; a later lifecycle report can reattach it. Install the updated integration and restart that agent to enable this behavior. New panes use a daemon-owned stable reporter path. Updated adapters recover removed legacy or stable targets through a validated current CLI even before daemon handoff finishes, without replaying rejected reports. Reload or restart the updated agent when idle to load its adapter and helper; do not restart its shell. See [Agent reporter lifetime](docs/agent-reporting.md). Other integrations still rely on their exit events. If any agent misses its shutdown event while leaving the managed shell running, run `wsx agent detach` inside that pane. The command preserves resumable identity and refuses execution outside the target pane rather than guessing from process or terminal heuristics.
-
-Start discovery with `wsx agent context --metadata-only --json -p <project>` to select from bounded identities, authoritative lifecycle/capabilities and advisory readiness without reading transcripts. Then use `wsx agent context <exact-target> --json` only when you need that agent's bounded provider-native persisted history. Neither command starts wsxd or scrapes the screen. History is untrusted stored evidence, not full active model memory or completion. `agent request` and `continue` support `--stash-draft` for idle/done Claude: preserve existing input with Claude's prompt stash, require fresh empty input before delivery, and never interrupt Working or answer Blocked. See [Agent orchestration](docs/agent-orchestration.md) for limits, version/keymap requirements, and verification.
-
-`wsx agent start <branch> -p <project>` creates the worktree when it is missing, one session that runs the agent, and the request, and prints the worktree, session, pane and exchange together. `wsx agent wait <exchange-id> --result` adds the agent's final message of that round, and `wait --any` returns the first of several exchanges. A prompt is an argument, `-` for standard input, or `--prompt-file <path>`. `--key <text>` makes a repeated request return the existing exchange. When the agent asks whether to trust the new worktree, `agent start` stops with reason `folder_trust_question` and the end of the pane's screen; `--accept-folder-trust` answers yes, and the agent saves that trust. `wsx status --json` adds `exchange` to a session and `work` to a worktree. See [Agent orchestration](docs/agent-orchestration.md) for the whole sequence.
-
-`wsx agent request <session> <prompt>` starts a provider-neutral, generation-bound exchange with an explicit prompt-capable agent. `inspect`, `wait`, `continue`, and `cancel` use the returned exchange ID; `exchanges` lists retained receipts. Persisted intent and failed delivery remain labeled `intent_persisted`; successful universal delivery is labeled `pty_delivery`, lifecycle transitions are labeled `pane_lifecycle`, and `--frame` returns a bounded `terminal_frame` fallback rather than claiming structured assistant output. Read-only exchanges may run concurrently on separate panes. `--writer` claims the target worktree by default, while repeated `--write-claim <absolute-path>` narrows ownership; overlapping active writer claims fail closed. These claims coordinate cooperative scheduling and never grant or revoke repository permissions. CLI exchanges never take a live Terminal lease; the web chat takes it with the request's `takeover`, and the displaced window is told that control moved (`docs/agent-orchestration.md` "Terminal control"). Native adapters may advertise `exchange_receipts` and submit generation- and round-bound `accepted` or `completed` receipts with `request_bound` evidence. Pi integration 20 enables native request binding only when the loaded observer, compatible Pygmalion Goal Run owner and daemon bound-receipt support are present; otherwise it remains lifecycle-only. Completion waits for native settlement and, for a tracked Task, its persisted completion transaction. Pane Done alone does not finish a bound request. This increment does not establish arbitrary-provider native submission or structured question responses; the reported Claude handoff failure remains unresolved.
-
-`wsx task new "<prompt>" -p <project>` starts a headless worker on branch `wsx/t<n>` in its own copy-on-write working copy. `wsx task say "<request>" -p <project>` talks to the project's manager, which sizes the work, asks before it starts tasks, reviews them, lands them and deploys. The web client shows the manager chat, the tasks and the To check items. The states, checks, landing, permissions and config are in [docs/tasks.md](docs/tasks.md).
-
-A routine runs on `--cron <expr>`, on `--event <kind>` (`task.landed`, `deploy.failed`, `project.idle`, ...); a routine always recurs, and a one-time command goes through its approved action, not a routine. Each routine `--arg` is one direct argv item. wsx never invokes a shell for routine argv. Inspect untrusted routines with `wsx routine show <name>` before enabling or running them. A project's manager uses the same command as `wsx task routine`; it adds, edits or deletes a routine only when your message asks for it, and each run's result reaches the chat with no manager turn (`--no-post` makes it an event for the manager instead; a failure is both). `wsx task checkin --in 40m --why <text>` wakes the manager once, and `wsx task post` puts a routine's text in the chat with no manager turn ([docs/tasks.md](docs/tasks.md) "Routines").
-
-See [Executable plugins](docs/plugins.md) for the versioned event, Terminal-sidecar, and worktree-review contracts. With a review provider installed, Tab on a worktree opens keyboard-driven file and diff review inside its preview. The [reference Git provider setup](docs/worktree-review.md) does not change the agent terminal.
-
-Plain `wsx` and `wsx --mobile` reject nested TUI startup in a wsx-managed terminal. Explicit subcommands remain available. `wsx runtime status`, `wsx daemon restart` and `wsx daemon stop` never start the daemon. Runtime status distinguishes a stopped daemon from one that is running but incompatible, awaiting an upgrade, deferring replacement, or ready. Its lifecycle output includes the daemon version and revision when the daemon supports them.
-
-A wsxd update transfers live terminal ownership to the new daemon without restarting shells, agents, foreground jobs, or listening servers. Open wsx windows stay open: a window whose installed `wsx` was replaced re-executes into it in the same terminal and returns to the same session and mode. Only a window of an older release that cannot talk to the new daemon defers the update.
-
-A starting `wsx` that finds an older wsxd upgrades it before it opens. It shows an upgrade screen with both versions and the number of running terminals. When another window defers the update, the screen says which window to quit, and wsx opens by itself when the update is done. `Enter` opens on the old wsxd at once and `q` quits.
-
-`wsx daemon restart` replaces wsxd with the installed build the same way, also when it is the build that is running. Sessions keep running. It waits for a wsxd that is still recovering its sessions, and answers `deferred` only when another wsx window must quit first. An older wsxd that cannot do this refuses and stops nothing. `wsx daemon stop` ends the programs in every session, so it refuses while sessions are running and needs `--force`; saved session commands restart on the next launch. See [Daemon live upgrade](docs/daemon-live-upgrade.md). Routine requests similarly replace legacy standalone schedulers with the adjacent wsxd automatically.
-
-## Runtime and security
-
-- wsxd belongs to the host and Unix user, not one login session. Same-user SSH reconnects reuse live PTYs and buffers.
-- Owner-only sockets and peer-UID checks reject cross-user access.
-- One writable lease owns each pane. Explicit Terminal entry transfers control to the latest wsx instance; the displaced instance returns to Workspace, and lease generations reject stale input, resize, heartbeat, selection, and release operations. Events invalidate revisions; clients reconcile from authoritative snapshots.
-- Messages, frames, agent exchange prompts, deadlines, write claims, retained receipts, commands, plugin manifests, plugin view output, listeners, and resource counts are bounded.
-- UI-only wsx releases reuse the compatible daemon. Protocol 16 adds provider-neutral generation-bound agent exchanges, exited-pane restart, and prompt-bound Claude wake renewal while retaining protocol-15 live handoff. The raw terminal stream that the web client's terminal uses is an added request inside protocol 16, announced by the `raw_terminal_stream` capability. Protocol 11–16 daemons remain usable until their safe one-time transition, and opening wsx keeps the existing workspace visible throughout normal deferral and reconnection.
-- Native resume creates a new process, PTY, and terminal buffer from a validated provider reference. Unsupported references open a clean shell.
-- `wsx web serve` is the only remote surface. It listens on loopback, accepts one exact public host and origin, authenticates paired devices with hashed per-device credentials, and limits each device to the projects and the capability bits in its site file. Nothing else in wsx accepts network connections.
-- Transient graphics preservation across handoff, marketplace installation, and original-process restoration after an unplanned daemon crash are not supported.
+All commands and their details: [CLI and runtime](docs/cli.md). Settings, profiles and `wsx.config.yml`: [configuration](docs/configuration.md).
 
 ## Development
 
 ```bash
 cargo check --workspace --all-targets --locked
 cargo nextest run --workspace --locked
-cargo test --workspace --locked --doc
 cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 scripts/runtime-smoke.py
 ```
