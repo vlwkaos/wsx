@@ -30,6 +30,7 @@
 
 ### Fixed
 
+- Tasks: a new role's room no longer opens with the project's old events. The web drew the project's resolutions ("#80 was closed", "Approved role research") into every chat, a role's too; a role room now shows only its own log, in the web and the TUI alike. The room's title is `<project> · <role>`, and a message of the project's manager shows under `<manager name> manager` instead of the bare project name, so the owner, the manager and the role are three distinct speakers ([docs/tasks.md](docs/tasks.md) "Roles").
 - `wsx daemon restart` now gives one true answer. Asked while a fresh wsxd was still recovering its saved sessions, it answered `deferred`; a caller that asked again could meet the handoff that began by itself and read `Error: daemon closed response` or `not_running` although the restart happened. The command now waits (up to 35 seconds) for a handoff that only recovery holds back, answers `restarted`, and asks once more when a handoff begins under it. `deferred` is left for a restart that waits on the owner (another wsx window) or on more than 64 panes ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "Restart and stop").
 
 ## [0.43.0] - 2026-11-10

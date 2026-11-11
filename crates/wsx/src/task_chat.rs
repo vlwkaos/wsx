@@ -730,9 +730,14 @@ fn read(
         Some(_) => Vec::new(),
         None => store::read_approvals(store)?,
     };
+    // ^ A role's chat names the manager with the word manager (docs/tasks.md "Roles").
+    let manager_seen = match role {
+        Some(_) => chat::manager_in_role_room(&manager),
+        None => manager.clone(),
+    };
     let names = Names {
         own: &name,
-        manager: &manager,
+        manager: &manager_seen,
         peer: &peer,
     };
     let Page {

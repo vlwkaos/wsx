@@ -707,9 +707,14 @@ pub fn chat(
             .find(|other| other.name == project)
             .map_or_else(|| project.to_string(), manager_name)
     };
+    // ^ A role's chat names the manager with the word manager (docs/tasks.md "Roles").
+    let manager_seen = match role {
+        Some(_) => task::chat::manager_in_role_room(&project_manager),
+        None => project_manager.clone(),
+    };
     let names = task::chat::Names {
         own: &own,
-        manager: &project_manager,
+        manager: &manager_seen,
         peer: &peer,
     };
     let window = task::chat::Window::new(find, after, around);
