@@ -83,6 +83,10 @@ pub struct Record {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
+    /// wsx extension: the globs or paths the record is about; a worker whose `--files` meet one
+    /// gets the record at start (`memory::start`). A landed task's fact holds its diff's files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
     /// wsx extension, a `rule`'s: unix ms of the decision, which a view shows as its date. It
     /// stays when the rule is replaced or its text changes; `updated` moves with each write.
     #[serde(default, skip_serializing_if = "Option::is_none")]

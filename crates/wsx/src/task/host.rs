@@ -19,8 +19,10 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
-use wsx_core::config::project::load_task_config;
+use wsx_core::config::project::{load_project_config, load_task_config};
 use wsx_core::git::{git_cmd, output_with_timeout_tail};
+use wsx_core::memory::start::{self as memory_start, Start};
+use wsx_core::memory::{manage as memory_manage, Store};
 use wsx_core::runtime;
 use wsx_core::task::status::{self, STOPPED_BY_REQUEST};
 use wsx_core::task::view::{checked_files, short_commit};
@@ -49,8 +51,6 @@ const PLAN_REQUEST: &str = "First write a short plan and stop: edit no file and 
 in this turn. Put the plan in your result's summary with status done: the goal in one line, the \
 files you expect to change, the approach, and how you will prove the result. The manager reads \
 it and answers with go or what to change.";
-/// At most this much of the manager's memo lines goes into a task's first turn.
-const MAX_TASK_CONTEXT_BYTES: usize = 4 * 1024;
 const HANDOFF_FILE: &str = "handoff.txt";
 /// The first line of a handoff names the trigger of the turn it carries.
 const HANDOFF_TRIGGER: &str = "trigger: ";
@@ -1939,6 +1939,28 @@ impl Host {
         )
     }
 
+    /// The handoff notes of a conversation that ends, as an episode of the project's memory.
+    /// The worker wrote them for the next conversation: no extra turn. ref: docs/memory.md "Capture"
+    fn remember_rotation(&self, notes: &str) {
+        let done = Store::project(
+            &self.record.project_id,
+            &self.record.project,
+            &self.record.project_path,
+        )
+        .and_then(|store| {
+            memory_manage::add_episode(
+                &store.without_rules(),
+                "rotation",
+                self.record.id,
+                notes,
+                &self.dir.file(ROTATE_NOTES),
+            )
+        });
+        if let Err(error) = done {
+            self.say(&format!("cannot remember the handoff notes: {error}"));
+        }
+    }
+
     /// End the conversation after its handoff notes and start `waiting` in a fresh one,
     /// with the task's prompt, the notes and the current step.
     fn rotate(&mut self, waiting: String, reason: Option<String>) {
@@ -1953,10 +1975,11 @@ impl Host {
         self.log(LogEvent::Rotated { tokens, reason });
         // ^ Notes too long to inline are read from their file.
         let notes = match self.dir.read_file(ROTATE_NOTES, MAX_ROTATE_NOTES_BYTES) {
-            Ok(Some(bytes)) if !bytes.trim_ascii().is_empty() => format!(
-                "The earlier conversation's handoff notes:\n{}",
-                String::from_utf8_lossy(&bytes)
-            ),
+            Ok(Some(bytes)) if !bytes.trim_ascii().is_empty() => {
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                self.remember_rotation(&text);
+                format!("The earlier conversation's handoff notes:\n{text}")
+            }
             Ok(_) => "The earlier conversation wrote no handoff notes.".into(),
             Err(_) => format!(
                 "Read the earlier conversation's handoff notes first: {}",
@@ -1993,8 +2016,9 @@ impl Host {
     }
 
     /// The host's task context for the first turn: the task's files, the open tasks that
-    /// share them and the manager's `context.md` lines that name them, so the worker needs no
-    /// turn of its own to load context. None when it has nothing. ref: docs/tasks.md "Workflow"
+    /// share them and the memory's start block (area briefs, the creating role's brief and
+    /// rules, the fresh records about the files), so the worker needs no turn of its own to
+    /// load context. None when it has nothing. ref: docs/tasks.md "Workflow"
     fn task_context(&self) -> Option<String> {
         let mut out = Vec::new();
         if !self.record.files.is_empty() {
@@ -2028,34 +2052,24 @@ impl Host {
                 ));
             }
         }
-        let words = file_words(&self.record.files);
-        let notes = store::ManagerDir::existing(&self.record.project_id)
-            .ok()
-            .flatten()
-            .map(|dir| {
-                super::manager::read_note(
-                    &dir.path.join("notes").join(super::manager::CONTEXT_FILE),
-                )
-            })
-            .unwrap_or_default();
-        let mut room = MAX_TASK_CONTEXT_BYTES;
-        let mut lines = Vec::new();
-        // ^ Newest first: the host appends each landed task's memo.
-        for line in notes.lines().rev() {
-            if !words.iter().any(|word| line.contains(word.as_str())) {
-                continue;
+        // ^ The memory's records, the area briefs and the role's brief: one rule, in the core.
+        // ref: docs/memory.md "Start set"
+        let areas = load_project_config(&self.record.project_path).memory_areas;
+        if let Ok(store) = Store::project(
+            &self.record.project_id,
+            &self.record.project,
+            &self.record.project_path,
+        ) {
+            let start = Start {
+                files: &self.record.files,
+                areas: &areas,
+                role: self.record.created_by.role(),
+            };
+            let block =
+                memory_start::block(&store.without_rules(), &start, memory_start::BUDGET_BYTES);
+            if !block.is_empty() {
+                out.push(block);
             }
-            if line.len() > room {
-                break;
-            }
-            room -= line.len();
-            lines.push(line);
-        }
-        if !lines.is_empty() {
-            out.push(format!(
-                "Project memos (manager context.md) about these files:\n{}",
-                lines.join("\n")
-            ));
         }
         (!out.is_empty()).then(|| format!("Task context from the host:\n{}", out.join("\n")))
     }
@@ -4041,25 +4055,4 @@ fn check_retry_request(failed: &[&CheckResult], attempt: u32) -> String {
         ));
     }
     text
-}
-
-/// The words of `files` globs a memo line names: each glob's part before its first wildcard
-/// and its last literal path component, of at least 3 characters.
-fn file_words(files: &[String]) -> Vec<String> {
-    let mut words = Vec::new();
-    for glob in files {
-        let literal = &glob[..glob.find(['*', '?', '[', '{']).unwrap_or(glob.len())];
-        let last = glob
-            .rsplit('/')
-            .find(|part| !part.contains(['*', '?', '[', '{']));
-        for word in [Some(literal.trim_end_matches('/')), last]
-            .into_iter()
-            .flatten()
-        {
-            if word.len() >= 3 && !words.iter().any(|known| known == word) {
-                words.push(word.to_string());
-            }
-        }
-    }
-    words
 }

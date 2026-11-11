@@ -354,9 +354,7 @@ def leak_check(t, tasks, home):
 
 
 def memory_gate(args):
-    """The paid memory arm runs only on the real code of build steps 4 and 5."""
-    if args.dry_run:
-        return
+    """The memory arm, dry run or paid, runs only on the real code of build steps 4 and 5."""
     for sub in (CAPTURE_SUB, START_SUB):
         done = sh([args.wsx, *sub, '--help'], env=clean_env())
         if done.returncode != 0:
@@ -378,13 +376,8 @@ def capture_store(t, tasks, home, args):
             continue
         files = o.landed_files()
         commit = o.revision()['commit']
-        if args.dry_run:  # ^ the stub: dry run only
-            text = (f'{memo.strip()}\nFiles: {", ".join(files[:12])}')[:4000]
-            done = sh([*wsx, 'memory', 'add', '--scope', PID, '--kind', 'fact', '--slug', f't{m}', '--text-file', '-',
-                       '--source', f'task:{m}', '--verified-by', f'task:{m}', '--commit', commit], input=text, env=env)
-        else:
-            done = sh([*wsx, *CAPTURE_SUB, '--scope', PID, '--task', str(m), '--memo', memo, '--commit', commit,
-                       '--files', '\n'.join(files)], env=env)
+        done = sh([*wsx, *CAPTURE_SUB, '--scope', PID, '--task', str(m), '--memo', memo, '--commit', commit,
+                   '--paths', ','.join(files)], env=env)
         records += done.returncode == 0
     # ^ The rules: decisions dated before t0, already cut into the notes of the state.
     store = home / 'wsx' / 'tasks' / PID / 'memory'
@@ -398,12 +391,7 @@ def memory_cut(t, tasks, home, args, ctx):
     wsx = [args.wsx]
     records, size = capture_store(t, tasks, home, args)
     files = t.rec.get('files') or []
-    if args.dry_run:
-        words = ' '.join(file_words(files))
-        hits = sh([*wsx, 'memory', 'search', words or t.rec.get('title') or 'wsx', '--scope', PID, '--limit', '5', '--json'], env=env)
-        start = 'Memory start set:\n' + (hits.stdout.strip()[:3000] if hits.returncode == 0 else '(none)')
-    else:
-        start = sh([*wsx, *START_SUB, '--scope', PID, '--files', ','.join(files)], env=env).stdout.strip()
+    start = sh([*wsx, *START_SUB, '--scope', PID, '--files', ','.join(files)], env=env).stdout.strip()
     return start, records, size
 
 
@@ -545,7 +533,7 @@ def one_run(task, tasks, arm, rep, args):
     try:
         ctx = build_state(task, tasks, home)
         sh(['git', '-C', str(ROOT), 'worktree', 'add', '--detach', str(wc), task.rec['base']], check=True)
-        block = host_context(task, tasks, ctx)
+        block = host_context(task, tasks, ctx if arm == 'baseline' else '')  # ^ the memory arms' host has no context.md lines: the start set replaces them
         info = {'task': task.n, 'arm': arm, 'rep': rep, 'logged_cost': task.plan['usage']['cost_micro_usd'] / 1e6,
                 'logged_calls': task.plan['usage'].get('calls'), 'model': task.rec.get('model')}
         brief = ''

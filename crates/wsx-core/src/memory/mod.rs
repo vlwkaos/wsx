@@ -6,6 +6,7 @@ pub mod backend;
 pub mod index;
 pub mod manage;
 mod record;
+pub mod start;
 mod store;
 
 pub use backend::{Command, KindFilter, Query};
