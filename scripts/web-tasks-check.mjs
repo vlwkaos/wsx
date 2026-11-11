@@ -671,15 +671,19 @@ const sinceState = `(() => { const log = document.querySelector('.log'), last = 
   return JSON.stringify({ since: document.querySelector('.since')?.textContent ?? null, top: log.scrollTop, height: log.scrollHeight, client: log.clientHeight, newestTop: at && Math.round(at.top - box.top), newestAt: last?.dataset.at ?? null }); })()`;
 async function comeBack() {
   await until("!document.querySelector('.since')", "an old since line is still shown");
-  let still = false;
-  for (let attempt = 0; attempt < 40 && !still; attempt++) {
-    still = (await evaluate(newestOutOfView)) && (await pause(300), await evaluate(newestOutOfView));
-  }
-  if (!still) await fail(`the newest reply does not stay out of view at the top of the chat: ${await evaluate(sinceState)}`);
-  await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 })); document.dispatchEvent(new Event('visibilitychange'))`);
-  // ^ A task that is ready is listed like the digest lists it (`view::REPORTED_STATES`).
+  // ^ A reply or a closing sheet can make the chat follow its end after the check and drop the
+  // line as it appears: the whole come-back is tried again, up to three times.
   const shown = "/Landed .*Ready .*Started .*repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')";
-  for (let attempt = 0; attempt < 100 && !(await evaluate(shown)); attempt++) await pause(100);
+  for (let round = 0; round < 3 && !(await evaluate(shown)); round++) {
+    let still = false;
+    for (let attempt = 0; attempt < 40 && !still; attempt++) {
+      still = (await evaluate(newestOutOfView)) && (await pause(300), await evaluate(newestOutOfView));
+    }
+    if (!still) await fail(`the newest reply does not stay out of view at the top of the chat: ${await evaluate(sinceState)}`);
+    await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 })); document.dispatchEvent(new Event('visibilitychange'))`);
+    // ^ A task that is ready is listed like the digest lists it (`view::REPORTED_STATES`).
+    for (let attempt = 0; attempt < 100 && !(await evaluate(shown)); attempt++) await pause(100);
+  }
   if (!(await evaluate(shown))) await fail(`no since-you-left line: ${await evaluate(sinceState)}`);
 }
 await go("#/");
