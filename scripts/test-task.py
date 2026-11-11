@@ -1741,37 +1741,6 @@ def part_core(created=None):
     js('task', 'close', sh, '--discard')
     cli('session', 'delete', main_shells[0], '-p', 'demo')
 
-    # 14f. The detail's actions (docs/tasks.md "TUI"): the footer names a key only while its action
-    # applies (`view::owner_actions`, the web's rule too). `L` and `H` ask first; `y` lands the
-    # ready task through `wsx task land`; `a` on a task that waits for the owner opens the
-    # manager's message line with `#<n> `.
-    mark('14f')
-    lt = js('task', 'new', 'WORK tuilanded.txt')['id']
-    assert wait_state(lt, 'ready', 'failed')['state'] == 'ready', show(lt)
-    ask = js('task', 'new', 'NEEDS WebSearch NOOP')['id']
-    wait_state(ask, 'waiting')
-    ordered = sorted(js('task', 'ledger')['open'], key=lambda task: rank.get(task['state'], 4))
-    rows_to = lambda n: b'j' * [task['id'] for task in ordered].index(n) + b'\r'
-    ready_footer = r'(?m)^ TASK +\(j/k\)scroll +\(S\)hell +\(L\)and +\(H\)and +Esc: back'
-    seen = tui_screens(wsx, env, project, [
-        (r'WORKSPACE', b't'),
-        (r'#%d +ready' % lt, rows_to(lt)),
-        (ready_footer, b'H'),
-        (r'Take over #%d\? \(y\)es  \(n\)o' % lt, b'n'),
-        (ready_footer, b'L'),
-        (r'Land #%d\? \(y\)es  \(n\)o' % lt, b'y'),
-        (r'State +landed', b'')])
-    assert '(a)nswer' not in seen[2] and 'Take over' not in seen[4], seen
-    assert show(lt)['state'] == 'landed' and main_has('tuilanded.txt'), show(lt)
-    seen = tui_screens(wsx, env, project, [
-        (r'WORKSPACE', b't'),
-        (r'#%d +waiting' % ask, rows_to(ask)),
-        (r'(?m)^ TASK +\(j/k\)scroll +\(S\)hell +\(a\)nswer +\(H\)and +Esc: back', b'L'),
-        (r'(?m)^ TASK .*\(a\)nswer', b'a'),
-        (r'(?s)> #%d\b.*MANAGER' % ask, b'')])
-    assert 'Land #' not in seen[2], seen[2]
-    js('task', 'close', ask, '--discard')
-
     # 15. Landing, local-merge (a dirty default-branch checkout is part 32h).
     mark('15')
     # Uncommitted work in the task's own copy refuses too: wsx commits nothing for the worker.
@@ -1798,6 +1767,37 @@ def part_core(created=None):
     assert git('show', 'main:x.txt') == 'resolved'
     for n in (x1, y1, x2):
         wait_closed(n)
+    # 15a. The detail's actions (docs/tasks.md "TUI"; after 15, since a land moves main under y1, x1 and x2): the footer names a key only while its action
+    # applies (`view::owner_actions`, the web's rule too). `L` and `H` ask first; `y` lands the
+    # ready task through `wsx task land`; `a` on a task that waits for the owner opens the
+    # manager's message line with `#<n> `.
+    mark('15a')
+    lt = js('task', 'new', 'WORK tuilanded.txt')['id']
+    assert wait_state(lt, 'ready', 'failed')['state'] == 'ready', show(lt)
+    ask = js('task', 'new', 'NEEDS WebSearch NOOP')['id']
+    wait_state(ask, 'waiting')
+    ordered = sorted(js('task', 'ledger')['open'], key=lambda task: rank.get(task['state'], 4))
+    rows_to = lambda n: b'j' * [task['id'] for task in ordered].index(n) + b'\r'
+    ready_footer = r'(?m)^ TASK +\(j/k\)scroll +\(S\)hell +\(L\)and +\(H\)and +Esc: back'
+    seen = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'),
+        (r'#%d +ready' % lt, rows_to(lt)),
+        (ready_footer, b'H'),
+        (r'Take over #%d\? \(y\)es  \(n\)o' % lt, b'n'),
+        (ready_footer, b'L'),
+        (r'Land #%d\? \(y\)es  \(n\)o' % lt, b'y'),
+        (r'State +landed', b'')])
+    assert '(a)nswer' not in seen[2] and 'Take over' not in seen[4], seen
+    assert show(lt)['state'] == 'landed' and main_has('tuilanded.txt'), show(lt)
+    seen = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'),
+        (r'#%d +waiting' % ask, rows_to(ask)),
+        (r'(?m)^ TASK +\(j/k\)scroll +\(S\)hell +\(a\)nswer +\(H\)and +Esc: back', b'L'),
+        (r'(?m)^ TASK .*\(a\)nswer', b'a'),
+        (r'(?s)> #%d\b.*MANAGER' % ask, b'')])
+    assert 'Land #' not in seen[2], seen[2]
+    js('task', 'close', ask, '--discard')
+
     # Two lands rebase onto one tip; the check slot runs p's checks first, so q's checks end
     # after p landed and main moved: q rebases and checks again by itself and lands.
     configure(LAND_CONFIG.replace('  checks:\n', '  checks:\n    - "sleep 1"\n'), 'slow checks')
