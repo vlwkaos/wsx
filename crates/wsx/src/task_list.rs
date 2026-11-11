@@ -9,9 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 use wsx_core::task::{
-    ledger, now_unix_ms,
+    ledger, now_unix_ms, owner,
     store::{self, Stamp},
-    usage,
+    usage, view, TaskState, WaitOn,
 };
 
 /// How often the store's files are compared with the last read.
@@ -118,6 +118,13 @@ pub struct TaskList {
     pub overview: Option<Overview>,
     /// The `?` popup over the list, the detail or the chat.
     pub help: Option<crate::ui::help::HelpView>,
+    /// A land or a hand of the task shown, waiting for `y` (the action's name in `owner_actions`).
+    pub confirm: Option<&'static str>,
+    /// What an owner action of the detail is doing now, and how the last one ended (a failure
+    /// stays until the next key).
+    pub acting: Option<String>,
+    pub notice: Option<(String, bool)>,
+    answer: Option<mpsc::Receiver<(String, bool)>>,
     stamp: Option<Stamp>,
     pending: Option<mpsc::Receiver<Read>>,
     last_check: Instant,
@@ -146,6 +153,10 @@ impl TaskList {
             chat: None,
             overview: None,
             help: None,
+            confirm: None,
+            acting: None,
+            notice: None,
+            answer: None,
             stamp: None,
             pending: None,
             last_check: Instant::now(),
@@ -260,23 +271,31 @@ impl TaskList {
         if let Some(chat) = &mut self.chat {
             return chat.poll();
         }
+        let mut changed = false;
+        if let Some(Ok((words, failed))) = self.answer.as_ref().map(mpsc::Receiver::try_recv) {
+            self.answer = None;
+            self.acting = None;
+            self.notice = Some((words, failed));
+            changed = true;
+        }
         if let Some(rx) = &self.pending {
-            return match rx.try_recv() {
-                Ok(read) => {
-                    self.pending = None;
-                    read.is_some_and(|(stamp, ledger, usage)| self.apply(stamp, ledger, usage))
-                }
-                Err(mpsc::TryRecvError::Empty) => false,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.pending = None;
-                    false
-                }
-            };
+            return changed
+                | match rx.try_recv() {
+                    Ok(read) => {
+                        self.pending = None;
+                        read.is_some_and(|(stamp, ledger, usage)| self.apply(stamp, ledger, usage))
+                    }
+                    Err(mpsc::TryRecvError::Empty) => false,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        self.pending = None;
+                        false
+                    }
+                };
         }
         if self.last_check.elapsed() >= CHECK_INTERVAL {
             self.check();
         }
-        false
+        changed
     }
 
     fn apply(
@@ -350,6 +369,8 @@ impl TaskList {
     fn open_detail(&mut self) {
         self.detail = self.rows.get(self.selected).map(|row| row.id);
         self.scroll = 0;
+        self.confirm = None;
+        self.notice = None;
     }
 
     /// Where `S` opens a shell: the shown or selected task's working copy with its worker's
@@ -384,6 +405,115 @@ impl TaskList {
             .filter_map(|key| ledger[key].as_array())
             .flatten()
             .find(|task| task["id"].as_u64() == Some(id))
+    }
+}
+
+impl TaskList {
+    /// The owner's actions on the task whose detail shows: the web's rule (`owner_actions`),
+    /// read off the ledger row, the project's trial and its `tasks.preview`.
+    pub fn detail_actions(&self) -> Vec<&'static str> {
+        let (Some(task), Some(ledger)) = (self.detail_task(), &self.ledger) else {
+            return Vec::new();
+        };
+        let Ok(state) = serde_json::from_value::<TaskState>(task["state"].clone()) else {
+            return Vec::new();
+        };
+        let waiting = serde_json::from_value::<WaitOn>(task["waiting"]["on"].clone()).ok();
+        let trial = &ledger["deploys"]["trial"];
+        let stage = if trial["task"].as_u64() == self.detail {
+            trial["stage"].as_str()
+        } else {
+            None
+        };
+        view::owner_actions(
+            state,
+            waiting,
+            task["status"]["kind"].as_str(),
+            stage,
+            ledger["preview"].as_bool() == Some(true),
+        )
+    }
+
+    /// One key in a task's detail. False when it is not an action's key. A land or a hand
+    /// asks first (`y` runs it, `n` or `Esc` drops it); `a` opens the manager chat with the
+    /// task's number in the message line, as the web's Answer does.
+    pub fn detail_key(&mut self, action: &Action) -> bool {
+        let Some(id) = self.detail else {
+            return false;
+        };
+        self.notice = None;
+        if let Some(what) = self.confirm {
+            if matches!(action, Action::ConfirmYes | Action::Select) {
+                self.confirm = None;
+                self.run(id, what);
+            } else if matches!(
+                action,
+                Action::NextAttention | Action::InputEscape | Action::Quit
+            ) {
+                self.confirm = None;
+            }
+            return true;
+        }
+        let actions = self.detail_actions();
+        let offered =
+            |names: &[&'static str]| names.iter().copied().find(|name| actions.contains(name));
+        match action {
+            Action::Land => self.confirm = offered(&["pass", "land"]),
+            Action::ConfirmHalt => self.confirm = offered(&["handback", "hand"]),
+            Action::GroupManager => {
+                if let Some(what) = offered(&["trial_end", "try"]) {
+                    self.run(id, what);
+                }
+            }
+            Action::NextActive => {
+                if actions.contains(&"answer") {
+                    self.open_chat(None);
+                    if let Some(chat) = &mut self.chat {
+                        chat.mention(id);
+                    }
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Run the owner action `what` of task `id` as the CLI does, off the UI thread; its
+    /// answer comes through `poll`.
+    fn run(&mut self, id: u64, what: &'static str) {
+        if self.acting.is_some() {
+            return;
+        }
+        let (doing, verb, flag) = match what {
+            "land" => ("Landing", "land", None),
+            "pass" => ("Landing", "land", Some("--tried")),
+            "hand" => ("Taking over", "hand", None),
+            "handback" => ("Handing back", "handback", None),
+            "trial_end" => ("Ending the trial of", "trial", Some("--end")),
+            _ => ("Starting the preview of", "preview", None),
+        };
+        let mut argv = vec!["task".to_string(), verb.into(), id.to_string()];
+        argv.extend(flag.map(String::from));
+        let project = self.project.clone();
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.acting = Some(format!("{doing} #{id}…"));
+        self.answer = Some(rx);
+        std::thread::spawn(move || {
+            let answer = std::env::current_exe()
+                .map_err(|error| error.to_string())
+                .and_then(|wsx| owner::run_as_owner(&wsx, &project, argv));
+            let _ = tx.send(match answer {
+                Ok(done) => (
+                    done["message"]
+                        .as_str()
+                        .map(str::to_string)
+                        .or_else(|| done["url"].as_str().map(|url| format!("Preview: {url}")))
+                        .unwrap_or_else(|| format!("#{id} {what} done")),
+                    false,
+                ),
+                Err(error) => (format!("#{id} not done: {error}"), true),
+            });
+        });
     }
 }
 

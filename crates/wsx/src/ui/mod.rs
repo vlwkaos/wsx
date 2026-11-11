@@ -755,11 +755,31 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
                 .map(task_chat::hints)
                 .unwrap_or_default(),
         ),
-        Mode::Tasks { list } if list.detail.is_some() => (
+        Mode::Tasks { list } if list.confirm.is_some() => (
             "TASK",
             theme::ModeBadge::Info,
-            vec!["(j/k)scroll".into(), "(S)hell".into(), "Esc: back".into()],
+            vec!["(y)es".into(), "(n)o".into()],
         ),
+        Mode::Tasks { list } if list.detail.is_some() => {
+            // ^ The actions the task allows (`owner_actions`), after the scroll; Esc stays last.
+            let actions = list.detail_actions();
+            let has = |name| actions.contains(&name);
+            let mut hints = vec!["(j/k)scroll".to_string(), "(S)hell".into()];
+            for (shown, hint) in [
+                (has("land") || has("pass"), "(L)and"),
+                (has("answer"), "(a)nswer"),
+                (has("handback"), "(H)and back"),
+                (has("hand") && !has("handback"), "(H)and"),
+                (has("trial_end"), "(T)end trial"),
+                (has("try") && !has("trial_end"), "(T)ry"),
+            ] {
+                if shown {
+                    hints.push(hint.into());
+                }
+            }
+            hints.push("Esc: back".into());
+            ("TASK", theme::ModeBadge::Info, hints)
+        }
         Mode::Tasks { list } => {
             let mut hints = vec![
                 "(j/k)move".to_string(),

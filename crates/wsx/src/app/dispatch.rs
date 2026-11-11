@@ -175,6 +175,11 @@ impl App {
                 }
                 return Ok(());
             }
+            // ^ The detail's actions: land, answer, hand, try (docs/tasks.md "TUI").
+            if list.detail_key(&action) {
+                self.needs_redraw = true;
+                return Ok(());
+            }
             match (action, list.detail.is_some()) {
                 (Action::EnterMove, false) => list.open_chat(None),
                 (Action::Overview, false) => list.open_overview(),

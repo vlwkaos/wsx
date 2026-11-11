@@ -381,6 +381,53 @@ pub fn agent_label(agent: &Value) -> Option<String> {
     )
 }
 
+/// The owner's actions on a task that its state allows; the web's buttons and the TUI's keys
+/// read this and no client makes its own rule. The host still decides; this only picks what
+/// is offered. `status_kind` is the status's `kind`, `trial_stage` the stage of the project's
+/// trial when it is this task's, `preview` whether the project sets `tasks.preview`.
+/// - `land`: a ready task with no trial; `pass`: lands the revision on a live trial.
+/// - `hand`, `handback`: take a build over in its working copy and give it back
+///   (docs/tasks.md "By hand"); `trial_end` frees the live site (docs/tasks.md "Hold and trial").
+/// - `answer`: the owner talks to the manager: a wait for the owner or a failure.
+/// - `try`: start the task's preview (docs/tasks.md "Preview").
+///
+/// Hold and trial stay commands for the manager: the owner's message to the worker goes
+/// through the manager (docs/web-client-tasks.md "Task sheet").
+pub fn owner_actions(
+    state: TaskState,
+    waiting: Option<WaitOn>,
+    status_kind: Option<&str>,
+    trial_stage: Option<&str>,
+    preview: bool,
+) -> Vec<&'static str> {
+    let mut actions = Vec::new();
+    if (waiting == Some(WaitOn::Owner) && status_kind != Some("after"))
+        || state == TaskState::Failed
+    {
+        actions.push("answer");
+    }
+    match (state, waiting) {
+        (TaskState::Waiting, Some(WaitOn::Hand)) => actions.push("handback"),
+        (TaskState::Ready, _) => {
+            match trial_stage {
+                None => actions.push("land"),
+                Some("live") => actions.push("pass"),
+                Some(_) => {}
+            }
+            actions.push("hand");
+        }
+        (TaskState::Working | TaskState::Waiting | TaskState::Failed, _) => actions.push("hand"),
+        (TaskState::Checking | TaskState::Landed | TaskState::Closed, _) => {}
+    }
+    if trial_stage.is_some() {
+        actions.push("trial_end");
+    }
+    if preview && state != TaskState::Closed {
+        actions.push("try");
+    }
+    actions
+}
+
 pub fn task_summary(dir: &TaskDir, record: &TaskRecord) -> Value {
     json!({
         "id": record.id,

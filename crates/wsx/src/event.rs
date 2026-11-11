@@ -544,6 +544,9 @@ fn translate_key(key: KeyEvent) -> Action {
         (KeyModifiers::SHIFT, KeyCode::Char('S')) | (KeyModifiers::NONE, KeyCode::Char('S')) => {
             Action::Shell
         }
+        (KeyModifiers::SHIFT, KeyCode::Char('L')) | (KeyModifiers::NONE, KeyCode::Char('L')) => {
+            Action::Land
+        }
         (KeyModifiers::SHIFT, KeyCode::Char('{')) | (KeyModifiers::NONE, KeyCode::Char('{')) => {
             Action::GroupPrev
         }

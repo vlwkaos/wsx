@@ -49,6 +49,8 @@ pub enum Action {
     MachinePanels,
     Overview,
     Shell,
+    /// `L`: land the task whose detail shows (a trial's pass).
+    Land,
     InputChar(char),
     /// A bracketed paste into a text field (`one_line` makes it fit).
     Paste(String),

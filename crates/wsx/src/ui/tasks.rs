@@ -74,6 +74,32 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
             Style::default().fg(theme::WARNING),
         ));
     }
+    // ^ A land or a hand waiting for `y`, what runs, or how the last action ended.
+    if list.detail.is_some() {
+        let id = list.detail.unwrap_or_default();
+        let (words, color) = match (&list.confirm, &list.acting, &list.notice) {
+            (Some(what), _, _) => (
+                format!("{} #{id}? (y)es  (n)o", confirm_words(what)),
+                theme::WARNING,
+            ),
+            (_, Some(doing), _) => (doing.clone(), theme::TEXT_MUTED),
+            (_, _, Some((words, failed))) => (
+                words.clone(),
+                if *failed {
+                    theme::ERROR
+                } else {
+                    theme::SUCCESS
+                },
+            ),
+            _ => (String::new(), theme::TEXT),
+        };
+        if !words.is_empty() {
+            lines.push(Line::styled(
+                truncate_to_width(&words, width),
+                Style::default().fg(color),
+            ));
+        }
+    }
     lines.push(Line::raw(""));
     let chrome = lines.len();
     if let Some(task) = list.detail_task() {
@@ -626,4 +652,14 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
         }
     }
     lines
+}
+
+/// The question's verb for an action that asks first.
+fn confirm_words(what: &str) -> &'static str {
+    match what {
+        "pass" => "Pass and land",
+        "land" => "Land",
+        "handback" => "Hand back",
+        _ => "Take over",
+    }
 }

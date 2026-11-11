@@ -392,6 +392,29 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
     })
 }
 
+/// Run `wsx <argv> -p <project> --json` as the owner (no task actor) and return its JSON
+/// answer, or what it said when it failed. The web and the TUI both run an owner's task
+/// action this way, the CLI's own path.
+pub fn run_as_owner(
+    wsx: &Path,
+    project: &str,
+    mut argv: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    argv.extend(["-p".into(), project.into(), "--json".into()]);
+    let output = std::process::Command::new(wsx)
+        .args(&argv)
+        .env_remove(ACTOR_ENV)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let said = String::from_utf8_lossy(&output.stderr);
+        return Err(said.trim().trim_start_matches("Error: ").to_string());
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|_| format!("wsx {} did not print JSON", argv[1]))
+}
+
 /// Record that the owner denied a pending request.
 pub fn deny(name: &str, main: &Path, id: &str, note: Option<String>) -> Result<()> {
     let project_id = store::project_id(name, main);
