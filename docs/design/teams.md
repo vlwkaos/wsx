@@ -24,7 +24,7 @@ flowchart LR
 | Piece | Where it is keyed | Source |
 |---|---|---|
 | Project, profile | `[[projects]]` name, path, groups, `profile`; a profile is the agent account and the web grant, not a store or a manager | `crates/wsx-core/src/config/global.rs:286`, `:305`; [profiles-and-parent-tasks.md](profiles-and-parent-tasks.md) |
-| Task | `tasks/<project-id>/<n>/`; `TaskRecord` already holds `project`, `project_id`, `project_path`, `default_branch`, `created_by` | `crates/wsx-core/src/task/mod.rs:225`; docs/tasks.md "Store" |
+| Task | `tasks/<project-id>/<n>/`; `TaskRecord` already holds `project`, `project_id`, `project_path`, `default_branch`, `created_by` | `crates/wsx-core/src/task/mod.rs:224`; docs/tasks.md "Store" |
 | Numbers, branch, copy | The store's locked counter; `wsx/t<n>` and `<repo>-t<n>`, so they are unique per store and per repo | `crates/wsx-core/src/task/copy.rs:18`, `:22` |
 | Manager | One per project: `tasks/<id>/manager/`, host `task-manager`; `tasks.manager.*` in the project's config | docs/tasks.md "Manager" |
 | Roles (members) | `tasks/<id>/roles/<name>/`; one `Role::Area` capability group, no per-project part; at most `tasks.roles.max` open | `crates/wsx-core/src/task/policy.rs:135`; docs/tasks.md "Roles" |
@@ -36,7 +36,7 @@ flowchart LR
 | Deploy, release, push | Per project: its config command, `deploy.lock`, `push.lock`, `trial.json` | `store.rs:770-886`; docs/tasks.md "Deploy and release", "Push" |
 | Routines, panels | Routines by a hash of the project path; panels by `(project path, name)` in wsxd memory | `crates/wsx-core/src/routine/store.rs:75`; `crates/wsx-daemon/src/panel.rs:21` |
 | Memory | Scope = the project's store id; an agent writes only its own project's scope and searches the transcripts of its own project only | [memory-system.md](memory-system.md) |
-| Web | Home: one row per granted project. Routes `#/p/<pid>[/t/<n>\|/r/<role>\|/page\|/checks\|/usage\|/panels]`; `pid` is the numeric wsxd project id; API `api/tasks/{project}/...`; the chat already shows `<project> #<n>` chips for another project's task | `crates/wsx-web/web/store.js:179`, `home.js`; `crates/wsx-web/src/tasks.rs:50` |
+| Web | Home: one row per granted project. Routes `#/p/<pid>[/t/<n>\|/r/<role>\|/page\|/checks\|/usage\|/panels]`; `pid` is the numeric wsxd project id; API `api/tasks/{project}/...`; the chat already shows `<project> #<n>` chips for another project's task | `crates/wsx-web/web/store.js:179`, `home.js`; `crates/wsx-web/src/tasks.rs:55` |
 | TUI | `t` Tasks view and `m` manager chat act on the selected tree project; Roles section opens a role chat | `crates/wsx/src/app/actions.rs:591`, `task_list.rs:222` |
 
 What stops the owner's example today: pizzahouse is "manage this machine", but its chat can only create tasks in the pizzahouse folder. Another repo it needs (dotfiles, an infra repo) is another project with another manager, reached by `say`, and the owner routes between them.
