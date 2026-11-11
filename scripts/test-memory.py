@@ -315,6 +315,7 @@ def notes_part(pid, notes):
     lines = len(open(records).readlines())
     check(ok('import', scope=pid)['imported'] == {'rules': 0, 'archived': 0, 'facts': 0, 'episodes': 0}, 'a rerun adds nothing')
     check(len(open(records).readlines()) == lines and all(view(n) == t for n, t in shown.items()), 'a rerun writes nothing')
+    check({h['kind'] for h in ok('search', 'sqlite', scope=pid)} == {'rule'}, 'the lines of a view are searched as records, not twice')
     rule = next(h for h in ok('search', 'paste secrets', '--kind', 'rule', scope=pid))
     kept = ok('get', rule['slug'], scope=pid)
     check(kept['words'] == 'never   paste secrets  in chat' and kept['status'] == 'active' and kept['kind'] == 'rule', kept)
