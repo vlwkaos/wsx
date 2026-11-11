@@ -49,7 +49,8 @@ export function designLint({ evaluate, captures, file }) {
     const [width, height] = await evaluate("[innerWidth, innerHeight]");
     if (!((width === 390 && height === 844) || (width === 1280 && height === 800))) return;
     // ^ A row that arrives or a tone that fades is mid-way in colour and place: lint it once the finite animations and transitions ended.
-    for (let waited = 0; waited < 40 && await evaluate("document.getAnimations().some((animation) => animation.playState === 'running' && animation.effect?.getComputedTiming().iterations !== Infinity)"); waited++) await pause(100);
+    // ^ A new row's animation is `pending` until its first frame, still at opacity 0 (CI run 43036504860: role-chat contrast 1.00:1); wait for that too.
+    for (let waited = 0; waited < 40 && await evaluate("document.getAnimations().some((animation) => (animation.playState === 'running' || animation.playState === 'pending') && animation.effect?.getComputedTiming().iterations !== Infinity)"); waited++) await pause(100);
     await evaluate(`globalThis.DESIGN_LINT = ${JSON.stringify({ touch: width < 600, gutter: 16, keep })}`);
     // ^ A closed <details> keeps its content measurable: hide it for the lint, as it is for the reader.
     // ^ A constructed sheet, not a <style> element: the page's CSP blocks inline styles.
