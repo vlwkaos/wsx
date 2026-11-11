@@ -913,3 +913,29 @@ pub enum MemoryCmd {
     /// The scopes on this machine and their folders
     List,
 }
+
+impl MemoryCmd {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Search { .. } => "search",
+            Self::Add { .. } => "add",
+            Self::Update { .. } => "update",
+            Self::Supersede { .. } => "supersede",
+            Self::Reindex => "reindex",
+            Self::Status => "status",
+            Self::List => "list",
+        }
+    }
+
+    /// What this command needs: the broker lets an agent run it only when its policy grants
+    /// one (`wsx_core::task::policy`). A `rule` record is judged again in the store.
+    pub fn needs(&self) -> &'static [wsx_core::task::policy::Capability] {
+        use wsx_core::task::policy::Capability::{Recall, Remember};
+        match self {
+            Self::Search { .. } | Self::Status | Self::List => &[Recall],
+            Self::Add { .. } | Self::Update { .. } | Self::Supersede { .. } | Self::Reindex => {
+                &[Remember]
+            }
+        }
+    }
+}

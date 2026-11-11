@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 use wsx_core::git::output_with_timeout_limit;
 use wsx_core::task::owner::ACTOR_ENV;
-use wsx_core::task::policy::{Capability, Policy, Role, Trust, TRUST_ENV};
+use wsx_core::task::policy::{Capability, Policy, Role, Trust, RULES_ENV, TRUST_ENV};
 
 pub const BROKER_ENV: &str = "WSX_TASK_BROKER";
 /// The manager's own project, for `say --from-manager`; set only by the manager host.
@@ -102,8 +102,8 @@ fn command_name(argv: &[String]) -> String {
     }
 }
 
-/// The CLI under `WSX_TASK_BROKER`: send a `task` command to the manager host and exit with
-/// its code; refuse anything else. Called before the arguments are parsed.
+/// The CLI under `WSX_TASK_BROKER`: send a `task` or `memory` command to the host and exit
+/// with its code; refuse anything else. Called before the arguments are parsed.
 pub fn forward_if_brokered() {
     let Some(socket) = std::env::var_os(BROKER_ENV).filter(|value| !value.is_empty()) else {
         return;
@@ -120,8 +120,8 @@ pub fn forward_if_brokered() {
 }
 
 fn forward(socket: &Path, argv: Vec<String>) -> Result<i32> {
-    if argv.first().map(String::as_str) != Some("task") {
-        bail!("only `wsx task` commands run here");
+    if !matches!(argv.first().map(String::as_str), Some("task" | "memory")) {
+        bail!("only `wsx task` and `wsx memory` commands run here");
     }
     // ^ Only `-` reads standard input (docs/tasks.md); an agent's stdin may never close.
     let stdin = if argv.iter().any(|arg| arg == "-") {
@@ -163,8 +163,9 @@ fn forward(socket: &Path, argv: Vec<String>) -> Result<i32> {
 pub struct ManagerBroker {
     pub exe: PathBuf,
     pub fallback_cwd: PathBuf,
-    /// The manager's own project.
+    /// The manager's own project, and its task ID (its memory scope).
     pub own: String,
+    pub project_id: String,
     pub actor: String,
     /// Answers the host owes, by sender (`role:<name>` or a project).
     pub owed: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u32>>>,
@@ -185,12 +186,16 @@ pub fn serve_manager(
         exe,
         fallback_cwd,
         own,
+        project_id,
         actor,
         owed,
         policy,
     } = broker;
     serve(listener, move |request: Request| {
         let policy = policy.get();
+        if request.argv.first().is_some_and(|first| first == "memory") {
+            return run_memory(&exe, request, &fallback_cwd, &project_id, policy);
+        }
         let target = match allowed(&request.argv, policy).and_then(|()| reach(&request.argv, &own))
         {
             Ok(target) => target,
@@ -214,7 +219,7 @@ pub fn serve_manager(
                 ));
             }
         }
-        let response = run(&exe, request, &fallback_cwd, &own, &actor, policy.trust)
+        let response = run(&exe, request, &fallback_cwd, &own, &actor, policy)
             .unwrap_or_else(|error| refused(format!("{error:#}")));
         if let (Some(to), 0) = (target, response.code) {
             // ^ Spent only by a reply that went out.
@@ -231,6 +236,56 @@ pub fn serve_manager(
         }
         response
     });
+}
+
+/// An agent's `wsx memory` call, run for it by its host: refused unless its policy grants the
+/// command, and pinned to its own project's store, so a write names no other scope (a read
+/// may). Which commands each role has is `policy`'s; a `rule` record is judged by the store
+/// (`RULES_ENV`). ref: docs/memory.md "Agents"
+pub fn run_memory(
+    exe: &Path,
+    mut request: Request,
+    fallback: &Path,
+    own_id: &str,
+    policy: Policy,
+) -> Response {
+    let outcome = memory_pin(&request.argv, own_id, policy).and_then(|pin| {
+        if pin {
+            request.argv.extend(["--scope".into(), own_id.into()]);
+        }
+        // ^ A memory command reads no actor, and the owner's is the one an empty mark gives.
+        run(exe, request, fallback, own_id, "", policy)
+    });
+    outcome.unwrap_or_else(|error| refused(format!("{error:#}")))
+}
+
+/// Whether `policy` grants the `memory` argv, and a write stays in `own_id`'s scope; true when
+/// the agent named no scope, so the caller adds its own.
+fn memory_pin(argv: &[String], own_id: &str, policy: Policy) -> Result<bool> {
+    use clap::Parser;
+    // ^ An argv that does not parse runs nothing: the CLI's own parser refuses it.
+    let Ok(args) = crate::cli::Args::try_parse_from(
+        std::iter::once("wsx").chain(argv.iter().map(String::as_str)),
+    ) else {
+        return Ok(false);
+    };
+    let Some(crate::cli::Command::Memory {
+        subcommand, scope, ..
+    }) = args.command
+    else {
+        bail!("only `wsx task` and `wsx memory` commands run here");
+    };
+    let needs = subcommand.needs();
+    if !policy.allows_any(needs) {
+        bail!(
+            "{}",
+            policy.refusal(&format!("memory {}", subcommand.name()), needs)
+        );
+    }
+    if needs != [Capability::Recall] && scope.iter().any(|s| s != own_id) {
+        bail!("an agent writes memory only in its own project's scope ({own_id})");
+    }
+    Ok(scope.is_empty())
 }
 
 /// The other project a command reaches, which only `ledger` and `say --from-manager` may, or
@@ -335,7 +390,7 @@ fn run(
     fallback: &Path,
     own: &str,
     actor: &str,
-    trust: Trust,
+    policy: Policy,
 ) -> Result<Response> {
     let cwd = if request.cwd.is_dir() {
         request.cwd
@@ -348,7 +403,15 @@ fn run(
         .current_dir(cwd)
         .env(ACTOR_ENV, actor)
         .env(FROM_ENV, own)
-        .env(TRUST_ENV, trust.as_str())
+        .env(TRUST_ENV, policy.trust.as_str())
+        .env(
+            RULES_ENV,
+            if policy.allows(Capability::Decide) {
+                "allow"
+            } else {
+                "deny"
+            },
+        )
         .env_remove(BROKER_ENV)
         .stdin(Stdio::null());
     if let Some(text) = request.stdin {

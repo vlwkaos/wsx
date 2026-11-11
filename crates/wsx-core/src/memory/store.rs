@@ -112,6 +112,8 @@ pub struct Store {
     project_id: Option<String>,
     /// Where a relative `verified_by` path lives: the project path, else the current folder.
     root: PathBuf,
+    /// Whether a `rule` record may be written or changed (the manager's and a role's).
+    rules: bool,
 }
 
 impl Store {
@@ -126,6 +128,7 @@ impl Store {
             dir,
             project_id: Some(project_id.into()),
             root: root.into(),
+            rules: true,
         })
     }
 
@@ -137,7 +140,24 @@ impl Store {
             dir: memory_root().join(name),
             project_id: None,
             root: root.into(),
+            rules: true,
         })
+    }
+
+    /// A store that refuses to add, change or replace a `rule` record: an agent that cannot
+    /// give the owner's word. ref: docs/memory.md "Agents"
+    pub fn without_rules(mut self) -> Self {
+        self.rules = false;
+        self
+    }
+
+    fn may_write(&self, kind: Kind) -> Result<()> {
+        match kind == Kind::Rule && !self.rules {
+            true => {
+                usage("a rule needs the owner's word, so only the manager or a role writes one")
+            }
+            false => Ok(()),
+        }
     }
 
     pub fn scope(&self) -> &str {
@@ -228,6 +248,7 @@ impl Store {
     pub fn add(&self, new: NewRecord) -> Result<(Record, bool)> {
         validate_scope(&new.slug)
             .map_err(|_| Error::Usage(format!("slug {:?}: use a-z, 0-9 and -", new.slug)))?;
+        self.may_write(new.kind)?;
         let text = self.check_text(&new.text)?;
         check_source(&new.source)?;
         if matches!(new.title.as_deref(), Some(t) if t.contains('\n')) {
@@ -296,6 +317,7 @@ impl Store {
         }
         let _lock = self.lock(true)?;
         let mut record = self.find(&patch.slug)?;
+        self.may_write(record.kind)?;
         if text.is_some() && record.status != Status::Active {
             return usage(format!(
                 "{} is not active; its text stays as it was",
@@ -329,6 +351,8 @@ impl Store {
         let mut records = self.load()?.records;
         let mut record = records.remove(old).ok_or_else(|| self.missing(old))?;
         let newer = records.get(new).ok_or_else(|| self.missing(new))?;
+        self.may_write(record.kind)?;
+        self.may_write(newer.kind)?;
         if newer.status != Status::Active || record.status == Status::Superseded {
             return usage(format!(
                 "{new} must be active and {old} must not be superseded already"

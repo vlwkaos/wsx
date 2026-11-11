@@ -355,8 +355,19 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
     (host.context_tokens, host.answered_ms) = host.last_context();
     let to_host = events.clone();
     let policy = host.policy.clone();
+    let (project_id, copy) = (
+        host.record.project_id.clone(),
+        host.record.working_copy.clone(),
+    );
     std::thread::spawn(move || {
         broker::serve(brokered, move |request| {
+            // ^ A `wsx memory` command runs for the worker in its project's scope.
+            if request.argv.first().is_some_and(|first| first == "memory") {
+                return match std::env::current_exe() {
+                    Ok(exe) => broker::run_memory(&exe, request, &copy, &project_id, policy.get()),
+                    Err(error) => broker::refused(format!("cannot find the wsx binary: {error}")),
+                };
+            }
             // ^ The worker's role grants `result` and `check-run`, nothing else.
             if let Err(error) = broker::allowed(&request.argv, policy.get()) {
                 return broker::refused(format!("{error:#}"));

@@ -26,6 +26,27 @@ import sys
 TRACE = os.environ.get('FAKE_CLAUDE_TRACE') or os.path.join(os.getcwd(), '..', 'fake-claude.trace')
 
 
+def memory_probe():
+    """What a worker's `wsx memory` calls answer through its host's broker: the exit code and the
+    first words of each answer, for scenario 27m of test-task.py."""
+    calls = [
+        ('search', ['wsx', 'memory', 'search', 'seed', '--json'], None),
+        ('add_episode', ['wsx', 'memory', 'add', '--kind', 'episode', '--slug', 'worker-note', '--text-file', '-',
+                         '--source', 'task:1', '--json'], 'The worker learned a thing.'),
+        ('add_rule', ['wsx', 'memory', 'add', '--kind', 'rule', '--slug', 'worker-rule', '--text-file', '-',
+                      '--source', 'task:1', '--verified-by', 'owner:1', '--json'], 'A rule by a worker.'),
+        ('update_rule', ['wsx', 'memory', 'update', '--slug', 'seed-rule', '--text-file', '-', '--source', 'task:1'],
+         'Changed by a worker.'),
+        ('supersede_rule', ['wsx', 'memory', 'supersede', 'seed-rule', 'worker-note', '--source', 'task:1'], None),
+        ('other_scope', ['wsx', 'memory', 'add', '--scope', 'default', '--kind', 'episode', '--slug', 'elsewhere',
+                         '--text-file', '-', '--source', 'task:1'], 'Not in its own project.'),
+    ]
+    answers = {}
+    for name, argv, text in calls:
+        done = subprocess.run(argv, input=text, capture_output=True, text=True)
+        answers[name] = [done.returncode, (done.stdout + done.stderr).strip()[:1500]]
+    return answers
+
 def trace(record):
     with open(TRACE, 'a') as out:
         out.write(json.dumps(dict(record, adapter='pi')) + '\n')
@@ -169,6 +190,8 @@ def main():
                         # ^ The reason goes to the trace: the scenario shows it when the task fails.
                         trace({'session': session, 'git_failed': git[-3:], 'error': done.stderr[-800:]})
                         sys.exit(1)
+            if 'MEMORY' in words:
+                trace({'session': session, 'memory': memory_probe()})
             if 'RUNNERWRITE' in words:
                 target = words[words.index('RUNNERWRITE') + 1]
                 control = os.path.join(os.getcwd(), 'runner-control.txt')

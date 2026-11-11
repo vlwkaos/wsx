@@ -65,6 +65,21 @@ Codes 4 and 5 belong to compaction, which a later step adds. Errors go to stderr
 - The old text of an `update` stays readable (wsx: in the log).
 - wsx's store is `tasks/<project-id>/memory/records.jsonl` (scope `default` and unbound names: `$XDG_STATE_HOME/wsx/memory/<name>/records.jsonl`): one JSON object per line, append-only, folded into current records. A last line cut short by a crash is skipped with a notice on stderr and never fails a command; the next write starts on a new line.
 
+## Agents
+
+A task agent calls `wsx memory` through its host's broker (`WSX_TASK_BROKER`), which runs the command for it. The one rule is `wsx_core::task::policy` ([tasks.md](tasks.md) "Permissions"):
+
+| Command | Who |
+|---|---|
+| `search`, `status`, `list` | every agent, also an untrusted one; a read may name any scope |
+| `add`, `update`, `supersede`, `reindex` | the manager, a named role and a worker, in the agent's own project scope only (`--scope` defaults to it, another one is refused) |
+| a `rule` record (add, change, replace) | the manager and a named role: it needs `owner:<id>`, and a worker's call is refused by the store |
+| any write | not an untrusted agent (strict profile): read only |
+
+A refusal exits 2 and names the cause. The host sets `WSX_MEMORY_RULES=deny` for an agent without `decide`; the owner's own call sets none.
+
 ## Proof
+
+`scripts/test-task.py` sections 23m and 27m run the broker cases (a worker, an untrusted worker, the manager) and the `task:<n>` and `check:<id>` forms of `verified_by` with a landed task and a passed item.
 
 `python3 -B scripts/test-memory.py "<command prefix>"` runs the same scenario against any program, for example `"target/debug/wsx memory"` or `"python3 memory.py"`. It sets `HOME` and `XDG_STATE_HOME` to a temp folder.

@@ -17,6 +17,7 @@ Each user message is a small script of words:
   CMDHV        return a Human Verify item that names a command
   BAREHV       return a Human Verify item about a page without a capture
   WAIT <file>  keep working until <file> exists, at most 10 minutes
+  MEMORY       run a few `wsx memory` commands through the host's broker and trace each answer
   CHECKRUN_AGAIN  start `wsx task check-run`, kill it after 1 s, run it again and trace that answer (`queued` while it waits)
   CHECKRUN_TWICE  run `wsx task check-run` twice on the same tree and trace both answers
   CHECKRUN_REPEAT <a>  run `wsx task check-run a` twice on the same tree and trace both answers
@@ -92,6 +93,27 @@ import zlib
 
 TRACE = os.environ.get('FAKE_CLAUDE_TRACE') or os.path.join(os.getcwd(), '..', 'fake-claude.trace')
 
+
+def memory_probe():
+    """What a worker's `wsx memory` calls answer through its host's broker: the exit code and the
+    first words of each answer, for scenario 27m of test-task.py."""
+    calls = [
+        ('search', ['wsx', 'memory', 'search', 'seed', '--json'], None),
+        ('add_episode', ['wsx', 'memory', 'add', '--kind', 'episode', '--slug', 'worker-note', '--text-file', '-',
+                         '--source', 'task:1', '--json'], 'The worker learned a thing.'),
+        ('add_rule', ['wsx', 'memory', 'add', '--kind', 'rule', '--slug', 'worker-rule', '--text-file', '-',
+                      '--source', 'task:1', '--verified-by', 'owner:1', '--json'], 'A rule by a worker.'),
+        ('update_rule', ['wsx', 'memory', 'update', '--slug', 'seed-rule', '--text-file', '-', '--source', 'task:1'],
+         'Changed by a worker.'),
+        ('supersede_rule', ['wsx', 'memory', 'supersede', 'seed-rule', 'worker-note', '--source', 'task:1'], None),
+        ('other_scope', ['wsx', 'memory', 'add', '--scope', 'default', '--kind', 'episode', '--slug', 'elsewhere',
+                         '--text-file', '-', '--source', 'task:1'], 'Not in its own project.'),
+    ]
+    answers = {}
+    for name, argv, text in calls:
+        done = subprocess.run(argv, input=text, capture_output=True, text=True)
+        answers[name] = [done.returncode, (done.stdout + done.stderr).strip()[:1500]]
+    return answers
 
 def trace(record):
     with open(TRACE, 'a') as out:
@@ -605,6 +627,8 @@ def main():
             ran = subprocess.run(['wsx', 'task', 'check-run'], capture_output=True, text=True)
             other = subprocess.run(['wsx', 'task', 'push', '--json'], capture_output=True, text=True)
             trace({'check_run': [ran.returncode, ran.stdout + ran.stderr], 'check_run_other': [other.returncode, other.stderr]})
+        if 'MEMORY' in words:
+            trace({'memory': memory_probe()})
         if 'CHECKRUN_AGAIN' in words:
             # ^ A client that gives up (a Bash timeout) and asks again joins the run it left.
             first = subprocess.Popen(['wsx', 'task', 'check-run'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

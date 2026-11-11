@@ -177,8 +177,10 @@ fn show(record: &Record, json: bool, verb: &str) -> MemResult<()> {
         return print(record);
     }
     println!(
-        "{verb} {} [{:?}, {:?}]",
-        record.slug, record.kind, record.status
+        "{verb} {} [{}, {}]",
+        record.slug,
+        record.kind.as_str(),
+        record.status.as_str()
     );
     Ok(())
 }
@@ -202,10 +204,20 @@ fn one(scopes: &[String]) -> MemResult<Store> {
     }
 }
 
+/// The stores of `scoped`, without rules for an agent that may not write one (the broker sets
+/// `policy::RULES_ENV`).
+fn stores(scopes: &[String]) -> MemResult<Vec<Store>> {
+    let rules = std::env::var(wsx_core::task::policy::RULES_ENV).as_deref() != Ok("deny");
+    Ok(scoped(scopes)?
+        .into_iter()
+        .map(|store| if rules { store } else { store.without_rules() })
+        .collect())
+}
+
 /// The store of each `--scope`, or of the project of the current folder when none is given.
 /// A name that is no registered project is an unbound scope; its relative paths start at the
 /// current folder.
-fn stores(scopes: &[String]) -> MemResult<Vec<Store>> {
+fn scoped(scopes: &[String]) -> MemResult<Vec<Store>> {
     let cwd = std::env::current_dir()?;
     // ^ `default` needs no config, so it works where the config cannot be read.
     let projects = if scopes.iter().all(|s| s == "default") && !scopes.is_empty() {
