@@ -325,6 +325,7 @@ impl App {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let now = wsx_core::task::now_unix_ms();
+            cache.retain(|path, _| projects.iter().any(|(_, kept)| kept == path));
             let attention: HashMap<PathBuf, ProjectAttention> = projects
                 .into_iter()
                 .map(|(name, path)| {
