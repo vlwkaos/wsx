@@ -5397,7 +5397,8 @@ def part_host(created=None):
     _, text = manager_says('release when #%d lands' % aft_gone, 'release --after %d --owner-said' % aft_gone)
     aft_old = approval_lines()[-1]
     _, text = manager_says('rather when #%d lands' % aft_newer, 'release --after %d --owner-said' % aft_newer)
-    aft_cur = approval_lines()[-1]
+    # ^ The replaced request's decision comes after the new request: take the last request.
+    aft_cur = [l for l in approval_lines() if l['kind'] == 'request'][-1]
     wait(lambda: events_with('approval %s (release) dropped; replaced by %s' % (aft_old['id'], aft_cur['id'])), 'the replaced event')
     assert [r['id'] for r in js('task', 'ledger')['approvals']] == [aft_cur['id']]
     js('task', 'close', aft_newer, '--discard')
