@@ -101,7 +101,7 @@ fn digest(text: &str) -> String {
 }
 
 /// The slug of a memo: its task and its words, so the same memo has one record.
-pub fn memo_slug(task: u32, text: &str) -> String {
+fn memo_slug(task: u32, text: &str) -> String {
     format!("memo-{task}-{}", digest(text))
 }
 
@@ -281,7 +281,7 @@ pub fn drift(store: &Store) -> Result<Vec<Drift>, Error> {
 
 /// Write the views from the records, under the store's lock. A view edited by hand is first
 /// kept as `<view>.drift` and returned. Nothing happens for a scope without a manager.
-pub fn render(store: &Store) -> Result<Vec<Drift>, Error> {
+fn render(store: &Store) -> Result<Vec<Drift>, Error> {
     let Some(notes) = store.notes_dir() else {
         return Ok(Vec::new());
     };
