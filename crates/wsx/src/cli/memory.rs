@@ -3,7 +3,9 @@
 use super::*;
 use serde_json::{json, Value};
 use std::io::Read;
+use wsx_core::config::project::load_project_config;
 use wsx_core::memory::manage::{self, Drift};
+use wsx_core::memory::start;
 use wsx_core::memory::{
     backend, known_scopes, validate_scope, Command, Error, NewRecord, Patch, Query, Record, Store,
 };
@@ -54,6 +56,7 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
             commit,
             description,
             keywords,
+            paths,
             words,
             supersedes,
         } => {
@@ -71,6 +74,7 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
                     commit,
                     description,
                     keywords,
+                    paths,
                     words,
                 },
                 supersedes.as_deref(),
@@ -137,6 +141,44 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
             )?;
             notice_drift(&drift);
             show(&record, json, "updated")?;
+        }
+        MemoryCmd::Capture {
+            task,
+            memo,
+            commit,
+            paths,
+        } => {
+            let added = manage::capture(&one(&scopes)?, task, &memo, commit.as_deref(), &paths)?;
+            notice_drift(&added.drift);
+            show(
+                &added.record,
+                json,
+                if added.written {
+                    "captured"
+                } else {
+                    "no change, same as"
+                },
+            )?;
+        }
+        MemoryCmd::Start { files, role } => {
+            let store = one(&scopes)?;
+            let areas = match store.project_ids() {
+                Some(_) => load_project_config(store.root()).memory_areas,
+                None => Vec::new(),
+            };
+            let text = start::block(
+                &store,
+                &start::Start {
+                    files: &files,
+                    areas: &areas,
+                    role: role.as_deref(),
+                },
+                start::BUDGET_BYTES,
+            );
+            match json {
+                true => print(&json!({ "scope": store.scope(), "start": text }))?,
+                false => println!("{text}"),
+            }
         }
         MemoryCmd::Supersede { old, new, source } => {
             let (record, drift) = manage::supersede(&one(&scopes)?, &old, &new, &source)?;
@@ -283,12 +325,17 @@ fn show_hits(answer: backend::Answer, json: bool) -> MemResult<()> {
     }
     for hit in &answer.hits {
         println!(
-            "{:.2} {}/{} [{}, {}] {}",
+            "{:.2} {}/{} [{}, {}{}] {}",
             hit.score,
             hit.scope,
             hit.slug,
             hit.kind,
             hit.status,
+            if hit.extra.contains_key("stale") {
+                ", stale"
+            } else {
+                ""
+            },
             hit.excerpt.replace('\n', " ")
         );
     }

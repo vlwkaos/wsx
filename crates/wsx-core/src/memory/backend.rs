@@ -6,6 +6,7 @@
 
 use super::index::{self, Target};
 use super::record::{Record, Status, EXCERPT_CHARS};
+use super::start;
 use super::store::{Error, Store};
 use crate::process::{run_bounded, Bound, Options, Stderr};
 use serde::{Deserialize, Serialize};
@@ -130,17 +131,17 @@ impl Backend for Builtin {
             &terms,
         );
         let wanted = query.kind.as_ref().map(|k| k.0.as_str());
-        let mut hits: Vec<(Hit, u64)> = Vec::new();
+        let mut hits: Vec<(Hit, u64, Option<&Record>)> = Vec::new();
         for (raw, at) in ranked.scored {
             let score = (raw / ranked.bound).clamp(0.0, 1.0);
-            let (hit, newest) = match records.get(at) {
+            let (hit, newest, record) = match records.get(at) {
                 Some(r) => {
                     if (!query.include_inactive && r.status != Status::Active)
                         || wanted.is_some_and(|k| k != r.kind.as_str())
                     {
                         continue;
                     }
-                    (record_hit(store, r, score), r.updated)
+                    (record_hit(store, r, score), r.updated, Some(r))
                 }
                 None => {
                     let (doc, target) = (&docs[at - records.len()], target.as_ref());
@@ -149,15 +150,24 @@ impl Backend for Builtin {
                     else {
                         continue;
                     };
-                    (transcript_hit(store, target, doc, score), doc.at)
+                    (transcript_hit(store, target, doc, score), doc.at, None)
                 }
             };
-            hits.push((hit, newest));
+            hits.push((hit, newest, record));
         }
         // ^ Equal scores: the newer first.
         hits.sort_by(|a, b| b.0.score.total_cmp(&a.0.score).then(b.1.cmp(&a.1)));
         hits.truncate(query.limit);
-        Ok(hits.into_iter().map(|(hit, _)| hit).collect())
+        // ^ Only the hits that stay are checked: one git call for each fact with a commit.
+        Ok(hits
+            .into_iter()
+            .map(|(mut hit, _, record)| {
+                if record.is_some_and(|r| start::stale(store, r)) {
+                    hit.extra.insert("stale".into(), Value::Bool(true));
+                }
+                hit
+            })
+            .collect())
     }
 
     /// Drops the project's digest and builds it again from the logs; a scope without

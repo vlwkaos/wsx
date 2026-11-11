@@ -56,6 +56,8 @@ pub struct ProjectConfig {
     pub tasks: TaskConfig,
     /// `panels:` of `wsx.config.yml` (docs/panels.md).
     pub panels: Vec<crate::panel::PanelConfig>,
+    /// `memory.areas` of `wsx.config.yml`: `(glob of files, brief file)` (docs/memory.md "Start set").
+    pub memory_areas: Vec<(String, String)>,
     /// Migration or parse feedback for the TUI; never affects worktree behavior.
     pub notice: Option<String>,
 }

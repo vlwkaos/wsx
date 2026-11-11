@@ -890,6 +890,10 @@ pub enum MemoryCmd {
         /// A comma list; searched with the text
         #[arg(long, value_delimiter = ',')]
         keywords: Vec<String>,
+        /// A comma list of the paths or globs the record is about; a task whose --files meet
+        /// one gets the record in its first prompt
+        #[arg(long, value_delimiter = ',')]
+        paths: Vec<String>,
         /// A rule's: the owner's words, which must stand in the message of --source msg:<id>
         #[arg(long)]
         words: Option<String>,
@@ -920,6 +924,28 @@ pub enum MemoryCmd {
         #[arg(long)]
         lesson: Option<String>,
     },
+    /// Store a finished task's memo as a record: a fact with the landed commit and the paths
+    /// of its diff when the task landed, else an episode (what the host does when a task leaves)
+    Capture {
+        #[arg(long)]
+        task: u32,
+        #[arg(long)]
+        memo: String,
+        #[arg(long)]
+        commit: Option<String>,
+        /// A comma list: the files of the landed diff
+        #[arg(long, value_delimiter = ',')]
+        paths: Vec<String>,
+    },
+    /// Print the start block a worker with these files gets in its first prompt
+    Start {
+        /// A comma list of the task's --files globs
+        #[arg(long, value_delimiter = ',')]
+        files: Vec<String>,
+        /// The role that created the task: its brief and rules join the block
+        #[arg(long)]
+        role: Option<String>,
+    },
     /// Replace the record OLD with the active record NEW
     Supersede {
         old: String,
@@ -946,6 +972,8 @@ impl MemoryCmd {
             Self::Recall { .. } => "recall",
             Self::Add { .. } => "add",
             Self::Update { .. } => "update",
+            Self::Capture { .. } => "capture",
+            Self::Start { .. } => "start",
             Self::Supersede { .. } => "supersede",
             Self::Reindex => "reindex",
             Self::Get { .. } => "get",
@@ -963,10 +991,12 @@ impl MemoryCmd {
             Self::Search { .. }
             | Self::Recall { .. }
             | Self::Get { .. }
+            | Self::Start { .. }
             | Self::Status
             | Self::List => &[Recall],
             Self::Add { .. }
             | Self::Update { .. }
+            | Self::Capture { .. }
             | Self::Supersede { .. }
             | Self::Import
             | Self::Reindex => &[Remember],

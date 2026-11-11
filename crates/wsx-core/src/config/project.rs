@@ -81,6 +81,57 @@ struct ProjectConfigFile {
     tasks: Option<TasksFile>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     panels: Vec<crate::panel::PanelFile>,
+    #[serde(skip_serializing_if = "MemoryFile::is_empty")]
+    memory: MemoryFile,
+}
+
+/// `memory:` of `wsx.config.yml`. ref: docs/memory.md "Start set"
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+struct MemoryFile {
+    /// A glob of the files a task works on, and the brief file (relative to the project) that
+    /// its first prompt holds.
+    areas: BTreeMap<String, String>,
+}
+
+impl MemoryFile {
+    fn is_empty(&self) -> bool {
+        self.areas.is_empty()
+    }
+}
+
+/// Most areas a project declares.
+const MAX_MEMORY_AREAS: usize = 64;
+
+/// `memory.areas` checked: each glob valid and relative, each brief a relative path.
+fn memory_areas(file: MemoryFile) -> Result<Vec<(String, String)>, String> {
+    if file.areas.len() > MAX_MEMORY_AREAS {
+        return Err(format!(
+            "memory.areas has {} entries; at most {MAX_MEMORY_AREAS}",
+            file.areas.len()
+        ));
+    }
+    let plain = |path: &str| {
+        !path.is_empty()
+            && path.len() <= 1024
+            && !path.starts_with('/')
+            && !path.chars().any(char::is_control)
+            && !path.split('/').any(|part| part == "..")
+    };
+    file.areas
+        .into_iter()
+        .map(|(glob, brief)| {
+            if !plain(&glob) || glob::Pattern::new(&glob).is_err() {
+                return Err(format!("memory.areas: {glob:?} is not a relative glob"));
+            }
+            if !plain(&brief) {
+                return Err(format!(
+                    "memory.areas.{glob}: {brief:?} is not a relative file path"
+                ));
+            }
+            Ok((glob, brief))
+        })
+        .collect()
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -908,9 +959,11 @@ fn validate_project_file(file: ProjectConfigFile) -> Result<ProjectConfig, Strin
         .transpose()?;
     let tasks = validate_tasks(file.tasks)?;
     let panels = crate::panel::validate(file.panels)?;
+    let memory_areas = memory_areas(file.memory)?;
     Ok(ProjectConfig {
         tasks,
         panels,
+        memory_areas,
         post_create: file.hooks.post_create,
         copy_includes: file.copy.include,
         copy_excludes: file.copy.exclude,
@@ -1021,6 +1074,7 @@ fn write_yaml(path: &Path, config: &ProjectConfig) -> Result<(), String> {
         },
         tasks: None,
         panels: Vec::new(),
+        memory: MemoryFile::default(),
     };
     let text = yaml_serde::to_string(&document).map_err(|error| error.to_string())?;
     write_text_atomic(path, &text, Publish::Create)

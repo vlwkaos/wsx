@@ -506,7 +506,7 @@ fn declared_meetings<'a>(record: &'a TaskRecord, other: &TaskRecord) -> Vec<&'a 
 /// Whether two path globs can name a common path. A literal also covers what is under it
 /// (`docs` meets `docs/tasks.md`); two wildcard globs meet when their literal heads and
 /// tails agree, which can report a meeting that no real path makes.
-fn meet(a: &str, b: &str) -> bool {
+pub(crate) fn meet(a: &str, b: &str) -> bool {
     const WILD: [char; 3] = ['*', '?', '['];
     let under = |path: &str, dir: &str| {
         path == dir
