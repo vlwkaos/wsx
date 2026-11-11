@@ -37,7 +37,7 @@ Paths: TUI under `crates/wsx/src/`, web under `crates/wsx-web/web/`. "Driven" = 
 2. **Gap 2, task detail actions.** Keys `L` land, `a` answer (opens the chat line with `#n `), `H` hand, with a y/n confirm as approvals have; call the CLI paths the web uses. M.
 3. **Gap 3, scrollable help.** Give `Mode::Help` a scroll (`j/k`, PgUp/PgDn), add `/`, `\|`, `-`, `S`; make `?` open a Tasks-view help. S.
 4. **Gap 5, paste.** Route `Event::Paste` in Input modes to the active field as typed text (newlines to spaces in one-line fields). S.
-5. **Gaps 4 and 6, footer and routine keys.** Add `(t)asks`, `(v)` to the Project footer, `M`, `[`/`]` to README; `R` run now and `space` on/off on a routine row. S.
+5. **Gaps 4 and 6, footer and routine keys.** Add `(t)asks`, `(v)` to the Project footer, `M`, `[`/`]` to README; run now and on/off on a routine row (not `R`: it is Refresh, `event.rs:499`). S.
 
 ## Proof limits
 
