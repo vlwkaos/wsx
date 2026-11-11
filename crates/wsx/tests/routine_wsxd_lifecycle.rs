@@ -77,24 +77,6 @@ impl Install {
             .unwrap_or_else(|error| panic!("run wsx {args:?}: {error}"))
     }
 
-    /// `wsx daemon restart`, asked again while wsxd still recovers its sessions after its start: the
-    /// restart waits for the recovery and answers `deferred` until then.
-    fn restart(&self) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let restarted = self.wsx(&["daemon", "restart", "--json"]);
-            let answer: Value = serde_json::from_slice(&restarted.stdout).unwrap_or_default();
-            if answer["state"] == "restarted" {
-                return;
-            }
-            assert!(
-                answer["state"] == "deferred" && Instant::now() < deadline,
-                "{restarted:?}"
-            );
-            thread::sleep(Duration::from_millis(100));
-        }
-    }
-
     /// `wsx routine <args> --project <project> --json`, which must succeed.
     fn routine(&self, args: &[&str]) -> Value {
         let project = self.project.to_str().unwrap();
@@ -379,7 +361,9 @@ fn a_run_outlives_a_live_handoff_and_records_its_exit() {
     ]);
     install.routine(&["run", "slow"]);
     assert_eq!(install.view("slow")["running"], true);
-    install.restart();
+    let restarted = install.wsx(&["daemon", "restart", "--json"]);
+    let answer: Value = serde_json::from_slice(&restarted.stdout).unwrap_or_default();
+    assert_eq!(answer["state"], "restarted", "{restarted:?}");
     let after = install.view("slow");
     assert_eq!(after["running"], true, "the handoff ended the run: {after}");
     fs::write(&gate, "").unwrap();
@@ -631,7 +615,9 @@ fn a_stored_one_shot_routine_is_dropped_and_no_new_one_is_taken() {
     };
     // ^ A reader sees no one-shot, also before wsxd takes the store again.
     assert_eq!(names(install.routine(&["list"])), ["keep"]);
-    install.restart();
+    let restarted = install.wsx(&["daemon", "restart", "--json"]);
+    let answer: Value = serde_json::from_slice(&restarted.stdout).unwrap_or_default();
+    assert_eq!(answer["state"], "restarted", "{restarted:?}");
     assert_eq!(names(install.routine(&["list"])), ["keep"]);
     let cleaned = fs::read_to_string(&file).unwrap();
     assert!(
