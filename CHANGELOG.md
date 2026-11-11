@@ -1,12 +1,6 @@
 # Changelog
 
-## [Unreleased]
-
-### Changed
-
-- Tasks: a manager no longer forgets an owner rule because `decisions.md` grew. A `decisions.md` over 4096 bytes gets the manager one follow-up turn (with `context.md` over 6144 bytes, the same one) to rewrite it as the current rules under 3072 bytes: merge duplicates, drop lines a later decision replaced, keep each rule's date and the owner's own words, never drop a rule that still holds. wsx first appends the old lines to `notes/decisions-archive.md`. A fresh conversation's start budget (10 KiB) now gives `decisions.md` the larger part, up to 6 KiB with `context.md` keeping at least 4 KiB; what is still left out is named in `NOT SHOWN: decisions.md lines a-b of N`, with the archive. An owner message also matches the lines of `decisions-archive.md`. ([docs/tasks.md](docs/tasks.md) "Notes budget").
-
-## [0.43.0] - 2026-11-10
+## [0.43.0] - 2026-11-11
 
 ### Added
 
@@ -80,6 +74,7 @@
 
 ### Changed
 
+- Tasks: a manager no longer forgets an owner rule because `decisions.md` grew. A `decisions.md` over 4096 bytes gets the manager one follow-up turn (with `context.md` over 6144 bytes, the same one) to rewrite it as the current rules under 3072 bytes: merge duplicates, drop lines a later decision replaced, keep each rule's date and the owner's own words, never drop a rule that still holds. wsx first appends the old lines to `notes/decisions-archive.md`. A fresh conversation's start budget (10 KiB) now gives `decisions.md` the larger part, up to 6 KiB with `context.md` keeping at least 4 KiB; what is still left out is named in `NOT SHOWN: decisions.md lines a-b of N`, with the archive. An owner message also matches the lines of `decisions-archive.md`. ([docs/tasks.md](docs/tasks.md) "Notes budget").
 - Routines recur only. The `at` trigger is gone from the routine model, `wsx routine add|edit --at`, `wsx task routine`, the TUI form, the docs and the manager's instructions; a command that must run once goes through its approved action (for example `wsx task project add`), not a routine. A stored routine with an `at` trigger is removed with its runs when wsxd takes the store (daemon revision 50), logged once per project, so fired one-shots no longer stay listed.
 - Tasks: `wsx task checkin --in/--at --why` keeps its command and its event, but it is a timer in the manager host's state (`checkin` in `manager/state.json`), not a routine named `checkin`. The event reads `check-in: <why>` (was `routine checkin succeeded after 0 s; its output ends: <why>`), a new check-in replaces the last, nothing shows in Routines, and a host restart keeps it and fires it late when it is past due.
 - Tasks: a manager or role asks each question once. Its turn input lists the replies that still ask the owner ("Open questions": reply id and first line, none when none is open), and the instructions say to end a reply with a question only for a new decision and never to restate an open one; the Needs you list holds it ([docs/tasks.md](docs/tasks.md) "Questions").
