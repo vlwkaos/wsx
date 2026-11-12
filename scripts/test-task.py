@@ -785,7 +785,8 @@ def manager_up(created):
         js('task', 'close', n, '--discard')
     assert not limit_record.exists()
     reset_mark.unlink()
-    probe_stamp.unlink()
+    # ^ A stamp a day ahead: no later section sees a probe clear its own short limit.
+    probe_stamp.write_text(json.dumps({'unix_ms': int((time.time() + 86400) * 1000)}))
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
     assert launch['git_optional_locks'] == '0', launch
     # ^ docs/configuration.md "Profiles": the manager and every Claude worker so far run under demo's profile
@@ -3010,8 +3011,10 @@ def part_core(created=None):
                    for t in traces()[traces().index(running) + 1:]), 'same launch keeps its conversation'
     assert not turn_with('STATUS again')['message'].startswith('Handover')
     # ^ A usage limit is no reply: the message waits and is answered after the reset.
+    before_limit = int(time.time() * 1000)
     limited = js('task', 'say', 'LIMIT 1 STATUS limited')
-    held = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'limit' and e.get('until')), None), 'the manager limit wait')
+    held = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'limit' and e.get('until') and e['unix_ms'] >= before_limit),
+                             None), 'the manager limit wait')
     assert re.fullmatch(r'\d\d:\d\d', held['until']), held
     answer = reply_to(limited['id'])
     assert answer['text'].startswith('open: ') and answer['unix_ms'] >= held['unix_ms'] + 1000, (held, answer)
