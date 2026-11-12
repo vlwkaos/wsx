@@ -9,8 +9,26 @@ import { h } from "./preact.js";
 import { html, useMemo, useState } from "./lib.js";
 import { Diagram } from "./diagram.js";
 
+// ^ A table whose header sits right under a list item's line, not indented to the item
+// (docs/design/list-tables.md): markdown-it's table rule needs the delimiter row at the item's
+// indent, so those lines stayed text of the item. This rule ends the item's paragraph at such a
+// header, by asking the table rule itself with the indent of the page; the table then follows
+// the list, as GitHub shows it with a blank line between.
+const afterItem = (table) => (state, line, end, silent) => {
+  if (!silent || state.sCount[line] >= state.blkIndent) return false;
+  const indent = state.blkIndent;
+  state.blkIndent = 0;
+  try {
+    return table(state, line, end, true);
+  } finally {
+    state.blkIndent = indent;
+  }
+};
+
 const makeParser = () => {
   const made = globalThis.markdownit({ html: false, linkify: true });
+  const table = made.block.ruler.__rules__.find((rule) => rule.name === "table").fn;
+  made.block.ruler.before("table", "table_after_item", afterItem(table), { alt: ["paragraph"] });
   // Only text with a scheme becomes a link: `main.rs` and `notes.io` are file names here.
   made.linkify.set({ fuzzyLink: false, fuzzyEmail: false });
   return made;

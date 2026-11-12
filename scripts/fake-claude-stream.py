@@ -57,6 +57,9 @@ Started with the manager's instructions it is a scripted manager instead: per tu
                  OWNER_SAID in it becomes the id of the turn's first owner message
   SCRIPT         (a line) run the rest of the message as one shell script, heredocs too
   TABLE          answer with a wide markdown table that names #4 twice and #2
+  LISTTABLE      answer with scripts/fixtures/list-tables.md: a manager's reply whose numbered items each
+                 have a table under them, not indented (docs/design/list-tables.md)
+  LISTPLAIN      answer with a plain table, a plain list and a list followed by a paragraph
   TABLE5         answer "Five columns:" with a table of five columns and 20 rows, and 30 lines after it
   DIAGRAM        answer with a tall mermaid diagram, drawn after the bubble shows
   PAGE <section> <words>  replace that section of the project overview (its instructions name it)
@@ -398,6 +401,12 @@ def manager_turn(text, project, page):
         cell = 'a long cell that keeps going ' * 4
         replies.append('Where things stand:\n\n| Task | State | Note |\n|---|---|---|\n'
                        '| #4 | blocked | %s |\n| #4 | asks | %s |\n| #2 | ready | %s |' % (cell, cell, cell))
+    if 'LISTTABLE' in text.split():
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'list-tables.md')) as fixture:
+            replies.append(fixture.read().rstrip('\n'))
+    if 'LISTPLAIN' in text.split():
+        replies.append('Plain shapes:\n\n| Key | Value |\n|---|---|\n| one | 1 |\n| two | 2 |\n\n- first bullet\n- second bullet\n\n'
+                       '1. only item\n\nA paragraph after the list.')
     if 'TABLE5' in text.split():
         rows = [('alpha', 'blocked', 'owner', 'Monday', 'waits for the network grant'),
                 ('beta', 'ready', 'manager', 'Tuesday', 'lands after the checks pass'),
