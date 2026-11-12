@@ -1299,7 +1299,7 @@ if (!(await evaluate("window.answerLine.isConnected"))) await fail("a status lin
 await shot("reservoir-acted", ".composer-send");
 await closeReservoir();
 
-// --- The ⋯ menu: Sessions, Usage, Media and Files (the site reads files); Overview is a header button, Routines a pill (Roles are checked below); the worktree list hides task sessions.
+// --- The ⋯ menu: Sessions, Usage, Media and Files (the site reads files); Overview is a header button, Routines a pill (Chats are checked below); the worktree list hides task sessions.
 await click(".more-button");
 if ((await text(".more-menu a:not(.role-contact)")).join() !== "Sessions,Usage,Media,Files") await fail(`the ⋯ menu offers ${await text(".more-menu a:not(.role-contact)")}`);
 await shot("more-menu", ".composer-send");
@@ -3474,7 +3474,7 @@ if (!resolved) await fail("the fixture project has no resolutions, so the chat c
 for (const wide of [false, true]) {
   await resize(wide ? [1280, 800, 1] : [390, 844, 2]);
   await go(chat);
-  await until("!!document.querySelector('.composer-field')", "the chat did not open for Roles");
+  await until("!!document.querySelector('.composer-field')", "the chat did not open for Chats");
   const projectName = (await text(".bar-label"))[0];
   const shownName = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((data) => data.manager.name)`);
   // ^ Home lists the open role under its project: its name and the line of its last reply, no dot
@@ -3486,7 +3486,7 @@ for (const wide of [false, true]) {
   if (listed.name !== "billing" || !listed.line.startsWith("open: ") || (!wide && listed.dots) || listed.under !== projectName) await fail(`Home lists the chat as ${JSON.stringify(listed)}, not billing under ${projectName}`);
   await shot(`roles-home${wide ? "-wide" : ""}`);
   await go(chat);
-  await until("!!document.querySelector('.composer-field')", "the chat did not open again for Roles");
+  await until("!!document.querySelector('.composer-field')", "the chat did not open again for Chats");
   await click(".more-button");
   await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lists no chat");
   // ^ The role's reply is news, but this device never opened its chat: as for a project, nothing is new.
