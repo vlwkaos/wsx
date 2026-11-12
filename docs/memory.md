@@ -35,7 +35,7 @@ A reader ignores fields it does not know, and a program keeps the fields of its 
 
 `slug`, `scope`, `path` (the file the record lives in), `kind`, `status`, `score` 0..1 (higher is better), `excerpt` (at most 240 characters), and `description` and `keywords` when the record has them.
 
-wsx also searches the transcripts of a project scope (a chat message or reply, a task's prompt, result and story, the manager's decision and memo lines; "Search" in [tasks.md](tasks.md)) and returns them as hits: `slug` is the line's `reference` (`<project>:<id>`, `<project>#<task>`, `<project>:notes/decisions.md`), `kind` one of `message`, `reply`, `task`, `result`, `history`, `decision`, `memo`, `status` `active`, `path` the log or note file it was read from, and the keys of a `wsx task search` hit (`project`, `role` (the chat), `id`, `task`, `unix_ms`, `by`, `reference`, `quote`, `outcome`). A reader ignores the keys it does not know and treats a `kind` it does not know as opaque. `--kind` takes any of these kinds.
+wsx also searches the transcripts of a project scope (a chat message or reply, a task's prompt, result and story, the manager's decision and memo lines; "Search" in [tasks.md](tasks.md)) and returns them as hits: `slug` is the line's `reference` (`<project>:<id>`, `<project>#<task>`, `<project>:notes/decisions.md`), `kind` one of `message`, `reply`, `task`, `result`, `history`, `decision`, `memo`, `status` `active`, `path` the log or note file it was read from, and the keys of a `wsx task search` hit (`project`, `chat`, `id`, `task`, `unix_ms`, `by`, `reference`, `quote`, `outcome`). A reader ignores the keys it does not know and treats a `kind` it does not know as opaque. `--kind` takes any of these kinds.
 
 ## Commands
 

@@ -20,7 +20,8 @@ use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-const DIGEST_FILE: &str = "search.jsonl";
+/// The project's search digest, rebuilt from the logs when it is missing.
+pub(crate) const DIGEST_FILE: &str = "search.jsonl";
 const LOCK_FILE: &str = "search.lock";
 /// A record keeps this much of a text; the log and the task keep the rest.
 const MAX_TEXT_BYTES: usize = 4096;
@@ -78,7 +79,7 @@ pub(super) struct Doc {
     pub kind: Kind,
     /// The chat it belongs to; none is the manager's.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub role: String,
+    pub chat: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -112,7 +113,7 @@ pub struct Hit {
     pub kind: Kind,
     /// The chat of a message of another chat than the manager's.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
+    pub chat: Option<String>,
     /// The message id in that chat, or none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<u64>,
@@ -280,7 +281,7 @@ pub(super) fn source_path(project_id: &str, doc: &Doc) -> String {
     let path = match (doc.kind, doc.task) {
         (Kind::Message | Kind::Reply, _) => ManagerDir::existing_as(
             project_id,
-            Some(doc.role.as_str()).filter(|r| !r.is_empty()),
+            Some(doc.chat.as_str()).filter(|r| !r.is_empty()),
         )
         .ok()
         .flatten()
@@ -312,10 +313,10 @@ pub(super) fn outcome(target: &Target, task: u32) -> Option<String> {
 }
 
 pub(super) fn hit(project: &str, doc: &Doc, score: f64, current: Option<&str>) -> Hit {
-    let role = Some(doc.role.clone()).filter(|role| !role.is_empty());
+    let chat = Some(doc.chat.clone()).filter(|chat| !chat.is_empty());
     let reference = match (doc.kind, doc.id, doc.task) {
-        (Kind::Message | Kind::Reply, Some(id), _) => match &role {
-            Some(role) => format!("{project}:{role}:{id}"),
+        (Kind::Message | Kind::Reply, Some(id), _) => match &chat {
+            Some(chat) => format!("{project}:{chat}:{id}"),
             None => format!("{project}:{id}"),
         },
         (Kind::Decision, ..) => format!("{project}:notes/decisions.md"),
@@ -324,7 +325,7 @@ pub(super) fn hit(project: &str, doc: &Doc, score: f64, current: Option<&str>) -
         _ => project.to_string(),
     };
     let quote = match (doc.kind, doc.id) {
-        (Kind::Message | Kind::Reply, Some(id)) if role.is_none() && current == Some(project) => {
+        (Kind::Message | Kind::Reply, Some(id)) if chat.is_none() && current == Some(project) => {
             Some(format!("{QUOTE_REF}{id}"))
         }
         _ => None,
@@ -332,7 +333,7 @@ pub(super) fn hit(project: &str, doc: &Doc, score: f64, current: Option<&str>) -
     Hit {
         project: project.to_string(),
         kind: doc.kind,
-        role,
+        chat,
         id: doc.id,
         task: doc.task,
         unix_ms: doc.at,
@@ -481,10 +482,10 @@ fn supersede(docs: &mut Vec<Doc>) {
 fn catch_up_chats(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Result<()> {
     let first = ManagerDir::existing(project_id)?;
     for dir in first.into_iter().chain(chats::all(project_id)) {
-        let role = dir.role.clone().unwrap_or_default();
+        let chat = dir.chat.clone().unwrap_or_default();
         let seen = docs
             .iter()
-            .filter(|doc| doc.role == role)
+            .filter(|doc| doc.chat == chat)
             .filter_map(|doc| doc.id)
             .max();
         let log = dir.read_back_where(
@@ -506,16 +507,16 @@ fn catch_up_chats(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
                 continue;
             };
             top = top.max(Some(id));
-            fresh.extend(chat_doc(entry, &role));
+            fresh.extend(chat_doc(entry, &chat));
         }
         if top != seen
             && !fresh
                 .last()
-                .is_some_and(|doc| doc.role == role && doc.id == top)
+                .is_some_and(|doc| doc.chat == chat && doc.id == top)
         {
             fresh.push(Doc {
                 kind: Kind::Mark,
-                role,
+                chat,
                 id: top,
                 task: None,
                 at: 0,
@@ -530,7 +531,7 @@ fn catch_up_chats(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
 
 /// The record of a chat entry: what the owner, a manager or a chat said, and a reply that says
 /// something. Wsx's events, recaps and quiet replies are not conversation.
-fn chat_doc(entry: &ManagerEntry, role: &str) -> Option<Doc> {
+fn chat_doc(entry: &ManagerEntry, chat: &str) -> Option<Doc> {
     let (kind, id, by, text, check) = match &entry.event {
         ManagerEvent::Message {
             id,
@@ -552,8 +553,8 @@ fn chat_doc(entry: &ManagerEntry, role: &str) -> Option<Doc> {
             quiet: false,
             ..
         } if !says_nothing(text) => {
-            let by = Some(role)
-                .filter(|role| !role.is_empty())
+            let by = Some(chat)
+                .filter(|chat| !chat.is_empty())
                 .unwrap_or("manager");
             (Kind::Reply, *id, by.to_string(), text, None)
         }
@@ -568,7 +569,7 @@ fn chat_doc(entry: &ManagerEntry, role: &str) -> Option<Doc> {
     };
     (!body.is_empty()).then(|| Doc {
         kind,
-        role: role.to_string(),
+        chat: chat.to_string(),
         id: Some(id),
         task: None,
         at: entry.unix_ms,
@@ -604,7 +605,7 @@ fn catch_up_tasks(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
                 let prompt = dir.prompt().ok().flatten().unwrap_or_default();
                 fresh.push(Doc {
                     kind: Kind::Task,
-                    role: String::new(),
+                    chat: String::new(),
                     id: None,
                     task: Some(task),
                     at: record.created_unix_ms,
@@ -628,7 +629,7 @@ fn catch_up_tasks(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
         if !text.is_empty() && old.is_none_or(|old| old.text != text) {
             fresh.push(Doc {
                 kind: Kind::Result,
-                role: String::new(),
+                chat: String::new(),
                 id: None,
                 task: Some(task),
                 at,
@@ -671,7 +672,7 @@ fn catch_up_history(dir: &TaskDir, task: u32, from: u64, fresh: &mut Vec<Doc>) {
         };
         fresh.push(Doc {
             kind: Kind::History,
-            role: String::new(),
+            chat: String::new(),
             id: None,
             task: Some(task),
             at: entry.unix_ms,
@@ -753,7 +754,7 @@ fn notes(project_id: &str, records_apart: bool) -> Vec<Doc> {
                 .and_then(|(n, _)| n.parse().ok());
             docs.push(Doc {
                 kind,
-                role: String::new(),
+                chat: String::new(),
                 id: None,
                 task,
                 at: text.split(' ').next().and_then(day_ms).unwrap_or(modified),

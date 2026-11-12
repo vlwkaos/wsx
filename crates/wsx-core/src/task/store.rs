@@ -969,7 +969,7 @@ pub struct ManagerDir {
     pub project_id: String,
     pub path: PathBuf,
     /// The chat's name; none is the first chat, the manager.
-    pub role: Option<String>,
+    pub chat: Option<String>,
 }
 
 const CHATS_DIR: &str = "chats";
@@ -981,9 +981,9 @@ impl ManagerDir {
     }
 
     /// Open the manager's folder or a chat's, creating it owner-only when it is missing.
-    pub fn open_as(project_id: &str, role: Option<&str>) -> Result<Self> {
+    pub fn open_as(project_id: &str, chat: Option<&str>) -> Result<Self> {
         let project = ensure_project_dir(project_id)?;
-        let path = match role {
+        let path = match chat {
             None => project.join(MANAGER_DIR),
             Some(name) => {
                 create_private_dir(&project.join(CHATS_DIR))?;
@@ -996,7 +996,7 @@ impl ManagerDir {
         Ok(Self {
             project_id: project_id.into(),
             path,
-            role: role.map(str::to_string),
+            chat: chat.map(str::to_string),
         })
     }
 
@@ -1005,21 +1005,21 @@ impl ManagerDir {
         Self::existing_as(project_id, None)
     }
 
-    pub fn existing_as(project_id: &str, role: Option<&str>) -> Result<Option<Self>> {
-        let path = match role {
+    pub fn existing_as(project_id: &str, chat: Option<&str>) -> Result<Option<Self>> {
+        let path = match chat {
             None => project_dir(project_id)?.join(MANAGER_DIR),
             Some(name) => chats_dir(project_id)?.join(super::chats::checked_name(name)?),
         };
         Ok(require_real_dir(&path).is_ok().then(|| Self {
             project_id: project_id.into(),
             path,
-            role: role.map(str::to_string),
+            chat: chat.map(str::to_string),
         }))
     }
 
     /// The name the owner reads and the session label's end: the chat's, or `manager`.
     pub fn name(&self) -> &str {
-        self.role.as_deref().unwrap_or("manager")
+        self.chat.as_deref().unwrap_or("manager")
     }
 
     pub fn socket_path(&self) -> PathBuf {

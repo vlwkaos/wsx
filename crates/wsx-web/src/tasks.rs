@@ -1428,7 +1428,7 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
         let key = (scope.project, dir.name().to_string());
         // ^ A chat seen for the first time, as at a server start, notifies nothing.
         let last = watch.replies.get(&key).copied();
-        let (name, url) = match &dir.role {
+        let (name, url) = match &dir.chat {
             Some(chat) => (chat.clone(), format!("#/p/{}/c/{chat}", scope.project)),
             None => (manager_name(scope), format!("#/p/{}", scope.project)),
         };

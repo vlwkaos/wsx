@@ -42,7 +42,6 @@ flowchart LR
 | Worker check runs and slot | 647 runs, 54 min wait per landed task | Simplify | The slot is needed on one machine; the wait comes from the long web scenario |
 | Land, conflict return, deploy | 175 lands, 52 conflicts, 172 deploys | Keep | Real owner load removed |
 | Batch land, trial, parent tasks | 0 manager batch lands since 10-29, 0 trial log events since 10-23, 0 `--into` | Remove | Never used here; a faster web scenario treats the cause batch land was for |
-| Roles | 0 uses, no `roles/` folder | Remove | Never used here; reverses the owner's yes in msg 1453 |
 | Hold | 8 tasks | Simplify | Owner called it hard to follow (10-24); keep the one line on the record |
 | Preview, by hand | 0 manager previews, owner clicks not logged; 0 by-hand log events | Simplify | Live deploy covers this repo, other product kinds not measured; opening the worker's session is the whole need (msg 1894) |
 | To check | 69 items, 3 failed | Simplify | Look and real device only; no release gate |

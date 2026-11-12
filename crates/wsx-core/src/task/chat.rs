@@ -569,7 +569,7 @@ pub fn read_for(
     edit: impl FnMut(&mut ManagerEntry),
 ) -> Result<Reading> {
     let shown = settings.manager_shown_name(project);
-    let chat = dir.and_then(|dir| dir.role.as_deref());
+    let chat = dir.and_then(|dir| dir.chat.as_deref());
     let manager = manager_name_in(chat, shown);
     let names = Names {
         own: chat.unwrap_or(shown),

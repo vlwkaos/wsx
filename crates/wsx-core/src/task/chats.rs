@@ -58,7 +58,7 @@ pub fn all(project_id: &str) -> Vec<ManagerDir> {
 }
 
 pub fn is_open(dir: &ManagerDir) -> bool {
-    dir.role.is_some() && !dir.path.join(CLOSED_FILE).exists()
+    dir.chat.is_some() && !dir.path.join(CLOSED_FILE).exists()
 }
 
 /// The open chats' folders, by name.
@@ -314,16 +314,19 @@ pub(super) fn migrate_once(project_id: &str, project: &Path) {
 /// `brief.md` to `goal.md`, keeps a role's adapter and model as the `[[agents]]` entry that has
 /// both (else drops them with a warning), rewrites the values `role:<n>` and `role-reply:<n>`
 /// in task records and logs to `chat:<n>` and `chat-reply:<n>`, and drops the approval lines of
-/// the removed `role` action. A step that fails leaves the rest for the next run.
+/// the removed `role` action, and deletes the search digest if it has a `role` field (it is
+/// rebuilt on the next search). A step that fails leaves the rest for the next run.
 fn migrate(project_id: &str, project: &Path) -> Result<()> {
     let approvals = project.join(store::APPROVALS_FILE);
     let old = project.join("roles");
-    let role_requests = |bytes: &Option<Vec<u8>>| {
-        bytes
-            .as_ref()
-            .is_some_and(|bytes| bytes.windows(6).any(|at| at == br#""role""#))
+    let digest = project.join(crate::memory::index::DIGEST_FILE);
+    let has = |file: &Path, key: &[u8]| -> Result<bool> {
+        Ok(store::read_bounded_if_exists(file, 64 << 20)?
+            .is_some_and(|bytes| bytes.windows(key.len()).any(|at| at == key)))
     };
-    if !old.is_dir() && !role_requests(&store::read_bounded_if_exists(&approvals, 64 << 20)?) {
+    let (role_requests, role_digest) =
+        (has(&approvals, br#""role""#)?, has(&digest, br#""role":"#)?);
+    if !old.is_dir() && !role_requests && !role_digest {
         return Ok(());
     }
     // ^ A log is rewritten whole here, while a host appends to it with no lock. Every process
@@ -335,6 +338,9 @@ fn migrate(project_id: &str, project: &Path) -> Result<()> {
     )?;
     if let Some(bytes) = store::read_bounded_if_exists(&approvals, 64 << 20)? {
         drop_role_approvals(&approvals, &bytes)?;
+    }
+    if role_digest {
+        std::fs::remove_file(&digest)?;
     }
     if !old.is_dir() {
         return Ok(());

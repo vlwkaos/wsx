@@ -106,6 +106,6 @@ The judge gets each case's own handover as `earlier`. In the first judgment, a b
 
 The new text adds about 155 tokens to a fresh start's cache write. Most of the +9% total comes from the extra checks in turns 3 and 4, not from the larger prefix. One run per mode is a small sample.
 
-The change itself: each manager and role takes the new instructions once. A warm conversation (under 100k context, active within 60 min) gets them as one message of about 2.3k tokens. Any other conversation rotates once, which is a fresh start (the logged one, 2286, cost $0.82).
+The change itself: each manager and chat takes the new instructions once. A warm conversation (under 100k context, active within 60 min) gets them as one message of about 2.3k tokens. Any other conversation rotates once, which is a fresh start (the logged one, 2286, cost $0.82).
 
 Retrospect after step 2, on a copy of the wsx log since 11-04 09:23 (sonnet, $0.08): 4 of 20 replies turned down, A 2, C 1, E 1. All 3 changes it named were instruction text. This is the baseline for the counts per kind.
