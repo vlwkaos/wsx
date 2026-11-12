@@ -7,7 +7,7 @@ import { Attachments } from "./chat.js";
 import { Quote } from "./reply.js";
 import { TaskChip, withChips } from "./task-words.js";
 import { checkQuote, CheckRow } from "./checks.js";
-import { can, sessionLink, shows } from "./store.js";
+import { can, sessionLink, shows, state } from "./store.js";
 
 // Bubbles of one author closer together than this read as one group.
 const GROUP_MS = 5 * 60_000;
@@ -140,12 +140,23 @@ const NeedTags = ({ items, onShow }) => items.map((item) => html`
     <span>Needs you: ${item.label}</span>
   </button>`);
 
+// ^ The registered project of another project's manager (`peer:<project>`; a role is no project's):
+// null when the site does not list it, and its name then stays plain text.
+const peerProject = (peer) => peer == null || peer.startsWith("role:") ? null : state.projects.find((other) => other.name === peer) ?? null;
+
+// A message's author above its box. Another project's manager is a link to that project's manager
+// chat, the route a Home row opens (docs/web-client-tasks.md "Project screen").
+const Author = ({ name, target, peer }) => target
+  ? html`<a class="bubble-author" href=${`#/p/${target.id}`} aria-label=${`Open ${peer} manager chat`}>${name}</a>`
+  : html`<p class="bubble-author" aria-hidden="true">${name}</p>`;
+
 // One message. `home` turns its text runs into task chips; a message of another project's
 // manager (not a role) reads its bare `#n` as that project's task.
 export function Bubble({ project, row, words: home, fresh, onNeed }) {
   const out = row.author === "owner";
   const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
   const words = peer != null && !peer.startsWith("role:") ? withChips(project, peer) : home;
+  const target = peerProject(peer);
   const id = `bubble-${row.key}`;
   // ^ A post with a level (`wsx task post --level warn|bad`) says it in its tag (docs/web-client-tasks.md "Task notifications").
   const tag = row.level ? (row.level === "bad" ? "Bad" : "Warn") : row.tag;
@@ -165,7 +176,7 @@ export function Bubble({ project, row, words: home, fresh, onNeed }) {
       data-quote=${row.quote ?? null} data-id=${row.quote != null ? row.id ?? null : null}
       data-pending=${row.pending ? "" : null} data-asks=${row.asks ? "" : null} data-routine=${row.post ? "" : null} data-level=${row.level ?? null}
       aria-label=${`${row.name}, ${clock(row.at)}${row.asks ? ", Asks you" : row.level ? `, ${tag}` : row.post ? ", Routine" : ""}`}>
-      ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${row.name}</p>`}
+      ${!out && (row.first || target) && html`<${Author} name=${row.name} target=${target} peer=${peer} />`}
       <div class="bubble-box">${mark && html`<p class="bubble-tag" role="img" aria-label=${mark[1]} title=${mark[1]}><${Icon} name=${mark[0]} /></p>`}${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>
       ${row.last && html`<p class="bubble-time" aria-hidden="true">${row.pending ? "Sending…" : clock(row.at)}</p>`}
     </article>`;

@@ -169,6 +169,14 @@ impl App {
                 }
                 // ^ A session link (Enter on it) is entered as `S` enters a shell.
                 let session = list.chat.as_mut().and_then(|chat| chat.session.take());
+                // ^ `P`: the chat of the other manager whose message is in view.
+                if let Some(peer) = list.chat.as_mut().and_then(|chat| chat.peer.take()) {
+                    if !list.switch_to(&peer) {
+                        if let Some(chat) = &mut list.chat {
+                            chat.notice = Some((format!("{peer}: not a registered project"), true));
+                        }
+                    }
+                }
                 self.needs_redraw = true;
                 if let Some(id) = session {
                     return self.action_open_session(runtime::SessionId(id), terminal);

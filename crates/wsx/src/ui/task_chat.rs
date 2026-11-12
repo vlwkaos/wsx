@@ -6,7 +6,7 @@ use super::{
     text::{cells, truncate_to_width, wrap_cells},
     theme,
 };
-use crate::task_chat::{links, parts, Focus, Item, ManagerChat, Part};
+use crate::task_chat::{links, parts, peer_of, Focus, Item, ManagerChat, Part};
 use ratatui::{
     layout::Rect,
     prelude::Stylize,
@@ -293,6 +293,9 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
             let mut hints = vec!["(i)message".into(), "(/)find".into()];
             if !links(&chat.rows).is_empty() {
                 hints.push("([/])link".into());
+            }
+            if chat.rows.iter().any(|row| peer_of(row).is_some()) {
+                hints.push("(P)eer chat".into());
             }
             match chat.selected_item() {
                 Some(Item::Check(_)) => {

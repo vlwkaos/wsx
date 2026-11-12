@@ -2258,6 +2258,20 @@ try:
     rows_in_order([r"^You\s+\d\d:\d\d", r"^Where is #3\?", r"^#3 done$", r"^Atlas$", r"^#3 is on main\.$",
                    r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.", r"^elsewhere\s+\d\d:\d\d",
                    r"^Hello from elsewhere\."])
+    # ^ `P` opens the chat of the other manager whose message is nearest the bottom of the view
+    # (docs/tasks.md "TUI"): elsewhere is no registered project and stays a notice; halt-me is one,
+    # and its message, the newest, opens halt-me's own chat in place of keep-me's.
+    wait_for(lambda: "(P)eer chat" in remove_tui.text(), lambda: f"the footer lists no P key:\n{remove_tui.text()}", seconds=60)
+    remove_tui.send(b"P")
+    wait_for(lambda: "elsewhere: not a registered project" in remove_tui.text(), "P on an unregistered manager gave no notice", seconds=60)
+    with keep_log.open("a") as log_file:
+        log_file.write(json.dumps({"unix_ms": int(time.time() * 1000), "kind": "message", "id": 901,
+                                   "from": "manager:halt-me", "text": "Hello from halt-me."}) + "\n")
+    remove_tui.send(b"G")
+    wait_for(lambda: "Hello from halt-me." in remove_tui.text(), "the TUI chat did not show halt-me's message", seconds=60)
+    remove_tui.send(b"P")
+    wait_for(lambda: "Hello from halt-me." not in remove_tui.text() and "Atlas" not in remove_tui.text() and "halt-me" in remove_tui.text(),
+             lambda: f"P did not open halt-me's manager chat:\n{remove_tui.text()}", seconds=60)
     remove_tui.send(b"\x1b")
     wait_for(lambda: "press i to write a message" not in remove_tui.text(), "Esc did not close the manager chat", seconds=60)
     remove_tui.send(b"q")
