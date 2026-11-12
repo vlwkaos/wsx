@@ -1743,8 +1743,10 @@ impl Manager {
             check,
         })?;
         self.last_activity = Instant::now();
-        self.duty().overview_asked &= from != Author::Owner;
-        self.duty().drift_said &= from != Author::Owner;
+        if let Some(duties) = self.duties.as_mut() {
+            duties.overview_asked &= from != Author::Owner;
+            duties.drift_said &= from != Author::Owner;
+        }
         self.thought_asked &= from != Author::Owner;
         // ^ The owner may have just signed in again: a sign-in hold tries at once.
         if from == Author::Owner {
