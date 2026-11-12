@@ -40,6 +40,7 @@ item keeps its number.
   Too wide: the widest column gives cells down to 6, its words wrap, and rows that wrap get a
   rule between them. If even that does not fit, each row is a record: its first cell in bold, then
   `Header: value` lines.
+- GFM makes a line without `|` right under a table a row. The fixture's closing sentence ("For a solo maintainer ...", no blank line) then became a one-cell row and widened the first column, so both chats end the table there. On the web the table rule is wrapped (`endingAtText`): the rows it took are given back to the text.
 - On the web a table right after a blockquote line stays text, as before; the TUI reads any indent.
 
 ## Sources
