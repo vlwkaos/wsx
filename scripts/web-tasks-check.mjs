@@ -3521,6 +3521,9 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   let id = 9000;
   const append = (entry) => fs.appendFileSync(path.join(state, found), `${JSON.stringify({ unix_ms: Date.now(), ...entry })}\n`);
   const marked = async () => {
+    // ^ Home is mounted afresh each time: the loop above leaves the page on Home, where go("#/") would change nothing.
+    await go("#/settings");
+    await until("!document.querySelector('.home-row')", "the page did not leave Home for the chat dot");
     await go("#/");
     await until("!!document.querySelector('.home-row') && !document.querySelector('.composer-field')", "home did not replace the chat for the chat dot");
     await until("!!document.querySelector('.home-rows .chat-row')", "Home lost the chat for the chat dot");
