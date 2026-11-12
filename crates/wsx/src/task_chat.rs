@@ -726,7 +726,6 @@ fn read(
 ) -> anyhow::Result<View> {
     let window = Window::new(Some(searched), None, around);
     let settings = load_task_config(main).unwrap_or_default();
-    let other = dir.and_then(|dir| dir.role.clone());
     // ^ Another registered project's manager by its set name (docs/tasks.md "Config"), each
     // project's config read once.
     let names = std::cell::RefCell::new(std::collections::HashMap::<String, String>::new());
@@ -750,24 +749,16 @@ fn read(
             log, asks, rows, ..
         },
         approvals,
+        items: checked,
     } = chat::read_for(dir, (project, store), &settings, &window, &peer, |_| {})?;
-    let name = other
-        .clone()
+    let name = dir
+        .and_then(|dir| dir.role.clone())
         .unwrap_or_else(|| settings.manager_shown_name(project).to_string());
     // ^ A fallback's while one runs, else the chat's own or the manager's (docs/tasks.md "Agents").
     let agent = dir
         .map(|dir| view::manager_agent(dir, &settings))
         .and_then(|agent| view::agent_label(&agent));
-    if other.is_some() {
-        return Ok(View {
-            rows,
-            name,
-            items: Vec::new(),
-            activity: activity(&log).map(str::to_string),
-            agent,
-        });
-    }
-    let mut items: Vec<Item> = checks::open_items(store)?
+    let mut items: Vec<Item> = checked
         .into_iter()
         .map(|item| Item::Check(Box::new(item)))
         .collect();

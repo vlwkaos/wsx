@@ -27,25 +27,65 @@ impl Level {
     }
 }
 
-/// Who wrote a message the manager receives: `owner`, `events`, `manager:<project>` or, for
-/// an answer to a message this manager sent, `manager-reply:<project>`; inside a project,
-/// `chat:<name>` and `chat-reply:<name>` (the first chat is `manager`).
+/// The other side of a peer message: a chat of this project (`manager` is the first chat) or
+/// another project's manager. Its key is `chat:<name>` or the project's name, as `owed`,
+/// `sent{to}` and a row's peer carry it. ref: docs/tasks.md "Chats", "Managers talk"
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Party {
+    Chat(String),
+    Project(String),
+}
+
+impl Party {
+    pub fn key(&self) -> String {
+        match self {
+            Self::Chat(name) => format!("chat:{name}"),
+            Self::Project(project) => project.clone(),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Chat(name) | Self::Project(name) => name,
+        }
+    }
+
+    pub fn from_key(key: &str) -> Self {
+        match key.strip_prefix("chat:") {
+            Some(name) => Self::Chat(name.into()),
+            None => Self::Project(key.into()),
+        }
+    }
+
+    /// The name that heads the party's author on the wire: `chat:<n>`, or `manager:<project>`;
+    /// an answer to a message this side sent is `chat-reply:<n>` or `manager-reply:<project>`.
+    pub fn label(&self, reply: bool) -> String {
+        let word = match self {
+            Self::Chat(_) => "chat",
+            Self::Project(_) => "manager",
+        };
+        format!(
+            "{word}{}:{}",
+            if reply { "-reply" } else { "" },
+            self.name()
+        )
+    }
+}
+
+/// Who wrote a message the manager receives: `owner`, `events`, a peer or `recap`. A peer is
+/// another project's manager (`manager:<project>`) or a chat of this one (`chat:<name>`; the
+/// first chat is `manager`); `-reply` after the word marks the answer to a message this side
+/// sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 pub enum Author {
     Owner,
     /// Written by wsx from task state changes and approval decisions.
     Events,
-    /// The manager of another registered project (docs/tasks.md "Managers talk").
-    Manager {
-        project: String,
-        reply: bool,
-    },
     /// wsx asks for a recap after a quiet period (docs/tasks.md "Recap").
     Recap,
-    /// A chat of the same project, or the first as `manager` (docs/tasks.md "Chats").
-    Chat {
-        name: String,
+    Peer {
+        from: Party,
         reply: bool,
     },
 }
@@ -56,16 +96,7 @@ impl From<Author> for String {
             Author::Owner => "owner".into(),
             Author::Events => "events".into(),
             Author::Recap => "recap".into(),
-            Author::Manager {
-                project,
-                reply: false,
-            } => format!("manager:{project}"),
-            Author::Manager {
-                project,
-                reply: true,
-            } => format!("manager-reply:{project}"),
-            Author::Chat { name, reply: false } => format!("chat:{name}"),
-            Author::Chat { name, reply: true } => format!("chat-reply:{name}"),
+            Author::Peer { from, reply } => from.label(reply),
         }
     }
 }
@@ -74,31 +105,30 @@ impl TryFrom<String> for Author {
     type Error = String;
 
     fn try_from(text: String) -> Result<Self, String> {
-        let manager = |project: &str, reply| match project.is_empty() {
-            true => Err(format!("{text} names no project")),
-            false => Ok(Author::Manager {
-                project: project.to_string(),
+        match text.as_str() {
+            "owner" => return Ok(Self::Owner),
+            "events" => return Ok(Self::Events),
+            "recap" => return Ok(Self::Recap),
+            _ => {}
+        }
+        let peer = [
+            ("manager:", false, Party::Project as fn(String) -> Party),
+            ("manager-reply:", true, Party::Project),
+            ("chat:", false, Party::Chat),
+            ("chat-reply:", true, Party::Chat),
+        ]
+        .into_iter()
+        .find_map(|(prefix, reply, party)| {
+            let name = text.strip_prefix(prefix)?;
+            Some((name.to_string(), reply, party))
+        });
+        match peer {
+            Some((name, reply, party)) if !name.is_empty() => Ok(Self::Peer {
+                from: party(name),
                 reply,
             }),
-        };
-        match text.as_str() {
-            "owner" => Ok(Self::Owner),
-            "events" => Ok(Self::Events),
-            "recap" => Ok(Self::Recap),
-            _ => match (
-                text.strip_prefix("manager:"),
-                text.strip_prefix("manager-reply:"),
-                text.strip_prefix("chat:"),
-                text.strip_prefix("chat-reply:"),
-            ) {
-                (Some(project), ..) => manager(project, false),
-                (_, Some(project), ..) => manager(project, true),
-                (.., Some(name), _) | (.., Some(name)) if !name.is_empty() => Ok(Author::Chat {
-                    name: name.to_string(),
-                    reply: text.starts_with("chat-reply:"),
-                }),
-                _ => Err(format!("unknown author {text}")),
-            },
+            Some(_) => Err(format!("{text} names no sender")),
+            None => Err(format!("unknown author {text}")),
         }
     }
 }
@@ -376,7 +406,7 @@ pub fn resolve_quote(text: &str, log: &[ManagerEntry]) -> (String, Option<u64>, 
         log.iter().find_map(|entry| match &entry.event {
             ManagerEvent::Message {
                 id: found,
-                from: Author::Owner | Author::Manager { .. } | Author::Chat { .. },
+                from: Author::Owner | Author::Peer { .. },
                 text,
                 ..
             } if *found == id => Some(text),
@@ -641,6 +671,10 @@ pub enum ApprovalLine {
         after: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         said: Option<u64>,
+        /// The chat whose agent asked; none for the first chat or the owner. Its view shows
+        /// the request and its host hears the decision (`chats::owner`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chat: Option<String>,
         unix_ms: u64,
     },
     Decision {
@@ -659,6 +693,14 @@ pub enum ApprovalLine {
 }
 
 impl ApprovalLine {
+    /// The chat whose agent asked: none for the first chat.
+    pub fn chat(&self) -> Option<&str> {
+        match self {
+            Self::Request { chat, .. } => chat.as_deref(),
+            Self::Decision { .. } => None,
+        }
+    }
+
     pub fn id(&self) -> &str {
         match self {
             Self::Request { id, .. } | Self::Decision { id, .. } => id,

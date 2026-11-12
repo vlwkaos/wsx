@@ -45,7 +45,7 @@ use cmd::work::{
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::task::owner::{HOST_TIMEOUT, LAND_TIMEOUT};
-use wsx_core::task::policy::{role_refusal, Capability, Role, Trust};
+use wsx_core::task::policy::Trust;
 use wsx_core::task::{
     call_host,
     store::{self, TaskDir},
@@ -127,16 +127,9 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
         TaskCmd::Say {
             text,
             to,
-            from_manager,
             from_chat,
             reply,
-        } => say_command(
-            project,
-            to.as_deref(),
-            text,
-            (from_manager, from_chat, reply),
-            json,
-        ),
+        } => say_command(project, to.as_deref(), text, (from_chat, reply), json),
         TaskCmd::Chat {
             after,
             around,
@@ -228,39 +221,6 @@ fn open(project: Option<&str>, task: &str) -> Result<TaskDir> {
         &store::project_id(&name, &path),
         store::parse_task_number(task)?,
     )
-}
-
-/// `open` for a command that changes the task: a chat acts only on the tasks it created,
-/// whose events go to it. ref: docs/tasks.md "Chats"
-fn open_owned(project: Option<&str>, task: &str) -> Result<TaskDir> {
-    let dir = open(project, task)?;
-    let actor = actor();
-    if let Some(chat) = actor.chat() {
-        let record = dir.read_record()?;
-        if record.created_by != actor {
-            bail!(
-                "chat {chat} acts only on the tasks it created; #{} is the {}'s",
-                record.id,
-                String::from(record.created_by)
-            );
-        }
-    }
-    Ok(dir)
-}
-
-/// Whether the acting role's group holds `capability` (`wsx_core::task::policy`); the owner,
-/// with no actor, holds every one. The broker refused what the role cannot do before the CLI
-/// ran; this is the same table for a command that reaches the CLI by another way.
-fn may(capability: Capability) -> bool {
-    Role::of_actor(&actor()).is_none_or(|role| role.caps().has(capability))
-}
-
-/// Refuse what the acting chat's group lacks, in its words. ref: docs/tasks.md "Chats"
-fn need(capability: Capability, what: &str) -> Result<()> {
-    match Role::of_actor(&actor()) {
-        Some(role) if !role.caps().has(capability) => bail!("{}", role_refusal(role, what)),
-        _ => Ok(()),
-    }
 }
 
 fn print_json(value: &serde_json::Value) -> Result<()> {

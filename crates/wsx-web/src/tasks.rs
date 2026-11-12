@@ -156,7 +156,12 @@ fn build_overview(
     let mut working = 0;
     let mut titles: HashMap<u32, String> = HashMap::new();
     let land_auto = settings.is_some_and(|settings| settings.land_auto);
-    let approvals = store::read_approvals(&scope.store).unwrap_or_default();
+    // ^ Task status words weigh every pending approval; the lists below are the first chat's own
+    // (`chats::owner`): another chat shows its own in its room.
+    let open_chats = task::chats::open_names(&scope.store);
+    let all_approvals = store::read_approvals(&scope.store).unwrap_or_default();
+    let all_pending = pending_approvals(&all_approvals);
+    let approvals = task::chats::approvals_of(all_approvals.clone(), None, &open_chats);
     let pending = pending_approvals(&approvals);
     for (dir, record) in &tasks {
         let Ok(record) = record else { continue };
@@ -164,7 +169,7 @@ fn build_overview(
         // ^ The words every view shows (docs/tasks.md "Status"); a row shows the label.
         let waiters = status::waiters(records.iter().copied(), record.id);
         let facts = status::Facts {
-            approvals: &pending,
+            approvals: &all_pending,
             waiters: &waiters,
             ..Default::default()
         };
@@ -202,31 +207,10 @@ fn build_overview(
         needs.push((rank, record.updated_unix_ms, row));
     }
     for line in pending {
-        let ApprovalLine::Request {
-            id,
-            action,
-            task,
-            revision,
-            commit,
-            path,
-            url,
-            unix_ms,
-            ..
-        } = line
-        else {
-            continue;
-        };
-        needs.push((
-            APPROVAL_RANK,
-            *unix_ms,
-            json!({
-                "kind": "approval", "approval": id, "action": owner::action_name(*action),
-                "label": owner::approval_label(line),
-                "task": task, "revision": revision, "commit": commit,
-                "path": path, "url": url,
-                "title": task.and_then(|task| titles.get(&task)), "unix_ms": unix_ms,
-            }),
-        ));
+        if let Some(item) = approval_item(line, |task| titles.get(&task).cloned()) {
+            let unix_ms = item["unix_ms"].as_u64().unwrap_or_default();
+            needs.push((APPROVAL_RANK, unix_ms, item));
+        }
     }
     needs.sort_by_key(|(rank, order, _)| (*rank, *order));
     listed.sort_by_key(|(order, recent, _)| (*order, *recent));
@@ -244,7 +228,12 @@ fn build_overview(
         .as_ref()
         .and_then(|dir| task::chat::asking(dir, now).ok())
         .unwrap_or_default();
-    let check_items = checks::read(&scope.store).unwrap_or_default();
+    let check_items = task::chats::checks_of(
+        &scope.store,
+        checks::read(&scope.store).unwrap_or_default(),
+        None,
+        &open_chats,
+    );
     // ^ The open items as the Project screen's To check list shows them: a row each, which
     // opens the sheet at the item (docs/web-client-tasks.md "Project screen").
     let open_checks: Vec<Value> = check_items
@@ -583,6 +572,31 @@ fn to_check_rows(dir: &TaskDir, items: &[checks::CheckItem], task: u32) -> Value
 }
 
 /// A task's pending approvals; a request carries its label.
+/// A pending request as the page lists it among the needs, with its task's title.
+fn approval_item(line: &ApprovalLine, title: impl Fn(u32) -> Option<String>) -> Option<Value> {
+    let ApprovalLine::Request {
+        id,
+        action,
+        task,
+        revision,
+        commit,
+        path,
+        url,
+        unix_ms,
+        ..
+    } = line
+    else {
+        return None;
+    };
+    Some(json!({
+        "kind": "approval", "approval": id, "action": owner::action_name(*action),
+        "label": owner::approval_label(line),
+        "task": task, "revision": revision, "commit": commit,
+        "path": path, "url": url,
+        "title": task.and_then(title), "unix_ms": unix_ms,
+    }))
+}
+
 fn approval_rows(lines: &[&ApprovalLine]) -> Value {
     json!(lines
         .iter()
@@ -697,7 +711,9 @@ pub fn chat(
     let window = task::chat::Window::new(find, after, around);
     // ^ An owner message's files show as attachments, not as their paths.
     let mut attachments: HashMap<u64, Value> = HashMap::new();
-    let task::chat::Reading { page, .. } = task::chat::read_for(
+    let task::chat::Reading {
+        page, approvals, ..
+    } = task::chat::read_for(
         Some(&dir),
         (&scope.name, &scope.store),
         &settings,
@@ -752,6 +768,17 @@ pub fn chat(
         "rows": rows,
         "skipped": page.skipped,
         "asks": page.asks.iter().map(|ask| ask.id).collect::<Vec<_>>(),
+        // ^ This chat's own pending approvals, as the overview lists the first chat's.
+        "approvals": pending_approvals(&approvals)
+            .into_iter()
+            .filter_map(|line| {
+                approval_item(line, |id| {
+                    open_task(scope, id)
+                        .ok()
+                        .and_then(|dir| view::readable_title(&dir, &dir.read_record().ok()?))
+                })
+            })
+            .collect::<Vec<_>>(),
         "running": status.is_some(),
         "busy": busy,
         "activity": if busy { activity } else { None },
@@ -989,8 +1016,14 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
 
 /// The open "To check" items, oldest first, each with its task's title and what the task
 /// did (the first sentence of its worker's summary, when it is not the title).
-pub fn checks(scope: &Scope) -> Outcome<Value> {
-    let items = checks::read(&scope.store).map_err(internal)?;
+pub fn checks(scope: &Scope, chat: Option<&str>) -> Outcome<Value> {
+    // ^ The items of the tasks that chat owns (`chats::owner`); the first chat's without one.
+    let items = task::chats::checks_of(
+        &scope.store,
+        checks::read(&scope.store).map_err(internal)?,
+        chat,
+        &task::chats::open_names(&scope.store),
+    );
     // ^ The chat shows each item once, as a bubble at the time it was added, decided or not:
     // every open item and the newest decided ones.
     let recent = items.len().saturating_sub(CHAT_CHECKS);

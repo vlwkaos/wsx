@@ -4,7 +4,7 @@ use super::approve::{after_landing, ask_covering, owner_only, request_of};
 use crate::cli::PromptSource;
 use crate::cli::{existing_daemon_snapshot, load_config};
 use crate::task::args::OwnerSaidAfter;
-use crate::task::{acting_as_manager, need, open, open_owned, outward_said, send};
+use crate::task::{acting_as_manager, open, outward_said, send};
 use crate::task::{ask_host_ok, print_json, project_entry};
 use crate::task::{preview, trial};
 use anyhow::{bail, Context, Result};
@@ -14,7 +14,6 @@ use std::time::{Duration, Instant};
 use wsx_core::task::checks::{self};
 use wsx_core::task::manager::ApprovalAction;
 use wsx_core::task::owner::HOST_TIMEOUT;
-use wsx_core::task::policy::Capability;
 use wsx_core::task::view::checked_files;
 use wsx_core::task::view::{
     overlaps, project_tasks, refuse_open_children, task_summary, MAX_RESULT_READ_BYTES,
@@ -471,7 +470,7 @@ pub(crate) fn steer_command(
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let dir = open_owned(project, task)?;
+    let dir = open(project, task)?;
     let text = text.read(MAX_MESSAGE_BYTES)?;
     send(&dir, HostRequest::Steer { text }, json)
 }
@@ -484,7 +483,7 @@ pub(crate) fn add_command(
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let dir = open_owned(project, task)?;
+    let dir = open(project, task)?;
     let text = text.read(MAX_MESSAGE_BYTES)?;
     let files = checked_files(&dir.read_record()?.files, files)?;
     send(&dir, HostRequest::Add { text, files }, json)
@@ -492,7 +491,7 @@ pub(crate) fn add_command(
 
 /// `wsx task stop`: interrupt the worker.
 pub(crate) fn stop_command(task: &str, project: Option<&str>, json: bool) -> Result<()> {
-    send(&open_owned(project, task)?, HostRequest::Stop, json)
+    send(&open(project, task)?, HostRequest::Stop, json)
 }
 
 /// `wsx task close`: remove the task; `--discard` of unlanded commits is the owner's word.
@@ -507,10 +506,7 @@ pub(crate) fn close_command(
     if after.is_some() && !discard {
         bail!("--after records an approved close --discard; a close without --discard needs no approval");
     }
-    let dir = open_owned(project, task)?;
-    if discard {
-        need(Capability::Discard, "close --discard")?;
-    }
+    let dir = open(project, task)?;
     // ^ Discarding work cannot be undone: the manager always asks first, or names
     // the owner's message that asked for it.
     let record = dir.read_record()?;

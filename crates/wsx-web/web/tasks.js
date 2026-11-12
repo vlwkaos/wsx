@@ -785,7 +785,7 @@ function useRowNodes(rows, { ready, own, context, draw }) {
 
 // The project screen with task_view: the manager chat as messages, what is open in the
 // reservoir, and with a task or the page in the route its sheet over the chat. With `chat`, another
-// chat (#/p/<project>/c/<chat>): the same bubbles without the manager's reservoir,
+// chat (#/p/<project>/c/<chat>): the same bubbles without the manager's reservoir, and with its own
 // approvals and To check items (docs/web-client-tasks.md "Chats").
 export function Manager({ project: id, sheet = null, task = null, item = null, chat: room = null }) {
   const store = useStore();
@@ -794,16 +794,16 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   const { chat, failure, around, aroundRead, finding, setFinding, cut, loading, jump, back, findWords } = useManagerLog(id, room);
   // ^ The To check items, each a bubble at the time it was added; read again when the open
   // count changes (a new item, a pass or a fail).
-  const [checkItems, setCheckItems] = useState(room ? [] : null);
-  const toCheck = overview?.to_check;
+  const [checkItems, setCheckItems] = useState(null);
+  // ^ A room has no overview count: its rows change when an item comes or goes.
+  const toCheck = room ? chat?.rows?.length : overview?.to_check;
   // ^ A reply to a decided item is its note: read again when one more reply names an item.
   const noted = chat?.rows?.filter((row) => row.quoted_check).map((row) => row.id).join();
   useEffect(() => {
-    if (room) return undefined;
     let live = true;
-    api(`api/tasks/${id}/checks`).then((value) => { if (live) setCheckItems(value.items); }, () => { if (live) setCheckItems((now) => now ?? []); });
+    api(`api/tasks/${id}/checks`, { query: room && { chat: room } }).then((value) => { if (live) setCheckItems(value.items); }, () => { if (live) setCheckItems((now) => now ?? []); });
     return () => { live = false; };
-  }, [id, toCheck, noted]);
+  }, [id, room, toCheck, noted]);
   const ready = Boolean(chat) && checkItems !== null;
   const [sent, setSent] = useState(null);
   const place = room ? `project-${id}-c-${room}` : `project-${id}`;
@@ -870,7 +870,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   const all = chat?.rows ?? [];
   const entries = all.filter((row) => !row.queued);
   const waiting = all.filter((row) => row.queued);
-  const items = room ? [] : overview?.needs ?? [];
+  const items = room ? chat?.approvals ?? [] : overview?.needs ?? [];
   const words = withChips(id);
   // ^ Another chat holds its own log only: the project's resolutions are the manager's (docs/tasks.md "Chats").
   const rows = ready ? conversation(entries, room ? [] : overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems, chat?.asks ?? []) : [];

@@ -541,8 +541,7 @@ fn chat_doc(entry: &ManagerEntry, role: &str) -> Option<Doc> {
         } => {
             let by = match from {
                 Author::Owner => "owner".to_string(),
-                Author::Manager { project, .. } => format!("manager:{project}"),
-                Author::Chat { name, .. } => format!("chat:{name}"),
+                Author::Peer { from, .. } => from.label(false),
                 Author::Events | Author::Recap => return None,
             };
             (Kind::Message, *id, by, text, check.as_deref())

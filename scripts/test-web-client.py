@@ -3842,11 +3842,11 @@ def task_journey(args):
                 return lands and lands <= {at for e in entries if e['kind'] == 'reply' for at in e['to']}
             wait(lands_answered, 'the manager answered the lands of #7 and #8', timeout=30)
             # The manager of plans asked ui's manager, which answered: both show as bubbles in ui.
-            js('task', 'say', 'RUN wsx task say -p ui --from-manager "How is ui?" --json', '-p', 'plans')
+            js('task', 'say', 'RUN wsx task say -p ui --from-chat "How is ui?" --json', '-p', 'plans')
             wait(lambda: any(e.get('from') == 'manager:plans' for e in js('task', 'chat', '-p', 'ui')['entries']),
                  'ui heard plans', timeout=30)
             # ^ Without --json: the sender's log still holds the words it sent.
-            js('task', 'say', 'RUN wsx task say -p plans --from-manager --reply "ui is fine"', '-p', 'ui')
+            js('task', 'say', 'RUN wsx task say -p plans --from-chat --reply "ui is fine"', '-p', 'ui')
             wait(lambda: any(e['kind'] == 'sent' for e in js('task', 'chat', '-p', 'ui')['entries']), 'ui answered plans', timeout=30)
             sent = [e for e in js('task', 'chat', '-p', 'ui')['entries'] if e['kind'] == 'sent']
             assert [e['text'] for e in sent] == ['ui is fine'], sent

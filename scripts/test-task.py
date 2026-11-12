@@ -758,7 +758,7 @@ def manager_up(created):
                  'Define each name the owner has not used', 'say how both hold', 'what you said you would report',
                  'every project and agent adapter', "the task's prompt and each later add", 'naming each ask it missed',
                  'or call it unchecked',
-                 '--from-manager --reply', 'use it and do not answer it', "'@<project>'"):
+                 '--from-chat --reply', 'use it and do not answer it', "'@<project>'"):
         assert rule in launch['instructions'], rule
     # ^ No instruction names a brief or a goal file: only the owner's `chat new` takes one (docs/tasks.md "Chats").
     assert 'brief' not in launch['instructions'].lower().replace('--brief', ''), launch['instructions']
@@ -5825,21 +5825,19 @@ def part_host(created=None):
     text = reply_to(asked['id'])['text']
     assert 'chat new is for the owner' in text and 'qa' not in chats(), text
     # A chat is the manager host with its goal, its own folder, session and actor; it starts
-    # on say. What only the owner or the manager does is refused to it.
+    # on say. It runs with the manager's policy: only the owner's `chat new` and another project's
+    # work (the first chat's) are refused to it.
     manager_task = js('task', 'new', 'WORK owner-chat.txt')['id']
     talk = js('task', 'say', '--to', 'billing',
               'RUN wsx task new "WORK chat.txt" -p demo --json\n'
               'RUN wsx task chat new more --goal %s -p demo --json\n'
-              'RUN wsx task land %d -p demo --json\n'
-              'RUN wsx task deploy -p demo --json\n'
-              'RUN wsx task routine list -p other --json' % (goal, manager_task))
+              'RUN wsx task routine list -p other --json' % goal)
     text = chat_reply('billing', talk['id'])['text']
-    assert 'chat new is not for a chat' in text and 'acts only on the tasks it created; #%d is the owner' % manager_task in text, text
-    assert 'deploy is not for a chat' in text and "only a project's manager acts in another project" in text, text
+    assert 'chat new is for the owner' in text and "only a project's manager acts in another project" in text, text
     chat_task = max(t['id'] for t in js('task', 'list')['tasks'])
     assert show(chat_task)['record']['created_by'] == 'chat:billing', show(chat_task)['record']
     chat_launch = next(t for t in traces() if t.get('launch') and t.get('actor') == 'chat:billing')
-    assert chat_launch['instructions'].startswith('You are billing, a chat in the project demo'), chat_launch
+    assert chat_launch['instructions'].startswith('You are billing, a chat of the project demo'), chat_launch
     assert 'Drive the billing rewrite.' in chat_launch['instructions'] and '/chats/billing/notes' in chat_launch['instructions']
     assert chat_launch['model'] == 'haiku', chat_launch
     assert chat_launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], chat_launch
@@ -5857,10 +5855,19 @@ def part_host(created=None):
     time.sleep(4)
     assert not events_with('#%d ' % chat_task), [e['text'] for e in manager_entries() if e['kind'] == 'message']
     assert not any('#%d ' % manager_task in e.get('text', '') for e in chat_entries('billing') if e['kind'] == 'message')
-    # A chat lands only a child into a parent; its own task with no parent is the manager's to land.
-    landed = chat_reply('billing', js('task', 'say', '--to', 'billing',
-                                      'RUN wsx task land %d -p demo --json' % chat_task)['id'])['text']
-    assert 'a chat lands only a child into its parent task' in landed, landed
+    # An approval a chat's agent asks belongs to that chat (docs/tasks.md "Chats"): only its view
+    # lists it, and its host hears the decision; the first chat does neither.
+    asked = chat_reply('billing', js('task', 'say', '--to', 'billing',
+                                     'RUN wsx task close %d --discard -p demo --json' % chat_task)['id'])['text']
+    assert 'needs the owner' in asked, asked
+    request = next(p['id'] for p in js('task', 'ledger')['approvals'] if p['action'] == 'discard' and p.get('task') == chat_task)
+    assert js('task', 'chat', '--chat', 'billing')['approvals'] == [request] and js('task', 'chat')['approvals'] == []
+    cli('task', 'deny', request, '-p', 'demo')
+    wait(lambda: any(e['kind'] == 'message' and e['from'] == 'events' and 'approval %s' % request in e['text']
+                     for e in chat_entries('billing')), 'the chat hears the decision', 60)
+    time.sleep(4)
+    assert not events_with('approval %s' % request), [e['text'] for e in manager_entries() if e['kind'] == 'message']
+    assert js('task', 'chat', '--chat', 'billing')['approvals'] == []
     # Chats talk inside the project as managers do: one answer to each message.
     asked = js('task', 'say', '--to', 'billing', "SCRIPT\nwsx task say -p demo --from-chat --json - <<'EOF'\n"
                "RUN wsx task say -p demo --to billing --from-chat --reply 'chat answer'\n"
@@ -6149,9 +6156,9 @@ def part_host(created=None):
         registry.write('[[projects]]\nname = "other"\npath = ' + json.dumps(str(other)) + '\n')
     other_id = 'other-' + hashlib.sha256(str(other).encode()).hexdigest()[:8]
     other_log = state / 'wsx/tasks' / other_id / 'manager' / 'log.jsonl'
-    asked = js('task', 'say', "SCRIPT\nwsx task ledger -p other --json >/dev/null && wsx task say -p other --from-manager --json - <<'EOF'\n"
-               "RUN wsx task say -p demo --from-manager --reply 'first answer'\n"
-               "RUN wsx task say -p demo --from-manager --reply 'second answer'\nEOF")
+    asked = js('task', 'say', "SCRIPT\nwsx task ledger -p other --json >/dev/null && wsx task say -p other --from-chat --json - <<'EOF'\n"
+               "RUN wsx task say -p demo --from-chat --reply 'first answer'\n"
+               "RUN wsx task say -p demo --from-chat --reply 'second answer'\nEOF")
     assert reply_to(asked['id'])['text'].startswith('script -> 0'), reply_to(asked['id'])
 
     def other_entries():
@@ -6192,10 +6199,10 @@ def part_host(created=None):
     assert len(replies) == 1 and replies[0]['text'] == 'first answer', replies
     assert any(e['kind'] == 'sent' and e['to'] == 'other' and 'first answer' in e['text'] for e in manager_entries())
     wait(lambda: turn_with('Manager other replies (message'), 'the reply reaches the demo agent')
-    crossing = js('task', 'say', 'RUN wsx task deploy -p other --json\nRUN wsx task say -p demo --from-manager hi')
+    crossing = js('task', 'say', 'RUN wsx task deploy -p other --json\nRUN wsx task say -p demo --from-chat hi')
     text = reply_to(crossing['id'])['text']
-    assert 'a manager acts in another project only with' in text and "messages another project's manager" in text, text
-    assert "is for a project's manager" in cli('task', 'say', '-p', 'other', '--from-manager', 'hello', ok=False).stderr
+    assert 'a manager acts in another project only with' in text and "messages another chat, not itself" in text, text
+    assert "is for a chat's agent" in cli('task', 'say', '-p', 'other', '--from-chat', 'hello', ok=False).stderr
 
     def other_tasks():
         return js('task', 'list', '--all', '-p', 'other')['tasks']
@@ -6279,7 +6286,7 @@ def part_host(created=None):
     js('task', 'chat', 'new', 'reachr', '--goal', goal)
     before = other_ids()
     talk = js('task', 'say', '--to', 'reachr',
-              'RUN wsx task new "WORK z.txt" -p other --json\nRUN wsx task say -p other --from-manager hi')
+              'RUN wsx task new "WORK z.txt" -p other --json\nRUN wsx task say -p other --from-chat hi')
     text = chat_reply('reachr', talk['id'])['text']
     assert text.count("only a project's manager acts in another project") == 2, text
     refused = js('task', 'say', 'RUN wsx task close %d --discard -p other --json\nRUN wsx task deploy -p other --json\n'

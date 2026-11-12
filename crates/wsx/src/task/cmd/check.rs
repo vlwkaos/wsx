@@ -3,7 +3,7 @@
 use super::approve::owner_only;
 use super::new::{create, NewTask, Steps};
 use crate::task::args::{CheckAction, Chosen};
-use crate::task::{acting_as_manager, print_json, project_entry};
+use crate::task::{acting_as_manager, actor, print_json, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use wsx_core::task::checks::{self, CheckItem, CheckState};
@@ -36,7 +36,7 @@ pub(crate) fn check(action: Option<CheckAction>, project: Option<&str>, json: bo
             let owner_said = if acting_as_manager() {
                 match crate::task::owner_said(said.owner_said) {
                     Some(said) if !chosen.all => {
-                        owner::check_owner_said(&project_id, said)?;
+                        owner::check_owner_said(&project_id, actor().chat(), said)?;
                         Some(said)
                     }
                     _ => bail!(

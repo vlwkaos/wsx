@@ -3,6 +3,8 @@
 //! `chat.json {agent?}`. The project (files, tasks, rules, memory) is shared; a chat reaches
 //! another's context by search or by `say`. ref: docs/tasks.md "Chats"
 
+use super::checks::CheckItem;
+use super::manager::ApprovalLine;
 use super::store::{self, ManagerDir};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -70,6 +72,62 @@ pub fn open_chat(project_id: &str, name: &str) -> Result<ManagerDir> {
         Some(dir) if is_open(&dir) => Ok(dir),
         _ => bail!("the project has no open chat {name}; `wsx task chat list` names them"),
     }
+}
+
+/// The names of the open chats.
+pub fn open_names(project_id: &str) -> Vec<String> {
+    open_chats(project_id)
+        .iter()
+        .map(|dir| dir.name().to_string())
+        .collect()
+}
+
+/// The one ownership rule: a task (`created_by`) or an approval request (`chat`) made by an
+/// open chat belongs to that chat; every other one, also one of a closed chat, belongs to the
+/// first chat (`None`). The chat hears the task's events and the request's decision, and its
+/// view shows the request and the task's To check items.
+pub fn owner<'a>(made_by: Option<&'a str>, open: &[String]) -> Option<&'a str> {
+    made_by.filter(|chat| open.iter().any(|name| name == chat))
+}
+
+/// The lines of `approvals.jsonl` that chat `viewer` (`None`: the first) shows: its own
+/// requests and their decisions.
+pub fn approvals_of(
+    lines: Vec<ApprovalLine>,
+    viewer: Option<&str>,
+    open: &[String],
+) -> Vec<ApprovalLine> {
+    let mine = |line: &ApprovalLine| match line {
+        ApprovalLine::Request { chat, .. } => owner(chat.as_deref(), open) == viewer,
+        ApprovalLine::Decision { .. } => false,
+    };
+    let ids: HashSet<String> = lines
+        .iter()
+        .filter(|line| mine(line))
+        .map(|line| line.id().to_string())
+        .collect();
+    lines
+        .into_iter()
+        .filter(|line| ids.contains(line.id()))
+        .collect()
+}
+
+/// The To check items of the tasks that chat `viewer` (`None`: the first) owns.
+pub fn checks_of(
+    project_id: &str,
+    items: Vec<CheckItem>,
+    viewer: Option<&str>,
+    open: &[String],
+) -> Vec<CheckItem> {
+    items
+        .into_iter()
+        .filter(|item| {
+            let made_by = store::TaskDir::open(project_id, item.task)
+                .and_then(|dir| dir.read_record())
+                .map(|record| record.created_by);
+            owner(made_by.as_ref().ok().and_then(|by| by.chat()), open) == viewer
+        })
+        .collect()
 }
 
 pub fn goal(dir: &ManagerDir) -> String {
@@ -234,10 +292,25 @@ pub(super) fn migrate_once(project_id: &str, project: &Path) {
 /// the removed `role` action. A step that fails leaves the rest for the next run.
 fn migrate(project_id: &str, project: &Path) -> Result<()> {
     let approvals = project.join(store::APPROVALS_FILE);
+    let old = project.join("roles");
+    let role_requests = |bytes: &Option<Vec<u8>>| {
+        bytes
+            .as_ref()
+            .is_some_and(|bytes| bytes.windows(6).any(|at| at == br#""role""#))
+    };
+    if !old.is_dir() && !role_requests(&store::read_bounded_if_exists(&approvals, 64 << 20)?) {
+        return Ok(());
+    }
+    // ^ A log is rewritten whole here, while a host appends to it with no lock. Every process
+    // migrates before its first append (`project_dir`), so this lock holds the others at that
+    // door until the rewrite is done; only an older wsx, which never migrates, can still append.
+    let _lock = store::open_locked(
+        &project.join("migrate.lock"),
+        std::fs::OpenOptions::new().write(true).create(true),
+    )?;
     if let Some(bytes) = store::read_bounded_if_exists(&approvals, 64 << 20)? {
         drop_role_approvals(&approvals, &bytes)?;
     }
-    let old = project.join("roles");
     if !old.is_dir() {
         return Ok(());
     }

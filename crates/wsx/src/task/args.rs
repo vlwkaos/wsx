@@ -229,13 +229,11 @@ pub enum TaskCmd {
         /// To this chat instead of the first
         #[arg(long, value_name = "NAME")]
         to: Option<String>,
-        /// From a project's manager to the manager of the project named with -p
-        #[arg(long, conflicts_with = "from_chat")]
-        from_manager: bool,
-        /// From a chat of this project to another (--to), the first when none
+        /// From a chat (the first is `manager`) to another chat of this project (--to, the
+        /// first when none), or with -p to another project's first chat
         #[arg(long)]
         from_chat: bool,
-        /// With --from-manager or --from-chat: this answers a message it sent
+        /// With --from-chat: this answers a message it sent
         #[arg(long)]
         reply: bool,
     },
@@ -496,7 +494,7 @@ impl TaskCmd {
             Self::New(_) => &[CreateTask],
             Self::Close { discard: true, .. } => &[Discard],
             Self::Close { .. } => &[Close],
-            Self::Land { .. } => &[Land, LandChild],
+            Self::Land { .. } => &[Land],
             Self::Trial { .. }
             | Self::Deploy(_)
             | Self::Release(_)

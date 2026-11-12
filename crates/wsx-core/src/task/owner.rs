@@ -483,7 +483,7 @@ pub fn drop_request(project_id: &str, id: &str, why: &str) -> Result<()> {
 /// owner's message `said` of its running turn, and the action runs without a button.
 /// The id of the recorded request is returned. ref: docs/tasks.md "Approvals"
 pub fn approve_by_message(project_id: &str, request: ApprovalLine, said: u64) -> Result<String> {
-    check_owner_said(project_id, said)?;
+    check_owner_said(project_id, request.chat(), said)?;
     let line = store::append_approval(project_id, request)?;
     let id = line.id().to_string();
     store::append_approval(
@@ -505,7 +505,7 @@ pub fn approve_by_message(project_id: &str, request: ApprovalLine, said: u64) ->
 /// host runs it when `after` lands (`approve_waiting`). Nothing is recorded when a check fails.
 /// ref: docs/tasks.md "Approvals"
 pub fn approve_after(project_id: &str, mut request: ApprovalLine, said: u64) -> Result<String> {
-    check_owner_said(project_id, said)?;
+    check_owner_said(project_id, request.chat(), said)?;
     let ApprovalLine::Request {
         after: Some(after),
         task,
@@ -535,9 +535,9 @@ pub fn approve_after(project_id: &str, mut request: ApprovalLine, said: u64) -> 
 }
 
 /// Refuse unless `said` is an owner message of the manager's running turn.
-pub fn check_owner_said(project_id: &str, said: u64) -> Result<()> {
-    let manager = ManagerDir::existing(project_id)?
-        .context("the project has no manager, so no owner message")?;
+pub fn check_owner_said(project_id: &str, chat: Option<&str>, said: u64) -> Result<()> {
+    let manager = ManagerDir::existing_as(project_id, chat)?
+        .context("the chat has no log, so no owner message")?;
     super::manager::owner_said_in_turn(&manager.read_log()?, said)
         .map_err(|why| anyhow::anyhow!("--owner-said {said}: {why}; nothing was run"))
 }

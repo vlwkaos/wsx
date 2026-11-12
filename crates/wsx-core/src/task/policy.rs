@@ -6,7 +6,6 @@
 //! approval rules of the outward commands (`WSX_TASK_TRUST`).
 //! ref: docs/tasks.md "Chats", "Permissions"; docs/design/local-model-fallback.md 3.2, 5
 
-use super::Actor;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 
@@ -48,14 +47,12 @@ pub enum Capability {
     Handoff,
     /// `new`.
     CreateTask,
-    /// `add`, `steer`, `stop`, `preview`: act on a task. A named role: only on ones it created.
+    /// `add`, `steer`, `stop`, `preview`: act on a task.
     Direct,
     /// `close` without `--discard`.
     Close,
     /// `close --discard`.
     Discard,
-    /// `land` of a child into its parent task.
-    LandChild,
     /// `land` onto the default branch.
     Land,
     /// `deploy`, `release`, `push`, `trial`.
@@ -77,7 +74,7 @@ pub enum Capability {
 }
 
 /// Every capability, in bit order.
-pub const ALL: [Capability; 19] = [
+pub const ALL: [Capability; 18] = [
     Capability::Read,
     Capability::Notify,
     Capability::Answer,
@@ -88,7 +85,6 @@ pub const ALL: [Capability; 19] = [
     Capability::Direct,
     Capability::Close,
     Capability::Discard,
-    Capability::LandChild,
     Capability::Land,
     Capability::Deploy,
     Capability::Routine,
@@ -154,34 +150,22 @@ pub struct RoleInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Manager,
-    Area,
     Organizer,
     Worker,
 }
 
 use Capability::*;
 
-/// The one table of roles. A named role of docs/tasks.md "Chats" is an `Area`; the organizer is
-/// the stand-in's job. The rules it holds replace the refusals that `not_for_roles` once spelled
+/// The one table of roles. Every chat of docs/tasks.md "Chats" runs as the manager; the organizer
+/// is the stand-in's job. The rules it holds replace the refusals that `not_for_roles` once spelled
 /// out one by one.
-pub const ROLES: [(Role, RoleInfo); 4] = [
+pub const ROLES: [(Role, RoleInfo); 3] = [
     (
         Role::Manager,
         RoleInfo {
             name: "manager",
             brief: "runs the project: every capability",
             caps: &ALL,
-        },
-    ),
-    (
-        Role::Area,
-        RoleInfo {
-            name: "area",
-            brief: "a named role for one area: its own tasks and their children, no approvals, deploys or routines",
-            caps: &[
-                Read, Notify, Answer, Backlog, Note, Handoff, CreateTask, Direct, Close, LandChild,
-                Recall, Remember, Decide,
-            ],
         },
     ),
     (
@@ -218,26 +202,14 @@ impl Role {
     /// Whether an `[[agents]]` entry whose `may` is `may` fills this role in a fallback choice:
     /// with no `may` it is a full fallback (the manager's turns and a task's steps); with one,
     /// it fills each role whose own capability it lists: `create_task` the manager, `answer`
-    /// the organizer (the stand-in), `result` a worker. `area` is the manager's named role,
-    /// never an entry's. ref: docs/tasks.md "Agents"
+    /// the organizer (the stand-in), `result` a worker. ref: docs/tasks.md "Agents"
     pub fn filled_by(self, may: Option<&[Capability]>) -> bool {
         let need = match self {
             Self::Manager => CreateTask,
             Self::Organizer => Answer,
             Self::Worker => Result,
-            Self::Area => return false,
         };
         may.map_or(self != Self::Organizer, |may| may.contains(&need))
-    }
-
-    /// The role the agent of an actor runs as: the manager host's as `Manager`, a named
-    /// role's as `Area`; the owner (no actor) has none.
-    pub fn of_actor(actor: &Actor) -> Option<Self> {
-        match actor {
-            Actor::Owner => None,
-            Actor::Manager | Actor::ManagerOf(_) => Some(Self::Manager),
-            Actor::Chat(_) => Some(Self::Area),
-        }
     }
 }
 
@@ -320,7 +292,7 @@ impl Policy {
     /// Why `what` is refused: the role's group lacks it, or the agent did not pass it.
     pub fn refusal(&self, what: &str, needs: &[Capability]) -> String {
         if !needs.iter().any(|cap| self.role.caps().has(*cap)) {
-            return role_refusal(self.role, what);
+            return format!("{what} is not for the {} role", self.role.info().name);
         }
         if self.strict() && needs.iter().any(|cap| MEMORY_WRITES.contains(cap)) {
             return format!("{what} is refused: an agent on a model wsx does not trust reads memory and writes none");
@@ -334,16 +306,6 @@ impl Policy {
             "{what} is beyond what this agent may do (`may` of its [[agents]] entry); it passed: {}",
             passed.join(", ")
         )
-    }
-}
-
-/// `what` is not in the role's group.
-pub fn role_refusal(role: Role, what: &str) -> String {
-    match role {
-        Role::Area => {
-            format!("{what} is not for a chat; ask the manager (`wsx task say --from-chat`)")
-        }
-        other => format!("{what} is not for the {} role", other.info().name),
     }
 }
 

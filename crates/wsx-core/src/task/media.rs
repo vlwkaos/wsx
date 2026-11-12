@@ -212,8 +212,7 @@ fn entry_items(
         ManagerEvent::Reply { id, text, .. } => (*id, dir_name.to_string(), text, false),
         ManagerEvent::Message { id, from, text, .. } => match from {
             Author::Owner => (*id, "owner".to_string(), text, with_uploads),
-            Author::Manager { project, .. } => (*id, project.clone(), text, false),
-            Author::Chat { name, .. } => (*id, name.clone(), text, false),
+            Author::Peer { from, .. } => (*id, from.name().to_string(), text, false),
             Author::Events | Author::Recap => return Vec::new(),
         },
         _ => return Vec::new(),
