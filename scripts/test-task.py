@@ -5948,6 +5948,7 @@ def part_host(created=None):
         {'unix_ms': now_ms, 'kind': 'reply', 'id': 3, 'to': [1], 'text': 'the numbers are in'})))
     with open(mig_store / 'approvals.jsonl', 'a') as out:
         out.write(json.dumps({'kind': 'request', 'id': 'a-old-role', 'action': 'role', 'role': 'qa', 'brief': 'x', 'unix_ms': now_ms}) + '\n')
+    (mig_store / 'search.jsonl').write_text(json.dumps({'kind': 'message', 'role': 'research', 'id': 1, 'at': 1, 'text': 'old'}) + '\n')
     record_path = mig_store / str(old_task) / 'task.json'
     record = json.loads(record_path.read_text())
     record['created_by'] = 'role:research'
@@ -5968,6 +5969,7 @@ def part_host(created=None):
     assert any(e['kind'] == 'message' and e['from'] == 'chat:research' for e in manager_entries())
     assert '"action":"role"' not in (mig_store / 'approvals.jsonl').read_text().replace(' ', '')
     assert all(a['action'] != 'role' for a in js('task', 'ledger')['approvals'])
+    assert not (mig_store / 'search.jsonl').exists(), 'the search digest with a role field is dropped (rebuilt on the next search)'
     # ^ The migration is idempotent: a second run changes nothing.
     again = (new_chat / 'log.jsonl').read_bytes()
     chats()

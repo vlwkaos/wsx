@@ -139,10 +139,9 @@ impl Caps {
     }
 }
 
-/// A built-in role: its line and its group. There is no owner-defined group in config.
+/// A built-in role: its name and its group. There is no owner-defined group in config.
 pub struct RoleInfo {
     pub name: &'static str,
-    pub brief: &'static str,
     pub caps: &'static [Capability],
 }
 
@@ -157,14 +156,12 @@ pub enum Role {
 use Capability::*;
 
 /// The one table of roles. Every chat of docs/tasks.md "Chats" runs as the manager; the organizer
-/// is the stand-in's job. The rules it holds replace the refusals that `not_for_roles` once spelled
-/// out one by one.
+/// is the stand-in's job.
 pub const ROLES: [(Role, RoleInfo); 3] = [
     (
         Role::Manager,
         RoleInfo {
             name: "manager",
-            brief: "runs the project: every capability",
             caps: &ALL,
         },
     ),
@@ -172,7 +169,6 @@ pub const ROLES: [(Role, RoleInfo); 3] = [
         Role::Organizer,
         RoleInfo {
             name: "organizer",
-            brief: "reads, answers the owner, keeps the backlog and the notes",
             caps: &[Read, Answer, Backlog, Note, Recall],
         },
     ),
@@ -180,7 +176,6 @@ pub const ROLES: [(Role, RoleInfo); 3] = [
         Role::Worker,
         RoleInfo {
             name: "worker",
-            brief: "builds in its own copy and reports its result and checks",
             caps: &[Result, Recall, Remember],
         },
     ),

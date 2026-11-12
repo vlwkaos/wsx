@@ -6,7 +6,7 @@ Design proposal, no code changed. Counts come from the clap enums in `crates/wsx
 
 | Caller | Commands | Where |
 |---|---|---|
-| Manager agent (broker) | `wsx task` new add steer stop hold after land close show ledger chat search say check pass deploy release push trial preview routine checkin role project; `wsx memory` search add update | `instructions.rs:25-168`; capability table `task/args.rs:597` |
+| Manager agent (broker) | `wsx task` new add steer stop hold after land close show ledger chat search say check pass deploy release push trial preview routine checkin project; `wsx memory` search add update | `instructions.rs:25-168`; capability table `task/args.rs:597` |
 | Worker agent | `task check-run`; `task result -` (non-Claude only) | `claude.rs:324,336,187`; `broker.rs:84` |
 | Web server (runs the CLI) | `task check`, `dismiss`, `preview`, `hand`, `handback`, `trial` | `wsx-web/src/tasks.rs:1089,1112,1119-1125`; approve and deny run in-process (`tasks.rs:1197,1229`) |
 | Hooks in users' agent configs | `agent report`, `presence-renew`, `wake-heartbeat`, `exchange-receipt`, `context` | `integrations/common/wsx-agent-status.sh:74,76`; `pi/wsx-agent-status.ts:82,132,215,259`; `opencode/wsx-tui-session.js:9`; `hermes/__init__.py:11` |
@@ -34,7 +34,7 @@ After: 9 groups, 80 visible level-2 entries; wsx task 29 visible
   web 4 | memory 9 | task 29       (group, plugin, runtime: hidden, still run)
 ```
 
-`wsx task` after: new list show add stop land after hold trial close hand dismiss check deploy release push ledger deployed checkin routine manager role project say chat search approve deny preview.
+`wsx task` after: new list show add stop land after hold trial close hand dismiss check deploy release push ledger deployed checkin routine manager project say chat search approve deny preview.
 
 ## Changes
 

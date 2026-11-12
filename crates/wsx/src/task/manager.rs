@@ -1692,7 +1692,7 @@ impl Manager {
 
     /// Who the agent's commands act as (`WSX_TASK_ACTOR`): the manager, or the chat.
     fn actor(&self) -> Actor {
-        match &self.dir.role {
+        match &self.dir.chat {
             Some(chat) => Actor::Chat(chat.clone()),
             None => Actor::Manager,
         }
@@ -2879,7 +2879,7 @@ impl Manager {
             skills.is_some(),
             &workflow,
         );
-        if let Some(chat) = &self.dir.role {
+        if let Some(chat) = &self.dir.chat {
             text = chat_preamble(chat, &self.project, &chats::goal(&self.dir)) + &text;
         }
         // ^ Other adapters list lent skills themselves (pi.rs `--skill`).
@@ -3265,7 +3265,7 @@ impl Manager {
     /// The handover as an episode of the project's memory, in the turn that carries it: no turn
     /// of its own. A chat's notes stay files. ref: docs/memory.md "Capture"
     fn remember_handover(&self, handover: &str) {
-        if self.dir.role.is_some() {
+        if self.dir.chat.is_some() {
             return;
         }
         let done = self.memory_store().and_then(|store| {

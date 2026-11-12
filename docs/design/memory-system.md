@@ -101,8 +101,8 @@ A scope is bound once in the global config: `memory.scopes.<name>` is `{dir}` (b
 | Reader | At start (fixed, in the prompt, so on every adapter) | On demand |
 |---|---|---|
 | Manager | active `rule` records (rendered `decisions.md`, about 3 KiB now) and project facts without `paths`; a pointer, not a cut list | `recall`; each owner message gets its top matches (today's `matching`) |
-| Worker | area briefs (below), open tasks that share files, the role's brief and rules when `created_by` is a role; 4 KiB as today. No fact records: the paid evaluation found no gain and likely harm (`memory-eval.md`, #392: plan cost +11% median, CI -4.8%..+21%; recall -0.05; about 3 extra calls checking records) | `wsx memory recall "<question>"` |
-| Role | its `brief.md`, its rules, the project rules | same |
+| Worker | area briefs (below), open tasks that share files; 4 KiB as today. No fact records: the paid evaluation found no gain and likely harm (`memory-eval.md`, #392: plan cost +11% median, CI -4.8%..+21%; recall -0.05; about 3 extra calls checking records) | `wsx memory recall "<question>"` |
+| Chat | its `goal.md`, its rules, the project rules | same |
 
 Areas (iam-studio): the project config declares `memory.areas: {"<glob>": "<brief file>"}`. A task whose `--files` match gets those briefs in the same start block, host-built in `host.rs` `task_context`, no skill involved. The brief is a record of kind `fact` with `source: path:<file>`.
 
@@ -158,7 +158,7 @@ A wrong record is caught three ways: (1) a fact with `commit` and `paths` is sta
 | `fold_memo` (`- #n:` memo line, 240 chars) | merged: memo becomes an `episode` record |
 | `wsx task search` and the digest `search.jsonl` (`task/search.rs`) | merged: the built-in backend; `wsx task search` stays as an alias |
 | `task_context` (files, overlaps, context.md lines by glob) | kept; reads records instead of lines; adds areas |
-| role `brief.md` and role notes | kept; reach the role's workers |
+| chat `goal.md` and chat notes | kept |
 | rotation, handover, recap, `rotate-notes.md` | kept; they write episodes |
 | ledger `recent` memo | kept; reads records |
 | `tasks.workflow.build` memo words and `idle` task | build words kept; the idle task's job (consolidate) becomes the host's manage pass; `idle` stays for project skills |

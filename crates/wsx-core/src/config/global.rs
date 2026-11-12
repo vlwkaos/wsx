@@ -368,13 +368,13 @@ pub struct AgentEntry {
     /// Needs the `pi` adapter. ref: docs/tasks.md "Pi adapter"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extension: Option<PathBuf>,
-    /// Replaced by `may`, which also picks the jobs a fallback choice gives the agent; read
-    /// only to refuse it with that advice. ref: docs/tasks.md "Agents"
-    #[serde(default, skip_serializing)]
-    pub roles: Option<Vec<String>>,
-    /// The capabilities this agent passed the test for (`task::policy`); its role's group is
+    /// The retired `roles` key (`may` replaced it): read so an old config still loads, never
+    /// used or written. ref: docs/tasks.md "Agents"
+    #[serde(default, skip_serializing, rename = "roles")]
+    _roles: Option<Vec<String>>,
+    /// The capabilities this agent passed the test for (`task::policy`); its launch group is
     /// cut down to them, and a fallback choice gives it only the jobs they cover
-    /// (`Role::filled_by`). None: all of the role's, a full fallback.
+    /// (`Role::filled_by`). None: all of the group's, a full fallback.
     /// ref: docs/tasks.md "Permissions"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub may: Option<Vec<crate::task::policy::Capability>>,
@@ -426,12 +426,6 @@ fn validate_agents(agents: &[AgentEntry]) -> std::result::Result<(), String> {
         {
             return Err(format!(
                 "agent {}: budget_usd_per_day must be 1..=10000",
-                agent.name
-            ));
-        }
-        if agent.roles.is_some() {
-            return Err(format!(
-                "agent {}: roles is replaced by may: the stand-in is may = [\"answer\"], a worker's job needs \"result\", the manager's \"create_task\"",
                 agent.name
             ));
         }

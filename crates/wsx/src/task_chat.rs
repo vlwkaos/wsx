@@ -752,7 +752,7 @@ fn read(
         items: checked,
     } = chat::read_for(dir, (project, store), &settings, &window, &peer, |_| {})?;
     let name = dir
-        .and_then(|dir| dir.role.clone())
+        .and_then(|dir| dir.chat.clone())
         .unwrap_or_else(|| settings.manager_shown_name(project).to_string());
     // ^ A fallback's while one runs, else the chat's own or the manager's (docs/tasks.md "Agents").
     let agent = dir
