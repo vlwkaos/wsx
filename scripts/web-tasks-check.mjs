@@ -3641,6 +3641,8 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await choose("project", String(project));
   for (const [typed, words] of [["qa", /already open/], ["9lives", /a-z, 0-9 and -/], ["manager", /first chat/]]) {
     await choose("name", typed);
+    // ^ The sheet reads the project's open chats again as it opens: wait for that read before the name is judged.
+    await until(`${words}.test(document.querySelector('${sheet} .field-note')?.textContent ?? '')`, `"${typed}" is not refused in the sheet: ${JSON.stringify(await note())}`);
     const refused = await note();
     if (!words.test(refused.text) || refused.alert !== "alert" || refused.invalid !== "true") await fail(`"${typed}" is not refused in the sheet: ${JSON.stringify(refused)}`);
     await evaluate(`document.querySelector('${sheet} form').requestSubmit()`);
