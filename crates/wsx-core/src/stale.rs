@@ -335,9 +335,13 @@ pub fn stop_leaked(project_id: &str, main: &Path) -> Vec<Note> {
         if !stopped.is_empty() {
             notes.push(Note {
                 text: format!(
-                    "stopped {} process{} that outlived task #{} ({}, {}): {}",
+                    "stopped {} {} that outlived task #{} ({}, {}): {}",
                     stopped.len(),
-                    plural(stopped.len()),
+                    if stopped.len() == 1 {
+                        "process"
+                    } else {
+                        "processes"
+                    },
                     record.id,
                     record.state.as_str(),
                     copy.display(),

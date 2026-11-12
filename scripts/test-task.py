@@ -1035,7 +1035,7 @@ def manager_up(created):
         assert os.path.realpath(closed['processes_stopped'][0]['path']) == os.path.realpath(copy_a / 'escape-bin'), closed
         assert any(e['kind'] == 'agent' and 'close stopped 1 process' in e['text'] for e in log(closing)), log(closing)
     else:
-        wait(lambda: [e for e in pruned_events() if 'task #%s' % closing in e['text'] and 'stopped 1 process' in e['text']],
+        wait(lambda: [e for e in pruned_events() if 'task #%s' % closing in e['text'] and 'stopped 1 process that outlived' in e['text']],
              'the sweep posted the stop', 30)
     wait(lambda: gone(first['escape']), 'the escaped helper is stopped', 10)
     assert not copy_a.exists() and bystander.poll() is None, 'close left the copy or stopped the bystander'
@@ -1049,7 +1049,7 @@ def manager_up(created):
     shutil.rmtree(copy_b)
     git('worktree', 'prune')
     wait(lambda: gone(second['escape']), 'the sweep stopped the helper of the removed copy', 40)
-    stopped = wait(lambda: [e for e in pruned_events() if 'task #%s' % orphan in e['text'] and 'stopped 1 process' in e['text']],
+    stopped = wait(lambda: [e for e in pruned_events() if 'task #%s' % orphan in e['text'] and 'stopped 1 process that outlived' in e['text']],
                    'the stop is posted', 30)
     # ^ The message may also carry the stop's own event lines, which wake: only the pruned line is quiet.
     quiet = [short for short in stopped[0]['short'] if short['text'].startswith('pruned: stopped')]
