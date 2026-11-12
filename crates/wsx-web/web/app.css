@@ -778,6 +778,9 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .bubble[data-peer="3"] { --speaker: var(--color-peer-3); }
 .bubble[data-peer="4"] { --speaker: var(--color-peer-4); }
 [data-speaker] .bubble-author { color: var(--speaker); }
+/* Another project's manager is a link to its chat: underlined, a 44 px hit area on the name's own line, the peer color kept. */
+a.bubble-author { position: relative; align-self: flex-start; text-decoration: underline; text-underline-offset: var(--space-1); }
+a.bubble-author::after { content: ""; position: absolute; inset: calc(var(--space-3) * -1) 0; }
 .bubble[data-pending] .bubble-box { color: var(--color-muted); }
 /* An approval the reply asked for: one small tag under the text that opens it in the Needs you list. */
 .bubble-need {

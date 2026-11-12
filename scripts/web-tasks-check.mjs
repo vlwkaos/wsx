@@ -3819,6 +3819,21 @@ await closeSheet("the page", `#/p/${plansArg}`);
   await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).scrollIntoView({ block: 'center' })`);
   // ^ Not `shot`: the long chat holds the manager's `"hold": null` JSON reply, which its raw-null audit refuses.
   await capture(`${size[0]}x${size[1]}-task-mentions`);
+  // ^ plans' name over its message is a link to plans' manager chat (docs/web-client-tasks.md "Project screen"): a named,
+  // underlined, peer-colored link, and a tap lands on plans' chat (its title and route); Back returns to ui's chat.
+  const nameOf = `(() => { const bubble = [...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(peerWords)}));
+    const name = bubble?.querySelector('.bubble-author'); return name && { tag: name.tagName, href: name.getAttribute('href'), label: name.getAttribute('aria-label'), text: name.textContent.trim(),
+      color: getComputedStyle(name).color, plain: getComputedStyle(bubble.closest('.log').querySelector('.bubble[data-speaker="manager"] .bubble-author') ?? name).color }; })()`;
+  const nameLink = await evaluate(nameOf);
+  if (nameLink?.tag !== "A" || nameLink.href !== `#/p/${plansArg}` || nameLink.label !== "Open plans manager chat" || nameLink.text !== "plans" || nameLink.color === nameLink.plain) {
+    await fail(`plans' name over its message reads ${JSON.stringify(nameLink)}`);
+  }
+  await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(peerWords)})).scrollIntoView({ block: 'center' })`);
+  await capture(`${size[0]}x${size[1]}-peer-name`);
+  await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(peerWords)})).querySelector('a.bubble-author').click()`);
+  await until(`location.hash === '#/p/${plansArg}' && document.querySelector('.bar-label')?.textContent === 'plans'`, "plans' name did not open plans' manager chat", 60);
+  await evaluate("history.back()");
+  await until(`(location.hash === '${chat}' || location.hash === '#/p/${project}') && [...document.querySelectorAll('.log .bubble')].some((node) => node.textContent.includes(${JSON.stringify(plansMark)}))`, "Back did not return to ui's chat from plans'", 100);
   // ^ A tap moves to plans' chat with #1's sheet over it; Back returns to ui's chat.
   await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).querySelector('a.task-chip').click()`);
   await until(`location.hash === '#/p/${plansArg}/t/1' && !!document.querySelector('dialog.task-sheet[open]')`, "plans #1 did not open from ui's chat", 60);
@@ -3835,7 +3850,7 @@ await closeSheet("the page", `#/p/${plansArg}`);
   await evaluate(`(async () => { const { state, update } = await ${pageModule("store.js")}; globalThis.mentionKept = state.projects;
     update({ projects: state.projects.filter((other) => other.name !== 'plans') }); })()`);
   await until(`(() => { const bubble = [...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(peerWords)}));
-    return bubble && !bubble.querySelector('a.task-chip') && bubble.textContent.includes('#1 waits for you'); })()`, "an ungranted sender's bare #1 is not plain text", 60);
+    return bubble && !bubble.querySelector('a.task-chip, a.bubble-author') && bubble.textContent.includes('#1 waits for you'); })()`, "an ungranted sender's bare #1 or name is not plain text", 60);
   await evaluate(`(async () => { const { update } = await ${pageModule("store.js")}; update({ projects: globalThis.mentionKept }); })()`);
 }
 

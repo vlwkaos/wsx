@@ -17,7 +17,7 @@ use std::{
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::{
     call_socket,
-    chat::{self, ChatRow, Names, Page, RowKind, Window},
+    chat::{self, ChatRow, Names, Page, RowKind, Speaker, Window},
     checks::{self, CheckItem, CheckState},
     manager::{activity, pending_approvals, waiting_approvals, ManagerRequest, ManagerResponse},
     media::{self, Kind},
@@ -343,6 +343,8 @@ pub struct ManagerChat {
     /// The question a message answers (`r` on an open question): its line and id, sent as the
     /// quote (`> message <id>`).
     reply: Option<(String, u64)>,
+    /// The project whose manager chat `P` asked for; the Tasks view takes it and switches.
+    pub peer: Option<String>,
     /// What runs now ("Sending", "Failing c3"), until its answer comes.
     pub acting: Option<String>,
     stamp: Option<Stamp>,
@@ -409,6 +411,7 @@ impl ManagerChat {
             around: None,
             jump_due: false,
             reply: None,
+            peer: None,
             reveal_due: false,
             marked: None,
             wrapped: RefCell::new(None),
@@ -706,6 +709,14 @@ impl ManagerChat {
 
 /// The conversation as rows (`chat_rows`), the open items then the waiting approvals, and
 /// the manager's last step. No manager folder yet is an empty chat.
+/// The project whose manager wrote the row; a role's message is no project's (`peer:role:<n>`).
+pub fn peer_of(row: &ChatRow) -> Option<String> {
+    match &row.author {
+        Some(Speaker::Peer(key)) if !key.starts_with("role:") => Some(key.clone()),
+        _ => None,
+    }
+}
+
 fn read(
     project: &str,
     store: &str,
@@ -890,6 +901,7 @@ impl ManagerChat {
             (Action::InputChar('m'), _) => self.open_media(),
             (Action::InputChar('['), _) => self.step_link(-1),
             (Action::InputChar(']'), _) => self.step_link(1),
+            (Action::InputChar('P'), _) => self.open_peer(),
             (Action::Select, _) if self.link.is_some() => self.open_link(),
             // ^ While a find is on, n and N move between matches, before an approval's n.
             (Action::InputChar('n'), _) if finding => self.step(-1),
@@ -929,6 +941,31 @@ impl ManagerChat {
             _ => {}
         }
         true
+    }
+
+    /// The project of the other manager whose message is nearest the bottom of the view: the
+    /// chat has no message cursor, so that message is the one `P` takes (docs/tasks.md "TUI").
+    pub fn peer_in_view(&self) -> Option<String> {
+        let (width, _) = self.area.get();
+        let total = self.wrapped(width).0.len();
+        let bottom = total.saturating_sub(self.scroll.min(self.max_scroll.get()));
+        let lines = |rows: &[ChatRow]| {
+            crate::ui::task_chat::chat_lines(rows, width, None, None)
+                .0
+                .len()
+        };
+        // ^ A message starts after the blank line that parts it from the one before.
+        (0..self.rows.len()).rev().find_map(|at| {
+            let key = peer_of(&self.rows[at])?;
+            (lines(&self.rows[..at]) + usize::from(at > 0) < bottom).then_some(key)
+        })
+    }
+
+    fn open_peer(&mut self) {
+        match self.peer_in_view() {
+            Some(project) => self.peer = Some(project),
+            None => self.notice = Some(("No other manager's message in view".into(), true)),
+        }
     }
 
     /// Select the next link toward `delta` (-1 older, 1 newer), from none the newest, and show it.

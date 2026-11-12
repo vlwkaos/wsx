@@ -241,6 +241,23 @@ impl TaskList {
         )));
     }
 
+    /// `P` in the chat: the manager chat of the registered project `name`, in place of this
+    /// view. False when no registered project has that name.
+    pub fn switch_to(&mut self, name: &str) -> bool {
+        let Some((name, main)) = self
+            .projects
+            .iter()
+            .find(|(other, _)| other == name)
+            .cloned()
+        else {
+            return false;
+        };
+        let mut list = Self::new(name, main, std::mem::take(&mut self.projects));
+        list.open_chat(None);
+        *self = list;
+        true
+    }
+
     /// `o`: the overview as it is now; a missing file or a failed read shows as words.
     pub fn open_overview(&mut self) {
         self.overview = Some(Overview::new(

@@ -145,6 +145,8 @@ const TASKS: &[&str] = &[
     "  g / G         Oldest loaded row / newest",
     "  /             Find (n older, N newer)",
     "  [ / ]         Select the previous / next link; Enter opens it",
+    "  P             Chat of the other manager whose message is nearest",
+    "                the bottom of the view (no message cursor)",
     "  m             Media list",
     "  o             Project overview",
     "  S             Shell",
