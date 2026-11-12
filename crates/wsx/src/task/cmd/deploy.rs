@@ -214,6 +214,9 @@ pub(crate) fn deploy(
     // check items stay on it. The manager cannot pass the flag.
     let waived = run.checks_waived && kind == DeployKind::Release && !acting_as_manager();
     let by_hand = !if_new && trial.is_none() && run_locked.is_none();
+    // ^ The run of an approved request (the owner's go, now or after a land) waits for the
+    // lock instead of refusing: a refused approval is spent. The manager cannot pass the flag.
+    let approved = run.approved && !acting_as_manager();
     let name = kind_name(kind);
     let (project_name, main) = project_entry(project)?;
     let settings =
@@ -241,7 +244,7 @@ pub(crate) fn deploy(
     // ref: docs/tasks.md "Deploy and release"
     let open = checks::open_items(&project_id)?;
     let to_check = open.len();
-    if public && to_check > 0 && run_locked.is_none() && !waived {
+    if public && to_check > 0 && (run_locked.is_none() || if_new) && !waived {
         match (kind, owner_said) {
             (DeployKind::Release, Some(said)) => owner::check_owner_said(&project_id, actor().chat(), said)?,
             _ => bail!(
@@ -262,12 +265,18 @@ pub(crate) fn deploy(
         return Ok(());
     }
     // ^ One deploy or release at a time per project: one by hand refuses while another runs,
-    // and one that a land or a trial started waits here.
+    // and one that a land, a trial or an approval started waits here.
+    let mut waited = false;
     let running = match run_locked {
         Some(fd) => store::adopt_deploy_lock(&project_id, fd)?,
-        None if by_hand => store::try_lock_deploys(&project_id)?.with_context(|| {
-            format!("a deploy or release of {project_name} runs; its result arrives in `wsx task deployed`. Nothing was run")
-        })?,
+        None if by_hand => match store::try_lock_deploys(&project_id)? {
+            Some(lock) => lock,
+            None if approved => {
+                waited = true;
+                store::lock_deploys(&project_id)?
+            }
+            None => bail!("a deploy or release of {project_name} runs; its result arrives in `wsx task deployed`. Nothing was run"),
+        },
         None => store::lock_deploys(&project_id)?,
     };
     // ^ While a trial holds the live site, only its own deploy runs; the default branch
@@ -345,7 +354,8 @@ pub(crate) fn deploy(
         ];
         hosting::spawn_wsx(&args, log, Some(&running))?;
         let message = format!(
-            "{name} of {commit:.12} started; its output goes to {}, its result to `wsx task deployed`{}",
+            "{name} of {commit:.12} started{}; its output goes to {}, its result to `wsx task deployed`{}",
+            if waited { " after waiting for the deploy or release that ran" } else { "" },
             store::follow_up_log_path(&project_id)?.display(),
             check_suffix
         );

@@ -5498,6 +5498,35 @@ def part_host(created=None):
     assert decision_of(aft_cur['id'])['approved'] is False and js('task', 'ledger')['approvals'] == []
     js('task', 'close', aft_gone, '--discard')
     assert release_log.read_text() == aft_ran + 'released\n'
+    # ^ The land starts the project's own deploy (it sleeps) and the approved release waits for
+    # the same land: the release waits for the deploy lock and runs after the deploy, on the same
+    # run of the owner's go (docs/tasks.md "Deploy and release"). A deploy by hand, no approval,
+    # still refuses while the deploy runs.
+    order_log = base / 'order.log'
+    configure(LAND_CONFIG + """  deploy:
+    command: 'echo start >> ../order.log; sleep 6; echo deploy >> ../order.log'
+    auto: true
+  release:
+    command: 'echo release >> ../order.log'
+    approve: true
+""", 'deploy and release order')
+    ord_task = ready_task('WORK order.txt')
+    _, text = manager_says('release once #%d has landed' % ord_task, 'release --after %d --owner-said' % ord_task)
+    ord_req = approval_lines()[-1]
+    assert (ord_req['action'], ord_req['after']) == ('release', ord_task), ord_req
+    records_before = len(deploy_records())
+    assert land(ord_task)['state'] == 'landed'
+    wait(lambda: order_log.exists() and order_log.read_text() == 'start\n', 'the land\'s deploy starts', 30)
+    refused = cli('task', 'deploy', ok=False).stderr
+    assert 'a deploy or release of demo runs' in refused and 'Nothing was run' in refused, refused
+    ord_dec = decision_of(ord_req['id'])
+    assert ord_dec['approved'] and ord_dec['outcome'].startswith('done: release of '), ord_dec
+    assert 'after waiting for the deploy or release that ran' in ord_dec['outcome'] and 'Nothing was run' not in ord_dec['outcome'], ord_dec
+    wait(lambda: order_log.read_text() == 'start\ndeploy\nrelease\n' and deploy_lock_free(), 'the release after the deploy', 30)
+    assert [r['kind'] for r in deploy_records()[records_before:]] == ['deploy', 'release'], deploy_records()[records_before:]
+    assert all(r['exit'] == 0 for r in deploy_records()[records_before:]), deploy_records()[records_before:]
+    wait(lambda: events_with('approval %s (release) approved; done' % ord_req['id']), 'the release event')
+    wait_closed(ord_task)
     configure(LAND_CONFIG, 'release as before')
     # 32g. A plan first (docs/tasks.md "Workflow"): the first turn of a `--plan` task is told to
     # plan and stop; its result runs no check and waits on plan for the manager, and an add
