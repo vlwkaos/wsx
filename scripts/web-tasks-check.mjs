@@ -1553,6 +1553,8 @@ await closeSheet("the usage sheet", chat);
     // A failed last run tints the pill in the danger color. The pill reads the server's `counts`, so the tweak sets them with the row.
     await evaluate("window.tweak = (body) => { const row = body.routines.find((each) => each.name === 'nightly'); row.last = { ...row.last, status: 'failed', exit: 3 }; body.counts = { ...body.counts, failed: 1 }; }");
     await again();
+    // ^ The pill first shows the overview's counts; the list's (the tweaked answer) follows.
+    await until("document.querySelector('.pill[data-kind=routines]')?.dataset.tone === 'danger'", "the Routines pill did not take the failed tone", 100);
     look = await pill();
     if (look.label !== "2 routines, 1 failed" || look.tone !== "danger") await fail(`the Routines pill with a failed last run is ${JSON.stringify(look)}`);
     // ^ The tone changes the color through a transition ([data-tone] in app.css) when the list's counts follow the overview's: let it end.
