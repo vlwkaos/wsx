@@ -1044,7 +1044,9 @@ def manager_up(created):
     wait(lambda: gone(second['escape']), 'the sweep stopped the helper of the removed copy', 40)
     stopped = wait(lambda: [e for e in pruned_events() if 'task #%s' % orphan in e['text'] and 'stopped 1 process' in e['text']],
                    'the stop is posted', 30)
-    assert len(stopped) == 1 and not any(short['wakes'] for short in stopped[0]['short']), pruned_events()
+    # ^ The message may also carry the stop's own event lines, which wake: only the pruned line is quiet.
+    quiet = [short for short in stopped[0]['short'] if short['text'].startswith('pruned: stopped')]
+    assert len(stopped) == 1 and quiet and not any(short.get('wakes', True) for short in quiet), pruned_events()
     # ^ A process left in the folder of a closed task (the situation of a copy that outlived its close).
     copy_a.mkdir()
     shutil.copy2(helper, copy_a / 'left')
@@ -1055,7 +1057,10 @@ def manager_up(created):
     # ^ Why only the path finds them: a wsxd started by a process that carries the agent's mark keeps it,
     # so a mark cleared by the caller (and the group left by setsid) is the whole escape.
     probe = {'WSX_SOCKET': str(work / 'd2.sock'), 'XDG_STATE_HOME': str(work / 'state2'), 'WSX_AGENT_TREE': 'probe-20k'}
-    cli_env(probe, 'session', 'list', '--json')
+    (work / 'state2').mkdir(exist_ok=True)
+    started = subprocess.run([str(wsx), 'session', 'list', '--json'], cwd=project, env={**env, **probe},
+                             capture_output=True, text=True, timeout=60)
+    assert started.returncode == 0, (started.stdout, started.stderr)
     seen_env = subprocess.run(['ps', '-axeww', '-o', 'pid=,command='], capture_output=True, text=True).stdout
     daemon = [line for line in seen_env.splitlines() if 'WSX_SOCKET=' + probe['WSX_SOCKET'] in line and 'wsxd' in line]
     assert daemon and 'WSX_AGENT_TREE=probe-20k' in daemon[0], daemon
