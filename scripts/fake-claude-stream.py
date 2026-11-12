@@ -220,7 +220,8 @@ def shaped(value):
 
 
 def emit(value):
-    if value.get('type') == 'result' and not value.get('is_error'):
+    if value.get('type') == 'result' and not value.get('is_error') and not os.path.exists(TRACE + '.norate'):
+        # ^ The test's `.norate` mark: a call that reports no rate limit state, as many real ones do.
         # ^ Claude Code 2.1.316 sends the account's limit state with each turn, in this shape. The
         # 5-hour window resets in 5 hours, so it starts at this turn: it holds only this turn.
         now = int(time.time())

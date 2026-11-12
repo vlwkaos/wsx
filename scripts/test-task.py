@@ -6226,9 +6226,14 @@ def part_host(created=None):
     # ^ A title without LIMIT: the fake manager would meet a limit of its own on the event line.
     held = js('task', 'new', '--title', 'Held by a limit', 'LIMIT 25 NOOP')['id']
     wait(lambda: show(held)['record'].get('waiting', {}).get('on') == 'limit', 'the limit wait')
-    # ^ The account is limited while this task checks: no ping, though it waits on the checks.
+    # ^ The account is limited while this task checks: no ping, though it waits on the checks. A
+    # call that reports `allowed` would end the limit (docs/tasks.md "Agents"), so this task's
+    # turn reports no rate state.
+    norate = tmp / 'fake-claude.trace.norate'
+    norate.touch()
     cold = js('task', 'new', 'NOOP')['id']
     assert wait_state(cold, 'ready', 'failed')['state'] == 'ready', show(cold)['result']
+    norate.unlink()
     assert not pings(cold), log(cold)
     done = wait(lambda: (current := show(held))['state'] in ('ready', 'failed') and current, 'held ready', 90)
     assert done['state'] == 'ready', done['result']
