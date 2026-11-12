@@ -3529,8 +3529,8 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
     await until("!!document.querySelector('.home-rows .chat-row')", "Home lost the chat for the chat dot");
     return count(".chat-row .news-mark");
   };
-  // ^ The overview is the observer's, no longer read with the manager's chat: wait until it holds the
-  // newest reply, then until the page does.
+  // ^ The overview is the observer's (a poll behind the log), not read with the manager's chat any more:
+  // wait until it holds the newest reply, then until the page does.
   const overviewReply = async (reply) => {
     for (let attempt = 0; attempt < 120; attempt++) {
       const last = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((data) => data.chats.find((c) => c.name === 'billing')?.last_reply ?? null)`);
