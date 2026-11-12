@@ -1063,10 +1063,23 @@ def manager_up(created):
     started = subprocess.run([str(wsx), 'session', 'list', '--json'], cwd=project, env={**env, **probe},
                              capture_output=True, text=True, timeout=60)
     assert started.returncode == 0, (started.stdout, started.stderr)
-    seen_env = subprocess.run(['ps', '-axeww', '-o', 'pid=,command='], capture_output=True, text=True).stdout
-    daemon = [line for line in seen_env.splitlines() if 'WSX_SOCKET=' + probe['WSX_SOCKET'] in line and 'wsxd' in line]
-    assert daemon and 'WSX_AGENT_TREE=probe-20k' in daemon[0], daemon
-    os.kill(int(daemon[0].split()[0]), 15)
+    def environment(pid):
+        # ^ macOS: the arguments block of KERN_PROCARGS2 (argv, then the environment); Linux: /proc.
+        if sys.platform != 'darwin':
+            try:
+                return Path('/proc/%d/environ' % pid).read_bytes()
+            except OSError:
+                return b''
+        import ctypes
+        buffer, size = ctypes.create_string_buffer(1 << 20), ctypes.c_size_t(1 << 20)
+        if ctypes.CDLL(None).sysctl((ctypes.c_int * 3)(1, 49, pid), 3, buffer, ctypes.byref(size), None, 0):
+            return b''
+        return buffer.raw[:size.value]
+    listed = subprocess.run(['ps', '-axo', 'pid=,command='], capture_output=True, text=True).stdout
+    daemons = [int(line.split()[0]) for line in listed.splitlines() if 'wsxd' in line and 'ps -axo' not in line]
+    mine = [pid for pid in daemons if probe['WSX_SOCKET'].encode() in environment(pid)]
+    assert len(mine) == 1 and b'WSX_AGENT_TREE=probe-20k' in environment(mine[0]), (daemons, mine)
+    os.kill(mine[0], 15)
     bystander.kill()
     bystander.wait()
     git('branch', '-D', 'wsx/t%s' % orphan, ok=False)
