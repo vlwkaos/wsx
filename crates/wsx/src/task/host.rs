@@ -4184,7 +4184,19 @@ fn run_ci(
         let Some(wait) = retry else {
             return ran;
         };
-        let reason = ran.output.lines().rev().find(|l| !l.trim().is_empty());
+        // ^ The line that says why: the script's own closing lines (`a temporary failure`,
+        // `retry-after:`, `retry: no`, `gh calls:`) come after it.
+        let reason = ran.output.lines().rev().map(str::trim).find(|line| {
+            !line.is_empty()
+                && ![
+                    "a temporary failure",
+                    "retry-after:",
+                    "retry: no",
+                    "gh calls:",
+                ]
+                .iter()
+                .any(|closing| line.starts_with(closing))
+        });
         let _ = events.send(Event::CiRetry {
             command: command.into(),
             attempt,
