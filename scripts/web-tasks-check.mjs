@@ -3602,7 +3602,8 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await until(`location.hash === '#/p/${project}/c/qa' && document.querySelector('.bar-label')?.textContent === 'qa'`, "the new chat did not open under its name", 30);
   const made = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((data) => data.chats.find((chat) => chat.name === 'qa'))`);
   if (!made || made.goal !== "Check the release notes.") await fail(`the new chat is ${JSON.stringify(made)}`);
-  // ^ A name the store refuses stays in the sheet.
+  // ^ A name the store refuses stays in the sheet; its 400 is expected, not a page defect.
+  const refusedFrom = problems.length;
   await open();
   await choose("project", String(project));
   await choose("name", "Bad Name");
@@ -3610,6 +3611,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await until(`/lowercase letter/.test(document.querySelector('${sheet} .error')?.textContent ?? '')`, "a bad name showed no refusal in the sheet");
   await evaluate(`document.querySelector('${sheet} form').closest('dialog').close()`);
   await until("!document.querySelector('dialog.sheet')", "the New chat sheet stayed open");
+  problems.splice(refusedFrom, problems.length - refusedFrom, ...problems.slice(refusedFrom).filter((problem) => !/status of 400 .*\/chats$/.test(problem)));
 }
 
 // --- Session news: the host's post for a session that needs the owner links to that session
