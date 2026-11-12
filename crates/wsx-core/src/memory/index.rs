@@ -4,6 +4,7 @@
 //! on request. `wsx task search` is this index alone; `wsx memory search` ranks the memory
 //! records with it (`backend::Builtin`). ref: docs/tasks.md "Search", docs/memory.md "Search"
 
+use super::manage::clip_to;
 use crate::task::manager::{
     says_nothing, split_quote, Author, ManagerEntry, ManagerEvent, QUOTE_REF,
 };
@@ -788,15 +789,4 @@ pub(super) fn day_ms(date: &str) -> Option<u64> {
 
 fn clip(text: &str) -> String {
     clip_to(text, MAX_TEXT_BYTES)
-}
-
-fn clip_to(text: &str, max: usize) -> String {
-    if text.len() <= max {
-        return text.to_string();
-    }
-    let mut end = max;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text[..end].to_string()
 }

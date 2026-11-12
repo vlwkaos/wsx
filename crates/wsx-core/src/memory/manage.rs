@@ -5,7 +5,7 @@
 use super::backend::{record_hit, searchable, Hit};
 use super::index::{self, day_ms};
 use super::record::{Kind, Record, Status};
-use super::store::{Error, NewRecord, Patch, Store, MAX_KEYWORD_BYTES};
+use super::store::{usage, Error, NewRecord, Patch, Store, MAX_KEYWORD_BYTES};
 use crate::task::chat::{read_chat, Window};
 use crate::task::manager::{Author, ManagerEvent};
 use crate::task::store::{read_bounded_if_exists, write_note, ManagerDir, TaskDir};
@@ -88,20 +88,12 @@ pub struct Added {
     pub drift: Vec<Drift>,
 }
 
-fn usage<T>(message: impl Into<String>) -> Result<T, Error> {
-    Err(Error::Usage(message.into()))
-}
-
 fn io<T>(result: anyhow::Result<T>) -> Result<T, Error> {
     result.map_err(|e| Error::Store(format!("{e:#}")))
 }
 
 fn digest(text: &str) -> String {
-    Sha256::digest(text.as_bytes())
-        .iter()
-        .take(8)
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    hash(text)[..16].to_string()
 }
 
 /// The slug of a memo: its task and its words, so the same memo has one record.
@@ -590,11 +582,11 @@ pub fn landed_commit(dir: &TaskDir, record: &TaskRecord) -> Option<String> {
 /// Give the imported facts of landed tasks the landed commit and the paths of the diff, from
 /// the task's own record and log: the same data `capture` stores. A task with no landed
 /// diff stays without paths. Idempotent; `import` runs it. ref: docs/memory.md "Capture"
-pub fn backfill(store: &Store) -> Result<usize, Error> {
+pub fn backfill(store: &Store) -> Result<(), Error> {
     let Some((project, _)) = store.project_ids() else {
-        return Ok(0);
+        return Ok(());
     };
-    let changed = store.backfill(|r| {
+    store.backfill(|r| {
         let task = r
             .verified_by
             .as_deref()?
@@ -605,8 +597,7 @@ pub fn backfill(store: &Store) -> Result<usize, Error> {
         let record = dir.read_record().ok()?;
         Some((landed_commit(&dir, &record)?, record.paths))
     })?;
-    io(write_note(&store.dir().join(BACKFILLED_FILE), "done\n"))?;
-    Ok(changed.len())
+    io(write_note(&store.dir().join(BACKFILLED_FILE), "done\n"))
 }
 
 /// `backfill` for a store that has not had it: run before the first write, so the memos imported

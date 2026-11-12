@@ -31,6 +31,8 @@ wsx task new|list|show|add|stop|land|after|hold|trial|close|hand|dismiss|check|d
 
 Hidden from `wsx --help`, still run: `wsx runtime status` (now `wsx daemon status`), `wsx task handback <n>` (now `wsx task hand <n> --back`), `wsx task steer`, `wsx task check-run`, `digest` and `post` (a worker's and the routines' commands), `wsx memory capture|start|import` (the task host's), `wsx session send-keys` (an alias of `send-text`), `wsx group` and `wsx plugin`. A hidden command keeps its argv, so scripts, hooks, stored routines and a running manager's older prompt work without a change.
 
+Chats ([tasks.md](tasks.md) "Chats"): `wsx task chat new <name> [--goal <file>|-] [--agent <entry>]`, `chat list` and `chat close <name>` are the owner's. `wsx task chat [--chat <name>] [--after <id>|--around <id>]` reads a chat. `wsx task say [--to <name>] "<text>"` writes to a chat (the first when `--to` is missing). A chat's agent adds `--from-chat [--reply]` to write to another chat of its project (`--to`), or with `-p <project>` to that project's first chat.
+
 The manager passes `--after <n>` with `--owner-said <id>` to `wsx task land|close --discard|deploy|release|push`: the owner's go is checked now and the action runs when #n lands ([tasks.md](tasks.md) "Approvals").
 
 ## Worktrees and sessions

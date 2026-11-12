@@ -1112,10 +1112,9 @@ impl ManagerChat {
             task: list.task,
             kind: list.kind,
             before: more.then(|| list.next.clone()).flatten(),
-            limit: 0,
             with_uploads: false,
         };
-        match media::list(&self.store, &filter, Some(&self.main)) {
+        match media::list(&self.store, &filter, &self.main) {
             Ok(page) => {
                 if !more {
                     list.items.clear();

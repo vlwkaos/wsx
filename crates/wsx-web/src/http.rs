@@ -1148,9 +1148,7 @@ async fn tasks_agents(State(app): State<Shared>, Paired(_): Paired) -> Outcome<J
 #[serde(deny_unknown_fields)]
 struct ChatInput {
     name: String,
-    #[serde(default)]
     goal: Option<String>,
-    #[serde(default)]
     agent: Option<String>,
 }
 
@@ -1224,7 +1222,6 @@ async fn tasks_media(
         task: query.task,
         kind,
         before: query.before,
-        limit: 0,
         with_uploads: true,
     };
     let shared = app.clone();

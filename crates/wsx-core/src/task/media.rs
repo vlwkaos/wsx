@@ -99,7 +99,6 @@ pub struct Filter {
     pub kind: Option<Kind>,
     /// A previous page's `next`: only older items.
     pub before: Option<String>,
-    pub limit: usize,
     /// Also the owner's uploads: only a reader of the web's media store can say whether one is
     /// still there.
     pub with_uploads: bool,
@@ -114,12 +113,7 @@ pub struct Page {
 
 /// One page of the project's media, newest first. `checkout` is the main checkout, for the
 /// files that messages link.
-pub fn list(project_id: &str, filter: &Filter, checkout: Option<&Path>) -> Result<Page> {
-    let limit = if filter.limit == 0 {
-        PAGE_ITEMS
-    } else {
-        filter.limit
-    };
+pub fn list(project_id: &str, filter: &Filter, checkout: &Path) -> Result<Page> {
     let before = filter.before.as_deref().and_then(parse_cursor);
     let older = |item: &Item| {
         before
@@ -138,7 +132,7 @@ pub fn list(project_id: &str, filter: &Filter, checkout: Option<&Path>) -> Resul
                     .filter(|item| filter.kind.is_none_or(|kind| kind == item.kind))
                     .collect()
             };
-            // ^ Newest first: a log read back until `limit` + 1 items older than the cursor are
+            // ^ Newest first: a log read back until `PAGE_ITEMS` + 1 items older than the cursor are
             // in has every item that can be in the page or show that another page follows.
             let entries = dir.read_all_where(
                 FIRST_READ_BYTES,
@@ -146,15 +140,15 @@ pub fn list(project_id: &str, filter: &Filter, checkout: Option<&Path>) -> Resul
                     contains_bytes(line, b"files/")
                         || contains_bytes(line, ATTACHMENT_HEADER.as_bytes())
                 },
-                |entries| items_of(entries).iter().filter(|item| older(item)).count() > limit,
+                |entries| items_of(entries).iter().filter(|item| older(item)).count() > PAGE_ITEMS,
             )?;
             items.extend(items_of(&entries));
         }
     }
     items.retain(&older);
     items.sort_by(|a, b| key(b).cmp(&key(a)));
-    let next = (items.len() > limit).then(|| items[limit - 1].cursor());
-    items.truncate(limit);
+    let next = (items.len() > PAGE_ITEMS).then(|| items[PAGE_ITEMS - 1].cursor());
+    items.truncate(PAGE_ITEMS);
     Ok(Page { items, next })
 }
 
@@ -205,7 +199,7 @@ fn capture_items(project_id: &str, filter: &Filter) -> Result<Vec<Item>> {
 fn entry_items(
     entry: &ManagerEntry,
     dir_name: &str,
-    checkout: Option<&Path>,
+    checkout: &Path,
     with_uploads: bool,
 ) -> Vec<Item> {
     let (id, who, text, uploads) = match &entry.event {
@@ -237,7 +231,7 @@ fn entry_items(
         let Some(kind) = Kind::of(&path).filter(|_| plain_path(&path)) else {
             continue;
         };
-        let gone = checkout.is_some_and(|root| !in_checkout(root, &path));
+        let gone = !in_checkout(checkout, &path);
         found.push(item(found.len(), Source::File, kind, &path, &path, gone));
     }
     if uploads {
