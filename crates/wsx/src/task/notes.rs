@@ -206,7 +206,7 @@ pub(super) fn record_memo(
     Ok(wsx_core::memory::manage::capture(store, project, task, memo, commit, paths)?.drift)
 }
 
-/// A role's notes are files of its own, not records: add a finished task's memo to its
+/// Another chat's notes are files of its own, not records: add a finished task's memo to its
 /// `context.md` as one line of at most `MEMO_LINE_CHARS`, unless
 /// the file holds it. Past `CONTEXT_CEILING_BYTES` the oldest memo lines move to the archive
 /// (written first, so a failed write loses none); the manager's own lines stay.

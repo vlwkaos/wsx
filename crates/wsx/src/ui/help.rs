@@ -121,7 +121,7 @@ const WORKSPACE: &[&str] = &[
 const TASKS: &[&str] = &[
     " Tasks list",
     "  j/k / ↑↓     Move",
-    "  Enter         Task detail (a role: its chat)",
+    "  Enter         Task detail (a chat: opens it)",
     "  m             Manager chat",
     "  S             Shell in the project",
     "  a             Pick the agent the spend counts",

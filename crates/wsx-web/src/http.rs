@@ -1215,8 +1215,8 @@ async fn tasks_overview(
 #[serde(deny_unknown_fields)]
 struct AfterQuery {
     after: Option<u64>,
-    /// A role's chat instead of the manager's (docs/tasks.md "Roles").
-    role: Option<String>,
+    /// Another chat instead of the manager's (docs/tasks.md "Chats").
+    chat: Option<String>,
     /// The chat from the oldest entry that shows these words, for a find
     /// (docs/web-client-chat.md "Find").
     find: Option<String>,
@@ -1240,7 +1240,7 @@ async fn tasks_chat(
         crate::tasks::chat(
             scope,
             &scopes,
-            query.role.as_deref(),
+            query.chat.as_deref(),
             (query.after, query.find.as_deref(), query.around),
             &app.media,
             &|text| {
@@ -1340,9 +1340,9 @@ struct SayInput {
     /// Media hashes from `PUT /api/media`.
     #[serde(default)]
     attachments: Vec<String>,
-    /// To this open role instead of the manager.
+    /// To this open chat instead of the manager.
     #[serde(default)]
-    role: Option<String>,
+    chat: Option<String>,
 }
 
 async fn tasks_say(
@@ -1359,7 +1359,7 @@ async fn tasks_say(
         crate::tasks::say(
             &app,
             &crate::tasks::scope(&app, project)?,
-            input.role.as_deref(),
+            input.chat.as_deref(),
             &text,
         )
         .map(Json)

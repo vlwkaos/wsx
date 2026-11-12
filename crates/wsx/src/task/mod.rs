@@ -28,7 +28,9 @@ use anyhow::{bail, Context, Result};
 pub use args::{Common, TaskCmd};
 use args::{DeployArgs, ReleaseArgs};
 use cmd::approve::{approve, deny};
-use cmd::chat::{boundary_profile, chat, dismiss, manager_command, role, say_command, search};
+use cmd::chat::{
+    boundary_profile, chat, chat_command, dismiss, manager_command, say_command, search,
+};
 use cmd::check::check;
 pub(crate) use cmd::check::fail_check;
 use cmd::deploy::{deploy, deployed, push, trial_command};
@@ -112,7 +114,6 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
         TaskCmd::Checkin { after, at, why } => {
             checkin(project, after.as_deref(), at.as_deref(), &why)
         }
-        TaskCmd::Role { action } => role(action, project, json),
         TaskCmd::Project { action } => self::project(action, project, json),
         TaskCmd::Ledger => ledger::ledger(project),
         TaskCmd::Routine {
@@ -125,22 +126,26 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
         TaskCmd::Manager => manager_command(project, json),
         TaskCmd::Say {
             text,
-            role,
+            to,
             from_manager,
-            from_role,
+            from_chat,
             reply,
         } => say_command(
             project,
-            role.as_deref(),
+            to.as_deref(),
             text,
-            (from_manager, from_role, reply),
+            (from_manager, from_chat, reply),
             json,
         ),
         TaskCmd::Chat {
             after,
             around,
-            role,
-        } => chat(project, role.as_deref(), (after, around), json),
+            chat: name,
+            action,
+        } => match action {
+            Some(action) => chat_command(action, project, json),
+            None => chat(project, name.as_deref(), (after, around), json),
+        },
         TaskCmd::Search {
             words,
             task,
@@ -165,7 +170,7 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
         TaskCmd::PreviewHost { project_id, task } => {
             preview::host(&project_id, store::parse_task_number(&task)?)
         }
-        TaskCmd::ManagerHost { project_id, role } => manager::run(&project_id, role.as_deref()),
+        TaskCmd::ManagerHost { project_id, chat } => manager::run(&project_id, chat.as_deref()),
         TaskCmd::BoundaryProfile { untrusted } => boundary_profile(project, untrusted),
         TaskCmd::Host { project_id, task } => {
             host::run(&project_id, store::parse_task_number(&task)?)
@@ -225,16 +230,16 @@ fn open(project: Option<&str>, task: &str) -> Result<TaskDir> {
     )
 }
 
-/// `open` for a command that changes the task: a role acts only on the tasks it created,
-/// whose events go to it. ref: docs/tasks.md "Roles"
+/// `open` for a command that changes the task: a chat acts only on the tasks it created,
+/// whose events go to it. ref: docs/tasks.md "Chats"
 fn open_owned(project: Option<&str>, task: &str) -> Result<TaskDir> {
     let dir = open(project, task)?;
     let actor = actor();
-    if let Some(role) = actor.role() {
+    if let Some(chat) = actor.chat() {
         let record = dir.read_record()?;
         if record.created_by != actor {
             bail!(
-                "role {role} acts only on the tasks it created; #{} is the {}'s",
+                "chat {chat} acts only on the tasks it created; #{} is the {}'s",
                 record.id,
                 String::from(record.created_by)
             );
@@ -250,7 +255,7 @@ fn may(capability: Capability) -> bool {
     Role::of_actor(&actor()).is_none_or(|role| role.caps().has(capability))
 }
 
-/// Refuse what the acting role's group lacks, in the role's words. ref: docs/tasks.md "Roles"
+/// Refuse what the acting chat's group lacks, in its words. ref: docs/tasks.md "Chats"
 fn need(capability: Capability, what: &str) -> Result<()> {
     match Role::of_actor(&actor()) {
         Some(role) if !role.caps().has(capability) => bail!("{}", role_refusal(role, what)),

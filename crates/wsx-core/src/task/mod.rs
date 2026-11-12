@@ -7,6 +7,7 @@
 
 pub mod build;
 pub mod chat;
+pub mod chats;
 pub mod checks;
 pub mod copy;
 pub mod failure;
@@ -18,7 +19,6 @@ pub mod needs;
 pub mod owner;
 pub mod policy;
 pub mod report;
-pub mod roles;
 /// `wsx task search` is the built-in index of the memory contract. ref: docs/tasks.md "Search"
 pub use crate::memory::index as search;
 pub mod session_news;
@@ -173,9 +173,9 @@ pub struct Waiting {
     pub until_ms: Option<u64>,
 }
 
-/// Who acted: the owner, the manager's agent (`WSX_TASK_ACTOR=manager`) or a role's
-/// (`role:<name>`). `ManagerOf` is only stored, on a task another project's manager created
-/// here (`manager@<project>`): its events go to that manager. ref: docs/tasks.md "Roles",
+/// Who acted: the owner, the manager's agent (`WSX_TASK_ACTOR=manager`) or another chat's
+/// (`chat:<name>`). `ManagerOf` is only stored, on a task another project's manager created
+/// here (`manager@<project>`): its events go to that manager. ref: docs/tasks.md "Chats",
 /// "Managers talk"
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
@@ -184,7 +184,7 @@ pub enum Actor {
     Owner,
     Manager,
     ManagerOf(String),
-    Role(String),
+    Chat(String),
 }
 
 impl From<Actor> for String {
@@ -193,7 +193,7 @@ impl From<Actor> for String {
             Actor::Owner => "owner".into(),
             Actor::Manager => "manager".into(),
             Actor::ManagerOf(project) => format!("manager@{project}"),
-            Actor::Role(name) => format!("role:{name}"),
+            Actor::Chat(name) => format!("chat:{name}"),
         }
     }
 }
@@ -205,8 +205,8 @@ impl TryFrom<String> for Actor {
         match text.as_str() {
             "owner" => Ok(Self::Owner),
             "manager" => Ok(Self::Manager),
-            _ => match (text.strip_prefix("role:"), text.strip_prefix("manager@")) {
-                (Some(name), _) if !name.is_empty() => Ok(Self::Role(name.into())),
+            _ => match (text.strip_prefix("chat:"), text.strip_prefix("manager@")) {
+                (Some(name), _) if !name.is_empty() => Ok(Self::Chat(name.into())),
                 (_, Some(project)) if !project.is_empty() => Ok(Self::ManagerOf(project.into())),
                 _ => Err(format!("unknown actor {text}")),
             },
@@ -223,10 +223,10 @@ impl Actor {
             .unwrap_or_default()
     }
 
-    /// The role's name, or none for the owner and the manager.
-    pub fn role(&self) -> Option<&str> {
+    /// The chat's name, or none for the owner and the manager.
+    pub fn chat(&self) -> Option<&str> {
         match self {
-            Self::Role(name) => Some(name),
+            Self::Chat(name) => Some(name),
             _ => None,
         }
     }
@@ -637,7 +637,7 @@ impl TaskRecord {
         matches!(self.state, TaskState::Ready | TaskState::Failed)
     }
 
-    /// A ready task waits for the manager's review when the manager or a role created it (the
+    /// A ready task waits for the manager's review when the manager or a chat created it (the
     /// creator reviews it), or when the
     /// project lands by itself (`tasks.land.auto`) and checks prove it: an owner task never
     /// lands by itself. A held one waits for the owner, as does any other ready task; one that

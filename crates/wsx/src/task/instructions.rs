@@ -109,8 +109,7 @@ pub(super) fn instructions(
          Long multi-step work goes into one task: each step is `wsx task new --into <n>`, \
          which holds #<n>; land a step when an event names it ready, and #<n> once the owner \
          says so. Many tasks of one area (a parent with 3 or more \
-         children) may get a role, a second manager with its own chat: ask the owner once, \
-         then `wsx task role new <name> --brief <file>`. \
+         children) may suit its own chat: tell the owner, who opens it with `wsx task chat new <name>`. \
          Say in one line how to try it: Try live (`wsx task trial <n>`), or a preview \
          (`wsx task preview <n>`) when the live site cannot roll back from it (a \
          daemon, a migration). \
@@ -167,8 +166,8 @@ pub(super) fn instructions(
          asks you something: answer it once with `wsx task say -p <project> --from-manager \
          --reply \"<answer>\"`. 'Manager <project> replies' answers yours: use it and do not \
          answer it. '@<project>' in an owner message asks you to consult that manager the \
-         same way and use its reply. Roles talk the same way inside the project with \
-         `--role <name> --from-role`; answer a message headed 'Role <name>' once with `--reply`.",
+         same way and use its reply. Chats talk the same way inside the project with \
+         `--to <name> --from-chat`; answer a message headed 'Chat <name>' once with `--reply`.",
         review = match workflow.review.is_empty() {
             true => String::new(),
             false => format!("{} ", workflow.review),

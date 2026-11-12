@@ -976,9 +976,6 @@ pub enum MemoryCmd {
         /// A comma list of the task's --files globs
         #[arg(long, value_delimiter = ',')]
         files: Vec<String>,
-        /// The role that created the task: its brief and rules join the block
-        #[arg(long)]
-        role: Option<String>,
     },
     /// Replace the record OLD with the active record NEW
     Supersede {

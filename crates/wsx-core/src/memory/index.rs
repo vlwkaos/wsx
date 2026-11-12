@@ -1,4 +1,4 @@
-//! The built-in index: BM25 over what was said. The manager chats and role chats, the manager's
+//! The built-in index: BM25 over what was said. The chats, the manager's
 //! notes and each task's title, story and results. One digest per project keeps the words of
 //! what was said, not the tool noise; it is built from the logs, caught up on read and rebuilt
 //! on request. `wsx task search` is this index alone; `wsx memory search` ranks the memory
@@ -11,7 +11,7 @@ use crate::task::store::{
     self, contains_bytes, ManagerDir, TaskDir, FIRST_READ_BYTES, LOG_FILE, RECORD_FILE, RESULT_FILE,
 };
 use crate::task::text::first_line;
-use crate::task::{history, roles, view};
+use crate::task::{chats, history, view};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -37,7 +37,7 @@ const BM25_B: f64 = 0.75;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// An owner's, another manager's or a role's message.
+    /// An owner's, another manager's or a chat's message.
     Message,
     /// A manager's reply that says something.
     Reply,
@@ -76,7 +76,7 @@ impl Kind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Doc {
     pub kind: Kind,
-    /// The role whose chat it is; none is the manager's.
+    /// The chat it belongs to; none is the manager's.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub role: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -110,7 +110,7 @@ pub struct Target {
 pub struct Hit {
     pub project: String,
     pub kind: Kind,
-    /// The role of a role chat's message.
+    /// The chat of a message of another chat than the manager's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     /// The message id in that chat, or none.
@@ -122,7 +122,7 @@ pub struct Hit {
     pub by: String,
     pub line: String,
     pub score: f64,
-    /// Where it is: `<project>:<id>`, `<project>:<role>:<id>`, `<project>#<task>`, or
+    /// Where it is: `<project>:<id>`, `<project>:<chat>:<id>`, `<project>#<task>`, or
     /// `<project>:notes/<file>`.
     pub reference: String,
     /// The first line of a reply that quotes it by id (`resolve_quote`): only a message of the
@@ -476,19 +476,12 @@ fn supersede(docs: &mut Vec<Doc>) {
     });
 }
 
-/// The manager's and each role's messages and replies newer than the digest holds. Ids grow,
+/// The manager's and each chat's messages and replies newer than the digest holds. Ids grow,
 /// so the read from the log's end stops at the newest one it has.
 fn catch_up_chats(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Result<()> {
-    let mut chats: Vec<(String, ManagerDir)> = Vec::new();
-    if let Some(dir) = ManagerDir::existing(project_id)? {
-        chats.push((String::new(), dir));
-    }
-    for role in roles::names(project_id) {
-        if let Some(dir) = ManagerDir::existing_as(project_id, Some(&role))? {
-            chats.push((role, dir));
-        }
-    }
-    for (role, dir) in chats {
+    let first = ManagerDir::existing(project_id)?;
+    for dir in first.into_iter().chain(chats::all(project_id)) {
+        let role = dir.role.clone().unwrap_or_default();
         let seen = docs
             .iter()
             .filter(|doc| doc.role == role)
@@ -535,7 +528,7 @@ fn catch_up_chats(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
     Ok(())
 }
 
-/// The record of a chat entry: what the owner, a manager or a role said, and a reply that says
+/// The record of a chat entry: what the owner, a manager or a chat said, and a reply that says
 /// something. Wsx's events, recaps and quiet replies are not conversation.
 fn chat_doc(entry: &ManagerEntry, role: &str) -> Option<Doc> {
     let (kind, id, by, text, check) = match &entry.event {
@@ -549,7 +542,7 @@ fn chat_doc(entry: &ManagerEntry, role: &str) -> Option<Doc> {
             let by = match from {
                 Author::Owner => "owner".to_string(),
                 Author::Manager { project, .. } => format!("manager:{project}"),
-                Author::Role { name, .. } => format!("role:{name}"),
+                Author::Chat { name, .. } => format!("chat:{name}"),
                 Author::Events | Author::Recap => return None,
             };
             (Kind::Message, *id, by, text, check.as_deref())

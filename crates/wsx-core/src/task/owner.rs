@@ -21,21 +21,21 @@ const MANAGER_START_WAIT: Duration = Duration::from_secs(10);
 /// Most characters of an action's answer kept in its decision.
 const MAX_OUTCOME_CHARS: usize = 1000;
 
-/// Start the project's manager host, or the open role's (`role`), unless one answers. True
+/// Start the project's manager host, or the open chat's (`chat`), unless one answers. True
 /// when it was started. `launch` creates the hidden session (its label, `task-manager` or
-/// `task-<role>`) in the main checkout with the given argv; the CLI may start wsxd for it,
+/// `task-<chat>`) in the main checkout with the given argv; the CLI may start wsxd for it,
 /// the web client never does.
 pub fn ensure_manager(
     name: &str,
     main: &Path,
     wsx: &Path,
-    role: Option<&str>,
+    chat: Option<&str>,
     launch: impl FnOnce(String, Vec<String>) -> Result<()>,
 ) -> Result<(bool, ManagerDir)> {
     let project_id = store::project_id(name, main);
-    let dir = match role {
+    let dir = match chat {
         None => ManagerDir::open(&project_id)?,
-        Some(role) => super::roles::open_role(&project_id, role)?,
+        Some(chat) => super::chats::open_chat(&project_id, chat)?,
     };
     let status = || {
         call_socket::<_, ManagerResponse>(&dir.socket_path(), &ManagerRequest::Status, HOST_TIMEOUT)
@@ -49,8 +49,8 @@ pub fn ensure_manager(
         "manager-host".into(),
         project_id,
     ];
-    if let Some(role) = role {
-        argv.extend(["--role".into(), role.into()]);
+    if let Some(chat) = chat {
+        argv.extend(["--chat".into(), chat.into()]);
     }
     let label = format!("task-{}", dir.name());
     launch(label.clone(), argv)
@@ -68,21 +68,21 @@ pub fn ensure_manager(
     )
 }
 
-/// Give the manager, or the open role `role`, a message, starting it first when needed.
-/// `from` is another manager or role; none is the owner. `short`: an events message's lines
+/// Give the manager, or the open chat `chat`, a message, starting it first when needed.
+/// `from` is another manager or chat; none is the owner. `short`: an events message's lines
 /// as the chat shows them.
 #[allow(clippy::too_many_arguments)]
 pub fn say(
     name: &str,
     main: &Path,
     wsx: &Path,
-    role: Option<&str>,
+    chat: Option<&str>,
     launch: impl FnOnce(String, Vec<String>) -> Result<()>,
     text: String,
     from: Option<super::manager::Author>,
     short: Vec<super::manager::Short>,
 ) -> Result<ManagerResponse> {
-    let (_, dir) = ensure_manager(name, main, wsx, role, launch)?;
+    let (_, dir) = ensure_manager(name, main, wsx, chat, launch)?;
     call_socket(
         &dir.socket_path(),
         &ManagerRequest::Say { text, from, short },
@@ -121,7 +121,6 @@ pub fn action_name(action: ApprovalAction) -> &'static str {
         ApprovalAction::Deploy => "deploy",
         ApprovalAction::Release => "release",
         ApprovalAction::Discard => "close --discard",
-        ApprovalAction::Role => "role new",
         ApprovalAction::Push => "push",
         ApprovalAction::Project => "project add",
     }
@@ -134,8 +133,6 @@ pub fn approval_label(request: &ApprovalLine) -> String {
     let ApprovalLine::Request {
         action,
         task,
-        role,
-        model,
         commit,
         lease,
         tasks,
@@ -148,21 +145,15 @@ pub fn approval_label(request: &ApprovalLine) -> String {
     };
     let verb = match action {
         ApprovalAction::Discard => "discard",
-        ApprovalAction::Role => "role",
         ApprovalAction::Push if lease.is_some() => "force push",
         other => action_name(*other),
     };
-    let mut label = match (task, role, action, commit) {
+    let mut label = match (task, action, commit) {
         (Some(task), ..) => format!("Approve {verb} #{task}"),
         // ^ A project add names the folder; the URL is the card's second line.
         _ if path.is_some() => format!("Approve {verb} {}", path.as_deref().unwrap_or_default()),
-        // ^ A role on its own model names it: "Approve role qa (sonnet)".
-        (None, Some(role), ..) => match model {
-            Some(model) => format!("Approve {verb} {role} ({model})"),
-            None => format!("Approve {verb} {role}"),
-        },
         // ^ A push with no landed task names the commit: "Approve force push 1a2b3c4d5e6f".
-        (None, None, ApprovalAction::Push, Some(commit)) if tasks.is_empty() => {
+        (None, ApprovalAction::Push, Some(commit)) if tasks.is_empty() => {
             format!("Approve {verb} {}", super::view::short_commit(commit))
         }
         _ => format!("Approve {verb}"),
@@ -352,10 +343,6 @@ fn run_request(
         task,
         revision,
         commit,
-        role,
-        brief,
-        adapter,
-        model,
         lease,
         path,
         url,
@@ -366,29 +353,6 @@ fn run_request(
         unreachable!("only requests run");
     };
     let id = id.as_str();
-    // ^ A role is store files only: no command to run.
-    if action == ApprovalAction::Role {
-        let role = role.unwrap_or_default();
-        let agent = adapter
-            .zip(model)
-            .map(|(adapter, model)| super::roles::RoleAgent { adapter, model });
-        let (ok, outcome) = match super::roles::create(
-            project_id,
-            &role,
-            brief.as_deref().unwrap_or_default(),
-            super::roles::Opener::Manager,
-            agent,
-        ) {
-            Ok(_) => (true, format!("done: role {role} is open")),
-            Err(error) => (false, format!("failed: {error:#}")),
-        };
-        decide(project_id, id, true, None, &outcome, owner_said)?;
-        return Ok(Approved {
-            ok,
-            outcome,
-            result: serde_json::json!({ "role": role }),
-        });
-    }
     // ^ The owner approves one revision: a task that moved on needs a new request.
     if let (Some(task), Some(revision)) = (task, revision) {
         let now = TaskDir::open(project_id, task)?.read_record()?.revision;
@@ -408,7 +372,6 @@ fn run_request(
             task.unwrap_or_default().to_string(),
             "--discard".into(),
         ]),
-        ApprovalAction::Role => unreachable!("a role is created above"),
         ApprovalAction::Project => {
             argv.extend(["project".into(), "add".into(), path.unwrap_or_default()]);
             if let Some(url) = url {

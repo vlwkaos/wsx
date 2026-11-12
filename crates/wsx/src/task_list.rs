@@ -65,14 +65,14 @@ impl Overview {
     }
 }
 
-/// One row: an open task in attention order, an open or asked role, then a recent landed or
-/// closed task. A role row has no number; its title is the role's name.
+/// One row: an open task in attention order, an open chat, then a recent landed or
+/// closed task. A chat row has no number; its title is the chat's name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRow {
     pub id: u64,
     pub title: String,
     pub state: String,
-    /// The status label (wsx-core `task::status`), or a role's brief; empty when nothing.
+    /// The status label (wsx-core `task::status`), or a chat's goal; empty when nothing.
     pub status: String,
     pub section: Section,
 }
@@ -80,7 +80,7 @@ pub struct TaskRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     Open,
-    Roles,
+    Chats,
     Recent,
 }
 
@@ -88,7 +88,7 @@ impl Section {
     pub fn heading(self) -> &'static str {
         match self {
             Self::Open => "Open",
-            Self::Roles => "Roles",
+            Self::Chats => "Chats",
             Self::Recent => "Recent",
         }
     }
@@ -232,12 +232,12 @@ impl TaskList {
         self.check();
     }
 
-    /// Open the manager's chat, or a role's (docs/tasks.md "Roles").
-    pub fn open_chat(&mut self, role: Option<String>) {
+    /// Open the manager's chat, or another's (docs/tasks.md "Chats").
+    pub fn open_chat(&mut self, chat: Option<String>) {
         self.chat = Some(Box::new(crate::task_chat::ManagerChat::new(
             self.project.clone(),
             self.main.clone(),
-            role,
+            chat,
         )));
     }
 
@@ -265,19 +265,19 @@ impl TaskList {
         ));
     }
 
-    /// The selected row's open role, whose chat `Enter` opens.
-    pub fn selected_role(&self) -> Option<&str> {
+    /// The selected row's open chat, which `Enter` opens.
+    pub fn selected_chat(&self) -> Option<&str> {
         self.rows
             .get(self.selected)
-            .filter(|row| row.section == Section::Roles && row.state == "open")
+            .filter(|row| row.section == Section::Chats && row.state == "open")
             .map(|row| row.title.as_str())
     }
 
-    /// `Enter`: an open role's chat, else a task's detail; an asked role waits for the owner.
+    /// `Enter`: an open chat, else a task's detail.
     pub fn open_selected(&mut self) {
-        match (self.selected_role(), self.rows.get(self.selected)) {
-            (Some(role), _) => self.open_chat(Some(role.to_string())),
-            (None, Some(row)) if row.section != Section::Roles => self.open_detail(),
+        match (self.selected_chat(), self.rows.get(self.selected)) {
+            (Some(chat), _) => self.open_chat(Some(chat.to_string())),
+            (None, Some(row)) if row.section != Section::Chats => self.open_detail(),
             _ => {}
         }
     }
@@ -550,7 +550,7 @@ pub fn state_word(task: &Value) -> String {
 }
 
 /// Open tasks first, waiting on the owner, failed, ready, checking, then working; then the
-/// open and asked roles; then the recent landed and closed tasks, newest first as the
+/// open chats; then the recent landed and closed tasks, newest first as the
 /// ledger has them.
 pub fn rows(ledger: &Value) -> Vec<TaskRow> {
     let rank = |state: &str| match state {
@@ -576,25 +576,25 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
             .join(" · "),
         section,
     };
-    let role = |role: &Value| TaskRow {
+    let chat = |chat: &Value| TaskRow {
         id: 0,
-        title: role["name"].as_str().unwrap_or_default().to_string(),
-        state: role["state"].as_str().unwrap_or_default().to_string(),
-        // ^ The role's own model first, as the room's heading shows it.
+        title: chat["name"].as_str().unwrap_or_default().to_string(),
+        state: chat["state"].as_str().unwrap_or_default().to_string(),
+        // ^ The chat's own model first, as the room's heading shows it.
         status: [
-            wsx_core::task::view::agent_label(role),
-            role["brief"].as_str().map(str::to_string),
+            wsx_core::task::view::agent_label(chat),
+            chat["goal"].as_str().map(str::to_string),
         ]
         .into_iter()
         .flatten()
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
         .join(" · "),
-        section: Section::Roles,
+        section: Section::Chats,
     };
     open.iter()
         .map(|task| row(task, Section::Open))
-        .chain(list("roles").iter().map(role))
+        .chain(list("chats").iter().map(chat))
         .chain(list("recent").iter().map(|task| row(task, Section::Recent)))
         .collect()
 }

@@ -91,10 +91,10 @@ pub(super) fn allowed(argv: &[String], policy: Policy) -> Result<()> {
     bail!("{}", policy.refusal(&what, needs))
 }
 
-/// The command as the refusal names it: `role new`, `routine changes`, `close --discard`.
+/// The command as the refusal names it: `chat new`, `routine changes`, `close --discard`.
 fn command_name(argv: &[String]) -> String {
     match (argv[1].as_str(), argv.get(2)) {
-        ("role", Some(action)) => format!("role {action}"),
+        ("chat", Some(action)) if !action.starts_with('-') => format!("chat {action}"),
         ("routine", _) => "routine changes".into(),
         ("checkin", _) => "a check-in".into(),
         ("close", _) if argv.iter().any(|arg| arg == "--discard") => "close --discard".into(),
@@ -167,16 +167,16 @@ pub struct ManagerBroker {
     pub own: String,
     pub project_id: String,
     pub actor: String,
-    /// Answers the host owes, by sender (`role:<name>` or a project).
+    /// Answers the host owes, by sender (`chat:<name>` or a project).
     pub owed: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u32>>>,
     pub policy: SharedPolicy,
 }
 
 /// The manager host's side: every `task` command runs as its `actor` (`manager` or
-/// `role:<name>`). Another project is reached only by `ledger` and `say --from-manager`, a
-/// role or the manager of this one by `say --from-role`; a `--reply` spends an answer the
+/// `chat:<name>`). Another project is reached only by `ledger` and `say --from-manager`, a
+/// chat of this one by `say --from-chat`; a `--reply` spends an answer the
 /// host owes (`owed`), and `sent` hears each message that went out.
-/// ref: docs/tasks.md "Managers talk", "Roles"
+/// ref: docs/tasks.md "Managers talk", "Chats"
 pub fn serve_manager(
     listener: UnixListener,
     broker: ManagerBroker,
@@ -213,8 +213,8 @@ pub fn serve_manager(
             if !owes(to) {
                 return refused(format!(
                     "no message from {} waits for an answer, and a reply is not answered",
-                    match to.strip_prefix("role:") {
-                        Some(role) => role.to_string(),
+                    match to.strip_prefix("chat:") {
+                        Some(chat) => chat.to_string(),
                         None => format!("the manager of {to}"),
                     }
                 ));
@@ -297,8 +297,8 @@ const MANAGER_REACH: [&str; 9] = [
 
 /// The other project a command reaches. A manager may run `MANAGER_REACH` there (the task
 /// lives in that project's store, as the owner's `-p` makes it) and `say --from-manager`; a
-/// role only reads `ledger`. Or `role:<name>` for `say --from-role` to a role of its own
-/// (`manager` without `--role`); `None` for anything else of its own. A `--from-manager`
+/// chat only reads `ledger`. Or `chat:<name>` for `say --from-chat` to a chat of its own
+/// (`manager` without `--to`); `None` for anything else of its own. A `--from-manager`
 /// message must go to another project. ref: docs/tasks.md "Managers talk"
 fn reach(argv: &[String], own: &str, actor: &str) -> Result<Option<String>> {
     let project = argv
@@ -313,22 +313,22 @@ fn reach(argv: &[String], own: &str, actor: &str) -> Result<Option<String>> {
         });
     let sub = argv.get(1).map(String::as_str).unwrap_or_default();
     let from_manager = argv.iter().any(|arg| arg == "--from-manager");
-    let from_role = argv.iter().any(|arg| arg == "--from-role");
+    let from_chat = argv.iter().any(|arg| arg == "--from-chat");
     let discard = argv.iter().any(|arg| arg == "--discard");
-    let role = argv
+    let to = argv
         .iter()
-        .position(|arg| arg == "--role")
+        .position(|arg| arg == "--to")
         .and_then(|at| argv.get(at + 1))
         .cloned()
         .or_else(|| {
             argv.iter()
-                .find_map(|arg| arg.strip_prefix("--role=").map(str::to_string))
+                .find_map(|arg| arg.strip_prefix("--to=").map(str::to_string))
         });
     match project.filter(|project| project != own) {
         None if from_manager => bail!("--from-manager messages another project's manager; name it with -p"),
-        None if sub == "say" && from_role => Ok(Some(format!(
-            "role:{}",
-            role.as_deref().unwrap_or("manager")
+        None if sub == "say" && from_chat => Ok(Some(format!(
+            "chat:{}",
+            to.as_deref().unwrap_or("manager")
         ))),
         None => Ok(None),
         // ^ Reading another ledger is not a message; only a sent message is logged.
@@ -340,7 +340,7 @@ fn reach(argv: &[String], own: &str, actor: &str) -> Result<Option<String>> {
             MANAGER_REACH.join(", ")
         ),
         Some(other) => bail!(
-            "only a project's manager acts in another project; a role stays in its own (for {other} it may read `wsx task ledger -p {other}`)"
+            "only a project's manager acts in another project; a chat stays in its own (for {other} it may read `wsx task ledger -p {other}`)"
         ),
     }
 }

@@ -4276,25 +4276,25 @@ merge_seconds = 3
         # ^ A read after the message's id still brings the rows that follow it, none queued.
         assert not any(r.get('queued') for r in steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]['rows'])
         ok('the manager held by a limit: a message sent meanwhile is a queued row, a bubble once a turn takes it')
-        # --- A role (docs/tasks.md "Roles"): its chat by ?role=, a say to it starts it, and the
+        # --- A chat (docs/tasks.md "Chats"): its page by ?chat=, a say to it starts it, and the
         # manager's chat lists it as a contact.
-        notes_brief = work / 'notes-brief.md'
-        notes_brief.write_text('Keep the notes.\n')
-        js('task', 'role', 'new', 'notes', '--brief', notes_brief, '-p', 'demo')
-        status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'STATUS', 'role': 'notes'})
+        notes_goal = work / 'notes-goal.md'
+        notes_goal.write_text('Keep the notes.\n')
+        js('task', 'chat', 'new', 'notes', '--goal', notes_goal, '-p', 'demo')
+        status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'STATUS', 'chat': 'notes'})
         assert status == 200 and body['ok'], body
-        events.expect('manager', lambda data: data == {'project': demo, 'role': 'notes'}, timeout=20)
+        events.expect('manager', lambda data: data == {'project': demo, 'chat': 'notes'}, timeout=20)
         role_chat = wait(lambda: (lambda data: data if any(manager_said(r) for r in data['rows']) else None)(
-            steady(owner, 'GET', '/api/tasks/%d/chat?role=notes' % demo)[1]), 'role reply')
-        # ^ A role with no model of its own shows the manager's agent in its room.
-        assert role_chat['manager'] == {'name': 'notes', 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and role_chat['roles'] is None and role_chat['running'], role_chat
-        contacts = steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]['roles']
-        assert [(c['name'], c['brief']) for c in contacts] == [('notes', 'Keep the notes.')], contacts
+            steady(owner, 'GET', '/api/tasks/%d/chat?chat=notes' % demo)[1]), 'chat reply')
+        # ^ A chat with no agent of its own shows the manager's agent.
+        assert role_chat['manager'] == {'name': 'notes', 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and role_chat['chats'] is None and role_chat['running'], role_chat
+        contacts = steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]['chats']
+        assert [(c['name'], c['goal']) for c in contacts] == [('notes', 'Keep the notes.')], contacts
         assert contacts[0]['last_reply'].startswith('open: ') and contacts[0]['news']['text'].startswith('open: ') and contacts[0]['news']['unix_ms'] > 0, contacts
-        assert steady(owner, 'GET', '/api/tasks/%d/chat?role=nobody' % demo)[0] == 404
-        status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'hi', 'role': 'nobody'})
-        assert status >= 400 and 'no open role nobody' in json.dumps(body), (status, body)
-        ok('roles: a role chat by ?role=, a say to a role starts it, the manager chat lists it as a contact, an unknown role refused')
+        assert steady(owner, 'GET', '/api/tasks/%d/chat?chat=nobody' % demo)[0] == 404
+        status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'hi', 'chat': 'nobody'})
+        assert status >= 400 and 'no open chat nobody' in json.dumps(body), (status, body)
+        ok('chats: a chat by ?chat=, a say to it starts it, the manager chat lists it as a contact, an unknown chat refused')
         # A manager turn alone changes the overview: its `busy` (the home row's typing dots) goes
         # true while the turn runs and false after it (docs/web-client-tasks.md "Home").
         watcher = Events(owner)
@@ -4723,13 +4723,15 @@ merge_seconds = 3
             assert sorted(home_order[:2]) == ['plans', 'ui'] and home_order[2:] == ['demo', 'calm'], home_order
             # ^ Projects with sessions and no task follow by their newest session (created in this order).
             home_order[-1:-1] = ['busy', 'quiet', 'gone']
-            # A role in ui with a reply, for the page's Roles contact and chat.
-            role_brief = work / 'role-brief.md'
-            role_brief.write_text('Write the release notes.\n')
-            js('task', 'role', 'new', 'billing', '--brief', role_brief, '--model', 'haiku', '-p', 'ui')
-            assert steady(owner, 'POST', '/api/tasks/%d/say' % ids['ui'], {'text': 'STATUS', 'role': 'billing'})[0] == 200
-            wait(lambda: any(manager_said(r) for r in steady(owner, 'GET', '/api/tasks/%d/chat?role=billing' % ids['ui'])[1]['rows']),
-                 'the ui role reply', 60)
+            # A chat in ui with a reply and an agent of its own, for the page's Chats contact and room.
+            with open(config / 'config-v2.toml', 'a') as agents:
+                agents.write('[[agents]]\nname = "haiku-chat"\ncommand = ["claude"]\nadapter = "claude"\nmodel = "haiku"\n')
+            chat_goal = work / 'chat-goal.md'
+            chat_goal.write_text('Write the release notes.\n')
+            js('task', 'chat', 'new', 'billing', '--goal', chat_goal, '--agent', 'haiku-chat', '-p', 'ui')
+            assert steady(owner, 'POST', '/api/tasks/%d/say' % ids['ui'], {'text': 'STATUS', 'chat': 'billing'})[0] == 200
+            wait(lambda: any(manager_said(r) for r in steady(owner, 'GET', '/api/tasks/%d/chat?chat=billing' % ids['ui'])[1]['rows']),
+                 'the ui chat reply', 60)
             # The page asks for a server with another build by writing this file: the owner's
             # server restarts under another site name, which is part of the page files' digest.
             restart = work / 'restart-owner'
@@ -4928,10 +4930,10 @@ merge_seconds = 3
         assert len(own) == 1 and own[0] == manager_push(wrote='demo'), (own, manager_push(wrote='demo'))
         # ^ manager_push()'s badge counts the overviews' needs only.
         assert says(own[0], 'demo wrote to you'), own
-        # ^ A role's reply it started on its own pushes the same way, named by the role and
-        # opening its chat (docs/web-client-tasks.md "Roles").
-        js('task', 'say', '--role', 'notes', 'RUN wsx task new "NOOP TABLE" -p demo --json', '-p', 'demo')
-        roled = new_pushes('manager', 'the push of a reply a role started', timeout=60)
+        # ^ A chat's reply it started on its own pushes the same way, named by the chat and
+        # opening it (docs/web-client-tasks.md "Chats").
+        js('task', 'say', '--to', 'notes', 'RUN wsx task new "NOOP TABLE" -p demo --json', '-p', 'demo')
+        roled = new_pushes('manager', 'the push of a reply a chat started', timeout=60)
         assert len(roled) == 1 and says(roled[0], 'notes wrote to you'), roled
         # ^ `wsx task post --level warn|bad` (docs/tasks.md "Routines"): a script with no WSX_* variable and
         # outside any project folder posts; the chat entry has its level and each post pushes once, in a

@@ -120,7 +120,6 @@ pub(crate) fn push(args: PushArgs, project: Option<&str>, json: bool) -> Result<
             } else {
                 Some(&target)
             },
-            None,
             lease.as_deref(),
         );
         request = after_landing(request, after);
@@ -260,7 +259,7 @@ pub(crate) fn deploy(
         && ask_covering(
             &main,
             &project_id,
-            after_landing(request_of(action, None, commit, None, None), after),
+            after_landing(request_of(action, None, commit, None), after),
             owner_said,
             json,
         )?

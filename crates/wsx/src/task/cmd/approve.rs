@@ -9,7 +9,6 @@ use wsx_core::task::manager::{ApprovalAction, ApprovalLine};
 use wsx_core::task::owner::{self, action_name, find_request};
 use wsx_core::task::{
     copy, now_unix_ms,
-    roles::RoleAgent,
     store::{self},
     TaskRecord,
 };
@@ -19,7 +18,6 @@ pub(crate) fn request_of(
     action: ApprovalAction,
     task: Option<&TaskRecord>,
     commit: Option<&str>,
-    role: Option<(&str, &str, Option<&RoleAgent>)>,
     lease: Option<&str>,
 ) -> ApprovalLine {
     ApprovalLine::Request {
@@ -28,14 +26,6 @@ pub(crate) fn request_of(
         task: task.map(|record| record.id),
         revision: task.map(|record| record.revision),
         commit: commit.map(str::to_string),
-        role: role.map(|(name, ..)| name.to_string()),
-        brief: role.map(|(_, brief, _)| brief.to_string()),
-        adapter: role
-            .and_then(|(.., agent)| agent)
-            .map(|agent| agent.adapter.clone()),
-        model: role
-            .and_then(|(.., agent)| agent)
-            .map(|agent| agent.model.clone()),
         lease: lease.map(str::to_string),
         tasks: Vec::new(),
         commits: None,
@@ -138,7 +128,7 @@ pub(crate) fn covered_requests(
                                 if copy::is_ancestor(main, &old, new).unwrap_or(false))
                     }
                     ApprovalAction::Project => path.is_some() && old_path == path,
-                    ApprovalAction::Land | ApprovalAction::Role => false,
+                    ApprovalAction::Land => false,
                 };
             covers.then(|| id.clone())
         })
@@ -185,7 +175,6 @@ pub(crate) fn submit(
         action,
         task,
         revision,
-        role,
         path,
         ..
     } = &request
@@ -194,9 +183,8 @@ pub(crate) fn submit(
     };
     let (action, target) = (
         *action,
-        match (task, revision, role, path) {
+        match (task, revision, path) {
             (Some(task), Some(revision), ..) => format!(" #{task} r{revision}"),
-            (_, _, Some(role), _) => format!(" {role}"),
             (.., Some(path)) => format!(" {path}"),
             _ => String::new(),
         },

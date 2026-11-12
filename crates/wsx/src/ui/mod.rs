@@ -746,8 +746,8 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
             vec!["(j/k)scroll".into(), "Esc: back".into()],
         ),
         Mode::Tasks { list } if list.chat.is_some() => (
-            match list.chat.as_deref().and_then(|chat| chat.role.as_ref()) {
-                Some(_) => "ROLE",
+            match list.chat.as_deref().and_then(|chat| chat.chat.as_ref()) {
+                Some(_) => "CHAT",
                 None => "MANAGER",
             },
             theme::ModeBadge::Info,
@@ -784,7 +784,7 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
         Mode::Tasks { list } => {
             let mut hints = vec![
                 "(j/k)move".to_string(),
-                match list.selected_role() {
+                match list.selected_chat() {
                     Some(_) => "(enter)chat".into(),
                     None => "(enter)detail".into(),
                 },

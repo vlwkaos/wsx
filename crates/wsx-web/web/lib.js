@@ -198,7 +198,7 @@ function keepRead(name, entry) {
 const readUpTo = (name) => readMap(READ_KEY)[name]?.read ?? null;
 export const READ_EVENT = "wsx-read";
 // ^ A server `news` ({unix_ms, text}) this device has not read in chat `name`, else null: the one
-// rule of a project's home row and a role's contact. A chat never opened here has nothing new.
+// rule of a project's home row and a chat's contact. A chat never opened here has nothing new.
 export function unreadNews(name, news) {
   const read = readUpTo(name);
   return news && read != null && news.unix_ms > read ? news : null;

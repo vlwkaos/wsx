@@ -35,7 +35,7 @@ A reader ignores fields it does not know, and a program keeps the fields of its 
 
 `slug`, `scope`, `path` (the file the record lives in), `kind`, `status`, `score` 0..1 (higher is better), `excerpt` (at most 240 characters), and `description` and `keywords` when the record has them.
 
-wsx also searches the transcripts of a project scope (a chat message or reply, a task's prompt, result and story, the manager's decision and memo lines; "Search" in [tasks.md](tasks.md)) and returns them as hits: `slug` is the line's `reference` (`<project>:<id>`, `<project>#<task>`, `<project>:notes/decisions.md`), `kind` one of `message`, `reply`, `task`, `result`, `history`, `decision`, `memo`, `status` `active`, `path` the log or note file it was read from, and the keys of a `wsx task search` hit (`project`, `role`, `id`, `task`, `unix_ms`, `by`, `reference`, `quote`, `outcome`). A reader ignores the keys it does not know and treats a `kind` it does not know as opaque. `--kind` takes any of these kinds.
+wsx also searches the transcripts of a project scope (a chat message or reply, a task's prompt, result and story, the manager's decision and memo lines; "Search" in [tasks.md](tasks.md)) and returns them as hits: `slug` is the line's `reference` (`<project>:<id>`, `<project>#<task>`, `<project>:notes/decisions.md`), `kind` one of `message`, `reply`, `task`, `result`, `history`, `decision`, `memo`, `status` `active`, `path` the log or note file it was read from, and the keys of a `wsx task search` hit (`project`, `role` (the chat), `id`, `task`, `unix_ms`, `by`, `reference`, `quote`, `outcome`). A reader ignores the keys it does not know and treats a `kind` it does not know as opaque. `--kind` takes any of these kinds.
 
 ## Commands
 
@@ -48,7 +48,7 @@ wsx also searches the transcripts of a project scope (a chat message or reply, a
 | `supersede` | `<old> <new> --source ID` | the old record, now `superseded` with `superseded_by` set to `<new>` |
 | `get` | `<slug>` | the record; unknown slug: exit 1 |
 | `capture` (wsx) | `--task N --memo TEXT [--commit SHA] [--paths a,b]` | the record, see "Capture" |
-| `start` (wsx) | `--files a,b [--role NAME]` | `{"scope","start"}`: the start block a worker with those `--files` gets (area briefs, the role's brief and rules), see "Start set" |
+| `start` (wsx) | `--files a,b ` | `{"scope","start"}`: the start block a worker with those `--files` gets (the area briefs), see "Start set" |
 | `import` (wsx) | none | `{"scope","imported":{"rules","archived","facts","episodes"}}`; see "Notes" |
 | `reindex` | none | `{"scope","ok"}`. wsx: drops the project's digest of transcripts and builds it again, then asks the backend to reindex (a backend that fails is exit 3) |
 | `status` | none | `{"scope","store","backend","search":{"network":bool,"model":bool},"limits":{"text_bytes":N},"counts":{"active","superseded","failed"}}` |
@@ -102,7 +102,6 @@ The manager's notes are views of the project scope's records ([tasks.md](tasks.m
 The first prompt of a worker holds a block from the memory, built by `wsx_core::memory::start` for every adapter (`host.rs` `task_context`; `wsx memory start` prints the same block). No other start loads memory: a Claude chat outside wsx gets nothing. In order, within 4 KiB:
 
 1. **Area briefs**: `memory.areas` of the project's `wsx.config.yml` is `{"<glob>": "<brief file>"}`. Each brief whose glob meets one of the task's `--files` is read from the project (a relative path inside it, at most 8 KiB) and shown whole.
-2. **The role's brief and rules**, when the task was created by a role: `brief.md`, then the role's `notes/decisions.md` lines, newest first.
 No fact records: the paid evaluation (`docs/design/memory-eval.md`, #392) found that records in the start block gave no gain and likely harm (plan cost +11% median, inside noise; recall -0.05; about 3 extra calls to check records, 92% of them marked stale), and baseline plans already name 0.81 of the landed files by reading. A worker finds records on demand with `wsx memory recall` and `search`.
 
 Nothing is cut silently: a piece that does not fit is named on a last line (`Not shown, over the 4096-byte start budget: <names>.`), and a brief that is cut says how many bytes and where the whole is.
@@ -119,7 +118,7 @@ When a task leaves, the manager host (`manager.rs` `fold_memo`) stores its resul
 | landed, run by another project's manager | the same fact in the scope of that manager's project: `verified_by` and `source` `task:<project>#<n>`, slug `memo-in-<project>-<n>-<digest>` (no number, so the notes views skip it). `stale` runs git in the registered folder of `<project>`, not the scope's own, and a project that is no longer registered counts as stale. Its own scope keeps the usual record. |
 | closed or failed | `episode`, no `commit`, no `paths` |
 
-The slug is `memo-<n>-<digest>`, so the same memo is one record. A memo is one line of at most 240 characters. `wsx memory capture` does the same for a replay. A task created by a role keeps its memo in the role's own notes (not captured). When a worker's conversation ends for its size, its host also stores the handoff notes as an episode `rotation-<n>-<digest>` (cut at the text limit, with the path of the whole). When the manager starts a fresh conversation, the host also stores the handover it puts in that turn as an episode `handover-<digest>` (source `path:manager/log.jsonl`; a role's manager keeps files). Neither takes a turn of its own.
+The slug is `memo-<n>-<digest>`, so the same memo is one record. A memo is one line of at most 240 characters. `wsx memory capture` does the same for a replay. A task created by a chat keeps its memo in the chat's own notes (not captured). When a worker's conversation ends for its size, its host also stores the handoff notes as an episode `rotation-<n>-<digest>` (cut at the text limit, with the path of the whole). When the manager starts a fresh conversation, the host also stores the handover it puts in that turn as an episode `handover-<digest>` (source `path:manager/log.jsonl`; a role's manager keeps files). Neither takes a turn of its own.
 
 **Backfill**: a memo imported before `paths` existed is a `fact` with no `commit` and no `paths`, so it could never be marked stale. `wsx memory import` and the first write of a rule writer (once, marked by `paths-backfilled` in the store folder) give each such fact of a landed task the landed commit and the task's `paths` from the task's own record and log, the data `capture` stores. The time of the record stays. A task with no landed diff stays without paths. A rerun changes nothing.
 
@@ -149,8 +148,8 @@ A task agent calls `wsx memory` through its host's broker (`WSX_TASK_BROKER`), w
 | Command | Who |
 |---|---|
 | `search`, `recall`, `status`, `list`, `get` | every agent, also an untrusted one; a read may name any scope |
-| `add`, `update`, `supersede`, `import`, `reindex` | the manager, a named role and a worker, in the agent's own project scope only (`--scope` defaults to it, another one is refused) |
-| a `rule` record (add, change, replace) | the manager and a named role: it needs `owner:<id>`, and a worker's call is refused by the store |
+| `add`, `update`, `supersede`, `import`, `reindex` | the manager, a named chat and a worker, in the agent's own project scope only (`--scope` defaults to it, another one is refused) |
+| a `rule` record (add, change, replace) | the manager and a named chat: it needs `owner:<id>`, and a worker's call is refused by the store |
 | any write | not an untrusted agent (strict profile): read only |
 
 The host, not the agent, writes the fact of a task that its manager ran in another project, in that manager's scope ("Capture"); an agent's own writes stay in its own scope. A read may name any scope, but an agent's search finds the transcripts (chats, task stories, notes) of its own project only; of another project's scope it finds the records. (The host sets `WSX_TASK_FROM` to the agent's project; the owner's own call sets none.)
@@ -163,6 +162,6 @@ A refusal exits 2 and names the cause. The host sets `WSX_MEMORY_RULES=deny` for
 
 `python3 -B scripts/test-memory.py "<command prefix>"` runs the same scenario against any program, for example `"target/debug/wsx memory"` or `"python3 memory.py"`. It runs every call in a temp home (`HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`) and drops `DGV3_ROOT` and every `WSX_*` variable of the caller, so a run against `memory.py` or `wsx` never touches the owner's vault or stores. It checks, for any program, `limits.text_bytes` (the limit exact, one byte over is exit 2), the `owner:transcript:` and `url:` forms (a bad URL is exit 2 and nothing is fetched), a scope with `_`, `get`, `description` and `keywords` (stored, shown, searched, replaced by `update`), and a slug with `.`. For wsx it also runs the notes of a project (import and its rerun, the views byte for byte, `--words`, `similar` and `--supersedes`, the memo ceiling, a hand edit as `drift`), the transcripts of a project scope and the backend cases against `scripts/fake-memory-backend.py` (a program that follows `search`, `reindex` and `status` and can exit 3, exit 1, print garbage or hang): merge by score, the kind filter, exit 3, the 10 s stop, `status` flags, `reindex` and `recall`.
 
-`scripts/test-memory.py` also runs, for wsx, the start set and the stale rule on a git project (area brief, no fact record in the block, a later commit making a fact stale in `search`, the budget with its `Not shown` line, bad paths, `capture` of an unlanded task). `scripts/test-task.py` checks the first prompt of a Claude, a Pi and a role-created worker (area and role brief, no fact record), the fact a landed task leaves (commit, paths) and its going stale in `search`, and the rotation episode. The task adapters are `claude` and `pi`; both take the start block from the same first turn.
+`scripts/test-memory.py` also runs, for wsx, the start set and the stale rule on a git project (area brief, no fact record in the block, a later commit making a fact stale in `search`, the budget with its `Not shown` line, bad paths, `capture` of an unlanded task). `scripts/test-task.py` checks the first prompt of a Claude and a Pi worker (area brief, no fact record), the fact a landed task leaves (commit, paths) and its going stale in `search`, and the rotation episode. The task adapters are `claude` and `pi`; both take the start block from the same first turn.
 
 CI: the `task` scenario's `core` part runs it (`.github/workflows/ci.yml`), so `wsx task check-run task` and every later step prove the contract.

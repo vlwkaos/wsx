@@ -346,9 +346,9 @@ pub fn task_agent(record: &TaskRecord) -> Value {
 }
 
 /// The agent the manager's turns run on now: a fallback in its state, else `tasks.manager`,
-/// or the role's own. ref: docs/tasks.md "Agents"
+/// or the chat's own. ref: docs/tasks.md "Agents"
 pub fn manager_agent(dir: &store::ManagerDir, settings: &TaskConfig) -> Value {
-    let own = super::roles::agent(dir);
+    let own = super::chats::agent(dir);
     match dir.read_state().ok().and_then(|state| state.agent) {
         Some(agent) => json!({
             "adapter": agent.adapter, "model": agent.model, "effort": settings.manager_effort,

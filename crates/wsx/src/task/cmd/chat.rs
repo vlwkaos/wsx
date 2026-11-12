@@ -1,24 +1,21 @@
-//! The manager and role chats: `say`, `chat`, `search`, `role` (docs/tasks.md "Manager", "Roles").
+//! The chats: `say`, `chat`, `search` (docs/tasks.md "Manager", "Chats").
 
-use super::approve::{ask_owner, owner_only, request_of};
+use super::approve::owner_only;
 use crate::cli::load_config;
 use crate::cli::PromptSource;
-use crate::task::args::RoleCmd;
+use crate::task::args::ChatCmd;
 use crate::task::broker;
 use crate::task::manager;
-use crate::task::{
-    acting_as_manager, actor, launch_manager, need, open, print_json, project_entry,
-};
+use crate::task::{acting_as_manager, actor, launch_manager, open, print_json, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
-use wsx_core::task::chat::{self, chat_rows, Names, Window};
-use wsx_core::task::manager::{ApprovalAction, ManagerEvent, ManagerRequest, ManagerResponse};
+use wsx_core::task::chat::{self, Reading, Window};
+use wsx_core::task::chats;
+use wsx_core::task::manager::{ManagerRequest, ManagerResponse};
 use wsx_core::task::owner::{self};
-use wsx_core::task::policy::Capability;
-use wsx_core::task::roles::{self, Opener, RoleAgent};
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::MAX_MESSAGE_BYTES;
 use wsx_core::task::{search, text};
@@ -37,14 +34,14 @@ pub(crate) fn ensure_manager(project: Option<&str>) -> Result<(bool, ManagerDir)
 pub(crate) enum From {
     /// `--from-manager`: this manager to another project's.
     Manager(bool),
-    /// `--from-role`: the manager or a role to a role or the manager of its own project.
-    Role(bool),
+    /// `--from-chat`: a chat to another chat of its own project.
+    Chat(bool),
 }
 
-/// Send to the manager, or to the open role `role`.
+/// Send to the manager, or to the open chat `to`.
 pub(crate) fn say(
     project: Option<&str>,
-    role: Option<&str>,
+    to: Option<&str>,
     text: String,
     from: Option<From>,
     json: bool,
@@ -70,39 +67,39 @@ pub(crate) fn say(
                 reply,
             })
         }
-        Some(From::Role(reply)) => {
-            let own = own().context("--from-role is for the manager or a role")?;
+        Some(From::Chat(reply)) => {
+            let own = own().context("--from-chat is for a chat's manager")?;
             if own != name {
-                bail!("--from-role messages a role or the manager of its own project");
+                bail!("--from-chat messages a chat of its own project");
             }
             let sender = match actor() {
-                Actor::Role(sender) => sender,
+                Actor::Chat(sender) => sender,
                 _ => "manager".to_string(),
             };
-            if sender == role.unwrap_or("manager") {
-                bail!("--from-role messages another role or the manager, not itself");
+            if sender == to.unwrap_or("manager") {
+                bail!("--from-chat messages another chat, not itself");
             }
-            Some(wsx_core::task::manager::Author::Role {
+            Some(wsx_core::task::manager::Author::Chat {
                 name: sender,
                 reply,
             })
         }
     };
-    // ^ `--role manager` is the manager, as a role names it in its reply.
-    let role = role.filter(|role| *role != "manager");
+    // ^ `--to manager` is the first chat, as another chat names it in its reply.
+    let chat = to.filter(|to| *to != "manager");
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
     let sent = from.is_some().then(|| text.clone());
     let response = owner::say(
         &name,
         &main,
         &exe,
-        role,
+        chat,
         launch_manager(&main),
         text,
         from,
         Vec::new(),
     )?;
-    // ^ A manager's or a role's message always answers in JSON: its host logs `sent` from
+    // ^ A chat's message always answers in JSON: its host logs `sent` from
     // the `text` (broker.rs). ref: docs/tasks.md "Managers talk"
     if json || sent.is_some() {
         let mut value = serde_json::to_value(&response)?;
@@ -123,34 +120,33 @@ pub(crate) fn say(
     Ok(())
 }
 
-/// The conversation after message `after` or around message `around`: messages, replies, rotations and stops; `asks`, the open questions (docs/tasks.md "Log window").
+/// The conversation after message `after` or around message `around`, as the other chats show
+/// it (`chat::read_for`); `asks`, the open questions (docs/tasks.md "Log window").
 pub(crate) fn chat(
     project: Option<&str>,
-    role: Option<&str>,
+    chat: Option<&str>,
     (after, around): (Option<u64>, Option<u64>),
     json: bool,
 ) -> Result<()> {
     let (name, main) = project_entry(project)?;
     let project_id = store::project_id(&name, &main);
-    let dir = match role {
-        None => ManagerDir::open(&project_id)?,
-        Some(role) => ManagerDir::existing_as(&project_id, Some(role))?
-            .with_context(|| format!("the project has no role {role}"))?,
+    let dir = match chat {
+        None => ManagerDir::existing(&project_id)?,
+        Some(chat) => Some(
+            ManagerDir::existing_as(&project_id, Some(chat))?
+                .with_context(|| format!("the project has no chat {chat}"))?,
+        ),
     };
     let window = Window::new(None, after, around);
-    let now = wsx_core::task::now_unix_ms();
-    let shown = load_task_config(&main)
-        .unwrap_or_default()
-        .manager_shown_name(&name)
-        .to_string();
-    let own = role.unwrap_or(&shown);
-    let manager = chat::manager_name_in(role, &shown);
-    let names = Names {
-        own,
-        manager: &manager,
-        peer: &|other: &str| other.to_string(),
-    };
-    let page = chat::page(&dir, &window, &names, &[], now, |_| {})?;
+    let settings = load_task_config(&main).unwrap_or_default();
+    let Reading { page, .. } = chat::read_for(
+        dir.as_ref(),
+        (&name, &project_id),
+        &settings,
+        &window,
+        &|other: &str| other.to_string(),
+        |_| {},
+    )?;
     let asks: Vec<u64> = page.asks.iter().map(|ask| ask.id).collect();
     // ^ The owner messages a held manager has not taken into a turn, as the chats show them.
     let waiting = chat::waiting_ids(&page.log);
@@ -159,29 +155,19 @@ pub(crate) fn chat(
             "entries": page.entries, "skipped": page.skipped, "asks": asks, "waiting": waiting,
         }));
     }
-    for entry in &page.entries {
-        match &entry.event {
-            ManagerEvent::Message { id, from, text, .. } => {
-                let held = if waiting.contains(id) {
+    for row in &page.rows {
+        match (&row.name, row.id) {
+            (Some(name), Some(id)) => {
+                let flag = if row.asks {
+                    " (asks)"
+                } else if row.queued {
                     " (waiting)"
                 } else {
                     ""
                 };
-                println!("[{id}] {from:?}{held}: {text}")
+                println!("[{id}] {name}{flag}: {}", row.text)
             }
-            ManagerEvent::Reply { id, text, .. } if asks.contains(id) => {
-                println!("[{id}] manager (asks): {text}")
-            }
-            ManagerEvent::Reply { id, text, .. } => println!("[{id}] manager: {text}"),
-            // ^ A pause, a new conversation and a stop read as the other chats say them.
-            ManagerEvent::Limit { .. }
-            | ManagerEvent::Rotated { .. }
-            | ManagerEvent::Stopped { .. } => {
-                for row in chat_rows(&[entry], &[], &[], &[], &names) {
-                    println!("({})", row.text);
-                }
-            }
-            _ => {}
+            _ => println!("({})", row.text),
         }
     }
     Ok(())
@@ -307,66 +293,27 @@ pub(crate) fn dismiss(project: Option<&str>, id: u64, json: bool) -> Result<()> 
     Ok(())
 }
 
-/// `wsx task role new|list|close`. ref: docs/tasks.md "Roles"
-pub(crate) fn role(action: RoleCmd, project: Option<&str>, json: bool) -> Result<()> {
-    let open_project = |project: Option<&str>| -> Result<(String, String, PathBuf)> {
-        let (name, main) = project_entry(project)?;
-        let project_id = store::project_id(&name, &main);
-        // ^ A role idle past tasks.roles.closeDays is closed before it is counted or listed.
-        if let Ok(settings) = load_task_config(&main) {
-            roles::close_idle(&project_id, settings.roles_close_secs);
-        }
-        Ok((name, project_id, main))
-    };
+/// `wsx task chat new|list|close`: the owner's. ref: docs/tasks.md "Chats"
+pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -> Result<()> {
+    let (name, main) = project_entry(project)?;
+    let project_id = store::project_id(&name, &main);
     match action {
-        RoleCmd::New {
-            name,
-            brief,
-            model,
-            adapter,
-            said,
-        } => {
-            need(Capability::RoleAdmin, "role new")?;
-            let agent = RoleAgent::checked(adapter.as_deref(), model.as_deref())?;
-            let (_, project_id, main) = open_project(project)?;
-            let settings = load_task_config(&main)
-                .map_err(|error| anyhow::anyhow!("{error}; no role was opened"))?;
-            roles::may_create(&project_id, &name, settings.roles_max)?;
-            let brief = read_brief(&brief)?;
-            // ^ The manager asks the owner once: a Yes/No card, or the owner's own word.
-            if actor() == Actor::Manager
-                && ask_owner(
-                    &project_id,
-                    request_of(
-                        ApprovalAction::Role,
-                        None,
-                        None,
-                        Some((&name, &brief, agent.as_ref())),
-                        None,
-                    ),
-                    said.owner_said,
-                    json,
-                )?
-            {
-                return Ok(());
-            }
-            let by = match actor() {
-                Actor::Manager => Opener::Manager,
-                _ => Opener::Owner,
-            };
-            roles::create(&project_id, &name, &brief, by, agent)?;
-            let message = format!("role {name} is open; `wsx task say --role {name}` talks to it");
+        ChatCmd::New { name, goal, agent } => {
+            owner_only("chat new")?;
+            let goal = goal.as_deref().map(read_goal).transpose()?;
+            let agent = agent.as_deref().map(chats::checked_agent).transpose()?;
+            chats::create(&project_id, &name, goal.as_deref(), agent)?;
+            let message = format!("chat {name} is open; `wsx task say --to {name}` talks to it");
             if json {
-                return print_json(&json!({ "role": name, "state": "open", "message": message }));
+                return print_json(&json!({ "chat": name, "state": "open", "message": message }));
             }
             println!("{message}");
             Ok(())
         }
-        RoleCmd::List => {
-            let (_, project_id, _) = open_project(project)?;
-            let lines = store::read_approvals(&project_id)?;
-            let mut rows = roles::rows(&project_id, &lines);
-            for row in rows.iter_mut().filter(|row| row["state"] != "asked") {
+        ChatCmd::List => {
+            owner_only("chat list")?;
+            let mut rows = chats::rows(&project_id);
+            for row in &mut rows {
                 let socket = ManagerDir::existing_as(&project_id, row["name"].as_str())?
                     .map(|dir| dir.socket_path());
                 row["running"] = json!(socket.is_some_and(|socket| {
@@ -379,28 +326,27 @@ pub(crate) fn role(action: RoleCmd, project: Option<&str>, json: bool) -> Result
                 }));
             }
             if json {
-                return print_json(&json!({ "roles": rows }));
+                return print_json(&json!({ "chats": rows }));
             }
             for row in &rows {
                 println!(
                     "{} {}{}",
                     row["name"].as_str().unwrap_or_default(),
                     row["state"].as_str().unwrap_or_default(),
-                    row["model"]
+                    row["agent"]
                         .as_str()
-                        .map_or(String::new(), |model| format!(" {model}"))
+                        .map_or(String::new(), |agent| format!(" {agent}"))
                 );
             }
             Ok(())
         }
-        RoleCmd::Close { name } => {
-            need(Capability::RoleAdmin, "role close")?;
-            let (_, project_id, _) = open_project(project)?;
-            let dir = roles::open_role(&project_id, &name)?;
-            roles::close(&dir, &format!("closed by the {}", String::from(actor())))?;
-            let message = format!("role {name} is closed; its notes stay");
+        ChatCmd::Close { name } => {
+            owner_only("chat close")?;
+            let dir = chats::open_chat(&project_id, &name)?;
+            chats::close(&dir, "closed by the owner")?;
+            let message = format!("chat {name} is closed; its notes stay");
             if json {
-                return print_json(&json!({ "role": name, "state": "closed", "message": message }));
+                return print_json(&json!({ "chat": name, "state": "closed", "message": message }));
             }
             println!("{message}");
             Ok(())
@@ -408,22 +354,22 @@ pub(crate) fn role(action: RoleCmd, project: Option<&str>, json: bool) -> Result
     }
 }
 
-/// A role's brief from a file, or `-` for standard input.
-pub(crate) fn read_brief(path: &Path) -> Result<String> {
+/// A chat's goal from a file, or `-` for standard input.
+pub(crate) fn read_goal(path: &Path) -> Result<String> {
     use std::io::Read;
     let mut bytes = Vec::new();
-    let limit = roles::MAX_BRIEF_BYTES as u64 + 1;
+    let limit = chats::MAX_GOAL_BYTES as u64 + 1;
     match path.as_os_str() == "-" {
         true => std::io::stdin().lock().take(limit).read_to_end(&mut bytes),
         false => std::fs::File::open(path)
-            .with_context(|| format!("cannot read the brief {}", path.display()))?
+            .with_context(|| format!("cannot read the goal {}", path.display()))?
             .take(limit)
             .read_to_end(&mut bytes),
     }
-    .context("cannot read the brief")?;
-    let brief = String::from_utf8(bytes).context("the brief is not UTF-8 text")?;
-    roles::checked_brief(&brief)?;
-    Ok(brief)
+    .context("cannot read the goal")?;
+    let goal = String::from_utf8(bytes).context("the goal is not UTF-8 text")?;
+    chats::checked_goal(&goal)?;
+    Ok(goal)
 }
 
 /// `wsx task manager`: start the project's manager, or say that it runs.
@@ -441,23 +387,23 @@ pub(crate) fn manager_command(project: Option<&str>, json: bool) -> Result<()> {
     }
 }
 
-/// `wsx task say`: to the manager or a role, from the owner, a manager or a role.
+/// `wsx task say`: to the manager or another chat, from the owner, a manager or a chat.
 pub(crate) fn say_command(
     project: Option<&str>,
-    role: Option<&str>,
+    to: Option<&str>,
     text: PromptSource,
-    (from_manager, from_role, reply): (bool, bool, bool),
+    (from_manager, from_chat, reply): (bool, bool, bool),
     json: bool,
 ) -> Result<()> {
-    if reply && !from_manager && !from_role {
-        bail!("--reply answers with --from-manager or --from-role");
+    if reply && !from_manager && !from_chat {
+        bail!("--reply answers with --from-manager or --from-chat");
     }
-    let from = match (from_manager, from_role) {
+    let from = match (from_manager, from_chat) {
         (true, _) => Some(From::Manager(reply)),
-        (_, true) => Some(From::Role(reply)),
+        (_, true) => Some(From::Chat(reply)),
         _ => None,
     };
-    say(project, role, text.read(MAX_MESSAGE_BYTES)?, from, json)
+    say(project, to, text.read(MAX_MESSAGE_BYTES)?, from, json)
 }
 
 /// `wsx task boundary-profile`: the manager's Seatbelt profile (hidden; the boundary scenario).

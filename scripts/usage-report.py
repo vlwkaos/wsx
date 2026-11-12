@@ -301,10 +301,10 @@ def main():
                    for t in turns])
     mevents, mturns, quotes = [], [], []
     for state_dir in a.state_dir:
-        roles = os.path.join(state_dir, "roles")
+        chats = os.path.join(state_dir, "chats")
         managers = [("manager", os.path.join(state_dir, "manager"))]
-        if os.path.isdir(roles):
-            managers += [(f"role {r}", os.path.join(roles, r)) for r in sorted(os.listdir(roles))]
+        if os.path.isdir(chats):
+            managers += [(f"chat {c}", os.path.join(chats, c)) for c in sorted(os.listdir(chats))]
         for who, folder in managers:
             said = [e for e in read_log(folder) if e.get("kind") == "reply" and since <= e.get("unix_ms", 0) < until
                     and not e.get("post") and (e.get("text") or "").strip() not in ("", "-")]

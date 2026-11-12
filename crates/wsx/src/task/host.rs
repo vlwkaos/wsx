@@ -2022,7 +2022,7 @@ impl Host {
     }
 
     /// The host's task context for the first turn: the task's files, the open tasks that
-    /// share them and the memory's start block (area briefs, the creating role's brief and
+    /// share them and the memory's start block (area briefs, and
     /// rules, the records about the files and the task's words), so the worker needs no turn of its own to
     /// load context. None when it has nothing. ref: docs/tasks.md "Workflow"
     fn task_context(&self) -> Option<String> {
@@ -2058,7 +2058,7 @@ impl Host {
                 ));
             }
         }
-        // ^ The area briefs and the role's brief: one rule, in the core. No fact records: the paid
+        // ^ The area briefs: one rule, in the core. No fact records: the paid
         // evaluation found they gave no gain. ref: docs/memory.md "Start set"
         let areas = load_project_config(&self.record.project_path).memory_areas;
         if let Ok(store) = Store::project(
@@ -2069,7 +2069,6 @@ impl Host {
             let start = Start {
                 files: &self.record.files,
                 areas: &areas,
-                role: self.record.created_by.role(),
             };
             let block =
                 memory_start::block(&store.without_rules(), &start, memory_start::BUDGET_BYTES);

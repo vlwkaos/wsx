@@ -23,7 +23,7 @@ pub(crate) fn land_batch(
         bail!("--tried passes one trial: land that task alone");
     }
     if !may(Capability::Land) {
-        bail!("a role lands only a child into its parent task, one at a time");
+        bail!("a chat lands only a child into its parent task, one at a time");
     }
     let mut ids = Vec::new();
     let mut first = None;
@@ -111,10 +111,10 @@ pub(crate) fn land_command(
         bail!("only the owner passes a trial; ask the owner to try it");
     }
     let record = dir.read_record()?;
-    // ^ A role lands only into a parent task; the manager lands onto the default branch.
+    // ^ A chat lands only into a parent task; the manager lands onto the default branch.
     if !may(Capability::Land) && record.parent.is_none() {
         bail!(
-            "a role lands only a child into its parent task; #{} lands onto {}, which is the manager's",
+            "a chat lands only a child into its parent task; #{} lands onto {}, which is the manager's",
             record.id,
             record.default_branch
         );
@@ -125,7 +125,7 @@ pub(crate) fn land_command(
         && ask_owner(
             &dir.project_id,
             after_landing(
-                request_of(ApprovalAction::Land, Some(&record), None, None, None),
+                request_of(ApprovalAction::Land, Some(&record), None, None),
                 after,
             ),
             said,
