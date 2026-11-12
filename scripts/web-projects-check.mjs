@@ -12,7 +12,7 @@ const cdp = await launch({ captures, prefix: "projects-", timeoutSeconds: 200 })
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = cdp;
 const linter = designLint({ evaluate, captures, file: "projects" });
 const name = path.basename(repo);
-const rows = "[...document.querySelectorAll('.home-rows > .row:not(.row-role)')]";
+const rows = "[...document.querySelectorAll('.home-rows > .row:not(.row-chat)')]";
 const rowOf = (project) => `${rows}.find((row) => row.querySelector('.row-label').firstChild.textContent === ${JSON.stringify(project)})`;
 
 const open = (url, code) => pair(cdp, url, code, { ready: ".home-row" });
@@ -23,20 +23,36 @@ const submit = (value) => evaluate(`(() => { const field = document.querySelecto
 
 await viewport(390, 844, 2);
 await open(viewerUrl, viewerCode);
-const without = await evaluate(`({ add: !!document.querySelector('[aria-label="Add project"]'), remove: !!document.querySelector('.row-remove'), slide: !!document.querySelector('.row-slide') })`);
-if (without.add || without.remove || without.slide) await fail(`a site without the grant shows project buttons: ${JSON.stringify(without)}`);
+// ^ Add project is the last choice of the New chat sheet's project list, where the site manages projects.
+const choices = () => evaluate(`[...document.querySelectorAll('dialog.sheet[open] select[name=project] option')].map((option) => option.textContent)`);
+const without = await evaluate(`({ remove: !!document.querySelector('.row-remove'), slide: !!document.querySelector('.row-slide'), separate: !!document.querySelector('[aria-label="Add project"]') })`);
+if (without.remove || without.slide || without.separate) await fail(`a site without the grant shows project buttons: ${JSON.stringify(without)}`);
+if (await evaluate("!!document.querySelector('[aria-label=\"New chat\"]')")) {
+  await evaluate("document.querySelector('[aria-label=\"New chat\"]').click()");
+  await until("!!document.querySelector('dialog.sheet[open] select[name=project]')", "the New chat sheet did not open");
+  if ((await choices()).includes("Add project…")) await fail("a site without the grant offers Add project…");
+  await evaluate("document.querySelector('dialog.sheet').close()");
+  await until("!document.querySelector('dialog.sheet')", "the New chat sheet stayed open");
+}
 
 await open(adminUrl, adminCode);
-const all = await evaluate(`({ add: document.querySelectorAll('[aria-label="Add project"]').length, rows: ${rows}.length,
+const all = await evaluate(`({ add: document.querySelectorAll('[aria-label="New chat"]').length, separate: document.querySelectorAll('[aria-label="Add project"]').length, rows: ${rows}.length,
   remove: ${rows}.filter((row) => row.classList.contains('row-slide') && row.querySelector('.row-remove')).length,
-  box: document.querySelector('[aria-label="Add project"]').getBoundingClientRect().toJSON() })`);
-if (all.add !== 1 || !all.rows || all.remove !== all.rows) await fail(`the managing site shows ${JSON.stringify(all)}`);
+  box: document.querySelector('[aria-label="New chat"]').getBoundingClientRect().toJSON() })`);
+if (all.add !== 1 || all.separate || !all.rows || all.remove !== all.rows) await fail(`the managing site shows ${JSON.stringify(all)}`);
 if (all.box.width < 44 || all.box.height < 44) await fail(`the + is ${all.box.width}x${all.box.height}, under 44 px`);
 await linter.lint("home");
 await capture("390x844-home");
 
 // A refusal stays in the sheet; the sheet stays open with the field focused.
-await evaluate("document.querySelector('[aria-label=\"Add project\"]').click()");
+await evaluate("document.querySelector('[aria-label=\"New chat\"]').click()");
+await until("!!document.querySelector('dialog.sheet[open] select[name=project]')", "the + opened no New chat sheet");
+{
+  const list = await choices();
+  if (list.at(-1) !== "Add project…" || list.filter((name) => name === "Add project…").length !== 1) await fail(`the project list is ${JSON.stringify(list)}, not ending with Add project…`);
+}
+await capture("390x844-new-chat");
+await evaluate(`(() => { const field = document.querySelector('dialog.sheet[open] select[name=project]'); field.value = 'add'; field.dispatchEvent(new Event('change', { bubbles: true })); })()`);
 await until("document.querySelector('dialog.sheet[open] input[name=path]') === document.activeElement", "the add sheet did not take the focus");
 await submit(`${repo}-missing`);
 await until("/does not exist/.test(document.querySelector('dialog.sheet .error')?.textContent ?? '')", "the sheet shows no refusal for a missing path");
@@ -77,13 +93,13 @@ if (await evaluate("!!document.querySelector('.notices')?.textContent.includes('
 
 await viewport(1280, 800, 1);
 await pause(300);
-if (!(await evaluate("!!document.querySelector('.rail [aria-label=\"Add project\"]')"))) await fail("the rail shows no + at 1280 px");
+if (!(await evaluate("!!document.querySelector('.rail [aria-label=\"New chat\"]')"))) await fail("the rail shows no + at 1280 px");
 await linter.lint("home");
 await capture("1280x800-home");
 // ^ The refusals are the point: 401 before pairing, 409 for the missing path.
 const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/status of 409 .*\/api\/projects$/.test(problem));
 if (defects.length) await fail(`page problems: ${defects.join("; ")}`);
 await linter.finish(fail);
-console.log("projects page: + and Remove only on the managing site, a refusal stays in the sheet, Remove asks first (Cancel keeps the row; halt sessions is a box, off by default) and takes effect, a project with an open task is removed too");
+console.log("projects page: the + opens New chat and its project list ends with Add project… only on the managing site, a refusal stays in the sheet, Remove asks first (Cancel keeps the row; halt sessions is a box, off by default) and takes effect, a project with an open task is removed too");
 await cleanup();
 process.exit(0);

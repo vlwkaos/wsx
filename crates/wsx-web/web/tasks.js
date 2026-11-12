@@ -3,7 +3,7 @@
 // task's or the project overview's sheet over the chat (docs/web-client-tasks.md). Fixed actions
 // go straight to wsx.
 import { api } from "./api.js";
-import { html, Icon, keepIn, plural, readMap, unreadNews, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
+import { html, Icon, keepIn, plural, readMap, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, goBack, leaveFor, shows, state, touch, useEventLoad, useStore } from "./store.js";
 import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, useDraft, useListKeys, useRecent, withNewLine } from "./chat.js";
@@ -592,7 +592,7 @@ function ProjectShell({ project }) {
     aria-label="Shell" title="Shell"><${Icon} name="terminal" /></button>`;
 }
 
-function More({ project, chats }) {
+function More({ project }) {
   const files = shows("files") && can("files_read");
   return html`
     <${MoreMenu}>
@@ -600,16 +600,6 @@ function More({ project, chats }) {
       <a role="menuitem" href=${`#/p/${project.id}/usage`}>Usage</a>
       <a role="menuitem" href=${`#/p/${project.id}/media`}>Media</a>
       ${files && html`<a role="menuitem" href=${`#/p/${project.id}/files`}>Files</a>`}
-      ${chats?.length > 0 && html`
-        <p class="more-heading" aria-hidden="true">Chats</p>
-        ${chats.map((chat) => {
-          const unread = Boolean(unreadNews(`project-${project.id}-c-${chat.name}`, chat.news));
-          return html`<a role="menuitem" class="role-contact" key=${chat.name} href=${`#/p/${project.id}/c/${encodeURIComponent(chat.name)}`}
-            aria-label=${`Chat ${chat.name}${unread ? ", unread" : ""}`}>
-            <span class="role-name">${chat.name}${unread && html`<span class="news-mark" aria-hidden="true"></span>`}</span>
-            <span class="role-line">${chat.last_reply ?? chat.goal}</span>
-          </a>`;
-        })}`}
     </${MoreMenu}>`;
 }
 
@@ -921,7 +911,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
     <header class="bar">
       <${Back} fallback=${room ? `#/p/${id}` : "#/"} />
       <div class="bar-title">
-        <span class="bar-label">${room ? `${project.name} · ${room}` : project.name}</span>
+        <span class="bar-label">${room ?? project.name}</span>
         ${!managerWord && chat?.manager.agent && html`<span class="bar-model" title="Model">${agentWords(chat.manager.agent)}</span>`}
         ${managerWord && html`<span class="bar-state" key=${managerWord} data-tone=${typing ? "working" : "danger"}>${typing
           ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><${Dots} /></span>`
@@ -932,7 +922,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
         ${!room && html`
           <a class="icon-button" href=${`#/p/${id}/page`} aria-label="Overview" title="Overview"><${Icon} name="overview" /></a>
           <${PanelsButton} project=${id} />
-          <${ProjectShell} project=${project} /><${More} project=${project} chats=${chat?.chats} />`}
+          <${ProjectShell} project=${project} /><${More} project=${project} />`}
       </div>
     </header>`;
   // ^ The header sits at the bottom, above the composer, when this device chose it (settings.js).

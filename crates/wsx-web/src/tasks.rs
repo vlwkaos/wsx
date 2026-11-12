@@ -666,7 +666,7 @@ fn talk(log: &[task::LogEntry]) -> Value {
 }
 
 /// The manager conversation, or the chat `chat`'s, after message `after`, and whether it
-/// runs or thinks; the manager's also lists the project's chats as contacts.
+/// runs or thinks.
 /// `scopes`: the granted projects, whose managers' names a peer bubble may show.
 /// `find`: from the oldest entry that shows these words, for a find over the whole history
 /// (docs/web-client-chat.md "Find"). `around`: the part around message `around`, at any age
@@ -683,10 +683,6 @@ pub fn chat(
     let settings = load_task_config(&scope.path).unwrap_or_default();
     let mut manager =
         json!({ "name": chat.unwrap_or_else(|| settings.manager_shown_name(&scope.name)) });
-    let chats = match chat {
-        Some(_) => Value::Null,
-        None => json!(chat_contacts(scope)),
-    };
     let dir = match chat {
         None => ManagerDir::existing(&scope.store).map_err(internal)?,
         Some(chat) => Some(
@@ -696,7 +692,7 @@ pub fn chat(
     };
     let Some(dir) = dir else {
         return Ok(
-            json!({ "rows": [], "skipped": 0, "asks": [], "running": false, "busy": false, "manager": manager, "chats": chats }),
+            json!({ "rows": [], "skipped": 0, "asks": [], "running": false, "busy": false, "manager": manager }),
         );
     };
     // ^ The agent in use now, a fallback's while one runs; a chat's own, else the manager's.
@@ -764,7 +760,6 @@ pub fn chat(
     let busy = status.as_ref().is_some_and(|status| status.busy);
     Ok(json!({
         "manager": manager,
-        "chats": chats,
         "rows": rows,
         "skipped": page.skipped,
         "asks": page.asks.iter().map(|ask| ask.id).collect::<Vec<_>>(),
@@ -805,13 +800,17 @@ fn news_value((unix_ms, text): (u64, String)) -> Value {
     json!({ "unix_ms": unix_ms, "text": text })
 }
 
-/// The open chats as contacts: name, the first line of the goal and of the last reply, and
-/// `news` (as a project's: `{unix_ms, text}` of the newest reply that is news, or `null`)
-/// (docs/web-client-tasks.md "Chats").
+/// The open chats as Home rows: name, the first line of the goal and of the last reply,
+/// `news` (as a project's: `{unix_ms, text}` of the newest reply that is news, or `null`) and
+/// `approvals`, the count of the chat's own pending requests (`chats::approvals_of`, the rule
+/// the first chat's count uses) (docs/web-client-tasks.md "Home").
 fn chat_contacts(scope: &Scope) -> Vec<Value> {
+    let open = task::chats::open_names(&scope.store);
+    let all = store::read_approvals(&scope.store).unwrap_or_default();
     task::chats::open_chats(&scope.store)
         .iter()
         .map(|dir| {
+            let own = task::chats::approvals_of(all.clone(), Some(dir.name()), &open);
             let tail = dir.read_tail(MANAGER_TAIL_BYTES).unwrap_or_default();
             let news = newest_news(&tail).map(news_value);
             let last = tail
@@ -831,9 +830,35 @@ fn chat_contacts(scope: &Scope) -> Vec<Value> {
                 "goal": task::chats::goal(dir).lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
                 "last_reply": last,
                 "news": news,
+                "approvals": pending_approvals(&own).len(),
             })
         })
         .collect()
+}
+
+/// A new chat of the project, opened for the owner: its name, an optional goal and an
+/// optional `[[agents]]` entry (docs/tasks.md "Chats").
+pub fn new_chat(
+    scope: &Scope,
+    name: &str,
+    goal: Option<&str>,
+    agent: Option<&str>,
+) -> Outcome<Value> {
+    let goal = goal.map(str::trim).filter(|goal| !goal.is_empty());
+    let agent = agent.filter(|agent| !agent.is_empty());
+    task::chats::create(&scope.store, name, goal, agent)
+        .map_err(|error| Fault::new(400, "invalid_chat", format!("{error:#}")))?;
+    Ok(json!({ "ok": true, "chat": name }))
+}
+
+/// The `[[agents]]` entries a chat may run on, for the New chat sheet.
+pub fn chat_agents() -> Value {
+    json!(task::chats::agent_entries()
+        .into_iter()
+        .map(
+            |(name, agent)| json!({ "name": name, "adapter": agent.adapter, "model": agent.model })
+        )
+        .collect::<Vec<_>>())
 }
 
 /// A project's manager name as the owner reads it (`TaskConfig::manager_shown_name`).

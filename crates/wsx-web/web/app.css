@@ -98,14 +98,14 @@ body[data-keyboard] .tabbar { padding-bottom: var(--space-2); }
   padding: var(--space-4) var(--space-4) var(--space-2);
   font-size: var(--font-size-title); font-weight: var(--font-weight-strong); letter-spacing: var(--tracking-title);
 }
-/* Hook: .home-top — Home's title row; the + that adds a project sits at its right gutter. */
+/* Hook: .home-top — Home's title row; the + that opens a New chat sits at its right gutter. */
 .home-top { display: flex; align-items: center; justify-content: flex-end; padding-right: var(--space-2); }
 .home-top .title { flex: 1; }
 .rail .home-top { padding-top: var(--space-1); }
 .sheet .error { margin-top: var(--space-2); }
-.new-project:focus-visible { color: var(--color-text); }
-@media (hover: hover) { .new-project:hover { color: var(--color-text); background: var(--color-raised); } }
-.new-project:active:not(:disabled) { color: var(--color-accent); }
+.new-chat:focus-visible { color: var(--color-text); }
+@media (hover: hover) { .new-chat:hover { color: var(--color-text); background: var(--color-raised); } }
+.new-chat:active:not(:disabled) { color: var(--color-accent); }
 .scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .label {
   padding: var(--space-4) var(--space-4) var(--space-1);
@@ -165,10 +165,10 @@ button.row-open { padding: 0; border: 0; background: none; text-align: left; }
 .news-mark { flex: none; align-self: center; width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-accent); }
 .row-news { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-sm); color: var(--color-text); }
 .row-context:empty { display: none; }
-/* Hook: .row-role — an open role under its project's row on Home: the row's text and hairline
+/* Hook: .row-chat — an open chat under its project's row on Home: the row's text and hairline
    start one step in. */
-.row-role { --row-inset: calc(var(--space-4) * 2); }
-.row-role > .row-link { padding-left: calc(var(--space-4) * 2); }
+.row-chat { --row-inset: calc(var(--space-4) * 2); }
+.row-chat > .row-link { padding-left: calc(var(--space-4) * 2); }
 .row-state {
   flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end;
   font-size: var(--font-size-sm); color: var(--color-muted);
@@ -244,6 +244,8 @@ button.row-open { padding: 0; border: 0; background: none; text-align: left; }
   border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);
   background: var(--color-raised);
 }
+textarea.input { padding: var(--space-2) var(--space-3); resize: vertical; }
+.input:disabled { opacity: 0.5; }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-4); }
 
 /* Hook: .bar, .switch — the one top row of a session or of the files screen. */
@@ -873,12 +875,6 @@ body[data-keyboard] .chat:has(.slash) .reservoir { display: none; }
 .more-menu a, .more-menu button { min-height: var(--size-control); display: flex; align-items: center; padding: 0 var(--space-4); text-decoration: none; }
 .more-menu button { border: 0; background: none; color: inherit; font: inherit; text-align: start; white-space: nowrap; }
 .more-menu a:focus-visible, .more-menu button:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
-/* Chats in the project's ⋯ menu: a contact list, the name over its last line, a dot when
-   unread (docs/web-client-tasks.md "Chats"). */
-.more-heading { margin: var(--space-2) var(--space-4) var(--space-1); padding-top: var(--space-2); border-top: var(--border-width) solid var(--color-hairline); font-size: var(--font-size-sm); color: var(--color-muted); }
-.more-menu .role-contact { flex-direction: column; align-items: stretch; justify-content: center; gap: var(--space-1); padding-block: var(--space-1); width: min(80vw, var(--size-rail)); }
-.role-name { display: flex; align-items: center; gap: var(--space-2); font-weight: var(--font-weight-medium); }
-.role-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-sm); color: var(--color-muted); }
 .manager .log-wrap { overflow: hidden; }
 /* The task sheet: over the chat from the bottom, about 85% of the visible height; on a wide
    screen a panel at the right. A swipe down on its top moves it with the finger (an inline

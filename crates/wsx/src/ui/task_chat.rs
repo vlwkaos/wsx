@@ -326,7 +326,7 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
     }
 }
 
-/// `Manager <project>` (another chat: `<project> · <chat>`) on the left, the To check and approval counts on
+/// `Manager <project>` (another chat: its name) on the left, the To check and approval counts on
 /// the right; another chat has none.
 fn heading(chat: &ManagerChat, width: usize) -> Line<'static> {
     let checks = chat
@@ -352,9 +352,9 @@ fn heading(chat: &ManagerChat, width: usize) -> Line<'static> {
             if approvals == 1 { "" } else { "s" }
         ),
     };
-    // ^ Another chat is titled by its affiliation, `<project> · <chat>` (docs/tasks.md "Chats").
+    // ^ Another chat is titled by its name (docs/tasks.md "Chats").
     let who = match &chat.chat {
-        Some(name) => format!("{} · {name}", chat.project),
+        Some(name) => name.clone(),
         None => chat.who().to_string(),
     };
     let who = truncate_to_width(&who, width / 2);

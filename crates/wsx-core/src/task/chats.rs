@@ -182,13 +182,34 @@ fn entry_agent(entry: &str) -> Option<ChatAgent> {
     })
 }
 
-/// `--agent`: a name in `[[agents]]` that has a headless adapter and a model, as a task's
+/// `agent`: a name in `[[agents]]` that has a headless adapter and a model, as a task's
 /// `--model` is checked before it is kept.
-pub fn checked_agent(entry: &str) -> Result<&str> {
+fn checked_agent(entry: &str) -> Result<&str> {
     if entry_agent(entry).is_none() {
         bail!("--agent {entry}: no [[agents]] entry of that name has an adapter and a model");
     }
     Ok(entry)
+}
+
+/// The `[[agents]]` entries a chat may run on: those with an adapter and a model, as
+/// `(name, agent)` in config order.
+pub fn agent_entries() -> Vec<(String, ChatAgent)> {
+    let Ok((config, _)) = crate::config::global::GlobalConfig::load() else {
+        return Vec::new();
+    };
+    config
+        .agents
+        .into_iter()
+        .filter_map(|entry| {
+            Some((
+                entry.name,
+                ChatAgent {
+                    adapter: entry.adapter?,
+                    model: entry.model?,
+                },
+            ))
+        })
+        .collect()
 }
 
 /// The chat's own agent; none runs the manager's (also when its entry is gone from the config).
@@ -205,12 +226,16 @@ pub fn create(
     agent: Option<&str>,
 ) -> Result<ManagerDir> {
     let name = checked_name(name)?;
+    let agent = agent.map(checked_agent).transpose()?;
+    if let Some(goal) = goal {
+        checked_goal(goal)?;
+    }
     if ManagerDir::existing_as(project_id, Some(name))?.is_some_and(|dir| is_open(&dir)) {
         bail!("chat {name} is already open");
     }
     let dir = ManagerDir::open_as(project_id, Some(name))?;
     if let Some(goal) = goal {
-        store::write_atomic(&dir.path.join(GOAL_FILE), checked_goal(goal)?.as_bytes())?;
+        store::write_atomic(&dir.path.join(GOAL_FILE), goal.as_bytes())?;
     }
     let file = ChatFile {
         agent: agent.map(str::to_string),

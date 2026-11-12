@@ -143,7 +143,7 @@ impl InputState {
         self.cursor = self.buffer.len();
     }
 
-    fn display_cursor(&self) -> usize {
+    pub fn display_cursor(&self) -> usize {
         self.buffer[..self.cursor].chars().count()
     }
 }

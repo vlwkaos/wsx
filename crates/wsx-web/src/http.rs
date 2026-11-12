@@ -89,6 +89,8 @@ pub fn router(app: Shared) -> Router {
             .route("/api/chat/{session}/queue/{id}/steer", post(queue_steer))
             .route("/api/tasks", get(tasks_all))
             .route("/api/tasks/usage", get(tasks_usage))
+            .route("/api/tasks/agents", get(tasks_agents))
+            .route("/api/tasks/{project}/chats", post(tasks_chat_new))
             .route("/api/tasks/{project}", get(tasks_overview))
             .route("/api/tasks/{project}/chat", get(tasks_chat))
             .route("/api/tasks/{project}/since", get(tasks_since))
@@ -1135,6 +1137,40 @@ async fn with_scope_long<T: Send + 'static>(
 async fn tasks_all(State(app): State<Shared>, Paired(_): Paired) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
     blocking(|| crate::tasks::overviews(&app).map(Json))
+}
+
+async fn tasks_agents(State(app): State<Shared>, Paired(_): Paired) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, false)?;
+    Ok(Json(json!({ "agents": crate::tasks::chat_agents() })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatInput {
+    name: String,
+    #[serde(default)]
+    goal: Option<String>,
+    #[serde(default)]
+    agent: Option<String>,
+}
+
+async fn tasks_chat_new(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    UrlPath(project): UrlPath<u64>,
+    Json(input): Json<ChatInput>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, true)?;
+    act_budget(&app, &device)?;
+    with_scope(&app, project, |scope| {
+        crate::tasks::new_chat(
+            scope,
+            &input.name,
+            input.goal.as_deref(),
+            input.agent.as_deref(),
+        )
+    })
+    .map(Json)
 }
 
 async fn tasks_usage(

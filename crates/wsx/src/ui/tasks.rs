@@ -22,6 +22,68 @@ const STATE_WIDTH: usize = 8;
 const NUMBER_MIN_WIDTH: usize = 40;
 const STATUS_MIN_WIDTH: usize = 64;
 
+/// The New chat form over the list: a line each for the name, the goal and, when the config
+/// has entries, the agent; a refusal under them. ref: docs/tasks.md "TUI"
+pub fn render_new_chat(frame: &mut Frame, area: Rect, form: &crate::task_new_chat::NewChat) {
+    let rows = form.agents_rows() as u16 + u16::from(form.error.is_some());
+    let popup = super::popup_upper(area, area.width.min(64), 4 + rows);
+    frame.render_widget(Clear, popup);
+    let hints = Line::from(vec![
+        Span::styled(" Enter create", Style::default().fg(theme::TEXT)),
+        Span::styled(
+            "  Tab next  Esc cancel ",
+            Style::default().fg(theme::TEXT_MUTED),
+        ),
+    ]);
+    frame.render_widget(
+        super::popup_block(
+            Line::from(" New chat "),
+            hints,
+            Style::default().fg(theme::ACCENT),
+        ),
+        popup,
+    );
+    if popup.width < 4 || popup.height < 4 {
+        return;
+    }
+    let width = popup.width as usize - 2;
+    let field = |at: usize, text: String| {
+        let style = if form.focus == at {
+            Style::default().fg(theme::ACCENT)
+        } else {
+            Style::default().fg(theme::TEXT)
+        };
+        Line::styled(truncate_to_width(&text, width), style)
+    };
+    let mut lines = vec![
+        field(0, format!("{}{}", form.name.prompt, form.name.buffer)),
+        field(1, format!("{}{}", form.goal.prompt, form.goal.buffer)),
+    ];
+    if form.agents_rows() == 3 {
+        lines.push(field(2, format!("agent: {}", form.agent_words())));
+    }
+    if let Some(error) = &form.error {
+        lines.push(Line::styled(
+            truncate_to_width(error, width),
+            Style::default().fg(theme::ERROR),
+        ));
+    }
+    let body = Rect::new(popup.x + 1, popup.y + 1, popup.width - 2, popup.height - 2);
+    frame.render_widget(Paragraph::new(lines), body);
+    let (text, row) = match form.focus {
+        0 => (Some(&form.name), 0),
+        1 => (Some(&form.goal), 1),
+        _ => (None, 0),
+    };
+    if let Some(text) = text {
+        let col = text.prompt.len() + text.display_cursor();
+        frame.set_cursor_position((
+            body.x + (col as u16).min(body.width.saturating_sub(1)),
+            body.y + row,
+        ));
+    }
+}
+
 pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
     frame.render_widget(Clear, area);
     let inner = Rect {

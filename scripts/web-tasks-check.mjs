@@ -33,7 +33,7 @@ const { file: mobilePath, source: mobileSource } = mobileAudit();
 if (!mobileSource) await fail(`no mobile audit at ${mobilePath}; set WSX_MOBILE_AUDIT`);
 // The main screens that get the design lint (scripts/design-lint.js), at 390x844 and 1280x800 only.
 const linter = designLint({ evaluate, captures, file: "tasks" });
-const LINTED = new Set(["roles-home", "roles-home-wide", "role-chat", "role-chat-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
+const LINTED = new Set(["new-chat", "chats-home-approval", "chats-home", "chats-home-wide", "chat-room", "chat-room-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
 let size = [390, 844, 2];
 const phone = () => size[0] < 600;
 const audits = [];
@@ -421,13 +421,13 @@ async function motion() {
     globalThis.motionKept = { tasks: state.tasks, projects: state.projects };
     const ui = state.projects.find((project) => project.name === 'ui').id;
     const calm = state.projects.find((project) => project.name === 'calm');
-    const rows = () => [...document.querySelectorAll('.home-rows > .row:not(.row-role)')];
+    const rows = () => [...document.querySelectorAll('.home-rows > .row:not(.row-chat)')];
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     // The manager of ui runs a turn: typing dots on its row. ^ Only ui's row: another fixture
     // manager may run a real turn at the same time.
     update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], busy: true } } });
     await frames();
-    const typing = document.querySelectorAll('.home-rows > .row:not(.row-role)[data-key="' + ui + '"] .row-typing .typing-dot').length;
+    const typing = document.querySelectorAll('.home-rows > .row:not(.row-chat)[data-key="' + ui + '"] .row-typing .typing-dot').length;
     toast('Saved the page');
     await frames();
     const notice = !!document.querySelector('.notice .notice-timer');
@@ -436,7 +436,7 @@ async function motion() {
     update({ tasks: { ...state.tasks, [calm.id]: { ...state.tasks[calm.id], last_unix_ms: Date.now() + 1e7 } } });
     await frames();
     const moved = rows().map((row) => row.dataset.key).join() !== before.join();
-    const glides = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row:not(.row-role)')
+    const glides = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row:not(.row-chat)')
       && String(animation.effect.getKeyframes()[0].transform ?? '').startsWith('translateY')).length;
     const projects = state.projects;
     update({ projects: projects.filter((project) => project !== calm) });
@@ -473,7 +473,7 @@ async function motion() {
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     update({ tasks: { ...state.tasks, [calm.id]: { ...state.tasks[calm.id], last_unix_ms: 1 } } });
     await frames();
-    const rows = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row:not(.row-role)')).length;
+    const rows = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row:not(.row-chat)')).length;
     update(globalThis.motionKept);
     return rows;
   })()`);
@@ -555,8 +555,8 @@ async function homeUnread() {
     // ^ calm has a message nobody read here; gone and quiet are read, and gone is newer by activity.
     localStorage.setItem('wsx-read', JSON.stringify(Object.fromEntries([calm, gone, quiet].map((project) => ['project-' + project.id, { read: T - 1000, place: null }]))));
     const overview = (project, extra) => ({ ...state.tasks[project.id], ...extra });
-    const names = () => [...document.querySelectorAll('.home-rows > .row:not(.row-role)')].map((row) => row.querySelector('.row-label').textContent).filter((name) => ['calm', 'gone', 'quiet'].includes(name));
-    const marked = (project) => document.querySelector('.home-rows > .row:not(.row-role)[data-key="' + project.id + '"]').hasAttribute('data-news');
+    const names = () => [...document.querySelectorAll('.home-rows > .row:not(.row-chat)')].map((row) => row.querySelector('.row-label').textContent).filter((name) => ['calm', 'gone', 'quiet'].includes(name));
+    const marked = (project) => document.querySelector('.home-rows > .row:not(.row-chat)[data-key="' + project.id + '"]').hasAttribute('data-news');
     update({ tasks: { ...state.tasks,
       [calm.id]: overview(calm, { news: { unix_ms: T, text: 'new' }, last_unix_ms: T - 9e6 }),
       [gone.id]: overview(gone, { news: null, last_unix_ms: T + 9e6 }),
@@ -1245,7 +1245,7 @@ await until(`(() => { const bubbles = [...document.querySelectorAll('.log .bubbl
 if ((await evaluate(`${askTags}.length`)) !== 1) await fail("a later report dropped the chat's Asks you");
 if ((await overviewAsks())?.length !== 1) await fail("a later report dropped the overview's asks");
 const askingChat = await evaluate("location.hash");
-const homeAskRows = "[...document.querySelectorAll('.home-rows > .row:not(.row-role)')].filter((row) => row.querySelector('.row-label[data-tone=accent]') && /Asks you/.test(row.querySelector('.row-label').textContent) && !row.querySelector('.row-asks, .row-label .icon')).map((row) => row.dataset.key).sort().join()";
+const homeAskRows = "[...document.querySelectorAll('.home-rows > .row:not(.row-chat)')].filter((row) => row.querySelector('.row-label[data-tone=accent]') && /Asks you/.test(row.querySelector('.row-label').textContent) && !row.querySelector('.row-asks, .row-label .icon')).map((row) => row.dataset.key).sort().join()";
 // ^ plans may still hold an open question of its log (test-web-client.py): the rows that ask are
 // the projects whose overview lists one, ui among them.
 const askingNow = async () => (await evaluate(`Promise.all([${project}, ${plansArg}].map((id) => fetch('api/tasks/' + id).then((r) => r.json()).then((view) => view.asks.length ? String(id) : '')))`)).filter(Boolean).sort().join();
@@ -1270,7 +1270,7 @@ await go("#/");
 const askingLeft = await askingNow();
 // ^ ui's question is answered; plans' older questions (test-web-client.py) are not, so only plans may still ask.
 if (askingLeft.split(",").includes(String(project))) await fail(`ui still asks after the owner wrote: ${askingLeft}`);
-await until(`!!document.querySelector('.home-rows > .row:not(.row-role)') && ${homeAskRows} === ${JSON.stringify(askingLeft)}`, "Asks you stayed on the Home row after the owner wrote", 100);
+await until(`!!document.querySelector('.home-rows > .row:not(.row-chat)') && ${homeAskRows} === ${JSON.stringify(askingLeft)}`, "Asks you stayed on the Home row after the owner wrote", 100);
 await go(askingChat);
 await until(`!!${asking}`, "the chat did not come back after Home", 100);
 await openReservoir();
@@ -1299,9 +1299,9 @@ if (!(await evaluate("window.answerLine.isConnected"))) await fail("a status lin
 await shot("reservoir-acted", ".composer-send");
 await closeReservoir();
 
-// --- The ⋯ menu: Sessions, Usage, Media and Files (the site reads files); Overview is a header button, Routines a pill (Chats are checked below); the worktree list hides task sessions.
+// --- The ⋯ menu: Sessions, Usage, Media and Files (the site reads files); Overview is a header button, Routines a pill (Chats are on Home, checked below); the worktree list hides task sessions.
 await click(".more-button");
-if ((await text(".more-menu a:not(.role-contact)")).join() !== "Sessions,Usage,Media,Files") await fail(`the ⋯ menu offers ${await text(".more-menu a:not(.role-contact)")}`);
+if ((await text(".more-menu a")).join() !== "Sessions,Usage,Media,Files") await fail(`the ⋯ menu offers ${await text(".more-menu a")}`);
 await shot("more-menu", ".composer-send");
 await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Sessions').click()");
 await until(`location.hash === '#/p/${project}/sessions' && !!document.querySelector('.worktree')`, "Sessions did not open the worktree list");
@@ -2311,7 +2311,7 @@ if (await count(".task-sheet textarea, .task-message, .task-steer")) await fail(
 await closeSheet("#4", chat);
 await typeInto(".composer-field", "see the logs");
 await go("#/");
-await until("!!document.querySelector('.home-rows > .row:not(.row-role)')", "Home did not open");
+await until("!!document.querySelector('.home-rows > .row:not(.row-chat)')", "Home did not open");
 await go(page(4));
 await until("!!document.querySelector('.task-next button[aria-label^=\"Answer #4\"]')", "#4's sheet has no Answer");
 await click(".task-next button[aria-label^=\"Answer #4\"]");
@@ -2691,13 +2691,13 @@ await closeReservoir();
 // mark and the message's first line; opening the chat clears it (docs/web-client-tasks.md "Home").
 await go("#/");
 await until("!!document.querySelector('.home-row')", "home did not open for the new message");
-const newsRow = `document.querySelector('.home-rows > .row:not(.row-role)[data-key="${project}"]')`;
+const newsRow = `document.querySelector('.home-rows > .row:not(.row-chat)[data-key="${project}"]')`;
 if (await evaluate(`!!${newsRow}.querySelector('.news-mark')`)) await fail("a project whose chat was read is marked new");
 await evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'STATUS for home' }) })`);
 await until(`!!${newsRow}?.querySelector('.news-mark') && /^open: /.test(${newsRow}.querySelector('.row-news')?.textContent ?? '')`, "the new reply did not mark the project's home row", 300);
 const marked = await evaluate(`(() => { const mark = getComputedStyle(${newsRow}.querySelector('.news-mark')).backgroundColor;
   const probe = document.createElement('span'); probe.style.color = 'var(--color-accent)'; document.body.append(probe); const accent = getComputedStyle(probe).color; probe.remove();
-  return { mark, accent, others: [...document.querySelectorAll('.home-rows > .row:not(.row-role):not([data-news]) .news-mark')].length }; })()`);
+  return { mark, accent, others: [...document.querySelectorAll('.home-rows > .row:not(.row-chat):not([data-news]) .news-mark')].length }; })()`);
 if (marked.mark !== marked.accent || marked.others) await fail(`the new message's mark is not the accent alone: ${JSON.stringify(marked)}`);
 await shot("home-news");
 await go(chat);
@@ -3459,9 +3459,9 @@ await until("document.querySelector('.composer-field').value === 'a draft across
 if (await count(".build-pill")) await fail("the pill stayed after the reload");
 problems.splice(quietFrom);
 
-// Chats (docs/web-client-tasks.md "Chats"): the ⋯ menu lists the chat as a contact, unread
-// until read; it opens the chat at #/p/<project>/c/<chat>, the same bubbles without the
-// manager's reservoir, and its composer talks to the chat.
+// Chats (docs/web-client-tasks.md "Chats"): Home lists the chat under its project, the chat's
+// name over the project's, unread until read; it opens the chat at #/p/<project>/c/<chat>, the
+// same bubbles without the manager's reservoir, and its composer talks to the chat.
 // ^ The manager says something in the chat: three speakers there, the owner, the manager and the chat.
 {
   const state = JSON.parse(fs.readFileSync(wsxCli)).env.XDG_STATE_HOME;
@@ -3477,26 +3477,19 @@ for (const wide of [false, true]) {
   await until("!!document.querySelector('.composer-field')", "the chat did not open for Chats");
   const projectName = (await text(".bar-label"))[0];
   const shownName = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((data) => data.manager.name)`);
-  // ^ Home lists the open role under its project: its name and the line of its last reply, no dot
+  // ^ Home lists the open chat under its project: its name, the project's name under it, no dot
   // before this device opened its chat; a click opens the room.
   await go("#/");
-  const roleRow = `[...document.querySelectorAll('.home-rows .role-row')].find((r) => r.querySelector('.row-label').textContent === 'billing')`;
-  await until(`!!(${roleRow})`, "Home lists no billing chat under its project");
-  const listed = await evaluate(`(() => { const row = ${roleRow}; const before = row.closest('li').previousElementSibling; return { name: row.querySelector('.row-label').textContent, line: row.querySelector('.row-context').textContent, dots: row.querySelectorAll('.news-mark').length, under: before && !before.classList.contains('row-role') ? before.querySelector('.row-label').firstChild.textContent : before?.className }; })()`);
-  if (listed.name !== "billing" || !listed.line.startsWith("open: ") || (!wide && listed.dots) || listed.under !== projectName) await fail(`Home lists the chat as ${JSON.stringify(listed)}, not billing under ${projectName}`);
-  await shot(`roles-home${wide ? "-wide" : ""}`);
-  await go(chat);
-  await until("!!document.querySelector('.composer-field')", "the chat did not open again for Chats");
-  await click(".more-button");
-  await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lists no chat");
-  // ^ The role's reply is news, but this device never opened its chat: as for a project, nothing is new.
-  if (!wide && (await count(".role-contact .news-mark"))) await fail("another chat never opened on this device shows unread");
-  if (!(await text(".role-contact .role-line"))[0].startsWith("open: ")) await fail(`the contact's line is not its last reply: ${await text(".role-contact")}`);
-  await shot(`roles-menu${wide ? "-wide" : ""}`);
-  await click(".more-menu .role-contact");
+  const chatRow = `[...document.querySelectorAll('.home-rows .chat-row')].find((r) => r.querySelector('.row-label').textContent === 'billing')`;
+  await until(`!!(${chatRow})`, "Home lists no billing chat under its project");
+  const listed = await evaluate(`(() => { const row = ${chatRow}; const before = row.closest('li').previousElementSibling; return { name: row.querySelector('.row-label').textContent, project: row.querySelector('.row-context').textContent, dots: row.querySelectorAll('.news-mark').length, under: before && !before.classList.contains('row-chat') ? before.querySelector('.row-label').firstChild.textContent : before?.className }; })()`);
+  if (listed.name !== "billing" || listed.project !== projectName || (!wide && listed.dots) || listed.under !== projectName) await fail(`Home lists the chat as ${JSON.stringify(listed)}, not billing over ${projectName}`);
+  if (await count(".more-menu .chat-row, .more-heading")) await fail("the ⋯ menu lists chats");
+  await shot(`chats-home${wide ? "-wide" : ""}`);
+  await evaluate(`${chatRow}.click()`);
   await until(`location.hash === '#/p/${project}/c/billing' && !!document.querySelector('.log .bubble[data-side=in]')`, "the chat did not open with its reply");
   if (await count(".reservoir")) await fail("another chat shows the manager's reservoir");
-  if ((await text(".bar-label"))[0] !== `${projectName} · billing`) await fail(`the chat's title is ${await text(".bar-label")}`);
+  if ((await text(".bar-label"))[0] !== "billing") await fail(`the chat's title is ${await text(".bar-label")}, not its name`);
   // ^ The chat shows its own model, as the manager's chat shows the manager's (billing opened with --agent haiku-chat).
   if (!/^haiku\b/.test((await text(".bar-model"))[0] ?? "")) await fail(`the chat's bar shows the model ${JSON.stringify(await text(".bar-model"))}, not haiku`);
   // ^ The chat holds its own log: none of the project's resolutions ("#5 was closed") is in it.
@@ -3510,14 +3503,13 @@ for (const wide of [false, true]) {
     await click(".composer-send");
     await until(`document.querySelectorAll('.log .bubble[data-side=in]').length > ${answered}`, "the chat did not answer the page", 60);
   }
-  await shot(`role-chat${wide ? "-wide" : ""}`, ".composer-send");
+  await shot(`chat-room${wide ? "-wide" : ""}`, ".composer-send");
   await evaluate("document.querySelector('.bar a.icon-button').click()");
   await until(`location.hash === ${JSON.stringify(chat)}`, "Back from a chat did not return to the manager");
 }
-await click(".more-button");
-await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lost the chat");
-if (await count(".role-contact .news-mark")) await fail("a chat read on this device still shows unread");
-await key("Escape", 27);
+await go("#/");
+await until("!!document.querySelector('.home-rows .chat-row')", "Home lost the chat");
+if (await count(".chat-row .news-mark")) await fail("a chat read on this device still shows unread");
 
 // Chat unread is the server's `news` (the newest reply that is not quiet), read against what this
 // device read: a ping, a quiet reply and the owner's own message are no news; a reply is.
@@ -3530,13 +3522,8 @@ await key("Escape", 27);
   const marked = async () => {
     await go("#/");
     await until("!!document.querySelector('.home-row') && !document.querySelector('.composer-field')", "home did not replace the chat for the chat dot");
-    await go(chat);
-    await until("!!document.querySelector('.composer-field')", "the chat did not open for the chat dot");
-    await click(".more-button");
-    await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lost the chat");
-    const dots = await count(".role-contact .news-mark");
-    await key("Escape", 27);
-    return dots;
+    await until("!!document.querySelector('.home-rows .chat-row')", "Home lost the chat for the chat dot");
+    return count(".chat-row .news-mark");
   };
   await pause(50);
   append({ kind: "ping" });
@@ -3545,6 +3532,67 @@ await key("Escape", 27);
   if (await marked()) await fail("a ping, the owner's message or a quiet reply marks the chat unread");
   append({ kind: "reply", id: ++id, to: [], text: "billing has an answer" });
   if (!(await marked())) await fail("a chat's reply that is news shows no dot");
+}
+
+// A chat's Home row counts its own pending approvals, as the first chat's row counts the
+// project's (chats::approvals_of; docs/web-client-tasks.md "Home").
+{
+  const state = JSON.parse(fs.readFileSync(wsxCli)).env.XDG_STATE_HOME;
+  const found = fs.readdirSync(state, { recursive: true }).find((file) => file.endsWith(path.join("chats", "billing", "log.jsonl")));
+  const approvals = path.join(state, path.dirname(path.dirname(path.dirname(found))), "approvals.jsonl");
+  const line = (entry) => fs.appendFileSync(approvals, `${JSON.stringify(entry)}\n`);
+  const chatCount = "(document.querySelector('.home-rows .chat-row .count')?.textContent ?? '')";
+  const firstCount = `(document.querySelector('.home-rows .row[data-key="${project}"] .count')?.textContent ?? '')`;
+  await resize([390, 844, 2]);
+  await go("#/");
+  await until(`!!document.querySelector('.home-rows .chat-row') && ${chatCount} === ''`, "the chat's row shows a count before it has an approval");
+  const before = await evaluate(firstCount);
+  line({ kind: "request", id: "a9001", action: "push", chat: "billing", unix_ms: Date.now() });
+  await until(`${chatCount} === '1'`, "the chat's row shows no pending approval of its own", 30);
+  if ((await evaluate(firstCount)) !== before) await fail("a chat's approval counted on the first chat's row");
+  await shot("chats-home-approval");
+  line({ kind: "decision", id: "a9001", approved: false, outcome: "dropped; the check is done" });
+  await until(`${chatCount} === ''`, "the chat's row kept a decided approval", 30);
+}
+
+// New chat (docs/web-client-tasks.md "Home"): the + on Home opens a sheet with the projects, then a
+// name, a goal and an agent that wait for a name; no name opens the project's first chat.
+{
+  const sheet = "dialog.sheet[open]";
+  const open = async () => {
+    await go("#/");
+    await until("!!document.querySelector('.home-row')", "Home did not open for New chat");
+    await click('[aria-label="New chat"]');
+    await until(`!!document.querySelector('${sheet} select[name=project]')`, "the + opened no New chat sheet");
+  };
+  const choose = (name, value) => evaluate(`(() => { const field = document.querySelector('${sheet} [name=${name}]'); field.value = ${JSON.stringify(value)}; field.dispatchEvent(new Event(field.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })); })()`);
+  await open();
+  const fields = await evaluate(`({ projects: [...document.querySelectorAll('${sheet} select[name=project] option')].map((option) => option.textContent), goal: document.querySelector('${sheet} textarea[name=goal]').disabled, agents: [...document.querySelectorAll('${sheet} select[name=agent] option')].map((option) => option.value), button: document.querySelector('${sheet} button[type=submit]').textContent, plus: document.querySelectorAll('[aria-label="Add project"]').length })`);
+  if (!fields.goal || fields.button !== "Open" || !fields.agents.includes("haiku-chat") || fields.plus || fields.projects.some((name, at) => name === "Add project…" && at !== fields.projects.length - 1)) await fail(`the New chat sheet is ${JSON.stringify(fields)}`);
+  await shot("new-chat");
+  // ^ No name opens the project's first chat.
+  await choose("project", String(project));
+  await evaluate(`document.querySelector('${sheet} form').requestSubmit()`);
+  await until(`location.hash === '#/p/${project}' && !document.querySelector('dialog.sheet')`, "no name did not open the first chat");
+  // ^ A name makes the chat with its goal and agent, and opens it, titled by its name.
+  await open();
+  await choose("project", String(project));
+  await choose("name", "qa");
+  await until(`document.querySelector('${sheet} button[type=submit]').textContent === 'Create' && !document.querySelector('${sheet} textarea[name=goal]').disabled`, "a name did not enable the goal");
+  await choose("goal", "Check the release notes.\nSecond line.");
+  await choose("agent", "haiku-chat");
+  await evaluate(`document.querySelector('${sheet} form').requestSubmit()`);
+  await until(`location.hash === '#/p/${project}/c/qa' && document.querySelector('.bar-label')?.textContent === 'qa'`, "the new chat did not open under its name", 30);
+  const made = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((data) => data.chats.find((chat) => chat.name === 'qa'))`);
+  if (!made || made.goal !== "Check the release notes.") await fail(`the new chat is ${JSON.stringify(made)}`);
+  // ^ A name the store refuses stays in the sheet.
+  await open();
+  await choose("project", String(project));
+  await choose("name", "Bad Name");
+  await evaluate(`document.querySelector('${sheet} form').requestSubmit()`);
+  await until(`/lowercase letter/.test(document.querySelector('${sheet} .error')?.textContent ?? '')`, "a bad name showed no refusal in the sheet");
+  await evaluate(`document.querySelector('${sheet} form').closest('dialog').close()`);
+  await until("!document.querySelector('dialog.sheet')", "the New chat sheet stayed open");
 }
 
 // --- Session news: the host's post for a session that needs the owner links to that session
