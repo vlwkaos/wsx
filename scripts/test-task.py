@@ -1027,10 +1027,17 @@ def manager_up(created):
     copy_a = Path(show(closing)['record']['working_copy'])
     assert not gone(first['escape']) and (copy_a / 'escape-bin').is_file()
     closed = js('task', 'close', closing, '--discard')
-    assert [one['pid'] for one in closed['processes_stopped']] == [first['escape']], closed
-    assert os.path.realpath(closed['processes_stopped'][0]['path']) == os.path.realpath(copy_a / 'escape-bin'), closed
-    wait(lambda: gone(first['escape']), 'close stopped the escaped helper', 10)
-    assert any(e['kind'] == 'agent' and 'close stopped 1 process' in e['text'] for e in log(closing)), log(closing)
+    # ^ The host marks the task closed before the close command removes the copy, and the sweep
+    # (every 3 s here) may stop the helper in that gap: then it posts the stop, else `close` names it.
+    by_close = [one['pid'] for one in closed['processes_stopped']]
+    assert by_close in ([first['escape']], []), closed
+    if by_close:
+        assert os.path.realpath(closed['processes_stopped'][0]['path']) == os.path.realpath(copy_a / 'escape-bin'), closed
+        assert any(e['kind'] == 'agent' and 'close stopped 1 process' in e['text'] for e in log(closing)), log(closing)
+    else:
+        wait(lambda: [e for e in pruned_events() if 'task #%s' % closing in e['text'] and 'stopped 1 process' in e['text']],
+             'the sweep posted the stop', 30)
+    wait(lambda: gone(first['escape']), 'the escaped helper is stopped', 10)
     assert not copy_a.exists() and bystander.poll() is None, 'close left the copy or stopped the bystander'
     # ^ The sweep: a task whose copy was removed outside close.
     seen = len(traces())
