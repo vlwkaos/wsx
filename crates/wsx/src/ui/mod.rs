@@ -1,5 +1,6 @@
 // Layout orchestration
 
+mod chat_table;
 pub mod config_modal;
 pub mod confirm;
 pub mod global_settings;

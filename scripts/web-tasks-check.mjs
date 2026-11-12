@@ -3704,6 +3704,45 @@ await setMotion("no-preference");
     return document.querySelector('.log .bubble[data-found]')?.dataset.key ?? null; })()`);
   if (found !== row.key) await fail(`a tap on the quote of the emoji message marks ${JSON.stringify(found)}, not ${row.key}`);
 }
+// --- A table under a list item (docs/design/list-tables.md): a manager's real reply has four numbered
+// items, each with a table under it that is not indented to the item. Each table shows right after
+// its item, with all its rows, and the lists keep their numbers. A plain table, a plain list and a
+// list followed by a paragraph read as before.
+{
+  const reply = (start) => `[...document.querySelectorAll('.log .bubble[data-side=in]')].findLast((node) => node.querySelector('.markdown')?.textContent.trim().startsWith(${JSON.stringify(start)}))`;
+  const shape = (start) => evaluate(`(() => { const bubble = ${reply(start)}; if (!bubble) return null; const markdown = bubble.querySelector('.markdown');
+    return { kids: [...markdown.children].map((node) => node.tagName.toLowerCase() + (node.classList.contains('table-wrap') ? ':table' : '')),
+      starts: [...markdown.querySelectorAll(':scope > ol')].map((list) => list.getAttribute('start') ?? '1'),
+      items: [...markdown.querySelectorAll(':scope > ol > li, :scope > ul > li')].map((item) => item.textContent.trim()),
+      rows: [...markdown.querySelectorAll('.table-wrap table')].map((table) => table.querySelectorAll('tr').length),
+      heads: [...markdown.querySelectorAll('.table-wrap table')].map((table) => [...table.querySelectorAll('th')].map((cell) => cell.textContent.trim()).join('|')),
+      raw: markdown.textContent.includes('|---|'), fits: [...markdown.querySelectorAll('.table-wrap')].every((wrap) => wrap.getBoundingClientRect().right <= bubble.querySelector('.bubble-box').getBoundingClientRect().right + 0.5) }; })()`);
+  if (await say("LISTTABLE") !== 200) await fail("the message for a list-table reply was not taken");
+  await until(`!!${reply("Read-only answer against wsx main")} && !document.querySelector('.log .typing')`, "the reply with tables under list items did not arrive", 120);
+  const listed = await shape("Read-only answer against wsx main");
+  // ^ Item, table, item, table, item, table, a paragraph, item, table: the lists restart at 2, 3 and 4.
+  const kids = ["p", "ol", "div:table", "ol", "div:table", "ol", "div:table", "p", "ol", "div:table"];
+  const want = { starts: ["1", "2", "3", "4"], rows: [6, 3, 4, 6], heads: ["Step of the owner's flow|wsx today", "Need|Supported way", "PR gives|Needed for solo ir?", "Item|Kind|Smallest change"] };
+  if (!listed || JSON.stringify(listed.kids) !== JSON.stringify(kids) || JSON.stringify(listed.starts) !== JSON.stringify(want.starts)
+    || JSON.stringify(listed.rows) !== JSON.stringify(want.rows) || JSON.stringify(listed.heads) !== JSON.stringify(want.heads) || listed.raw || !listed.fits
+    || listed.items[0] !== "What wsx does today" || listed.items[3] !== "Missing vs habit") {
+    await fail(`the tables under list items read ${JSON.stringify({ listed, kids, want })}`);
+  }
+  await shot("list-tables", ".composer-send");
+  if (await say("LISTPLAIN") !== 200) await fail("the message for a plain-shapes reply was not taken");
+  await until(`!!${reply("Plain shapes:")} && !document.querySelector('.log .typing')`, "the reply with plain shapes did not arrive", 120);
+  const plain = await shape("Plain shapes:");
+  if (JSON.stringify(plain?.kids) !== JSON.stringify(["p", "div:table", "ul", "ol", "p"]) || JSON.stringify(plain.rows) !== "[3]" || JSON.stringify(plain.items) !== JSON.stringify(["first bullet", "second bullet", "only item"])) {
+    await fail(`the plain table, list and list with a paragraph read ${JSON.stringify(plain)}`);
+  }
+  await resize([1280, 800, 1]);
+  await evaluate(`${reply("Read-only answer against wsx main")}.scrollIntoView({ block: 'start' })`);
+  await pause(300);
+  const wide = await shape("Read-only answer against wsx main");
+  if (!wide || !wide.fits || wide.rows.join() !== "6,3,4,6") await fail(`the tables under list items at 1280 px read ${JSON.stringify(wide)}`);
+  await shot("list-tables-wide", ".composer-send");
+  await resize([390, 844, 2]);
+}
 await toLatest("390 px");
 // A ready task the manager created waits for the manager's review: under Running, with those words and a calm dot.
 const asked = await say('RUN wsx task new "WORK z.txt" -p ui');

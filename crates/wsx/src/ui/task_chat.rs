@@ -1,6 +1,7 @@
 //! The manager chat: the conversation with the newest at the bottom, the owner's open
 //! items under it and the message line last. ref: docs/tasks.md "TUI"
 use super::{
+    chat_table,
     tasks::muted,
     text::{cells, truncate_to_width, wrap_cells},
     theme,
@@ -537,27 +538,47 @@ pub fn chat_lines(
             Some(agent) => format!("Stand-in {agent}, not checked: {}", row.text),
             None => row.text.clone(),
         };
-        for paragraph in body.lines() {
-            // ^ Each char with the link it belongs to, so a link that wraps stays one.
-            let mut cells: Vec<(char, Option<usize>)> = Vec::new();
-            for part in parts(paragraph) {
-                match part {
-                    Part::Text(words) => cells.extend(words.chars().map(|c| (c, None))),
-                    Part::Link { label, .. } => {
-                        cells.extend(label.chars().map(|c| (c, Some(nth))));
-                        nth += 1;
-                    }
-                }
+        let source: Vec<&str> = body.lines().collect();
+        let (mut at, mut fenced) = (0, false);
+        while at < source.len() {
+            // ^ The table rule of `chat_table` holds anywhere but in a fenced block, which shows
+            // as written.
+            if source[at].trim_start().starts_with("```") {
+                fenced = !fenced;
             }
-            for part in wrap_cells(&cells, width.saturating_sub(2).max(1)) {
+            let table = if fenced {
+                None
+            } else {
+                chat_table::read(&source[at..])
+            };
+            let shown: Vec<chat_table::Shown> = match table {
+                Some(table) => {
+                    at += table.len;
+                    let rows: Vec<Vec<_>> = table
+                        .rows
+                        .iter()
+                        .map(|row| row.iter().map(|cell| link_cells(cell, &mut nth)).collect())
+                        .collect();
+                    chat_table::lines(&rows, &table.aligns, width.saturating_sub(2).max(1))
+                }
+                None => {
+                    let cells = link_cells(source[at], &mut nth);
+                    at += 1;
+                    wrap_cells(&cells, width.saturating_sub(2).max(1))
+                        .into_iter()
+                        .map(|part| (part, Style::default()))
+                        .collect()
+                }
+            };
+            for (part, base) in shown {
                 let mut spans = vec![match bar {
                     Some(color) => Span::styled("│ ", Style::default().fg(color)),
                     None => Span::raw("  "),
                 }];
                 for (link, run) in chunk_by_link(&part) {
                     let style = match link {
-                        None => Style::default(),
-                        Some(at) if selected == Some((row.unix_ms, at)) => {
+                        None => base,
+                        Some(link) if selected == Some((row.unix_ms, link)) => {
                             selected_line = Some(lines.len());
                             Style::default()
                                 .fg(theme::ACCENT)
@@ -574,6 +595,22 @@ pub fn chat_lines(
         }
     }
     (lines, selected_line)
+}
+
+/// `text` as chars, each with the link it belongs to (numbered from `nth` on), so a link that
+/// wraps stays one.
+fn link_cells(text: &str, nth: &mut usize) -> Vec<(char, Option<usize>)> {
+    let mut cells = Vec::new();
+    for part in parts(text) {
+        match part {
+            Part::Text(words) => cells.extend(words.chars().map(|c| (c, None))),
+            Part::Link { label, .. } => {
+                cells.extend(label.chars().map(|c| (c, Some(*nth))));
+                *nth += 1;
+            }
+        }
+    }
+    cells
 }
 
 /// `cells` as runs of one link (or none): the link's index and the run's text.

@@ -37,6 +37,14 @@ class Screen:
         self.grid = [[" "] * cols for _ in range(rows)]
         self.styles = [[BLANK] * cols for _ in range(rows)]
 
+    def resize(self, rows, cols):
+        """A blank grid of the new size: the TUI repaints all of it after a resize."""
+        with self.lock:
+            self.rows, self.cols = rows, cols
+            self.row = self.col = 0
+            self.grid = [[" "] * cols for _ in range(rows)]
+            self.styles = [[BLANK] * cols for _ in range(rows)]
+
     def clear(self, top, bottom, left, right):
         for row in range(top, bottom):
             self.grid[row][left:right] = [" "] * (right - left)
@@ -165,6 +173,8 @@ class TuiPty:
     def resize(self, rows, cols):
         """Set the PTY's window size and tell the TUI, as a window drag does."""
         fcntl.ioctl(self.master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        self.view.resize(rows, cols)
+        self.cols = cols
         self.proc.send_signal(signal.SIGWINCH)
 
     def wait_text(self, found, message, seconds=20, idle=0):

@@ -2455,6 +2455,79 @@ try:
     # ^ Two Escs in one write read as Alt-Esc: the first leaves the composer, the second the chat.
     remove_tui.send(b"\x1b")
     wait_for(lambda: "Enter: send" not in remove_tui.text(), "Esc did not leave the composer", seconds=60)
+    # docs/design/list-tables.md: a manager's reply whose numbered items each have a table under
+    # them, not indented (scripts/fixtures/list-tables.md), shows each table as aligned columns in
+    # the chat; so do a plain table, a plain list and a list followed by a paragraph, as before.
+    list_tables = (ROOT / "scripts" / "fixtures" / "list-tables.md").read_text().rstrip("\n")
+    plain_shapes = "Plain shapes:\n\n| Key | Value |\n|---|---|\n| one | 1 |\n\n- first bullet\n- second bullet\n\n1. only item\n\nA paragraph after the list."
+    with halt_log.open("a") as log_file:
+        for step, text in enumerate((list_tables, plain_shapes), start=2):
+            log_file.write(json.dumps({"unix_ms": base + filler_count + step, "kind": "reply", "id": 100 + filler_count + step,
+                                       "to": [100 + filler_count], "text": text}) + "\n")
+    wait_for(lambda: "Plain shapes:" in remove_tui.text(), lambda: f"the chat did not show the replies with tables:\n{remove_tui.text()}", seconds=60)
+
+    def chat_pages():
+        # ^ The newest screen, then each page up to the oldest loaded row, one read of the text each.
+        remove_tui.send(b"G")
+        time.sleep(0.5)
+        pages = []
+        for _ in range(10):
+            pages.append(remove_tui.text())
+            remove_tui.send(b"\x1b[5~")
+            deadline = time.monotonic() + 2
+            while remove_tui.text() == pages[-1] and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if remove_tui.text() == pages[-1]:
+                break
+        remove_tui.send(b"G")
+        time.sleep(0.5)
+        return pages
+
+    def table_rows(pages, header):
+        # ^ The rows of the table under a header line, on one screen: the rule line under the
+        # header has its crossings where the header has its bars, every row line has its bars
+        # there too, and the first line after the table has none. A frame border at the screen's
+        # edge does not count. Returns the row lines, none when no screen shows the table.
+        edge = remove_tui.cols - 1
+        for page in pages:
+            lines = page.splitlines()
+            for at, line in enumerate(lines[:-1]):
+                if not re.search(header, line):
+                    continue
+                bars = [i for i, char in enumerate(line[:edge]) if char == "│" and i > 0]
+                crossings = [i for i, char in enumerate(lines[at + 1][:edge]) if char == "┼" and i > 0]
+                if not crossings or crossings != bars:
+                    continue
+                rows = []
+                for row in lines[at + 2:]:
+                    if not any(char in "│┼" for char in row[1:edge]):
+                        break
+                    assert all(row[i : i + 1] in ("│", "┼") for i in crossings), f"a row is off the columns {crossings}: {row!r}\n{page}"
+                    rows.append(row)
+                return rows
+        return None
+
+    pages = chat_pages()
+    everything = "\n".join(pages)
+    for header, first_cells in ((r"Step of the owner's flow\s+│ wsx today", "Separate worktree/branch per piece of work"),
+                                (r"^\s*Need\s+│ Supported way", "CI on the task's own branch"),
+                                (r"PR gives\s+│ Needed for solo ir\?", "CI on the branch before main"),
+                                (r"Item\s+│ Kind\s+│ Smallest change", "One task per piece of work, retries via `add`")):
+        rows = table_rows(pages, header)
+        assert rows and any(first_cells in row for row in rows), f"no aligned table under {header}:\n{everything}"
+    assert "|---" not in everything and not re.search(r"\| wsx today \|", everything), everything
+    assert re.search(r"^\s*1\. What wsx does today$", everything, re.M) and re.search(r"^\s*4\. Missing vs habit$", everything, re.M), everything
+    plain_rows = table_rows(pages, r"Key\s+│ Value")
+    assert plain_rows and re.search(r"one\s+│ 1", plain_rows[0]), everything
+    for shown in ("- first bullet", "- second bullet", "1. only item", "A paragraph after the list."):
+        assert re.search(rf"^\s*{re.escape(shown)}$", everything, re.M), f"{shown!r} changed:\n{everything}"
+    # A width where the three-column table does not fit even shrunk: one record per row.
+    remove_tui.resize(40, 26)
+    time.sleep(1)
+    narrow = "\n".join(chat_pages())
+    assert re.search(r"^\s*Kind: Manager habit\s*$", narrow, re.M), narrow
+    remove_tui.resize(40, 120)
+    time.sleep(1)
     remove_tui.send(b"\x1b")
     wait_for(lambda: "All projects" in remove_tui.text(), "Esc did not close the manager chat", seconds=60)
     remove_tui.send(b"q")

@@ -4,7 +4,8 @@ use ratatui::{
     text::{Line, Span},
 };
 
-type Cell = (char, Option<usize>);
+/// A char with the link of the chat it belongs to.
+pub(super) type Cell = (char, Option<usize>);
 
 /// Display cells `text` takes.
 pub(super) fn cells(text: &str) -> usize {
@@ -42,6 +43,11 @@ pub(super) fn fit(text: &str, width: usize) -> String {
 
 fn size_of(char: char) -> usize {
     cells(char.encode_utf8(&mut [0; 4]))
+}
+
+/// Display cells of `cells`.
+pub(super) fn width_of(cells: &[Cell]) -> usize {
+    cells.iter().map(|(char, _)| size_of(*char)).sum()
 }
 
 /// Appends `word` to `line`, starting a new line in `lines` whenever the next char would
