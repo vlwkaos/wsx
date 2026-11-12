@@ -5945,8 +5945,8 @@ def part_host(created=None):
     record = json.loads(record_path.read_text())
     record['created_by'] = 'role:research'
     record_path.write_text(json.dumps(record))
-    with (mig_store / 'manager/log.jsonl').open('a') as manager_log:
-        manager_log.write(json.dumps({'unix_ms': now_ms, 'kind': 'message', 'id': 9000002, 'from': 'role:research', 'text': 'RESEARCH SAYS'}) + '\n')
+    with (mig_store / 'manager/log.jsonl').open('a') as mig_log:
+        mig_log.write(json.dumps({'unix_ms': now_ms, 'kind': 'message', 'id': 9000002, 'from': 'role:research', 'text': 'RESEARCH SAYS'}) + '\n')
     migrated = chats()
     assert 'research' in migrated and migrated['research']['state'] == 'open', migrated
     assert not (mig_store / 'roles').exists()
