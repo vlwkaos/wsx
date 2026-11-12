@@ -2,9 +2,7 @@
 
 use super::approve::{after_landing, ask_covering, request_of};
 use crate::task::args::{DeployArgs, PushArgs};
-use crate::task::{
-    acting_as_manager, actor, ask_host, need, print_json, project_entry, report_response,
-};
+use crate::task::{acting_as_manager, actor, ask_host, print_json, project_entry, report_response};
 use crate::task::{asks_owner, open, outward_said};
 use crate::task::{host, hosting, trial};
 use anyhow::{bail, Context, Result};
@@ -18,7 +16,6 @@ use wsx_core::task::checks::{self};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
 use wsx_core::task::manager::{ApprovalAction, ApprovalLine};
 use wsx_core::task::owner::{self};
-use wsx_core::task::policy::Capability;
 use wsx_core::task::view::short_commit;
 use wsx_core::task::{
     copy, now_unix_ms,
@@ -47,7 +44,6 @@ pub(crate) fn push(args: PushArgs, project: Option<&str>, json: bool) -> Result<
     } = args;
     let (commit, lease) = (commit.as_deref(), lease.as_deref());
     let (owner_said, after) = outward_said(&said)?;
-    need(Capability::Deploy, "push")?;
     let (project_name, main) = project_entry(project)?;
     let project_id = store::project_id(&project_name, &main);
     let default = default_ref(&main);
@@ -219,7 +215,6 @@ pub(crate) fn deploy(
     let waived = run.checks_waived && kind == DeployKind::Release && !acting_as_manager();
     let by_hand = !if_new && trial.is_none() && run_locked.is_none();
     let name = kind_name(kind);
-    need(Capability::Deploy, name)?;
     let (project_name, main) = project_entry(project)?;
     let settings =
         load_task_config(&main).map_err(|error| anyhow::anyhow!("{error}; nothing was run"))?;
@@ -248,7 +243,7 @@ pub(crate) fn deploy(
     let to_check = open.len();
     if public && to_check > 0 && run_locked.is_none() && !waived {
         match (kind, owner_said) {
-            (DeployKind::Release, Some(said)) => owner::check_owner_said(&project_id, said)?,
+            (DeployKind::Release, Some(said)) => owner::check_owner_said(&project_id, actor().chat(), said)?,
             _ => bail!(
                 "{to_check} item(s) to check are open; the owner checks them first (`wsx task check`). Nothing was run"
             ),
@@ -459,7 +454,6 @@ pub(crate) fn trial_command(
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    need(Capability::Deploy, "trial")?;
     let dir = open(project, task)?;
     let record = dir.read_record()?;
     if end {

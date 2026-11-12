@@ -7,8 +7,6 @@ use super::manager::{read_note, CONTEXT_FILE, DECISIONS_FILE};
 use anyhow::Result;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use wsx_core::memory::manage::MEMO_LINE_CHARS;
-use wsx_core::task::store;
 use wsx_core::task::view::clip;
 
 /// The most of both files a fresh conversation's first message carries.
@@ -16,8 +14,6 @@ const MAX_NOTES_BYTES: usize = 10 * 1024;
 /// What `context.md` keeps of that budget when `decisions.md` is long: the owner's rules come
 /// first, so `decisions.md` takes the rest (6 KiB), and a short file leaves its part to the other.
 const CONTEXT_FLOOR_BYTES: usize = 4 * 1024;
-/// Past this many bytes the oldest memo lines move to `ARCHIVE_FILE`.
-const CONTEXT_CEILING_BYTES: usize = 32 * 1024;
 const ARCHIVE_FILE: &str = "context-archive.md";
 /// The rules a later one replaced; a view of the records.
 const DECISIONS_ARCHIVE_FILE: &str = "decisions-archive.md";
@@ -204,39 +200,6 @@ pub(super) fn record_memo(
 ) -> Result<Vec<wsx_core::memory::manage::Drift>> {
     let (commit, paths) = landed.map_or((None, &[][..]), |(commit, paths)| (Some(commit), paths));
     Ok(wsx_core::memory::manage::capture(store, project, task, memo, commit, paths)?.drift)
-}
-
-/// Another chat's notes are files of its own, not records: add a finished task's memo to its
-/// `context.md` as one line of at most `MEMO_LINE_CHARS`, unless
-/// the file holds it. Past `CONTEXT_CEILING_BYTES` the oldest memo lines move to the archive
-/// (written first, so a failed write loses none); the manager's own lines stay.
-/// ref: docs/tasks.md "Memo"
-pub(super) fn fold_memo(notes: &Path, task: u32, memo: &str) -> Result<()> {
-    let path = notes.join(CONTEXT_FILE);
-    let text = read_note(&path);
-    let memo = clip(memo, MEMO_LINE_CHARS);
-    let mut lines: Vec<&str> = text.lines().collect();
-    if lines
-        .iter()
-        .any(|line| line.contains(memo.trim_end_matches('…')))
-    {
-        return Ok(());
-    }
-    let added = format!("- #{task}: {memo}");
-    lines.push(&added);
-    let mut moved: Vec<&str> = Vec::new();
-    while lines.iter().map(|line| line.len() + 1).sum::<usize>() > CONTEXT_CEILING_BYTES {
-        let Some(oldest) = lines.iter().position(|line| line.starts_with("- #")) else {
-            break;
-        };
-        moved.push(lines.remove(oldest));
-    }
-    if !moved.is_empty() {
-        let archive = notes.join(ARCHIVE_FILE);
-        let old = read_note(&archive);
-        store::write_note(&archive, &format!("{old}{}\n", moved.join("\n")))?;
-    }
-    store::write_note(&path, &(lines.join("\n") + "\n"))
 }
 
 /// The words of `text` that name a topic: lowercase, cut to 6 characters so `restart` meets

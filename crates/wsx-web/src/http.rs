@@ -1450,13 +1450,24 @@ async fn task_decide(
     })
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatQuery {
+    /// The items of this chat's tasks instead of the first chat's (docs/tasks.md "Chats").
+    chat: Option<String>,
+}
+
 async fn tasks_checks(
     State(app): State<Shared>,
     Paired(_): Paired,
     UrlPath(project): UrlPath<u64>,
+    Query(query): Query<ChatQuery>,
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
-    with_scope(&app, project, crate::tasks::checks).map(Json)
+    with_scope(&app, project, move |scope| {
+        crate::tasks::checks(scope, query.chat.as_deref())
+    })
+    .map(Json)
 }
 
 /// The capture kept with a "To check" item, `GET .../checks/<id>/capture`, and a video's

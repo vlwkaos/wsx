@@ -1,12 +1,11 @@
 //! `digest`, `checkin` and `post`: what a routine does for the chat (docs/tasks.md "Routines").
 
 use crate::cli::RoutineCmd;
-use crate::task::{acting_as_manager, need, project_entry};
+use crate::task::{acting_as_manager, actor, project_entry};
 use anyhow::{bail, Context, Result};
 use std::time::{Duration, Instant};
 use wsx_core::task::manager::{Author, Level, ManagerEntry, ManagerEvent};
 use wsx_core::task::owner::{self};
-use wsx_core::task::policy::Capability;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::digest_lines;
 use wsx_core::task::{
@@ -51,7 +50,6 @@ pub(crate) fn checkin(
     at: Option<&str>,
     why: &str,
 ) -> Result<()> {
-    need(Capability::Routine, "a check-in")?;
     let why = why.split_whitespace().collect::<Vec<_>>().join(" ");
     if why.is_empty() || why.chars().count() > CHECKIN_WHY_CHARS {
         bail!("--why must say what to look at, in at most {CHECKIN_WHY_CHARS} characters");
@@ -213,11 +211,7 @@ pub(crate) fn post_when_free(
 /// `wsx task routine`: the project's routines. A role changes nothing of the project's own, and
 /// the manager writes one only with the owner's word (docs/tasks.md "Chats", "Routines").
 pub(crate) fn routine_command(action: RoutineCmd, owner_said: Option<u64>) -> Result<()> {
-    use RoutineCmd::{Add, Delete, Disable, Edit, Enable};
-    // ^ A role changes nothing of the project's own (docs/tasks.md "Chats").
-    if let Add { .. } | Edit { .. } | Delete { .. } | Enable { .. } | Disable { .. } = &action {
-        need(Capability::Routine, "routine changes")?;
-    }
+    use RoutineCmd::{Add, Delete, Edit};
     // ^ wsxd runs a routine outside the agent boundary: only the owner writes one.
     if let Add { project, .. } | Edit { project, .. } | Delete { project, .. } = &action {
         if acting_as_manager() {
@@ -226,7 +220,7 @@ pub(crate) fn routine_command(action: RoutineCmd, owner_said: Option<u64>) -> Re
                  when the owner's message of this turn asks for it; nothing was run",
             )?;
             let (name, main) = project_entry(project.as_deref())?;
-            owner::check_owner_said(&store::project_id(&name, &main), said)?;
+            owner::check_owner_said(&store::project_id(&name, &main), actor().chat(), said)?;
         }
     }
     crate::cli::cmd_routine(action)

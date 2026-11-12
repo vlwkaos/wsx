@@ -158,16 +158,16 @@ pub(super) fn instructions(
          or another project, run `wsx task search -p {project} --all <words>`; quote a hit \
          with its `quote` line; `--task <n>` reads one task's history. \
          You may read another project's `wsx task ledger -p \
-         <project>` and message its manager with `wsx task say -p <project> --from-manager \
+         <project>` and message its first chat with `wsx task say -p <project> --from-chat \
          \"<text>\"`. You may also create and change its tasks with `wsx task new|show|list|add|steer|stop|hold|land|close -p \
          <project>` (never `close --discard`; its deploys, releases and pushes stay its own): the task \
          is its own, with its numbers, checks and land, and its events come back to you as \
          `<project> #<n>`; its memo lands in your memory. A message headed 'Manager <project>' \
-         asks you something: answer it once with `wsx task say -p <project> --from-manager \
+         asks you something: answer it once with `wsx task say -p <project> --from-chat \
          --reply \"<answer>\"`. 'Manager <project> replies' answers yours: use it and do not \
          answer it. '@<project>' in an owner message asks you to consult that manager the \
-         same way and use its reply. Chats talk the same way inside the project with \
-         `--to <name> --from-chat`; answer a message headed 'Chat <name>' once with `--reply`.",
+         same way and use its reply. Chats of this project: `--to <name> --from-chat` (`--to manager` \
+         is the first); answer a message headed 'Chat <name>' once with `--reply`.",
         review = match workflow.review.is_empty() {
             true => String::new(),
             false => format!("{} ", workflow.review),

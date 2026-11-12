@@ -13,11 +13,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use wsx_core::git::output_with_timeout_limit;
+use wsx_core::task::manager::Party;
 use wsx_core::task::owner::ACTOR_ENV;
 use wsx_core::task::policy::{Capability, Policy, Role, Trust, RULES_ENV, TRUST_ENV};
 
 pub const BROKER_ENV: &str = "WSX_TASK_BROKER";
-/// The manager's own project, for `say --from-manager`; set only by the manager host.
+/// The manager's own project, for `say --from-chat`; set only by the manager host.
 pub const FROM_ENV: &str = "WSX_TASK_FROM";
 /// Stdin, and stdout and stderr each, of one command.
 const MAX_STREAM_BYTES: usize = 1024 * 1024;
@@ -167,13 +168,13 @@ pub struct ManagerBroker {
     pub own: String,
     pub project_id: String,
     pub actor: String,
-    /// Answers the host owes, by sender (`chat:<name>` or a project).
+    /// Answers the host owes, by sender (`Party::key`).
     pub owed: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u32>>>,
     pub policy: SharedPolicy,
 }
 
 /// The manager host's side: every `task` command runs as its `actor` (`manager` or
-/// `chat:<name>`). Another project is reached only by `ledger` and `say --from-manager`, a
+/// `chat:<name>`). Another project is reached only by `ledger` and `say --from-chat -p`, a
 /// chat of this one by `say --from-chat`; a `--reply` spends an answer the
 /// host owes (`owed`), and `sent` hears each message that went out.
 /// ref: docs/tasks.md "Managers talk", "Chats"
@@ -203,19 +204,19 @@ pub fn serve_manager(
             Err(error) => return refused(format!("{error:#}")),
         };
         let reply = request.argv.iter().any(|arg| arg == "--reply");
-        let owes = |to: &String| {
+        let owes = |to: &Party| {
             owed.lock()
                 .expect("owed lock")
-                .get(to)
+                .get(&to.key())
                 .is_some_and(|count| *count > 0)
         };
         if let (Some(to), true) = (&target, reply) {
             if !owes(to) {
                 return refused(format!(
                     "no message from {} waits for an answer, and a reply is not answered",
-                    match to.strip_prefix("chat:") {
-                        Some(chat) => chat.to_string(),
-                        None => format!("the manager of {to}"),
+                    match to {
+                        Party::Chat(chat) => chat.clone(),
+                        Party::Project(project) => format!("the manager of {project}"),
                     }
                 ));
             }
@@ -225,7 +226,7 @@ pub fn serve_manager(
         if let (Some(to), 0) = (target, response.code) {
             // ^ Spent only by a reply that went out.
             if reply {
-                if let Some(count) = owed.lock().expect("owed lock").get_mut(&to) {
+                if let Some(count) = owed.lock().expect("owed lock").get_mut(&to.key()) {
                     *count = count.saturating_sub(1);
                 }
             }
@@ -233,7 +234,7 @@ pub fn serve_manager(
                 .ok()
                 .and_then(|value| value["text"].as_str().map(str::to_string))
                 .unwrap_or_default();
-            sent(to, text, reply);
+            sent(to.key(), text, reply);
         }
         response
     });
@@ -296,11 +297,11 @@ const MANAGER_REACH: [&str; 9] = [
 ];
 
 /// The other project a command reaches. A manager may run `MANAGER_REACH` there (the task
-/// lives in that project's store, as the owner's `-p` makes it) and `say --from-manager`; a
-/// chat only reads `ledger`. Or `chat:<name>` for `say --from-chat` to a chat of its own
-/// (`manager` without `--to`); `None` for anything else of its own. A `--from-manager`
-/// message must go to another project. ref: docs/tasks.md "Managers talk"
-fn reach(argv: &[String], own: &str, actor: &str) -> Result<Option<String>> {
+/// lives in that project's store, as the owner's `-p` makes it) and `say --from-chat`, which
+/// reaches its first chat; a chat only reads `ledger`. A `say --from-chat` without `-p` reaches
+/// a chat of its own (`manager` without `--to`); `None` for anything else of its own.
+/// ref: docs/tasks.md "Managers talk"
+fn reach(argv: &[String], own: &str, actor: &str) -> Result<Option<Party>> {
     let project = argv
         .iter()
         .enumerate()
@@ -312,7 +313,6 @@ fn reach(argv: &[String], own: &str, actor: &str) -> Result<Option<String>> {
                 .map(str::to_string),
         });
     let sub = argv.get(1).map(String::as_str).unwrap_or_default();
-    let from_manager = argv.iter().any(|arg| arg == "--from-manager");
     let from_chat = argv.iter().any(|arg| arg == "--from-chat");
     let discard = argv.iter().any(|arg| arg == "--discard");
     let to = argv
@@ -325,18 +325,18 @@ fn reach(argv: &[String], own: &str, actor: &str) -> Result<Option<String>> {
                 .find_map(|arg| arg.strip_prefix("--to=").map(str::to_string))
         });
     match project.filter(|project| project != own) {
-        None if from_manager => bail!("--from-manager messages another project's manager; name it with -p"),
-        None if sub == "say" && from_chat => Ok(Some(format!(
-            "chat:{}",
-            to.as_deref().unwrap_or("manager")
+        None if sub == "say" && from_chat => Ok(Some(Party::Chat(
+            to.unwrap_or_else(|| "manager".into()),
         ))),
         None => Ok(None),
         // ^ Reading another ledger is not a message; only a sent message is logged.
         Some(_) if sub == "ledger" => Ok(None),
-        Some(other) if actor == "manager" && sub == "say" && from_manager => Ok(Some(other)),
+        Some(other) if actor == "manager" && sub == "say" && from_chat => {
+            Ok(Some(Party::Project(other)))
+        }
         Some(_) if actor == "manager" && MANAGER_REACH.contains(&sub) && !discard => Ok(None),
         Some(other) if actor == "manager" => bail!(
-            "a manager acts in another project only with {}, never --discard or an approved action; for {other} it may also read `wsx task ledger -p {other}` and `wsx task say -p {other} --from-manager`",
+            "a manager acts in another project only with {}, never --discard or an approved action; for {other} it may also read `wsx task ledger -p {other}` and `wsx task say -p {other} --from-chat`",
             MANAGER_REACH.join(", ")
         ),
         Some(other) => bail!(

@@ -2,13 +2,10 @@
 
 use super::approve::{after_landing, ask_owner, request_of};
 use crate::task::args::OwnerSaidAfter;
-use crate::task::{
-    acting_as_manager, actor, asks_owner, batch, may, open, open_owned, outward_said, send,
-};
+use crate::task::{acting_as_manager, actor, asks_owner, batch, open, outward_said, send};
 use anyhow::{bail, Context, Result};
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::manager::ApprovalAction;
-use wsx_core::task::policy::Capability;
 use wsx_core::task::{AfterKind, HostRequest, TaskState};
 
 /// `land <a> <b>...`: refuse what one land would refuse, then ask the first task's host to
@@ -21,9 +18,6 @@ pub(crate) fn land_batch(
 ) -> Result<()> {
     if tried {
         bail!("--tried passes one trial: land that task alone");
-    }
-    if !may(Capability::Land) {
-        bail!("a chat lands only a child into its parent task, one at a time");
     }
     let mut ids = Vec::new();
     let mut first = None;
@@ -62,7 +56,7 @@ pub(crate) fn after_command(
     because: Option<AfterKind>,
     json: bool,
 ) -> Result<()> {
-    let dir = open_owned(project, task)?;
+    let dir = open(project, task)?;
     let target = on
         .map(|on| {
             let other = open(project, &on)?.read_record()?;
@@ -105,20 +99,12 @@ pub(crate) fn land_command(
         }
         return land_batch(project, &task, tried, json);
     }
-    let dir = open_owned(project, &task[0])?;
+    let dir = open(project, &task[0])?;
     // ^ Only the owner tries a trial, so only the owner passes one.
     if tried && acting_as_manager() {
         bail!("only the owner passes a trial; ask the owner to try it");
     }
     let record = dir.read_record()?;
-    // ^ A chat lands only into a parent task; the manager lands onto the default branch.
-    if !may(Capability::Land) && record.parent.is_none() {
-        bail!(
-            "a chat lands only a child into its parent task; #{} lands onto {}, which is the manager's",
-            record.id,
-            record.default_branch
-        );
-    }
     let settings = load_task_config(&record.project_path)
         .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
     if (after.is_some() || asks_owner(settings.land_approve))
@@ -152,7 +138,7 @@ pub(crate) fn hold_command(
     json: bool,
 ) -> Result<()> {
     send(
-        &open_owned(project, task)?,
+        &open(project, task)?,
         HostRequest::Hold {
             reason,
             by: actor(),

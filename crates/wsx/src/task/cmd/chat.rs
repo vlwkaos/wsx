@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::chat::{self, Reading, Window};
 use wsx_core::task::chats;
-use wsx_core::task::manager::{ManagerRequest, ManagerResponse};
+use wsx_core::task::manager::{pending_approvals, Author, ManagerRequest, ManagerResponse, Party};
 use wsx_core::task::owner::{self};
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::MAX_MESSAGE_BYTES;
@@ -30,59 +30,40 @@ pub(crate) fn ensure_manager(project: Option<&str>) -> Result<(bool, ManagerDir)
     owner::ensure_manager(&name, &main, &exe, None, launch_manager(&main))
 }
 
-/// Who sends a message with `say`, besides the owner; each with whether it is a reply.
-pub(crate) enum From {
-    /// `--from-manager`: this manager to another project's.
-    Manager(bool),
-    /// `--from-chat`: a chat to another chat of its own project.
-    Chat(bool),
-}
-
-/// Send to the manager, or to the open chat `to`.
+/// Send to the manager, or to the open chat `to`. `from_chat`: this host's agent sends it, and
+/// whether it is a reply; the sender is the acting chat (the first as `manager`), and for
+/// another project (`-p`) its first chat is the one reached.
 pub(crate) fn say(
     project: Option<&str>,
     to: Option<&str>,
     text: String,
-    from: Option<From>,
+    from_chat: Option<bool>,
     json: bool,
 ) -> Result<()> {
     let (name, main) = project_entry(project)?;
-    // ^ Only a manager host sets the sender's project (broker.rs).
-    let own = || {
-        std::env::var(broker::FROM_ENV)
-            .ok()
-            .filter(|own| acting_as_manager() && !own.is_empty())
-    };
-    let from = match from {
+    let from = match from_chat {
         None => None,
-        Some(From::Manager(reply)) => {
-            let own = own()
-                .filter(|_| actor() == Actor::Manager)
-                .context("--from-manager is for a project's manager")?;
-            if own == name {
-                bail!("--from-manager messages another project's manager");
-            }
-            Some(wsx_core::task::manager::Author::Manager {
-                project: own,
-                reply,
-            })
-        }
-        Some(From::Chat(reply)) => {
-            let own = own().context("--from-chat is for a chat's manager")?;
-            if own != name {
-                bail!("--from-chat messages a chat of its own project");
-            }
-            let sender = match actor() {
-                Actor::Chat(sender) => sender,
-                _ => "manager".to_string(),
+        Some(reply) => {
+            // ^ Only a manager host sets the sender's project (broker.rs).
+            let own = std::env::var(broker::FROM_ENV)
+                .ok()
+                .filter(|own| acting_as_manager() && !own.is_empty())
+                .context("--from-chat is for a chat's agent")?;
+            let party = if own == name {
+                let sender = match actor() {
+                    Actor::Chat(sender) => sender,
+                    _ => "manager".to_string(),
+                };
+                if sender == to.unwrap_or("manager") {
+                    bail!("--from-chat messages another chat, not itself");
+                }
+                Party::Chat(sender)
+            } else if actor() != Actor::Manager || to.is_some() {
+                bail!("--from-chat reaches another project's first chat, as the first chat, with no --to");
+            } else {
+                Party::Project(own)
             };
-            if sender == to.unwrap_or("manager") {
-                bail!("--from-chat messages another chat, not itself");
-            }
-            Some(wsx_core::task::manager::Author::Chat {
-                name: sender,
-                reply,
-            })
+            Some(Author::Peer { from: party, reply })
         }
     };
     // ^ `--to manager` is the first chat, as another chat names it in its reply.
@@ -121,7 +102,8 @@ pub(crate) fn say(
 }
 
 /// The conversation after message `after` or around message `around`, as the other chats show
-/// it (`chat::read_for`); `asks`, the open questions (docs/tasks.md "Log window").
+/// it (`chat::read_for`); `asks`, the open questions (docs/tasks.md "Log window"); `approvals`
+/// and `to_check`, the ids this chat owns and shows (`chats::owner`).
 pub(crate) fn chat(
     project: Option<&str>,
     chat: Option<&str>,
@@ -139,7 +121,11 @@ pub(crate) fn chat(
     };
     let window = Window::new(None, after, around);
     let settings = load_task_config(&main).unwrap_or_default();
-    let Reading { page, .. } = chat::read_for(
+    let Reading {
+        page,
+        approvals,
+        items,
+    } = chat::read_for(
         dir.as_ref(),
         (&name, &project_id),
         &settings,
@@ -153,6 +139,8 @@ pub(crate) fn chat(
     if json {
         return print_json(&json!({
             "entries": page.entries, "skipped": page.skipped, "asks": asks, "waiting": waiting,
+            "approvals": pending_approvals(&approvals).iter().map(|line| line.id()).collect::<Vec<_>>(),
+            "to_check": items.iter().map(|item| &item.id).collect::<Vec<_>>(),
         }));
     }
     for row in &page.rows {
@@ -387,23 +375,24 @@ pub(crate) fn manager_command(project: Option<&str>, json: bool) -> Result<()> {
     }
 }
 
-/// `wsx task say`: to the manager or another chat, from the owner, a manager or a chat.
+/// `wsx task say`: to the manager or another chat, from the owner or a chat.
 pub(crate) fn say_command(
     project: Option<&str>,
     to: Option<&str>,
     text: PromptSource,
-    (from_manager, from_chat, reply): (bool, bool, bool),
+    (from_chat, reply): (bool, bool),
     json: bool,
 ) -> Result<()> {
-    if reply && !from_manager && !from_chat {
-        bail!("--reply answers with --from-manager or --from-chat");
+    if reply && !from_chat {
+        bail!("--reply answers with --from-chat");
     }
-    let from = match (from_manager, from_chat) {
-        (true, _) => Some(From::Manager(reply)),
-        (_, true) => Some(From::Chat(reply)),
-        _ => None,
-    };
-    say(project, to, text.read(MAX_MESSAGE_BYTES)?, from, json)
+    say(
+        project,
+        to,
+        text.read(MAX_MESSAGE_BYTES)?,
+        from_chat.then_some(reply),
+        json,
+    )
 }
 
 /// `wsx task boundary-profile`: the manager's Seatbelt profile (hidden; the boundary scenario).

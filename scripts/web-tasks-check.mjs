@@ -1239,7 +1239,7 @@ await shot("asks-you", ".composer-send");
 // ^ A later report does not drop the mark: plans' manager asks ui's, whose answer is a reply that
 // is not quiet and asks nothing. The chat keeps its tag and the Home row, from the real overview,
 // shows the same on that row only (docs/web-client-tasks.md "Home").
-await evaluate(`fetch('api/tasks/${plansArg}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ text: 'RUN wsx task say -p ui --from-manager "How is ui now?" --json' }))} })`);
+await evaluate(`fetch('api/tasks/${plansArg}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ text: 'RUN wsx task say -p ui --from-chat "How is ui now?" --json' }))} })`);
 await until(`(() => { const bubbles = [...document.querySelectorAll('.log .bubble[data-side=in]')], heard = bubbles.findIndex((node) => node.textContent.includes('How is ui now?'));
   return heard >= 0 && heard < bubbles.length - 1 && !document.querySelector('.log .typing'); })()`, "no report after the question", 300);
 if ((await evaluate(`${askTags}.length`)) !== 1) await fail("a later report dropped the chat's Asks you");
@@ -3802,7 +3802,7 @@ await closeSheet("the page", `#/p/${plansArg}`);
   const peerWords = "waits for you";
   const pageModule = (name) => `import(new URL(${JSON.stringify(name)}, [...document.scripts].find((script) => script.type === 'module').src))`;
   // ^ plans' manager says it to ui's.
-  const asked = await say(`RUN wsx task say -p ui --from-manager "${fromPlans}" --json`, plansArg);
+  const asked = await say(`RUN wsx task say -p ui --from-chat "${fromPlans}" --json`, plansArg);
   if (asked !== 200) await fail(`plans' manager was not asked to write to ui's: ${asked}`);
   await go(chat);
   const chipsIn = (needle) => evaluate(`(() => { const bubble = [...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(needle)}));

@@ -34,7 +34,7 @@ use wsx_core::task::manager::{
 };
 use wsx_core::task::manager::{
     Author, Checkin, Level, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest,
-    ManagerResponse, ManagerState, Seen, Short,
+    ManagerResponse, ManagerState, Party, Seen, Short,
 };
 use wsx_core::task::policy;
 use wsx_core::task::session_news;
@@ -150,30 +150,20 @@ pub(super) enum Event {
     /// The events of a task that the host of the chat, or the manager of the project, that
     /// created it did not take: this manager hears them.
     Undelivered {
-        to: Hearer,
+        to: Party,
         lines: Vec<(String, Short)>,
     },
 }
 
-/// Who hears the events of a task besides this manager: the open chat that created it, or the
-/// manager of the other project that did. ref: docs/tasks.md "Chats", "Managers talk"
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum Hearer {
-    Chat(String),
-    Project(String),
-}
-
-impl Hearer {
-    /// The head of the events this manager hears when `self` did not take them.
-    fn refusal(&self) -> String {
-        match self {
-            Self::Chat(chat) => {
-                format!("chat {chat} did not take the events of its tasks, so they are yours:")
-            }
-            Self::Project(project) => format!(
-                "the manager of {project} did not take the events of its tasks here, so they are yours:"
-            ),
+/// The head of the events this manager hears when `hearer` did not take them.
+fn refusal(hearer: &Party) -> String {
+    match hearer {
+        Party::Chat(chat) => {
+            format!("chat {chat} did not take the events of its tasks, so they are yours:")
         }
+        Party::Project(project) => format!(
+            "the manager of {project} did not take the events of its tasks here, so they are yours:"
+        ),
     }
 }
 
@@ -182,39 +172,14 @@ impl Hearer {
 /// answered and a message is answered once. ref: docs/tasks.md "Managers talk"
 type Owed = std::sync::Arc<std::sync::Mutex<BTreeMap<String, u32>>>;
 
-struct Manager {
-    dir: ManagerDir,
-    project: String,
-    main: PathBuf,
-    /// `tasks.manager.adapter`: the headless adapter the manager runs on.
-    adapter: String,
+/// What only the project's first chat does besides talking: it watches the store for events,
+/// stalls, approvals, deploys, routines and agent sessions, asks for recaps, sweeps captures and
+/// stale worktrees, and checks the overview and the notes' views. Another chat's host has none.
+/// ref: docs/tasks.md "Chats"
+#[derive(Default)]
+struct Duties {
     /// `tasks.deploy.auto`: a deploy that worked starts no turn. ref: `state_wakes`
     deploy_auto: bool,
-    /// A stand-in's call runs: which agent and when it began.
-    stand_in: Option<(agent::Choice, Instant)>,
-    /// A hold runs for hours: looking for a stand-in reads config and log, so not every tick.
-    stand_in_look: Option<Instant>,
-    model: String,
-    /// `tasks.manager.eventModel`: the model of a turn with only events and no review due.
-    event_model: Option<String>,
-    /// The model the running agent process uses now.
-    agent_model: String,
-    /// `tasks.manager.rotateTokens` when set; `rotate_limit` is the size that counts.
-    rotate_tokens: Option<u64>,
-    /// `tasks.manager.effort`, passed to every launch.
-    effort: String,
-    state: ManagerState,
-    events: Sender<Event>,
-    agent: Option<Agent>,
-    generation: u64,
-    /// Logged messages not yet delivered, oldest first.
-    queue: VecDeque<(u64, Author, String, bool)>,
-    /// The ids of the messages in the running turn.
-    turn: Option<Vec<u64>>,
-    /// The running turn holds only events: its reply is quiet.
-    turn_events: bool,
-    pane: Option<u64>,
-    started: Instant,
     /// Task states as last seen, including ones not yet reported.
     observed: BTreeMap<u32, Seen>,
     /// Approval decisions seen, including ones not yet reported.
@@ -236,19 +201,59 @@ struct Manager {
     /// The worktrees the last sweep left for the owner, with the text posted: posted again
     /// only when the text changes.
     flagged: BTreeMap<PathBuf, String>,
+    /// `tasks.manager.recapMinutes` as a duration; `None` is off.
+    recap_quiet: Option<Duration>,
+    /// When the host last removed old captures; `None` sweeps on the first tick.
+    captures_swept: Option<Instant>,
+    /// The host asked for a shorter overview since the last owner message or in-cap result.
+    overview_asked: bool,
+    /// A hand edit of `decisions.md` or `context.md` was said once; no second notice until the
+    /// owner writes again or the views are whole.
+    drift_said: bool,
+}
+
+struct Manager {
+    dir: ManagerDir,
+    project: String,
+    main: PathBuf,
+    /// `tasks.manager.adapter`: the headless adapter the manager runs on.
+    adapter: String,
+    /// A stand-in's call runs: which agent and when it began.
+    stand_in: Option<(agent::Choice, Instant)>,
+    /// A hold runs for hours: looking for a stand-in reads config and log, so not every tick.
+    stand_in_look: Option<Instant>,
+    /// The project duties; only the project's first chat has them (`Duties`).
+    duties: Option<Duties>,
+    model: String,
+    /// `tasks.manager.eventModel`: the model of a turn with only events and no review due.
+    event_model: Option<String>,
+    /// The model the running agent process uses now.
+    agent_model: String,
+    /// `tasks.manager.rotateTokens` when set; `rotate_limit` is the size that counts.
+    rotate_tokens: Option<u64>,
+    /// `tasks.manager.effort`, passed to every launch.
+    effort: String,
+    state: ManagerState,
+    events: Sender<Event>,
+    agent: Option<Agent>,
+    generation: u64,
+    /// Logged messages not yet delivered, oldest first.
+    queue: VecDeque<(u64, Author, String, bool)>,
+    /// The ids of the messages in the running turn.
+    turn: Option<Vec<u64>>,
+    /// The running turn holds only events: its reply is quiet.
+    turn_events: bool,
+    pane: Option<u64>,
+    started: Instant,
     /// Event lines not yet logged as a message, each with the chat's short form of it, and
     /// when the last one came.
     pending_events: Vec<(String, Short)>,
     last_event: Option<Instant>,
-    /// `tasks.manager.recapMinutes` as a duration; `None` is off.
-    recap_quiet: Option<Duration>,
     /// When a message was logged, a turn ran or the host last looked for a recap.
     last_activity: Instant,
     /// The file this host runs from, and whether it must exec its replacement.
     binary: Option<hosting::Binary>,
     reexec: bool,
-    /// When the host last removed old captures; `None` sweeps on the first tick.
-    captures_swept: Option<Instant>,
     owed: Owed,
     /// The policy of the agent that runs now, which the broker checks commands against.
     policy: broker::SharedPolicy,
@@ -256,16 +261,11 @@ struct Manager {
     start_failed: Option<Instant>,
     /// Event lines of tasks a chat or another project's manager created, by who hears them, not
     /// yet sent.
-    chat_events: BTreeMap<Hearer, Vec<(String, Short)>>,
+    chat_events: BTreeMap<Party, Vec<(String, Short)>>,
     /// The waiting approvals that run now, by id (`run_waiting`).
     running_waits: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     /// A chat host that is closed or idle: it leaves.
     leaving: bool,
-    /// The host asked for a shorter overview since the last owner message or in-cap result.
-    overview_asked: bool,
-    /// A hand edit of `decisions.md` or `context.md` was said once; no second notice until the
-    /// owner writes again or the views are whole.
-    drift_said: bool,
     /// Like `overview_asked`, for the request to write an answer that sat in thinking.
     thought_asked: bool,
     /// Ping turns since the last real turn, and whether the running turn is one.
@@ -288,21 +288,10 @@ const INSTRUCTION_MESSAGE_TOKENS: u64 = 100_000;
 // ^ The agent writes the notes: a link or a huge file must not reach the host's read.
 const MAX_NOTES_READ: u64 = 256 * 1024;
 
-/// A chat's instructions open with this, its goal, then the manager's.
+/// A chat's instructions open with its name and goal, then the manager's.
 /// ref: docs/tasks.md "Chats"
 fn chat_preamble(chat: &str, project: &str, goal: &str) -> String {
-    format!(
-        "You are {chat}, a chat in the project {project}: a second manager with its own log and \
-         notes, and the owner's goal below. The manager's instructions after it are yours, with \
-         these differences. You hear the events only of the tasks you create, and act only on \
-         them; you land only a child into its parent task. The manager keeps every other task, \
-         the recap, approvals, deploys, releases, routines and the project overview. You never \
-         open a chat or change the project's config. Message another chat with `wsx task say \
-         --to <name> --from-chat \"<text>\"` (`--to manager` for the first); a message headed \
-         'Manager' or 'Chat <name>' asks you something: answer it once with `wsx task say \
-         --to <name> --from-chat --reply \"<answer>\"`.\n\nThe owner's goal:\n{goal}\n\n\
-         The manager's instructions:\n"
-    )
+    format!("You are {chat}, a chat of the project {project}. The owner's goal:\n{goal}\n\n")
 }
 
 /// The manager's boundary profile as text. ref: scripts/test-manager-boundary.py
@@ -350,7 +339,12 @@ pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
         project,
         main,
         adapter,
-        deploy_auto: settings.deploy_auto,
+        duties: chat.is_none().then(|| Duties {
+            deploy_auto: settings.deploy_auto,
+            recap_quiet: (settings.manager_recap_secs > 0)
+                .then(|| Duration::from_secs(settings.manager_recap_secs)),
+            ..Duties::default()
+        }),
         stand_in: None,
         stand_in_look: None,
         model,
@@ -367,33 +361,17 @@ pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
         turn_events: false,
         pane: hosting::own_pane(),
         started: Instant::now(),
-        observed: BTreeMap::new(),
-        observed_decisions: 0,
-        observed_deploys_ms: 0,
-        observed_routines: 0,
-        observed_stalls: BTreeMap::new(),
-        stall_suspects: BTreeMap::new(),
-        stalls_swept: None,
-        sessions_looked: None,
-        pruned: None,
-        pruning: false,
-        flagged: BTreeMap::new(),
         pending_events: Vec::new(),
         last_event: None,
-        recap_quiet: (settings.manager_recap_secs > 0)
-            .then(|| Duration::from_secs(settings.manager_recap_secs)),
         last_activity: Instant::now(),
         binary: hosting::Binary::capture(),
         reexec: false,
-        captures_swept: None,
         owed: Owed::default(),
         policy: broker::SharedPolicy::default(),
         start_failed: None,
         chat_events: BTreeMap::new(),
         running_waits: Default::default(),
         leaving: false,
-        overview_asked: false,
-        drift_said: false,
         thought_asked: false,
         pings: 0,
         pinging: false,
@@ -489,20 +467,13 @@ fn author_heading(author: &Author) -> String {
         Author::Owner => "Owner".to_string(),
         Author::Events => "Events".to_string(),
         Author::Recap => "Recap request from wsx".to_string(),
-        Author::Manager {
-            project,
-            reply: false,
-        } => format!("Manager {project}"),
-        Author::Manager {
-            project,
-            reply: true,
-        } => format!("Manager {project} replies"),
-        // ^ A chat's or this project's manager's message is answered once, as a
-        // manager's (docs/tasks.md "Chats").
-        Author::Chat { name, reply } => {
-            let who = match name.as_str() {
-                "manager" => "Manager".to_string(),
-                name => format!("Chat {name}"),
+        // ^ A chat's, this project's manager's or another project's message is answered once
+        // (docs/tasks.md "Chats", "Managers talk").
+        Author::Peer { from, reply } => {
+            let who = match from {
+                Party::Chat(name) if name == "manager" => "Manager".to_string(),
+                Party::Chat(name) => format!("Chat {name}"),
+                Party::Project(project) => format!("Manager {project}"),
             };
             match reply {
                 true => format!("{who} replies"),
@@ -523,7 +494,7 @@ impl Manager {
                     self.on_agent(line)
                 }
                 Event::Agent(..) => {}
-                // ^ A role hears only what the manager host sends it.
+                // ^ A chat's host has no project duties: it hears what is said to it.
                 Event::Tick
                     if self
                         .stand_in
@@ -532,7 +503,7 @@ impl Manager {
                 {
                     self.stand_in_done(None)
                 }
-                Event::Tick if self.dir.role.is_some() => self.leave_when_done(),
+                Event::Tick if self.duties.is_none() => self.leave_when_done(),
                 Event::Tick => {
                     self.fire_checkin();
                     self.watch_tasks();
@@ -556,7 +527,7 @@ impl Manager {
                 }
                 Event::Sent { to, text, reply } => self.log(ManagerEvent::Sent { to, text, reply }),
                 Event::Undelivered { to, lines } => {
-                    self.pending_events.push(plain_event(to.refusal()));
+                    self.pending_events.push(plain_event(refusal(&to)));
                     self.pending_events.extend(lines);
                     self.last_event = Some(Instant::now());
                 }
@@ -743,34 +714,42 @@ impl Manager {
                 }
             }
         }
+        if self.duties.is_some() {
+            self.restore_seen();
+        }
+        Ok(())
+    }
+
+    /// The duties start from what the saved state has seen; a first start takes what already
+    /// happened as the baseline, not news.
+    fn restore_seen(&mut self) {
         match self.state.seen.clone() {
             Some(seen) => {
-                self.observed = seen;
-                self.observed_decisions = self.state.decisions_seen;
-                self.observed_stalls = self.state.stalls.clone();
-                self.observed_deploys_ms = self
+                self.duty().observed = seen;
+                self.duty().observed_decisions = self.state.decisions_seen;
+                self.duty().observed_stalls = self.state.stalls.clone();
+                self.duty().observed_deploys_ms = self
                     .state
                     .deploys_seen_ms
                     .unwrap_or_else(|| self.newest_deploy_ms());
-                self.observed_routines = self
+                self.duty().observed_routines = self
                     .state
                     .routines_seen
                     .unwrap_or_else(|| self.newest_routine_run());
             }
             None => {
                 // ^ First start: what already happened is the baseline, not news.
-                self.observed = self.current_tasks().into_iter().collect();
-                self.observed_decisions = self.approval_lines().len() as u64;
-                self.observed_deploys_ms = self.newest_deploy_ms();
-                self.observed_routines = self.newest_routine_run();
-                self.state.seen = Some(self.observed.clone());
-                self.state.decisions_seen = self.observed_decisions;
-                self.state.deploys_seen_ms = Some(self.observed_deploys_ms);
-                self.state.routines_seen = Some(self.observed_routines);
+                self.duty().observed = self.current_tasks().into_iter().collect();
+                self.duty().observed_decisions = self.approval_lines().len() as u64;
+                self.duty().observed_deploys_ms = self.newest_deploy_ms();
+                self.duty().observed_routines = self.newest_routine_run();
+                self.state.seen = Some(self.duty().observed.clone());
+                self.state.decisions_seen = self.duty().observed_decisions;
+                self.state.deploys_seen_ms = Some(self.duty().observed_deploys_ms);
+                self.state.routines_seen = Some(self.duty().observed_routines);
                 self.save();
             }
         }
-        Ok(())
     }
 
     fn current_tasks(&self) -> Vec<(u32, Seen)> {
@@ -848,10 +827,14 @@ impl Manager {
         {
             self.run_waiting(id);
         }
+        let open = chats::open_names(&self.dir.project_id);
         let decisions: Vec<usize> = (0..lines.len())
             .filter(|at| matches!(lines[*at], ApprovalLine::Decision { .. }))
             .collect();
-        for at in decisions.iter().skip(self.observed_decisions as usize) {
+        for at in decisions
+            .iter()
+            .skip(self.duty().observed_decisions as usize)
+        {
             let ApprovalLine::Decision {
                 id,
                 approved,
@@ -892,7 +875,12 @@ impl Manager {
                     format!("Denied {asked}"),
                 ),
             };
-            self.pending_events.push((
+            // ^ The chat whose agent asked hears the decision (`chats::owner`).
+            let asker = match request {
+                Some(ApprovalLine::Request { chat, .. }) => chats::owner(chat.as_deref(), &open),
+                _ => None,
+            };
+            let line = (
                 format!(
                     "approval {id} ({asked}) {}",
                     clip(&verdict, EVENT_SUMMARY_CHARS * 2)
@@ -902,10 +890,18 @@ impl Manager {
                     task: None,
                     wakes: true,
                 },
-            ));
+            );
+            match asker {
+                Some(chat) => self
+                    .chat_events
+                    .entry(Party::Chat(chat.to_string()))
+                    .or_default()
+                    .push(line),
+                None => self.pending_events.push(line),
+            }
             self.last_event = Some(Instant::now());
         }
-        self.observed_decisions = decisions.len() as u64;
+        self.duty().observed_decisions = decisions.len() as u64;
     }
 
     /// Run the waiting request `id` off the loop (a land or a release takes a while), once at a
@@ -964,10 +960,10 @@ impl Manager {
             return;
         };
         for record in &records {
-            if record.unix_ms <= self.observed_deploys_ms {
+            if record.unix_ms <= self.duty().observed_deploys_ms {
                 continue;
             }
-            self.observed_deploys_ms = record.unix_ms;
+            self.duty().observed_deploys_ms = record.unix_ms;
             // ^ Deploys and releases run detached for minutes: a success is news too, or a
             // manager that waits for one never hears that it may go on.
             let outcome = match record.exit == Some(0) {
@@ -988,11 +984,12 @@ impl Manager {
                 );
                 let (line, short) = plain_event(line);
                 // ^ An automatic deploy that worked is no news; a release that worked is.
-                let short =
-                    match self.deploy_auto && record.kind == wsx_core::task::DeployKind::Deploy {
-                        true => short.quiet(),
-                        false => short,
-                    };
+                let short = match self.duty().deploy_auto
+                    && record.kind == wsx_core::task::DeployKind::Deploy
+                {
+                    true => short.quiet(),
+                    false => short,
+                };
                 self.pending_events.push((line, short));
                 self.last_event = Some(Instant::now());
                 continue;
@@ -1046,7 +1043,7 @@ impl Manager {
             .into_iter()
             .filter(|run| {
                 run.finished_epoch
-                    .is_some_and(|end| end > self.observed_routines && end < settled)
+                    .is_some_and(|end| end > self.duty().observed_routines && end < settled)
             })
             .collect();
         runs.sort_by_key(|run| run.finished_epoch);
@@ -1061,7 +1058,7 @@ impl Manager {
                 .collect(),
         };
         for run in runs {
-            self.observed_routines = run.finished_epoch.unwrap_or_default();
+            self.duty().observed_routines = run.finished_epoch.unwrap_or_default();
             if run.status == RunStatus::Succeeded && stdout_empty(&run) {
                 continue;
             }
@@ -1081,12 +1078,13 @@ impl Manager {
     fn watch_sessions(&mut self) {
         if self.turn.is_some()
             || self
+                .duty()
                 .sessions_looked
                 .is_some_and(|at| at.elapsed() < SESSION_LOOK)
         {
             return;
         }
-        self.sessions_looked = Some(Instant::now());
+        self.duty().sessions_looked = Some(Instant::now());
         // ^ No wsxd, no change: a sleeping daemon must not read as every session gone.
         let Ok(snapshot) = existing_daemon_snapshot() else {
             return;
@@ -1106,12 +1104,13 @@ impl Manager {
     /// over it the oldest decided items' files go. ref: docs/tasks.md "To check"
     fn sweep_captures(&mut self) {
         if self
+            .duty()
             .captures_swept
             .is_some_and(|at| at.elapsed() < CAPTURE_SWEEP)
         {
             return;
         }
-        self.captures_swept = Some(Instant::now());
+        self.duty().captures_swept = Some(Instant::now());
         // ^ A config that does not parse names no budget, so nothing is removed.
         let Ok(settings) = load_task_config(&self.main) else {
             return;
@@ -1131,16 +1130,21 @@ impl Manager {
     /// that outlived a closed task's working copy, also when the prune rules are off.
     /// ref: docs/tasks.md "Stale worktrees"
     fn prune_stale(&mut self) {
-        if self.pruning || self.pruned.is_some_and(|at| at.elapsed() < prune_sweep()) {
+        if self.duty().pruning
+            || self
+                .duty()
+                .pruned
+                .is_some_and(|at| at.elapsed() < prune_sweep())
+        {
             return;
         }
-        self.pruned = Some(Instant::now());
+        self.duty().pruned = Some(Instant::now());
         let Ok(settings) = load_task_config(&self.main) else {
             return;
         };
         let rules = stale::rules(&settings);
         let copies = stale::open_copies(&self.dir.project_id);
-        self.pruning = true;
+        self.duty().pruning = true;
         let (main, project_id, events) = (
             self.main.clone(),
             self.dir.project_id.clone(),
@@ -1164,7 +1168,7 @@ impl Manager {
 
     /// What a sweep did goes to the chat as events that start no turn, listed with the next one.
     fn pruned_done(&mut self, result: Result<Vec<stale::Note>, String>) {
-        self.pruning = false;
+        self.duty().pruning = false;
         let notes = match result {
             Ok(notes) => notes,
             Err(error) => return self.say(&format!("cannot sweep stale worktrees: {error}")),
@@ -1175,14 +1179,14 @@ impl Manager {
             .map(|note| (note.path.clone(), note.text.clone()))
             .collect();
         for note in notes {
-            if note.flag && self.flagged.get(&note.path) == Some(&note.text) {
+            if note.flag && self.duty().flagged.get(&note.path) == Some(&note.text) {
                 continue;
             }
             let (line, short) = plain_event(format!("pruned: {}", note.text));
             self.pending_events.push((line, short.quiet()));
             self.last_event = Some(Instant::now());
         }
-        self.flagged = left;
+        self.duty().flagged = left;
     }
 
     /// Turn task state changes into event lines.
@@ -1193,7 +1197,7 @@ impl Manager {
         let Ok(tasks) = project_tasks(&self.dir.project_id) else {
             return;
         };
-        let open_chats = self.open_chat_names();
+        let open_chats = chats::open_names(&self.dir.project_id);
         // ^ A child's land waits for its parent at rest: the parent's event names them.
         // ref: docs/tasks.md "Parent tasks"
         let ready_children: Vec<(u32, u32)> = tasks
@@ -1205,10 +1209,10 @@ impl Manager {
         for (dir, record) in tasks {
             let Ok(record) = record else { continue };
             let now = Seen::of(&record);
-            if self.observed.get(&record.id) == Some(&now) {
+            if self.duty().observed.get(&record.id) == Some(&now) {
                 continue;
             }
-            self.observed.insert(record.id, now);
+            self.duty().observed.insert(record.id, now);
             if !view::is_event(&record) {
                 continue;
             }
@@ -1370,23 +1374,17 @@ impl Manager {
 
     /// Add a finished task's memo to the manager's notes: a record (a landed task's fact holds
     /// its landed commit and the paths of its diff), then `notes/context.md` from the records.
-    /// A chat's notes stay files. ref: docs/tasks.md "Memo", docs/memory.md "Capture"
+    /// ref: docs/tasks.md "Memo", docs/memory.md "Capture"
     fn fold_memo(&self, record: &TaskRecord, dir: &wsx_core::task::store::TaskDir, memo: &str) {
         let task = record.id;
         let landed = wsx_core::memory::manage::landed_commit(dir, record);
         let landed = landed
             .as_deref()
             .map(|commit| (commit, record.paths.as_slice()));
-        let Ok(notes) = self.dir.notes() else {
-            return;
-        };
-        let done = match self.dir.role {
-            Some(_) => notes::fold_memo(&notes, task, memo),
-            None => self
-                .memory_store()
-                .and_then(|store| notes::record_memo(&store, None, task, memo, landed))
-                .map(|drift| self.say_drift(&drift)),
-        };
+        let done = self
+            .memory_store()
+            .and_then(|store| notes::record_memo(&store, None, task, memo, landed))
+            .map(|drift| self.say_drift(&drift));
         // ^ The manager that ran the task from another project keeps the fact too, in its own
         // scope. ref: docs/memory.md "Capture"
         let done = done.and_then(|()| match record.created_by.origin() {
@@ -1420,13 +1418,6 @@ impl Manager {
         }
     }
 
-    fn open_chat_names(&self) -> Vec<String> {
-        chats::open_chats(&self.dir.project_id)
-            .iter()
-            .map(|dir| dir.name().to_string())
-            .collect()
-    }
-
     /// Queue a task's event line. Only a task's creator hears of it: an open chat, the manager
     /// of the project that created it, else this manager. The other project's manager hears
     /// the task as `<this project> #<n>`, with no chip, which would link into its own tasks.
@@ -1443,19 +1434,19 @@ impl Manager {
             .chat()
             .filter(|chat| open_chats.iter().any(|open| open == chat));
         let to = match (chat, record.created_by.origin()) {
-            (Some(chat), _) => Some(Hearer::Chat(chat.to_string())),
-            (None, Some(origin)) => Some(Hearer::Project(origin.to_string())),
+            (Some(chat), _) => Some(Party::Chat(chat.to_string())),
+            (None, Some(origin)) => Some(Party::Project(origin.to_string())),
             (None, None) => None,
         };
         match to {
             Some(to) => {
                 let line = match &to {
-                    Hearer::Project(_) => {
+                    Party::Project(_) => {
                         short.text = format!("{} {}", self.project, short.text);
                         short.task = None;
                         format!("{} {line}", self.project)
                     }
-                    Hearer::Chat(_) => line,
+                    Party::Chat(_) => line,
                 };
                 self.chat_events.entry(to).or_default().push((line, short));
             }
@@ -1468,16 +1459,17 @@ impl Manager {
     /// `stall::GRACE`. ref: docs/tasks.md "Manager" (Stalls)
     fn watch_stalls(&mut self) {
         if self
+            .duty()
             .stalls_swept
             .is_some_and(|at| at.elapsed() < stall::SWEEP)
         {
             return;
         }
-        self.stalls_swept = Some(Instant::now());
+        self.duty().stalls_swept = Some(Instant::now());
         let Ok(tasks) = project_tasks(&self.dir.project_id) else {
             return;
         };
-        let open_chats = self.open_chat_names();
+        let open_chats = chats::open_names(&self.dir.project_id);
         let now = now_unix_ms();
         let mut open = Vec::new();
         let mut suspects = BTreeMap::new();
@@ -1501,13 +1493,13 @@ impl Manager {
             let Some(found) = stall::find(&dir, &record, now) else {
                 continue;
             };
-            let since = match self.stall_suspects.get(&record.id) {
+            let since = match self.duty().stall_suspects.get(&record.id) {
                 Some((marker, since)) if *marker == found.marker => *since,
                 _ => Instant::now(),
             };
             suspects.insert(record.id, (found.marker.clone(), since));
             if since.elapsed() < stall::grace()
-                || self.observed_stalls.get(&record.id) == Some(&found.marker)
+                || self.duty().observed_stalls.get(&record.id) == Some(&found.marker)
             {
                 continue;
             }
@@ -1519,7 +1511,7 @@ impl Manager {
                 clip(&title, EVENT_TITLE_CHARS),
                 found.words
             );
-            self.observed_stalls.insert(record.id, found.marker);
+            self.duty().observed_stalls.insert(record.id, found.marker);
             self.task_event(
                 &record,
                 &open_chats,
@@ -1527,9 +1519,11 @@ impl Manager {
                 Short::task(record.id, "stalled"),
             );
         }
-        self.stall_suspects = suspects;
+        self.duty().stall_suspects = suspects;
         // ^ Saved with the next event's `seen`.
-        self.observed_stalls.retain(|id, _| open.contains(id));
+        self.duty()
+            .observed_stalls
+            .retain(|id, _| open.contains(id));
     }
 
     /// End the wait of `wsx task after` when its task `state` is landed (the task gets the
@@ -1619,7 +1613,7 @@ impl Manager {
                     .join("\n");
                 let short = lines.iter().map(|(_, short)| short.clone()).collect();
                 let sent = match &to {
-                    Hearer::Chat(chat) => owner::say(
+                    Party::Chat(chat) => owner::say(
                         &project,
                         &main,
                         &exe,
@@ -1629,7 +1623,7 @@ impl Manager {
                         Some(Author::Events),
                         short,
                     ),
-                    Hearer::Project(origin) => {
+                    Party::Project(origin) => {
                         super::project_entry(Some(origin)).and_then(|(name, origin_main)| {
                             owner::say(
                                 &name,
@@ -1685,11 +1679,14 @@ impl Manager {
     }
 
     fn save_seen(&mut self) {
-        self.state.seen = Some(self.observed.clone());
-        self.state.decisions_seen = self.observed_decisions;
-        self.state.deploys_seen_ms = Some(self.observed_deploys_ms);
-        self.state.routines_seen = Some(self.observed_routines);
-        self.state.stalls = self.observed_stalls.clone();
+        if self.duties.is_none() {
+            return;
+        }
+        self.state.seen = Some(self.duty().observed.clone());
+        self.state.decisions_seen = self.duty().observed_decisions;
+        self.state.deploys_seen_ms = Some(self.duty().observed_deploys_ms);
+        self.state.routines_seen = Some(self.duty().observed_routines);
+        self.state.stalls = self.duty().observed_stalls.clone();
         self.save();
     }
 
@@ -1708,10 +1705,7 @@ impl Manager {
         // message's id, so it is taken first. ref: `checks::item_reply`
         let mut reserved = None;
         let mut check = None;
-        if from == Author::Owner
-            && self.dir.role.is_none()
-            && text.trim_start().starts_with(checks::QUOTE_REF)
-        {
+        if from == Author::Owner && text.trim_start().starts_with(checks::QUOTE_REF) {
             let message = self.next_id();
             reserved = Some(message);
             match checks::item_reply(&self.dir.project_id, &text, message) {
@@ -1749,8 +1743,8 @@ impl Manager {
             check,
         })?;
         self.last_activity = Instant::now();
-        self.overview_asked &= from != Author::Owner;
-        self.drift_said &= from != Author::Owner;
+        self.duty().overview_asked &= from != Author::Owner;
+        self.duty().drift_said &= from != Author::Owner;
         self.thought_asked &= from != Author::Owner;
         // ^ The owner may have just signed in again: a sign-in hold tries at once.
         if from == Author::Owner {
@@ -1809,7 +1803,7 @@ impl Manager {
     /// and ask the manager for a recap when something changed since the last one, with the
     /// token cost since. A quiet project gets one recap. ref: docs/tasks.md "Recap"
     fn ask_recap(&mut self) {
-        let due = self.recap_quiet.is_some_and(|quiet| {
+        let due = self.duty().recap_quiet.is_some_and(|quiet| {
             self.turn.is_none()
                 && !self.work_waiting()
                 && self.pending_events.is_empty()
@@ -1947,7 +1941,7 @@ impl Manager {
     fn enqueue(&mut self, id: u64, from: Author, text: String, wakes: bool) {
         let rank = |author: &Author| match author {
             Author::Owner => 0,
-            Author::Manager { .. } | Author::Chat { .. } => 1,
+            Author::Peer { .. } => 1,
             Author::Events => 2,
             Author::Recap => 3,
         };
@@ -1961,15 +1955,15 @@ impl Manager {
 
     /// A message of a manager or a chat is answered once (docs/tasks.md "Chats").
     fn owe(&self, author: &Author) {
-        let who = match author {
-            Author::Manager {
-                project,
-                reply: false,
-            } => project.clone(),
-            Author::Chat { name, reply: false } => format!("chat:{name}"),
-            _ => return,
+        let Author::Peer { from, reply: false } = author else {
+            return;
         };
-        *self.owed.lock().expect("owed lock").entry(who).or_default() += 1;
+        *self
+            .owed
+            .lock()
+            .expect("owed lock")
+            .entry(from.key())
+            .or_default() += 1;
     }
 
     fn next_id(&mut self) -> u64 {
@@ -2005,7 +1999,9 @@ impl Manager {
                 });
                 self.save();
             }
-            self.stand_in();
+            if self.duties.is_some() {
+                self.stand_in();
+            }
             return true;
         }
         false
@@ -2118,12 +2114,7 @@ impl Manager {
             && if ids.is_empty() {
                 held.is_some()
             } else {
-                matches!(
-                    first,
-                    Author::Events
-                        | Author::Manager { reply: true, .. }
-                        | Author::Chat { reply: true, .. }
-                )
+                matches!(first, Author::Events | Author::Peer { reply: true, .. })
             };
         match &held {
             // ^ A wait no turn met: no message waits for an answer.
@@ -2683,8 +2674,7 @@ impl Manager {
     fn ping(&mut self) {
         let now = now_unix_ms();
         let idle = now.saturating_sub(self.state.last_reply_ms);
-        if self.dir.role.is_some()
-            || self.turn.is_some()
+        if self.turn.is_some()
             || self.agent.is_none()
             || self.stand_in.is_some()
             || self.state.agent.is_some()
@@ -2871,8 +2861,7 @@ impl Manager {
         .into_iter()
         .chain(account_env(root.clone()))
         .collect();
-        let role = policy::Role::of_actor(&self.actor()).unwrap_or(policy::Role::Manager);
-        let policy = agent::policy(role, adapter, model, &env);
+        let policy = agent::policy(policy::Role::Manager, adapter, model, &env);
         let boundary = Boundary::manager(&self.main, &self.dir.path, &overview, policy)?
             .adapter(adapter, root.as_deref())
             .reach(adapter, model, &env)
@@ -3161,7 +3150,7 @@ impl Manager {
     /// gets one follow-up turn, and no second one until the owner writes again.
     /// ref: docs/tasks.md "Project overview"
     fn check_overview(&mut self) {
-        if self.dir.role.is_some() {
+        if self.duties.is_none() {
             return;
         }
         let Ok(Some((text, _))) = store::read_overview(&self.dir.project_id) else {
@@ -3170,9 +3159,9 @@ impl Manager {
         let (lines, chars) = store::overview_size(&text);
         let over = lines > store::MAX_OVERVIEW_LINES || chars > store::MAX_OVERVIEW_CHARS;
         if !over {
-            self.overview_asked = false;
-        } else if !self.overview_asked {
-            self.overview_asked = true;
+            self.duty().overview_asked = false;
+        } else if !self.duty().overview_asked {
+            self.duty().overview_asked = true;
             if let Err(error) =
                 self.accept(Author::Recap, overview_too_long(lines, chars), Vec::new())
             {
@@ -3185,7 +3174,7 @@ impl Manager {
     /// the next write of a record keeps the edited file as `<file>.drift` and renders again.
     /// ref: docs/tasks.md "Notes budget"
     fn check_views(&mut self) {
-        if self.dir.role.is_some() {
+        if self.duties.is_none() {
             return;
         }
         let drift = self
@@ -3194,9 +3183,9 @@ impl Manager {
             .and_then(|store| wsx_core::memory::manage::drift(&store).ok())
             .unwrap_or_default();
         if drift.is_empty() {
-            self.drift_said = false;
-        } else if !self.drift_said {
-            self.drift_said = true;
+            self.duty().drift_said = false;
+        } else if !self.duty().drift_said {
+            self.duty().drift_said = true;
             for d in &drift {
                 self.say(&d.notice(false));
             }
@@ -3301,6 +3290,13 @@ impl Manager {
         if let Err(error) = self.dir.append(event) {
             self.say(&format!("cannot append to the manager log: {error:#}"));
         }
+    }
+
+    /// The project duties; called only by what the first chat's host runs.
+    fn duty(&mut self) -> &mut Duties {
+        self.duties
+            .as_mut()
+            .expect("a duty runs in the first chat's host")
     }
 
     fn say(&self, text: &str) {

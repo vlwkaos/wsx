@@ -1,6 +1,6 @@
 //! The owner's approvals: a request, `approve` and `deny` (docs/tasks.md "Approvals").
 
-use crate::task::{acting_as_manager, print_json, project_entry};
+use crate::task::{acting_as_manager, actor, print_json, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use std::path::Path;
@@ -33,6 +33,7 @@ pub(crate) fn request_of(
         url: None,
         after: None,
         said: None,
+        chat: actor().chat().map(str::to_string),
         unix_ms: now_unix_ms(),
     }
 }

@@ -2,6 +2,7 @@
 //! chat, which only render them. ref: docs/tasks.md "Manager", docs/web-client-tasks.md
 //! "Project screen"
 
+use super::checks::CheckItem;
 use super::manager::{
     quote_of, says_nothing, split_quote, ApprovalLine, Author, Level, ManagerEntry, ManagerEvent,
     Short,
@@ -549,13 +550,15 @@ impl ChatRow {
 /// A chat read for a viewer: the page and the approvals that go with it.
 pub struct Reading {
     pub page: Page,
-    /// The pending and waiting approvals of the project's first chat; none in another chat.
+    /// The approvals this chat shows: its own requests (`chats::owner`) and their decisions.
     pub approvals: Vec<ApprovalLine>,
+    /// The open To check items of the tasks this chat owns.
+    pub items: Vec<CheckItem>,
 }
 
 /// The one read of a chat for the web, the TUI and `wsx task chat`: the names the viewer sees
 /// (the manager's shown name, the chat's own, another project's by `peer`), the approvals of
-/// the first chat only, and the page at `window`. No folder yet is an empty chat. `edit` is
+/// the chat that owns them, and the page at `window`. No folder yet is an empty chat. `edit` is
 /// `page`'s.
 pub fn read_for(
     dir: Option<&ManagerDir>,
@@ -573,10 +576,11 @@ pub fn read_for(
         manager: &manager,
         peer,
     };
-    let approvals = match chat {
-        Some(_) => Vec::new(),
-        None => super::store::read_approvals(store_id)?,
-    };
+    let open = super::chats::open_names(store_id);
+    let approvals =
+        super::chats::approvals_of(super::store::read_approvals(store_id)?, chat, &open);
+    let items =
+        super::chats::checks_of(store_id, super::checks::open_items(store_id)?, chat, &open);
     let page = match dir {
         Some(dir) => page(
             dir,
@@ -588,7 +592,11 @@ pub fn read_for(
         )?,
         None => Page::default(),
     };
-    Ok(Reading { page, approvals })
+    Ok(Reading {
+        page,
+        approvals,
+        items,
+    })
 }
 
 /// A chat window read once: what the web, the TUI and `wsx task chat` all need.
@@ -789,8 +797,7 @@ fn message_row(entry: &ManagerEntry, from: &Author, text: &str, names: &Names) -
                 text,
             ))
         }
-        Author::Manager { project, reply } => (project.clone(), reply),
-        Author::Chat { name, reply } => (format!("chat:{name}"), reply),
+        Author::Peer { from, reply } => (from.key(), reply),
         Author::Events | Author::Recap => return None,
     };
     Some(ChatRow {
