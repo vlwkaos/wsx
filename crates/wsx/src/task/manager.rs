@@ -39,6 +39,7 @@ use wsx_core::task::manager::{
 use wsx_core::task::policy;
 use wsx_core::task::session_news;
 use wsx_core::task::stall;
+use wsx_core::task::status;
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
@@ -1751,10 +1752,6 @@ impl Manager {
                 hold.until_ms = hold.until_ms.min(now_unix_ms());
                 self.save();
             }
-            // ^ The owner may have used a reset: ask now whether the usage limit has lifted.
-            if self.state.limit.as_ref().is_some_and(|hold| hold.account) {
-                claude::probe_limit(true);
-            }
         }
         self.enqueue(id, from, text, wakes);
         Ok(id)
@@ -1982,7 +1979,7 @@ impl Manager {
         let now = now_unix_ms();
         let account = self.current_account();
         if account == "claude" {
-            claude::probe_limit(false);
+            claude::probe_limit();
         }
         // ^ A usage-limit hold follows the account's record: a reset the owner used, or one
         // a probe or another agent's call saw, ends it before the provider's reset time.
@@ -2008,7 +2005,7 @@ impl Manager {
         if let Some(until_ms) = waits_until {
             if self.state.limit.is_none() && self.work_waiting() {
                 self.log(ManagerEvent::Limit {
-                    until: Some(limit::resume_time(until_ms, now)),
+                    until: Some(status::resume_time(until_ms, now)),
                 });
                 self.state.limit = Some(LimitHold {
                     until_ms,
@@ -2288,7 +2285,7 @@ impl Manager {
             "switched to {}: {} usage limit until {}",
             next.name,
             self.current_adapter(),
-            limit::resume_time(until_ms, now)
+            status::resume_time(until_ms, now)
         );
         self.move_to(next, reason, ids, events, false);
         true
@@ -2446,7 +2443,7 @@ impl Manager {
             }
             Err(error) => {
                 self.say(&format!("cannot start {}: {error:#}", agent.name));
-                let _ = store::mark_limited(&account, now + STAND_IN_RETRY_MS, now, false);
+                let _ = store::mark_limited(&account, now + STAND_IN_RETRY_MS, now, false, None);
             }
         }
     }
@@ -2495,7 +2492,7 @@ impl Manager {
             None => {
                 self.say(&format!("{name} could not stand in"));
                 let account = agent::account(&stand_in.adapter, &stand_in.model);
-                let _ = store::mark_limited(&account, now + STAND_IN_RETRY_MS, now, false);
+                let _ = store::mark_limited(&account, now + STAND_IN_RETRY_MS, now, false, None);
             }
         }
     }
@@ -2984,8 +2981,7 @@ impl Manager {
         // ref: docs/tasks.md "Manager"
         if let Some(reached) = &result.limit {
             let attempt = self.state.limit.as_ref().map_or(0, |hold| hold.attempt) + 1;
-            let (until_ms, problem) =
-                agent::record_limit(&adapter, &model, reached.resets_at, attempt, now);
+            let (until_ms, problem) = agent::record_limit(&adapter, &model, reached, attempt, now);
             if let Some(message) = problem {
                 self.say(&message);
             }
@@ -2994,9 +2990,14 @@ impl Manager {
                 self.report(runtime::AgentState::Idle);
                 return;
             }
-            self.say(&limit::reason(&adapter, until_ms, now));
+            self.say(&status::limit_reason(
+                &adapter,
+                reached.window.as_deref(),
+                until_ms,
+                now,
+            ));
             self.log(ManagerEvent::Limit {
-                until: Some(limit::resume_time(until_ms, now)),
+                until: Some(status::resume_time(until_ms, now)),
             });
             self.state.limit = Some(LimitHold {
                 until_ms,
@@ -3058,7 +3059,7 @@ impl Manager {
                 // a `limit` without a time reads as a resume.
                 if !auth {
                     self.log(ManagerEvent::Limit {
-                        until: Some(limit::resume_time(until_ms, now)),
+                        until: Some(status::resume_time(until_ms, now)),
                     });
                 }
             }

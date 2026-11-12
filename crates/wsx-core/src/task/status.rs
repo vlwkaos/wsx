@@ -380,12 +380,14 @@ fn waiting_on(
             "It goes on by itself once there is space.",
             now_ms,
         ),
+        // ^ No elapsed time: it reads as the time left. The reason names the window and the
+        // reset the account's record holds, which the provider confirmed.
         WaitOn::Limit => words(
             "limit",
             "Waiting for the usage limit",
-            Some(entered),
+            None,
             &queue_words(record, &waiting.reason, "goes on first"),
-            "It goes on by itself then, one task at a time.",
+            "It goes on by itself when the account answers again, one task at a time.",
             now_ms,
         ),
         WaitOn::CheckSlot => slot(dir, record, &waiting.reason, entered, now_ms),
@@ -671,6 +673,43 @@ pub(crate) fn task_label(holder: &str) -> Option<(&str, u32)> {
     let (project, id) = holder.rsplit_once(" t")?;
     Some((project, id.parse().ok()?))
 }
+
+/// "Claude 5-hour limit, resets 03:20": the account's limit as the provider reported it.
+/// Without a window the reset is wsx's own backoff: "Claude usage limit, tries again at 03:20".
+pub fn limit_reason(adapter: &str, window: Option<&str>, until_ms: u64, now_ms: u64) -> String {
+    let mut name = adapter.to_string();
+    name[..1].make_ascii_uppercase();
+    let time = resume_time(until_ms, now_ms);
+    match window {
+        Some("five_hour") => format!("{name} 5-hour limit, resets {time}"),
+        Some("seven_day") => format!("{name} 7-day limit, resets {time}"),
+        Some(window) => format!("{name} {} limit, resets {time}", window.replace('_', " ")),
+        None => format!("{name} usage limit, tries again at {time}"),
+    }
+}
+
+/// The time of day (and the date when it is not within a day) a wait ends.
+pub fn resume_time(until_ms: u64, now_ms: u64) -> String {
+    crate::routine::local::local_tm((until_ms / 1000) as i64).map_or_else(
+        || {
+            format!(
+                "in {} min",
+                until_ms.saturating_sub(now_ms).div_ceil(60_000)
+            )
+        },
+        |tm| {
+            let clock = format!("{:02}:{:02}", tm.tm_hour, tm.tm_min);
+            match until_ms.saturating_sub(now_ms) < 20 * 3_600_000 {
+                true => clock,
+                false => format!("{} {} {clock}", MONTHS[tm.tm_mon as usize % 12], tm.tm_mday),
+            }
+        },
+    )
+}
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 /// "45 min", "3 h 10 min", "2 d 4 h".
 pub(crate) fn span(ms: u64) -> String {

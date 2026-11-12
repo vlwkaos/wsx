@@ -226,9 +226,15 @@ def emit(value):
         now = int(time.time())
         windows = {'five_hour': {'utilization': 0.25, 'resetsAt': now + 5 * 3600, 'status': 'allowed'},
                    'seven_day': {'utilization': 0.47, 'resetsAt': now + 3 * 86400, 'status': 'allowed'}}
-        sys.stdout.write(json.dumps(shaped({'type': 'rate_limit_event', 'rate_limit_info': {
-            'status': 'allowed', 'resetsAt': now + 5 * 3600, 'rateLimitType': 'five_hour', 'overageStatus': 'rejected',
-            'overageDisabledReason': 'org_level_disabled', 'isUsingOverage': False, 'unifiedWindows': windows}})) + '\n')
+        info = {'status': 'allowed', 'resetsAt': now + 5 * 3600, 'rateLimitType': 'five_hour', 'overageStatus': 'rejected',
+                'overageDisabledReason': 'org_level_disabled', 'isUsingOverage': False, 'unifiedWindows': windows}
+        if os.path.exists(TRACE + '.warn'):
+            # ^ The test's mark: the 7-day window is near its end, as on the real account (not a refusal).
+            windows['seven_day'] = {'utilization': 0.8, 'resetsAt': now + 3 * 86400, 'status': 'allowed_warning',
+                                    'surpassedThreshold': 0.75}
+            info.update({'status': 'allowed_warning', 'rateLimitType': 'seven_day', 'resetsAt': now + 3 * 86400,
+                         'surpassedThreshold': 0.75})
+        sys.stdout.write(json.dumps(shaped({'type': 'rate_limit_event', 'rate_limit_info': info})) + '\n')
     sys.stdout.write(json.dumps(shaped(value)) + '\n')
     sys.stdout.flush()
 
@@ -819,7 +825,7 @@ def usage_limit(session, seconds):
     """Claude's usage limit: a rejected rate_limit_event, the synthetic API error, its result."""
     resets = int(time.time()) + seconds
     info = {'status': 'rejected', 'resetsAt': resets, 'rateLimitType': 'five_hour', 'isUsingOverage': False}
-    words = "You've hit your session limit \u00b7 resets 12:10am (Asia/Seoul)"
+    words = "You've hit your 5-hour limit \u00b7 resets 12:10am (Asia/Seoul)"
     emit({'type': 'rate_limit_event', 'rate_limit_info': info, 'session_id': session})
     emit({'type': 'assistant', 'parent_tool_use_id': None, 'session_id': session, 'error': 'rate_limit',
           'api_error': 'usage_limit_reached', 'api_error_status': 429, 'api_error_params': {'rate_limit_info': info},

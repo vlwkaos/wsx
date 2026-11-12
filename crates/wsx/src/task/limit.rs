@@ -23,15 +23,6 @@ pub fn known_reset(resets_at: Option<u64>, now_ms: u64) -> Option<u64> {
         .filter(|at| *at > now_ms && *at <= now_ms + MAX_AHEAD_MS)
 }
 
-/// "claude usage limit; resumes at 00:10" for `adapter`, with the date when it is not
-/// within a day.
-pub fn reason(adapter: &str, until_ms: u64, now_ms: u64) -> String {
-    format!(
-        "{adapter} usage limit; resumes at {}",
-        resume_time(until_ms, now_ms)
-    )
-}
-
 /// The words a sign-in wait's reason opens with.
 pub const SIGN_IN_WORDS: &str = "sign-in expired";
 
@@ -39,29 +30,6 @@ pub const SIGN_IN_WORDS: &str = "sign-in expired";
 pub fn sign_in_reason(until_ms: u64, now_ms: u64) -> String {
     format!(
         "{SIGN_IN_WORDS}; tries again at {}",
-        resume_time(until_ms, now_ms)
+        wsx_core::task::status::resume_time(until_ms, now_ms)
     )
 }
-
-/// The time of day (and the date when it is not within a day) the wait ends.
-pub fn resume_time(until_ms: u64, now_ms: u64) -> String {
-    wsx_core::routine::local::local_tm((until_ms / 1000) as i64).map_or_else(
-        || {
-            format!(
-                "in {} min",
-                until_ms.saturating_sub(now_ms).div_ceil(60_000)
-            )
-        },
-        |tm| {
-            let clock = format!("{:02}:{:02}", tm.tm_hour, tm.tm_min);
-            match until_ms.saturating_sub(now_ms) < 20 * 3_600_000 {
-                true => clock,
-                false => format!("{} {} {clock}", MONTHS[tm.tm_mon as usize % 12], tm.tm_mday),
-            }
-        },
-    )
-}
-
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];

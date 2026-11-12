@@ -590,7 +590,7 @@ fn limit_line(limits: &Value, width: usize) -> Option<Line<'static>> {
             let resets = window["resets_ms"].as_u64().unwrap_or(0);
             format!(
                 "{words}, resets {}",
-                crate::task::limit::resume_time(resets, now)
+                wsx_core::task::status::resume_time(resets, now)
             )
         })
         .collect();

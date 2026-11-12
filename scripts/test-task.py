@@ -317,6 +317,9 @@ def run(wsx, wsxd, work, owned, part):
            'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(daemon_socket),
            'WSX_TEST_STALL_GRACE_SECS': str(STALL_GRACE), 'WSX_TEST_ALLOW_FILE_CLONE': '1', 'WSX_TEST_PRUNE_SWEEP_SECS': '3',
            'WSX_TEST_SIGN_IN_RETRY_SECS': str(SIGN_IN_RETRY), 'WSX_TEST_CI_BACKOFF_SECS': '1',
+           # ^ The limit probe's period (30 s) would put probe traces into every long limit; the
+           # limit scenario of part 11 starts a probe by clearing the stamp.
+           'WSX_TEST_LIMIT_PROBE_SECS': '600',
            'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
            'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp),
            # ^ A fixture git command must never reach the repository this script runs in.
@@ -727,40 +730,59 @@ def manager_up(created):
     assert not [e for e in entries() if e['kind'] == 'rotated' and e['unix_ms'] >= failed[0]['unix_ms']], entries()[-20:]
     retries = launches()[first_launch:]
     assert len({t['pid'] for t in retries}) == len(retries) >= 2 and all(t['resume'] for t in retries), retries
-    # ^ A usage limit that lifts before its reset, as when the owner uses one (docs/tasks.md
-    # "Agents"): a probe finds it still on, an owner message probes again, and once a call goes
-    # through the record goes: the held manager and a task that waits 3 hours both go on.
+    # ^ A usage limit the provider lifts before its reset, as when the owner uses a reset
+    # (docs/tasks.md "Agents"): the account's record, confirmed by a probe, decides every wait,
+    # not the reset time a host kept. The held manager and two tasks go on with no message.
     agents_dir = state / 'wsx/tasks/agents'
     limit_record, probe_stamp = agents_dir / 'claude.json', agents_dir / 'claude.probe.json'
-    reset_mark = tmp / 'fake-claude.trace.reset'
+    reset_mark, warn_mark = tmp / 'fake-claude.trace.reset', tmp / 'fake-claude.trace.warn'
     probes = lambda: [t for t in traces() if t.get('limit_probe')]
     # ^ No turn in flight: a call that goes through reports `allowed`, which ends the limit.
     wait(lambda: entries()[-1]['kind'] in ('reply', 'delivered') and time.time() * 1000 - entries()[-1]['unix_ms'] > 5000,
          'a quiet manager', 60)
+    # ^ A warning is an answer that takes calls: no wait and no record, also with the 7-day window near its end.
+    warn_mark.touch()
+    warned = js('task', 'new', 'WORK lw.txt')['id']
+    wait(lambda: kinds(warned, 'result'), 'a turn that reports allowed_warning', 40)
+    assert not kinds(warned, 'limit_wait') and not limit_record.exists(), log(warned)
+    js('task', 'close', warned, '--discard')
+    warn_mark.unlink()
     agents_dir.mkdir(parents=True, exist_ok=True)
-    limit_record.write_text(json.dumps({'until_ms': int((time.time() + 3 * 3600) * 1000)}))
+    now_ms = int(time.time() * 1000)
+    limit_record.write_text(json.dumps({'since_ms': now_ms, 'until_ms': now_ms + 3 * 3600 * 1000,
+                                        'window': 'five_hour', 'model': 'haiku'}))
     held = js('task', 'say', 'STATUS during a long limit')
     wait(lambda: probes(), lambda: 'the limit probe (state %s, agents %s, chat %s)' % (
         (manager_log.parent / 'state.json').read_text()[:600], sorted(p.name for p in agents_dir.iterdir()),
         [(e['kind'], str(e.get('text', e.get('reason', '')))[:80]) for e in entries()[-6:]]))
+    assert probes()[0]['argv'][probes()[0]['argv'].index('--model') + 1] == 'haiku', probes()
     time.sleep(3)
     assert limit_record.exists() and len(probes()) == 1, probes()
     assert not [e for e in chat() if e['kind'] == 'reply' and held['id'] in e['to']], chat()[-3:]
     reset_mark.touch()
-    # ^ An owner message probes at most every 30 s: the first probe was just now.
     probe_stamp.write_text(json.dumps({'unix_ms': 0}))
-    nudge = js('task', 'say', 'STATUS after the reset')
-    replied = reply_to(nudge['id'])
-    assert held['id'] in replied['to'] and not limit_record.exists() and len(probes()) == 2, (replied, probes())
+    replied = reply_to(held['id'], 40)
+    assert not limit_record.exists() and len(probes()) == 2, (replied, probes())
     reset_mark.unlink()
-    waited = js('task', 'new', 'LIMIT 3600 WORK lr.txt')['id']
-    wait(lambda: kinds(waited, 'limit_wait'), 'the task waits on a 3 hour limit')
-    assert json.loads(limit_record.read_text())['until_ms'] > (time.time() + 3000) * 1000, limit_record.read_text()
+    # ^ Two tasks meet a 5-hour limit (a rejected event with its window): the status names the
+    # window and the reset, not an elapsed time, and the record keeps both.
+    waited = [js('task', 'new', 'LIMIT 3600 WORK lr%d.txt' % i)['id'] for i in (1, 2)]
+    for n in waited:
+        wait(lambda: kinds(n, 'limit_wait'), 'the task waits on a 3 hour limit')
+    held_status = wait(lambda: (current := show(waited[0])) and current['status']['kind'] == 'limit' and current)['status']
+    assert re.fullmatch(r'Waiting for the usage limit: Claude 5-hour limit, resets \d\d:\d\d\. It goes on by itself when the account '
+                        r'answers again, one task at a time\.', held_status['sentence']), held_status
+    record = json.loads(limit_record.read_text())
+    assert record['until_ms'] > (time.time() + 3000) * 1000 and record['window'] == 'five_hour' and record['model'], record
+    # ^ The account answers again: the probe clears the record and both go on, with no message.
     reset_mark.touch()
     probe_stamp.write_text(json.dumps({'unix_ms': 0}))
-    wait(lambda: kinds(waited, 'result'), 'the task goes on once the limit lifts', 40)
-    assert kinds(waited, 'limit_wait', 'result') == ['limit_wait', 'result'] and not limit_record.exists(), log(waited)
-    js('task', 'close', waited, '--discard')
+    for n in waited:
+        wait(lambda: kinds(n, 'result'), 'the task goes on once the limit lifts', 60)
+        assert kinds(n, 'limit_wait', 'result') == ['limit_wait', 'result'], log(n)
+        assert not [e for e in log(n) if e['kind'] == 'message' and e.get('mode') != 'prompt'], log(n)
+        js('task', 'close', n, '--discard')
+    assert not limit_record.exists()
     reset_mark.unlink()
     probe_stamp.unlink()
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
@@ -4222,7 +4244,7 @@ def part_worker(created=None):
     first = js('task', 'new', 'LIMIT 4 WORK la.txt')['id']
     limited = lambda n: (current := show(n))['state'] == 'waiting' and current['record'].get('waiting') and current
     waiting = wait(lambda: limited(first), 'limit wait')['record']['waiting']
-    assert waiting['on'] == 'limit' and waiting['reason'].startswith('claude usage limit; resumes at '), waiting
+    assert waiting['on'] == 'limit' and re.fullmatch(r'Claude 5-hour limit, resets \d\d:\d\d', waiting['reason']), waiting
     assert waiting['until_ms'] > time.time() * 1000, waiting
     row = next(r for r in js('task', 'ledger')['open'] if r['id'] == first)
     assert row['waiting']['on'] == 'limit', row

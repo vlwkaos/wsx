@@ -492,6 +492,7 @@ fn refusal(error: &str) -> Option<UsageLimit> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
         return Some(UsageLimit {
             resets_at: Some(now + UNAVAILABLE_SECS),
+            window: None,
         });
     }
     says(&[
@@ -504,7 +505,10 @@ fn refusal(error: &str) -> Option<UsageLimit> {
         "fetch failed",
         "connection error",
     ])
-    .then_some(UsageLimit { resets_at: None })
+    .then_some(UsageLimit {
+        resets_at: None,
+        window: None,
+    })
 }
 
 fn key_argument(input: &Value) -> Option<String> {

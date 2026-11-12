@@ -432,26 +432,48 @@ pub fn rate_limit(account: &str, now_ms: u64) -> Option<serde_json::Value> {
 /// ref: docs/tasks.md "Agents"
 const LIMIT_ROW_GAP_MS: u64 = 15 * 60_000;
 
-/// An account's limit on record: refused since `since_ms`, until `until_ms` (unix ms).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// An account's limit on record: refused since `since_ms`, until `until_ms` (unix ms). A limit
+/// the provider reported also names the `window` it came from (Claude's `rateLimitType`, as
+/// `five_hour`) and the `model` of the turn it refused, which a probe asks with.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountLimit {
     pub since_ms: u64,
     pub until_ms: u64,
+    pub window: Option<String>,
+    pub model: Option<String>,
+}
+
+/// Where a provider reported a limit: its window and the model of the refused turn.
+#[derive(Debug, Clone, Copy)]
+pub struct LimitSource<'a> {
+    pub window: &'a str,
+    pub model: &'a str,
 }
 
 fn read_limit(account: &str) -> Option<AccountLimit> {
     let bytes = read_bounded_if_exists(&account_file(account, ".json").ok()?, 4096).ok()??;
     let record = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
     let until_ms = record["until_ms"].as_u64()?;
+    let text = |name: &str| record[name].as_str().map(str::to_string);
     Some(AccountLimit {
         since_ms: record["since_ms"].as_u64().unwrap_or(until_ms),
         until_ms,
+        window: text("window"),
+        model: text("model"),
     })
 }
 
-/// Record that `account` refuses turns until `until_ms`, as of `now_ms`. A limit that `continues` the last one (a backoff with no reset time, or the same
-/// wait again) keeps its start when it follows within the row gap.
-pub fn mark_limited(account: &str, until_ms: u64, now_ms: u64, continues: bool) -> Result<()> {
+/// Record that `account` refuses turns until `until_ms`, as of `now_ms`, with where the provider
+/// reported it (None for a limit wsx made: a budget, a backoff, a stand-in's retry). A limit that
+/// `continues` the last one (a backoff with no reset time, or the same wait again) keeps its
+/// start when it follows within the row gap.
+pub fn mark_limited(
+    account: &str,
+    until_ms: u64,
+    now_ms: u64,
+    continues: bool,
+    source: Option<LimitSource>,
+) -> Result<()> {
     let path = account_file(account, ".json")?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
@@ -461,12 +483,12 @@ pub fn mark_limited(account: &str, until_ms: u64, now_ms: u64, continues: bool) 
         .flatten()
         .filter(|last| last.until_ms.saturating_add(LIMIT_ROW_GAP_MS) >= now_ms)
         .map_or(now_ms, |last| last.since_ms.min(now_ms));
-    write_atomic(
-        &path,
-        serde_json::json!({ "since_ms": since_ms, "until_ms": until_ms })
-            .to_string()
-            .as_bytes(),
-    )
+    let mut record = serde_json::json!({ "since_ms": since_ms, "until_ms": until_ms });
+    if let Some(source) = source {
+        record["window"] = source.window.into();
+        record["model"] = source.model.into();
+    }
+    write_atomic(&path, record.to_string().as_bytes())
 }
 
 /// `account`'s recorded limit, if it still holds at `now_ms`. An unreadable record counts as

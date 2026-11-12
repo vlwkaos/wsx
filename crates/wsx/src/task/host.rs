@@ -471,7 +471,11 @@ impl Host {
         if let Some((text, trigger)) = self.take_handoff() {
             self.say("restarted with the replaced wsx binary");
             self.carried = true;
-            self.start_turn(&text, trigger);
+            match trigger {
+                // ^ A limit wait handed over, not a turn: the account's record says if it goes on.
+                TurnTrigger::Limit => self.rejoin_limit_wait(&text),
+                trigger => self.start_turn(&text, trigger),
+            }
         } else {
             self.resume_state()?;
         }
@@ -488,6 +492,22 @@ impl Host {
             // ref: docs/tasks.md "Claude adapter"
             if !self.turn_active {
                 self.limit_slot = None;
+            }
+            // ^ A limit wait starts no turn for hours, so a fix to the wait would never reach
+            // this host: it hands the held text to the replaced binary now, which rejoins the
+            // wait. ref: docs/tasks.md "Agents"
+            if !self.reexec && self.must_follow_binary() {
+                if let Some(wait) = &self.limit_wait {
+                    let handoff = format!(
+                        "{HANDOFF_TRIGGER}{}\n{}",
+                        serde_json::to_string(&TurnTrigger::Limit)?,
+                        wait.text
+                    );
+                    self.dir.write_file(HANDOFF_FILE, handoff.as_bytes())?;
+                    self.reexec = true;
+                    self.say("the wsx binary was replaced: the host restarts with it");
+                    continue;
+                }
             }
             if self
                 .disk_slot
@@ -822,34 +842,9 @@ impl Host {
                 });
                 self.wait(WaitOn::Owner, reason);
             }
-            // ^ A limit wait outlives its host: the restarted one continues at the same time.
+            // ^ A limit wait outlives its host: the restarted one asks the account's record.
             TaskState::Waiting if self.record.waits_on(WaitOn::Limit) => {
-                let until_ms = self
-                    .record
-                    .waiting
-                    .as_ref()
-                    .and_then(|w| w.until_ms)
-                    .unwrap_or_default();
-                // ^ A long wait from an older host or from before a fallback was configured
-                // moves to the fallback now instead of waiting days. ref: docs/tasks.md "Agents"
-                let now = now_unix_ms();
-                let account = self.account();
-                let sign_in = self
-                    .record
-                    .waiting
-                    .as_ref()
-                    .is_some_and(|w| w.reason.starts_with(limit::SIGN_IN_WORDS));
-                if !sign_in
-                    && self.move_after_limit(
-                        Some("Continue the task where it stopped."),
-                        until_ms,
-                        now,
-                    )
-                {
-                    let _ = store::mark_limited(&account, until_ms, now, true);
-                } else {
-                    self.wait_for_limit(LIMIT_CONTINUE.into(), until_ms, sign_in);
-                }
+                self.rejoin_limit_wait(LIMIT_CONTINUE);
             }
             state => {
                 self.set_state(state);
@@ -1710,7 +1705,7 @@ impl Host {
             let (until_ms, problem) = super::agent::record_limit(
                 &self.record.adapter,
                 &self.record.model,
-                limit.resets_at,
+                limit,
                 self.limit_attempt,
                 now,
             );
@@ -2253,12 +2248,33 @@ impl Host {
         }
     }
 
-    /// Hold the turn `text` until `until_ms`, in the machine's limit queue. `sign_in`: the wait
-    /// is for a failed sign-in, which only a new agent process can see end.
+    /// A host that starts with a limit wait on its task record (a restart, or the exec of a
+    /// replaced binary) holds the turn `text` again. The account's record says whether it still
+    /// holds; with none the turn goes on at the next look. A sign-in wait keeps its retry time.
+    /// A long wait from an older host or from before a fallback was configured moves to the
+    /// fallback now instead of waiting days. ref: docs/tasks.md "Agents"
+    fn rejoin_limit_wait(&mut self, text: &str) {
+        let now = now_unix_ms();
+        let waiting = self.record.waiting.as_ref();
+        let sign_in = waiting.is_some_and(|w| w.reason.starts_with(limit::SIGN_IN_WORDS));
+        if sign_in {
+            let until_ms = waiting.and_then(|w| w.until_ms).unwrap_or_default();
+            return self.wait_for_limit(text.to_string(), until_ms, true);
+        }
+        let until_ms = store::limited_until(&self.account(), now).unwrap_or(now);
+        if !self.move_after_limit(Some(text), until_ms, now) {
+            self.wait_for_limit(text.to_string(), until_ms, false);
+        }
+    }
+
+    /// Hold the turn `text` until the account's limit ends, in the machine's limit queue.
+    /// `until_ms` is the record's reset as shown, not what ends the wait: the record does
+    /// (`resume_after_limit`). `sign_in`: the wait is for a failed sign-in, which only a new
+    /// agent process can see end, at `until_ms`.
     fn wait_for_limit(&mut self, text: String, until_ms: u64, sign_in: bool) {
         let now = now_unix_ms();
-        // ^ A wait on a fallback also looks for the task's own agent coming free, and a usage
-        // limit for its record ending early (a reset the owner used).
+        // ^ A wait looks every 10 s: for the task's own agent coming free on a fallback, and
+        // for the account's limit record ending early.
         let next_ms = match sign_in {
             true => until_ms,
             false => until_ms.min(now + HOME_POLL_MS),
@@ -2269,12 +2285,24 @@ impl Host {
             next_ms,
             sign_in,
         });
-        let reason = match sign_in {
-            true => limit::sign_in_reason(until_ms, now),
-            false => limit::reason(&self.record.adapter, until_ms, now),
-        };
+        let reason = self.limit_reason(until_ms, now);
         self.say(&reason);
         self.wait(WaitOn::Limit, reason);
+    }
+
+    /// The reason of the limit wait now: the window and reset the record names.
+    fn limit_reason(&self, until_ms: u64, now: u64) -> String {
+        match self.limit_wait.as_ref().is_some_and(|wait| wait.sign_in) {
+            true => limit::sign_in_reason(until_ms, now),
+            false => status::limit_reason(
+                &self.record.adapter,
+                store::account_limit(&self.account(), now)
+                    .and_then(|limit| limit.window)
+                    .as_deref(),
+                until_ms,
+                now,
+            ),
+        }
     }
 
     /// The agent's sign-in failed and no fallback can take the turn: wait like a limit, until
@@ -2312,7 +2340,7 @@ impl Host {
         let reason = format!(
             "{} usage limit until {}",
             self.record.adapter,
-            limit::resume_time(until_ms, now)
+            status::resume_time(until_ms, now)
         );
         self.switch_agent(next, reason, false);
         true
@@ -2360,11 +2388,37 @@ impl Host {
         super::agent::account(&self.record.adapter, &self.record.model)
     }
 
-    /// Continue after a usage limit. Tasks resume one at a time, oldest wait first: each
-    /// holds the limit slot until its agent answers, so a limit that has not lifted stops
-    /// only one. ref: docs/tasks.md "Claude adapter"
+    /// Continue after a usage limit. The account's record decides: it ends the wait when it
+    /// is gone (a probe, or another agent's call, found the account answering) or past, and
+    /// it names the reset shown meanwhile. Tasks resume one at a time, oldest wait first: each
+    /// holds the limit slot until its agent answers, so a limit that has not lifted stops only
+    /// one. ref: docs/tasks.md "Claude adapter"
     fn resume_after_limit(&mut self) {
         let now = now_unix_ms();
+        let account = self.account();
+        // ^ Not a sign-in wait: only a new agent process sees that end, at its retry time.
+        if self
+            .limit_wait
+            .as_ref()
+            .is_some_and(|wait| !wait.sign_in && wait.next_ms <= now)
+        {
+            if account == "claude" {
+                super::claude::probe_limit();
+            }
+            let until_ms = store::limited_until(&account, now).unwrap_or(now);
+            let shown = self
+                .limit_wait
+                .as_ref()
+                .is_some_and(|wait| wait.until_ms != until_ms);
+            if let Some(wait) = self.limit_wait.as_mut() {
+                wait.until_ms = until_ms;
+            }
+            if shown && until_ms > now {
+                let reason = self.limit_reason(until_ms, now);
+                self.say(&reason);
+                self.wait(WaitOn::Limit, reason);
+            }
+        }
         // ^ On a fallback, a wait ends as soon as the task's own agent is free.
         if let Some(wait) = self.limit_wait.take() {
             if !wait.sign_in && self.move_after_limit(Some(&wait.text), wait.until_ms, now) {
@@ -2372,20 +2426,9 @@ impl Host {
             }
             self.limit_wait = Some(wait);
         }
-        let account = self.account();
         let Some(wait) = self.limit_wait.as_mut().filter(|wait| wait.next_ms <= now) else {
             return;
         };
-        // ^ The account's record decides: one that ended early (a probe, another agent's call
-        // that went through) ends the wait. ref: docs/tasks.md "Agents"
-        if !wait.sign_in && now < wait.until_ms {
-            if account == "claude" {
-                super::claude::probe_limit(false);
-            }
-            if store::limited_until(&account, now).is_none() {
-                wait.until_ms = now;
-            }
-        }
         if now < wait.until_ms {
             wait.next_ms = wait.until_ms.min(now + HOME_POLL_MS);
             return;

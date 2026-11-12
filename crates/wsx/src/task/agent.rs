@@ -67,6 +67,8 @@ pub struct TurnResult {
 pub struct UsageLimit {
     /// When the limit resets, in unix seconds, when the provider said.
     pub resets_at: Option<u64>,
+    /// The window the provider named (Claude's `rateLimitType`, as `five_hour`).
+    pub window: Option<String>,
 }
 
 /// An error result that says the agent's sign-in failed (Claude's `Failed to authenticate:
@@ -403,7 +405,7 @@ pub fn note_spend(adapter: &str, model: &str, micro_usd: u64, now_ms: u64) -> Op
         return None;
     }
     let midnight = usage::local_midnight_ms(today + 26 * 3_600_000);
-    match store::mark_limited(&account, midnight, now_ms, false) {
+    match store::mark_limited(&account, midnight, now_ms, false, None) {
         Ok(()) => Some(format!(
             "{account} spent {} of its {budget} USD for today: limited until midnight",
             usage::usd(spent)
@@ -413,18 +415,23 @@ pub fn note_spend(adapter: &str, model: &str, micro_usd: u64, now_ms: u64) -> Op
 }
 
 /// Record a usage limit the agent reached: mark its account limited until it resets (or a
-/// backoff for this `attempt` when the reset is unknown). Returns when work may resume, and
-/// the message to say when the record failed. ref: docs/tasks.md "Claude adapter"
+/// backoff for this `attempt` when the reset is unknown), with the window the provider named.
+/// Returns when work may resume, and the message to say when the record failed.
+/// ref: docs/tasks.md "Claude adapter"
 pub fn record_limit(
     adapter: &str,
     model: &str,
-    resets_at: Option<u64>,
+    reached: &UsageLimit,
     attempt: u32,
     now_ms: u64,
 ) -> (u64, Option<String>) {
-    let until_ms = super::limit::resume_at(resets_at, attempt, now_ms);
-    let backoff = super::limit::known_reset(resets_at, now_ms).is_none();
-    let message = store::mark_limited(&account(adapter, model), until_ms, now_ms, backoff)
+    let until_ms = super::limit::resume_at(reached.resets_at, attempt, now_ms);
+    let backoff = super::limit::known_reset(reached.resets_at, now_ms).is_none();
+    let source = reached
+        .window
+        .as_deref()
+        .map(|window| store::LimitSource { window, model });
+    let message = store::mark_limited(&account(adapter, model), until_ms, now_ms, backoff, source)
         .err()
         .map(|error| format!("cannot record the usage limit: {error:#}"));
     (until_ms, message)
