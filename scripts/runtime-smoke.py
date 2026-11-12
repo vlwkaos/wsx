@@ -2357,7 +2357,7 @@ try:
     wait_for(lambda: "press i to write a message" not in remove_tui.text(), "Esc did not close the manager chat", seconds=60)
     remove_tui.send(b"q")
     wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close the Tasks view after New chat", seconds=60)
-    closed = wsx("task", "chat", "close", "qa", "-p", keep_path, "--json")
+    closed = wsx("task", "chat", "close", "qa", "-p", "keep-me", "--json")
     assert closed.returncode == 0, closed.stdout + closed.stderr
     # docs/design/tui-parity-audit.md gaps 3 to 7: the keys the footers and the help name work in the
     # real TUI. The help scrolls to its last section at 40 rows; the footers list the project and
