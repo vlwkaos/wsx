@@ -27,6 +27,8 @@ Each user message is a small script of words:
   CHECKRUN_PART <a> <p>  run `wsx task check-run a --part p` twice, then `wsx task check-run a`, with a bad part and with a plain check, and trace the answers
   CHECKRUN_LATE <a>  start `wsx task check-run a` in the background and finish before its answer
   CHECKRUN_LATER <a>  like CHECKRUN_LATE, but after WORK's commit: the run is on a clean tree
+  ESCAPE       (worker) start a helper compiled into the working copy with a cleared environment, in a
+               session of its own: no agent stop finds it, only its executable's path does
   BGRESULT     return the result while a background job still runs
   REPEAT       return the result again 1 s later, as Claude's own turn for a background notice
   LIMIT <s>    (once per process) end the turn as Claude's usage limit does, resetting in <s> s;
@@ -127,6 +129,15 @@ def leak(session):
     kids = [subprocess.Popen(['sleep', '600'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=own) for own in (False, True)]
     trace({'leak': [kid.pid for kid in kids], 'agent': os.getpid(), 'session': session})
+
+def escape(session):
+    # ^ ESCAPE: what a daemon a worker started does (a wsxd of its own, from its copy's target/).
+    source = '#include <unistd.h>\nint main(void) { sleep(600); return 0; }\n'
+    binary = os.path.join(os.getcwd(), 'escape-bin')
+    subprocess.run(['cc', '-x', 'c', '-', '-o', binary], input=source, text=True, check=True)
+    kid = subprocess.Popen([binary], env={}, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, start_new_session=True)
+    trace({'escape': kid.pid, 'bin': binary, 'session': session})
 
 SESSION = MODEL = None
 THOUGHT = ''  # ^ The words of the last `THINK` part: the manager's follow-up writes them as its answer.
@@ -568,6 +579,8 @@ def main():
         # ^ Workers only: a manager's event lines carry task titles.
         if project is None and ('LEAK' in words or 'LEAKEXIT' in words):
             leak(session)
+        if project is None and 'ESCAPE' in words:
+            escape(session)
         if project is None and 'LEAKEXIT' in words:
             # ^ The agent ends by itself during the turn: its host must reap it and its tree.
             os._exit(3)

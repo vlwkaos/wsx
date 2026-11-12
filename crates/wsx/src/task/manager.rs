@@ -1137,8 +1137,9 @@ impl Manager {
     }
 
     /// Once an hour, off the loop: close the project's idle sessions and remove its stale
-    /// worktrees that are clean, merged or pushed (`wsx_core::stale`). ref: docs/tasks.md
-    /// "Stale worktrees"
+    /// worktrees that are clean, merged or pushed (`wsx_core::stale`), and stop the processes
+    /// that outlived a closed task's working copy, also when the prune rules are off.
+    /// ref: docs/tasks.md "Stale worktrees"
     fn prune_stale(&mut self) {
         if self.pruning || self.pruned.is_some_and(|at| at.elapsed() < prune_sweep()) {
             return;
@@ -1148,16 +1149,25 @@ impl Manager {
             return;
         };
         let rules = stale::rules(&settings);
-        if rules.off() {
-            return;
-        }
         let copies = stale::open_copies(&self.dir.project_id);
         self.pruning = true;
-        let (main, events) = (self.main.clone(), self.events.clone());
+        let (main, project_id, events) = (
+            self.main.clone(),
+            self.dir.project_id.clone(),
+            self.events.clone(),
+        );
         std::thread::spawn(move || {
             let client = wsx_core::runtime::Client::new(wsx_core::runtime::default_socket_path());
-            let result =
-                stale::sweep(&client, &main, &copies, &rules).map_err(|e| format!("{e:#}"));
+            let leaked = stale::stop_leaked(&project_id, &main);
+            let swept = if rules.off() {
+                Ok(Vec::new())
+            } else {
+                stale::sweep(&client, &main, &copies, &rules).map_err(|e| format!("{e:#}"))
+            };
+            let result = swept.map(|mut notes| {
+                notes.extend(leaked);
+                notes
+            });
             let _ = events.send(Event::Pruned(result));
         });
     }

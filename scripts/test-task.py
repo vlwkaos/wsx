@@ -1009,6 +1009,63 @@ def manager_up(created):
         git('worktree', 'remove', '--force', str(base / name))
     cli('session', 'delete', 'keep-main', '-p', 'demo')
     git('branch', '-D', 'stale-clean', 'stale-dirty', 'stale-busy', ok=False)
+    # 20k. A process that left the agent's group and cleared its environment (a daemon the worker
+    # started) is found by its executable's path under the working copy: `close` stops it; the
+    # manager host's sweep stops one whose copy is gone, and one left in a closed task's folder;
+    # a process outside every copy stays (docs/tasks.md "Close", "Stale worktrees").
+    mark('20k')
+    configure('tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent:\n    model: fake-model\n', 'tasks without checks')
+    escaped = lambda seen: [t for t in traces()[seen:] if 'escape' in t]
+    seen = len(traces())
+    closing = js('task', 'new', 'NOOP ESCAPE')['id']
+    wait_state(closing, 'ready', 'failed')
+    first = wait(lambda: escaped(seen), 't%s escaped' % closing)[0]
+    # ^ The same helper, outside every copy, is the bystander the stops must leave.
+    helper = work / 'escape-helper'
+    shutil.copy2(first['bin'], helper)
+    bystander = subprocess.Popen([str(helper)], env={}, start_new_session=True)
+    copy_a = Path(show(closing)['record']['working_copy'])
+    assert not gone(first['escape']) and (copy_a / 'escape-bin').is_file()
+    closed = js('task', 'close', closing, '--discard')
+    assert [one['pid'] for one in closed['processes_stopped']] == [first['escape']], closed
+    assert os.path.realpath(closed['processes_stopped'][0]['path']) == os.path.realpath(copy_a / 'escape-bin'), closed
+    wait(lambda: gone(first['escape']), 'close stopped the escaped helper', 10)
+    assert any(e['kind'] == 'agent' and 'close stopped 1 process' in e['text'] for e in log(closing)), log(closing)
+    assert not copy_a.exists() and bystander.poll() is None, 'close left the copy or stopped the bystander'
+    # ^ The sweep: a task whose copy was removed outside close.
+    seen = len(traces())
+    orphan = js('task', 'new', 'NOOP ESCAPE')['id']
+    wait_state(orphan, 'ready', 'failed')
+    second = wait(lambda: escaped(seen), 't%s escaped' % orphan)[0]
+    copy_b = Path(show(orphan)['record']['working_copy'])
+    js('task', 'stop', orphan)
+    shutil.rmtree(copy_b)
+    git('worktree', 'prune')
+    wait(lambda: gone(second['escape']), 'the sweep stopped the helper of the removed copy', 40)
+    stopped = wait(lambda: [e for e in pruned_events() if 'task #%s' % orphan in e['text'] and 'stopped 1 process' in e['text']],
+                   'the stop is posted', 30)
+    assert len(stopped) == 1 and not any(short['wakes'] for short in stopped[0]['short']), pruned_events()
+    # ^ A process left in the folder of a closed task (the situation of a copy that outlived its close).
+    copy_a.mkdir()
+    shutil.copy2(helper, copy_a / 'left')
+    left = subprocess.Popen([str(copy_a / 'left')], env={}, start_new_session=True)
+    wait(lambda: left.poll() is not None, 'the sweep stopped the helper in the closed task folder', 40)
+    left.wait()
+    assert bystander.poll() is None, 'a process outside every copy was stopped'
+    # ^ Why only the path finds them: a wsxd started by a process that carries the agent's mark keeps it,
+    # so a mark cleared by the caller (and the group left by setsid) is the whole escape.
+    probe = {'WSX_SOCKET': str(work / 'd2.sock'), 'XDG_STATE_HOME': str(work / 'state2'), 'WSX_AGENT_TREE': 'probe-20k'}
+    cli_env(probe, 'session', 'list', '--json')
+    seen_env = subprocess.run(['ps', '-axeww', '-o', 'pid=,command='], capture_output=True, text=True).stdout
+    daemon = [line for line in seen_env.splitlines() if 'WSX_SOCKET=' + probe['WSX_SOCKET'] in line and 'wsxd' in line]
+    assert daemon and 'WSX_AGENT_TREE=probe-20k' in daemon[0], daemon
+    os.kill(int(daemon[0].split()[0]), 15)
+    bystander.kill()
+    bystander.wait()
+    git('branch', '-D', 'wsx/t%s' % orphan, ok=False)
+    js('task', 'close', orphan, '--discard')
+    shutil.rmtree(copy_a, ignore_errors=True)
+    configure(manager_config, 'restore the config again')
     globals().update(locals())
 
 

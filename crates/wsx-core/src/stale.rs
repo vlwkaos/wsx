@@ -318,6 +318,39 @@ pub fn open_copies(project_id: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Stop the processes of this user whose executable lies in the working copy of a task that is
+/// closed or landed, or whose folder is gone: they outlived the task (a daemon that left its
+/// group and cleared its environment). An open task's copy is never touched, nor a folder that
+/// holds the main checkout. One note per task. ref: docs/tasks.md "Stale worktrees"
+pub fn stop_leaked(project_id: &str, main: &Path) -> Vec<Note> {
+    let tasks = crate::task::view::project_tasks(project_id).unwrap_or_default();
+    let mut notes = Vec::new();
+    for record in tasks.into_iter().filter_map(|(_, record)| record.ok()) {
+        let copy = record.working_copy;
+        if (record.state.is_open() && copy.exists()) || main.starts_with(&copy) {
+            continue;
+        }
+        let stopped =
+            crate::process::stop_under(std::slice::from_ref(&copy), crate::process::STOP_GRACE);
+        if !stopped.is_empty() {
+            notes.push(Note {
+                text: format!(
+                    "stopped {} process{} that outlived task #{} ({}, {}): {}",
+                    stopped.len(),
+                    plural(stopped.len()),
+                    record.id,
+                    record.state.as_str(),
+                    copy.display(),
+                    crate::process::stopped_words(&stopped),
+                ),
+                path: copy,
+                flag: false,
+            });
+        }
+    }
+    notes
+}
+
 /// One line for the manager's chat and whether it needs the owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
