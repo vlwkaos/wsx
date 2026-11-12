@@ -3529,13 +3529,26 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
     await until("!!document.querySelector('.home-rows .chat-row')", "Home lost the chat for the chat dot");
     return count(".chat-row .news-mark");
   };
+  // ^ The overview is the observer's, no longer read with the manager's chat: wait until it holds the
+  // newest reply, then until the page does.
+  const overviewReply = async (reply) => {
+    for (let attempt = 0; attempt < 120; attempt++) {
+      const last = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((data) => data.chats.find((c) => c.name === 'billing')?.last_reply ?? null)`);
+      if (last === reply) return;
+      await pause(500);
+    }
+    await fail(`the overview never listed the reply ${JSON.stringify(reply)}`);
+  };
   await pause(50);
   append({ kind: "ping" });
   append({ kind: "message", id: ++id, from: "owner", text: "later" });
   append({ kind: "reply", id: ++id, to: [], text: "-", quiet: true });
+  await overviewReply("-");
   if (await marked()) await fail("a ping, the owner's message or a quiet reply marks the chat unread");
   append({ kind: "reply", id: ++id, to: [], text: "billing has an answer" });
-  if (!(await marked())) await fail("a chat's reply that is news shows no dot");
+  await overviewReply("billing has an answer");
+  await marked();
+  await until("!!document.querySelector('.chat-row .news-mark')", "a chat's reply that is news shows no dot", 60);
 }
 
 // A chat's Home row counts its own pending approvals, as the first chat's row counts the
