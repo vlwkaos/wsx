@@ -166,6 +166,7 @@
 - Tasks: the ledger's git calls (main checkout, stray worktrees, land blockers) time out after 10 s and the ledger names the folder in a note (the TUI shows warning lines); before, a hung git left the Tasks list stale with no reason. Usage and a task's agent switch share one parse of each log, spend over all projects sums on a 30 s timer, and the usage cache drops logs idle for 10 min, so the Tasks views do less steady work.
 - Web: the Home "Since you left" line leads each group with its word, wraps to two lines and ends with *+N more* instead of cutting, and it fits its lines from the first paint. A panel's status row is one muted line with *Refresh* as a 44 px button at its end.
 - No change for users: the `wsx task` CLI is split into modules (`args`, `cmd/*`, `instructions`), the task host's and manager's long functions into steps, the web client's screens share hooks (`useManagerLog`, `useListKeys`, `useDraft`, `SheetPage`), and wsx-core gains `panel::list` and `panel::get`, which the web and the TUI call instead of matching the response.
+- Release: `scripts/release.sh` run again for a version whose tag is on origin moves the tag to the new commit (force-with-lease on that tag only) when the version has no GitHub release and no crates.io `wsx-core` version, and refuses otherwise. Before, a failed tag run needed the tag deleted by hand.
 
 ### Fixed
 

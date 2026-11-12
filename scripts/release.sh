@@ -3,6 +3,7 @@
 # and release"). `wsx task release` runs it on the host in a temporary detached copy of that
 # commit with WSX_DEPLOY_COMMIT. The tag starts .github/workflows/release.yml, which runs ci.yml's
 # tests, then builds the archive, the GitHub release, wsx-core on crates.io and the Homebrew tap.
+# A tag on origin whose version has no GitHub release and no crates.io version moves to the commit.
 # WSX_RELEASE_DRY_RUN=1 runs every check and prints the builds, pushes and waits instead.
 set -eu
 commit=$(git rev-parse --verify "${WSX_DEPLOY_COMMIT:-HEAD}^{commit}")
@@ -21,16 +22,37 @@ version=$(git show "$commit:Cargo.toml" | awk -F '"' '/^version =/ { print $2; e
 tag="v$version"
 echo "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || fail "version '$version' is not a stable release (release.yml takes vX.Y.Z)"
 git show "$commit:CHANGELOG.md" | grep -q "^## \[$version\]" || fail "CHANGELOG.md has no [$version] section"
-if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-  [ "$(git rev-parse "$tag^{commit}")" = "$commit" ] || fail "tag $tag exists here on another commit"
-  echo "tag $tag already exists here on this commit; it is pushed again"
-fi
-remote=0; git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null || remote=$?
+# ^ A rerun of one version: a failed tag run publishes nothing, so origin's tag may move to the fixed
+# commit. It moves only while nothing of the version is published: no GitHub release, no crates.io version.
+move=
+remote=0; found=$(git ls-remote --exit-code --tags origin "refs/tags/$tag" "refs/tags/$tag^{}") || remote=$?
 case $remote in
-  0) fail "origin already has tag $tag: $version is released" ;;
+  0)
+    old_tag=$(echo "$found" | awk -v ref="refs/tags/$tag" '$2 == ref { print $1 }')
+    old_commit=$(echo "$found" | awk -v ref="refs/tags/$tag^{}" '$2 == ref { print $1 }')
+    [ -n "$old_tag" ] || fail "cannot read origin's tag $tag"
+    [ "${old_commit:-$old_tag}" != "$commit" ] \
+      || fail "origin's tag $tag is already on this commit; nothing was published, so rerun its run (gh run rerun --failed)"
+    out=$(gh release view "$tag" 2>&1) && fail "$version is released: GitHub has the release $tag; origin's tag stays"
+    case $out in *"release not found"*) ;; *) fail "cannot read GitHub release $tag: $out" ;; esac
+    code=$(curl -sS -o /dev/null -w '%{http_code}' -A 'wsx-release (github.com/vlwkaos/wsx)' "https://crates.io/api/v1/crates/wsx-core/$version") \
+      || fail "cannot read crates.io"
+    case $code in
+      200) fail "$version is released: crates.io has wsx-core $version; origin's tag stays" ;;
+      404) ;;
+      *) fail "cannot read crates.io wsx-core $version (HTTP $code)" ;;
+    esac
+    move=$old_tag
+    echo "origin's tag $tag is on ${old_commit:-$old_tag} and $version is not published: the tag moves to $commit"
+    ;;
   2) ;;
   *) fail "cannot read origin's tags (git ls-remote exit $remote)" ;;
 esac
+if git rev-parse -q --verify "refs/tags/$tag" >/dev/null && [ "$(git rev-parse "$tag^{commit}")" = "$commit" ]; then
+  echo "tag $tag already exists here on this commit; it is pushed again"
+elif git rev-parse -q --verify "refs/tags/$tag" >/dev/null && [ -z "$move" ]; then
+  fail "tag $tag exists here on another commit"
+fi
 origin_main=$(git ls-remote --exit-code origin refs/heads/main | cut -f1) || fail "cannot read origin's main"
 git merge-base --is-ancestor "$origin_main" "$commit" 2>/dev/null \
   || fail "$commit does not contain origin/main $origin_main; a push would not fast-forward"
@@ -65,8 +87,13 @@ watch_run() {
 }
 
 step "push tag"
-git rev-parse -q --verify "refs/tags/$tag" >/dev/null || act git tag -a "$tag" -m "wsx $version" "$commit"
-act git push origin "refs/tags/$tag"
+# ^ Moving the tag leases only this tag at the value read in the preflight.
+[ "$(git rev-parse -q --verify "refs/tags/$tag^{commit}" || true)" = "$commit" ] || act git tag -fa "$tag" -m "wsx $version" "$commit"
+if [ -n "$move" ]; then
+  act git push --force-with-lease="refs/tags/$tag:$move" origin "refs/tags/$tag"
+else
+  act git push origin "refs/tags/$tag"
+fi
 
 step "release.yml"
 run=$(run_of release.yml)
@@ -78,8 +105,8 @@ if ! watch_run "$run"; then
   if [ -n "$tests" ]; then
     gh run view "$run" --log-failed | tail -40
     echo "NOT PUBLISHED: tests failed for $tag: $(echo $tests)"
-    echo "The tag is on origin, but nothing was built or published. Fix the failure on main, then delete the tag"
-    echo "(git push origin :refs/tags/$tag && git tag -d $tag) and run the release again."
+    echo "The tag is on origin, but nothing was built or published. Fix the failure on main and run the release"
+    echo "again: it moves the tag to the new commit while $version has no GitHub release and no crates.io version."
     exit 1
   fi
   # ^ Credentials are checked in release.yml's preflight job, before anything is published.
