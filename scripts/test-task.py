@@ -1056,8 +1056,10 @@ def manager_up(created):
     assert bystander.poll() is None, 'a process outside every copy was stopped'
     # ^ Why only the path finds them: a wsxd started by a process that carries the agent's mark keeps it,
     # so a mark cleared by the caller (and the group left by setsid) is the whole escape.
-    probe = {'WSX_SOCKET': str(work / 'd2.sock'), 'XDG_STATE_HOME': str(work / 'state2'), 'WSX_AGENT_TREE': 'probe-20k'}
+    # ^ A daemon's state file and lock lie beside its socket: its own folder keeps it from the scenario's.
+    probe = {'WSX_SOCKET': str(work / 'd2/d.sock'), 'XDG_STATE_HOME': str(work / 'state2'), 'WSX_AGENT_TREE': 'probe-20k'}
     (work / 'state2').mkdir(exist_ok=True)
+    (work / 'd2').mkdir(mode=0o700, exist_ok=True)
     started = subprocess.run([str(wsx), 'session', 'list', '--json'], cwd=project, env={**env, **probe},
                              capture_output=True, text=True, timeout=60)
     assert started.returncode == 0, (started.stdout, started.stderr)
