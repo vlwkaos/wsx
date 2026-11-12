@@ -140,9 +140,9 @@ const NeedTags = ({ items, onShow }) => items.map((item) => html`
     <span>Needs you: ${item.label}</span>
   </button>`);
 
-// ^ The registered project of another project's manager (`peer:<project>`; a role is no project's):
-// null when the site does not list it, and its name then stays plain text.
-const peerProject = (peer) => peer == null || peer.startsWith("role:") ? null : state.projects.find((other) => other.name === peer) ?? null;
+// ^ The project of a row's peer key as wsx-core's `Party::from_key` reads it: `chat:<name>` is a chat
+// of this project, no project's; any other key is another project's manager.
+const peerProject = (peer) => peer == null || peer.startsWith("chat:") ? null : peer;
 
 // A message's author above its box. Another project's manager is a link to that project's manager
 // chat, the route a Home row opens (docs/web-client-tasks.md "Project screen").
@@ -155,8 +155,10 @@ const Author = ({ name, target, peer }) => target
 export function Bubble({ project, row, words: home, fresh, onNeed }) {
   const out = row.author === "owner";
   const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
-  const words = peer != null && !peer.startsWith("chat:") ? withChips(project, peer) : home;
-  const target = peerProject(peer);
+  const other = peerProject(peer);
+  const words = other != null ? withChips(project, other) : home;
+  // ^ A link only to a project the site lists; else its name stays plain text.
+  const target = other && state.projects.find((listed) => listed.name === other);
   const id = `bubble-${row.key}`;
   // ^ A post with a level (`wsx task post --level warn|bad`) says it in its tag (docs/web-client-tasks.md "Task notifications").
   const tag = row.level ? (row.level === "bad" ? "Bad" : "Warn") : row.tag;

@@ -2259,11 +2259,18 @@ try:
                    r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.", r"^elsewhere\s+\d\d:\d\d",
                    r"^Hello from elsewhere\."])
     # ^ `P` opens the chat of the other manager whose message is nearest the bottom of the view
-    # (docs/tasks.md "TUI"): elsewhere is no registered project and stays a notice; halt-me is one,
-    # and its message, the newest, opens halt-me's own chat in place of keep-me's.
+    # (docs/tasks.md "TUI"): a chat of keep-me (`chat:qa`, the newest) is no project's and is
+    # passed over; elsewhere is no registered project and stays a notice; halt-me is one, and its
+    # message, the newest, opens halt-me's own chat in place of keep-me's.
     wait_for(lambda: "(P)eer chat" in remove_tui.text(), lambda: f"the footer lists no P key:\n{remove_tui.text()}", seconds=60)
+    with keep_log.open("a") as log_file:
+        log_file.write(json.dumps({"unix_ms": int(time.time() * 1000), "kind": "message", "id": 900,
+                                   "from": "chat:qa", "text": "Hello from the qa chat."}) + "\n")
+    remove_tui.send(b"G")
+    wait_for(lambda: "Hello from the qa chat." in remove_tui.text(), "the TUI chat did not show the qa chat's message", seconds=60)
     remove_tui.send(b"P")
     wait_for(lambda: "elsewhere: not a registered project" in remove_tui.text(), "P on an unregistered manager gave no notice", seconds=60)
+    assert "chat:qa" not in remove_tui.text(), remove_tui.text()
     with keep_log.open("a") as log_file:
         log_file.write(json.dumps({"unix_ms": int(time.time() * 1000), "kind": "message", "id": 901,
                                    "from": "manager:halt-me", "text": "Hello from halt-me."}) + "\n")

@@ -19,7 +19,9 @@ use wsx_core::task::{
     call_socket,
     chat::{self, ChatRow, Page, Reading, RowKind, Speaker, Window},
     checks::{self, CheckItem, CheckState},
-    manager::{activity, pending_approvals, waiting_approvals, ManagerRequest, ManagerResponse},
+    manager::{
+        activity, pending_approvals, waiting_approvals, ManagerRequest, ManagerResponse, Party,
+    },
     media::{self, Kind},
     owner,
     store::{self, ManagerDir, Stamp},
@@ -707,10 +709,10 @@ impl ManagerChat {
     }
 }
 
-/// The project whose manager wrote the row; a role's message is no project's (`peer:role:<n>`).
+/// The project whose manager wrote the row; a chat's message is no project's.
 pub fn peer_of(row: &ChatRow) -> Option<String> {
     match &row.author {
-        Some(Speaker::Peer(key)) if !key.starts_with("role:") => Some(key.clone()),
+        Some(Speaker::Peer(Party::Project(project))) => Some(project.clone()),
         _ => None,
     }
 }
