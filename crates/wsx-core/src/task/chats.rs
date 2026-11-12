@@ -267,6 +267,9 @@ fn migrate(project_id: &str, project: &Path) -> Result<()> {
         .unwrap_or_default();
     store::create_private_dir(&project.join("chats"))?;
     for (name, path) in &roles {
+        if !path.is_dir() {
+            continue; // ^ another process moved it first
+        }
         move_role(name, path, &agents)?;
         let target = project.join("chats").join(name);
         if target.exists() {

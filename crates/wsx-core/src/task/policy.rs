@@ -4,7 +4,7 @@
 //! `[[agents]]` entry passed. Three consumers read it: the Seatbelt profile
 //! (`wsx/src/task/boundary.rs`), the brokers' command check (`broker.rs`, `host.rs`) and the
 //! approval rules of the outward commands (`WSX_TASK_TRUST`).
-//! ref: docs/tasks.md "Roles", "Permissions"; docs/design/local-model-fallback.md 3.2, 5
+//! ref: docs/tasks.md "Chats", "Permissions"; docs/design/local-model-fallback.md 3.2, 5
 
 use super::Actor;
 use serde::{Deserialize, Serialize};
@@ -161,7 +161,7 @@ pub enum Role {
 
 use Capability::*;
 
-/// The one table of roles. A named role of docs/tasks.md "Roles" is an `Area`; the organizer is
+/// The one table of roles. A named role of docs/tasks.md "Chats" is an `Area`; the organizer is
 /// the stand-in's job. The rules it holds replace the refusals that `not_for_roles` once spelled
 /// out one by one.
 pub const ROLES: [(Role, RoleInfo); 4] = [
