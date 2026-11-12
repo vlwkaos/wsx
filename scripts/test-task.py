@@ -707,7 +707,7 @@ def manager_up(created):
     held = js('task', 'chat')
     assert held['waiting'] == [waits['id']], (held['waiting'], waits, slow)
     text = cli('task', 'chat').stdout
-    assert re.search(r'\[%d\] Owner \(waiting\): AUTHFAIL' % waits['id'], text) and text.count('(waiting)') == 1, text
+    assert re.search(r'\[%d\] You \(waiting\): AUTHFAIL' % waits['id'], text) and text.count('(waiting)') == 1, text
     assert [e['kind'] for e in entries() if e['kind'] == 'limit' and e['unix_ms'] >= failed_at()] == [], entries()[-12:]
     assert len([e for e in entries() if e['kind'] == 'stopped' and 'Sign in again' in e['reason']]) == 1, entries()[-12:]
     assert 'resumed' not in text.split('Sign in again')[-1], text
