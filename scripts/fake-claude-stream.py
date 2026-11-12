@@ -333,6 +333,9 @@ def edit_page(page, section, words):
 
 def manager_turn(text, project, page):
     replies = []
+    # ^ The notes the host attaches carry earlier owner messages ("Owner (message 5): STATUS ...") when a rotation
+    # came before: their words are no command of this turn. fake-pi-rpc.py does the same.
+    text = re.sub(r'Notes that match this message.*?\n\n', '', text, flags=re.S)
     if 'only in your thinking' in text:
         return '-' if THOUGHT.startswith('nothing') else THOUGHT
     if 'SLOW' in text.split():
