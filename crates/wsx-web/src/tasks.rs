@@ -141,6 +141,9 @@ pub fn overview(app: &App, scope: &Scope) -> Value {
         body
     });
     body["busy"] = json!(manager_busy(scope));
+    // ^ The routine pill's counts (docs/web-client-tasks.md "Home"): the scheduler's, not a store
+    // file's, so they are read on each call and not kept with the body.
+    body["routines"] = json!(ledger::routine_counts(&scope.path));
     body
 }
 
@@ -292,7 +295,9 @@ fn build_overview(
         "last_reply": last_reply.map(|(_, text)| text),
         "news": news,
         // ^ The open chats under the project's home row (docs/web-client-tasks.md "Home").
-        "chats": chat_contacts(scope),
+        "chats": chat_contacts(scope, land_auto),
+        // ^ The agent the New chat sheet's Default runs on.
+        "default_agent": settings.map(|settings| json!({ "adapter": settings.manager_adapter, "model": settings.manager_model })),
         "asks": asks,
         "last_unix_ms": last_unix_ms,
         // ^ Tasks can be tried on a preview link (docs/tasks.md "Preview").
@@ -801,16 +806,15 @@ fn news_value((unix_ms, text): (u64, String)) -> Value {
 }
 
 /// The open chats as Home rows: name, the first line of the goal and of the last reply,
-/// `news` (as a project's: `{unix_ms, text}` of the newest reply that is news, or `null`) and
-/// `approvals`, the count of the chat's own pending requests (`chats::approvals_of`, the rule
-/// the first chat's count uses) (docs/web-client-tasks.md "Home").
-fn chat_contacts(scope: &Scope) -> Vec<Value> {
-    let open = task::chats::open_names(&scope.store);
-    let all = store::read_approvals(&scope.store).unwrap_or_default();
+/// `news` (as a project's: `{unix_ms, text}` of the newest reply that is news, or `null`),
+/// `last_unix_ms` and the pill counts `running`, `needs` and `check` (`needs::chat_counts`)
+/// (docs/web-client-tasks.md "Home").
+fn chat_contacts(scope: &Scope, land_auto: bool) -> Vec<Value> {
+    let counts = needs::chat_counts(&scope.store, land_auto);
     task::chats::open_chats(&scope.store)
         .iter()
         .map(|dir| {
-            let own = task::chats::approvals_of(all.clone(), Some(dir.name()), &open);
+            let own = counts.get(dir.name()).copied().unwrap_or_default();
             let tail = dir.read_tail(MANAGER_TAIL_BYTES).unwrap_or_default();
             let news = newest_news(&tail).map(news_value);
             let last = tail
@@ -830,7 +834,10 @@ fn chat_contacts(scope: &Scope) -> Vec<Value> {
                 "goal": task::chats::goal(dir).lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
                 "last_reply": last,
                 "news": news,
-                "approvals": pending_approvals(&own).len(),
+                "last_unix_ms": task::chats::last_active_ms(dir),
+                "running": own.running,
+                "needs": own.needs,
+                "check": own.check,
             })
         })
         .collect()
@@ -889,8 +896,8 @@ pub fn page(scope: &Scope) -> Outcome<Value> {
 pub fn routines(scope: &Scope) -> Value {
     let dir = ManagerDir::existing(&scope.store).ok().flatten();
     match ledger::routine_rows(&scope.path, MAX_ROUTINES, true, dir.as_ref()) {
-        rows @ Value::Array(_) => json!({ "routines": rows }),
-        failed => json!({ "routines": [], "error": failed["error"] }),
+        (rows @ Value::Array(_), counts) => json!({ "routines": rows, "counts": counts }),
+        (failed, _) => json!({ "routines": [], "error": failed["error"] }),
     }
 }
 

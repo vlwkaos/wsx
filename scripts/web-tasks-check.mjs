@@ -33,7 +33,7 @@ const { file: mobilePath, source: mobileSource } = mobileAudit();
 if (!mobileSource) await fail(`no mobile audit at ${mobilePath}; set WSX_MOBILE_AUDIT`);
 // The main screens that get the design lint (scripts/design-lint.js), at 390x844 and 1280x800 only.
 const linter = designLint({ evaluate, captures, file: "tasks" });
-const LINTED = new Set(["new-chat", "chats-home-approval", "chats-home", "chats-home-wide", "chat-room", "chat-room-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
+const LINTED = new Set(["new-chat", "new-chat-refused", "chats-home-approval", "chats-home", "chats-home-wide", "chat-room", "chat-room-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
 let size = [390, 844, 2];
 const phone = () => size[0] < 600;
 const audits = [];
@@ -456,8 +456,7 @@ async function motion() {
   for (let attempt = 1; attempt < 3 && !good(seen); attempt++) { await restore(); await pause(1000); seen = await run(false); }
   if (!good(seen)) await fail(`motion at ${w}px: ${JSON.stringify(seen)}`);
   await expectAll("typing dots", ".row-typing .typing-dot", "typing");
-  await expectAll("a working row", ".home-row .pulse", "pulse");
-  await expectAll("the count badge", ".home-row .count", "pop");
+  await expectAll("the tray counts", ".home-row .tray-count", "pop");
   await expectAll("the status line", ".home-row .row-context:not([data-loading])", "arrive");
   await expectAll("the notice", ".notice", "slide-down");
   await expectAll("the toast timer", ".notice-timer", "drain");
@@ -478,7 +477,7 @@ async function motion() {
     return rows;
   })()`);
   if (still) await fail(`motion at ${w}px: ${still} row animations run with reduced motion`);
-  for (const selector of [".row-typing .typing-dot", ".home-row .pulse", ".home-row .count", ".home-row .row-context", ".notice", ".notice-timer", ".skeleton"]) {
+  for (const selector of [".row-typing .typing-dot", ".home-row .tray-count", ".home-row .row-context", ".notice", ".notice-timer", ".skeleton"]) {
     const seen = await names(selector);
     if (seen.some((item) => item !== "none")) await fail(`motion at ${w}px: ${selector} animates with reduced motion: ${JSON.stringify(seen)}`);
   }
@@ -586,8 +585,11 @@ await until("document.querySelectorAll('.home-row').length >= 3", "home does not
 // ^ A row's name is its label's first text: an asking row's label adds a hidden ", Asks you".
 await until(`[...document.querySelectorAll('.home-row .row-label')].map((node) => node.firstChild.textContent).join() === ${JSON.stringify(homeOrder)}`, "home did not settle in the expected order", 30);
 const homeRows = await evaluate(`[...document.querySelectorAll('.home-row')].map((row) => ({ name: row.querySelector('.row-label').firstChild.textContent,
-  count: row.querySelector('.count')?.textContent ?? '', status: row.querySelector('.row-context').textContent, state: row.querySelector('.row-state').textContent }))`);
+  count: row.querySelector('.tray[data-kind=needs] .tray-count')?.textContent ?? '', trays: [...row.querySelectorAll('.tray')].map((tray) => tray.dataset.kind + ':' + tray.querySelector('.tray-count').textContent + ':' + !!tray.querySelector('svg.icon')).join(),
+  status: row.querySelector('.row-context').textContent, state: row.querySelector('.time')?.textContent ?? '' }))`);
 const uiRow = homeRows.find((row) => row.name === "ui");
+// ^ The tray icons are the pills' (trays.js): the needs tray reads the needs count, and a row with nothing to count shows none.
+if (!uiRow.trays.split(",").includes("needs:6:true") || homeRows.find((row) => row.name === "calm").trays) await fail(`the Home trays read ${JSON.stringify(homeRows.map((row) => [row.name, row.trays]))}`);
 if (uiRow.count !== "6" || uiRow.status !== "#1 Waiting for your answer" || !/ago|now/.test(uiRow.state)) await fail(`the ui row reads ${JSON.stringify(uiRow)}`);
 const calmRow = homeRows.at(-1);
 if (calmRow.name !== "calm" || calmRow.count || calmRow.status !== "No tasks yet" || calmRow.state) await fail(`the calm row reads ${JSON.stringify(calmRow)}`);
@@ -1472,6 +1474,18 @@ await closeSheet("the usage sheet", chat);
   try {
     let look = await pill();
     if (look.label !== "2 routines" || look.count !== "2" || look.tone || !look.icon) await fail(`the Routines pill with nightly and idle on is ${JSON.stringify(look)}`);
+    // ^ Home shows the same icons, counts and tones beside the project's name (docs/web-client-tasks.md "Home").
+    const trayOf = (selector, count) => `[...document.querySelectorAll('${selector}')].map((node) => [node.dataset.kind, node.querySelector('${count}').textContent.trim(), node.getAttribute('aria-label'), node.dataset.tone ?? '', node.querySelector('svg.icon path').getAttribute('d')].join('|')).join()`;
+    const pills = await evaluate(trayOf(".pill", ".pill-count"));
+    await go("#/");
+    const homeTrays = `.home-rows > .row[data-key="${project}"] .tray`;
+    await until(`document.querySelectorAll('${homeTrays}').length === 4`, "Home shows no four trays on the project's row", 50);
+    const trays = await evaluate(trayOf(homeTrays, ".tray-count"));
+    if (trays !== pills || pills.split(",").length !== 4) await fail(`Home's trays are ${trays}, the pills ${pills}`);
+    const lines = await evaluate(`(() => { const row = document.querySelector('.home-rows > .row[data-key="${project}"] .row-link'), head = row.querySelector('.row-head'), main = row.querySelector('.row-main');
+      return { children: [...main.children].map((node) => node.className), time: !!head.querySelector('.time'), height: Math.round(row.getBoundingClientRect().height) }; })()`);
+    if (lines.children.join() !== "row-head,row-context" || !lines.time) await fail(`the project's row is not two lines: ${JSON.stringify(lines)}`);
+    await again();
     // The list: the shared row; run now and on/off in the row's actions.
     await openReservoir("routines");
     const rows = await rowsOf();
@@ -2694,7 +2708,7 @@ await until("!!document.querySelector('.home-row')", "home did not open for the 
 const newsRow = `document.querySelector('.home-rows > .row:not(.row-chat)[data-key="${project}"]')`;
 if (await evaluate(`!!${newsRow}.querySelector('.news-mark')`)) await fail("a project whose chat was read is marked new");
 await evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'STATUS for home' }) })`);
-await until(`!!${newsRow}?.querySelector('.news-mark') && /^open: /.test(${newsRow}.querySelector('.row-news')?.textContent ?? '')`, "the new reply did not mark the project's home row", 300);
+await until(`!!${newsRow}?.querySelector('.news-mark') && /^open: /.test(${newsRow}.querySelector('.row-context[data-news]')?.textContent.trim() ?? '')`, "the new reply did not mark the project's home row", 300);
 const marked = await evaluate(`(() => { const mark = getComputedStyle(${newsRow}.querySelector('.news-mark')).backgroundColor;
   const probe = document.createElement('span'); probe.style.color = 'var(--color-accent)'; document.body.append(probe); const accent = getComputedStyle(probe).color; probe.remove();
   return { mark, accent, others: [...document.querySelectorAll('.home-rows > .row:not(.row-chat):not([data-news]) .news-mark')].length }; })()`);
@@ -2704,7 +2718,7 @@ await go(chat);
 await until("!!document.querySelector('.log .bubble') && !document.querySelector('.jump')", "the chat did not open at its end for the new reply", 100);
 await pause(500);
 await go("#/");
-await until(`!!${newsRow} && !${newsRow}.querySelector('.news-mark') && !${newsRow}.querySelector('.row-news')`, "opening the chat did not clear the home row's mark", 50);
+await until(`!!${newsRow} && !${newsRow}.querySelector('.news-mark') && !${newsRow}.querySelector('.row-context[data-news]')`, "opening the chat did not clear the home row's mark", 50);
 await shot("home-read");
 
 // --- A deep link to a task opens the chat with the sheet over it; Back closes the sheet, then
@@ -3482,8 +3496,8 @@ for (const wide of [false, true]) {
   await go("#/");
   const chatRow = `[...document.querySelectorAll('.home-rows .chat-row')].find((r) => r.querySelector('.row-label').textContent === 'billing')`;
   await until(`!!(${chatRow})`, "Home lists no billing chat under its project");
-  const listed = await evaluate(`(() => { const row = ${chatRow}; const before = row.closest('li').previousElementSibling; return { name: row.querySelector('.row-label').textContent, project: row.querySelector('.row-context').textContent, dots: row.querySelectorAll('.news-mark').length, under: before && !before.classList.contains('row-chat') ? before.querySelector('.row-label').firstChild.textContent : before?.className }; })()`);
-  if (listed.name !== "billing" || listed.project !== projectName || (!wide && listed.dots) || listed.under !== projectName) await fail(`Home lists the chat as ${JSON.stringify(listed)}, not billing over ${projectName}`);
+  const listed = await evaluate(`(() => { const row = ${chatRow}; const before = row.closest('li').previousElementSibling; return { name: row.querySelector('.row-label').textContent, context: row.querySelector('.row-context').textContent.trim(), dots: row.querySelectorAll('.news-mark').length, under: before && !before.classList.contains('row-chat') ? before.querySelector('.row-label').firstChild.textContent : before?.className }; })()`);
+  if (listed.name !== "billing" || !listed.context || listed.context === projectName || (!wide && listed.dots) || listed.under !== projectName) await fail(`Home lists the chat as ${JSON.stringify(listed)}, not billing over ${projectName}`);
   if (await count(".more-menu .chat-row")) await fail("the ⋯ menu lists chats");
   await shot(`chats-home${wide ? "-wide" : ""}`);
   await evaluate(`${chatRow}.click()`);
@@ -3558,8 +3572,8 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   const found = fs.readdirSync(state, { recursive: true }).find((file) => file.endsWith(path.join("chats", "billing", "log.jsonl")));
   const approvals = path.join(state, path.dirname(path.dirname(path.dirname(found))), "approvals.jsonl");
   const line = (entry) => fs.appendFileSync(approvals, `${JSON.stringify(entry)}\n`);
-  const chatCount = "(document.querySelector('.home-rows .chat-row .count')?.textContent ?? '')";
-  const firstCount = `(document.querySelector('.home-rows .row[data-key="${project}"] .count')?.textContent ?? '')`;
+  const chatCount = "(document.querySelector('.home-rows .chat-row .tray[data-kind=needs] .tray-count')?.textContent ?? '')";
+  const firstCount = `(document.querySelector('.home-rows .row[data-key="${project}"] .tray[data-kind=needs] .tray-count')?.textContent ?? '')`;
   await resize([390, 844, 2]);
   await go("#/");
   await until(`!!document.querySelector('.home-rows .chat-row') && ${chatCount} === ''`, "the chat's row shows a count before it has an approval");
@@ -3573,7 +3587,8 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
 }
 
 // New chat (docs/web-client-tasks.md "Home"): the + on Home opens a sheet with the projects, then a
-// name, a goal and an agent that wait for a name; no name opens the project's first chat.
+// name (focused, with its rule as a hint), an optional goal and an agent whose Default names the
+// manager's; a bad or an open name is refused in the sheet before it asks; Create makes the chat.
 {
   const sheet = "dialog.sheet[open]";
   const open = async () => {
@@ -3583,36 +3598,47 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
     await until(`!!document.querySelector('${sheet} select[name=project]')`, "the + opened no New chat sheet");
   };
   const choose = (name, value) => evaluate(`(() => { const field = document.querySelector('${sheet} [name=${name}]'); field.value = ${JSON.stringify(value)}; field.dispatchEvent(new Event(field.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })); })()`);
+  const note = () => evaluate(`(() => { const node = document.querySelector('${sheet} .field-note'); return { text: node.textContent, alert: node.getAttribute('role'), invalid: document.querySelector('${sheet} input[name=name]').getAttribute('aria-invalid') }; })()`);
   await open();
   await until(`!!document.querySelector('${sheet} select[name=agent] option[value="haiku-chat"]')`, "the New chat sheet lists no agents", 30);
-  const fields = await evaluate(`({ projects: [...document.querySelectorAll('${sheet} select[name=project] option')].map((option) => option.textContent), goal: document.querySelector('${sheet} textarea[name=goal]').disabled, agents: [...document.querySelectorAll('${sheet} select[name=agent] option')].map((option) => option.value), button: document.querySelector('${sheet} button[type=submit]').textContent, plus: document.querySelectorAll('[aria-label="Add project"]').length })`);
-  if (!fields.goal || fields.button !== "Open" || !fields.agents.includes("haiku-chat") || fields.plus || fields.projects.some((name, at) => name === "Add project…" && at !== fields.projects.length - 1)) await fail(`the New chat sheet is ${JSON.stringify(fields)}`);
+  const fields = await evaluate(`({ projects: [...document.querySelectorAll('${sheet} select[name=project] option')].map((option) => option.textContent), goal: document.querySelector('${sheet} textarea[name=goal]').disabled, agents: [...document.querySelectorAll('${sheet} select[name=agent] option')].map((option) => option.value),
+    standard: document.querySelector('${sheet} select[name=agent] option').textContent, button: document.querySelector('${sheet} button[type=submit]').textContent, plus: document.querySelectorAll('[aria-label="Add project"]').length,
+    focus: document.activeElement?.name, placeholder: document.querySelector('${sheet} input[name=name]').placeholder, hint: document.querySelector('${sheet} .field-note').textContent, agentDisabled: document.querySelector('${sheet} select[name=agent]').disabled })`);
+  if (fields.goal || fields.agentDisabled || fields.button !== "Create" || fields.focus !== "name" || !fields.placeholder || !fields.hint || !/^Default \(.+\)$/.test(fields.standard) || !fields.agents.includes("haiku-chat") || fields.plus
+    || fields.projects.some((name, at) => name === "Add project…" && at !== fields.projects.length - 1)) await fail(`the New chat sheet is ${JSON.stringify(fields)}`);
   await shot("new-chat");
-  // ^ No name opens the project's first chat.
+  // ^ No name is refused in the sheet, which stays open and keeps the name field focused.
   await choose("project", String(project));
   await evaluate(`document.querySelector('${sheet} form').requestSubmit()`);
-  await until(`location.hash === '#/p/${project}' && !document.querySelector('dialog.sheet')`, "no name did not open the first chat");
+  await until(`/required/.test(document.querySelector('${sheet} .field-note')?.textContent ?? '')`, "an empty name showed no refusal");
+  if (!(await evaluate(`document.activeElement?.name === 'name' && location.hash !== '#/p/${project}'`))) await fail("an empty name left the name field or the sheet");
   // ^ A name makes the chat with its goal and agent, and opens it, titled by its name.
-  await open();
-  await choose("project", String(project));
-  await choose("name", "qa");
-  await until(`document.querySelector('${sheet} button[type=submit]').textContent === 'Create' && !document.querySelector('${sheet} textarea[name=goal]').disabled`, "a name did not enable the goal");
+  await choose("name", "QA");
+  if ((await evaluate(`document.querySelector('${sheet} input[name=name]').value`)) !== "qa") await fail("the name was not lower-cased as typed");
   await choose("goal", "Check the release notes.\nSecond line.");
   await choose("agent", "haiku-chat");
   await evaluate(`document.querySelector('${sheet} form').requestSubmit()`);
   await until(`location.hash === '#/p/${project}/c/qa' && document.querySelector('.bar-label')?.textContent === 'qa'`, "the new chat did not open under its name", 30);
   const made = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((data) => data.chats.find((chat) => chat.name === 'qa'))`);
   if (!made || made.goal !== "Check the release notes.") await fail(`the new chat is ${JSON.stringify(made)}`);
-  // ^ A name the store refuses stays in the sheet; its 400 is expected, not a page defect.
-  const refusedFrom = problems.length;
+  // ^ An open name and a name the store would refuse are refused in the sheet, with no request.
+  const asked = await evaluate("performance.getEntriesByType('resource').filter((entry) => /\\/chats$/.test(entry.name)).length");
   await open();
   await choose("project", String(project));
-  await choose("name", "Bad Name");
-  await evaluate(`document.querySelector('${sheet} form').requestSubmit()`);
-  await until(`/lowercase letter/.test(document.querySelector('${sheet} .error')?.textContent ?? '')`, "a bad name showed no refusal in the sheet");
+  for (const [typed, words] of [["qa", /already open/], ["9lives", /a-z, 0-9 and -/], ["manager", /first chat/]]) {
+    await choose("name", typed);
+    const refused = await note();
+    if (!words.test(refused.text) || refused.alert !== "alert" || refused.invalid !== "true") await fail(`"${typed}" is not refused in the sheet: ${JSON.stringify(refused)}`);
+    await evaluate(`document.querySelector('${sheet} form').requestSubmit()`);
+    await pause(200);
+    if (!(await evaluate(`!!document.querySelector('${sheet}')`))) await fail(`"${typed}" closed the sheet`);
+  }
+  await shot("new-chat-refused");
+  if ((await evaluate("performance.getEntriesByType('resource').filter((entry) => /\\/chats$/.test(entry.name)).length")) !== asked) await fail("a refused name was sent to the server");
+  await choose("name", "fresh");
+  if ((await note()).alert) await fail("a good name is still refused");
   await evaluate(`document.querySelector('${sheet} form').closest('dialog').close()`);
   await until("!document.querySelector('dialog.sheet')", "the New chat sheet stayed open");
-  problems.splice(refusedFrom, problems.length - refusedFrom, ...problems.slice(refusedFrom).filter((problem) => !/status of 400 .*\/chats$/.test(problem)));
 }
 
 // --- Session news: the host's post for a session that needs the owner links to that session
@@ -3987,18 +4013,15 @@ await closeSheet("the page", `#/p/${plansArg}`);
       || middle.pillBottom > middle.height - 34 || end.lastBottom > end.pillTop) await fail(`${hash}: the bar does not float: ${JSON.stringify({ middle, end })}`);
   };
   for (const hash of ["#/sessions", "#/settings", "#/settings/ui"]) await floating(hash);
-  // ^ The count badge (tab bar pseudo-element and Home row .count) shares --size-badge: 16 px high, a circle for one digit, "99+" wider and uncut. The row is measured by layout size: its pop animation scales the bounding box.
+  // ^ The tab bar's count badge uses --size-badge: 16 px high, a circle for one digit, "99+" wider and uncut.
   const badges = await evaluate(`(() => { const out = {}; const icon = document.querySelector('.tab-icon');
     const read = (label, style, text) => { out[label] = { height: parseFloat(style.height), width: parseFloat(style.width), text }; };
     for (const text of ['2', '99+']) { icon.setAttribute('data-count', text); read('tab ' + text, getComputedStyle(icon, '::after'), text); }
     icon.removeAttribute('data-count');
-    const host = document.querySelector('.screen > .page > .scroll');
-    for (const text of ['2', '99+']) { const node = document.createElement('span'); node.className = 'count'; node.textContent = text; node.style.cssText = 'position:absolute;top:0;left:0';
-      host.append(node); out['row ' + text] = { height: node.offsetHeight, width: node.offsetWidth, text, cut: node.scrollWidth > node.clientWidth }; node.remove(); }
     out.token = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--size-badge'));
     return out; })()`);
-  const roundOne = ["tab 2", "row 2"].every((key) => badges[key].height === 16 && badges[key].width === badges[key].height);
-  const wide = ["tab 99+", "row 99+"].every((key) => badges[key].height === 16 && badges[key].width > 16 && !badges[key].cut);
+  const roundOne = ["tab 2"].every((key) => badges[key].height === 16 && badges[key].width === badges[key].height);
+  const wide = ["tab 99+"].every((key) => badges[key].height === 16 && badges[key].width > 16 && !badges[key].cut);
   if (badges.token !== 16 || !roundOne || !wide) await fail(`the count badge is not the shared 16 px circle: ${JSON.stringify(badges)}`);
   await evaluate("document.querySelector('.tab-icon').setAttribute('data-count', '2')");
   await evaluate("document.querySelector('.screen > .page > .scroll').scrollTop = 300");

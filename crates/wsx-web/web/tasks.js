@@ -15,7 +15,8 @@ import { ProjectOverview } from "./overview.js";
 import { checkQuote, ChecksPage, decideCheck } from "./checks.js";
 import { UsagePage } from "./usage.js";
 import { MediaPage } from "./media.js";
-import { RoutineActions, routineAct, routineCounts, routineRow, routineWords, useRoutines } from "./routines.js";
+import { RoutineActions, routineAct, routineRow, useRoutines } from "./routines.js";
+import { present, shownTrays, TRAYS, trayCounts, trayWords } from "./trays.js";
 import { PanelsButton, PanelsPage } from "./panels.js";
 import { loadTasks, act } from "./task-api.js";
 import { agentWords, calm, KIND_TONE, LEAVE_MS, running, taskLink, taskStage, TaskChip, withChips } from "./task-words.js";
@@ -183,17 +184,7 @@ function CheckingRow({ project, item, index, onActing, onFailed, onReply, leavin
 }
 
 // The four lists over the composer and the pills that open them (docs/web-client-tasks.md
-// "Project screen"). Each pill is an icon and its count, in the composer row; a count of 0 has no
-// pill, except Routines, which shows while the project has any routine (its count is the enabled
-// ones: `counts.routines` is the `routineCounts` of the project). One list is open at a time.
-const TRAYS = [
-  { key: "running", icon: "play", label: "Running", count: (c) => c.running, words: () => "running" },
-  { key: "needs", icon: "unchecked", label: "Needs you", count: (c) => c.needs, words: (count) => count === 1 ? "needs you" : "need you" },
-  { key: "check", icon: "pass", label: "To check", count: (c) => c.check, words: () => "to check" },
-  { key: "routines", icon: "routines", label: "Routines", count: (c) => c.routines.on, shown: (c) => c.routines.total > 0, words: (count, c) => routineWords(c.routines), tone: (c) => c.routines.tone },
-];
-const present = (counts, tray) => tray.shown ? tray.shown(counts) : tray.count(counts) > 0;
-
+// "Project screen"); the trays are defined in trays.js, as Home shows them. One list is open at a time.
 // The open list's name, or null: a list whose count fell to 0 closes. A tap on the open pill
 // closes it; a tap on another pill switches to its list.
 function useTray(counts) {
@@ -205,13 +196,13 @@ function useTray(counts) {
 
 // `bar`: a device that cannot act has no composer, so the pills stand in a bar of their own.
 function Pills({ counts, open, onToggle, bar = false }) {
-  const shown = TRAYS.filter((tray) => present(counts, tray));
+  const shown = shownTrays(counts);
   if (!shown.length) return null;
   return html`
     <div class=${bar ? "pills pill-bar" : "pills"} role="group" aria-label="Running, needs you, to check, routines">
       ${shown.map((tray) => html`
         <button class="pill" type="button" key=${tray.key} data-kind=${tray.key} data-tone=${tray.tone?.(counts) ?? null} aria-pressed=${open === tray.key}
-          aria-controls=${open === tray.key ? "reservoir-list" : null} aria-label=${tray.key === "routines" ? tray.words(0, counts) : `${tray.count(counts)} ${tray.words(tray.count(counts), counts)}`}
+          aria-controls=${open === tray.key ? "reservoir-list" : null} aria-label=${trayWords(tray, counts)}
           onClick=${() => onToggle(tray.key)}>
           <${Icon} name=${tray.icon} /><span class="pill-count"><${Tick} value=${tray.count(counts)} /></span><span class="pill-label" aria-hidden="true">${tray.label}</span>
         </button>`)}
@@ -843,7 +834,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   const asking = room ? [] : (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote }));
   const needing = room ? [] : [...(overview?.needs ?? []), ...asking];
   const [routineList, setRoutineList] = useRoutines(id, !room, chat?.rows?.at(-1)?.key);
-  const counts = { running: room ? 0 : (overview?.tasks ?? []).filter(running).length + (overview?.waiting?.length ?? 0), needs: needing.length, check: room ? 0 : overview?.to_check ?? 0, routines: routineCounts(room ? null : routineList) };
+  const counts = trayCounts(room ? null : overview, routineList?.counts);
   const [tray, toggleTray, setTray] = useTray(counts);
   const [look, setLook] = useState(null);
   const showNeed = (approval) => { setTray("needs"); setLook(approval); };

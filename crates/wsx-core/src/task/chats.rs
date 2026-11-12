@@ -40,6 +40,25 @@ pub fn checked_name(name: &str) -> Result<&str> {
     Ok(name)
 }
 
+/// Why `name` cannot be the name of a new chat, in a phrase, or none: the New chat forms of the
+/// web and the TUI say it before they ask, with `open` the project's open chats. An empty name
+/// has no problem yet.
+pub fn name_problem(name: &str, open: &[String]) -> Option<String> {
+    if name.is_empty() {
+        None
+    } else if name == "manager" {
+        Some("manager: the project's first chat".into())
+    } else if checked_name(name).is_err() {
+        Some(format!(
+            "{name}: a-z, 0-9 and -, up to {MAX_NAME_CHARS}, from a letter"
+        ))
+    } else {
+        open.iter()
+            .any(|each| each == name)
+            .then(|| format!("{name}: already open"))
+    }
+}
+
 /// The project's chat folders besides `manager/`, open or closed, by name.
 pub fn all(project_id: &str) -> Vec<ManagerDir> {
     let Ok(entries) = store::chats_dir(project_id).and_then(|dir| Ok(std::fs::read_dir(dir)?))

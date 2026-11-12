@@ -2335,19 +2335,20 @@ try:
     remove_tui.send(b"q")
     wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close the Tasks view opened from a routine", seconds=60)
     # New chat (docs/tasks.md "TUI", "Chats"): `n` in the Tasks list opens a form with a name and a
-    # goal (and an agent when [[agents]] has entries). A refused name stays in the form with the
-    # store's words; a name makes the chat, opens it titled by its name, and the list shows it under
-    # Chats with its goal; no name opens the manager's chat.
+    # goal (and an agent when [[agents]] has entries). The line under them gives the name's rule and,
+    # as it is typed, why it is refused (a bad name, an open one, none); a name makes the chat,
+    # opens it titled by its name, and the list shows it under Chats with its goal.
     select_in_tui("keep-me")
     remove_tui.send(b"t")
     wait_for(lambda: "All projects" in remove_tui.text(), "t did not open keep-me's Tasks view for New chat", seconds=60)
     remove_tui.send(b"n")
     wait_for(lambda: "New chat" in remove_tui.text() and "name:" in remove_tui.text() and "goal:" in remove_tui.text(),
              lambda: f"n opened no New chat form:\n{remove_tui.text()}", seconds=60)
-    remove_tui.send(b"Bad Name\r")
-    wait_for(lambda: "lowercase letter" in remove_tui.text(), lambda: f"a bad name showed no refusal:\n{remove_tui.text()}", seconds=60)
-    assert "name: Bad Name" in remove_tui.text(), remove_tui.text()
-    remove_tui.send(b"\x7f" * 8 + b"qa\tCheck the notes\r")
+    assert "up to 24" in remove_tui.text(), remove_tui.text()
+    remove_tui.send(b"9lives\r")
+    wait_for(lambda: "from a letter" in remove_tui.text(), lambda: f"a bad name showed no refusal:\n{remove_tui.text()}", seconds=60)
+    assert "name: 9lives" in remove_tui.text() and "┌ New chat" in remove_tui.text(), remove_tui.text()
+    remove_tui.send(b"\x7f" * 6 + b"QA\tCheck the notes\r")
     wait_for(lambda: "press i to write a message" in remove_tui.text() and re.search(r"(?m)^\s*qa\s", remove_tui.text()),
              lambda: f"a name did not open the new chat titled by its name:\n{remove_tui.text()}", seconds=60)
     remove_tui.send(b"\x1b")
@@ -2357,13 +2358,13 @@ try:
     wait_for(lambda: "┌ New chat" in remove_tui.text(), "n opened no form again", seconds=60)
     remove_tui.send(b"\x1b")
     wait_for(lambda: "┌ New chat" not in remove_tui.text(), "Esc did not close the form", seconds=60)
-    remove_tui.send(b"n\r")
-    # ^ The title row: the manager's chat counts "<n> to check  <n> approvals" there and another chat
-    # does not. A line `qa  14:56` is a message's author inside the manager's chat, not a title.
-    wait_for(lambda: "press i to write a message" in remove_tui.text() and re.search(r"\d+ to check\s+\d+ approvals?", remove_tui.text()),
-             lambda: f"no name did not open the manager's chat:\n{remove_tui.text()}", seconds=60)
+    # ^ An open name and no name are refused in the form, which stays.
+    remove_tui.send(b"n" + b"qa\r")
+    wait_for(lambda: "qa: already open" in remove_tui.text(), lambda: f"an open name showed no refusal:\n{remove_tui.text()}", seconds=60)
+    remove_tui.send(b"\x7f\x7f\r")
+    wait_for(lambda: "name: required" in remove_tui.text(), lambda: f"no name showed no refusal:\n{remove_tui.text()}", seconds=60)
     remove_tui.send(b"\x1b")
-    wait_for(lambda: "press i to write a message" not in remove_tui.text(), "Esc did not close the manager chat", seconds=60)
+    wait_for(lambda: "┌ New chat" not in remove_tui.text(), "Esc did not close the form after the refusals", seconds=60)
     remove_tui.send(b"q")
     wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close the Tasks view after New chat", seconds=60)
     closed = wsx("task", "chat", "close", "qa", "-p", "keep-me", "--json")
