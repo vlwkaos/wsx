@@ -39,6 +39,9 @@ pub struct RunLocked {
     /// A release the owner's message approved (`--after`): open To check items stay on it
     #[arg(long, hide = true)]
     pub(super) checks_waived: bool,
+    /// Run from an approval (now or after a land): wait for a running deploy or release
+    #[arg(long, hide = true)]
+    pub(super) approved: bool,
 }
 
 /// `-p` and `--json` of every `wsx task` command (`digest`, `checkin`, `post` and the hidden host

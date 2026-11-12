@@ -16,6 +16,7 @@ use super::trial;
 use super::RECORDED_BY_HOST;
 use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, VecDeque};
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -3598,16 +3599,31 @@ impl Host {
         let deploys = self.record.parent.is_none()
             && load_task_config(&self.record.project_path)
                 .is_ok_and(|settings| settings.deploy_auto && settings.deploy_command.is_some());
-        let mut follow_ups = vec![vec!["task", "close", id.as_str(), "-p", project, "--json"]];
+        // ^ The land takes the deploy lock before it starts the deploy, so an approved release
+        // that waited for this land queues behind that deploy, not before it. A deploy that
+        // runs already holds it: then the detached deploy waits for it as before.
+        let lock = if deploys {
+            store::try_lock_deploys(&self.record.project_id)
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+        let fd = lock.as_ref().map(|lock| lock.as_raw_fd().to_string());
+        let mut follow_ups = vec![(
+            vec!["task", "close", id.as_str(), "-p", project, "--json"],
+            None,
+        )];
         if deploys {
-            follow_ups.insert(
-                0,
-                vec!["task", "deploy", "-p", project, "--if-new", "--json"],
-            );
+            let mut args = vec!["task", "deploy", "-p", project, "--if-new", "--json"];
+            if let Some(fd) = &fd {
+                args.extend(["--run-locked", fd]);
+            }
+            follow_ups.insert(0, (args, lock.as_ref()));
         }
-        for args in follow_ups {
+        for (args, keep) in follow_ups {
             let started = store::follow_up_log(&self.record.project_id)
-                .and_then(|log| hosting::spawn_wsx(&args, log, None));
+                .and_then(|log| hosting::spawn_wsx(&args, log, keep));
             if let Err(error) = started {
                 self.say(&format!("cannot start wsx {}: {error:#}", args.join(" ")));
             }

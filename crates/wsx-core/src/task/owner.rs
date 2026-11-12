@@ -390,7 +390,8 @@ fn run_request(
             }
         }
         ApprovalAction::Deploy | ApprovalAction::Release => {
-            argv.push(action_name(action).into());
+            // ^ An approved run waits for a running deploy or release, as a land's deploy does.
+            argv.extend([action_name(action).into(), "--approved".into()]);
             if let Some(commit) = commit {
                 argv.extend(["--commit".into(), commit]);
             }
