@@ -5,7 +5,7 @@
 use super::checks::CheckItem;
 use super::manager::{
     quote_of, says_nothing, split_quote, ApprovalLine, Author, Level, ManagerEntry, ManagerEvent,
-    Short,
+    Party, Short,
 };
 use super::store::{contains_bytes, ManagerDir, FIRST_READ_BYTES};
 use crate::routine::RunRecord;
@@ -413,8 +413,8 @@ pub enum RowKind {
 pub enum Speaker {
     Owner,
     Manager,
-    /// Another project's manager by its project, or a chat as `chat:<name>`.
-    Peer(String),
+    /// Another project's manager, or a chat of this project.
+    Peer(Party),
 }
 
 impl From<Speaker> for String {
@@ -422,7 +422,7 @@ impl From<Speaker> for String {
         match speaker {
             Speaker::Owner => "owner".into(),
             Speaker::Manager => "manager".into(),
-            Speaker::Peer(key) => format!("peer:{key}"),
+            Speaker::Peer(party) => format!("peer:{}", party.key()),
         }
     }
 }
@@ -775,11 +775,11 @@ fn row_key(entry: &ManagerEntry, kind: &str) -> String {
 }
 
 /// A peer's name: a chat of this project, or another project's manager.
-fn peer_name(key: &str, names: &Names) -> String {
-    match key.strip_prefix("chat:") {
-        Some("manager") => names.manager.to_string(),
-        Some(chat) => chat.to_string(),
-        None => (names.peer)(key),
+fn peer_name(party: &Party, names: &Names) -> String {
+    match party {
+        Party::Chat(chat) if chat == "manager" => names.manager.to_string(),
+        Party::Chat(chat) => chat.clone(),
+        Party::Project(project) => (names.peer)(project),
     }
 }
 
@@ -797,7 +797,7 @@ fn message_row(entry: &ManagerEntry, from: &Author, text: &str, names: &Names) -
                 text,
             ))
         }
-        Author::Peer { from, reply } => (from.key(), reply),
+        Author::Peer { from, reply } => (from, reply),
         Author::Events | Author::Recap => return None,
     };
     Some(ChatRow {
@@ -806,7 +806,7 @@ fn message_row(entry: &ManagerEntry, from: &Author, text: &str, names: &Names) -
             key,
             entry,
             Speaker::Peer(peer.clone()),
-            peer_name(&peer, names),
+            peer_name(peer, names),
             text,
         )
     })
@@ -908,7 +908,7 @@ fn note_row(entry: &ManagerEntry, names: &Names) -> Option<ChatRow> {
             tag: Some(format!(
                 "{} {}",
                 if *reply { "Reply to" } else { "To" },
-                peer_name(to, names)
+                peer_name(&Party::from_key(to), names)
             )),
             ..ChatRow::said(
                 row_key(entry, "sent"),

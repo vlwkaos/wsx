@@ -3872,11 +3872,16 @@ await closeSheet("the page", `#/p/${plansArg}`);
   // ^ plans' manager says it to ui's.
   const asked = await say(`RUN wsx task say -p ui --from-chat "${fromPlans}" --json`, plansArg);
   if (asked !== 200) await fail(`plans' manager was not asked to write to ui's: ${asked}`);
+  // ^ ui's own chat billing (made by the fixture) writes to ui's first chat: `peer:chat:billing` is no project's.
+  const fromBilling = "Chat note: #1 is ours";
+  const billingAsked = await evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: ${JSON.stringify(`RUN wsx task say -p ui --from-chat "${fromBilling}" --json`)}, chat: 'billing' }) }).then((response) => response.status)`);
+  if (billingAsked !== 200) await fail(`ui's chat billing was not asked to write to the first chat: ${billingAsked}`);
   await go(chat);
   const chipsIn = (needle) => evaluate(`(() => { const bubble = [...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(needle)}));
     return bubble && { author: bubble.dataset.speaker, text: bubble.querySelector('.bubble-body').textContent.trim().replace(/\\s+/g, ' '),
       chips: [...bubble.querySelectorAll('a.task-chip')].map((chip) => ({ href: chip.getAttribute('href'), text: chip.textContent.trim(), label: chip.getAttribute('aria-label') })) }; })()`);
-  for (const [what, needle] of [["the post of wsx task post", plansMark], ["plans' manager's note", peerWords]]) {
+  for (const [what, needle] of [["the post of wsx task post", plansMark], ["plans' manager's note", peerWords], ["the billing chat's note", fromBilling]]) {
     await until(`[...document.querySelectorAll('.log .bubble')].some((node) => node.textContent.includes(${JSON.stringify(needle)}))`, `${what} did not reach ui's chat`, 1200);
   }
   const own = await chipsIn(plansMark);
@@ -3884,6 +3889,13 @@ await closeSheet("the page", `#/p/${plansArg}`);
     || own.chips[1].href !== `#/p/${project}/t/1` || own.chips[1].text !== "#1") await fail(`ui's own reply reads ${JSON.stringify(own)}`);
   const theirs = await chipsIn(peerWords);
   if (theirs.author !== "peer" || theirs.chips.length !== 1 || theirs.chips[0].href !== `#/p/${plansArg}/t/1` || !/^plans #1$/.test(theirs.chips[0].text)) await fail(`plans' message reads ${JSON.stringify(theirs)}`);
+  // ^ The billing chat's bare #1 is ui's #1, and its name over the message is plain text, no link.
+  const ours = await chipsIn(fromBilling);
+  const billingName = await evaluate(`(() => { const bubble = [...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(fromBilling)}));
+    return bubble && { link: !!bubble.querySelector('a.bubble-author'), name: bubble.querySelector('.bubble-author')?.textContent.trim() ?? null }; })()`);
+  if (ours.author !== "peer" || ours.chips.length !== 1 || ours.chips[0].href !== `#/p/${project}/t/1` || ours.chips[0].text !== "#1" || billingName?.link !== false) {
+    await fail(`the billing chat's message reads ${JSON.stringify({ ours, billingName })}`);
+  }
   await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).scrollIntoView({ block: 'center' })`);
   // ^ Not `shot`: the long chat holds the manager's `"hold": null` JSON reply, which its raw-null audit refuses.
   await capture(`${size[0]}x${size[1]}-task-mentions`);
