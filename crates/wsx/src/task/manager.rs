@@ -140,8 +140,8 @@ pub(super) enum Event {
     /// `wsx task new` with `tasks.workflow.idle` ended: when it began, and the task number or
     /// the error.
     IdleStarted(u64, Result<u32, String>),
-    /// The agent's `say --from-manager` reached another project's manager, or its
-    /// `say --from-chat` a chat of this project (`to` is `chat:<name>`).
+    /// The agent's `say --from-chat` reached a chat of this project or another project's
+    /// first chat (`to` is the `Party` key).
     Sent {
         to: String,
         text: String,
@@ -155,9 +155,9 @@ pub(super) enum Event {
     },
 }
 
-/// The head of the events this manager hears when `hearer` did not take them.
-fn refusal(hearer: &Party) -> String {
-    match hearer {
+/// The head of the events this manager hears when `party` did not take them.
+fn refusal(party: &Party) -> String {
+    match party {
         Party::Chat(chat) => {
             format!("chat {chat} did not take the events of its tasks, so they are yours:")
         }
@@ -168,7 +168,7 @@ fn refusal(hearer: &Party) -> String {
 }
 
 /// Answers this manager owes other projects' managers: one per message from one of them
-/// that a turn delivered. A `say --from-manager --reply` spends one, so a reply is never
+/// that a turn delivered. A `say --from-chat --reply` spends one, so a reply is never
 /// answered and a message is answered once. ref: docs/tasks.md "Managers talk"
 type Owed = std::sync::Arc<std::sync::Mutex<BTreeMap<String, u32>>>;
 
