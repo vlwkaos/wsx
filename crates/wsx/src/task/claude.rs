@@ -372,6 +372,10 @@ impl ClaudeAgent {
             // leaves the last one. ref: docs/tasks.md "Usage"
             let limit = |info: &Value| {
                 let _ = store::note_rate_limit("claude", info, now_unix_ms());
+                // ^ A call went through: a limit on record has lifted early.
+                if rate_allows(info) {
+                    store::clear_limit("claude");
+                }
             };
             let read = read_stream(stdout, cost_base, limit, |line| {
                 events.send(wrap(Some(line))).is_ok()
@@ -792,5 +796,87 @@ fn progress_text(item: &Value) -> Option<(String, bool)> {
             (!text.is_empty()).then(|| (clip(text, PROGRESS_CHARS), true))
         }
         _ => None,
+    }
+}
+
+/// How often one host on the machine asks Claude whether a usage limit on record has lifted
+/// before its reset; an owner message may ask sooner, at most this often.
+/// ref: docs/tasks.md "Agents"
+const LIMIT_PROBE_EVERY_MS: u64 = 10 * 60_000;
+const LIMIT_PROBE_FORCED_MS: u64 = 30_000;
+const LIMIT_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// Claude's rate limit event says the account takes calls.
+fn rate_allows(info: &Value) -> bool {
+    matches!(
+        info["status"].as_str(),
+        Some("allowed") | Some("allowed_warning")
+    )
+}
+
+/// While Claude's usage limit is on record, ask the provider with one tiny call whether it has
+/// lifted early (the owner used a reset): an allowed answer removes the record, and every
+/// waiting host resumes. A reset that comes within the probe period is waited for. `forced`
+/// (the owner wrote) probes at any distance. Runs in its own thread; at most one probe per
+/// period on the machine. ref: docs/tasks.md "Agents"
+pub fn probe_limit(forced: bool) {
+    let now = now_unix_ms();
+    let Some(until_ms) = store::limited_until("claude", now) else {
+        return;
+    };
+    let every = match forced {
+        true => LIMIT_PROBE_FORCED_MS,
+        false if until_ms <= now + LIMIT_PROBE_EVERY_MS => return,
+        false => LIMIT_PROBE_EVERY_MS,
+    };
+    if !store::claim_limit_probe("claude", now, every) {
+        return;
+    }
+    std::thread::spawn(run_limit_probe);
+}
+
+fn run_limit_probe() {
+    use wsx_core::process::{run_bounded, Bound, Options, Stderr};
+    let mut command = std::process::Command::new("claude");
+    // ^ No project folder: no CLAUDE.md or settings, no tools asked for.
+    command
+        .current_dir(store::state_dir())
+        .env_clear()
+        .envs(
+            KEPT_ENV
+                .iter()
+                .filter_map(|name| Some((*name, std::env::var_os(name)?))),
+        )
+        .args(["-p", "--output-format", "stream-json", "--verbose"])
+        .args(["--model", "haiku", "--setting-sources", ""])
+        .arg("Reply with the word ok.")
+        .stdin(std::process::Stdio::null());
+    let options = Options {
+        timeout: LIMIT_PROBE_TIMEOUT,
+        stdout: Bound::Tail(256 * 1024),
+        stderr: Stderr::Null,
+        reap: true,
+    };
+    let Ok(run) = run_bounded(&mut command, &options) else {
+        return;
+    };
+    let now = now_unix_ms();
+    let mut allowed = false;
+    for line in run.stdout.split(|byte| *byte == b'\n') {
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        match value["type"].as_str() {
+            Some("rate_limit_event") => {
+                let info = &value["rate_limit_info"];
+                let _ = store::note_rate_limit("claude", info, now);
+                allowed |= rate_allows(info);
+            }
+            Some("result") => allowed |= value["is_error"] == false,
+            _ => {}
+        }
+    }
+    if allowed {
+        store::clear_limit("claude");
     }
 }

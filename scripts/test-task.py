@@ -727,6 +727,42 @@ def manager_up(created):
     assert not [e for e in entries() if e['kind'] == 'rotated' and e['unix_ms'] >= failed[0]['unix_ms']], entries()[-20:]
     retries = launches()[first_launch:]
     assert len({t['pid'] for t in retries}) == len(retries) >= 2 and all(t['resume'] for t in retries), retries
+    # ^ A usage limit that lifts before its reset, as when the owner uses one (docs/tasks.md
+    # "Agents"): a probe finds it still on, an owner message probes again, and once a call goes
+    # through the record goes: the held manager and a task that waits 3 hours both go on.
+    agents_dir = state / 'wsx/tasks/agents'
+    limit_record, probe_stamp = agents_dir / 'claude.json', agents_dir / 'claude.probe.json'
+    reset_mark = tmp / 'fake-claude.trace.reset'
+    probes = lambda: [t for t in traces() if t.get('limit_probe')]
+    # ^ No turn in flight: a call that goes through reports `allowed`, which ends the limit.
+    wait(lambda: entries()[-1]['kind'] in ('reply', 'delivered') and time.time() * 1000 - entries()[-1]['unix_ms'] > 5000,
+         'a quiet manager', 60)
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    limit_record.write_text(json.dumps({'until_ms': int((time.time() + 3 * 3600) * 1000)}))
+    held = js('task', 'say', 'STATUS during a long limit')
+    wait(lambda: probes(), lambda: 'the limit probe (state %s, agents %s, chat %s)' % (
+        (manager_log.parent / 'state.json').read_text()[:600], sorted(p.name for p in agents_dir.iterdir()),
+        [(e['kind'], str(e.get('text', e.get('reason', '')))[:80]) for e in entries()[-6:]]))
+    time.sleep(3)
+    assert limit_record.exists() and len(probes()) == 1, probes()
+    assert not [e for e in chat() if e['kind'] == 'reply' and held['id'] in e['to']], chat()[-3:]
+    reset_mark.touch()
+    # ^ An owner message probes at most every 30 s: the first probe was just now.
+    probe_stamp.write_text(json.dumps({'unix_ms': 0}))
+    nudge = js('task', 'say', 'STATUS after the reset')
+    replied = reply_to(nudge['id'])
+    assert held['id'] in replied['to'] and not limit_record.exists() and len(probes()) == 2, (replied, probes())
+    reset_mark.unlink()
+    waited = js('task', 'new', 'LIMIT 3600 WORK lr.txt')['id']
+    wait(lambda: kinds(waited, 'limit_wait'), 'the task waits on a 3 hour limit')
+    assert json.loads(limit_record.read_text())['until_ms'] > (time.time() + 3000) * 1000, limit_record.read_text()
+    reset_mark.touch()
+    probe_stamp.write_text(json.dumps({'unix_ms': 0}))
+    wait(lambda: kinds(waited, 'result'), 'the task goes on once the limit lifts', 40)
+    assert kinds(waited, 'limit_wait', 'result') == ['limit_wait', 'result'] and not limit_record.exists(), log(waited)
+    js('task', 'close', waited, '--discard')
+    reset_mark.unlink()
+    probe_stamp.unlink()
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
     assert launch['git_optional_locks'] == '0', launch
     # ^ docs/configuration.md "Profiles": the manager and every Claude worker so far run under demo's profile
@@ -4182,6 +4218,7 @@ def part_worker(created=None):
     configure(LAND_CONFIG, 'review wait over')
     # A usage limit is no failure: the task waits on `limit` and its session continues after the
     # reset, oldest wait first, one task at a time (docs/tasks.md "Claude adapter").
+    traced_before_limits = len(traces())
     first = js('task', 'new', 'LIMIT 4 WORK la.txt')['id']
     limited = lambda n: (current := show(n))['state'] == 'waiting' and current['record'].get('waiting') and current
     waiting = wait(lambda: limited(first), 'limit wait')['record']['waiting']
@@ -4198,7 +4235,7 @@ def part_worker(created=None):
         assert kinds(n, 'limit_wait', 'result', 'check_retry') == ['limit_wait', 'result'], log(n)
         assert "You've hit" not in next(e for e in log(n) if e['kind'] == 'result')['summary']
     sessions = {show(n)['record']['agent_session']: n for n in (first, second)}
-    resumed = [sessions.get(t['session']) for t in traces()
+    resumed = [sessions.get(t['session']) for t in traces()[traced_before_limits:]
                if not t.get('manager') and str(t.get('message', '')).startswith('The usage limit has reset')]
     assert resumed == [first, second], resumed
     for n in (first, second):

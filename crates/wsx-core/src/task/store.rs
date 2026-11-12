@@ -475,6 +475,43 @@ pub fn account_limit(account: &str, now_ms: u64) -> Option<AccountLimit> {
     read_limit(account).filter(|limit| limit.until_ms > now_ms)
 }
 
+/// `account` takes turns again before its recorded reset (the owner used a reset, or the
+/// provider lifted it): the record goes, so every waiting host resumes at its next look.
+/// ref: docs/tasks.md "Agents"
+pub fn clear_limit(account: &str) {
+    if let Ok(path) = account_file(account, ".json") {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// Claim `account`'s next limit probe at `now_ms`: false while another host probed within
+/// `every_ms`, so one host on the machine asks the provider, not each one.
+pub fn claim_limit_probe(account: &str, now_ms: u64, every_ms: u64) -> bool {
+    let Ok(path) = account_file(account, ".probe.json") else {
+        return false;
+    };
+    let last = read_bounded_if_exists(&path, 4096)
+        .ok()
+        .flatten()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|record| record["unix_ms"].as_u64());
+    if last.is_some_and(|last| last.saturating_add(every_ms) > now_ms) {
+        return false;
+    }
+    if let Some(dir) = path.parent() {
+        if fs::create_dir_all(dir).is_err() {
+            return false;
+        }
+    }
+    write_atomic(
+        &path,
+        serde_json::json!({ "unix_ms": now_ms })
+            .to_string()
+            .as_bytes(),
+    )
+    .is_ok()
+}
+
 /// When `account`'s recorded limit ends, if it is still ahead of `now_ms`.
 pub fn limited_until(account: &str, now_ms: u64) -> Option<u64> {
     account_limit(account, now_ms).map(|limit| limit.until_ms)
