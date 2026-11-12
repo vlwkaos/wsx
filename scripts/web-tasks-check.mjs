@@ -3584,6 +3584,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   };
   const choose = (name, value) => evaluate(`(() => { const field = document.querySelector('${sheet} [name=${name}]'); field.value = ${JSON.stringify(value)}; field.dispatchEvent(new Event(field.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })); })()`);
   await open();
+  await until(`!!document.querySelector('${sheet} select[name=agent] option[value="haiku-chat"]')`, "the New chat sheet lists no agents", 30);
   const fields = await evaluate(`({ projects: [...document.querySelectorAll('${sheet} select[name=project] option')].map((option) => option.textContent), goal: document.querySelector('${sheet} textarea[name=goal]').disabled, agents: [...document.querySelectorAll('${sheet} select[name=agent] option')].map((option) => option.value), button: document.querySelector('${sheet} button[type=submit]').textContent, plus: document.querySelectorAll('[aria-label="Add project"]').length })`);
   if (!fields.goal || fields.button !== "Open" || !fields.agents.includes("haiku-chat") || fields.plus || fields.projects.some((name, at) => name === "Add project…" && at !== fields.projects.length - 1)) await fail(`the New chat sheet is ${JSON.stringify(fields)}`);
   await shot("new-chat");
