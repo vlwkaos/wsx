@@ -594,8 +594,9 @@ if (uiRow.count !== "6" || uiRow.status !== "#1 Waiting for your answer" || !/ag
 const calmRow = homeRows.at(-1);
 if (calmRow.name !== "calm" || calmRow.count || calmRow.status !== "No tasks yet" || calmRow.state) await fail(`the calm row reads ${JSON.stringify(calmRow)}`);
 const plansRow = homeRows.find((row) => row.name === "plans");
-// ^ #1 waits for an answer; #2 is ready to land.
-if (plansRow?.status !== "#1 Waiting for your answer" || plansRow.count !== "2") await fail(`the plans row reads ${JSON.stringify(plansRow)}`);
+// ^ #1 waits for an answer; #2 is ready to land. The needs tray counts them with the project's open questions, as the pill does.
+const plansView = await evaluate(`fetch('api/tasks/${plansArg}').then((r) => r.json()).then((view) => ({ needs: view.needs.length, asks: view.asks.length }))`);
+if (plansRow?.status !== "#1 Waiting for your answer" || plansView.needs !== 2 || plansRow.count !== String(plansView.needs + plansView.asks)) await fail(`the plans row reads ${JSON.stringify([plansRow, plansView])}`);
 // Projects with agent sessions and no task: the sessions in words, and the time of the newest.
 // ^ `quiet` went done while the fixture was built, which can take over a minute.
 const sessionRows = { busy: /^2 working$/, quiet: /^claude in main done (just now|\d+m ago)$/, gone: /^claude in main exited$/ };
