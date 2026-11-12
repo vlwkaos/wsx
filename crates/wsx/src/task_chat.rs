@@ -707,8 +707,6 @@ impl ManagerChat {
     }
 }
 
-/// The conversation as rows (`chat_rows`), the open items then the waiting approvals, and
-/// the manager's last step. No manager folder yet is an empty chat.
 /// The project whose manager wrote the row; a role's message is no project's (`peer:role:<n>`).
 pub fn peer_of(row: &ChatRow) -> Option<String> {
     match &row.author {
@@ -717,6 +715,8 @@ pub fn peer_of(row: &ChatRow) -> Option<String> {
     }
 }
 
+/// The conversation as rows (`chat_rows`), the open items then the waiting approvals, and
+/// the manager's last step. No manager folder yet is an empty chat.
 fn read(
     project: &str,
     store: &str,
