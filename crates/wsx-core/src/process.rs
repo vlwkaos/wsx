@@ -408,9 +408,11 @@ impl ProcArgs {
     }
 }
 
+// ^ A tuple struct, so `ProcArgs::default()` is a call on both targets (a unit struct makes clippy
+// say `default_constructed_unit_structs` on Linux).
 #[cfg(not(target_os = "macos"))]
 #[derive(Default)]
-struct ProcArgs;
+struct ProcArgs(());
 
 #[cfg(not(target_os = "macos"))]
 impl ProcArgs {

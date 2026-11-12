@@ -2358,7 +2358,9 @@ try:
     remove_tui.send(b"\x1b")
     wait_for(lambda: "┌ New chat" not in remove_tui.text(), "Esc did not close the form", seconds=60)
     remove_tui.send(b"n\r")
-    wait_for(lambda: "press i to write a message" in remove_tui.text() and not re.search(r"(?m)^\s*qa\s", remove_tui.text()),
+    # ^ The title row: the manager's chat counts "<n> to check  <n> approvals" there and another chat
+    # does not. A line `qa  14:56` is a message's author inside the manager's chat, not a title.
+    wait_for(lambda: "press i to write a message" in remove_tui.text() and re.search(r"\d+ to check\s+\d+ approvals?", remove_tui.text()),
              lambda: f"no name did not open the manager's chat:\n{remove_tui.text()}", seconds=60)
     remove_tui.send(b"\x1b")
     wait_for(lambda: "press i to write a message" not in remove_tui.text(), "Esc did not close the manager chat", seconds=60)
