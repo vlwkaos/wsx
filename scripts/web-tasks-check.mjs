@@ -455,12 +455,21 @@ async function motion() {
   const restore = () => evaluate(`(async () => (await ${pageModule("store.js")}).update(globalThis.motionKept))()`);
   for (let attempt = 1; attempt < 3 && !good(seen); attempt++) { await restore(); await pause(1000); seen = await run(false); }
   if (!good(seen)) await fail(`motion at ${w}px: ${JSON.stringify(seen)}`);
+  // ^ A real overview read between the tries and here can undo the fake busy: set it again, as `run` did.
+  const typingOn = () => evaluate(`(async () => {
+    const { state, update } = await ${pageModule("store.js")};
+    const ui = state.projects.find((project) => project.name === 'ui').id;
+    update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], busy: true } } });
+    await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+  })()`);
+  await typingOn();
   await expectAll("typing dots", ".row-typing .typing-dot", "typing");
   await expectAll("the tray counts", ".home-row .tray-count", "pop");
   await expectAll("the status line", ".home-row .row-context:not([data-loading])", "arrive");
   await expectAll("the notice", ".notice", "slide-down");
   await expectAll("the toast timer", ".notice-timer", "drain");
   await expectAll("the loading placeholder", ".skeleton", "shimmer");
+  await typingOn();
   await capture(`${w}-motion-home-typing`);
   await pause(60);
   await capture(`${w}-motion-home-toast`);
