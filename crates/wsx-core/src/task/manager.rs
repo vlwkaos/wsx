@@ -188,7 +188,7 @@ pub enum ManagerEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         quote: Option<u64>,
     },
-    /// This manager's message to another project's manager (`say --from-manager`).
+    /// This manager's message to another project's manager (`say --from-chat`).
     Sent {
         to: String,
         text: String,
