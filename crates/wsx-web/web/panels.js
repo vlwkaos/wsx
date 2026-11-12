@@ -107,7 +107,7 @@ function Tile({ card, project }) {
 }
 
 const Cards = ({ item, project }) => html`
-  <div class="panel-cards-block">
+  <div>
     ${item.title && html`<h4 class="panel-cards-title">${item.title}</h4>`}
     <div class="panel-cards">${item.items.map((card, at) => html`<${Tile} key=${at} card=${card} project=${project} />`)}</div>
   </div>`;

@@ -30,18 +30,22 @@ pub(crate) fn ensure_manager(project: Option<&str>) -> Result<(bool, ManagerDir)
     owner::ensure_manager(&name, &main, &exe, None, launch_manager(&main))
 }
 
-/// Send to the manager, or to the open chat `to`. `from_chat`: this host's agent sends it, and
-/// whether it is a reply; the sender is the acting chat (the first as `manager`), and for
-/// another project (`-p`) its first chat is the one reached.
-pub(crate) fn say(
+/// `wsx task say`: to the manager, or to the open chat `to`, from the owner or a chat.
+/// `from_chat`: this host's agent sends it (`reply`: as a reply); the sender is the acting chat
+/// (the first as `manager`), and for another project (`-p`) its first chat is the one reached.
+pub(crate) fn say_command(
     project: Option<&str>,
     to: Option<&str>,
-    text: String,
-    from_chat: Option<bool>,
+    text: PromptSource,
+    (from_chat, reply): (bool, bool),
     json: bool,
 ) -> Result<()> {
+    if reply && !from_chat {
+        bail!("--reply answers with --from-chat");
+    }
+    let text = text.read(MAX_MESSAGE_BYTES)?;
     let (name, main) = project_entry(project)?;
-    let from = match from_chat {
+    let from = match from_chat.then_some(reply) {
         None => None,
         Some(reply) => {
             // ^ Only a manager host sets the sender's project (broker.rs).
@@ -372,26 +376,6 @@ pub(crate) fn manager_command(project: Option<&str>, json: bool) -> Result<()> {
         println!("manager {state}");
         Ok(())
     }
-}
-
-/// `wsx task say`: to the manager or another chat, from the owner or a chat.
-pub(crate) fn say_command(
-    project: Option<&str>,
-    to: Option<&str>,
-    text: PromptSource,
-    (from_chat, reply): (bool, bool),
-    json: bool,
-) -> Result<()> {
-    if reply && !from_chat {
-        bail!("--reply answers with --from-chat");
-    }
-    say(
-        project,
-        to,
-        text.read(MAX_MESSAGE_BYTES)?,
-        from_chat.then_some(reply),
-        json,
-    )
 }
 
 /// `wsx task boundary-profile`: the manager's Seatbelt profile (hidden; the boundary scenario).

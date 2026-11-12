@@ -1429,10 +1429,7 @@ impl Manager {
         line: String,
         mut short: Short,
     ) {
-        let chat = record
-            .created_by
-            .chat()
-            .filter(|chat| open_chats.iter().any(|open| open == chat));
+        let chat = chats::owner(record.created_by.chat(), open_chats);
         let to = match (chat, record.created_by.origin()) {
             (Some(chat), _) => Some(Party::Chat(chat.to_string())),
             (None, Some(origin)) => Some(Party::Project(origin.to_string())),

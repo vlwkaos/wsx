@@ -78,8 +78,6 @@ fn stale_of(store: &Store, r: &Record) -> Option<bool> {
 struct Piece {
     name: String,
     text: String,
-    /// Where the whole text is read, named when it is cut.
-    whole: String,
 }
 
 /// The start block of a task, within `budget` bytes; empty when there is nothing for it.
@@ -119,7 +117,7 @@ fn fit(piece: &Piece, room: usize) -> Option<String> {
         "\n[cut: {} bytes of {}; read {}]",
         piece.text.len(),
         piece.name,
-        piece.whole
+        piece.name
     );
     let keep = room
         .checked_sub(note.len())
@@ -136,7 +134,6 @@ fn area(root: &Path, glob: &str, file: &str) -> Piece {
     Piece {
         name: file.into(),
         text,
-        whole: file.into(),
     }
 }
 

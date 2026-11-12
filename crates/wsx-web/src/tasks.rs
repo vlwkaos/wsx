@@ -1746,7 +1746,7 @@ pub fn usage_all(app: &App, filter: &task::usage::Filter) -> Outcome<Value> {
 /// `media_download`, else the item has no `url`); an upload is in the media store or `gone`
 /// (expired).
 pub fn media(app: &App, scope: &Scope, filter: &task::media::Filter) -> Outcome<Value> {
-    let page = task::media::list(&scope.store, filter, Some(&scope.path)).map_err(internal)?;
+    let page = task::media::list(&scope.store, filter, &scope.path).map_err(internal)?;
     let root = app
         .site
         .allows(crate::site::Capability::MediaDownload)

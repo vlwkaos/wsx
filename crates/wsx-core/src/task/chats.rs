@@ -171,15 +171,9 @@ pub struct ChatAgent {
 }
 
 fn entry_agent(entry: &str) -> Option<ChatAgent> {
-    let (config, _) = crate::config::global::GlobalConfig::load().ok()?;
-    let agent = config
-        .agents
+    agent_entries()
         .into_iter()
-        .find(|agent| agent.name == entry)?;
-    Some(ChatAgent {
-        adapter: agent.adapter?,
-        model: agent.model?,
-    })
+        .find_map(|(name, agent)| (name == entry).then_some(agent))
 }
 
 /// `agent`: a name in `[[agents]]` that has a headless adapter and a model, as a task's
@@ -322,7 +316,7 @@ fn migrate(project_id: &str, project: &Path) -> Result<()> {
     let digest = project.join(crate::memory::index::DIGEST_FILE);
     let has = |file: &Path, key: &[u8]| -> Result<bool> {
         Ok(store::read_bounded_if_exists(file, 64 << 20)?
-            .is_some_and(|bytes| bytes.windows(key.len()).any(|at| at == key)))
+            .is_some_and(|bytes| store::contains_bytes(&bytes, key)))
     };
     let (role_requests, role_digest) = (
         has(&approvals, br#""role""#)?,
@@ -428,8 +422,8 @@ fn rewrite_dir(dir: &Path, names: &[&str]) -> Result<()> {
         let Some(bytes) = store::read_bounded_if_exists(&path, 64 << 20)? else {
             continue;
         };
-        if !bytes.windows(5).any(|at| at == b"role:")
-            && !bytes.windows(11).any(|at| at == b"role-reply:")
+        if !store::contains_bytes(&bytes, b"role:")
+            && !store::contains_bytes(&bytes, b"role-reply:")
         {
             continue;
         }
@@ -482,7 +476,7 @@ fn rename_peers(value: &mut Value, names: &[&str]) -> bool {
 
 /// Drop the requests of the removed `role` action and the decisions of their ids.
 fn drop_role_approvals(path: &Path, bytes: &[u8]) -> Result<()> {
-    if !bytes.windows(6).any(|at| at == br#""role""#) {
+    if !store::contains_bytes(bytes, br#""role""#) {
         return Ok(());
     }
     let lines: Vec<(&[u8], Option<Value>)> = bytes

@@ -51,7 +51,7 @@ impl From<std::io::Error> for Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-fn usage<T>(message: impl Into<String>) -> Result<T> {
+pub(super) fn usage<T>(message: impl Into<String>) -> Result<T> {
     Err(Error::Usage(message.into()))
 }
 
@@ -495,12 +495,9 @@ impl Store {
     }
 
     /// Give the facts that hold no `commit` and no `paths` the pair `find` has for them, in one
-    /// write under the lock; the slugs changed. Their time stays, so the views keep their
+    /// write under the lock. Their time stays, so the views keep their
     /// order. A rerun finds nothing to give. ref: docs/memory.md "Capture"
-    pub fn backfill(
-        &self,
-        find: impl Fn(&Record) -> Option<(String, Vec<String>)>,
-    ) -> Result<Vec<String>> {
+    pub fn backfill(&self, find: impl Fn(&Record) -> Option<(String, Vec<String>)>) -> Result<()> {
         let _lock = self.lock(true)?;
         let mut changed = Vec::new();
         for mut r in self.load()?.records.into_values() {
@@ -519,7 +516,7 @@ impl Store {
         if !changed.is_empty() {
             self.append_all("backfill", &changed)?;
         }
-        Ok(changed.into_iter().map(|r| r.slug).collect())
+        Ok(())
     }
 
     /// Run `f` on the current records with the store locked, so no write lands meanwhile.

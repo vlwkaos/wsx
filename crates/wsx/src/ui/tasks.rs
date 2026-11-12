@@ -137,8 +137,7 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
         ));
     }
     // ^ A land or a hand waiting for `y`, what runs, or how the last action ended.
-    if list.detail.is_some() {
-        let id = list.detail.unwrap_or_default();
+    if let Some(id) = list.detail {
         let (words, color) = match (&list.confirm, &list.acting, &list.notice) {
             (Some(what), _, _) => (
                 format!("{} #{id}? (y)es  (n)o", confirm_words(what)),

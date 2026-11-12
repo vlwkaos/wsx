@@ -33,7 +33,7 @@ flowchart LR
 - A deploy follows a land by itself where `tasks.deploy.auto` is set.
 - Deploy, release, discard, push and project add wait for you in **Needs you**.
 - **To check** holds only what a person must look at or feel.
-- A project has several chats: each a manager with its own name, goal and log, for one area of work; the project's tasks, files and memory are shared.
+- A project has several chats: each a manager with its own name, goal and log, for one area of work; the project's tasks, files and memory are shared. `wsx task chat new|list|close` manages them, `wsx task say --to <name>` writes to one.
 - A manager can run tasks in another registered project. It gets their events and memo back.
 - Routines (cron or event) and check-ins wake the manager. `wsx memory` keeps its records.
 

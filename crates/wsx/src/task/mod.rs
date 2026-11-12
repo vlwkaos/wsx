@@ -297,7 +297,7 @@ fn ask_host_ok(dir: &TaskDir, request: &HostRequest) -> Result<HostResponse> {
     Ok(response)
 }
 
-/// Create the manager's or a role's hidden session (its label), starting wsxd when it does
+/// Create the manager's or a chat's hidden session (its label), starting wsxd when it does
 /// not run.
 pub(crate) fn launch_manager(main: &Path) -> impl FnOnce(String, Vec<String>) -> Result<()> + '_ {
     move |label, argv| {
@@ -313,7 +313,7 @@ pub(crate) fn launch_manager(main: &Path) -> impl FnOnce(String, Vec<String>) ->
     }
 }
 
-/// True when the manager's or a role's agent runs this command (`WSX_TASK_ACTOR`).
+/// True when the manager's or a chat's agent runs this command (`WSX_TASK_ACTOR`).
 /// ^ A guard against the agents' mistakes, not a security boundary: anything that runs
 /// commands as the owner can unset it (docs/tasks.md "Approvals").
 fn acting_as_manager() -> bool {
