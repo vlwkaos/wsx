@@ -7,7 +7,7 @@ Sources: `docs/tasks.md`, `docs/memory.md`, `docs/design/{memory-system,memory-e
 
 - The owner decides; one chat per project runs the work; a task is an isolated copy proven by host checks. These three facts are the whole system. Everything else is a cache, a convenience or a leftover.
 - The manager's text is 12.2 KB; 45% of it (gates and tool docs) belongs in code or `--help`. The lean prompt is about 4 KB of judgment only, and the same prompt serves Sonnet and a small model because the gates refuse instead of asking the model to remember.
-- Truth lives in 6 append-only files per project plus `task.json`. The 9 derived copies (two overview caches, four `seen` copies, four notes views, search digest, event `short`) each get one owner or go.
+- Truth lives in 6 append-only files per project plus `task.json`. Each derived copy (two overview caches, four `seen` copies, four notes views, the search digest, the event `short`) gets one owner or goes.
 - Worker time is not the model: check-run waits are 50% of a task's life and 120 of 229 CI failures are not the task's (#427). The scale fix is scheduling and triage by the host, not a faster agent.
 - No new mechanism for "a stronger model for this talk": a `model` field on the Say request, set for that turn, back after. Capability levels reuse `Policy::of(trust, role, may)`.
 
@@ -33,7 +33,7 @@ flowchart LR
 
 Intention: the owner talks to one manager per project and only decides; the manager turns messages into tasks; tasks run in isolated copies; the host proves them (`docs/tasks.md` "Manager", "Checks"). Essential objects: project, chat (the manager is the first chat, #410/#418), task, check item, approval, routine, memory record. Each has a store file and a web and TUI view.
 
-Gap, with evidence: four objects exist with 0 measured uses since 10-29 (`orchestration-review.md` counts; store logs confirm no `trial`, `batch` or `--into` event in 7 days): batch land (`crates/wsx/src/task/batch.rs`, 206 lines), trial (`trial.rs` 81 lines plus about 90 in `host.rs` and branches in `cmd/deploy.rs`), parent `--into` (about 85 lines in `host.rs`, `cmd/new.rs:262-301`, `boundary.rs:77-82`), preview (`preview.rs` 347 lines, rarely used). `hand` and `handback` (`host.rs:1176-1250`; handback is `hand --back`) are used and stay.
+Gap, with evidence: four objects exist with 0 measured uses since 10-29 (`orchestration-review.md` counts; in the last 7 days the task logs hold no trial or batch event and no task has a `parent`): batch land (`crates/wsx/src/task/batch.rs`, 206 lines), trial (`trial.rs` 81 lines plus about 90 in `host.rs` and branches in `cmd/deploy.rs`), parent `--into` (about 85 lines in `host.rs`, `cmd/new.rs:262-301`, `boundary.rs:77-82`), preview (`preview.rs` 347 lines, seldom used per `orchestration-review.md`). `hand` and `handback` (`host.rs:1176-1250`; handback is `hand --back`) are used and stay.
 
 | Step | Value / cost | Proof |
 |---|---|---|
@@ -46,7 +46,7 @@ Risk: the owner may want parent tasks back for release work; the ledger keeps `-
 
 Intention: every fact written once, by the process that learns it; clients read, never rebuild.
 
-Truth today (store, 7 days): `task.json` per task, `log.jsonl` per task, `manager/log.jsonl` 4.6 MB, `memory/records.jsonl` 252 KB (225 records: 35 active rules, 122 superseded, 47 facts, 21 episodes), `approvals.jsonl` 40 KB, `checks.jsonl` 164 KB, `deploys.jsonl` 196 KB. Derived: `search.jsonl` 6.2 MB (rebuildable digest), four notes views (`decisions.md` 4,140 B, `context.md` 9,544 B, `decisions-archive.md` 20.6 KB, 4 `.pre-memory` copies), 29 loose notes files (about 37 KB, plus a `skill-backup` dir and `t371.json`/`t376.diff` scratch), `overview.md`, `report.md` per task, `follow-up.log` 2.6 MB, `grants.json` 85 B (dead: no code reads grants), `state.json` 55 KB with 15 keys.
+Truth today (store sizes on 11-13): `task.json` per task, `log.jsonl` per task, `manager/log.jsonl` 4.6 MB, `memory/records.jsonl` 252 KB (225 records: 35 active rules, 122 superseded, 47 facts, 21 episodes), `approvals.jsonl` 40 KB, `checks.jsonl` 164 KB, `deploys.jsonl` 196 KB. Derived: `search.jsonl` 6.2 MB (rebuildable digest), four notes views (`decisions.md` 4,140 B, `context.md` 9,544 B, `decisions-archive.md` 20.6 KB, 4 `.pre-memory` copies), 29 loose notes files (about 37 KB, plus a `skill-backup` dir and `t371.json`/`t376.diff` scratch), `overview.md`, `report.md` per task, `follow-up.log` 2.6 MB, `grants.json` 85 B (dead: no code reads grants), `state.json` 55 KB with 15 keys.
 
 Duplicates in code: `seen {state, revision}` in four places (manager `Duties.observed`, `state.json` `seen` `manager.rs:1678`, `turn_seen` `:2615`, web `Watch.seen` `crates/wsx-web/src/tasks.rs:1270`); two overview caches (`App.overviews` `tasks.rs:99`, `Watch.overviews` `:1268`) plus `Watch.replies`/`requests`; the event `short` both stored and derived (`Short::plain` `wsx-core/src/task/manager.rs:251`); `ledger_summary` (`manager.rs:2564-2634`) and `build_overview` count the same things from separate reads; `needs::stage` runs twice per task (`tasks.rs:181,196`); `status::waiters` is O(N²) in `build_overview`.
 
@@ -55,7 +55,7 @@ Target: truth = 6 jsonl files + `task.json`; derived = one `overview.json` writt
 | Step | Value / cost | Proof |
 |---|---|---|
 | Delete `grants.json` writer, the `seen` copies but the manager's, `Watch.overviews` | small; removes 3 ways to disagree | web `tasks` part, `test-task.py` host part |
-| One `overview.json` from `build_overview`, read by `ledger_summary` and the clients | one read per turn instead of N `task.json` reads per tick (`watch_tasks` `manager.rs:1193` reads all each second) | smoke TUI rows and web overview equal |
+| One `overview.json` from `build_overview`, read by `ledger_summary` and the clients | one read per turn instead of N `task.json` reads per tick (§5) | smoke TUI rows and web overview equal |
 | A rule for loose notes files: records only; `wsx memory` refuses a path outside `memory/` | no scratch in the store | `test-memory.py` section |
 | `search.jsonl` rebuilt on demand, not on each message | 6.2 MB write path gone from the hot turn | `test-task.py` search section |
 
@@ -81,7 +81,7 @@ Risk: the owner may want `context.md` memos at start for the manager (eval cover
 
 Intention: a chat is a party the owner talks to; `may` says what the chat can do (#410); a worker is a chat with a copy; trust and role give the tools (`crates/wsx-core/src/task/policy.rs:160` ROLES: Manager ALL; Organizer Read, Answer, Backlog, Note, Recall; Worker Result, Recall, Remember; `Policy::of(trust, role, may)` `:260`). Fallback (`local-model-fallback.md`, #349/#354) gives roles to untrusted local agents; the broker (`broker.rs:76-93`) and the boundary (`boundary.rs`) enforce.
 
-Gap: the chat host is the manager host without `Duties` (`manager.rs:180`), good. Two places still decide what an agent may do by prose: the manager instructions (§7, class 2) and the worker prompt's "never git push" (the boundary denies only `~/.ssh`, `boundary.rs:25,113`). The one-call stand-in during a hold (`manager.rs:2322 stand_in`) is the only code path tuned to a weak model; it is the right shape (no tools, one answer) and §10 builds on it.
+Gap: the chat host is the manager host without `Duties` (`manager.rs:180`), good. Two places still decide what an agent may do by prose: the manager instructions (§7, class 2) and the worker prompt's "never git push" (the boundary denies only the secret folders, `boundary.rs:25,113`). The one-call stand-in during a hold (`manager.rs:2322 stand_in`) is the only code path tuned to a weak model; it is the right shape (no tools, one answer) and §10 builds on it.
 
 Target: the policy is the single capability source: tools, boundary denies, reply schema and prompt text all come from `Policy`. Prose says only what code cannot check (tone, when to ask).
 
@@ -102,7 +102,7 @@ Target: the manager host, task hosts and the web server stay separate (restart a
 
 | Step | Value / cost | Proof |
 |---|---|---|
-| Broker runs the command in-process | −1 process and −1 clap parse per agent command; about 3k spawns a day (23,533 `agent` events in 7 days) | `test-task.py` worker part, `test-manager-boundary.py` |
+| Broker runs the command in-process | −1 process and −1 clap parse per agent command | `test-task.py` worker part, `test-manager-boundary.py` |
 | Store watch instead of 1 Hz reads | −N file reads a second per project | smoke, web `tasks` part (events still arrive within 3 s `EVENT_QUIET`) |
 | Land fires one `deploy --run-locked` when `--if-new` says new, no separate spawn | −1 process per land | `test-task.py` host part 32 |
 
@@ -149,7 +149,7 @@ Class 2, each with its code owner:
 | 55 | say the owner was asked | prose only | host posts the ask line |
 | 57 | `live` only when deploys shows the commit | prose only | `live` flag on ledger rows from `deploys.jsonl` |
 | 63 | one commit on the owner's yes | prose only | `wsx task commit <files> --owner-said` (owner-said check exists, `wsx-core task/owner.rs:538`) |
-| 64 | never `git push` | only `~/.ssh` denied (`boundary.rs:25,113`) | deny in the profile |
+| 64 | never `git push` | only the secret folders denied (`boundary.rs:25,113`) | deny in the profile |
 | 67 | long `wsx memory add --kind rule …` | `check_words` `wsx-core memory/manage.rs:635` | `wsx task decide --msg <id>` |
 | 74 | overview in place | prose only | only the overview writable (§2) |
 | 80 | `@<project>` consult | no code | host resolves the mention |
@@ -189,8 +189,8 @@ Measured (#427, 108 tasks since 11-08; store, 7 days):
 Target shape: the host decides what runs and when; the worker only names what it changed.
 
 1. Scenario selection by paths (owner's draft item 1): `tasks.scenarios.<name>.paths` globs; the host runs the scenarios a diff touches, once per clean revision, before the worker's review step. The worker's "run only the checks your change touches" sentence goes.
-2. Failure triage by the host (draft items 3 and 4): a failed part reruns once alone; a failure in a part the diff does not touch is a finding on main, not a block and not a worker turn. This alone removes the 120 non-task failures from the worker's turns (about $1 of each task's $2.85, by #427's plan and check-turn share).
-3. Deploy coalesced: one `deploy --run-locked` per quiet window, started by the last land in the window (the `--if-new` check already exists), not one per land: 239 deploys → about one per 10 min burst; the 39 h of deploy lock becomes the deploy's own runtime. Release stays a deploy of its own kind.
+2. Failure triage by the host (draft items 3 and 4): a failed part reruns once alone; a failure in a part the diff does not touch is a finding on main, not a block and not a worker turn. This alone keeps the 120 non-task failures out of the worker's turns; #427's rerun after a week measures the saved share.
+3. Deploy coalesced: one `deploy --run-locked` per quiet window, started by the last land in the window (the `--if-new` check already exists), not one per land: one deploy per burst of lands instead of 245 in 7 days, and the 39 h under the deploy lock shrinks to the deploys that run. Release stays a deploy of its own kind.
 4. Limit waits serve the fallback: during a limit, a task with `may` fallback goes to the local or second provider (`local-model-fallback.md`), the rest hold.
 5. The plan step folds into build for `--size small` (owner config `steps`), since it asks the owner once in 76 turns.
 6. CI parts as matrix jobs by paths (draft item 2, #293/#321 gave `--part`), so a `web` rerun is one part.
@@ -259,6 +259,6 @@ Worker turns: 14 `TurnTrigger` values (`wsx-core task/mod.rs:541-566`), all thro
 
 - Instruction bytes: `bench-manager.py` render, `wc -c`; sentence classes by hand, each sentence tagged once.
 - Store sizes: `ls -l`, `du` under `~/.local/state/wsx/tasks/wsx-8cbe3f08`; records counted by `kind` and `superseded` in `memory/records.jsonl`.
-- Check-run and deploy numbers (7 days to 11-13): one Python pass over `*/log.jsonl` (`checks` and `check_run` events, `queued_ms` present, `stored` skipped, one run per event) and `deploys.jsonl` (`duration_ms`, `kind`, `exit`); the query is the one in `check-scheduling-audit.md` with the window moved.
+- Check-run and deploy numbers (7 days to 11-13): one Python pass over `*/log.jsonl` (`checks` and `check_run` events, `queued_ms` present, `stored` skipped, one run per event) and `deploys.jsonl` (`duration_ms`, `kind`, `exit`); the query is adapted from `check-scheduling-audit.md` (window moved, deploys added).
 - Task life and cost: `task-time-cost-audit.md` (#427, branch `wsx/t427`), 108 tasks since 11-08.
 - Model turn costs: `manager-continuity.md` and the `eventModel` measurement in `manager-efficiency.md`.
