@@ -198,16 +198,19 @@ pub(super) fn lines(rows: &[Vec<Vec<Cell>>], aligns: &[Align], width: usize) -> 
     out
 }
 
+/// `cell` wrapped to `width`, each line in `style`.
+fn wrapped_in(cell: &[Cell], width: usize, style: Style) -> impl Iterator<Item = Shown> {
+    wrap_cells(cell, width)
+        .into_iter()
+        .map(move |line| (line, style))
+}
+
 /// Each row as a record: its first cell in bold, then a line `header: value` for each other cell.
 fn stacked(rows: &[Vec<Vec<Cell>>], width: usize) -> Vec<Shown> {
     let mut out = Vec::new();
     if rows.len() == 1 {
         for cell in &rows[0] {
-            out.extend(
-                wrap_cells(cell, width)
-                    .into_iter()
-                    .map(|line| (line, bold())),
-            );
+            out.extend(wrapped_in(cell, width, bold()));
         }
         return out;
     }
@@ -217,21 +220,13 @@ fn stacked(rows: &[Vec<Vec<Cell>>], width: usize) -> Vec<Shown> {
         }
         for (at, cell) in row.iter().enumerate() {
             if at == 0 {
-                out.extend(
-                    wrap_cells(cell, width)
-                        .into_iter()
-                        .map(|line| (line, bold())),
-                );
+                out.extend(wrapped_in(cell, width, bold()));
                 continue;
             }
             let mut text = rows[0][at].clone();
             text.extend(chars(": "));
             text.extend_from_slice(cell);
-            out.extend(
-                wrap_cells(&text, width)
-                    .into_iter()
-                    .map(|line| (line, Style::default())),
-            );
+            out.extend(wrapped_in(&text, width, Style::default()));
         }
     }
     out
