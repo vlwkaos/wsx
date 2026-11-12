@@ -1555,6 +1555,8 @@ await closeSheet("the usage sheet", chat);
     await again();
     look = await pill();
     if (look.label !== "2 routines, 1 failed" || look.tone !== "danger") await fail(`the Routines pill with a failed last run is ${JSON.stringify(look)}`);
+    // ^ The tone changes the color through a transition ([data-tone] in app.css) when the list's counts follow the overview's: let it end.
+    await until("(() => { const node = document.createElement('i'); node.style.color = 'var(--color-danger)'; document.body.append(node); const danger = getComputedStyle(node).color; node.remove(); return getComputedStyle(document.querySelector('.pill[data-kind=routines]')).color === danger; })()", "the failed Routines pill did not reach the danger color", 100);
     const colors = await evaluate(`(() => { const node = document.createElement('i'); node.style.color = 'var(--color-danger)'; document.body.append(node); const danger = getComputedStyle(node).color; node.remove();
       const pill = document.querySelector('.pill[data-kind=routines]'); return { pill: getComputedStyle(pill).color, edge: getComputedStyle(pill).borderTopColor, danger }; })()`);
     if (colors.pill !== colors.danger || colors.edge !== colors.danger) await fail(`the failed Routines pill is not in the danger color: ${JSON.stringify(colors)}`);
