@@ -5924,12 +5924,12 @@ def part_host(created=None):
     # in a task record and the logs, and the approval lines of the removed `role` action, are rewritten
     # or dropped; the argv wsxd stored for the role's session, `manager-host <id> --role research`, starts the chat.
     mark('32rm')
-    project_store = Path(created['task_dir']).parent
+    mig_store = Path(created['task_dir']).parent
     # ^ The store is opened (and moved) by the first `wsx task` that runs after the folder is there: the task is
     # made first, the old-shaped files last.
     old_task = js('task', 'new', 'WORK migrated.txt')['id']
     assert wait_state(old_task, 'ready', 'failed')['state'] == 'ready'
-    old_role = project_store / 'roles/research'
+    old_role = mig_store / 'roles/research'
     (old_role / 'notes').mkdir(parents=True)
     (old_role / 'brief.md').write_text('Research the market.\n')
     (old_role / 'role.json').write_text(json.dumps({'by': 'owner', 'adapter': 'claude', 'model': 'haiku'}))
@@ -5939,18 +5939,18 @@ def part_host(created=None):
         {'unix_ms': now_ms, 'kind': 'message', 'id': 1, 'from': 'owner', 'text': 'find the numbers'},
         {'unix_ms': now_ms, 'kind': 'message', 'id': 2, 'from': 'role:manager', 'text': 'manager asks research'},
         {'unix_ms': now_ms, 'kind': 'reply', 'id': 3, 'to': [1], 'text': 'the numbers are in'})))
-    with open(project_store / 'approvals.jsonl', 'a') as out:
+    with open(mig_store / 'approvals.jsonl', 'a') as out:
         out.write(json.dumps({'kind': 'request', 'id': 'a-old-role', 'action': 'role', 'role': 'qa', 'brief': 'x', 'unix_ms': now_ms}) + '\n')
-    record_path = project_store / str(old_task) / 'task.json'
+    record_path = mig_store / str(old_task) / 'task.json'
     record = json.loads(record_path.read_text())
     record['created_by'] = 'role:research'
     record_path.write_text(json.dumps(record))
-    with (project_store / 'manager/log.jsonl').open('a') as manager_log:
+    with (mig_store / 'manager/log.jsonl').open('a') as manager_log:
         manager_log.write(json.dumps({'unix_ms': now_ms, 'kind': 'message', 'id': 9000002, 'from': 'role:research', 'text': 'RESEARCH SAYS'}) + '\n')
     migrated = chats()
     assert 'research' in migrated and migrated['research']['state'] == 'open', migrated
-    assert not (project_store / 'roles').exists()
-    new_chat = project_store / 'chats/research'
+    assert not (mig_store / 'roles').exists()
+    new_chat = mig_store / 'chats/research'
     assert (new_chat / 'goal.md').read_text() == 'Research the market.\n' and not (new_chat / 'brief.md').exists()
     assert (new_chat / 'notes/context.md').read_text() == 'research notes\n' and not (new_chat / 'role.json').exists()
     # ^ role.json's adapter and model map to the [[agents]] entry with the same two (haiku-chat above).
@@ -5959,13 +5959,13 @@ def part_host(created=None):
     assert json.loads(record_path.read_text())['created_by'] == 'chat:research'
     assert show(old_task)['record']['created_by'] == 'chat:research'
     assert any(e['kind'] == 'message' and e['from'] == 'chat:research' for e in manager_entries())
-    assert '"action":"role"' not in (project_store / 'approvals.jsonl').read_text().replace(' ', '')
+    assert '"action":"role"' not in (mig_store / 'approvals.jsonl').read_text().replace(' ', '')
     assert all(a['action'] != 'role' for a in js('task', 'ledger')['approvals'])
     # ^ The migration is idempotent: a second run changes nothing.
     again = (new_chat / 'log.jsonl').read_bytes()
     chats()
     assert (new_chat / 'log.jsonl').read_bytes() == again
-    host = subprocess.Popen([str(wsx), 'task', 'manager-host', project_store.name, '--role', 'research'], cwd=project, env=env,
+    host = subprocess.Popen([str(wsx), 'task', 'manager-host', mig_store.name, '--role', 'research'], cwd=project, env=env,
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         wait(lambda: chats()['research']['running'], 'the stored argv starts the migrated chat', 30)
