@@ -74,6 +74,8 @@ pub struct TaskRow {
     pub state: String,
     /// The status label (wsx-core `task::status`), or a chat's goal; empty when nothing.
     pub status: String,
+    /// A chat's pill counts, marked after its name; zero for a task.
+    pub counts: wsx_core::task::needs::ChatCounts,
     pub section: Section,
 }
 
@@ -261,7 +263,19 @@ impl TaskList {
         true
     }
 
-    /// A key of the New chat form: it opens the chat made, or the first, and closes on Esc.
+    /// `n`: the New chat form, whose `default` agent is the project's manager's.
+    pub fn open_new_chat(&mut self) {
+        let default = wsx_core::config::project::load_task_config(&self.main)
+            .ok()
+            .and_then(|config| {
+                wsx_core::task::view::agent_label(&serde_json::json!({
+                    "adapter": config.manager_adapter, "model": config.manager_model,
+                }))
+            });
+        self.new_chat = Some(crate::task_new_chat::NewChat::new(&self.store, default));
+    }
+
+    /// A key of the New chat form: it opens the chat made and closes on Esc.
     pub fn new_chat_key(&mut self, action: &Action) {
         let Some(form) = &mut self.new_chat else {
             return;
@@ -271,7 +285,7 @@ impl TaskList {
             crate::task_new_chat::Outcome::Cancel => self.new_chat = None,
             crate::task_new_chat::Outcome::Done(chat) => {
                 self.new_chat = None;
-                self.open_chat(chat);
+                self.open_chat(Some(chat));
                 self.stamp = None;
             }
         }
@@ -593,6 +607,7 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
             .filter_map(|word| word.as_str().filter(|word| !word.is_empty()))
             .collect::<Vec<_>>()
             .join(" · "),
+        counts: Default::default(),
         section,
     };
     let chat = |chat: &Value| TaskRow {
@@ -609,6 +624,7 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
         .join(" · "),
+        counts: serde_json::from_value(chat["counts"].clone()).unwrap_or_default(),
         section: Section::Chats,
     };
     open.iter()

@@ -1,13 +1,14 @@
 //! What a project needs from the owner: the one rule behind the web's Home row and the TUI's
 //! Workspace tree marks. ref: docs/tasks.md "Landing", "To check", "TUI"
 use super::{
-    checks,
-    manager::pending_approvals,
+    chats, checks,
+    manager::{pending_approvals, waiting_approvals},
     status,
     store::{self, TaskDir},
     view, TaskRecord, TaskState, WaitOn,
 };
 use anyhow::Result;
+use std::collections::HashMap;
 
 /// The three states the owner sees (docs/web-client-tasks.md); the store keeps the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,11 +93,18 @@ pub struct Needs {
     pub owner: usize,
     /// Tasks at work (or with the manager, or with the owner by hand).
     pub working: usize,
+    /// Approved actions that run when their task lands.
+    pub waiting: usize,
     /// Open To check items.
     pub to_check: usize,
 }
 
 impl Needs {
+    /// The Running pill's count: tasks at work and the approved actions that wait for a landing.
+    pub fn running(&self) -> usize {
+        self.working + self.waiting
+    }
+
     /// Whether anything waits for the owner.
     pub fn any(&self) -> bool {
         self.owner + self.to_check > 0
@@ -116,7 +124,55 @@ impl Needs {
         }
         let approvals = store::read_approvals(project_id).unwrap_or_default();
         needs.owner += pending_approvals(&approvals).len();
+        needs.waiting = waiting_approvals(&approvals).len();
         needs.to_check = checks::open_items(project_id).unwrap_or_default().len();
         Ok(needs)
     }
+}
+
+/// What an open chat has for the owner, as the Running, Needs you and To check pills count it,
+/// by the one ownership rule (`chats::owner`): the tasks the chat made, its own approvals and the
+/// To check items of its tasks. ref: docs/web-client-tasks.md "Home"
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChatCounts {
+    pub running: usize,
+    pub needs: usize,
+    pub check: usize,
+}
+
+/// The counts of every open chat of the project, by name.
+pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCounts> {
+    let open = chats::open_names(project_id);
+    let mut counts: HashMap<String, ChatCounts> = open
+        .iter()
+        .map(|name| (name.clone(), ChatCounts::default()))
+        .collect();
+    if open.is_empty() {
+        return counts;
+    }
+    for (dir, record) in view::project_tasks(project_id).unwrap_or_default() {
+        let Ok(record) = record else { continue };
+        let Some(own) =
+            chats::owner(record.created_by.chat(), &open).and_then(|n| counts.get_mut(n))
+        else {
+            continue;
+        };
+        match stage(&dir, &record, land_auto) {
+            Stage::Working => own.running += 1,
+            Stage::NeedsYou => own.needs += 1,
+            Stage::Done | Stage::Closed => {}
+        }
+    }
+    let approvals = store::read_approvals(project_id).unwrap_or_default();
+    let items = checks::open_items(project_id).unwrap_or_default();
+    for name in &open {
+        let own = chats::approvals_of(approvals.clone(), Some(name), &open);
+        let Some(entry) = counts.get_mut(name) else {
+            continue;
+        };
+        entry.needs += pending_approvals(&own).len();
+        entry.running += waiting_approvals(&own).len();
+        entry.check = chats::checks_of(project_id, items.clone(), Some(name), &open).len();
+    }
+    counts
 }

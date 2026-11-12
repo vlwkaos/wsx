@@ -112,6 +112,20 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         .collect();
     let main_checkout = main_checkout(main, &mut git);
     let (strays, stray_omitted) = stray_worktrees(main, &copies, &mut git);
+    // ^ Open chats with their pill counts (`needs::chat_counts`) while any is above 0: the TUI's
+    // chat rows mark them as the web's Home rows do; a closed chat is history (docs/tasks.md "Chats").
+    let counts = super::needs::chat_counts(&project_id, settings.land_auto);
+    let chats: Vec<Value> = super::chats::rows(&project_id)
+        .into_iter()
+        .filter(|row| row["state"] != "closed")
+        .map(|mut row| {
+            let own = row["name"].as_str().and_then(|name| counts.get(name));
+            if let Some(own) = own.filter(|own| **own != super::needs::ChatCounts::default()) {
+                row["counts"] = json!(own);
+            }
+            row
+        })
+        .collect();
     let mut ledger = json!({
         "project": project_name,
         // ^ A ready task lands by itself unless this is false (docs/tasks.md "Landing").
@@ -146,10 +160,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
             })
             .collect::<Vec<_>>(),
         // ^ Open chats; a closed one is history (docs/tasks.md "Chats").
-        "chats": super::chats::rows(&project_id)
-            .into_iter()
-            .filter(|row| row["state"] != "closed")
-            .collect::<Vec<_>>(),
+        "chats": chats,
     });
     // ^ Set after `fit_size` counted the rest, and kept: a few short lines.
     if !git.notes.is_empty() {
@@ -394,33 +405,47 @@ const ARGV_CHARS: usize = 200;
 /// next run and the last run; `{error}` when the scheduler does not answer and the project
 /// has routines. ref: docs/tasks.md "Routines"
 pub fn routines(main: &Path) -> Value {
-    routine_rows(main, ROUTINES, false, None)
+    routine_rows(main, ROUTINES, false, None).0
+}
+
+/// The counts of the project's routines (`routine::Counts`), zero when the scheduler does not
+/// answer. ref: docs/web-client-tasks.md "Home"
+pub fn routine_counts(main: &Path) -> crate::routine::Counts {
+    routine_rows(main, 0, false, None).1
 }
 
 /// `routines` for at most `limit` routines; `full` adds each row's `command` (clipped) and the
 /// last run's `finished_unix_ms`; `chat` adds its `message`, the id of the events message that
 /// told of its end (`chat::run_messages`, null for none). The web client's routine list reads
-/// it that way; the agent's ledger does not, so the id costs no tokens.
+/// it that way; the agent's ledger does not, so the id costs no tokens. The counts are those of
+/// all the routines, not only the rows shown.
 pub fn routine_rows(
     main: &Path,
     limit: usize,
     full: bool,
     chat: Option<&super::store::ManagerDir>,
-) -> Value {
+) -> (Value, crate::routine::Counts) {
+    let none = crate::routine::Counts::default();
     use crate::routine::{request, store, Action, Response};
     let listed = request(&crate::runtime::Client::local(), main, Action::List);
     let views = match listed {
         Ok(Response::Routines { routines, .. }) => routines,
-        Ok(other) => return json!({ "error": format!("unexpected answer: {other:?}") }),
+        Ok(other) => {
+            return (
+                json!({ "error": format!("unexpected answer: {other:?}") }),
+                none,
+            )
+        }
         Err(error) => {
             // ^ No routine file: nothing to schedule, so a stopped scheduler is not news.
             let defined = store::canonical_project(main)
                 .is_ok_and(|project| store::project_file(&store::root(), &project).exists());
             return match defined {
-                true => {
-                    json!({ "error": format!("the routine scheduler does not answer: {error}") })
-                }
-                false => json!([]),
+                true => (
+                    json!({ "error": format!("the routine scheduler does not answer: {error}") }),
+                    none,
+                ),
+                false => (json!([]), none),
             };
         }
     };
@@ -485,7 +510,7 @@ pub fn routine_rows(
             row
         })
         .collect();
-    json!(rows)
+    (json!(rows), crate::routine::Counts::of(&views))
 }
 
 /// The ledger's `deploys` show this many last lines of a failed attempt's output.

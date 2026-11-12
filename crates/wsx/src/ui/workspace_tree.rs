@@ -222,26 +222,50 @@ fn asks(attention: &HashMap<PathBuf, ProjectAttention>, path: &PathBuf) -> bool 
     attention.get(path).is_some_and(|project| project.asks)
 }
 
-/// The marks after a project's name, each with its count and a space before: `!` for what waits
-/// for the owner (tasks and approvals), `✓` for To check items, `…` for tasks at work
-/// (docs/tasks.md "TUI"). A zero count shows nothing.
-fn need_marks(
-    attention: &HashMap<PathBuf, ProjectAttention>,
-    path: &PathBuf,
-) -> Vec<Span<'static>> {
-    let Some(project) = attention.get(path) else {
-        return Vec::new();
-    };
-    let needs = project.needs;
+/// The marks of the first three trays, each with its count and a space before, a zero count
+/// left out: `…` running, `!` needs you, `✓` to check. A project's row and a chat's row in the
+/// Tasks view use them.
+pub(super) fn tray_marks(running: usize, needs: usize, check: usize) -> Vec<Span<'static>> {
     [
-        (needs.owner, "!", theme::WARNING),
-        (needs.to_check, "✓", theme::ACCENT),
-        (needs.working, "…", theme::TEXT_SUBTLE),
+        (running, "…", theme::TEXT_SUBTLE),
+        (needs, "!", theme::WARNING),
+        (check, "✓", theme::ACCENT),
     ]
     .into_iter()
     .filter(|(count, _, _)| *count > 0)
     .map(|(count, mark, color)| Span::styled(format!(" {mark}{count}"), Style::default().fg(color)))
     .collect()
+}
+
+/// The marks after a project's name, each with its count and a space before, in the order of the
+/// web's tray icons (`web/trays.js`): `…` for tasks at work and approved actions that wait for a
+/// landing, `!` for what waits for the owner (tasks and approvals), `✓` for To check items, `◈`
+/// for the enabled routines while the project has any, in the warning color after a run that
+/// found something and the error color after one that failed (docs/tasks.md "TUI"). A zero count
+/// shows nothing.
+fn need_marks(
+    attention: &HashMap<PathBuf, ProjectAttention>,
+    path: &PathBuf,
+    routines: &[wsx_core::routine::RoutineView],
+) -> Vec<Span<'static>> {
+    let needs = attention
+        .get(path)
+        .map(|project| project.needs)
+        .unwrap_or_default();
+    let counts = wsx_core::routine::Counts::of(routines);
+    let routine_color = match (counts.failed, counts.found) {
+        (0, 0) => theme::TEXT_SUBTLE,
+        (0, _) => theme::WARNING,
+        _ => theme::ERROR,
+    };
+    let mut marks = tray_marks(needs.running(), needs.owner, needs.to_check);
+    if counts.total > 0 {
+        marks.push(Span::styled(
+            format!(" ◈{}", counts.on),
+            Style::default().fg(routine_color),
+        ));
+    }
+    marks
 }
 
 fn compact_tree_cell(
@@ -448,7 +472,8 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                 };
                 let mut line = Line::from(label);
                 if !p.missing {
-                    line.spans.extend(need_marks(attention, &p.path));
+                    line.spans
+                        .extend(need_marks(attention, &p.path, &p.routines));
                 }
                 folded_item(line, style, badge, width)
             }

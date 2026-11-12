@@ -25,7 +25,7 @@ const STATUS_MIN_WIDTH: usize = 64;
 /// The New chat form over the list: a line each for the name, the goal and, when the config
 /// has entries, the agent; a refusal under them. ref: docs/tasks.md "TUI"
 pub fn render_new_chat(frame: &mut Frame, area: Rect, form: &crate::task_new_chat::NewChat) {
-    let rows = form.agents_rows() as u16 + u16::from(form.error.is_some());
+    let rows = form.agents_rows() as u16 + 1;
     let popup = super::popup_upper(area, area.width.min(64), 4 + rows);
     frame.render_widget(Clear, popup);
     let hints = Line::from(vec![
@@ -62,12 +62,15 @@ pub fn render_new_chat(frame: &mut Frame, area: Rect, form: &crate::task_new_cha
     if form.agents_rows() == 3 {
         lines.push(field(2, format!("agent: {}", form.agent_words())));
     }
-    if let Some(error) = &form.error {
-        lines.push(Line::styled(
-            truncate_to_width(error, width),
-            Style::default().fg(theme::ERROR),
-        ));
-    }
+    let (note, refused) = form.note();
+    lines.push(Line::styled(
+        truncate_to_width(&note, width),
+        Style::default().fg(if refused {
+            theme::ERROR
+        } else {
+            theme::TEXT_MUTED
+        }),
+    ));
     let body = Rect::new(popup.x + 1, popup.y + 1, popup.width - 2, popup.height - 2);
     frame.render_widget(Paragraph::new(lines), body);
     let (text, row) = match form.focus {
@@ -382,10 +385,19 @@ fn task_lines(
                 Style::default().fg(theme::TEXT_SUBTLE).bold(),
             ));
         }
+        // ^ A chat's pill counts follow its name, inside the title's width.
+        let marks = super::workspace_tree::tray_marks(
+            row.counts.running,
+            row.counts.needs,
+            row.counts.check,
+        );
+        let marks_width: usize = marks.iter().map(|mark| mark.content.chars().count()).sum();
         let mut spans = vec![Span::styled(
-            fit(&row.title, title_width.saturating_sub(1)) + " ",
+            fit(&row.title, title_width.saturating_sub(1 + marks_width)),
             Style::default().fg(theme::TEXT),
         )];
+        spans.extend(marks);
+        spans.push(Span::raw(" "));
         if number_width > 0 {
             // ^ A chat has no number: its column stays empty.
             let number = match row.section {

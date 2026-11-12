@@ -79,13 +79,12 @@ body[data-keyboard] .tabbar { padding-bottom: var(--space-2); }
 .tabbar a:active { background: var(--color-raised); }
 .tabbar a:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
 .tab-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Hook: .count, .tab-icon[data-count]::after — the count badge (Home row, tab bar): one size from
+/* Hook: .tab-icon[data-count]::after — the count badge of the tab bar: one size from
    --size-badge, so one digit is a circle and "99+" widens it. */
-.count, .tab-icon[data-count]::after {
+.tab-icon[data-count]::after {
   box-sizing: border-box; min-width: var(--size-badge); height: var(--size-badge); padding: 0 var(--space-1); border-radius: var(--size-badge);
   text-align: center; font-size: var(--font-size-badge); font-weight: var(--font-weight-medium); line-height: var(--size-badge); font-variant-numeric: tabular-nums;
 }
-.count { flex: 0 0 auto; }
 .tab-icon { position: relative; display: flex; }
 .tab-icon[data-count]::after {
   content: attr(data-count); position: absolute; bottom: 50%; left: 50%;
@@ -163,7 +162,12 @@ button.row-open { padding: 0; border: 0; background: none; text-align: left; }
 /* A project whose chat has a message this device has not read: an accent mark before its name
    and the message's first line under it (docs/web-client-tasks.md "Home"). */
 .news-mark { flex: none; align-self: center; width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-accent); }
-.row-news { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-sm); color: var(--color-text); }
+/* A Home row is two lines (docs/web-client-tasks.md "Home"): the name, the tray icons and the time;
+   then the status line, or the unread message in bold. */
+.row-head { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.row-head > .row-work { flex: 0 1 auto; }
+.row-head > .time { flex: none; margin-left: auto; font-size: var(--font-size-sm); }
+.row-context[data-news] { font-weight: var(--font-weight-strong); color: var(--color-text); }
 .row-context:empty { display: none; }
 /* Hook: .row-chat — an open chat under its project's row on Home: the row's text and hairline
    start one step in. */
@@ -173,6 +177,16 @@ button.row-open { padding: 0; border: 0; background: none; text-align: left; }
   flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end;
   font-size: var(--font-size-sm); color: var(--color-muted);
 }
+/* The tray icons of a Home row: the pills' icons and counts without the button (trays.js). */
+.trays { flex: none; display: inline-flex; align-items: center; gap: var(--space-2); }
+.tray { display: inline-flex; align-items: center; gap: calc(var(--space-1) / 2); font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); color: var(--color-muted); font-variant-numeric: tabular-nums; }
+.tray .icon { width: var(--space-4); height: var(--space-4); }
+.tray[data-kind="running"] .icon { color: var(--color-working); }
+.tray[data-kind="needs"] .icon, .tray[data-kind="check"] .icon { color: var(--color-attention); }
+.tray[data-tone="danger"] { color: var(--color-danger); }
+.tray[data-tone="attention"] { color: var(--color-attention); }
+.field-note { min-height: calc(var(--font-size-sm) * 1.5); }
+.field-note[data-tone="danger"] { color: var(--color-danger); }
 .row-actions { flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-3); }
 .new { color: var(--color-accent); font-weight: var(--font-weight-medium); }
 /* State is always a word; the mark and the tone repeat it. Every working state (a task or a
@@ -480,8 +494,7 @@ div.steps .steps-summary { cursor: default; }
   .row-context { animation: arrive var(--motion-duration) var(--motion-easing); }
   .row-typing .typing-dot:nth-child(2) { animation-delay: calc(var(--motion-duration) * 2); }
   .row-typing .typing-dot:nth-child(3) { animation-delay: calc(var(--motion-duration) * 4); }
-  .count { animation: pop calc(var(--motion-duration) * 2) var(--motion-easing); }
-  .working-count { animation: arrive calc(var(--motion-duration) * 2) var(--motion-easing); }
+  .tray-count { animation: pop calc(var(--motion-duration) * 2) var(--motion-easing); }
   .working { animation: slide-up calc(var(--motion-duration) * 1.5) var(--motion-easing); }
   .message-user:not([data-pending]) { animation: settle calc(var(--motion-duration) * 3) var(--motion-easing); }
   .bubble-box, [data-tone], .bar-state { transition: color calc(var(--motion-duration) * 3) var(--motion-easing), background-color calc(var(--motion-duration) * 3) var(--motion-easing); }
@@ -918,7 +931,6 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .home-rows > [data-ghost] { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; }
 .row-typing { display: inline-flex; align-items: center; gap: var(--space-1); margin-inline-end: var(--space-2); vertical-align: middle; }
 
-.count[data-tone="attention"] { background: var(--color-attention); color: var(--color-bg); }
 /* The number carries the chip's baseline, so "#6" sits on the line of the text around it; the
    dot alone is centered. An inline flex box takes the baseline of its first item, the dot,
    unless its items align by baseline (https://www.w3.org/TR/css-flexbox-1/#flex-baselines). */

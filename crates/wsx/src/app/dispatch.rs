@@ -197,9 +197,7 @@ impl App {
                 (Action::EnterMove, false) => list.open_chat(None),
                 (Action::Overview, false) => list.open_overview(),
                 // ^ `n` is the Workspace's next-attention key; here it opens the New chat form.
-                (Action::NextAttention, false) => {
-                    list.new_chat = Some(crate::task_new_chat::NewChat::new())
-                }
+                (Action::NextAttention, false) => list.open_new_chat(),
                 (Action::NavigateDown, false) => list.select(1),
                 (Action::NavigateUp, false) => list.select(-1),
                 (Action::Select, false) => list.open_selected(),

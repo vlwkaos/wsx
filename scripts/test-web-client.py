@@ -4294,7 +4294,7 @@ merge_seconds = 3
             steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['chats']), 'the overview lists %d chats' % count)
         contacts = overview_chats(1)
         assert [(c['name'], c['goal']) for c in contacts] == [('notes', 'Keep the notes.')], contacts
-        assert contacts[0]['last_reply'].startswith('open: ') and contacts[0]['news']['text'].startswith('open: ') and contacts[0]['news']['unix_ms'] > 0 and contacts[0]['approvals'] == 0, contacts
+        assert contacts[0]['last_reply'].startswith('open: ') and contacts[0]['news']['text'].startswith('open: ') and contacts[0]['news']['unix_ms'] > 0 and contacts[0]['needs'] == 0 and contacts[0]['running'] == 0 and contacts[0]['check'] == 0 and contacts[0]['last_unix_ms'] > 0, contacts
         assert steady(owner, 'GET', '/api/tasks/%d/chat?chat=nobody' % demo)[0] == 404
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'hi', 'chat': 'nobody'})
         assert status >= 400 and 'no open chat nobody' in json.dumps(body), (status, body)
@@ -4792,6 +4792,11 @@ merge_seconds = 3
             wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger', '-p', 'ui')['routines'] if r['name'] != 'idle'), 'the ui routines ran', 60)
             js('task', 'routine', 'disable', 'weekly', '-p', 'ui')
             js('task', 'routine', 'add', 'idle', '-p', 'ui', '--cron', '0 7 * * *', '--arg=/bin/true')  # never run
+            # ^ The routine pill's counts, from wsx-core `routine::Counts`: the overview (Home) and the routines list (the pill) agree; weekly is off, so its findings do not count.
+            routine_counts = {'total': 3, 'on': 2, 'failed': 0, 'found': 0}
+            overview = steady(owner, 'GET', '/api/tasks/%d' % ids['ui'])[1]
+            assert overview['routines'] == routine_counts and 'default_agent' in overview, overview
+            assert steady(owner, 'GET', '/api/tasks/%d/routines' % ids['ui'])[1]['counts'] == routine_counts
             # ^ The page stages tasks in `plans` with the fixture's own wsx (scripts/web-tasks-check.mjs "Progress").
             (work / 'wsx-cli.json').write_text(json.dumps({'wsx': str(wsx), 'env': env, 'cwd': str(plans)}))
             result = check(work, [node, str(ROOT / 'scripts/web-tasks-check.mjs'), owner.origin + '/', browser_code,

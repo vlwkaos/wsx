@@ -230,6 +230,43 @@ pub struct RoutineView {
     pub recent_runs: Vec<RunRecord>,
 }
 
+/// What a project's routines say at a glance: the routine pill's count and tone on the web's
+/// project screen and Home, and the Workspace tree's `◈` mark. Of the enabled routines, how
+/// many failed or found something on their last run.
+/// ref: docs/web-client-tasks.md "Routines", docs/tasks.md "TUI"
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Counts {
+    pub total: usize,
+    pub on: usize,
+    pub failed: usize,
+    pub found: usize,
+}
+
+impl Counts {
+    pub fn of(views: &[RoutineView]) -> Self {
+        let on = views.iter().filter(|view| view.routine.enabled);
+        let status = |view: &&RoutineView| view.latest_run.as_ref().map(|run| run.status);
+        Self {
+            total: views.len(),
+            on: on.clone().count(),
+            failed: on
+                .clone()
+                .filter(|view| {
+                    status(view).is_some_and(|status| {
+                        !matches!(
+                            status,
+                            RunStatus::Succeeded | RunStatus::Running | RunStatus::Findings
+                        )
+                    })
+                })
+                .count(),
+            found: on
+                .filter(|view| status(view) == Some(RunStatus::Findings))
+                .count(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {

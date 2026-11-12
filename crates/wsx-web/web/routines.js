@@ -2,6 +2,7 @@
 // (docs/web-client-tasks.md "Routines"). The pill and the list are in tasks.js.
 import { api } from "./api.js";
 import { ago, html, Icon, useCoalescedLoad, useEffect, useState } from "./lib.js";
+import { loadTasks } from "./task-api.js";
 
 const DAYS = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"];
 
@@ -29,7 +30,8 @@ const failedRun = (last) => Boolean(last) && last.status !== "succeeded" && last
 
 // The routines of a project, read now, every minute, and again when `key` changes (the newest
 // chat row: a run's end comes as a message, and it carries the run's message id), and every
-// 2 s while a routine runs. `setList` takes the answer of an action.
+// 2 s while a routine runs. `setList` takes the answer of an action and renews the project's
+// overview, whose routine counts Home shows.
 export function useRoutines(project, active, key) {
   const [list, setList] = useState(null);
   const read = useCoalescedLoad(async (current) => {
@@ -45,17 +47,14 @@ export function useRoutines(project, active, key) {
     const timer = setInterval(read, running ? 2000 : 60000);
     return () => clearInterval(timer);
   }, [project, active, key, running]);
-  return [list, setList];
+  return [list, (answer) => { setList(answer); loadTasks(project); }];
 }
 
-// What the pill says: the enabled routines, how many failed or found something on their last
-// run, and the tone that shows (the worst state wins).
-export function routineCounts(list) {
-  const rows = list?.routines ?? [];
-  const on = rows.filter((row) => row.enabled);
-  const failed = on.filter((row) => failedRun(row.last)).length;
-  const found = on.filter((row) => foundRun(row.last)).length;
-  return { total: rows.length, on: on.length, failed, found, tone: failed ? "danger" : found ? "attention" : null };
+// What the pill says: the server's `routine::Counts` (the enabled routines, how many failed or
+// found something on their last run), and the tone that shows (the worst state wins).
+export function routineCounts(counts) {
+  const { total = 0, on = 0, failed = 0, found = 0 } = counts ?? {};
+  return { total, on, failed, found, tone: failed ? "danger" : found ? "attention" : null };
 }
 
 export function routineWords({ on, failed, found }) {
