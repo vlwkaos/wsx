@@ -11,7 +11,7 @@ use super::agent::{
 };
 use super::boundary::Boundary;
 use super::claude::{account_env, config_root, skills_plugin, SKILLS_PLUGIN_NAME};
-use super::{broker, hosting, limit, notes};
+use super::{broker, claude, hosting, limit, notes};
 use crate::cli::existing_daemon_snapshot;
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -1751,6 +1751,10 @@ impl Manager {
                 hold.until_ms = hold.until_ms.min(now_unix_ms());
                 self.save();
             }
+            // ^ The owner may have used a reset: ask now whether the usage limit has lifted.
+            if self.state.limit.as_ref().is_some_and(|hold| hold.account) {
+                claude::probe_limit(true);
+            }
         }
         self.enqueue(id, from, text, wakes);
         Ok(id)
@@ -1976,6 +1980,24 @@ impl Manager {
     /// after it they go with the held ones. True while they wait.
     fn waits_for_limit(&mut self) -> bool {
         let now = now_unix_ms();
+        let account = self.current_account();
+        if account == "claude" {
+            claude::probe_limit(false);
+        }
+        // ^ A usage-limit hold follows the account's record: a reset the owner used, or one
+        // a probe or another agent's call saw, ends it before the provider's reset time.
+        if let Some(hold) = self
+            .state
+            .limit
+            .as_mut()
+            .filter(|hold| hold.account && now < hold.until_ms)
+        {
+            if store::limited_until(&account, now).is_none() {
+                hold.until_ms = now;
+                self.say("the usage limit has lifted: the manager continues");
+                self.save();
+            }
+        }
         let waits_until = self
             .state
             .limit
@@ -1995,6 +2017,7 @@ impl Manager {
                     events: true,
                     switched: false,
                     auth: false,
+                    account: true,
                 });
                 self.save();
             }
@@ -2084,19 +2107,22 @@ impl Manager {
         {
             return;
         }
+        // ^ A replaced binary: exec it before this turn, also while a hold waits, so a fix
+        // to the wait reaches a held host. The messages stay logged and not delivered, so
+        // the new host queues them again (`restore`); a hold stays in the state.
+        if (self.state.limit.is_some() || self.work_waiting())
+            && self.binary.as_ref().is_some_and(hosting::Binary::replaced)
+        {
+            self.say("the wsx binary was replaced: the manager restarts with it");
+            self.reexec = true;
+            return;
+        }
         self.choose_agent();
         if self.waits_for_limit() {
             return;
         }
         let held = self.state.limit.clone();
         if held.is_none() && !self.work_waiting() {
-            return;
-        }
-        // ^ A replaced binary: exec it before this turn. The messages stay logged and not
-        // delivered, so the new host queues them again (`restore`).
-        if self.binary.as_ref().is_some_and(hosting::Binary::replaced) {
-            self.say("the wsx binary was replaced: the manager restarts with it");
-            self.reexec = true;
             return;
         }
         let Batch {
@@ -2306,6 +2332,7 @@ impl Manager {
             events,
             switched: true,
             auth: false,
+            account: false,
         });
         self.rotate(0, Some(reason));
         self.state.agent = Some(ManagerAgent {
@@ -2978,6 +3005,7 @@ impl Manager {
                 events: self.turn_events,
                 switched: false,
                 auth: false,
+                account: true,
             });
             self.save();
             self.report(runtime::AgentState::Idle);
@@ -3045,6 +3073,7 @@ impl Manager {
                 events: self.turn_events,
                 switched: rotate || self.state.limit.as_ref().is_some_and(|hold| hold.switched),
                 auth,
+                account: false,
             });
             self.save();
             self.report(runtime::AgentState::Error);

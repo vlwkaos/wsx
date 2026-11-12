@@ -451,6 +451,18 @@ def transcript(session, text):
         out.write(json.dumps({'message': text}) + '\n')
 
 
+def limit_probe():
+    """wsx's usage-limit probe (claude.rs `probe_limit`): still limited, until the test writes
+    <trace>.reset, the reset the owner used; then the call goes through."""
+    trace({'limit_probe': True, 'argv': sys.argv[1:], 'cwd': os.getcwd()})
+    if not os.path.exists(TRACE + '.reset'):
+        return usage_limit('probe', 600)
+    info = {'status': 'allowed', 'resetsAt': int(time.time()) + 18000, 'rateLimitType': 'five_hour'}
+    emit({'type': 'rate_limit_event', 'rate_limit_info': info, 'session_id': 'probe'})
+    emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'ok', 'session_id': 'probe',
+          'permission_denials': [], 'usage': {'input_tokens': 1, 'output_tokens': 1}})
+
+
 def interactive(options):
     resumed = options.get('--resume')
     session = 'fork-%d' % os.getpid() if '--fork-session' in options else resumed
@@ -468,6 +480,8 @@ def main():
     options = parse_args(sys.argv[1:])
     if '-p' not in options:
         return interactive(options)
+    if 'Reply with the word ok.' in sys.argv[1:]:
+        return limit_probe()
     instructions = options.get('--append-system-prompt', '')
     project = instructions.split('wsx project ')[1].split('.')[0] if 'You are the manager' in instructions else None
     session = options.get('--resume') or options.get('--session-id')

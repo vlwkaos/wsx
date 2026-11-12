@@ -599,6 +599,10 @@ pub struct LimitHold {
     /// at once when the owner writes, until a sign-in lets it through. ref: docs/tasks.md "Manager"
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auth: bool,
+    /// The hold is the account's usage limit: it ends as soon as the account's record does,
+    /// also before the provider's reset time. ref: docs/tasks.md "Agents"
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub account: bool,
 }
 
 /// The fallback agent the manager runs on while its own is at a long usage limit.

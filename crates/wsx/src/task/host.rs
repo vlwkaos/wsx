@@ -2159,11 +2159,11 @@ impl Host {
     /// is for a failed sign-in, which only a new agent process can see end.
     fn wait_for_limit(&mut self, text: String, until_ms: u64, sign_in: bool) {
         let now = now_unix_ms();
-        // ^ A wait on a fallback also looks for the task's own agent coming free.
-        let next_ms = match self.record.adapter.as_str() {
-            _ if sign_in => until_ms,
-            "claude" => until_ms,
-            _ => until_ms.min(now + HOME_POLL_MS),
+        // ^ A wait on a fallback also looks for the task's own agent coming free, and a usage
+        // limit for its record ending early (a reset the owner used).
+        let next_ms = match sign_in {
+            true => until_ms,
+            false => until_ms.min(now + HOME_POLL_MS),
         };
         self.limit_wait = Some(LimitWait {
             text,
@@ -2274,9 +2274,20 @@ impl Host {
             }
             self.limit_wait = Some(wait);
         }
+        let account = self.account();
         let Some(wait) = self.limit_wait.as_mut().filter(|wait| wait.next_ms <= now) else {
             return;
         };
+        // ^ The account's record decides: one that ended early (a probe, another agent's call
+        // that went through) ends the wait. ref: docs/tasks.md "Agents"
+        if !wait.sign_in && now < wait.until_ms {
+            if account == "claude" {
+                super::claude::probe_limit(false);
+            }
+            if store::limited_until(&account, now).is_none() {
+                wait.until_ms = now;
+            }
+        }
         if now < wait.until_ms {
             wait.next_ms = wait.until_ms.min(now + HOME_POLL_MS);
             return;
