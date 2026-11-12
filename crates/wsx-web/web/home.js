@@ -3,6 +3,7 @@
 import { ago, html, Icon, Loading, READ_EVENT, unreadNews, useEffect, useFlip, useNow, useRef, useState } from "./lib.js";
 import { api } from "./api.js";
 import { can, isAgent, listedSessions, stateOf, useStore } from "./store.js";
+import { loadTasks } from "./task-api.js";
 import { agentWords, needTone, needWords } from "./task-words.js";
 import { chatCounts, shownTrays, TrayIcons, trayCounts, trayWords } from "./trays.js";
 import { Dots } from "./bubbles.js";
@@ -225,6 +226,8 @@ function NewChat({ projects, tasks, project, manage, onAdd, onClose }) {
     field.current.focus();
     api("api/tasks/agents").then((answer) => setAgents(answer.agents ?? []), () => {});
   }, []);
+  // ^ The names in use are read again when the sheet opens and with each project: a chat made a moment ago is in the list.
+  useEffect(() => { loadTasks(chosen); }, [chosen]);
   const taken = (tasks[chosen]?.chats ?? []).map((chat) => chat.name);
   const problem = nameProblem(name, taken) || (asked && !name ? "Name: required" : "");
   const submit = async (event) => {
