@@ -486,8 +486,9 @@ struct Turns {
     /// The turn's main-conversation calls so far, and the last one's message id.
     calls: u32,
     call_id: Option<String>,
-    /// `resetsAt` of the last rejected `rate_limit_info` before the result.
+    /// `resetsAt` and `rateLimitType` of the last rejected `rate_limit_info` before the result.
     resets_at: Option<u64>,
+    window: Option<String>,
     /// The live background jobs of the last `background_tasks_changed`, its `ambient` ones
     /// (Claude's own) left out. None are announced at startup, so a process starts at 0.
     background: usize,
@@ -531,6 +532,9 @@ impl Turns {
         };
         if let Some(at) = info.get("resetsAt").and_then(Value::as_u64) {
             self.resets_at = Some(at);
+        }
+        if let Some(window) = info.get("rateLimitType").and_then(Value::as_str) {
+            self.window = Some(window.to_string());
         }
     }
 }
@@ -624,7 +628,7 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
                 turn_text(&said, str_field(value, "result"))
             };
             Some(AgentLine::Result(Box::new(TurnResult {
-                limit: usage_limit(value, turns.resets_at.take()),
+                limit: usage_limit(value, turns.resets_at.take(), turns.window.take()),
                 background: turns.background,
                 thought: std::mem::take(&mut turns.thought),
                 simplified: std::mem::take(&mut turns.simplified),
@@ -703,10 +707,15 @@ fn turn_usage(value: &Value, turns: &mut Turns) -> TurnUsage {
 }
 
 /// A result that Claude's usage limit ended, with its reset from the stream or its words.
-fn usage_limit(result: &Value, resets_at: Option<u64>) -> Option<UsageLimit> {
+fn usage_limit(
+    result: &Value,
+    resets_at: Option<u64>,
+    window: Option<String>,
+) -> Option<UsageLimit> {
     (result["api_error"] == "usage_limit_reached").then(|| UsageLimit {
         resets_at: resets_at
             .or_else(|| text_reset(&str_field(result, "result"), now_unix_ms() / 1000)),
+        window,
     })
 }
 
@@ -799,12 +808,18 @@ fn progress_text(item: &Value) -> Option<(String, bool)> {
     }
 }
 
-/// How often one host on the machine asks Claude whether a usage limit on record has lifted
-/// before its reset; an owner message may ask sooner, at most this often.
-/// ref: docs/tasks.md "Agents"
-const LIMIT_PROBE_EVERY_MS: u64 = 10 * 60_000;
-const LIMIT_PROBE_FORCED_MS: u64 = 30_000;
-const LIMIT_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+/// How often one host on the machine asks Claude whether a usage limit on record still holds
+/// (`WSX_TEST_LIMIT_PROBE_SECS` for `scripts/test-task.py`), and how long that call may take:
+/// less than the period, so probes never overlap. ref: docs/tasks.md "Agents"
+const LIMIT_PROBE_EVERY_MS: u64 = 30_000;
+const LIMIT_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+
+fn limit_probe_every_ms() -> u64 {
+    std::env::var("WSX_TEST_LIMIT_PROBE_SECS")
+        .ok()
+        .and_then(|secs| secs.parse::<u64>().ok())
+        .map_or(LIMIT_PROBE_EVERY_MS, |secs| secs * 1000)
+}
 
 /// Claude's rate limit event says the account takes calls.
 fn rate_allows(info: &Value) -> bool {
@@ -814,28 +829,27 @@ fn rate_allows(info: &Value) -> bool {
     )
 }
 
-/// While Claude's usage limit is on record, ask the provider with one tiny call whether it has
-/// lifted early (the owner used a reset): an allowed answer removes the record, and every
-/// waiting host resumes. A reset that comes within the probe period is waited for. `forced`
-/// (the owner wrote) probes at any distance. Runs in its own thread; at most one probe per
-/// period on the machine. ref: docs/tasks.md "Agents"
-pub fn probe_limit(forced: bool) {
+/// While Claude's usage limit is on record, ask the provider with one tiny call, on the model
+/// the limit refused, whether it still holds: the provider's answer, not the stored reset time,
+/// decides every wait. An allowed answer removes the record and every waiting host resumes; a
+/// rejected one leaves it. Every waiting host calls this at each look; it runs in its own
+/// thread, at most once per period on the machine, and not for a reset that comes within the
+/// period. ref: docs/tasks.md "Agents"
+pub fn probe_limit() {
     let now = now_unix_ms();
-    let Some(until_ms) = store::limited_until("claude", now) else {
+    let every = limit_probe_every_ms();
+    let Some(limit) = store::account_limit("claude", now).filter(|l| l.until_ms > now + every)
+    else {
         return;
-    };
-    let every = match forced {
-        true => LIMIT_PROBE_FORCED_MS,
-        false if until_ms <= now + LIMIT_PROBE_EVERY_MS => return,
-        false => LIMIT_PROBE_EVERY_MS,
     };
     if !store::claim_limit_probe("claude", now, every) {
         return;
     }
-    std::thread::spawn(run_limit_probe);
+    let model = limit.model.unwrap_or_else(|| "haiku".into());
+    std::thread::spawn(move || run_limit_probe(&model));
 }
 
-fn run_limit_probe() {
+fn run_limit_probe(model: &str) {
     use wsx_core::process::{run_bounded, Bound, Options, Stderr};
     let mut command = std::process::Command::new("claude");
     // ^ No project folder: no CLAUDE.md or settings, no tools asked for.
@@ -848,7 +862,7 @@ fn run_limit_probe() {
                 .filter_map(|name| Some((*name, std::env::var_os(name)?))),
         )
         .args(["-p", "--output-format", "stream-json", "--verbose"])
-        .args(["--model", "haiku", "--setting-sources", ""])
+        .args(["--model", model, "--setting-sources", ""])
         .arg("Reply with the word ok.")
         .stdin(std::process::Stdio::null());
     let options = Options {
