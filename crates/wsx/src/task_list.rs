@@ -114,6 +114,8 @@ pub struct TaskList {
     pub agent: Option<String>,
     /// The project's manager chat, opened over the list with `m`.
     pub chat: Option<Box<crate::task_chat::ManagerChat>>,
+    /// The New chat form, opened with `n` over the list.
+    pub new_chat: Option<crate::task_new_chat::NewChat>,
     /// The project's overview, opened with `o` over the list or the chat.
     pub overview: Option<Overview>,
     /// The `?` popup over the list, the detail or the chat.
@@ -151,6 +153,7 @@ impl TaskList {
             tokens: false,
             agent: None,
             chat: None,
+            new_chat: None,
             overview: None,
             help: None,
             confirm: None,
@@ -256,6 +259,22 @@ impl TaskList {
         list.open_chat(None);
         *self = list;
         true
+    }
+
+    /// A key of the New chat form: it opens the chat made, or the first, and closes on Esc.
+    pub fn new_chat_key(&mut self, action: &Action) {
+        let Some(form) = &mut self.new_chat else {
+            return;
+        };
+        match form.key(action, &self.store) {
+            crate::task_new_chat::Outcome::Open => {}
+            crate::task_new_chat::Outcome::Cancel => self.new_chat = None,
+            crate::task_new_chat::Outcome::Done(chat) => {
+                self.new_chat = None;
+                self.open_chat(chat);
+                self.stamp = None;
+            }
+        }
     }
 
     /// `o`: the overview as it is now; a missing file or a failed read shows as words.

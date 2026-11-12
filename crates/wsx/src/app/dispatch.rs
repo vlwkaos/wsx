@@ -131,6 +131,11 @@ impl App {
                 self.needs_redraw = true;
                 return Ok(());
             }
+            if list.new_chat.is_some() {
+                list.new_chat_key(&action);
+                self.needs_redraw = true;
+                return Ok(());
+            }
             if let Some(help) = &mut list.help {
                 if !help.key(&action) {
                     list.help = None;
@@ -191,6 +196,10 @@ impl App {
             match (action, list.detail.is_some()) {
                 (Action::EnterMove, false) => list.open_chat(None),
                 (Action::Overview, false) => list.open_overview(),
+                // ^ `n` is the Workspace's next-attention key; here it opens the New chat form.
+                (Action::NextAttention, false) => {
+                    list.new_chat = Some(crate::task_new_chat::NewChat::new())
+                }
                 (Action::NavigateDown, false) => list.select(1),
                 (Action::NavigateUp, false) => list.select(-1),
                 (Action::Select, false) => list.open_selected(),

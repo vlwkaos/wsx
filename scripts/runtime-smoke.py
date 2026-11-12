@@ -2327,6 +2327,38 @@ try:
     wait_for(lambda: "press i to write a message" not in remove_tui.text(), "Esc did not close the chat opened from a routine", seconds=60)
     remove_tui.send(b"q")
     wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close the Tasks view opened from a routine", seconds=60)
+    # New chat (docs/tasks.md "TUI", "Chats"): `n` in the Tasks list opens a form with a name and a
+    # goal (and an agent when [[agents]] has entries). A refused name stays in the form with the
+    # store's words; a name makes the chat, opens it titled by its name, and the list shows it under
+    # Chats with its goal; no name opens the manager's chat.
+    select_in_tui("keep-me")
+    remove_tui.send(b"t")
+    wait_for(lambda: "All projects" in remove_tui.text(), "t did not open keep-me's Tasks view for New chat", seconds=60)
+    remove_tui.send(b"n")
+    wait_for(lambda: "New chat" in remove_tui.text() and "name:" in remove_tui.text() and "goal:" in remove_tui.text(),
+             lambda: f"n opened no New chat form:\n{remove_tui.text()}", seconds=60)
+    remove_tui.send(b"Bad Name\r")
+    wait_for(lambda: "lowercase letter" in remove_tui.text(), lambda: f"a bad name showed no refusal:\n{remove_tui.text()}", seconds=60)
+    assert "name: Bad Name" in remove_tui.text(), remove_tui.text()
+    remove_tui.send(b"\x7f" * 8 + b"qa\tCheck the notes\r")
+    wait_for(lambda: "press i to write a message" in remove_tui.text() and re.search(r"(?m)^\s*qa\s", remove_tui.text()),
+             lambda: f"a name did not open the new chat titled by its name:\n{remove_tui.text()}", seconds=60)
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "press i to write a message" not in remove_tui.text() and "Chats" in remove_tui.text() and "Check the notes" in remove_tui.text(),
+             lambda: f"the list does not show the new chat under Chats with its goal:\n{remove_tui.text()}", seconds=60)
+    remove_tui.send(b"n")
+    wait_for(lambda: "┌ New chat" in remove_tui.text(), "n opened no form again", seconds=60)
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "┌ New chat" not in remove_tui.text(), "Esc did not close the form", seconds=60)
+    remove_tui.send(b"n\r")
+    wait_for(lambda: "press i to write a message" in remove_tui.text() and not re.search(r"(?m)^\s*qa\s", remove_tui.text()),
+             lambda: f"no name did not open the manager's chat:\n{remove_tui.text()}", seconds=60)
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "press i to write a message" not in remove_tui.text(), "Esc did not close the manager chat", seconds=60)
+    remove_tui.send(b"q")
+    wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close the Tasks view after New chat", seconds=60)
+    closed = wsx("task", "chat", "close", "qa", "-p", keep_path, "--json")
+    assert closed.returncode == 0, closed.stdout + closed.stderr
     # docs/design/tui-parity-audit.md gaps 3 to 7: the keys the footers and the help name work in the
     # real TUI. The help scrolls to its last section at 40 rows; the footers list the project and
     # routine keys; a bracketed paste lands in the `p` path and the chat line; a routine runs now

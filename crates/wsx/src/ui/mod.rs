@@ -562,7 +562,12 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
         Mode::Tasks { list } => match (&list.overview, &list.chat) {
             (Some(overview), _) => tasks::render_overview(frame, area, &list.project, overview),
             (None, Some(chat)) => task_chat::render(frame, area, chat),
-            (None, None) => tasks::render(frame, area, list),
+            (None, None) => {
+                tasks::render(frame, area, list);
+                if let Some(form) = &list.new_chat {
+                    tasks::render_new_chat(frame, area, form);
+                }
+            }
         },
         Mode::Workspace
         | Mode::Terminal { .. }
@@ -740,6 +745,11 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
             hints.extend(["(R)un".into(), "Esc: close".into()]);
             ("PANELS", theme::ModeBadge::Info, hints)
         }
+        Mode::Tasks { list } if list.new_chat.is_some() => (
+            "NEW CHAT",
+            theme::ModeBadge::Info,
+            vec!["Enter: create".into(), "Esc: cancel".into()],
+        ),
         Mode::Tasks { list } if list.overview.is_some() => (
             "OVERVIEW",
             theme::ModeBadge::Info,
@@ -799,6 +809,8 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
             }
             // ^ After `(u)sage`: the narrow footer drops the overview first.
             hints.push("(o)verview".into());
+            // ^ Last: a narrow footer drops it first.
+            hints.push("(n)ew chat".into());
             ("TASKS", theme::ModeBadge::Info, hints)
         }
     };

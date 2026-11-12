@@ -4287,14 +4287,31 @@ merge_seconds = 3
         role_chat = wait(lambda: (lambda data: data if any(manager_said(r) for r in data['rows']) else None)(
             steady(owner, 'GET', '/api/tasks/%d/chat?chat=notes' % demo)[1]), 'chat reply')
         # ^ A chat with no agent of its own shows the manager's agent.
-        assert role_chat['manager'] == {'name': 'notes', 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and role_chat['chats'] is None and role_chat['running'], role_chat
-        contacts = steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]['chats']
+        assert role_chat['manager'] == {'name': 'notes', 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and 'chats' not in role_chat and role_chat['running'], role_chat
+        # ^ The overview is the observer's: it follows the chat's files within a poll.
+        overview_chats = lambda count: wait(lambda: (lambda chats: chats if len(chats) == count and all(c['news'] for c in chats if c['name'] == 'notes') else None)(
+            steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['chats']), 'the overview lists %d chats' % count)
+        contacts = overview_chats(1)
         assert [(c['name'], c['goal']) for c in contacts] == [('notes', 'Keep the notes.')], contacts
-        assert contacts[0]['last_reply'].startswith('open: ') and contacts[0]['news']['text'].startswith('open: ') and contacts[0]['news']['unix_ms'] > 0, contacts
+        assert contacts[0]['last_reply'].startswith('open: ') and contacts[0]['news']['text'].startswith('open: ') and contacts[0]['news']['unix_ms'] > 0 and contacts[0]['approvals'] == 0, contacts
         assert steady(owner, 'GET', '/api/tasks/%d/chat?chat=nobody' % demo)[0] == 404
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'hi', 'chat': 'nobody'})
         assert status >= 400 and 'no open chat nobody' in json.dumps(body), (status, body)
-        ok('chats: a chat by ?chat=, a say to it starts it, the manager chat lists it as a contact, an unknown chat refused')
+        ok('chats: a chat by ?chat=, a say to it starts it, the overview lists it as a Home row, an unknown chat refused')
+        # The page's New chat: a bad name is refused with the store's words, a name makes the
+        # chat with its goal, and the agents list answers.
+        status, body = steady(owner, 'POST', '/api/tasks/%d/chats' % demo, {'name': 'Bad Name'})
+        assert status == 400 and 'lowercase letter' in json.dumps(body), (status, body)
+        status, body = steady(owner, 'POST', '/api/tasks/%d/chats' % demo, {'name': 'made', 'goal': 'Made by the page.'})
+        assert status == 200 and body['chat'] == 'made', (status, body)
+        contacts = overview_chats(2)
+        assert [(c['name'], c['goal']) for c in contacts] == [('made', 'Made by the page.'), ('notes', 'Keep the notes.')], contacts
+        status, body = steady(owner, 'POST', '/api/tasks/%d/chats' % demo, {'name': 'made'})
+        assert status == 400 and 'already open' in json.dumps(body), (status, body)
+        status, body = steady(owner, 'GET', '/api/tasks/agents')
+        assert status == 200 and isinstance(body['agents'], list), (status, body)
+        js('task', 'chat', 'close', 'made', '-p', 'demo')
+        ok('chats: the page makes a chat (a bad or an open name refused), the agents list answers')
         # A manager turn alone changes the overview: its `busy` (the home row's typing dots) goes
         # true while the turn runs and false after it (docs/web-client-tasks.md "Home").
         watcher = Events(owner)

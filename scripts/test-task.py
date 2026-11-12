@@ -5908,8 +5908,8 @@ def part_host(created=None):
             (r'WORKSPACE', b'')], cols=cols)
         talk = shots[3]
         assert 'to check' not in talk and re.search(r'(?m)^ billing +\d\d:\d\d$', talk), talk
-        # ^ The title names the project and the chat; the manager's message is under "<name> manager", not the bare project name.
-        assert 'demo · billing · haiku' in talk and 'MANAGER PING' in talk, talk
+        # ^ The title is the chat's name and its model; the manager's message is under "<name> manager", not the bare project name.
+        assert 'billing · haiku' in talk and 'demo · billing' not in talk and 'MANAGER PING' in talk, talk
         assert re.search(r'(?m)^ demo manager +\d\d:\d\d$', talk) and not re.search(r'(?m)^ demo +\d\d:\d\d$', talk), talk
     # chat close keeps the notes; the chat's tasks go back to the manager.
     (chats_dir / 'billing/notes/context.md').write_text('billing notes\n')

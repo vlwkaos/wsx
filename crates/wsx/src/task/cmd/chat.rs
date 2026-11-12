@@ -289,8 +289,7 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
         ChatCmd::New { name, goal, agent } => {
             owner_only("chat new")?;
             let goal = goal.as_deref().map(read_goal).transpose()?;
-            let agent = agent.as_deref().map(chats::checked_agent).transpose()?;
-            chats::create(&project_id, &name, goal.as_deref(), agent)?;
+            chats::create(&project_id, &name, goal.as_deref(), agent.as_deref())?;
             let message = format!("chat {name} is open; `wsx task say --to {name}` talks to it");
             if json {
                 return print_json(&json!({ "chat": name, "state": "open", "message": message }));

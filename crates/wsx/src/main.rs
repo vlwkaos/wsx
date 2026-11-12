@@ -15,6 +15,7 @@ mod session_state;
 mod task;
 mod task_chat;
 mod task_list;
+mod task_new_chat;
 mod terminal_surface;
 #[cfg(test)]
 mod terminal_surface_tests;
