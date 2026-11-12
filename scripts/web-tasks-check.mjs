@@ -1541,8 +1541,8 @@ await closeSheet("the usage sheet", chat);
     await until("/^succeeded now$/.test([...document.querySelectorAll('.reservoir .need[data-key=\"routine-nightly\"] .row-context')].at(-1)?.textContent ?? '')", "Run now did not show nightly's new run", 300);
     await closeReservoir();
 
-    // A failed last run tints the pill in the danger color.
-    await evaluate("window.tweak = (body) => { const row = body.routines.find((each) => each.name === 'nightly'); row.last = { ...row.last, status: 'failed', exit: 3 }; }");
+    // A failed last run tints the pill in the danger color. The pill reads the server's `counts`, so the tweak sets them with the row.
+    await evaluate("window.tweak = (body) => { const row = body.routines.find((each) => each.name === 'nightly'); row.last = { ...row.last, status: 'failed', exit: 3 }; body.counts = { ...body.counts, failed: 1 }; }");
     await again();
     look = await pill();
     if (look.label !== "2 routines, 1 failed" || look.tone !== "danger") await fail(`the Routines pill with a failed last run is ${JSON.stringify(look)}`);
