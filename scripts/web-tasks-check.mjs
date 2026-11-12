@@ -3728,6 +3728,9 @@ await setMotion("no-preference");
     || listed.items[0] !== "What wsx does today" || listed.items[3] !== "Missing vs habit") {
     await fail(`the tables under list items read ${JSON.stringify({ listed, kids, want })}`);
   }
+  // ^ The reader is above the new reply, so it is brought into view for the capture.
+  await evaluate(`${reply("Read-only answer against wsx main")}.scrollIntoView({ block: 'start' })`);
+  await pause(300);
   await shot("list-tables", ".composer-send");
   if (await say("LISTPLAIN") !== 200) await fail("the message for a plain-shapes reply was not taken");
   await until(`!!${reply("Plain shapes:")} && !document.querySelector('.log .typing')`, "the reply with plain shapes did not arrive", 120);
