@@ -324,8 +324,11 @@ fn migrate(project_id: &str, project: &Path) -> Result<()> {
         Ok(store::read_bounded_if_exists(file, 64 << 20)?
             .is_some_and(|bytes| bytes.windows(key.len()).any(|at| at == key)))
     };
-    let (role_requests, role_digest) =
-        (has(&approvals, br#""role""#)?, has(&digest, br#""role":"#)?);
+    let (role_requests, role_digest) = (
+        has(&approvals, br#""role""#)?,
+        has(&digest, br#""role":"#).unwrap_or(false),
+    );
+    // ^ A digest too large to read is the search's to rebuild, not a reason to fail the move.
     if !old.is_dir() && !role_requests && !role_digest {
         return Ok(());
     }
@@ -340,7 +343,7 @@ fn migrate(project_id: &str, project: &Path) -> Result<()> {
         drop_role_approvals(&approvals, &bytes)?;
     }
     if role_digest {
-        std::fs::remove_file(&digest)?;
+        let _ = std::fs::remove_file(&digest); // ^ a search may have rebuilt it first
     }
     if !old.is_dir() {
         return Ok(());
