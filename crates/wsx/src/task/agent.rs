@@ -492,8 +492,6 @@ pub(super) fn end_stream<E>(
 const TREE_ENV: &str = "WSX_AGENT_TREE";
 /// Lines that wait for a slow agent's stdin before `write` refuses the next one.
 const INPUT_LINES: usize = 64;
-/// How long a stopped agent has to end after SIGTERM before SIGKILL.
-const STOP_GRACE: Duration = Duration::from_secs(5);
 /// The wsxd argument of a resumable session's supervisor, which a stop never signals.
 /// ref: crates/wsx-daemon/src/lib.rs `RESUME_SUPERVISOR_ARG`
 #[cfg(target_os = "macos")]
@@ -656,7 +654,7 @@ impl Drop for AgentProcess {
         drop(self.input.take());
         let leader = self.child.id() as libc::pid_t;
         self.signal(libc::SIGTERM);
-        let deadline = Instant::now() + STOP_GRACE;
+        let deadline = Instant::now() + wsx_core::process::STOP_GRACE;
         while !exited(leader) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -687,62 +685,17 @@ fn exited(pid: libc::pid_t) -> bool {
 #[cfg(target_os = "macos")]
 fn marked(marker: &[u8]) -> Vec<libc::pid_t> {
     let me = std::process::id() as libc::pid_t;
-    // SAFETY: a null buffer asks only for the count.
-    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) }.max(0) as usize;
-    let mut pids: Vec<libc::pid_t> = vec![0; count + 64];
-    let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
-    // SAFETY: the buffer holds `bytes` bytes.
-    let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
-    pids.truncate(listed.max(0) as usize);
-    let mut args = vec![0u8; arg_max()];
-    let mut found = Vec::new();
-    for pid in pids.into_iter().filter(|pid| *pid > 1 && *pid != me) {
-        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
-        let mut size = args.len();
-        // SAFETY: `args` holds `size` bytes, and sysctl writes at most that and sets `size`.
-        let read = unsafe {
-            libc::sysctl(
-                mib.as_mut_ptr(),
-                3,
-                args.as_mut_ptr().cast(),
-                &mut size,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        if read == 0 && in_tree(&args[..size], marker) {
-            found.push(pid);
-        }
-    }
-    found
+    let mut args = wsx_core::process::ProcArgs::default();
+    wsx_core::process::pids()
+        .into_iter()
+        .filter(|pid| *pid > 1 && *pid != me)
+        .filter(|pid| args.read(*pid).is_some_and(|args| in_tree(args, marker)))
+        .collect()
 }
 
 #[cfg(not(target_os = "macos"))]
 fn marked(_marker: &[u8]) -> Vec<libc::pid_t> {
     Vec::new()
-}
-
-#[cfg(target_os = "macos")]
-fn arg_max() -> usize {
-    let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
-    let mut value: libc::c_int = 0;
-    let mut size = std::mem::size_of::<libc::c_int>();
-    // SAFETY: KERN_ARGMAX is one int.
-    let read = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            2,
-            (&mut value as *mut libc::c_int).cast(),
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if read == 0 && value > 0 {
-        value as usize
-    } else {
-        1 << 20
-    }
 }
 
 /// `KERN_PROCARGS2` is argc, the exec path, NUL padding, the arguments, then the environment,

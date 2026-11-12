@@ -3,10 +3,12 @@
 //! it grow past a bound, and on a timeout stops the whole group and keeps what was read.
 //! `terminate_group` is the one stop: the git runner, panels, the web server's shell lines
 //! and compact copies, the terminal, routines, previews and review providers all use it.
+//! `stop_under` is the stop by executable path, for the processes that left every group.
 
 use std::{
     io::{self, Read},
     os::unix::process::CommandExt,
+    path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
     sync::{mpsc, Arc, Mutex},
     time::{Duration, Instant},
@@ -18,6 +20,8 @@ use std::{
 const STREAM_GRACE: Duration = Duration::from_secs(2);
 /// How long `terminate_group` waits after SIGKILL for the group to be gone.
 const KILL_WAIT: Duration = Duration::from_secs(2);
+/// How long a stop of an agent, a tool tree or a process outside any copy waits after SIGTERM.
+pub const STOP_GRACE: Duration = Duration::from_secs(5);
 
 /// What a stream may hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -271,12 +275,19 @@ pub fn terminate_group(pgid: libc::pid_t, grace: Duration) {
 
 /// Whether the group has no process left within `limit`.
 fn wait_gone(pgid: libc::pid_t, limit: Duration) -> bool {
-    let deadline = Instant::now() + limit;
-    loop {
+    wait_until(limit, || {
         // ^ A child of this process is a zombie until reaped, and a zombie keeps its group.
         // SAFETY: waitpid with WNOHANG and no status pointer touches no memory.
         unsafe { libc::waitpid(-pgid, std::ptr::null_mut(), libc::WNOHANG) };
-        if !group_exists(pgid) {
+        !group_exists(pgid)
+    })
+}
+
+/// Poll `gone` every 20 ms until it holds or `limit` passes.
+fn wait_until(limit: Duration, mut gone: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + limit;
+    loop {
+        if gone() {
             return true;
         }
         if Instant::now() >= deadline {
@@ -290,4 +301,225 @@ fn group_exists(pgid: libc::pid_t) -> bool {
     // SAFETY: signal 0 only checks that the group exists.
     let alive = unsafe { libc::kill(-pgid, 0) } == 0;
     alive || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+/// The process has ended: reaped when it is a child of this process, else not found.
+fn pid_gone(pid: libc::pid_t) -> bool {
+    // SAFETY: waitpid with WNOHANG and no status pointer touches no memory; a pid that is not
+    // a child answers ECHILD.
+    unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+    // SAFETY: signal 0 only checks that the process exists.
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    !alive && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+/// The pids of every process now running.
+pub fn pids() -> Vec<libc::pid_t> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: a null buffer asks only for the count.
+        let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) }.max(0) as usize;
+        let mut pids: Vec<libc::pid_t> = vec![0; count + 64];
+        let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+        // SAFETY: the buffer holds `bytes` bytes.
+        let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+        pids.truncate(listed.max(0) as usize);
+        pids
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+            .collect()
+    }
+}
+
+/// Reads `KERN_PROCARGS2`: argc, the exec path, NUL padding, the arguments, then the
+/// environment, each NUL-ended. One buffer serves every process.
+#[cfg(target_os = "macos")]
+pub struct ProcArgs(Vec<u8>);
+
+#[cfg(target_os = "macos")]
+impl Default for ProcArgs {
+    fn default() -> Self {
+        let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
+        let mut value: libc::c_int = 0;
+        let mut size = std::mem::size_of::<libc::c_int>();
+        // SAFETY: KERN_ARGMAX is one int.
+        let read = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                2,
+                (&mut value as *mut libc::c_int).cast(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        Self(vec![
+            0;
+            if read == 0 && value > 0 {
+                value as usize
+            } else {
+                1 << 20
+            }
+        ])
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl ProcArgs {
+    /// The process's raw arguments block; none for another user's process or one that ended.
+    pub fn read(&mut self, pid: libc::pid_t) -> Option<&[u8]> {
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+        let mut size = self.0.len();
+        // SAFETY: the buffer holds `size` bytes, and sysctl writes at most that and sets `size`.
+        let read = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                3,
+                self.0.as_mut_ptr().cast(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        (read == 0).then(|| &self.0[..size])
+    }
+
+    /// The executable's path. `proc_pidpath` is the resolved path of a running file; it fails
+    /// once the file is removed, so the exec path the process was started with answers then,
+    /// when it is absolute (a relative one cannot be placed).
+    fn executable(&mut self, pid: libc::pid_t) -> Option<PathBuf> {
+        let mut buffer = [0u8; 4096];
+        // SAFETY: the buffer holds 4096 bytes.
+        let length = unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), 4096) };
+        if length > 0 {
+            return Some(path_of(&buffer[..length as usize]));
+        }
+        let args = self.read(pid)?;
+        let exec = args.get(4..)?.split(|byte| *byte == 0).next()?;
+        let path = path_of(exec);
+        path.is_absolute().then_some(path)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[derive(Default)]
+struct ProcArgs;
+
+#[cfg(not(target_os = "macos"))]
+impl ProcArgs {
+    /// `/proc/<pid>/exe`; a removed file reads `<path> (deleted)`.
+    fn executable(&mut self, pid: libc::pid_t) -> Option<PathBuf> {
+        let link = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+        let text = link.to_str()?;
+        Some(PathBuf::from(
+            text.strip_suffix(" (deleted)").unwrap_or(text),
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn path_of(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(bytes))
+}
+
+/// A process `stop_under` stopped, with the executable that placed it under a root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stopped {
+    pub pid: libc::pid_t,
+    pub path: PathBuf,
+}
+
+/// What was stopped, for a log line: the first five as `pid N path`.
+pub fn stopped_words(stopped: &[Stopped]) -> String {
+    let mut words: Vec<String> = stopped
+        .iter()
+        .take(5)
+        .map(|one| format!("pid {} {}", one.pid, one.path.display()))
+        .collect();
+    if stopped.len() > 5 {
+        words.push(format!("and {} more", stopped.len() - 5));
+    }
+    words.join(", ")
+}
+
+/// A root as the system may report a path below it: as given, and with its nearest existing
+/// parent resolved (`/tmp` is `/private/tmp`; the folder itself may be gone).
+fn root_forms(root: &Path) -> Vec<PathBuf> {
+    let mut rest = Vec::new();
+    let mut head = root;
+    let resolved = loop {
+        if let Ok(real) = head.canonicalize() {
+            break Some(rest.iter().rev().fold(real, |path, name| path.join(name)));
+        }
+        match (head.parent(), head.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                head = parent;
+            }
+            _ => break None,
+        }
+    };
+    let mut forms = vec![root.to_path_buf()];
+    forms.extend(resolved.filter(|path| path != root));
+    forms
+}
+
+/// Stop every process of this user, other than the caller, whose executable lies under one of
+/// `roots`: SIGTERM, `grace` to end, SIGKILL, then wait for each to go (a child of the caller
+/// is reaped). It finds what left every process group and cleared its environment, which
+/// `terminate_group` and the agent's mark do not. A root that is not absolute or has fewer than
+/// three parts is ignored (an empty one would match every process); a process whose path
+/// cannot be read, or that this user may not signal, is left alone. Returns what it stopped.
+pub fn stop_under(roots: &[PathBuf], grace: Duration) -> Vec<Stopped> {
+    let roots: Vec<PathBuf> = roots
+        .iter()
+        .filter(|root| root.is_absolute() && root.components().count() >= 3)
+        .flat_map(|root| root_forms(root))
+        .collect();
+    if roots.is_empty() {
+        return Vec::new();
+    }
+    let me = std::process::id() as libc::pid_t;
+    let mut reader = ProcArgs::default();
+    let found: Vec<Stopped> = pids()
+        .into_iter()
+        .filter(|pid| *pid > 1 && *pid != me)
+        .filter_map(|pid| {
+            let path = reader.executable(pid)?;
+            let under = roots.iter().any(|root| path.starts_with(root));
+            // SAFETY: signal 0 only checks that this user may signal the process.
+            (under && unsafe { libc::kill(pid, 0) } == 0).then_some(Stopped { pid, path })
+        })
+        .collect();
+    let send = |signal: libc::c_int, reader: &mut ProcArgs| {
+        for stopped in &found {
+            // ^ The path is read again before SIGKILL: the pid may be a newer process by now.
+            if signal == libc::SIGKILL
+                && reader.executable(stopped.pid).as_ref() != Some(&stopped.path)
+            {
+                continue;
+            }
+            // SAFETY: a plain signal to a process that lay under the root a moment ago.
+            unsafe { libc::kill(stopped.pid, signal) };
+        }
+    };
+    let all_gone = || found.iter().all(|stopped| pid_gone(stopped.pid));
+    if !grace.is_zero() {
+        send(libc::SIGTERM, &mut reader);
+        if wait_until(grace, all_gone) {
+            return found;
+        }
+    }
+    send(libc::SIGKILL, &mut reader);
+    if !grace.is_zero() {
+        wait_until(KILL_WAIT, all_gone);
+    }
+    found
 }

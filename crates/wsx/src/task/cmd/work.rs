@@ -25,7 +25,7 @@ use wsx_core::task::{
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
     HostRequest, LogEvent, TaskRecord, TaskState,
 };
-use wsx_core::{ops, runtime};
+use wsx_core::{ops, process, runtime};
 
 pub(crate) const CLOSE_WAIT: Duration = Duration::from_secs(15);
 
@@ -375,7 +375,22 @@ pub(crate) fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
         })?;
         removed.push(session.0);
     }
+    let mut stopped = Vec::new();
     if working_copy_exists {
+        // ^ A process that left the agent's group and cleared its environment holds the copy
+        // by its executable: stop it before the copy goes. ref: docs/tasks.md "Close"
+        stopped = process::stop_under(
+            std::slice::from_ref(&record.working_copy),
+            process::STOP_GRACE,
+        );
+        if !stopped.is_empty() {
+            let text = format!(
+                "close stopped {} process(es) left in the working copy: {}",
+                stopped.len(),
+                process::stopped_words(&stopped)
+            );
+            let _ = dir.append(LogEvent::Agent { text, said: false });
+        }
         ops::cargo_clean(&record.working_copy);
         copy::remove(&main, &record.working_copy, Some(&record.branch)).with_context(|| {
             format!(
@@ -393,14 +408,20 @@ pub(crate) fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
             "state": record.state,
             "discarded": discard,
             "sessions_removed": removed,
+            "processes_stopped": stopped.iter().map(|one| json!({"pid": one.pid, "path": one.path})).collect::<Vec<_>>(),
             "working_copy_removed": working_copy_exists,
         }));
     }
     println!(
-        "task t{} closed; removed {} and {} session(s)",
+        "task t{} closed; removed {} and {} session(s){}",
         record.id,
         record.working_copy.display(),
-        removed.len()
+        removed.len(),
+        if stopped.is_empty() {
+            String::new()
+        } else {
+            format!(", stopped {} process(es)", stopped.len())
+        }
     );
     Ok(())
 }
