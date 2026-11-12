@@ -3936,8 +3936,9 @@ def task_journey(args):
             'owner': ('"all"', '"task_view", "task_act", "push", "media_upload", "media_download", "files_read"'),
             'viewer': (json.dumps([str(project)]), '"task_view", "push"'),
             'plain': (json.dumps([str(other)]), '"chat_send", "push"'),
-            # ^ Adds and removes projects (docs/web-client.md "Projects"): every project and a terminal that takes input.
-            'admin': ('"all"', '"task_view", "terminal_view", "terminal_input", "push"'),
+            # ^ Adds and removes projects (docs/web-client.md "Projects"): every project and a terminal that takes input;
+            # task_act gives it the New chat sheet whose project list ends with Add project….
+            'admin': ('"all"', '"task_view", "task_act", "terminal_view", "terminal_input", "push"'),
             # ^ Reads panels, but only of `other`, which declares none (docs/panels.md "Machine panels").
             'scoped': (json.dumps([str(other)]), '"task_view", "terminal_view", "terminal_input", "push"'),
             # ^ Runs panels and reads files: a project page link in a panel opens (docs/panels.md "Links").
