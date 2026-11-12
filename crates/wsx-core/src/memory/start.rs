@@ -114,10 +114,9 @@ fn fit(piece: &Piece, room: usize) -> Option<String> {
         return Some(piece.text.clone());
     }
     let note = format!(
-        "\n[cut: {} bytes of {}; read {}]",
+        "\n[cut: {} bytes of {name}; read {name}]",
         piece.text.len(),
-        piece.name,
-        piece.name
+        name = piece.name
     );
     let keep = room
         .checked_sub(note.len())
