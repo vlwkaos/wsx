@@ -1,9 +1,9 @@
 //! `wsx task manager-host`: one manager agent per project in a hidden session in the
 //! main checkout. It edits no project file but a commit of the owner's own changes on the
 //! owner's yes; it answers from the ledger, acts through
-//! `wsx task` commands and keeps notes in its own folder. With `--role <name>` the same host
-//! runs a role: its brief, its own folder and only its tasks' events, and it leaves once idle.
-//! ref: docs/tasks.md "Manager", "Roles"
+//! `wsx task` commands and keeps notes in its own folder. With `--chat <name>` the same host
+//! runs another chat: its goal, its own folder and only its tasks' events, and it leaves once
+//! idle. ref: docs/tasks.md "Manager", "Chats"
 
 use super::agent::{
     self, new_session_id, Agent, AgentLine, Launch, TurnResult, KEEP_WARM_PINGS, KEEP_WARM_TEXT,
@@ -45,7 +45,7 @@ use wsx_core::task::view::{self, clip, project_tasks, read_result};
 use wsx_core::task::{
     call_host, checks, ledger, now_unix_ms, HostRequest, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
 };
-use wsx_core::task::{owner, roles, usage};
+use wsx_core::task::{chats, owner, usage, Actor};
 
 use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -107,10 +107,8 @@ const ERROR_ROTATE_ATTEMPTS: u32 = 3;
 const IDLE_EVERY_MS: u64 = 24 * 3_600_000;
 /// The title of the task `tasks.workflow.idle` starts.
 const IDLE_TITLE: &str = "Consolidate project knowledge";
-/// A role's host leaves after this long with no message and no turn; `say` starts it again.
-const ROLE_LINGER: Duration = Duration::from_secs(20);
-/// How often the manager host closes roles idle past `tasks.roles.closeDays`.
-const ROLE_SWEEP: Duration = Duration::from_secs(10);
+/// A chat's host leaves after this long with no message and no turn; `say` starts it again.
+const CHAT_LINGER: Duration = Duration::from_secs(20);
 /// A message in a handover: one line, clipped, so a quote never reads as a new message.
 fn one_line(text: &str) -> String {
     clip(
@@ -143,13 +141,13 @@ pub(super) enum Event {
     /// the error.
     IdleStarted(u64, Result<u32, String>),
     /// The agent's `say --from-manager` reached another project's manager, or its
-    /// `say --from-role` a role of this project (`to` is `role:<name>`).
+    /// `say --from-chat` a chat of this project (`to` is `chat:<name>`).
     Sent {
         to: String,
         text: String,
         reply: bool,
     },
-    /// The events of a task that the host of the role, or the manager of the project, that
+    /// The events of a task that the host of the chat, or the manager of the project, that
     /// created it did not take: this manager hears them.
     Undelivered {
         to: Hearer,
@@ -157,11 +155,11 @@ pub(super) enum Event {
     },
 }
 
-/// Who hears the events of a task besides this manager: the open role that created it, or the
-/// manager of the other project that did. ref: docs/tasks.md "Roles", "Managers talk"
+/// Who hears the events of a task besides this manager: the open chat that created it, or the
+/// manager of the other project that did. ref: docs/tasks.md "Chats", "Managers talk"
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Hearer {
-    Role(String),
+    Chat(String),
     Project(String),
 }
 
@@ -169,8 +167,8 @@ impl Hearer {
     /// The head of the events this manager hears when `self` did not take them.
     fn refusal(&self) -> String {
         match self {
-            Self::Role(role) => {
-                format!("role {role} did not take the events of its tasks, so they are yours:")
+            Self::Chat(chat) => {
+                format!("chat {chat} did not take the events of its tasks, so they are yours:")
             }
             Self::Project(project) => format!(
                 "the manager of {project} did not take the events of its tasks here, so they are yours:"
@@ -256,13 +254,12 @@ struct Manager {
     policy: broker::SharedPolicy,
     /// When the agent last failed to start a turn; the next try waits `START_RETRY`.
     start_failed: Option<Instant>,
-    /// Event lines of tasks a role or another project's manager created, by who hears them, not
+    /// Event lines of tasks a chat or another project's manager created, by who hears them, not
     /// yet sent.
-    role_events: BTreeMap<Hearer, Vec<(String, Short)>>,
+    chat_events: BTreeMap<Hearer, Vec<(String, Short)>>,
     /// The waiting approvals that run now, by id (`run_waiting`).
     running_waits: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
-    roles_swept: Option<Instant>,
-    /// A role host that is closed or idle: it leaves.
+    /// A chat host that is closed or idle: it leaves.
     leaving: bool,
     /// The host asked for a shorter overview since the last owner message or in-cap result.
     overview_asked: bool,
@@ -291,19 +288,19 @@ const INSTRUCTION_MESSAGE_TOKENS: u64 = 100_000;
 // ^ The agent writes the notes: a link or a huge file must not reach the host's read.
 const MAX_NOTES_READ: u64 = 256 * 1024;
 
-/// A role's instructions open with this, its brief, then the manager's.
-/// ref: docs/tasks.md "Roles"
-fn role_preamble(role: &str, project: &str, brief: &str) -> String {
+/// A chat's instructions open with this, its goal, then the manager's.
+/// ref: docs/tasks.md "Chats"
+fn chat_preamble(chat: &str, project: &str, goal: &str) -> String {
     format!(
-        "You are {role}, a role in the project {project}: a second manager for one area, \
-         with the owner's brief below. The manager's instructions after it are yours, with these \
-         differences. You hear the events only of the tasks you create, and act only on them; \
-         you land only a child into its parent task. The manager keeps every other task, the \
-         recap, approvals, deploys, releases, routines and the project overview. You never create a \
-         role or change the project's config. Message the manager with `wsx task say \
-         --from-role \"<text>\"`; a message headed 'Manager' or 'Role <name>' asks you \
-         something: answer it once with `wsx task say --role <name> --from-role --reply \
-         \"<answer>\"` (`--role manager` for the manager).\n\nThe owner's brief:\n{brief}\n\n\
+        "You are {chat}, a chat in the project {project}: a second manager with its own log and \
+         notes, and the owner's goal below. The manager's instructions after it are yours, with \
+         these differences. You hear the events only of the tasks you create, and act only on \
+         them; you land only a child into its parent task. The manager keeps every other task, \
+         the recap, approvals, deploys, releases, routines and the project overview. You never \
+         open a chat or change the project's config. Message another chat with `wsx task say \
+         --to <name> --from-chat \"<text>\"` (`--to manager` for the first); a message headed \
+         'Manager' or 'Chat <name>' asks you something: answer it once with `wsx task say \
+         --to <name> --from-chat --reply \"<answer>\"`.\n\nThe owner's goal:\n{goal}\n\n\
          The manager's instructions:\n"
     )
 }
@@ -328,18 +325,18 @@ pub fn print_profile(project: &str, main: &Path, untrusted: bool) -> Result<()> 
     Ok(())
 }
 
-pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
+pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
     let (project, main) = super::project_by_id(project_id)?;
     let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
-    let dir = match role {
+    let dir = match chat {
         None => ManagerDir::open(project_id)?,
-        Some(role) => roles::open_role(project_id, role)?,
+        Some(chat) => chats::open_chat(project_id, chat)?,
     };
     let listener = hosting::bind(&dir.socket_path())?;
     let brokered = hosting::bind(&dir.broker_path())?;
     let state = dir.read_state()?;
-    // ^ A role with its own agent runs it; the event model names one of the manager's models.
-    let (adapter, model, event_model) = match roles::agent(&dir) {
+    // ^ A chat with its own agent runs it; the event model names one of the manager's models.
+    let (adapter, model, event_model) = match chats::agent(&dir) {
         Some(own) => (own.adapter, own.model, None),
         None => (
             settings.manager_adapter,
@@ -392,9 +389,8 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         owed: Owed::default(),
         policy: broker::SharedPolicy::default(),
         start_failed: None,
-        role_events: BTreeMap::new(),
+        chat_events: BTreeMap::new(),
         running_waits: Default::default(),
-        roles_swept: None,
         leaving: false,
         overview_asked: false,
         drift_said: false,
@@ -431,7 +427,7 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
                 fallback_cwd: folder,
                 own,
                 project_id,
-                actor,
+                actor: actor.into(),
                 owed,
                 policy,
             },
@@ -501,12 +497,12 @@ fn author_heading(author: &Author) -> String {
             project,
             reply: true,
         } => format!("Manager {project} replies"),
-        // ^ A role's or this project's manager's message is answered once, as a
-        // manager's (docs/tasks.md "Roles").
-        Author::Role { name, reply } => {
+        // ^ A chat's or this project's manager's message is answered once, as a
+        // manager's (docs/tasks.md "Chats").
+        Author::Chat { name, reply } => {
             let who = match name.as_str() {
                 "manager" => "Manager".to_string(),
-                name => format!("Role {name}"),
+                name => format!("Chat {name}"),
             };
             match reply {
                 true => format!("{who} replies"),
@@ -545,7 +541,6 @@ impl Manager {
                     self.ask_recap();
                     self.sweep_captures();
                     self.prune_stale();
-                    self.close_idle_roles();
                     self.ping();
                 }
                 Event::Pruned(result) => self.pruned_done(result),
@@ -877,19 +872,14 @@ impl Manager {
             }
             let asked = match request {
                 Some(ApprovalLine::Request {
-                    action,
-                    task,
-                    role,
-                    path,
-                    ..
+                    action, task, path, ..
                 }) => format!(
                     "{}{}",
                     format!("{action:?}").to_ascii_lowercase(),
-                    match (task, role, path) {
-                        (Some(task), ..) => format!(" #{task}"),
-                        (None, Some(role), _) => format!(" {role}"),
-                        (None, None, Some(path)) => format!(" {path}"),
-                        (None, None, None) => String::new(),
+                    match (task, path) {
+                        (Some(task), _) => format!(" #{task}"),
+                        (None, Some(path)) => format!(" {path}"),
+                        (None, None) => String::new(),
                     }
                 ),
                 _ => String::new(),
@@ -1203,7 +1193,7 @@ impl Manager {
         let Ok(tasks) = project_tasks(&self.dir.project_id) else {
             return;
         };
-        let open_roles = self.open_role_names();
+        let open_chats = self.open_chat_names();
         // ^ A child's land waits for its parent at rest: the parent's event names them.
         // ref: docs/tasks.md "Parent tasks"
         let ready_children: Vec<(u32, u32)> = tasks
@@ -1332,7 +1322,7 @@ impl Manager {
             };
             let mut short = Short::task(record.id, words);
             short.wakes = state_wakes(&dir, &record);
-            self.task_event(&record, &open_roles, line, short);
+            self.task_event(&record, &open_chats, line, short);
             let state = record.state.as_str();
             self.fire(
                 &format!("task.{state}"),
@@ -1380,7 +1370,7 @@ impl Manager {
 
     /// Add a finished task's memo to the manager's notes: a record (a landed task's fact holds
     /// its landed commit and the paths of its diff), then `notes/context.md` from the records.
-    /// A role's notes stay files. ref: docs/tasks.md "Memo", docs/memory.md "Capture"
+    /// A chat's notes stay files. ref: docs/tasks.md "Memo", docs/memory.md "Capture"
     fn fold_memo(&self, record: &TaskRecord, dir: &wsx_core::task::store::TaskDir, memo: &str) {
         let task = record.id;
         let landed = wsx_core::memory::manage::landed_commit(dir, record);
@@ -1430,30 +1420,30 @@ impl Manager {
         }
     }
 
-    fn open_role_names(&self) -> Vec<String> {
-        roles::open_roles(&self.dir.project_id)
+    fn open_chat_names(&self) -> Vec<String> {
+        chats::open_chats(&self.dir.project_id)
             .iter()
             .map(|dir| dir.name().to_string())
             .collect()
     }
 
-    /// Queue a task's event line. Only a task's creator hears of it: an open role, the manager
+    /// Queue a task's event line. Only a task's creator hears of it: an open chat, the manager
     /// of the project that created it, else this manager. The other project's manager hears
     /// the task as `<this project> #<n>`, with no chip, which would link into its own tasks.
-    /// ref: docs/tasks.md "Roles", "Managers talk"
+    /// ref: docs/tasks.md "Chats", "Managers talk"
     fn task_event(
         &mut self,
         record: &TaskRecord,
-        open_roles: &[String],
+        open_chats: &[String],
         line: String,
         mut short: Short,
     ) {
-        let role = record
+        let chat = record
             .created_by
-            .role()
-            .filter(|role| open_roles.iter().any(|open| open == role));
-        let to = match (role, record.created_by.origin()) {
-            (Some(role), _) => Some(Hearer::Role(role.to_string())),
+            .chat()
+            .filter(|chat| open_chats.iter().any(|open| open == chat));
+        let to = match (chat, record.created_by.origin()) {
+            (Some(chat), _) => Some(Hearer::Chat(chat.to_string())),
             (None, Some(origin)) => Some(Hearer::Project(origin.to_string())),
             (None, None) => None,
         };
@@ -1465,9 +1455,9 @@ impl Manager {
                         short.task = None;
                         format!("{} {line}", self.project)
                     }
-                    Hearer::Role(_) => line,
+                    Hearer::Chat(_) => line,
                 };
-                self.role_events.entry(to).or_default().push((line, short));
+                self.chat_events.entry(to).or_default().push((line, short));
             }
             None => self.pending_events.push((line, short)),
         }
@@ -1487,7 +1477,7 @@ impl Manager {
         let Ok(tasks) = project_tasks(&self.dir.project_id) else {
             return;
         };
-        let open_roles = self.open_role_names();
+        let open_chats = self.open_chat_names();
         let now = now_unix_ms();
         let mut open = Vec::new();
         let mut suspects = BTreeMap::new();
@@ -1504,7 +1494,7 @@ impl Manager {
             open.push(record.id);
             if let Some(after) = &record.after {
                 let state = states.get(&after.task).copied();
-                if self.end_after(&dir, &record, state, &open_roles) {
+                if self.end_after(&dir, &record, state, &open_chats) {
                     continue;
                 }
             }
@@ -1532,7 +1522,7 @@ impl Manager {
             self.observed_stalls.insert(record.id, found.marker);
             self.task_event(
                 &record,
-                &open_roles,
+                &open_chats,
                 line,
                 Short::task(record.id, "stalled"),
             );
@@ -1551,7 +1541,7 @@ impl Manager {
         dir: &store::TaskDir,
         record: &TaskRecord,
         state: Option<TaskState>,
-        open_roles: &[String],
+        open_chats: &[String],
     ) -> bool {
         let Some(after) = &record.after else {
             return false;
@@ -1585,55 +1575,36 @@ impl Manager {
                 }
             );
             let short = Short::task(record.id, "wait over");
-            self.task_event(record, open_roles, line, short);
+            self.task_event(record, open_chats, line, short);
         }
         true
     }
 
-    /// Close the roles with no turn for `tasks.roles.closeDays`, and tell the manager.
-    /// ref: docs/tasks.md "Roles"
-    fn close_idle_roles(&mut self) {
-        if self.roles_swept.is_some_and(|at| at.elapsed() < ROLE_SWEEP) {
-            return;
-        }
-        self.roles_swept = Some(Instant::now());
-        let Ok(settings) = load_task_config(&self.main) else {
-            return;
-        };
-        for role in roles::close_idle(&self.dir.project_id, settings.roles_close_secs) {
-            let line = format!(
-                "role {role} closed by wsx: no turn for tasks.roles.closeDays; its notes are kept"
-            );
-            self.pending_events.push(plain_event(line));
-            self.last_event = Some(Instant::now());
-        }
-    }
-
-    /// A role's host leaves when its role is closed, or after `ROLE_LINGER` with no message
-    /// and no turn: an idle role costs no agent and no pane.
+    /// A chat's host leaves when its chat is closed, or after `CHAT_LINGER` with no message
+    /// and no turn: an idle chat costs no agent and no pane.
     fn leave_when_done(&mut self) {
-        let closed = !roles::is_open(&self.dir);
+        let closed = !chats::is_open(&self.dir);
         let idle = self.turn.is_none()
             && !self.work_waiting()
             && self.state.limit.is_none()
-            && self.last_activity.elapsed() >= ROLE_LINGER;
+            && self.last_activity.elapsed() >= CHAT_LINGER;
         if closed || idle {
             self.say(match closed {
-                true => "the role is closed: its host leaves",
-                false => "idle: the role's host leaves until the next message",
+                true => "the chat is closed: its host leaves",
+                false => "idle: the chat's host leaves until the next message",
             });
             self.leaving = true;
         }
     }
 
-    /// Send the events of a role's tasks to the role, and those of another project's manager's
+    /// Send the events of a chat's tasks to the chat, and those of another project's manager's
     /// tasks to that manager, through `say`, which starts its host; the events of one whose
     /// host does not take them go to this manager.
-    fn send_role_events(&mut self) {
+    fn send_chat_events(&mut self) {
         let Ok(exe) = std::env::current_exe() else {
             return;
         };
-        for (to, lines) in std::mem::take(&mut self.role_events) {
+        for (to, lines) in std::mem::take(&mut self.chat_events) {
             let (project, main, exe, events) = (
                 self.project.clone(),
                 self.main.clone(),
@@ -1648,11 +1619,11 @@ impl Manager {
                     .join("\n");
                 let short = lines.iter().map(|(_, short)| short.clone()).collect();
                 let sent = match &to {
-                    Hearer::Role(role) => owner::say(
+                    Hearer::Chat(chat) => owner::say(
                         &project,
                         &main,
                         &exe,
-                        Some(role),
+                        Some(chat),
                         super::launch_manager(&main),
                         text,
                         Some(Author::Events),
@@ -1685,10 +1656,10 @@ impl Manager {
         let quiet = self
             .last_event
             .is_some_and(|last| last.elapsed() >= EVENT_QUIET);
-        if (self.pending_events.is_empty() && self.role_events.is_empty()) || !quiet {
+        if (self.pending_events.is_empty() && self.chat_events.is_empty()) || !quiet {
             return;
         }
-        self.send_role_events();
+        self.send_chat_events();
         if self.pending_events.is_empty() {
             self.save_seen();
             return;
@@ -1722,11 +1693,11 @@ impl Manager {
         self.save();
     }
 
-    /// `WSX_TASK_ACTOR` of the agent's commands: `manager` or `role:<name>`.
-    fn actor(&self) -> String {
+    /// Who the agent's commands act as (`WSX_TASK_ACTOR`): the manager, or the chat.
+    fn actor(&self) -> Actor {
         match &self.dir.role {
-            Some(role) => wsx_core::task::Actor::Role(role.clone()).into(),
-            None => "manager".into(),
+            Some(chat) => Actor::Chat(chat.clone()),
+            None => Actor::Manager,
         }
     }
 
@@ -1976,7 +1947,7 @@ impl Manager {
     fn enqueue(&mut self, id: u64, from: Author, text: String, wakes: bool) {
         let rank = |author: &Author| match author {
             Author::Owner => 0,
-            Author::Manager { .. } | Author::Role { .. } => 1,
+            Author::Manager { .. } | Author::Chat { .. } => 1,
             Author::Events => 2,
             Author::Recap => 3,
         };
@@ -1988,14 +1959,14 @@ impl Manager {
         self.queue.insert(at, (id, from, text, wakes));
     }
 
-    /// A message of a manager or a role is answered once (docs/tasks.md "Roles").
+    /// A message of a manager or a chat is answered once (docs/tasks.md "Chats").
     fn owe(&self, author: &Author) {
         let who = match author {
             Author::Manager {
                 project,
                 reply: false,
             } => project.clone(),
-            Author::Role { name, reply: false } => format!("role:{name}"),
+            Author::Chat { name, reply: false } => format!("chat:{name}"),
             _ => return,
         };
         *self.owed.lock().expect("owed lock").entry(who).or_default() += 1;
@@ -2141,7 +2112,7 @@ impl Manager {
             for_owner,
         } = self.take_batch();
         // ^ The limit preface is no owner message: a held turn is events-only when its
-        // held and its new messages all are. Another manager's or a role's reply is used, not
+        // held and its new messages all are. Another manager's or a chat's reply is used, not
         // answered: like events. ref: docs/tasks.md "Manager"
         let events_only = held.as_ref().is_none_or(|hold| hold.events)
             && if ids.is_empty() {
@@ -2151,7 +2122,7 @@ impl Manager {
                     first,
                     Author::Events
                         | Author::Manager { reply: true, .. }
-                        | Author::Role { reply: true, .. }
+                        | Author::Chat { reply: true, .. }
                 )
             };
         match &held {
@@ -2893,17 +2864,14 @@ impl Manager {
                 broker::BROKER_ENV.into(),
                 broker_socket.clone().into_os_string(),
             ),
-            (ACTOR_ENV.into(), self.actor().into()),
+            (ACTOR_ENV.into(), String::from(self.actor()).into()),
             // ^ Its git reads must not take the index lock of the owner's checkout.
             ("GIT_OPTIONAL_LOCKS".into(), "0".into()),
         ]
         .into_iter()
         .chain(account_env(root.clone()))
         .collect();
-        let role = match self.dir.role {
-            Some(_) => policy::Role::Area,
-            None => policy::Role::Manager,
-        };
+        let role = policy::Role::of_actor(&self.actor()).unwrap_or(policy::Role::Manager);
         let policy = agent::policy(role, adapter, model, &env);
         let boundary = Boundary::manager(&self.main, &self.dir.path, &overview, policy)?
             .adapter(adapter, root.as_deref())
@@ -2920,8 +2888,8 @@ impl Manager {
             skills.is_some(),
             &workflow,
         );
-        if let Some(role) = &self.dir.role {
-            text = role_preamble(role, &self.project, &roles::brief(&self.dir)) + &text;
+        if let Some(chat) = &self.dir.role {
+            text = chat_preamble(chat, &self.project, &chats::goal(&self.dir)) + &text;
         }
         // ^ Other adapters list lent skills themselves (pi.rs `--skill`).
         if adapter != "claude" {
@@ -3304,7 +3272,7 @@ impl Manager {
     }
 
     /// The handover as an episode of the project's memory, in the turn that carries it: no turn
-    /// of its own. A role's notes stay files. ref: docs/memory.md "Capture"
+    /// of its own. A chat's notes stay files. ref: docs/memory.md "Capture"
     fn remember_handover(&self, handover: &str) {
         if self.dir.role.is_some() {
             return;
@@ -3603,7 +3571,7 @@ fn new_task(exe: &Path, project: &str, prompt: &str) -> Result<u32, String> {
             "--json",
             "-",
         ])
-        .env(ACTOR_ENV, "manager")
+        .env(ACTOR_ENV, String::from(Actor::Manager))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

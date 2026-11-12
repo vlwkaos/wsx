@@ -217,34 +217,30 @@ pub enum TaskCmd {
     },
     /// Start the project's manager agent, or report the running one
     Manager,
-    /// The project's roles: named chats like the manager's (docs/tasks.md "Roles")
-    Role {
-        #[command(subcommand)]
-        action: RoleCmd,
-    },
     /// Add a project to wsx: clone it when the folder is missing (the manager asks the owner first)
     Project {
         #[command(subcommand)]
         action: ProjectCmd,
     },
-    /// Send a message to the project's manager, or a role; returns at once with its id
+    /// Send a message to the project's manager, or another chat; returns at once with its id
     Say {
         #[command(flatten)]
         text: PromptSource,
-        /// To this role instead of the manager
+        /// To this chat instead of the first
         #[arg(long, value_name = "NAME")]
-        role: Option<String>,
+        to: Option<String>,
         /// From a project's manager to the manager of the project named with -p
-        #[arg(long, conflicts_with = "from_role")]
+        #[arg(long, conflicts_with = "from_chat")]
         from_manager: bool,
-        /// From the manager or a role to a role (--role) or the manager of its own project
+        /// From a chat of this project to another (--to), the first when none
         #[arg(long)]
-        from_role: bool,
-        /// With --from-manager or --from-role: this answers a message it sent
+        from_chat: bool,
+        /// With --from-manager or --from-chat: this answers a message it sent
         #[arg(long)]
         reply: bool,
     },
-    /// Read the manager conversation, or a role's, after a message id or around one
+    /// Read the manager conversation, or another chat's, after a message id or around one; the
+    /// owner opens, lists and closes chats (docs/tasks.md "Chats")
     Chat {
         #[arg(long, value_name = "ID")]
         after: Option<u64>,
@@ -252,9 +248,11 @@ pub enum TaskCmd {
         #[arg(long, value_name = "ID", conflicts_with = "after")]
         around: Option<u64>,
         #[arg(long, value_name = "NAME")]
-        role: Option<String>,
+        chat: Option<String>,
+        #[command(subcommand)]
+        action: Option<ChatCmd>,
     },
-    /// Find earlier messages, decisions and task history, ranked: the manager and role chats, the notes and the tasks
+    /// Find earlier messages, decisions and task history, ranked: the chats, the notes and the tasks
     Search {
         /// The words to find, all of them or some; the best matches come first
         #[arg(required_unless_present = "task", value_name = "WORDS")]
@@ -319,8 +317,9 @@ pub enum TaskCmd {
     #[command(hide = true)]
     ManagerHost {
         project_id: String,
-        #[arg(long)]
-        role: Option<String>,
+        /// `role`: the argv wsxd stored for a session before chats starts the same host
+        #[arg(long, alias = "role")]
+        chat: Option<String>,
     },
 }
 
@@ -442,25 +441,20 @@ pub enum ProjectCmd {
 }
 
 #[derive(Subcommand)]
-pub enum RoleCmd {
-    /// Open a role (the manager asks the owner first; at most tasks.roles.max)
+pub enum ChatCmd {
+    /// Open a chat: a manager with a name and a goal, in the same project (the owner's)
     New {
         name: String,
-        /// The role's brief, a file or - for standard input
+        /// The chat's goal, a file or - for standard input
         #[arg(long, value_name = "FILE")]
-        brief: PathBuf,
-        /// The role's model; default: the manager's (tasks.manager.model)
-        #[arg(long, value_name = "NAME")]
-        model: Option<String>,
-        /// The role's adapter (claude or pi), with --model; default: claude
-        #[arg(long, value_name = "NAME", requires = "model")]
-        adapter: Option<String>,
-        #[command(flatten)]
-        said: OwnerSaid,
+        goal: Option<PathBuf>,
+        /// The `[[agents]]` entry it runs on; default: the manager's (tasks.manager)
+        #[arg(long, value_name = "ENTRY")]
+        agent: Option<String>,
     },
-    /// The roles: open, asked for and closed
+    /// The chats: open and closed
     List,
-    /// Close a role; its notes stay
+    /// Close a chat; its log and notes stay
     Close { name: String },
 }
 
@@ -489,7 +483,7 @@ impl TaskCmd {
             | Self::Show { .. }
             | Self::Ledger
             | Self::Deployed
-            | Self::Chat { .. }
+            | Self::Chat { action: None, .. }
             | Self::Search { .. }
             | Self::Check { .. }
             | Self::Manager => &[Read],
@@ -515,13 +509,12 @@ impl TaskCmd {
                 }
                 _ => &[Routine],
             },
-            Self::Role { action } => match action {
-                RoleCmd::List => &[Read],
-                RoleCmd::New { .. } | RoleCmd::Close { .. } => &[RoleAdmin],
-            },
             Self::Hand { .. }
             | Self::Handback { .. }
             | Self::Dismiss { .. }
+            | Self::Chat {
+                action: Some(_), ..
+            }
             | Self::Approve { .. }
             | Self::Deny { .. }
             | Self::PreviewHost { .. }

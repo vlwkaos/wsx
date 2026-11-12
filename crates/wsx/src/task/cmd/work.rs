@@ -520,7 +520,7 @@ pub(crate) fn close_command(
             &record.project_path,
             &dir.project_id,
             after_landing(
-                request_of(ApprovalAction::Discard, Some(&record), None, None, None),
+                request_of(ApprovalAction::Discard, Some(&record), None, None),
                 after,
             ),
             said,

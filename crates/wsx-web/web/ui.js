@@ -144,7 +144,7 @@ export function Back({ fallback }) {
   const project = state.projects.find((candidate) => candidate.id === route.id)?.name ?? "project";
   const names = {
     home: "home", inbox: can("task_view") ? "all sessions" : "inbox", projects: "projects", settings: "settings", project, files: `files of ${project}`,
-    sessions: `sessions of ${project}`, task: `task #${route.task}`, role: `role ${route.role}`,
+    sessions: `sessions of ${project}`, task: `task #${route.task}`, chat: `chat ${route.chat}`,
     session: state.sessions.find((candidate) => candidate.id === route.id)?.label ?? "session",
   };
   return html`

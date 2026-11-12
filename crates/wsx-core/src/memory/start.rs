@@ -1,5 +1,5 @@
 //! The start set: what the first prompt of a worker holds from the memory: the area briefs of
-//! the project config and the role's brief and rules. No fact records: the paid evaluation found
+//! the project config. No fact records: the paid evaluation found
 //! they gave no gain (docs/design/memory-eval.md); `wsx memory recall` and `search` find them on
 //! demand. Nothing is cut silently: what does not fit the budget is named, with the file that
 //! holds it. This module also holds the one rule that says a fact is stale (search marks it).
@@ -9,7 +9,6 @@ use super::manage::clip_to;
 use super::record::{Kind, Record};
 use super::store::{foreign_task, registered, Store};
 use crate::git::{git_cmd, output_with_timeout_limit};
-use crate::task::store::{read_bounded_if_exists, ManagerDir};
 use crate::task::view::meet;
 use std::io::Read;
 use std::path::{Component, Path};
@@ -24,16 +23,14 @@ const RESERVE: usize = 320;
 /// The least of a brief worth a cut; a smaller room names it as not shown.
 const MIN_CUT: usize = 200;
 const MAX_BRIEF_BYTES: u64 = 8 * 1024;
-const MAX_RULES_BYTES: u64 = 64 * 1024;
 /// Names listed in the line of what is not shown.
 const NAMES_SHOWN: usize = 8;
 
 /// What a worker is about to do: the `--files` globs of its task, the `memory.areas` of the
-/// project config as `(glob, brief file)`, and the role that created it.
+/// project config as `(glob, brief file)`.
 pub struct Start<'a> {
     pub files: &'a [String],
     pub areas: &'a [(String, String)],
-    pub role: Option<&'a str>,
 }
 
 fn is_hash(commit: &str) -> bool {
@@ -94,9 +91,6 @@ pub fn block(store: &Store, start: &Start, budget: usize) -> String {
             seen.push(file);
             pieces.push(area(store.root(), glob, file));
         }
-    }
-    if let Some(role) = start.role {
-        pieces.extend(role_pieces(store.scope(), role));
     }
     let mut room = budget.saturating_sub(RESERVE);
     let mut out = Vec::new();
@@ -162,56 +156,6 @@ fn read_brief(root: &Path, file: &str) -> Result<String, String> {
         .and_then(|f| f.take(MAX_BRIEF_BYTES).read_to_end(&mut bytes))
         .map_err(|e| e.to_string())?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
-}
-
-/// The brief of the role that created the task, and its rules (`notes/decisions.md`, newest
-/// first). A role that is gone gives nothing.
-fn role_pieces(project_id: &str, role: &str) -> Vec<Piece> {
-    let Ok(Some(dir)) = ManagerDir::existing_as(project_id, Some(role)) else {
-        return Vec::new();
-    };
-    let brief = crate::task::roles::brief(&dir);
-    let rules = read_bounded_if_exists(
-        &dir.path.join("notes").join("decisions.md"),
-        MAX_RULES_BYTES,
-    )
-    .ok()
-    .flatten()
-    .map(|b| String::from_utf8_lossy(&b).into_owned())
-    .unwrap_or_default();
-    let rules: Vec<&str> = rules
-        .lines()
-        .rev()
-        .filter(|l| !l.trim().is_empty())
-        .collect();
-    let mut pieces = Vec::new();
-    if !brief.trim().is_empty() {
-        pieces.push(Piece {
-            name: format!("the brief of role {role}"),
-            text: format!(
-                "Brief of role {role}, which created this task:\n{}",
-                brief.trim_end()
-            ),
-            whole: dir
-                .path
-                .join(crate::task::roles::BRIEF_FILE)
-                .display()
-                .to_string(),
-        });
-    }
-    if !rules.is_empty() {
-        pieces.push(Piece {
-            name: format!("the rules of role {role}"),
-            text: format!("Rules of role {role} (newest first):\n{}", rules.join("\n")),
-            whole: dir
-                .path
-                .join("notes")
-                .join("decisions.md")
-                .display()
-                .to_string(),
-        });
-    }
-    pieces
 }
 
 fn stale_of_needs_git(r: &Record) -> bool {

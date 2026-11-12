@@ -151,10 +151,6 @@ pub struct TaskConfig {
     /// wait with no action before it is a stall; 0 is off. The config says minutes
     /// (`reviewMinutes`, a fraction allowed). ref: docs/tasks.md "Manager" (Stalls)
     pub manager_review_secs: u64,
-    /// `tasks.roles.max`: open roles besides the manager. ref: docs/tasks.md "Roles"
-    pub roles_max: usize,
-    /// `tasks.roles.closeDays` in seconds: a role with no turn for this long is closed.
-    pub roles_close_secs: u64,
     /// `tasks.prune.idleDays` in seconds: a session idle this long is closed; 0 is off.
     /// ref: docs/tasks.md "Stale worktrees"
     pub prune_idle_secs: u64,
@@ -288,10 +284,6 @@ impl Default for TaskConfig {
             manager_rotate_tokens: None,
             manager_recap_secs: 0,
             manager_review_secs: DEFAULT_MANAGER_REVIEW_SECS,
-            roles_max: 2,
-            // ^ A role is for work over weeks, and its parent task may wait on the owner for
-            // more than a week: two weeks of no turn means the work is over.
-            roles_close_secs: 14 * 24 * 60 * 60,
             prune_idle_secs: 14 * 24 * 60 * 60,
             prune_remove_secs: 30 * 24 * 60 * 60,
         }

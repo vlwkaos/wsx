@@ -386,10 +386,10 @@ function withMention(text, n) {
   return [text, /\s/.test(text[end]) ? end + 1 : end];
 }
 
-function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent, field, pills }) {
+function ManagerComposer({ project, room, busy: thinking, reply, onReply, onSent, field, pills }) {
   const store = useStore();
-  // ^ A role's draft is its own.
-  const draft = role ? `${project}/${role}` : project;
+  // ^ Another chat's draft is its own.
+  const draft = room ? `${project}/${room}` : project;
   const [text, setText] = useState(() => readMap(DRAFTS_KEY)[draft] ?? "");
   const [caret, setCaret] = useState(0);
   const { active, setActive, shut, keys } = useListKeys(text);
@@ -448,7 +448,7 @@ function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent
       const attachments = files.attachments.map((item) => item.hash);
       const text = withQuote(reply?.line, body);
       // ^ A say may start the manager first: up to about 40 s (docs/tasks.md "Manager").
-      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text: reply?.id != null ? `> message ${reply.id}\n\n${body}` : reply?.check ? `> check ${reply.check}\n\n${body}` : text, attachments, ...(role && { role }) }, timeout: 60_000 });
+      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text: reply?.id != null ? `> message ${reply.id}\n\n${body}` : reply?.check ? `> check ${reply.check}\n\n${body}` : text, attachments, ...(room && { chat: room }) }, timeout: 60_000 });
       field.current.value = "";
       files.attachments = [];
       changed();
@@ -479,7 +479,7 @@ function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent
         <${AttachButton} onFiles=${upload} />
         ${pills}
         <div class="composer-input">
-          <textarea class="composer-field" ref=${field} rows="1" aria-label=${`Message to ${role ?? "the manager"}`}
+          <textarea class="composer-field" ref=${field} rows="1" aria-label=${`Message to ${room ?? "the manager"}`}
             placeholder="Message · # task @ project / skill" role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
             aria-controls=${listOpen ? "slash-list" : null} aria-activedescendant=${listOpen && options.length ? `slash-${active}` : null}
             onInput=${changed} onKeyDown=${keydown} onPaste=${pasteFiles(upload)} onKeyUp=${() => setCaret(field.current.selectionStart)}
@@ -592,7 +592,7 @@ function ProjectShell({ project }) {
     aria-label="Shell" title="Shell"><${Icon} name="terminal" /></button>`;
 }
 
-function More({ project, roles }) {
+function More({ project, chats }) {
   const files = shows("files") && can("files_read");
   return html`
     <${MoreMenu}>
@@ -600,14 +600,14 @@ function More({ project, roles }) {
       <a role="menuitem" href=${`#/p/${project.id}/usage`}>Usage</a>
       <a role="menuitem" href=${`#/p/${project.id}/media`}>Media</a>
       ${files && html`<a role="menuitem" href=${`#/p/${project.id}/files`}>Files</a>`}
-      ${roles?.length > 0 && html`
-        <p class="more-heading" aria-hidden="true">Roles</p>
-        ${roles.map((role) => {
-          const unread = Boolean(unreadNews(`project-${project.id}-r-${role.name}`, role.news));
-          return html`<a role="menuitem" class="role-contact" key=${role.name} href=${`#/p/${project.id}/r/${encodeURIComponent(role.name)}`}
-            aria-label=${`Role ${role.name}${unread ? ", unread" : ""}`}>
-            <span class="role-name">${role.name}${unread && html`<span class="news-mark" aria-hidden="true"></span>`}</span>
-            <span class="role-line">${role.last_reply ?? role.brief}</span>
+      ${chats?.length > 0 && html`
+        <p class="more-heading" aria-hidden="true">Chats</p>
+        ${chats.map((chat) => {
+          const unread = Boolean(unreadNews(`project-${project.id}-c-${chat.name}`, chat.news));
+          return html`<a role="menuitem" class="role-contact" key=${chat.name} href=${`#/p/${project.id}/c/${encodeURIComponent(chat.name)}`}
+            aria-label=${`Chat ${chat.name}${unread ? ", unread" : ""}`}>
+            <span class="role-name">${chat.name}${unread && html`<span class="news-mark" aria-hidden="true"></span>`}</span>
+            <span class="role-line">${chat.last_reply ?? chat.goal}</span>
           </a>`;
         })}`}
     </${MoreMenu}>`;
@@ -669,7 +669,7 @@ const SHEETS = {
   media: { Page: MediaPage, label: "Media" },
 };
 
-// ^ The conversation of a manager (or a role) as the rows the page holds. A read asks after the
+// ^ The conversation of a manager (or another chat) as the rows the page holds. A read asks after the
 // last entry it has; one read at a time, one more after a change during it. `search` is the one
 // record of what the rows were read for: `words` and `around` are what is asked, `read` and
 // `readAround` what the shown rows hold. A find's words read the conversation from the oldest entry
@@ -677,7 +677,7 @@ const SHEETS = {
 // (docs/web-client-chat.md "Find"). `around` is the message a tap on a quote opened the chat at
 // (docs/web-client-chat.md "Replies"): the rows are a snapshot of that part, no later read adds to
 // them, until `back` reads the newest part.
-function useManagerLog(id, role) {
+function useManagerLog(id, room) {
   const [chat, setChat] = useState(null);
   const [failure, setFailure] = useState("");
   const [finding, setFinding] = useState(false);
@@ -695,7 +695,7 @@ function useManagerLog(id, role) {
     const taken = shown.current.filter((entry) => !entry.queued);
     const oldest = Math.min(...shown.current.filter((entry) => entry.queued).map((entry) => entry.id));
     const last = fresh ? null : taken.findLast((entry) => entry.id != null && entry.id < oldest)?.id;
-    const next = await api(`api/tasks/${id}/chat`, { query: { ...(last != null && { after: last }), ...(fresh && words && { find: words }), ...(fresh && !words && at != null && { around: at }), ...(role && { role }) } });
+    const next = await api(`api/tasks/${id}/chat`, { query: { ...(last != null && { after: last }), ...(fresh && words && { find: words }), ...(fresh && !words && at != null && { around: at }), ...(room && { chat: room }) } });
     if (!current()) return;
     if (fresh) {
       search.current.read = words;
@@ -727,7 +727,7 @@ function useManagerLog(id, role) {
     setFailure("");
   }, (error) => setFailure(error.message), [id]);
   useEventLoad("manager", load, (detail) => detail.project == null
-    || (detail.project === id && (!role || detail.role === role)), [id]);
+    || (detail.project === id && (!room || detail.chat === room)), [id]);
   // ^ A tap on a quote whose message is not among the rows (`Quote`, reply.js) reads the chat
   // around it; `back` reads the newest part.
   const jump = (message) => {
@@ -784,29 +784,29 @@ function useRowNodes(rows, { ready, own, context, draw }) {
 }
 
 // The project screen with task_view: the manager chat as messages, what is open in the
-// reservoir, and with a task or the page in the route its sheet over the chat. With `role`, a
-// role's chat (#/p/<project>/r/<role>): the same bubbles without the manager's reservoir,
-// approvals and To check items (docs/web-client-tasks.md "Roles").
-export function Manager({ project: id, sheet = null, task = null, item = null, role = null }) {
+// reservoir, and with a task or the page in the route its sheet over the chat. With `chat`, another
+// chat (#/p/<project>/c/<chat>): the same bubbles without the manager's reservoir,
+// approvals and To check items (docs/web-client-tasks.md "Chats").
+export function Manager({ project: id, sheet = null, task = null, item = null, chat: room = null }) {
   const store = useStore();
   const project = store.projects.find((candidate) => candidate.id === id);
   const overview = store.tasks[id];
-  const { chat, failure, around, aroundRead, finding, setFinding, cut, loading, jump, back, findWords } = useManagerLog(id, role);
+  const { chat, failure, around, aroundRead, finding, setFinding, cut, loading, jump, back, findWords } = useManagerLog(id, room);
   // ^ The To check items, each a bubble at the time it was added; read again when the open
   // count changes (a new item, a pass or a fail).
-  const [checkItems, setCheckItems] = useState(role ? [] : null);
+  const [checkItems, setCheckItems] = useState(room ? [] : null);
   const toCheck = overview?.to_check;
   // ^ A reply to a decided item is its note: read again when one more reply names an item.
   const noted = chat?.rows?.filter((row) => row.quoted_check).map((row) => row.id).join();
   useEffect(() => {
-    if (role) return undefined;
+    if (room) return undefined;
     let live = true;
     api(`api/tasks/${id}/checks`).then((value) => { if (live) setCheckItems(value.items); }, () => { if (live) setCheckItems((now) => now ?? []); });
     return () => { live = false; };
   }, [id, toCheck, noted]);
   const ready = Boolean(chat) && checkItems !== null;
   const [sent, setSent] = useState(null);
-  const place = role ? `project-${id}-r-${role}` : `project-${id}`;
+  const place = room ? `project-${id}-c-${room}` : `project-${id}`;
   const { log, node: logNode, away, unread, since, scrolled, toEnd, reveal } = useFollowEnd(place, ready);
   const field = useRef();
   const [reply, setReply] = useState(null);
@@ -850,10 +850,10 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   }, [refocus]);
 
   // ^ What waits for the owner is the needs and the open questions (docs/web-client-tasks.md "Project screen").
-  const asking = role ? [] : (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote }));
-  const needing = role ? [] : [...(overview?.needs ?? []), ...asking];
-  const [routineList, setRoutineList] = useRoutines(id, !role, chat?.rows?.at(-1)?.key);
-  const counts = { running: role ? 0 : (overview?.tasks ?? []).filter(running).length + (overview?.waiting?.length ?? 0), needs: needing.length, check: role ? 0 : overview?.to_check ?? 0, routines: routineCounts(role ? null : routineList) };
+  const asking = room ? [] : (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote }));
+  const needing = room ? [] : [...(overview?.needs ?? []), ...asking];
+  const [routineList, setRoutineList] = useRoutines(id, !room, chat?.rows?.at(-1)?.key);
+  const counts = { running: room ? 0 : (overview?.tasks ?? []).filter(running).length + (overview?.waiting?.length ?? 0), needs: needing.length, check: room ? 0 : overview?.to_check ?? 0, routines: routineCounts(room ? null : routineList) };
   const [tray, toggleTray, setTray] = useTray(counts);
   const [look, setLook] = useState(null);
   const showNeed = (approval) => { setTray("needs"); setLook(approval); };
@@ -870,10 +870,10 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   const all = chat?.rows ?? [];
   const entries = all.filter((row) => !row.queued);
   const waiting = all.filter((row) => row.queued);
-  const items = role ? [] : overview?.needs ?? [];
+  const items = room ? [] : overview?.needs ?? [];
   const words = withChips(id);
-  // ^ A role's room holds its own log only: the project's resolutions are the manager's chat (docs/tasks.md "Roles").
-  const rows = ready ? conversation(entries, role ? [] : overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems, chat?.asks ?? []) : [];
+  // ^ Another chat holds its own log only: the project's resolutions are the manager's (docs/tasks.md "Chats").
+  const rows = ready ? conversation(entries, room ? [] : overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems, chat?.asks ?? []) : [];
   // The sent message shows until the log has it.
   if (sent && !all.some((row) => row.kind === "message" && row.id === sent.id)) {
     const last = rows.at(-1);
@@ -902,7 +902,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   const stopped = chat && !chat.running && entries.at(-1)?.danger;
   // ^ The manager's state only when it matters: typing or stopped (docs/web-client-tasks.md "Project screen").
   const managerWord = typing ? "typing" : stopped ? "stopped" : "";
-  const draw = (row, isNew) => row.kind === "message" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} fresh=${isNew} onNeed=${role ? null : showNeed} />`
+  const draw = (row, isNew) => row.kind === "message" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} fresh=${isNew} onNeed=${room ? null : showNeed} />`
     : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} row=${row} fresh=${isNew} />`
     : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} fresh=${isNew} />`
     : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} all=${finding} want=${wanted} />`
@@ -919,9 +919,9 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   const replyFrom = (line, check) => { replyTo(line, check); leaveFor(`#/p/${id}`); };
   const header = html`
     <header class="bar">
-      <${Back} fallback=${role ? `#/p/${id}` : "#/"} />
+      <${Back} fallback=${room ? `#/p/${id}` : "#/"} />
       <div class="bar-title">
-        <span class="bar-label">${role ? `${project.name} · ${role}` : project.name}</span>
+        <span class="bar-label">${room ? `${project.name} · ${room}` : project.name}</span>
         ${!managerWord && chat?.manager.agent && html`<span class="bar-model" title="Model">${agentWords(chat.manager.agent)}</span>`}
         ${managerWord && html`<span class="bar-state" key=${managerWord} data-tone=${typing ? "working" : "danger"}>${typing
           ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><${Dots} /></span>`
@@ -929,10 +929,10 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
       </div>
       <div class="bar-tools">
         <${FindButton} open=${finding} onClick=${find} />
-        ${!role && html`
+        ${!room && html`
           <a class="icon-button" href=${`#/p/${id}/page`} aria-label="Overview" title="Overview"><${Icon} name="overview" /></a>
           <${PanelsButton} project=${id} />
-          <${ProjectShell} project=${project} /><${More} project=${project} roles=${chat?.roles} />`}
+          <${ProjectShell} project=${project} /><${More} project=${project} chats=${chat?.chats} />`}
       </div>
     </header>`;
   // ^ The header sits at the bottom, above the composer, when this device chose it (settings.js).
@@ -942,13 +942,13 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
       ${!low && header}
       <div class="chat">
         ${finding && html`<${FindBar} log=${logNode} reveal=${reveal} loading=${loading} onQuery=${findWords} onClose=${() => setFinding(false)} />`}
-        ${!role && html`<${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "message" && row.author !== "owner")?.at} sent=${sent} />`}
+        ${!room && html`<${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "message" && row.author !== "owner")?.at} sent=${sent} />`}
         ${around != null && html`<p class="note around" role="status">Showing an earlier part of the conversation. <button class="link-action" type="button" onClick=${newest}>Back to newest</button></p>`}
         <div class="log-wrap">
-          <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label=${`Conversation with ${role ?? "the manager"}`} tabindex="0" ...${gestures}>
+          <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label=${`Conversation with ${room ?? "the manager"}`} tabindex="0" ...${gestures}>
             ${cut ? html`<p class="note">Older messages are not shown.</p>` : null}
-            ${ready && !rows.length ? html`<p class="empty">${role
-              ? `No messages yet. Ask ${role} about its work; it answers from the ledger.`
+            ${ready && !rows.length ? html`<p class="empty">${room
+              ? `No messages yet. Ask ${room} about its work; it answers from the ledger.`
               : "No messages yet. Ask the manager for a task or a status; it answers from the ledger."}</p>` : null}
             ${earlier}
             ${withNewLine(recent, firstNew, show)}
@@ -958,14 +958,14 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
         </div>
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
         ${waiting.length > 0 && html`
-          <ul class="queue" aria-label=${`Messages waiting for ${role ?? "the manager"}`}>
+          <ul class="queue" aria-label=${`Messages waiting for ${room ?? "the manager"}`}>
             ${waiting.map((row) => html`<li key=${row.key} class="queued" data-key=${row.key}><span class="queued-text">${row.text || `${row.attachments?.length ?? 0} files`}</span></li>`)}
           </ul>`}
-        ${!role && html`<${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${overview?.tasks ?? []} waiting=${role ? [] : overview?.waiting ?? []} checks=${overview?.check_items ?? []} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${replyTo} onShow=${goToReply} />`}
+        ${!room && html`<${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${overview?.tasks ?? []} waiting=${room ? [] : overview?.waiting ?? []} checks=${overview?.check_items ?? []} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${replyTo} onShow=${goToReply} />`}
         ${low && header}
-        ${!role && !can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
-        ${can("task_act") && html`<${ManagerComposer} project=${id} role=${role} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
-          pills=${!role && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} />`}
+        ${!room && !can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
+        ${can("task_act") && html`<${ManagerComposer} project=${id} room=${room} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
+          pills=${!room && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} />`}
           onSent=${(message) => { toEnd(); setSent(message); back(); }} />`}
       </div>
       ${menu}

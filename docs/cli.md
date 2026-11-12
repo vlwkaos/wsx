@@ -26,7 +26,7 @@ wsx daemon stop [--force] [--json]
 wsx daemon recover
 wsx web serve|pair|devices [<site>]
 wsx web vapid
-wsx task new|list|show|add|stop|land|after|hold|trial|close|hand|dismiss|check|deploy|release|push|ledger|deployed|checkin|routine|manager|role|project|say|chat|search|approve|deny|preview|steer [-p <project>] [--json]
+wsx task new|list|show|add|stop|land|after|hold|trial|close|hand|dismiss|check|deploy|release|push|ledger|deployed|checkin|routine|manager|project|say|chat|search|approve|deny|preview|steer [-p <project>] [--json]
 ```
 
 Hidden from `wsx --help`, still run: `wsx runtime status` (now `wsx daemon status`), `wsx task handback <n>` (now `wsx task hand <n> --back`), `wsx task steer`, `wsx task check-run`, `digest` and `post` (a worker's and the routines' commands), `wsx memory capture|start|import` (the task host's), `wsx session send-keys` (an alias of `send-text`), `wsx group` and `wsx plugin`. A hidden command keeps its argv, so scripts, hooks, stored routines and a running manager's older prompt work without a change.

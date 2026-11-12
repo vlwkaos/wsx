@@ -151,11 +151,11 @@ const Author = ({ name, target, peer }) => target
   : html`<p class="bubble-author" aria-hidden="true">${name}</p>`;
 
 // One message. `home` turns its text runs into task chips; a message of another project's
-// manager (not a role) reads its bare `#n` as that project's task.
+// manager (not another chat) reads its bare `#n` as that project's task.
 export function Bubble({ project, row, words: home, fresh, onNeed }) {
   const out = row.author === "owner";
   const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
-  const words = peer != null && !peer.startsWith("role:") ? withChips(project, peer) : home;
+  const words = peer != null && !peer.startsWith("chat:") ? withChips(project, peer) : home;
   const target = peerProject(peer);
   const id = `bubble-${row.key}`;
   // ^ A post with a level (`wsx task post --level warn|bad`) says it in its tag (docs/web-client-tasks.md "Task notifications").

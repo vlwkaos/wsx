@@ -396,7 +396,7 @@ pub fn dismiss(dir: &ManagerDir, id: u64, now: u64) -> Result<()> {
 #[serde(rename_all = "snake_case")]
 pub enum RowKind {
     /// A message with its author: the owner's, a reply of the manager, what it sent another
-    /// manager, or a message of another manager or a role.
+    /// manager, or a message of another manager or a chat.
     Message,
     /// A muted line of wsx: an event in its short form, or the usage limit.
     Line,
@@ -412,7 +412,7 @@ pub enum RowKind {
 pub enum Speaker {
     Owner,
     Manager,
-    /// Another project's manager by its project, or a role as `role:<name>`.
+    /// Another project's manager by its project, or a chat as `chat:<name>`.
     Peer(String),
 }
 
@@ -428,19 +428,19 @@ impl From<Speaker> for String {
 
 /// The names the rows show.
 pub struct Names<'a> {
-    /// The chat's other side: the manager's shown name (`manager_shown_name`), or the role's.
+    /// The chat's other side: the manager's shown name (`manager_shown_name`), or the chat's.
     pub own: &'a str,
-    /// The project's manager, as a role's chat names it (`manager_in_role_room`).
+    /// The project's manager, as another chat names it (`manager_name_in`).
     pub manager: &'a str,
     /// Another project's manager by its shown name.
     pub peer: &'a dyn Fn(&str) -> String,
 }
 
-/// How a chat names the project's manager: its shown name, and in a role's chat (`role`) the word
-/// `manager` after it, so the room has three speakers (the owner, the manager, the role) and the
-/// bare project name is none. ref: docs/tasks.md "Roles"
-pub fn manager_name_in(role: Option<&str>, shown: &str) -> String {
-    match role {
+/// How a chat names the project's first chat: its shown name, and in another chat (`chat`) the
+/// word `manager` after it, so the room has three speakers (the owner, the manager, the chat)
+/// and the bare project name is none. ref: docs/tasks.md "Chats"
+pub fn manager_name_in(chat: Option<&str>, shown: &str) -> String {
+    match chat {
         Some(_) => format!("{shown} manager"),
         None => shown.to_string(),
     }
@@ -544,6 +544,51 @@ impl ChatRow {
             ..Self::new(RowKind::Message, key, entry, body.trim().to_string())
         }
     }
+}
+
+/// A chat read for a viewer: the page and the approvals that go with it.
+pub struct Reading {
+    pub page: Page,
+    /// The pending and waiting approvals of the project's first chat; none in another chat.
+    pub approvals: Vec<ApprovalLine>,
+}
+
+/// The one read of a chat for the web, the TUI and `wsx task chat`: the names the viewer sees
+/// (the manager's shown name, the chat's own, another project's by `peer`), the approvals of
+/// the first chat only, and the page at `window`. No folder yet is an empty chat. `edit` is
+/// `page`'s.
+pub fn read_for(
+    dir: Option<&ManagerDir>,
+    (project, store_id): (&str, &str),
+    settings: &crate::model::workspace::TaskConfig,
+    window: &Window,
+    peer: &dyn Fn(&str) -> String,
+    edit: impl FnMut(&mut ManagerEntry),
+) -> Result<Reading> {
+    let shown = settings.manager_shown_name(project);
+    let chat = dir.and_then(|dir| dir.role.as_deref());
+    let manager = manager_name_in(chat, shown);
+    let names = Names {
+        own: chat.unwrap_or(shown),
+        manager: &manager,
+        peer,
+    };
+    let approvals = match chat {
+        Some(_) => Vec::new(),
+        None => super::store::read_approvals(store_id)?,
+    };
+    let page = match dir {
+        Some(dir) => page(
+            dir,
+            window,
+            &names,
+            &super::manager::pending_approvals(&approvals),
+            super::now_unix_ms(),
+            edit,
+        )?,
+        None => Page::default(),
+    };
+    Ok(Reading { page, approvals })
 }
 
 /// A chat window read once: what the web, the TUI and `wsx task chat` all need.
@@ -721,16 +766,16 @@ fn row_key(entry: &ManagerEntry, kind: &str) -> String {
     }
 }
 
-/// A peer's name: a role of this project, or another project's manager.
+/// A peer's name: a chat of this project, or another project's manager.
 fn peer_name(key: &str, names: &Names) -> String {
-    match key.strip_prefix("role:") {
+    match key.strip_prefix("chat:") {
         Some("manager") => names.manager.to_string(),
-        Some(role) => role.to_string(),
+        Some(chat) => chat.to_string(),
         None => (names.peer)(key),
     }
 }
 
-/// The row of a message from the owner, a manager or a role. Events have `event_rows`; a recap
+/// The row of a message from the owner, a manager or a chat. Events have `event_rows`; a recap
 /// request shows nothing.
 fn message_row(entry: &ManagerEntry, from: &Author, text: &str, names: &Names) -> Option<ChatRow> {
     let key = row_key(entry, "message");
@@ -745,7 +790,7 @@ fn message_row(entry: &ManagerEntry, from: &Author, text: &str, names: &Names) -
             ))
         }
         Author::Manager { project, reply } => (project.clone(), reply),
-        Author::Role { name, reply } => (format!("role:{name}"), reply),
+        Author::Chat { name, reply } => (format!("chat:{name}"), reply),
         Author::Events | Author::Recap => return None,
     };
     Some(ChatRow {

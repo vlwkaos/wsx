@@ -326,9 +326,9 @@ fn task_lines(
             Style::default().fg(theme::TEXT),
         )];
         if number_width > 0 {
-            // ^ A role has no number: its column stays empty.
+            // ^ A chat has no number: its column stays empty.
             let number = match row.section {
-                Section::Roles => String::new(),
+                Section::Chats => String::new(),
                 _ => format!("#{}", row.id),
             };
             spans.push(Span::styled(

@@ -144,7 +144,10 @@ fn require_real_dir(path: &Path) -> Result<()> {
 
 pub(crate) fn project_dir(project_id: &str) -> Result<PathBuf> {
     validate_project_id(project_id)?;
-    Ok(tasks_root().join(project_id))
+    let dir = tasks_root().join(project_id);
+    // ^ Every store access starts here: a store from before chats moves first.
+    super::chats::migrate_once(project_id, &dir);
+    Ok(dir)
 }
 
 /// Create `tasks/<project-id>/` and its parents, each owner-only.
@@ -959,17 +962,17 @@ const MANAGER_SOCKET: &str = "manager.sock";
 const MAX_MANAGER_LOG_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_MANAGER_STATE_BYTES: u64 = 256 * 1024;
 
-/// The project manager's folder, `tasks/<project-id>/manager/`, or a role's,
-/// `tasks/<project-id>/roles/<name>/` (docs/tasks.md "Roles").
+/// The project's first chat's folder, `tasks/<project-id>/manager/`, or another chat's,
+/// `tasks/<project-id>/chats/<name>/` (docs/tasks.md "Chats").
 #[derive(Debug, Clone)]
 pub struct ManagerDir {
     pub project_id: String,
     pub path: PathBuf,
-    /// The role's name; none is the manager.
+    /// The chat's name; none is the first chat, the manager.
     pub role: Option<String>,
 }
 
-const ROLES_DIR: &str = "roles";
+const CHATS_DIR: &str = "chats";
 
 impl ManagerDir {
     /// Open the folder, creating it owner-only when it is missing.
@@ -977,16 +980,16 @@ impl ManagerDir {
         Self::open_as(project_id, None)
     }
 
-    /// Open the manager's folder or a role's, creating it owner-only when it is missing.
+    /// Open the manager's folder or a chat's, creating it owner-only when it is missing.
     pub fn open_as(project_id: &str, role: Option<&str>) -> Result<Self> {
         let project = ensure_project_dir(project_id)?;
         let path = match role {
             None => project.join(MANAGER_DIR),
             Some(name) => {
-                create_private_dir(&project.join(ROLES_DIR))?;
+                create_private_dir(&project.join(CHATS_DIR))?;
                 project
-                    .join(ROLES_DIR)
-                    .join(super::roles::checked_name(name)?)
+                    .join(CHATS_DIR)
+                    .join(super::chats::checked_name(name)?)
             }
         };
         create_private_dir(&path)?;
@@ -1005,7 +1008,7 @@ impl ManagerDir {
     pub fn existing_as(project_id: &str, role: Option<&str>) -> Result<Option<Self>> {
         let path = match role {
             None => project_dir(project_id)?.join(MANAGER_DIR),
-            Some(name) => roles_dir(project_id)?.join(super::roles::checked_name(name)?),
+            Some(name) => chats_dir(project_id)?.join(super::chats::checked_name(name)?),
         };
         Ok(require_real_dir(&path).is_ok().then(|| Self {
             project_id: project_id.into(),
@@ -1014,7 +1017,7 @@ impl ManagerDir {
         }))
     }
 
-    /// The name the owner reads and the session label's end: the role's, or `manager`.
+    /// The name the owner reads and the session label's end: the chat's, or `manager`.
     pub fn name(&self) -> &str {
         self.role.as_deref().unwrap_or("manager")
     }
@@ -1188,6 +1191,21 @@ impl ManagerDir {
     }
 }
 
+/// The chat whose folder holds `path`: `Some(None)` is the manager's, `Some(Some(name))` another's;
+/// none for any other file of the store.
+pub fn chat_of(path: &Path) -> Option<Option<&str>> {
+    let dir = path.parent()?;
+    let name = dir.file_name()?;
+    if name == MANAGER_DIR {
+        return Some(None);
+    }
+    let chat = dir
+        .parent()?
+        .file_name()
+        .is_some_and(|parent| parent == CHATS_DIR);
+    chat.then(|| name.to_str()).flatten().map(Some)
+}
+
 /// A reader of the manager's log (the chat, the search catch-up) reads this much of its end
 /// first, more only when its window needs it (`read_back_where`, docs/tasks.md "Log window").
 pub(crate) const FIRST_READ_BYTES: u64 = 256 * 1024;
@@ -1196,15 +1214,15 @@ pub(crate) fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|at| at == needle)
 }
 
-const APPROVALS_FILE: &str = "approvals.jsonl";
+pub(super) const APPROVALS_FILE: &str = "approvals.jsonl";
 
-/// `tasks/<project-id>/roles/`, which holds one folder per role.
-pub fn roles_dir(project_id: &str) -> Result<PathBuf> {
-    Ok(project_dir(project_id)?.join(ROLES_DIR))
+/// `tasks/<project-id>/chats/`, which holds one folder per chat besides the manager's.
+pub fn chats_dir(project_id: &str) -> Result<PathBuf> {
+    Ok(project_dir(project_id)?.join(CHATS_DIR))
 }
 
-/// The files a reader follows to see every change to a project's tasks, its manager's and
-/// roles' conversations and its approvals. Missing ones are left out.
+/// The files a reader follows to see every change to a project's tasks, its chats'
+/// conversations and its approvals. Missing ones are left out.
 pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
     let dir = project_dir(project_id)?;
     let mut files = vec![
@@ -1216,12 +1234,11 @@ pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
         // ^ A trial goes live when its deploy is recorded here.
         dir.join(DEPLOYS_FILE),
     ];
-    for role in super::roles::names(project_id) {
-        let role = dir.join(ROLES_DIR).join(role);
+    for chat in super::chats::all(project_id) {
         files.extend([
-            role.join(MANAGER_LOG),
-            role.join(super::roles::CLOSED_FILE),
-            role.join(super::roles::ROLE_FILE),
+            chat.path.join(MANAGER_LOG),
+            chat.path.join(super::chats::CLOSED_FILE),
+            chat.path.join(super::chats::CHAT_FILE),
         ]);
     }
     for id in task_numbers(project_id)? {

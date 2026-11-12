@@ -145,8 +145,8 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
                 row
             })
             .collect::<Vec<_>>(),
-        // ^ Open and asked roles; a closed one is history (docs/tasks.md "Roles").
-        "roles": super::roles::rows(&project_id, &approvals)
+        // ^ Open chats; a closed one is history (docs/tasks.md "Chats").
+        "chats": super::chats::rows(&project_id)
             .into_iter()
             .filter(|row| row["state"] != "closed")
             .collect::<Vec<_>>(),

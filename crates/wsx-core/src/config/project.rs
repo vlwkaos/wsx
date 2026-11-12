@@ -164,8 +164,6 @@ struct TasksFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     manager: Option<TaskManagerFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    roles: Option<TaskRolesFile>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     prune: Option<TaskPruneFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     preview: Option<TaskPreviewFile>,
@@ -233,15 +231,6 @@ struct TaskManagerFile {
     fallback: Option<Vec<String>>,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
-struct TaskRolesFile {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max: Option<usize>,
-    #[serde(rename = "closeDays", skip_serializing_if = "Option::is_none")]
-    close_days: Option<f64>,
-}
-
 /// `[tasks.prune]`: days a session or a worktree stands idle before the manager host acts;
 /// 0 is off. ref: docs/tasks.md "Stale worktrees"
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -254,10 +243,6 @@ struct TaskPruneFile {
 }
 
 const MAX_PRUNE_DAYS: f64 = 3650.0;
-
-/// Open roles besides the manager; each is a conversation the owner reads.
-const MAX_ROLES: usize = 8;
-const MAX_ROLE_CLOSE_DAYS: f64 = 365.0;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -706,23 +691,6 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         .flatten();
     if let Some(manager) = file.manager {
         validate_task_manager(manager, &mut config)?;
-    }
-    if let Some(roles) = file.roles {
-        if let Some(max) = roles.max {
-            if max > MAX_ROLES {
-                return Err(format!("tasks.roles.max must be 0 to {MAX_ROLES}"));
-            }
-            config.roles_max = max;
-        }
-        if let Some(days) = roles.close_days {
-            if !(days > 0.0 && days <= MAX_ROLE_CLOSE_DAYS) {
-                return Err(format!(
-                    "tasks.roles.closeDays must be more than 0 and at most {MAX_ROLE_CLOSE_DAYS}"
-                ));
-            }
-            // ^ A fraction is allowed, at least one second (a test closes a role in seconds).
-            config.roles_close_secs = ((days * 86_400.0).round() as u64).max(1);
-        }
     }
     if let Some(prune) = file.prune {
         for (days, field, secs) in [

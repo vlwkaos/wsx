@@ -176,7 +176,7 @@ export const shownTabs = (list = tabs()) => {
 // #/p/<id>/page (the manager with the project overview's sheet, `sheet: "overview"`), #/p/<id>/checks[/<item>] (with the To check list, at the item),
 // #/p/<id>/usage (with the project's token use and cost), #/p/<id>/panels (with its panels),
 // #/p/<id>/media (with the media archive),
-// #/p/<id>/r/<role> (a role's chat, docs/tasks.md "Roles").
+// #/p/<id>/c/<chat> (another chat of the project, docs/tasks.md "Chats").
 export function parseRoute(hash) {
   const [, first = "", second, third, fourth] = hash.split("/");
   if (first === "s" && Number(second)) return { screen: "session", id: Number(second), tab: third === "terminal" ? "terminal" : "chat" };
@@ -184,7 +184,7 @@ export function parseRoute(hash) {
   // ^ The sheets over the manager's chat: the route name `page` is the overview's (its API and event keep it).
   const sheet = { __proto__: null, page: "overview", checks: "checks", usage: "usage", panels: "panels", media: "media" }[third];
   if (first === "p" && Number(second) && sheet) return { screen: "task", id: Number(second), sheet, item: sheet === "checks" && /^c\d+$/.test(fourth ?? "") ? fourth : null };
-  if (first === "p" && Number(second) && third === "r" && fourth) return { screen: "role", id: Number(second), role: decodeURIComponent(fourth) };
+  if (first === "p" && Number(second) && third === "c" && fourth) return { screen: "chat", id: Number(second), chat: decodeURIComponent(fourth) };
   if (first === "p" && Number(second)) {
     // ^ `#/p/<project>/files/<path>` opens that file (a manager's message about a routine links it).
     if (third === "files" && fourth) {

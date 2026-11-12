@@ -62,8 +62,6 @@ pub enum Capability {
     Deploy,
     /// `routine add|edit|delete|enable|disable|run|cancel|fire`, `checkin`.
     Routine,
-    /// `role new`, `role close`.
-    RoleAdmin,
     /// The owner's commands, which the CLI judges itself for a manager: `approve`, `deny`,
     /// `hand` (also `--back`, and its old name `handback`), `dismiss`, and the hidden host commands.
     Approve,
@@ -79,7 +77,7 @@ pub enum Capability {
 }
 
 /// Every capability, in bit order.
-pub const ALL: [Capability; 20] = [
+pub const ALL: [Capability; 19] = [
     Capability::Read,
     Capability::Notify,
     Capability::Answer,
@@ -94,7 +92,6 @@ pub const ALL: [Capability; 20] = [
     Capability::Land,
     Capability::Deploy,
     Capability::Routine,
-    Capability::RoleAdmin,
     Capability::Approve,
     Capability::Result,
     Capability::Recall,
@@ -180,7 +177,7 @@ pub const ROLES: [(Role, RoleInfo); 4] = [
         Role::Area,
         RoleInfo {
             name: "area",
-            brief: "a named role for one area: its own tasks and their children, no approvals, deploys, routines or roles",
+            brief: "a named role for one area: its own tasks and their children, no approvals, deploys or routines",
             caps: &[
                 Read, Notify, Answer, Backlog, Note, Handoff, CreateTask, Direct, Close, LandChild,
                 Recall, Remember, Decide,
@@ -239,7 +236,7 @@ impl Role {
         match actor {
             Actor::Owner => None,
             Actor::Manager | Actor::ManagerOf(_) => Some(Self::Manager),
-            Actor::Role(_) => Some(Self::Area),
+            Actor::Chat(_) => Some(Self::Area),
         }
     }
 }
@@ -344,7 +341,7 @@ impl Policy {
 pub fn role_refusal(role: Role, what: &str) -> String {
     match role {
         Role::Area => {
-            format!("{what} is not for a role; ask the manager (`wsx task say --from-role`)")
+            format!("{what} is not for a chat; ask the manager (`wsx task say --from-chat`)")
         }
         other => format!("{what} is not for the {} role", other.info().name),
     }

@@ -326,8 +326,8 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
     }
 }
 
-/// `Manager <project>` (a role: `<project> · <role>`) on the left, the To check and approval counts on
-/// the right; a role's chat has none.
+/// `Manager <project>` (another chat: `<project> · <chat>`) on the left, the To check and approval counts on
+/// the right; another chat has none.
 fn heading(chat: &ManagerChat, width: usize) -> Line<'static> {
     let checks = chat
         .items
@@ -340,7 +340,7 @@ fn heading(chat: &ManagerChat, width: usize) -> Line<'static> {
         .filter(|item| matches!(item, Item::Ask { .. }))
         .count();
     let approvals = chat.items.len() - checks - asks;
-    let counts = match chat.role {
+    let counts = match chat.chat {
         Some(_) => String::new(),
         None => format!(
             "{}{checks} to check  {approvals} approval{}",
@@ -352,9 +352,9 @@ fn heading(chat: &ManagerChat, width: usize) -> Line<'static> {
             if approvals == 1 { "" } else { "s" }
         ),
     };
-    // ^ A role's room is titled by its affiliation, `<project> · <role>` (docs/tasks.md "Roles").
-    let who = match &chat.role {
-        Some(role) => format!("{} · {role}", chat.project),
+    // ^ Another chat is titled by its affiliation, `<project> · <chat>` (docs/tasks.md "Chats").
+    let who = match &chat.chat {
+        Some(name) => format!("{} · {name}", chat.project),
         None => chat.who().to_string(),
     };
     let who = truncate_to_width(&who, width / 2);
@@ -364,7 +364,7 @@ fn heading(chat: &ManagerChat, width: usize) -> Line<'static> {
         .as_ref()
         .map_or(String::new(), |agent| format!(" · {agent}"));
     let project = truncate_to_width(
-        &match chat.role {
+        &match chat.chat {
             Some(_) => agent.clone(),
             None => format!(" {}{agent}", chat.project),
         },

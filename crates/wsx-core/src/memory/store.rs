@@ -154,7 +154,7 @@ pub struct Store {
     project: Option<(String, String)>,
     /// Where a relative `verified_by` path lives: the project path, else the current folder.
     root: PathBuf,
-    /// Whether a `rule` record may be written or changed (the manager's and a role's).
+    /// Whether a `rule` record may be written or changed (the manager's and a chat's).
     rules: bool,
     /// Whether a search also reads the project's transcripts.
     transcripts: bool,
@@ -207,7 +207,7 @@ impl Store {
     pub(super) fn may_write(&self, kind: Kind) -> Result<()> {
         match kind == Kind::Rule && !self.rules {
             true => {
-                usage("a rule needs the owner's word, so only the manager or a role writes one")
+                usage("a rule needs the owner's word, so only the manager or a chat writes one")
             }
             false => Ok(()),
         }

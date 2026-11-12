@@ -20,7 +20,7 @@ pub(crate) fn project(action: ProjectCmd, project: Option<&str>, json: bool) -> 
     let folder = ops::check_add_project(&config, &path, clone.as_deref())?;
     if acting_as_manager() {
         let (name, main) = project_entry(project)?;
-        let mut request = request_of(ApprovalAction::Project, None, None, None, None);
+        let mut request = request_of(ApprovalAction::Project, None, None, None);
         if let ApprovalLine::Request { path, url, .. } = &mut request {
             *path = Some(folder.display().to_string());
             *url = clone.clone();

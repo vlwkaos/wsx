@@ -3459,18 +3459,18 @@ await until("document.querySelector('.composer-field').value === 'a draft across
 if (await count(".build-pill")) await fail("the pill stayed after the reload");
 problems.splice(quietFrom);
 
-// Roles (docs/web-client-tasks.md "Roles"): the ⋯ menu lists the role as a contact, unread
-// until read; it opens the role's chat at #/p/<project>/r/<role>, the same bubbles without the
-// manager's reservoir, and its composer talks to the role.
-// ^ The manager says something in the role's room: three speakers there, the owner, the manager and the role.
+// Chats (docs/web-client-tasks.md "Chats"): the ⋯ menu lists the chat as a contact, unread
+// until read; it opens the chat at #/p/<project>/c/<chat>, the same bubbles without the
+// manager's reservoir, and its composer talks to the chat.
+// ^ The manager says something in the chat: three speakers there, the owner, the manager and the chat.
 {
   const state = JSON.parse(fs.readFileSync(wsxCli)).env.XDG_STATE_HOME;
-  const found = fs.readdirSync(state, { recursive: true }).find((file) => file.endsWith(path.join("roles", "billing", "log.jsonl")));
-  if (!found) await fail(`no log of the billing role under ${state}`);
-  fs.appendFileSync(path.join(state, found), `${JSON.stringify({ unix_ms: Date.now(), kind: "message", id: 8990, from: "role:manager", text: "manager asks billing for the numbers" })}\n`);
+  const found = fs.readdirSync(state, { recursive: true }).find((file) => file.endsWith(path.join("chats", "billing", "log.jsonl")));
+  if (!found) await fail(`no log of the billing chat under ${state}`);
+  fs.appendFileSync(path.join(state, found), `${JSON.stringify({ unix_ms: Date.now(), kind: "message", id: 8990, from: "chat:manager", text: "manager asks billing for the numbers" })}\n`);
 }
 const resolved = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((data) => data.resolutions.length)`);
-if (!resolved) await fail("the fixture project has no resolutions, so the role room check proves nothing");
+if (!resolved) await fail("the fixture project has no resolutions, so the chat check proves nothing");
 for (const wide of [false, true]) {
   await resize(wide ? [1280, 800, 1] : [390, 844, 2]);
   await go(chat);
@@ -3481,59 +3481,59 @@ for (const wide of [false, true]) {
   // before this device opened its chat; a click opens the room.
   await go("#/");
   const roleRow = `[...document.querySelectorAll('.home-rows .role-row')].find((r) => r.querySelector('.row-label').textContent === 'billing')`;
-  await until(`!!(${roleRow})`, "Home lists no billing role under its project");
+  await until(`!!(${roleRow})`, "Home lists no billing chat under its project");
   const listed = await evaluate(`(() => { const row = ${roleRow}; const before = row.closest('li').previousElementSibling; return { name: row.querySelector('.row-label').textContent, line: row.querySelector('.row-context').textContent, dots: row.querySelectorAll('.news-mark').length, under: before && !before.classList.contains('row-role') ? before.querySelector('.row-label').firstChild.textContent : before?.className }; })()`);
-  if (listed.name !== "billing" || !listed.line.startsWith("open: ") || (!wide && listed.dots) || listed.under !== projectName) await fail(`Home lists the role as ${JSON.stringify(listed)}, not billing under ${projectName}`);
+  if (listed.name !== "billing" || !listed.line.startsWith("open: ") || (!wide && listed.dots) || listed.under !== projectName) await fail(`Home lists the chat as ${JSON.stringify(listed)}, not billing under ${projectName}`);
   await shot(`roles-home${wide ? "-wide" : ""}`);
   await go(chat);
   await until("!!document.querySelector('.composer-field')", "the chat did not open again for Roles");
   await click(".more-button");
-  await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lists no role");
+  await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lists no chat");
   // ^ The role's reply is news, but this device never opened its chat: as for a project, nothing is new.
-  if (!wide && (await count(".role-contact .news-mark"))) await fail("a role chat never opened on this device shows unread");
+  if (!wide && (await count(".role-contact .news-mark"))) await fail("another chat never opened on this device shows unread");
   if (!(await text(".role-contact .role-line"))[0].startsWith("open: ")) await fail(`the contact's line is not its last reply: ${await text(".role-contact")}`);
   await shot(`roles-menu${wide ? "-wide" : ""}`);
   await click(".more-menu .role-contact");
-  await until(`location.hash === '#/p/${project}/r/billing' && !!document.querySelector('.log .bubble[data-side=in]')`, "the role chat did not open with its reply");
-  if (await count(".reservoir")) await fail("a role's chat shows the manager's reservoir");
-  if ((await text(".bar-label"))[0] !== `${projectName} · billing`) await fail(`the role chat's title is ${await text(".bar-label")}`);
-  // ^ The room shows the role's own model, as the manager's chat shows the manager's (billing opened with --model haiku).
-  if (!/^haiku\b/.test((await text(".bar-model"))[0] ?? "")) await fail(`the role chat's bar shows the model ${JSON.stringify(await text(".bar-model"))}, not haiku`);
-  // ^ The room holds the role's own log: none of the project's resolutions ("#5 was closed") is in it.
-  if (await count(".log .status-line, .log .fold")) await fail(`a role chat shows the project's events: ${await text(".log .status-line, .log .fold")}`);
-  // ^ The speakers: the manager's message is under its name with the word manager, the role's reply under the role's.
+  await until(`location.hash === '#/p/${project}/c/billing' && !!document.querySelector('.log .bubble[data-side=in]')`, "the chat did not open with its reply");
+  if (await count(".reservoir")) await fail("another chat shows the manager's reservoir");
+  if ((await text(".bar-label"))[0] !== `${projectName} · billing`) await fail(`the chat's title is ${await text(".bar-label")}`);
+  // ^ The chat shows its own model, as the manager's chat shows the manager's (billing opened with --agent haiku-chat).
+  if (!/^haiku\b/.test((await text(".bar-model"))[0] ?? "")) await fail(`the chat's bar shows the model ${JSON.stringify(await text(".bar-model"))}, not haiku`);
+  // ^ The chat holds its own log: none of the project's resolutions ("#5 was closed") is in it.
+  if (await count(".log .status-line, .log .fold")) await fail(`a chat shows the project's events: ${await text(".log .status-line, .log .fold")}`);
+  // ^ The speakers: the manager's message is under its name with the word manager, the chat's reply under the chat's.
   const speakers = await evaluate(`[...document.querySelectorAll('.log .bubble')].map((node) => node.querySelector('.bubble-author')?.textContent ?? '').filter(Boolean)`);
-  if (!speakers.includes(`${shownName} manager`) || !speakers.includes("billing") || speakers.includes(shownName)) await fail(`the role chat's speakers are ${speakers}`);
+  if (!speakers.includes(`${shownName} manager`) || !speakers.includes("billing") || speakers.includes(shownName)) await fail(`the chat's speakers are ${speakers}`);
   if (!wide) {
     const answered = await count(".log .bubble[data-side=in]");
     await typeInto(".composer-field", "STATUS");
     await click(".composer-send");
-    await until(`document.querySelectorAll('.log .bubble[data-side=in]').length > ${answered}`, "the role did not answer the page", 60);
+    await until(`document.querySelectorAll('.log .bubble[data-side=in]').length > ${answered}`, "the chat did not answer the page", 60);
   }
   await shot(`role-chat${wide ? "-wide" : ""}`, ".composer-send");
   await evaluate("document.querySelector('.bar a.icon-button').click()");
-  await until(`location.hash === ${JSON.stringify(chat)}`, "Back from a role did not return to the manager");
+  await until(`location.hash === ${JSON.stringify(chat)}`, "Back from a chat did not return to the manager");
 }
 await click(".more-button");
-await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lost the role");
-if (await count(".role-contact .news-mark")) await fail("a role read on this device still shows unread");
+await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lost the chat");
+if (await count(".role-contact .news-mark")) await fail("a chat read on this device still shows unread");
 await key("Escape", 27);
 
-// Role unread is the server's `news` (the newest reply that is not quiet), read against what this
+// Chat unread is the server's `news` (the newest reply that is not quiet), read against what this
 // device read: a ping, a quiet reply and the owner's own message are no news; a reply is.
 {
   const state = JSON.parse(fs.readFileSync(wsxCli)).env.XDG_STATE_HOME;
-  const found = fs.readdirSync(state, { recursive: true }).find((file) => file.endsWith(path.join("roles", "billing", "log.jsonl")));
-  if (!found) await fail(`no log of the billing role under ${state}`);
+  const found = fs.readdirSync(state, { recursive: true }).find((file) => file.endsWith(path.join("chats", "billing", "log.jsonl")));
+  if (!found) await fail(`no log of the billing chat under ${state}`);
   let id = 9000;
   const append = (entry) => fs.appendFileSync(path.join(state, found), `${JSON.stringify({ unix_ms: Date.now(), ...entry })}\n`);
   const marked = async () => {
     await go("#/");
-    await until("!!document.querySelector('.home-row') && !document.querySelector('.composer-field')", "home did not replace the chat for the role dot");
+    await until("!!document.querySelector('.home-row') && !document.querySelector('.composer-field')", "home did not replace the chat for the chat dot");
     await go(chat);
-    await until("!!document.querySelector('.composer-field')", "the chat did not open for the role dot");
+    await until("!!document.querySelector('.composer-field')", "the chat did not open for the chat dot");
     await click(".more-button");
-    await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lost the role");
+    await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lost the chat");
     const dots = await count(".role-contact .news-mark");
     await key("Escape", 27);
     return dots;
@@ -3542,9 +3542,9 @@ await key("Escape", 27);
   append({ kind: "ping" });
   append({ kind: "message", id: ++id, from: "owner", text: "later" });
   append({ kind: "reply", id: ++id, to: [], text: "-", quiet: true });
-  if (await marked()) await fail("a ping, the owner's message or a quiet reply marks the role unread");
+  if (await marked()) await fail("a ping, the owner's message or a quiet reply marks the chat unread");
   append({ kind: "reply", id: ++id, to: [], text: "billing has an answer" });
-  if (!(await marked())) await fail("a role's reply that is news shows no dot");
+  if (!(await marked())) await fail("a chat's reply that is news shows no dot");
 }
 
 // --- Session news: the host's post for a session that needs the owner links to that session
@@ -4233,7 +4233,7 @@ await closeSheet("the page", `#/p/${plansArg}`);
   fs.rmSync(path.join(plansCheckout, ".env"));
   await go(`#/p/${plansArg}`);
 }
-console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail closing the item and its reply kept as the note, Pass in a bubble that stays in place, Skip), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Roles (the ⋯ contact with its unread dot, its chat at #/p/<project>/r/<role> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail closing the item and its reply kept as the note, Pass in a bubble that stays in place, Skip), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Chats (the ⋯ contact with its unread dot, its chat at #/p/<project>/c/<chat> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await linter.finish(fail);
 await cleanup();
 process.exit(0);

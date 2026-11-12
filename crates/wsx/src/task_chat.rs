@@ -1,4 +1,4 @@
-//! The TUI's manager chat of one project, or a role's (docs/tasks.md "Roles"): the
+//! The TUI's manager chat of one project, or another chat's (docs/tasks.md "Chats"): the
 //! conversation, the open To check items and the waiting approvals, read off the UI thread when a file of the task store changes, and the
 //! owner's message and decisions, also run off it. ref: docs/tasks.md "TUI"
 use crate::{
@@ -17,7 +17,7 @@ use std::{
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::{
     call_socket,
-    chat::{self, ChatRow, Names, Page, RowKind, Speaker, Window},
+    chat::{self, ChatRow, Page, Reading, RowKind, Speaker, Window},
     checks::{self, CheckItem, CheckState},
     manager::{activity, pending_approvals, waiting_approvals, ManagerRequest, ManagerResponse},
     media::{self, Kind},
@@ -269,7 +269,7 @@ pub enum Focus {
 
 struct View {
     rows: Vec<ChatRow>,
-    /// The other side's shown name: the manager's (`manager_shown_name`), or the role's.
+    /// The other side's shown name: the manager's (`manager_shown_name`), or the chat's.
     name: String,
     items: Vec<Item>,
     activity: Option<String>,
@@ -289,8 +289,8 @@ struct Read {
 
 pub struct ManagerChat {
     pub project: String,
-    /// The role this chat talks to; none is the manager.
-    pub role: Option<String>,
+    /// The chat this one talks to; none is the manager.
+    pub chat: Option<String>,
     main: PathBuf,
     store: String,
     pub rows: Vec<ChatRow>,
@@ -370,10 +370,10 @@ struct Wrapped {
 type Answer = (String, bool, Option<String>);
 
 impl ManagerChat {
-    pub fn new(project: String, main: PathBuf, role: Option<String>) -> Self {
+    pub fn new(project: String, main: PathBuf, chat: Option<String>) -> Self {
         let store = store::project_id(&project, &main);
         // ^ The shown name before the first read, which reads it again.
-        let name = role.clone().unwrap_or_else(|| {
+        let name = chat.clone().unwrap_or_else(|| {
             load_task_config(&main)
                 .unwrap_or_default()
                 .manager_shown_name(&project)
@@ -382,7 +382,7 @@ impl ManagerChat {
         let mut chat = Self {
             name,
             project,
-            role,
+            chat,
             main,
             store,
             rows: Vec::new(),
@@ -427,13 +427,13 @@ impl ManagerChat {
 
     fn check(&mut self) {
         let (tx, rx) = mpsc::sync_channel(1);
-        let (store, last, role) = (self.store.clone(), self.stamp.clone(), self.role.clone());
+        let (store, last, chat) = (self.store.clone(), self.stamp.clone(), self.chat.clone());
         let (searched, around) = (self.searched.clone(), self.around);
         let (main, project) = (self.main.clone(), self.project.clone());
         self.pending = Some(rx);
         self.last_check = Instant::now();
         std::thread::spawn(move || {
-            let dir = ManagerDir::existing_as(&store, role.as_deref())
+            let dir = ManagerDir::existing_as(&store, chat.as_deref())
                 .ok()
                 .flatten();
             let status = dir.as_ref().and_then(|dir| {
@@ -543,7 +543,7 @@ impl ManagerChat {
         changed
     }
 
-    /// The name the chat shows for the other side: the role's, or the manager's shown name.
+    /// The name the chat shows for the other side: the chat's, or the manager's shown name.
     pub fn who(&self) -> &str {
         &self.name
     }
@@ -598,7 +598,7 @@ impl ManagerChat {
         self.newest();
         self.composer = InputState::new("> ");
         self.scroll = 0;
-        let role = self.role.clone();
+        let chat = self.chat.clone();
         self.run("Sending".into(), move |project, main, _| {
             let said = std::env::current_exe()
                 .map_err(anyhow::Error::from)
@@ -607,7 +607,7 @@ impl ManagerChat {
                         &project,
                         &main,
                         &exe,
-                        role.as_deref(),
+                        chat.as_deref(),
                         crate::task::launch_manager(&main),
                         text.clone(),
                         None,
@@ -726,9 +726,7 @@ fn read(
 ) -> anyhow::Result<View> {
     let window = Window::new(Some(searched), None, around);
     let settings = load_task_config(main).unwrap_or_default();
-    let manager = settings.manager_shown_name(project).to_string();
-    let role = dir.and_then(|dir| dir.role.clone());
-    let name = role.clone().unwrap_or_else(|| manager.clone());
+    let other = dir.and_then(|dir| dir.role.clone());
     // ^ Another registered project's manager by its set name (docs/tasks.md "Config"), each
     // project's config read once.
     let names = std::cell::RefCell::new(std::collections::HashMap::<String, String>::new());
@@ -747,35 +745,20 @@ fn read(
             })
             .clone()
     };
-    // ^ To check items and approvals are the manager's (docs/tasks.md "Roles").
-    let approvals = match role {
-        Some(_) => Vec::new(),
-        None => store::read_approvals(store)?,
-    };
-    let manager_seen = chat::manager_name_in(role.as_deref(), &manager);
-    let names = Names {
-        own: &name,
-        manager: &manager_seen,
-        peer: &peer,
-    };
-    let Page {
-        log, asks, rows, ..
-    } = match dir {
-        Some(dir) => chat::page(
-            dir,
-            &window,
-            &names,
-            &pending_approvals(&approvals),
-            wsx_core::task::now_unix_ms(),
-            |_| {},
-        )?,
-        None => Page::default(),
-    };
-    // ^ A fallback's while one runs, else the role's own or the manager's (docs/tasks.md "Agents").
+    let Reading {
+        page: Page {
+            log, asks, rows, ..
+        },
+        approvals,
+    } = chat::read_for(dir, (project, store), &settings, &window, &peer, |_| {})?;
+    let name = other
+        .clone()
+        .unwrap_or_else(|| settings.manager_shown_name(project).to_string());
+    // ^ A fallback's while one runs, else the chat's own or the manager's (docs/tasks.md "Agents").
     let agent = dir
         .map(|dir| view::manager_agent(dir, &settings))
         .and_then(|agent| view::agent_label(&agent));
-    if role.is_some() {
+    if other.is_some() {
         return Ok(View {
             rows,
             name,

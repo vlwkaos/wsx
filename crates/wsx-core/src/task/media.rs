@@ -2,14 +2,14 @@
 //! Media sheet and the TUI's list, which only render it. ref: docs/tasks.md "Media"
 //!
 //! Three sources: the To check captures (`checks`), the pictures and videos that messages of the
-//! manager, its roles and its peers link (`files/<path>`), and the files an owner message
+//! manager, its chats and its peers link (`files/<path>`), and the files an owner message
 //! attached (the web's media store, which this crate cannot read: an upload's item names the
 //! store's file and the web says whether the store still has it).
 
 use super::chat::linked_files;
+use super::chats;
 use super::checks::{self, CheckState};
 use super::manager::{Author, ManagerEntry, ManagerEvent};
-use super::roles;
 use super::store::{contains_bytes, ManagerDir, TaskDir, FIRST_READ_BYTES};
 use anyhow::Result;
 use serde::Serialize;
@@ -72,7 +72,7 @@ pub struct Item {
     /// When the capture was collected or the message written.
     pub unix_ms: u64,
     pub task: Option<u32>,
-    /// Who posted it: `owner`, `manager`, a role or a peer project; `checks` for a capture.
+    /// Who posted it: `owner`, `manager`, a chat or a peer project; `checks` for a capture.
     pub who: String,
     /// The check's text, the file's path or the upload's name.
     pub text: String,
@@ -129,13 +129,8 @@ pub fn list(project_id: &str, filter: &Filter, checkout: Option<&Path>) -> Resul
     let mut items = capture_items(project_id, filter)?;
     // ^ A message has no task: a task filter leaves the logs unread.
     if filter.task.is_none() {
-        let mut dirs: Vec<ManagerDir> = ManagerDir::existing(project_id)?.into_iter().collect();
-        dirs.extend(roles::names(project_id).iter().filter_map(|name| {
-            ManagerDir::existing_as(project_id, Some(name))
-                .ok()
-                .flatten()
-        }));
-        for dir in dirs {
+        let first = ManagerDir::existing(project_id)?;
+        for dir in first.into_iter().chain(chats::all(project_id)) {
             let items_of = |entries: &[ManagerEntry]| -> Vec<Item> {
                 entries
                     .iter()
@@ -218,7 +213,7 @@ fn entry_items(
         ManagerEvent::Message { id, from, text, .. } => match from {
             Author::Owner => (*id, "owner".to_string(), text, with_uploads),
             Author::Manager { project, .. } => (*id, project.clone(), text, false),
-            Author::Role { name, .. } => (*id, name.clone(), text, false),
+            Author::Chat { name, .. } => (*id, name.clone(), text, false),
             Author::Events | Author::Recap => return Vec::new(),
         },
         _ => return Vec::new(),

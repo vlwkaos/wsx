@@ -29,7 +29,7 @@ impl Level {
 
 /// Who wrote a message the manager receives: `owner`, `events`, `manager:<project>` or, for
 /// an answer to a message this manager sent, `manager-reply:<project>`; inside a project,
-/// `role:<name>` and `role-reply:<name>` (the manager is the role `manager`).
+/// `chat:<name>` and `chat-reply:<name>` (the first chat is `manager`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 pub enum Author {
@@ -43,8 +43,8 @@ pub enum Author {
     },
     /// wsx asks for a recap after a quiet period (docs/tasks.md "Recap").
     Recap,
-    /// A role of the same project, or its manager as `manager` (docs/tasks.md "Roles").
-    Role {
+    /// A chat of the same project, or the first as `manager` (docs/tasks.md "Chats").
+    Chat {
         name: String,
         reply: bool,
     },
@@ -64,8 +64,8 @@ impl From<Author> for String {
                 project,
                 reply: true,
             } => format!("manager-reply:{project}"),
-            Author::Role { name, reply: false } => format!("role:{name}"),
-            Author::Role { name, reply: true } => format!("role-reply:{name}"),
+            Author::Chat { name, reply: false } => format!("chat:{name}"),
+            Author::Chat { name, reply: true } => format!("chat-reply:{name}"),
         }
     }
 }
@@ -88,14 +88,14 @@ impl TryFrom<String> for Author {
             _ => match (
                 text.strip_prefix("manager:"),
                 text.strip_prefix("manager-reply:"),
-                text.strip_prefix("role:"),
-                text.strip_prefix("role-reply:"),
+                text.strip_prefix("chat:"),
+                text.strip_prefix("chat-reply:"),
             ) {
                 (Some(project), ..) => manager(project, false),
                 (_, Some(project), ..) => manager(project, true),
-                (.., Some(name), _) | (.., Some(name)) if !name.is_empty() => Ok(Author::Role {
+                (.., Some(name), _) | (.., Some(name)) if !name.is_empty() => Ok(Author::Chat {
                     name: name.to_string(),
-                    reply: text.starts_with("role-reply:"),
+                    reply: text.starts_with("chat-reply:"),
                 }),
                 _ => Err(format!("unknown author {text}")),
             },
@@ -376,7 +376,7 @@ pub fn resolve_quote(text: &str, log: &[ManagerEntry]) -> (String, Option<u64>, 
         log.iter().find_map(|entry| match &entry.event {
             ManagerEvent::Message {
                 id: found,
-                from: Author::Owner | Author::Manager { .. } | Author::Role { .. },
+                from: Author::Owner | Author::Manager { .. } | Author::Chat { .. },
                 text,
                 ..
             } if *found == id => Some(text),
@@ -601,8 +601,6 @@ pub enum ApprovalAction {
     Release,
     /// `close --discard`
     Discard,
-    /// `role new`: the manager asks once for a role (docs/tasks.md "Roles").
-    Role,
     /// `push`: the default branch to origin, run by the host (docs/tasks.md "Push").
     Push,
     /// `project add`: clone and register a project (docs/tasks.md "Approvals").
@@ -622,16 +620,6 @@ pub enum ApprovalLine {
         revision: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<String>,
-        /// A role request: the role's name and the brief it opens with.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        role: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        brief: Option<String>,
-        /// A role request: the agent it asks for (both set, or the manager's).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        adapter: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        model: Option<String>,
         /// A forced push: origin's tip the request saw, which the push leases (empty: origin
         /// had no such branch).
         #[serde(default, skip_serializing_if = "Option::is_none")]
