@@ -211,7 +211,7 @@ const grid = async (where) => {
   await send("Page.navigate", { url: `${pagerUrl}#/p/${project}/panels` });
   await until("document.querySelectorAll('.panel-tabs [role=tab]').length === 4", `the pager site's panels page did not draw ${where}`);
   await tab("gauges");
-  await until("document.querySelectorAll('.panel-tile img').length === 2 && [...document.querySelectorAll('.panel-tile img')].every((img) => img.complete && img.naturalWidth > 0)", `the card pictures did not load ${where}`);
+  await until("document.querySelectorAll('.panel-tile img').length === 2 && [...document.querySelectorAll('.panel-tile img')].every((img) => img.complete && img.naturalWidth > 0)", `the card pictures did not load ${where}`, 300);
   const shown = await evaluate(`(() => { const boxes = [...document.querySelectorAll('.panel-tile-image')].map((box) => box.getBoundingClientRect());
     const tiles = [...document.querySelectorAll('.panel-tile')].map((tile) => tile.getBoundingClientRect());
     const note = document.querySelector('.panel-tile-note');
