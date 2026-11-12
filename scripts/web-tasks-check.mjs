@@ -3505,7 +3505,8 @@ for (const wide of [false, true]) {
   }
   await shot(`chat-room${wide ? "-wide" : ""}`, ".composer-send");
   await evaluate("document.querySelector('.bar a.icon-button').click()");
-  await until(`location.hash === ${JSON.stringify(chat)}`, "Back from a chat did not return to the manager");
+  // ^ The chat was opened from Home, so Back returns there (the entry before it).
+  await until("location.hash === '#/'", "Back from a chat did not return to Home");
 }
 await go("#/");
 await until("!!document.querySelector('.home-rows .chat-row')", "Home lost the chat");
