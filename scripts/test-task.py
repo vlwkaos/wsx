@@ -6171,7 +6171,7 @@ def part_host(created=None):
     for cols in (120, 80):
         shots = tui_screens(wsx, env, project, [
             (r'WORKSPACE', b't'),
-            (r'(?ms)^ Chats$.*^ billing +open +haiku · Drive the billing', b'j' * below),
+            (r'(?ms)^ Chats$.*^ billing +(?:[…!✓]\d+ +)*open +haiku · Drive the billing', b'j' * below),
             (r'\(enter\)chat', b'\r'),
             (r'(?ms)^ billing +\d\d:\d\d$.*CHAT', b'\x1b'),
             (r'\(m\)anager', b'\x1b'),
