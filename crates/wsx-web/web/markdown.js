@@ -25,9 +25,29 @@ const afterItem = (table) => (state, line, end, silent) => {
   }
 };
 
+// ^ GFM turns a line without `|` right under a table into a row; a manager's closing sentence
+// then became a one-cell row that widened the first column. A table ends at such a line, as the
+// TUI chat reads it: the rows markdown-it took for it are given back to the text after it.
+const endingAtText = (table) => (state, line, end, silent) => {
+  const found = table(state, line, end, silent);
+  if (!found || silent) return found;
+  const { tokens } = state;
+  const hasPipe = (at) => state.src.slice(state.bMarks[at] + state.tShift[at], state.eMarks[at]).includes("|");
+  while (state.line > line + 2 && !hasPipe(state.line - 1)) {
+    const row = tokens.findLastIndex((token) => token.type === "tr_open");
+    tokens.splice(row, tokens.findLastIndex((token) => token.type === "tbody_close") - row);
+    state.line -= 1;
+  }
+  tokens.findLast((token) => token.type === "table_open").map[1] = state.line;
+  const body = tokens.findLast((token) => token.type === "tbody_open");
+  if (body) body.map[1] = state.line;
+  return true;
+};
+
 const makeParser = () => {
   const made = globalThis.markdownit({ html: false, linkify: true });
-  const table = made.block.ruler.__rules__.find((rule) => rule.name === "table").fn;
+  const table = endingAtText(made.block.ruler.__rules__.find((rule) => rule.name === "table").fn);
+  made.block.ruler.at("table", table, { alt: ["paragraph", "reference"] });
   made.block.ruler.before("table", "table_after_item", afterItem(table), { alt: ["paragraph"] });
   // Only text with a scheme becomes a link: `main.rs` and `notes.io` are file names here.
   made.linkify.set({ fuzzyLink: false, fuzzyEmail: false });
