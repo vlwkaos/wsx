@@ -11,14 +11,17 @@ failed steps' log tail, downloads the run's `scenario-files*` artifacts (files.t
 checkout such as `.work/web-captures`) into the same paths, deletes the branch and exits 0 only when the run
 passed, 75 (EX_TEMPFAIL) when the run failed for the network or the runner and no scenario step
 failed, or the GitHub token is invalid, or its rate limit resets after the deadline (the host then keeps
-no result: the next check-run runs it again). A rate limit answer is never a failure: the script waits
+no result: the host runs it again itself, up to 3 runs; `retry-after: <secs>` is the reset it waits for and `retry: no` a failure a retry cannot cure). A rate limit answer is never a failure: the script waits
 for the reset time of `gh api rate_limit` (that endpoint does not count) and goes on. A poll costs one
 request (the run), and the jobs are read when the run's status changes, every JOBS_SECONDS and at the
 end. A branch a killed run left behind is deleted by a later run once it is STALE_SECONDS
 old, and it cancels every scenario run still queued or running after the script's whole time (the
 account runs at most 5 macOS jobs at once: an orphan holds a slot and every new run queues behind it). A
 run with no job started after QUEUE_SECONDS is a runner problem, not the tree: it is cancelled and the
-script exits 75. The task host runs it outside the slot (docs/tasks.md "Scenarios").
+script exits 75, as it does for a run that GitHub or another script cancelled. A run that fails on a
+scenario assert prints, after its own log, the failed log of main's latest `ci.yml` push run (the
+`task` jobs run on main; `web` does not), after the line `MAIN_MARK`: the host takes the failure
+key of both and answers "fails on main too" (docs/tasks.md "Shared failure"). The task host runs it outside the slot (docs/tasks.md "Scenarios").
 """
 
 import argparse
@@ -48,6 +51,11 @@ RUN_SECONDS = 60 * 60
 # ^ The account runs at most 5 macOS jobs at once: a run whose jobs have not started by then is cancelled.
 QUEUE_SECONDS = 60 * 60
 LOG_LINES = 150
+# ^ The host reads the key of both logs from the last 8 KiB of this output: main's block is short and last.
+MAIN_LINES = 12
+MAIN_LINE_CHARS = 200
+# ^ Read by wsx-core task::failure (MAIN_MARK): what follows is main's, not the task's.
+MAIN_MARK = "== main's latest CI run"
 # ^ The host's `ci:` limit is QUEUE_SECONDS + RUN_SECONDS + 5 min (CI_TIMEOUT in
 # crates/wsx/src/task/host.rs); past it, no run still waits on the branch.
 STALE_SECONDS = 3 * 3600
@@ -70,7 +78,14 @@ CALLS = {'gh': 0, 'rate_limit': 0}
 
 
 class TempFail(Exception):
-    """A failure outside the tree (exit 75): the token or the rate limit, not the scenario."""
+    """A failure outside the tree (exit 75): the token or the rate limit, not the scenario.
+    `after` is the seconds until a retry may succeed (the rate limit's reset); `retry` False when
+    none can (an invalid token)."""
+
+    def __init__(self, text, after=None, retry=True):
+        super().__init__(text)
+        self.after, self.retry = after, retry
+
 # ^ A scenario's own failure: a log with one is never a temporary failure.
 SCENARIO_FAILURE = re.compile(r'\bFAIL\b|AssertionError|Traceback')
 # ^ The one list of network and runner failures; add a line of a new one here (docs/tasks.md "Scenarios").
@@ -103,7 +118,7 @@ def gh(*args, check=True, until=None):
                 raise RuntimeError('gh %s: %s' % (' '.join(args), ran.stderr.strip()))
             return ran
         if time.monotonic() + pause > until:
-            raise TempFail('GitHub rate limit resets in %d s, after the deadline of this run.' % pause)
+            raise TempFail('GitHub rate limit resets in %d s, after the deadline of this run.' % pause, after=pause)
         say('%s  GitHub rate limit: waiting %d s' % (time.strftime('%H:%M:%S'), pause))
         time.sleep(pause)
 
@@ -126,7 +141,7 @@ def limit_pause(text):
         found = re.search(r'retry[- ]after:?\s*(\d+)', text, re.IGNORECASE)
         return int(found.group(1)) + 1 if found else SECONDARY_WAIT
     if BAD_TOKEN.search(text) or (core is None and 'HTTP 401' in ran.stderr):
-        raise TempFail('The GitHub token is invalid (gh auth login): %s' % text.strip().splitlines()[0][:150])
+        raise TempFail('The GitHub token is invalid (gh auth login): %s' % text.strip().splitlines()[0][:150], retry=False)
     return None
 
 
@@ -158,6 +173,24 @@ def find_run(repo, commit):
             return found[0]
         time.sleep(5)
     raise RuntimeError('no CI run started for %s in %d s' % (commit, FIND_SECONDS))
+
+
+def print_main_failure(repo, name):
+    """After a failed scenario: the failed log of main's latest completed `ci.yml` push run, for the
+    host to compare with the run's own failure. Two requests; nothing when main's run passed, has no
+    job for the scenario or is out of reach (this is extra information, never a failure)."""
+    try:
+        runs = json.loads(gh('run', 'list', '--repo', repo, '--branch', 'main', '--event', 'push', '--workflow',
+                             'ci.yml', '--status', 'completed', '--limit', '1', '--json', 'databaseId,conclusion,url,headSha',
+                             check=False).stdout or '[]')
+        if not runs or runs[0]['conclusion'] != 'failure':
+            return
+        log = gh('run', 'view', str(runs[0]['databaseId']), '--repo', repo, '--log-failed', check=False).stdout
+    except (TempFail, ValueError, KeyError):
+        return
+    lines = [line[:MAIN_LINE_CHARS] for line in log.splitlines() if line.startswith('%s scenario' % name)]
+    if lines:
+        say('%s %s (%s) ==\n%s' % (MAIN_MARK, runs[0]['url'], runs[0]['headSha'][:12], '\n'.join(lines[-MAIN_LINES:])))
 
 
 def own_jobs(jobs, part):
@@ -335,11 +368,12 @@ def main():
                 say('\n'.join(lines[-LOG_LINES:]))
             say('failed: %s' % ', '.join(j['name'] for j in view['jobs']
                                          if j['conclusion'] in ('failure', 'timed_out', 'cancelled')))
-            if temporary_failure(failed):
+            if temporary_failure(failed) or (view['conclusion'] == 'cancelled' and not SCENARIO_FAILURE.search(failed)):
                 say('%s failed on CI for the network or the runner, not the tree (%s): %s\n'
-                    'a temporary failure: the next check-run runs it again.' % (name, view['conclusion'], run['url']))
+                    'a temporary failure: the host runs it again.' % (name, view['conclusion'], run['url']))
                 return TEMPFAIL
             say('%s failed on CI (%s): %s' % (name, view['conclusion'], run['url']))
+            print_main_failure(repo, name)
             return 1
         say('%s passed on CI: %s' % (name, run['url']))
         return 0
@@ -359,7 +393,11 @@ def run():
     try:
         code = main()
     except TempFail as why:
-        say('%s\na temporary failure: the next check-run runs it again.' % why)
+        say('%s\na temporary failure: the host runs it again.' % why)
+        if why.after:
+            say('retry-after: %d' % why.after)
+        if not why.retry:
+            say('retry: no')
         code = TEMPFAIL
     say('gh calls: %(gh)d (and %(rate_limit)d of `gh api rate_limit`, which is free)' % CALLS)
     return code

@@ -18,7 +18,9 @@ use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, VecDeque};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wsx_core::config::project::{load_project_config, load_task_config};
 use wsx_core::git::{git_cmd, output_with_timeout_tail};
@@ -64,6 +66,36 @@ const CHECK_TAIL_BYTES: usize = 3 * 1024;
 /// with it. Its result is never kept, so the next check-run runs it again.
 /// ref: docs/tasks.md "Check-run"
 const TEMPFAIL: i32 = 75;
+/// A `ci:` run that exits `TEMPFAIL` (the rate limit, a queue cancel, a lost runner) is run
+/// again on the same tree by the host, at most this many runs in all; the worker gets no turn
+/// until a run answers. ref: docs/tasks.md "Scenarios"
+const CI_TRIES: u32 = 3;
+/// The wait before the second and the third run, and the longest wait the script's
+/// `retry-after: <secs>` line (the rate limit's reset) may ask for; longer ends the retries.
+const CI_BACKOFF_SECS: [u64; 2] = [60, 300];
+const CI_MAX_WAIT_SECS: u64 = 60 * 60;
+
+/// The wait before run `attempt + 1` of a `ci:` command that ended `TEMPFAIL` with `output`:
+/// the longer of the backoff (or the seconds in `WSX_TEST_CI_BACKOFF_SECS`, for the task
+/// scenario only) and the script's `retry-after: <secs>` line. `None` when it asks too long, or
+/// says `retry: no` (an invalid token).
+fn ci_retry_wait(attempt: u32, output: &str) -> Option<Duration> {
+    if output.lines().any(|line| line.trim() == "retry: no") {
+        return None;
+    }
+    let backoff = std::env::var("WSX_TEST_CI_BACKOFF_SECS")
+        .ok()
+        .and_then(|secs| secs.parse().ok())
+        .unwrap_or(CI_BACKOFF_SECS[attempt as usize - 1]);
+    let hint = output
+        .lines()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix("retry-after:"))
+        .and_then(|secs| secs.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let wait = backoff.max(hint);
+    (wait <= CI_MAX_WAIT_SECS).then(|| Duration::from_secs(wait))
+}
 
 enum Event {
     Request(HostRequest, Sender<HostResponse>),
@@ -82,6 +114,13 @@ enum Event {
     CheckQueued(String),
     /// Checks took the slot, or run without it after this error.
     CheckSlot(Option<String>),
+    /// A `ci:` run ended outside the tree and runs again after the wait (seconds).
+    CiRetry {
+        command: String,
+        attempt: u32,
+        wait: Duration,
+        reason: String,
+    },
 }
 
 /// What waits for free disk, resumed once `tasks.minFreeGb` is free again.
@@ -234,6 +273,8 @@ struct Host {
     /// `wsx task stop` ran and no add or steer came since: nothing else starts a turn.
     /// ref: docs/tasks.md "Host" (Stop)
     stopped: bool,
+    /// `stopped`, for the threads that wait to run a `ci:` command again.
+    ci_halt: Arc<AtomicBool>,
     /// Counts check runs and stops: the results of an older run (one a stop left running) are
     /// logged and nothing more.
     checks_epoch: u64,
@@ -322,6 +363,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         carried: false,
         stop_requested: false,
         stopped: false,
+        ci_halt: Arc::new(AtomicBool::new(false)),
         checks_epoch: 0,
         last_result: None,
         last_denials: Vec::new(),
@@ -542,6 +584,12 @@ impl Host {
                 }
                 Event::CheckQueued(reason) => self.check_queued(reason),
                 Event::CheckSlot(error) => self.check_slot(error),
+                Event::CiRetry {
+                    command,
+                    attempt,
+                    wait,
+                    reason,
+                } => self.ci_retry(command, attempt, wait, reason),
             }
         }
         Ok(())
@@ -556,10 +604,16 @@ impl Host {
         mut response: broker::Response,
         stored: Option<StoredChecks>,
     ) {
-        let shared = self.shared_failures(&results);
+        let found = self.shared_failures(&results);
+        let shared = found
+            .iter()
+            .map(|failure| failure.sentence(self.record.id))
+            .collect::<Vec<_>>()
+            .join("\n");
         if !shared.is_empty() {
             response.stdout = format!("{}\n{shared}", response.stdout.trim_end());
         }
+        let known = self.known_failure(&results, &found);
         let run = self.check_run.take();
         if self.record.waits_on(WaitOn::CheckRun) {
             self.record.waiting = None;
@@ -581,17 +635,39 @@ impl Host {
         self.log(LogEvent::CheckRun { results });
         // ^ The worker finishes with the proof it asked for, then the checks run.
         let commit = run.as_ref().map_or("", |run| short_commit(&run.commit));
-        let answer = CheckAnswer {
-            text: format!(
-                "Your check-run ended. Its answer, on commit {commit}:\n{}\nPut it in your \
-                 result's evidence (fix what fails in code you changed) and return your result \
-                 again.",
-                response.stdout.trim_end()
-            ),
-            proof: (response.code == 0 && tree_kept).then(|| Evidence {
-                check: format!("wsx task check-run {label} passed {RECORDED_BY_HOST}"),
-                proof: response.stdout.trim_end().into(),
-            }),
+        // ^ Every failing check is one other tasks or main fail with too: a short answer with no
+        // rerun, and when main's own CI run fails the same way, the host records it as evidence.
+        // ref: docs/tasks.md "Shared failure"
+        let answer = match known {
+            Some(on_main) => CheckAnswer {
+                text: format!(
+                    "Your check-run ended on commit {commit}. {shared}\nIt is a known failure: \
+                     do not run it again. Name it in your result and return your result again."
+                ),
+                proof: (on_main && tree_kept).then(|| Evidence {
+                    check: format!(
+                        "wsx task check-run {label} failed on main too: {} {RECORDED_BY_HOST}",
+                        found
+                            .iter()
+                            .map(|failure| failure.shown.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ),
+                    proof: shared.clone(),
+                }),
+            },
+            None => CheckAnswer {
+                text: format!(
+                    "Your check-run ended. Its answer, on commit {commit}:\n{}\nPut it in your \
+                     result's evidence (fix what fails in code you changed) and return your \
+                     result again.",
+                    response.stdout.trim_end()
+                ),
+                proof: (response.code == 0 && tree_kept).then(|| Evidence {
+                    check: format!("wsx task check-run {label} passed {RECORDED_BY_HOST}"),
+                    proof: response.stdout.trim_end().into(),
+                }),
+            },
         };
         // ^ A run on a newer commit waited for this one: this answer joins the next turn, and a
         // held result waits for the new run. One that does not start (refused, or every check
@@ -633,6 +709,25 @@ impl Host {
             }
             _ => {}
         }
+    }
+
+    /// Whether every check that failed in `results` is a failure `found` shows in other tasks
+    /// or on main, and no other check of the tree's kept results failed: `Some(true)` when
+    /// main's latest CI run fails with all of them.
+    fn known_failure(
+        &self,
+        results: &[CheckResult],
+        found: &[failure::SharedFailure],
+    ) -> Option<bool> {
+        let failed: Vec<&CheckResult> = results.iter().filter(|c| c.exit != Some(0)).collect();
+        let kept_failure = self
+            .stored_checks
+            .iter()
+            .flat_map(|(_, kept)| kept.values())
+            .any(|c| c.exit != Some(0) && !results.iter().any(|r| r.command == c.command));
+        let known = |check: &CheckResult| found.iter().find(|f| f.command == check.command);
+        (!failed.is_empty() && !kept_failure && failed.iter().all(|c| known(c).is_some()))
+            .then(|| failed.iter().all(|c| known(c).is_some_and(|f| f.on_main)))
     }
 
     /// Whether this host must exec the wsx file that replaced it before it starts more work:
@@ -1099,6 +1194,7 @@ impl Host {
     fn deliver_or_queue(&mut self, text: String) -> String {
         self.check_retries = 0;
         self.stopped = false;
+        self.ci_halt.store(false, Ordering::Relaxed);
         if self.turn_active || self.record.state == TaskState::Checking {
             self.pending.push_back(text);
             "queued until the current turn ends".into()
@@ -1123,6 +1219,7 @@ impl Host {
             );
         }
         self.stopped = true;
+        self.ci_halt.store(true, Ordering::Relaxed);
         if let Some(agent) = self.agent.take() {
             self.stop_requested = true;
             agent.stop();
@@ -1188,6 +1285,7 @@ impl Host {
             agent.stop();
         }
         self.stopped = false;
+        self.ci_halt.store(false, Ordering::Relaxed);
         self.turn_active = false;
         self.end_trial("the owner took it by hand");
         let dropped = self.pending.len() as u32;
@@ -2778,6 +2876,7 @@ impl Host {
         let env = self.record.env.clone();
         let born = std::time::UNIX_EPOCH + Duration::from_millis(self.record.created_unix_ms);
         let events = self.events.clone();
+        let halt = self.ci_halt.clone();
         let label = format!("{} t{}", self.record.project, self.record.id);
         let checks = checks
             .into_iter()
@@ -2791,17 +2890,13 @@ impl Host {
         std::thread::spawn(move || {
             let on_ci = {
                 let (working_copy, env) = (working_copy.clone(), env.clone());
+                let events = events.clone();
                 std::thread::spawn(move || {
                     remote
                         .into_iter()
                         .map(|(at, (command, log))| {
-                            let ran = run_check(
-                                &working_copy,
-                                ci_command(&command).unwrap_or_default(),
-                                &env,
-                                CI_TIMEOUT,
-                                &log,
-                            );
+                            let ran =
+                                run_ci((&working_copy, &env, &log), &command, (&events, &halt));
                             (at, CheckResult { command, ..ran })
                         })
                         .collect::<Vec<_>>()
@@ -2896,6 +2991,36 @@ impl Host {
             until_ms: None,
         });
         self.save();
+    }
+
+    /// A `ci:` run of the worker's check-run ended outside the tree and runs again after `wait`:
+    /// the log records it, the run's time limit counts from its new start, and the worker
+    /// gets nothing. ref: docs/tasks.md "Scenarios"
+    fn ci_retry(&mut self, command: String, attempt: u32, wait: Duration, reason: String) {
+        self.say(&format!(
+            "check-run: {command} ended outside the tree ({reason}); run {} of {CI_TRIES} in {} s",
+            attempt + 1,
+            wait.as_secs()
+        ));
+        self.log(LogEvent::CiRetry {
+            command,
+            attempt,
+            wait_secs: wait.as_secs(),
+            reason,
+        });
+        let Some(run) = &mut self.check_run else {
+            return;
+        };
+        run.deadline_ms = Some(now_unix_ms() + (wait + run.limit).as_millis() as u64);
+        if let Some(waiting) = self
+            .record
+            .waiting
+            .as_mut()
+            .filter(|w| w.on == WaitOn::CheckRun)
+        {
+            waiting.until_ms = run.deadline_ms;
+            self.save();
+        }
     }
 
     fn check_slot(&mut self, error: Option<String>) {
@@ -3741,19 +3866,17 @@ impl Host {
     }
 
     /// The failures of `results` that other tasks of the project show too: each is posted to
-    /// the manager once, as one event that wakes a turn; returns the sentences for the worker
-    /// whose run it was. ref: docs/tasks.md "Checks, revisions and report"
-    fn shared_failures(&self, results: &[CheckResult]) -> String {
+    /// the manager once, as one event that wakes a turn; returns them for the worker whose
+    /// run it was (and for main's, see `check_run_done`). ref: docs/tasks.md "Checks, revisions and report"
+    fn shared_failures(&self, results: &[CheckResult]) -> Vec<failure::SharedFailure> {
         let now = now_unix_ms();
         let found = failure::shared_failures(&self.record.project_id, self.record.id, results, now);
-        for failure in &found {
+        // ^ A failure only main's CI run has is the project's known one: no event, the ready
+        // event names it from the evidence.
+        for failure in found.iter().filter(|failure| failure.tasks.len() > 1) {
             self.tell_manager(failure.key(), failure.event());
         }
         found
-            .iter()
-            .map(|failure| failure.sentence(self.record.id))
-            .collect::<Vec<_>>()
-            .join("\n")
     }
 
     /// Post `text` to the manager as one event that wakes a turn, once per `key` a day. The
@@ -4032,6 +4155,47 @@ pub(super) fn run_check(
         ms: started.elapsed().as_millis() as u64,
         queued_ms: 0,
         stored: false,
+    }
+}
+
+/// A `ci:` command (its text without the prefix is run) until a run answers: one that exits
+/// `TEMPFAIL` ran into the rate limit, a queue cancel or a lost runner, not into the tree, so it
+/// runs again on the same tree after a wait, up to `CI_TRIES` runs. Each retry is sent as an
+/// event (the log records it); a stopped task (`halt`) retries no more.
+/// ref: docs/tasks.md "Scenarios"
+fn run_ci(
+    (working_copy, env, log): (&Path, &BTreeMap<String, String>, &Path),
+    command: &str,
+    (events, halt): (&Sender<Event>, &AtomicBool),
+) -> CheckResult {
+    let mut attempt = 1;
+    loop {
+        let ran = run_check(
+            working_copy,
+            ci_command(command).unwrap_or_default(),
+            env,
+            CI_TIMEOUT,
+            log,
+        );
+        let retry = (ran.exit == Some(TEMPFAIL) && attempt < CI_TRIES)
+            .then(|| ci_retry_wait(attempt, &ran.output))
+            .flatten()
+            .filter(|_| !halt.load(Ordering::Relaxed));
+        let Some(wait) = retry else {
+            return ran;
+        };
+        let reason = ran.output.lines().rev().find(|l| !l.trim().is_empty());
+        let _ = events.send(Event::CiRetry {
+            command: command.into(),
+            attempt,
+            wait,
+            reason: reason.unwrap_or_default().chars().take(160).collect(),
+        });
+        std::thread::sleep(wait);
+        if halt.load(Ordering::Relaxed) {
+            return ran;
+        }
+        attempt += 1;
     }
 }
 

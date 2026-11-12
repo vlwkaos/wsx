@@ -421,6 +421,14 @@ pub enum LogEvent {
         attempt: u32,
         commands: Vec<String>,
     },
+    /// A `ci:` check-run ended outside the tree (exit 75) and the host ran it again on the
+    /// same tree after `wait_secs`; `attempt` is the run that ended. ref: docs/tasks.md "Scenarios"
+    CiRetry {
+        command: String,
+        attempt: u32,
+        wait_secs: u64,
+        reason: String,
+    },
     Revision {
         revision: u32,
         commit: String,

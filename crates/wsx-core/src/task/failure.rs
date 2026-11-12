@@ -1,5 +1,5 @@
-//! A check that fails the same way in two tasks of a project fails on main, not in the tasks.
-//! ref: docs/tasks.md "Checks, revisions and report" ("Shared failure")
+//! A check that fails the same way in two tasks of a project, or as main's latest CI run does,
+//! fails on main, not in the tasks. ref: docs/tasks.md "Checks, revisions and report" ("Shared failure")
 
 use super::store::TaskDir;
 use super::{CheckResult, LogEvent};
@@ -7,6 +7,10 @@ use std::collections::BTreeMap;
 
 /// A check whose output says this ran out of disk: the machine's fault, never a shared failure.
 pub const NO_SPACE: &str = "No space left on device";
+
+/// The line `scripts/ci-scenario.py` prints before the failed log of main's latest CI run of the
+/// scenario: what follows it is main's, never the task's own.
+pub const MAIN_MARK: &str = "== main's latest CI run";
 
 /// Only tasks with a log entry this young count.
 const WINDOW_MS: u64 = 24 * 60 * 60 * 1000;
@@ -32,6 +36,8 @@ pub struct SharedFailure {
     /// The newest task's line as printed (clipped): the event and the worker sentence.
     pub shown: String,
     pub tasks: Vec<u32>,
+    /// Main's latest CI run of the scenario fails with this line too.
+    pub on_main: bool,
 }
 
 impl SharedFailure {
@@ -51,7 +57,7 @@ impl SharedFailure {
         )
     }
 
-    /// The sentence for the worker whose check-run just failed.
+    /// The sentence for the worker whose check-run just failed: it is not the worker's to fix.
     pub fn sentence(&self, own: u32) -> String {
         let others: Vec<String> = self
             .tasks
@@ -59,10 +65,16 @@ impl SharedFailure {
             .filter(|task| **task != own)
             .map(|task| format!("#{task}"))
             .collect();
+        let main = self.on_main.then(|| "on main".to_string());
+        let place: Vec<String> = main
+            .into_iter()
+            .chain((!others.is_empty()).then(|| format!("in {}", others.join(", "))))
+            .collect();
         format!(
-            "`{}`: the same failure is in {}; it is likely on main, not your change.",
+            "`{}`: fails {} too: `{}`; not yours.",
             clip(&self.command),
-            others.join(", ")
+            place.join(" and "),
+            self.shown
         )
     }
 
@@ -99,14 +111,24 @@ fn has_fail_word(line: &str) -> bool {
         .any(|word| word == "FAIL" || word == "FAILED")
 }
 
-/// The last line of a failed result's output that tells its cause, clipped, as printed and with
-/// digits as `0`: a `FAIL`/`FAILED`/`AssertionError` line, else an `error` line that is no
-/// generic summary.
+/// The last line of a failed result's own output that tells its cause, clipped, as printed and
+/// with digits as `0`: a `FAIL`/`FAILED`/`AssertionError` line, else an `error` line that is no
+/// generic summary. What follows `MAIN_MARK` is main's, not the result's.
 fn failure_line(result: &CheckResult) -> Option<(String, String)> {
     if result.exit == Some(0) || result.timed_out || result.output.contains(NO_SPACE) {
         return None;
     }
-    let lines = || result.output.lines().rev().map(log_text);
+    line_of(result.output.split(MAIN_MARK).next().unwrap_or_default())
+}
+
+/// The line of main's latest CI run that failed the result's command, when the log has it.
+fn main_line(result: &CheckResult) -> Option<(String, String)> {
+    let (_, main) = result.output.split_once(MAIN_MARK)?;
+    line_of(main)
+}
+
+fn line_of(output: &str) -> Option<(String, String)> {
+    let lines = || output.lines().rev().map(log_text);
     let line = lines()
         .find(|line| has_fail_word(line) || line.contains("AssertionError"))
         .or_else(|| {
@@ -140,7 +162,8 @@ fn lines_of<'a>(
 
 /// The failures of `results` (task `task`'s newest) that the latest check results of the
 /// project's other tasks, logged in the last 24 h, also have: bounded reads of the newest
-/// tasks' log ends. Those with the same command and line in two or more tasks, this one included.
+/// tasks' log ends. Those with the same command and line in two or more tasks, this one included,
+/// and those main's latest CI run (the result's `MAIN_MARK` block) fails with too.
 pub fn shared_failures(
     project_id: &str,
     task: u32,
@@ -151,11 +174,18 @@ pub fn shared_failures(
     if own.values().all(Option::is_none) {
         return Vec::new();
     }
-    let mut found: BTreeMap<(String, String), (String, Vec<u32>)> = own
+    let on_main = |command: &str, line: &str| {
+        results
+            .iter()
+            .filter(|result| result.command == command)
+            .any(|result| main_line(result).is_some_and(|(_, main)| main == line))
+    };
+    let mut found: BTreeMap<(String, String), (String, Vec<u32>, bool)> = own
         .into_iter()
         .filter_map(|(command, line)| {
             let (shown, line) = line?;
-            Some(((command, line), (shown, vec![task])))
+            let main = on_main(&command, &line);
+            Some(((command, line), (shown, vec![task], main)))
         })
         .collect();
     let numbers = super::store::task_numbers(project_id).unwrap_or_default();
@@ -183,21 +213,23 @@ pub fn shared_failures(
                 }),
         );
         for (command, line) in latest {
-            if let Some((_, tasks)) = line.and_then(|(_, line)| found.get_mut(&(command, line))) {
+            if let Some((_, tasks, _)) = line.and_then(|(_, line)| found.get_mut(&(command, line)))
+            {
                 tasks.push(other);
             }
         }
     }
     found
         .into_iter()
-        .filter(|(_, (_, tasks))| tasks.len() > 1)
-        .map(|((command, line), (shown, mut tasks))| {
+        .filter(|(_, (_, tasks, on_main))| tasks.len() > 1 || *on_main)
+        .map(|((command, line), (shown, mut tasks, on_main))| {
             tasks.sort_unstable();
             SharedFailure {
                 command,
                 line,
                 shown,
                 tasks,
+                on_main,
             }
         })
         .collect()

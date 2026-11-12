@@ -316,7 +316,7 @@ def run(wsx, wsxd, work, owned, part):
     env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
            'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(daemon_socket),
            'WSX_TEST_STALL_GRACE_SECS': str(STALL_GRACE), 'WSX_TEST_ALLOW_FILE_CLONE': '1', 'WSX_TEST_PRUNE_SWEEP_SECS': '3',
-           'WSX_TEST_SIGN_IN_RETRY_SECS': str(SIGN_IN_RETRY),
+           'WSX_TEST_SIGN_IN_RETRY_SECS': str(SIGN_IN_RETRY), 'WSX_TEST_CI_BACKOFF_SECS': '1',
            'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
            'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp),
            # ^ A fixture git command must never reach the repository this script runs in.
@@ -5032,6 +5032,69 @@ def part_worker(created=None):
     assert done['state'] == 'ready' and len(proof) == 1 and 'WSX_SCENARIO_PART]' in proof[0]['proof'] and 'export' not in proof[0]['proof'], done['result']
     for n in (parted, full):
         js('task', 'close', n, '--discard')
+    # 32t6. A `ci:` run that ends outside the tree (exit 75: the rate limit, a queue cancel) runs
+    # again on the same tree, up to 3 runs (docs/tasks.md "Scenarios"): one `check_run` entry, a
+    # `ci_retry` entry for each retry, and the worker gets no turn until a run answers.
+    mark('32t6')
+    outside = {'ci403': 'echo "gh api: HTTP 403: API rate limit exceeded"; echo "retry-after: 1"',
+               'cicancel': 'echo "RuntimeError: the CI run is cancelled: no job started in 60 min of queue"',
+               'cinever': 'echo "gh api: HTTP 403: API rate limit exceeded"'}
+    counts = {name: base / (name + '.count') for name in outside}
+    # ^ ci403 and cicancel answer on the second run; cinever never does.
+    configure(LAND_CONFIG + '  scenarios:\n' + ''.join(
+        "    %s: 'ci: echo x >> %s; if [ $(wc -l < %s) -lt %d ]; then %s; exit 75; fi; echo ci-passed'\n"
+        % (name, counts[name], counts[name], 99 if name == 'cinever' else 2, said) for name, said in outside.items()), 'ci runs outside the tree')
+    retried = {name: js('task', 'new', 'CHECKRUN_LATER %s WORK %s.txt' % (name, name))['id'] for name in outside}
+    for name in ('ci403', 'cicancel'):
+        n = retried[name]
+        done = wait_state(n, 'ready', 'failed')
+        assert done['state'] == 'ready' and counts[name].read_text().count('x') == 2, (name, log(n))
+        assert len(kinds(n, 'check_run')) == 1 and len(kinds(n, 'ci_retry')) == 1, log(n)
+        retry = [e for e in log(n) if e['kind'] == 'ci_retry'][0]
+        assert retry['attempt'] == 1 and retry['wait_secs'] >= 1 and retry['command'].startswith('ci: ') and retry['reason'], retry
+        assert [e['trigger'] for e in log(n) if e['kind'] == 'result'] == ['step'], log(n)
+        assert [e for e in done['result']['result']['evidence'] if 'check-run %s passed' % name in e['check']], done['result']
+    assert 'rate limit' in [e for e in log(retried['ci403']) if e['kind'] == 'ci_retry'][0]['reason']
+    # ^ Three runs in all; the worker then gets the temporary failure as today.
+    n = retried['cinever']
+    assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+    assert counts['cinever'].read_text().count('x') == 3 and len(kinds(n, 'ci_retry')) == 2, log(n)
+    assert [e['trigger'] for e in log(n) if e['kind'] == 'result'] == ['step', 'check_run'], log(n)
+    assert any('exit 75 (a temporary failure, not kept' in t.get('message', '') for t in traces()), 'the temporary failure turn'
+    for n in retried.values():
+        js('task', 'close', n, '--discard')
+    # 32t7. A `ci:` assert that main's latest CI run fails with too (the script's `== main's latest
+    # CI run` block) starts no turn: the host records "failed on main too" as evidence, which the
+    # manager's ready event names. An assert that only other tasks fail with answers a short
+    # "known failure" turn without a rerun request; an own assert goes to the worker as before.
+    mark('32t7')
+    configure(LAND_CONFIG + '  scenarios:\n'
+              '    cimain: \'ci: echo "FAIL: ci main assert 12"; echo "== main\'\'s latest CI run https://x (abc123) =="; echo "FAIL: ci main assert 34"; exit 1\'\n'
+              '    ciknown: \'ci: echo "FAIL: ci known assert"; exit 1\'\n'
+              '    ciown: \'ci: echo "FAIL: ci own assert"; exit 1\'\n', 'ci assert scenarios')
+    main_task = js('task', 'new', 'CHECKRUN_LATER cimain WORK cimain.txt')['id']
+    done = wait_state(main_task, 'ready', 'failed')
+    proof = [e for e in done['result']['result']['evidence'] if 'check-run cimain failed on main too' in e['check']]
+    assert done['state'] == 'ready' and len(proof) == 1 and 'FAIL: ci main assert 12' in proof[0]['check'] and 'not yours' in proof[0]['proof'], done['result']
+    assert proof[0]['check'].endswith('(recorded by the host)') and [e['trigger'] for e in log(main_task) if e['kind'] == 'result'] == ['step'], log(main_task)
+    wait(lambda: events_with('check-run cimain failed on main too'), 'the ready event names the known failure', 30)
+    known_a = js('task', 'new', 'CHECKRUN_LATER ciknown WORK ciknown1.txt')['id']
+    assert wait_state(known_a, 'ready', 'failed')['state'] == 'ready', log(known_a)
+    assert [e['trigger'] for e in log(known_a) if e['kind'] == 'result'] == ['step', 'check_run'], log(known_a)
+    known_b = js('task', 'new', 'CHECKRUN_LATER ciknown WORK ciknown2.txt')['id']
+    done = wait_state(known_b, 'ready', 'failed')
+    assert done['state'] == 'ready' and not [e for e in done['result']['result']['evidence'] if 'recorded by the host' in e['check']], done['result']
+    sent = {t['message'] for t in traces() if 'Your check-run ended' in t.get('message', '') and 'ci known assert' in t['message']}
+    first_turn, = [m for m in sent if 'Put it in your result' in m]
+    second_turn, = [m for m in sent if 'known failure: do not run it again' in m]
+    assert 'fails in #%s too' % known_a in second_turn and 'not yours' in second_turn and 'Put it in' not in second_turn, second_turn
+    own = js('task', 'new', 'CHECKRUN_LATER ciown WORK ciown.txt')['id']
+    assert wait_state(own, 'ready', 'failed')['state'] == 'ready', log(own)
+    assert [e['trigger'] for e in log(own) if e['kind'] == 'result'] == ['step', 'check_run'], log(own)
+    assert [m for m in (t.get('message', '') for t in traces()) if 'ci own assert' in m and 'Put it in your result' in m], 'the own assert turn'
+    for n in (main_task, known_a, known_b, own):
+        js('task', 'close', n, '--discard')
+    configure(LAND_CONFIG, 'no ci assert scenarios')
     # 32v. Two lanes (docs/tasks.md "Check slot"): a scenario check-run holds the scenarios lane, a
     # task's result checks still run at once in the checks lane, and a second scenario run waits
     # with the scenarios reason.
@@ -5679,12 +5742,12 @@ def part_host(created=None):
     first, said = shared_run('shared', 'sf1')
     assert 'likely on main' not in said and not shared_events(), (said, shared_events())
     second, said = shared_run('shared', 'sf2')
-    assert 'the same failure is in #%d; it is likely on main, not your change.' % first in said, said
+    assert 'fails in #%d too: `FAIL: after Back' % first in said and 'not yours.' in said, said
     wait(lambda: shared_events(), 'the shared failure event', 30)
     event = shared_events()[0]['text']
     assert 'in #%d, #%d, likely on main' % (first, second) in event and re.search(r'ends with `FAIL: after Back the page is [1-9]\d+ items`', event), event
     third, said = shared_run('shared', 'sf3')
-    assert 'is in #%d, #%d;' % (first, second) in said, said
+    assert 'fails in #%d, #%d too' % (first, second) in said, said
     time.sleep(2)
     assert len(shared_events()) == 1, shared_events()
     differ, said = shared_run('other', 'sf4')
@@ -5716,7 +5779,7 @@ def part_host(created=None):
     event = events_with('ends with `NameError')[0]['text']
     assert 'in #%d, #%d, likely on main' % (cia, cic) in event and 'ends with `NameError: name qrows is not defined at line 4011`' in event, event
     assert 'diagram' not in event and 'Process completed' not in event, event
-    assert 'is in #%d;' % cia in said, said
+    assert 'fails in #%d too' % cia in said, said
     for n in (cia, cib, cic):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'no ci log scenarios')
