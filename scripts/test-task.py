@@ -769,7 +769,8 @@ def manager_up(created):
     waited = [js('task', 'new', 'LIMIT 3600 WORK lr%d.txt' % i)['id'] for i in (1, 2)]
     for n in waited:
         wait(lambda: kinds(n, 'limit_wait'), 'the task waits on a 3 hour limit')
-    held_status = wait(lambda: (current := show(waited[0])) and current['status']['kind'] == 'limit' and current)['status']
+    held_status = wait(lambda: (current := show(waited[0])) and current['status']['kind'] == 'limit' and current,
+                       'the limit status sentence')['status']
     assert re.fullmatch(r'Waiting for the usage limit: Claude 5-hour limit, resets \d\d:\d\d\. It goes on by itself when the account '
                         r'answers again, one task at a time\.', held_status['sentence']), held_status
     record = json.loads(limit_record.read_text())
