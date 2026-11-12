@@ -271,7 +271,8 @@ export function Home({ rail }) {
   const [removing, setRemoving] = useState(null);
   const manage = store.site.manage_projects;
   // ^ A chat is the owner's to open where the site acts on tasks; the first chat of a project always exists.
-  const canChat = can("task_act") && store.projects.length > 0;
+  // ^ A site that manages projects but may not act on tasks has nothing to chat in: its + adds a project.
+  const plus = can("task_act") && store.projects.length > 0 ? "chat" : manage ? "project" : null;
   let body;
   if (!store.daemon) body = html`<p class="empty">wsx is not running on the host.</p>`;
   else if (!store.loaded) body = html`<${Loading} />`;
@@ -313,10 +314,10 @@ export function Home({ rail }) {
   }
   return html`
     <div class="page">
-      ${(!rail || canChat) && html`
+      ${(!rail || plus) && html`
         <div class="home-top">
           ${!rail && html`<h1 class="title">Home</h1>`}
-          ${canChat && html`<button class="icon-button new-chat" type="button" onClick=${() => setSheet("chat")} aria-label="New chat" title="New chat"><${Icon} name="plus" /></button>`}
+          ${plus && html`<button class="icon-button new-chat" type="button" onClick=${() => setSheet(plus)} aria-label=${plus === "chat" ? "New chat" : "Add project"} title=${plus === "chat" ? "New chat" : "Add project"}><${Icon} name="plus" /></button>`}
         </div>`}
       ${sheet === "chat" && html`<${NewChat} projects=${store.projects} project=${kind === "p" && store.projects.some((each) => each.id === Number(open)) ? Number(open) : store.projects[0].id}
         manage=${manage} onAdd=${() => setSheet("project")} onClose=${() => setSheet(null)} />`}
