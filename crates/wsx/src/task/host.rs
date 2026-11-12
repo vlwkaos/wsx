@@ -471,11 +471,7 @@ impl Host {
         if let Some((text, trigger)) = self.take_handoff() {
             self.say("restarted with the replaced wsx binary");
             self.carried = true;
-            match trigger {
-                // ^ A limit wait handed over, not a turn: the account's record says if it goes on.
-                TurnTrigger::Limit => self.rejoin_limit_wait(&text),
-                trigger => self.start_turn(&text, trigger),
-            }
+            self.start_turn(&text, trigger);
         } else {
             self.resume_state()?;
         }
@@ -492,22 +488,6 @@ impl Host {
             // ref: docs/tasks.md "Claude adapter"
             if !self.turn_active {
                 self.limit_slot = None;
-            }
-            // ^ A limit wait starts no turn for hours, so a fix to the wait would never reach
-            // this host: it hands the held text to the replaced binary now, which rejoins the
-            // wait. ref: docs/tasks.md "Agents"
-            if !self.reexec && self.must_follow_binary() {
-                if let Some(wait) = &self.limit_wait {
-                    let handoff = format!(
-                        "{HANDOFF_TRIGGER}{}\n{}",
-                        serde_json::to_string(&TurnTrigger::Limit)?,
-                        wait.text
-                    );
-                    self.dir.write_file(HANDOFF_FILE, handoff.as_bytes())?;
-                    self.reexec = true;
-                    self.say("the wsx binary was replaced: the host restarts with it");
-                    continue;
-                }
             }
             if self
                 .disk_slot
