@@ -3568,7 +3568,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await until(`${chatCount} === '1'`, "the chat's row shows no pending approval of its own", 30);
   if ((await evaluate(firstCount)) !== before) await fail("a chat's approval counted on the first chat's row");
   await shot("chats-home-approval");
-  line({ kind: "decision", id: "a9001", approved: false, outcome: "dropped; the check is done" });
+  line({ kind: "decision", id: "a9001", approved: false, outcome: "dropped; the check is done", unix_ms: Date.now() });
   await until(`${chatCount} === ''`, "the chat's row kept a decided approval", 30);
 }
 
