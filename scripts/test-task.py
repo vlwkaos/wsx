@@ -6784,18 +6784,19 @@ def part_host(created=None):
     refusal = work / 'credit-refusal.txt'
     refusal.write_text('400 {"type":"error","error":{"type":"invalid_request_error","message":'
                        '"Your credit balance is too low to access the Anthropic API."}}\n')
+    manager_state = lambda: json.loads((manager_log.parent / 'state.json').read_text())
     # A manager already held at a long limit moves when a fallback comes.
     configure(with_fallback('fake-backlog, fake-organizer'), 'no fallback for the manager yet')
     limit_for(600)
     held = js('task', 'say', 'STATUS held')
     wait(lambda: any(e['kind'] == 'reply' and e.get('provisional') and held['id'] in e['to'] for e in chat()),
-         'the stand-in answers the held message')
+         lambda: 'the stand-in answers the held message %r %r' % (
+             manager_state(), [(e['kind'], e.get('reason'), e.get('text', '')[:80]) for e in manager_entries()[-10:]]))
     configure(with_fallback('fake-backlog, fake-organizer, fake-pi'), 'manager fallback')
     on_fallback = js('task', 'say', 'STATUS on the fallback')
     assert reply_to(on_fallback['id'])['text'].startswith('pi answers: '), chat()[-3:]
     assert any(e['kind'] == 'reply' and not e.get('provisional') and held['id'] in e['to']
                and e['text'].startswith('pi answers: ') for e in chat()), chat()[-4:]
-    manager_state = lambda: json.loads((manager_log.parent / 'state.json').read_text())
     assert manager_state()['agent']['name'] == 'fake-pi', manager_state()
     # ^ The Pi adapter counts `thinking` content too: the same follow-up asks for the answer once.
     pi_thought = js('task', 'say', 'PITHINK on the fallback')
