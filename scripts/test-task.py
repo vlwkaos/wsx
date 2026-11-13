@@ -7096,6 +7096,8 @@ def part_host(created=None):
     js('task', 'close', s3, '--discard')
     # S4, the worker: a hung fallback counts as its refusal with no reset: its account backs off and
     # the task goes home for the wait.
+    (agents / 'pi-fake.json').unlink()
+    # ^ The S2 refusal backed the fallback's account off: a held fallback is no move.
     limit_for(600)
     s4 = js('task', 'new', 'LIMIT 600 PIHANG %s WORK s4.txt' % (work / 's4-release'))['id']
     wait(lambda: show(s4)['state'] == 'waiting' and show(s4)['record']['adapter'] == 'claude', 'the hung fallback sends the worker home for the wait', 80)
