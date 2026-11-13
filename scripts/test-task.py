@@ -7126,6 +7126,50 @@ def part_host(created=None):
     assert (show(s6)['record']['adapter'], show(s6)['record']['model']) == ('claude', 'sonnet'), show(s6)['record']
     assert len(lc_claude_launches(s6_before)) == 1 and lc_claude_launches(s6_before)[0]['model'] == 'sonnet', lc_claude_launches(s6_before)
     js('task', 'close', s6, '--discard')
+    # S7: the reset of a limit is the rejected window's. Claude Code names the representative
+    # claim at the top level (here the 7-day window, 4 days ahead) while five_hour is the window
+    # that rejected: the task waits out the 45 s at home instead of moving to the fallback.
+    s7 = js('task', 'new', 'LIMIT 45 REPRESENTATIVE WORK s7.txt')['id']
+    wait(lambda: show(s7)['state'] == 'waiting' and show(s7)['record']['waiting']['on'] == 'limit', 'the worker waits out the five-hour reset', 40)
+    s7_record = json.loads(limit_file.read_text())
+    assert s7_record['window'] == 'five_hour' and s7_record['until_ms'] < (time.time() + 60) * 1000, s7_record
+    assert not any(e['kind'] == 'agent_switch' for e in log(s7)) and show(s7)['record']['adapter'] == 'claude', log(s7)
+    limit_file.unlink()
+    assert wait_state(s7, 'ready', 'failed')['state'] == 'ready' and (Path(show(s7)['record']['working_copy']) / 's7.txt').exists(), show(s7)
+    js('task', 'close', s7, '--discard')
+    # S8: a manager an older host pinned to a fallback (state.json `agent`, and a `limit` with
+    # `switched` whose time is long past and no `account`), as the ir project's was. (1) With the
+    # own record gone it goes home at the next host start and answers the waiting message with no
+    # Pi launch. (2) With the limit on record and the fallback refusing at once, it comes home for
+    # the wait after one Pi launch and answers once the record goes.
+    def pin_manager():
+        sock = js('task', 'manager')['socket']
+        cli('session', 'delete', 'task-manager', '-p', 'demo')
+        wait(lambda: not Path(sock).exists() or subprocess.run(['nc', '-zU', sock]).returncode != 0, 'manager down')
+        data = manager_state()
+        data['agent'] = {'name': 'fake-pi', 'adapter': 'pi', 'model': 'fake/pi-model'}
+        data['limit'] = {'until_ms': int(time.time() * 1000) - 3600_000, 'attempt': 0, 'ids': [], 'events': True, 'switched': True}
+        (manager_log.parent / 'state.json').write_text(json.dumps(data))
+        return len(traces()), int(time.time() * 1000)
+    lc_pi_manager = lambda since: [t for t in traces()[since:] if t.get('adapter') == 'pi' and t.get('launch') and t.get('manager')]
+    lc_rotated_since = lambda at, words: any(e['kind'] == 'rotated' and e.get('reason', '').startswith(words) and e['unix_ms'] >= at for e in manager_entries())
+    (agents / 'pi-fake.json').unlink(missing_ok=True)
+    limit_file.unlink(missing_ok=True)
+    s8_before, s8_at = pin_manager()
+    pinned = js('task', 'say', 'STATUS pinned by an older host')
+    assert reply_to(pinned['id'], 40)['text'].startswith('open: '), chat()[-3:]
+    assert 'agent' not in manager_state() and lc_rotated_since(s8_at, 'back on claude'), (manager_state(), manager_entries()[-6:])
+    assert not lc_pi_manager(s8_before), lc_pi_manager(s8_before)
+    s8_before, s8_at = pin_manager()
+    limit_for(600)
+    pinned_refused = js('task', 'say', 'PIREFUSE %s STATUS pinned, the fallback refuses' % no_key)
+    wait(lambda: lc_rotated_since(s8_at, 'back on claude: pi was refused: No API key found'), 'the pinned manager back home for the wait', 40)
+    assert 'agent' not in manager_state() and manager_state()['limit']['account'] is True, manager_state()
+    assert len(lc_pi_manager(s8_before)) == 1, lc_pi_manager(s8_before)
+    assert not any(e['kind'] == 'reply' and pinned_refused['id'] in e['to'] for e in chat()), chat()[-3:]
+    limit_file.unlink()
+    assert reply_to(pinned_refused['id'], 40)['text'].startswith('open: '), chat()[-3:]
+    (agents / 'pi-fake.json').unlink(missing_ok=True)
     configure(CONFIG, 'no fallback')
 
     # 38. A host that started before this wsx cannot read a request the newer CLI added

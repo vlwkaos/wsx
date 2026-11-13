@@ -48,7 +48,7 @@ Each user message is a small script of words:
   SIMPLIFY     (worker) a Skill tool call of owner:simplify in the turn; SIMPLIFYLATE does it only in
                the host's send-back ("The simplify skill did not run ...")
 The host's request for handoff notes ("Write <path> for that fresh conversation") makes it
-write "NOTES from the fixture" to <path>.
+write "NOTES from the fixture" to <path>; "for that conversation" (the task goes home) too.
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
 conflict with the line "resolved".
 Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE, and each
@@ -551,7 +551,7 @@ def main():
                 subprocess.Popen(['wsx', 'task', 'check-run', words[words.index('CHECKRUN_LATE') + 1]],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 time.sleep(1)
-            usage_limit(session, int(words[words.index('LIMIT') + 1]))
+            usage_limit(session, int(words[words.index('LIMIT') + 1]), 'REPRESENTATIVE' in words)
             continue
         if project is not None and (signed := next((b for a, b in zip(text.split(), text.split()[1:])
                                                      if a == 'AUTHFAIL'), None)) and not os.path.exists(signed):
@@ -799,7 +799,7 @@ def main():
         if 'NORESULT' in words:
             no_result = end_without_result(session, int(words[words.index('NORESULT') + 1]))
             continue
-        handoff = re.search(r'Write (\S+) for that fresh conversation', text)
+        handoff = re.search(r'Write (\S+) for that (?:fresh )?conversation', text)
         if handoff:
             with open(handoff.group(1), 'w') as out:
                 out.write('NOTES from the fixture\n')
@@ -836,10 +836,18 @@ def own_words(text, project):
     return '\n'.join(line for line in text.split('\n') if not re.match(r'#\d+ ', line))
 
 
-def usage_limit(session, seconds):
-    """Claude's usage limit: a rejected rate_limit_event, the synthetic API error, its result."""
+def usage_limit(session, seconds, representative=False):
+    """Claude's usage limit: a rejected rate_limit_event, the synthetic API error, its result.
+    `representative` (the word REPRESENTATIVE after LIMIT <secs>): the top-level claim is the 7-day
+    window, 4 days ahead, as Claude Code copies the representative-claim headers, while five_hour is
+    the window that rejected, resetting in `seconds`."""
     resets = int(time.time()) + seconds
     info = {'status': 'rejected', 'resetsAt': resets, 'rateLimitType': 'five_hour', 'isUsingOverage': False}
+    if representative:
+        far = int(time.time()) + 4 * 86400
+        info.update({'resetsAt': far, 'rateLimitType': 'seven_day', 'unifiedWindows': {
+            'five_hour': {'utilization': 1.0, 'resetsAt': resets, 'status': 'rejected'},
+            'seven_day': {'utilization': 0.9, 'resetsAt': far, 'status': 'allowed_warning'}}})
     words = "You've hit your 5-hour limit \u00b7 resets 12:10am (Asia/Seoul)"
     emit({'type': 'rate_limit_event', 'rate_limit_info': info, 'session_id': session})
     emit({'type': 'assistant', 'parent_tool_use_id': None, 'session_id': session, 'error': 'rate_limit',
