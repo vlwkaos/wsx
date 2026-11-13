@@ -71,12 +71,14 @@ const doc = await evaluate(`(() => {
   const levels = [...document.querySelectorAll('.panel-level')].map((level) => level.textContent + ':' + level.dataset.level + ':' + getComputedStyle(level).color);
   return { title: document.querySelector('.panel-title')?.textContent, meters, levels, cells: [...document.querySelectorAll('.panel-table td')].map((cell) => cell.textContent),
     list: [...document.querySelectorAll('.panel-list li')].map((item) => item.textContent), notice: document.querySelector('.panel-notice')?.textContent ?? '', raw: !!document.querySelector('.panel-output'),
-    wide: document.documentElement.scrollWidth > innerWidth };
+    wide: document.documentElement.scrollWidth > innerWidth,
+    lone: [...document.querySelectorAll('.panel-end')].filter((end) => end.querySelector('.panel-level') && end.querySelector('.panel-level').getBoundingClientRect().top - end.querySelector('.panel-value').getBoundingClientRect().top > 8).length };
 })()`);
 const want = (what, ok) => ok || fail(`the json panel: ${what}: ${JSON.stringify(doc)}`);
 await want("title", doc.title === "This Mac");
 await want("memory gauge", JSON.stringify(doc.meters[0]) === JSON.stringify(["Memory", "13.6", "16", "13.6 / 16 GB · 85%", 85]));
 await want("swap gauge", doc.meters[1][1] === "0" && doc.meters[1][4] === 0);
+await want("a level word wrapped alone under its value", doc.lone === 0);
 await want("level words", doc.levels.map((level) => level.split(":").slice(0, 2).join(":")).join(",") === "warn:warn,ok:ok,ok:ok,bad:bad,ok:ok");
 await want("level colours differ", new Set(doc.levels.map((level) => level.split(":")[2])).size === 3);
 await want("table", doc.cells.join("|") === "Macintosh HD|412 GB|88 GB|Data|12|3" && doc.list.length === 2);

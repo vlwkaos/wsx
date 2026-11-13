@@ -88,7 +88,15 @@ function Push() {
     </section>`;
 }
 
-// Appearance, header position and the bottom bar's tabs, one switch each, from the one list the bar reads (store.js `tabs`).
+// A pair of choices as one segmented control: radios under the labels, so the keyboard and the checks keep the native group.
+const Segmented = ({ name, label, value, items, onChange }) => html`
+  <div class="segmented" role="radiogroup" aria-label=${label}>
+    ${items.map(([item, label]) => html`
+      <label class="segment" key=${item}>
+        <input type="radio" name=${name} value=${item} checked=${value === item} onChange=${() => onChange(item)} />${label}</label>`)}
+  </div>`;
+
+// Appearance and header position as segmented controls; the bottom bar's tabs one switch each, from the one list the bar reads (store.js `tabs`).
 // Settings is always shown, so the way back to these switches stays (docs/web-client.md "Settings").
 function Interface() {
   const store = useStore();
@@ -97,21 +105,12 @@ function Interface() {
     ${hasDarkScheme() && html`
       <section aria-label="Appearance">
         <h2 class="label">Appearance</h2>
-        <div class="options">
-          ${[["dark", "Dark"], ["light", "Light"]].map(([value, label]) => html`
-            <label class="option" key=${value}>
-              <input type="radio" name="scheme" value=${value} checked=${current === value}
-                onChange=${() => { setScheme(value); setCurrent(value); }} />${label}</label>`)}
-        </div>
+        <${Segmented} name="scheme" label="Appearance" value=${current} items=${[["dark", "Dark"], ["light", "Light"]]}
+          onChange=${(value) => { setScheme(value); setCurrent(value); }} />
       </section>`}
     <section aria-label="Header">
       <h2 class="label">Header</h2>
-      <div class="options">
-        ${[["top", "Top"], ["bottom", "Bottom"]].map(([value, label]) => html`
-          <label class="option" key=${value}>
-            <input type="radio" name="bar" value=${value} checked=${store.bar === value}
-              onChange=${() => setBar(value)} />${label}</label>`)}
-      </div>
+      <${Segmented} name="bar" label="Header" value=${store.bar} items=${[["top", "Top"], ["bottom", "Bottom"]]} onChange=${setBar} />
     </section>
     <section aria-label="Bottom bar">
       <h2 class="label">Bottom bar</h2>
@@ -210,12 +209,14 @@ function General() {
     ${state.build && html`
       <section aria-label="Version">
         <h2 class="label">Version</h2>
-        <dl class="facts">
-          <dt>wsx</dt><dd>${state.build.version}</dd>
-          <dt>Build</dt><dd><code>${state.build.commit ?? state.build.id}</code></dd>
-          ${state.build.commit && html`<dt>Page files</dt><dd><code>${state.build.id}</code></dd>`}
-          <dt>Server started</dt><dd>${new Date(state.build.started_unix * 1000).toLocaleString()}</dd>
-        </dl>
+        <p class="version">wsx ${state.build.version} · <code>${state.build.commit ?? state.build.id}</code></p>
+        <details class="version-more">
+          <summary>Build details</summary>
+          <dl class="facts">
+            ${state.build.commit && html`<dt>Page files</dt><dd><code>${state.build.id}</code></dd>`}
+            <dt>Server started</dt><dd>${new Date(state.build.started_unix * 1000).toLocaleString()}</dd>
+          </dl>
+        </details>
         ${state.build.id !== pageBuild && html`
           <div class="actions">
             <span class="muted">This page is still the older version <code>${pageBuild}</code>.</span>

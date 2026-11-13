@@ -184,10 +184,12 @@ if (mode === "restart") {
   await until("!!document.querySelector('.composer-field')", "the chat's composer did not open after the reload");
   if ((await evaluate("document.querySelector('.composer-field').value")) !== "typed before the new build") await fail("the draft did not survive the reload");
   await go("#/settings");
-  await until("!!document.querySelector('.facts')", "Settings shows no version");
+  await until("!!document.querySelector('.version')", "Settings shows no version");
+  // ^ One line of version and build; the page files and the start time are one fold below it.
   const facts = await evaluate("Object.fromEntries([...document.querySelectorAll('.facts dt')].map((dt) => [dt.textContent, dt.nextElementSibling.textContent]))");
-  const shown = facts["Page files"] ?? facts.Build;
-  if (!/^\d+\.\d+\.\d+/.test(facts.wsx) || shown !== buildB || !facts["Server started"] || await count(".settings .actions .muted code")) await fail(`Settings does not show build ${buildB}: ${JSON.stringify(facts)}`);
+  const line = await evaluate("document.querySelector('.version').textContent");
+  const shown = facts["Page files"] ?? line.split(" · ")[1];
+  if (!/^wsx \d+\.\d+\.\d+ · \S+$/.test(line) || shown !== buildB || !facts["Server started"] || facts.Build || await evaluate("document.querySelector('.version-more').open") || await count(".settings .actions .muted code")) await fail(`Settings does not show build ${buildB}: ${line} ${JSON.stringify(facts)}`);
   await shot("settings-version");
   // Leave no draft for the later checks.
   await go(chatLink);
@@ -428,6 +430,14 @@ async function chats() {
     || working.live.join() !== "Thinking" || working.pulse !== "pulse") {
     await fail(`the working chat is wrong: ${JSON.stringify(working)}`);
   }
+  // ^ The top row keeps its label whole: the model shows in the wide layout only.
+  const bar = await evaluate(`(() => { const label = document.querySelector('.bar-label'); return { whole: label.scrollWidth <= label.clientWidth, model: getComputedStyle(document.querySelector('.bar-model')).display !== 'none', wide: !!document.querySelector('.app[data-wide]') }; })()`);
+  if (!bar.whole || bar.model !== bar.wide) await fail(`the session top row cuts its label or shows the model on a phone: ${JSON.stringify(bar)}`);
+  // An agent in error says so in the chat, where the reason of the exited state's "Claude exited." stands.
+  await openSession("error");
+  await until("!!document.querySelector('.chat .chat-notice')", "the chat of an agent in error does not say so");
+  if ((await text(".chat .chat-notice")).join() !== "The agent stopped with an error.") await fail(`the error chat says ${await text(".chat .chat-notice")}`);
+  await openSession("working");
   // A `!` line runs in Claude's shell mode: from the `!` on, the input box takes the shell
   // colour and the button says Run; it sends once a command follows.
   const typeInto = (text) => evaluate(`(() => { const field = document.querySelector('.composer-field'); field.value = ${JSON.stringify(text)};
@@ -559,6 +569,10 @@ async function chats() {
   ]) {
     await openSession(role);
     await until("!!document.querySelector('.question .question-option')", `the question of the ${role} session did not show`);
+    // ^ The parsed options say what the dialog says: its raw rows fold under "What the terminal shows", closed. Open, they are measured as before.
+    const fold = await evaluate(`(() => { const held = document.querySelector('.question details.held'); const raw = document.querySelector('.question .question-screen'); const shown = raw.getBoundingClientRect().height;
+      const label = held?.querySelector('summary').textContent.trim(); const closed = held && !held.open; held.open = true; return { label, closed, shown, inside: held.contains(raw) }; })()`);
+    if (fold.label !== "What the terminal shows" || !fold.closed || fold.shown || !fold.inside) await fail(`the raw dialog of ${role} is not folded under its options: ${JSON.stringify(fold)}`);
     const asked = await evaluate(`(() => { const sheet = document.querySelector('.question'); const screen = sheet.querySelector('.question-screen');
       const box = (node) => node.getBoundingClientRect(); const inner = sheet.clientWidth - parseFloat(getComputedStyle(sheet).paddingLeft) - parseFloat(getComputedStyle(sheet).paddingRight);
       const options = [...sheet.querySelectorAll('.question-option')];
@@ -580,6 +594,7 @@ async function chats() {
     if (!/JetBrains Mono/.test(asked.screen.font) || asked.screen.space !== "pre" || !asked.screen.cursor || asked.screen.high > 180 || (size[0] === 320 && !asked.screen.wide)) await fail(`the question's screen block is wrong: ${JSON.stringify(asked.screen)}`);
     if (asked.bottom !== 0 || asked.log < 60 || asked.state !== "needs input" || (phone() && !asked.under)) await fail(`the question sheet is not anchored under a visible conversation: ${JSON.stringify(asked)}`);
     await sound(`question of ${role}`);
+    await evaluate("document.querySelector('.question details.held').open = false");
     await shot(capture);
   }
   // The free-text field shows only on demand.

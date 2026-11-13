@@ -38,7 +38,7 @@ function Gauge({ item }) {
   const value = `${num(item.used)} / ${num(item.total)}${unit} · ${Math.round(share * 100)}%`;
   return html`
     <div class="panel-gauge" data-level=${item.level ?? null}>
-      <div class="panel-row"><span class="panel-label">${item.label}</span><span class="panel-value">${value}</span><${Level} level=${item.level} /></div>
+      <div class="panel-row"><span class="panel-label">${item.label}</span><span class="panel-end"><span class="panel-value">${value}</span><${Level} level=${item.level} /></span></div>
       <div class="panel-bar" role="meter" aria-label=${item.label} aria-valuemin="0" aria-valuemax=${item.total} aria-valuenow=${Math.min(item.used, item.total)} aria-valuetext=${value}>
         <span style=${{ width: `${Math.min(100, share * 100)}%` }}></span>
       </div>
@@ -47,8 +47,8 @@ function Gauge({ item }) {
 
 const Stat = ({ item }) => html`
   <div class="panel-row panel-stat" data-level=${item.level ?? null}>
-    <span class="panel-label">${item.label}</span><strong class="panel-value">${item.value}</strong>
-    ${item.note && html`<span class="panel-note">${item.note}</span>`}<${Level} level=${item.level} />
+    <span class="panel-label">${item.label}</span>
+    <span class="panel-end"><strong class="panel-value">${item.value}</strong>${item.note && html`<span class="panel-note">${item.note}</span>`}<${Level} level=${item.level} /></span>
   </div>`;
 
 // Where a link goes (docs/panels.md "Links"): an https address in a new tab; a project page in the

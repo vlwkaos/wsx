@@ -110,18 +110,16 @@ export function Inbox({ rail }) {
     body = html`
       <p class="empty">No session is open.</p>`;
   } else {
+    const lists = SECTIONS.map(([group, title]) => [group, title, group === "finished" ? finished : grouped(group)]).filter(([, , list]) => list.length);
     body = html`
-      ${SECTIONS.map(([group, title]) => {
-        const list = group === "finished" ? finished : grouped(group);
-        return list.length ? html`
-          <section key=${group} aria-label=${title}>
-            <h2 class="label">${title}</h2>
-            <ul class="rows">${list.map((session) => row(session))}</ul>
-          </section>` : null;
-      })}
+      ${lists.map(([group, title, list]) => html`
+        <section key=${group} aria-label=${title}>
+          <h2 class="label">${title}</h2>
+          <ul class="rows">${list.map((session) => row(session))}</ul>
+        </section>`)}
       ${projects.length ? html`
         <section aria-label="Sessions">
-          <h2 class="label">Sessions</h2>
+          ${lists.length > 0 && html`<h2 class="label">Sessions</h2>`}
           ${projects.map((project) => html`
             <div class="group" key=${project.id}>
               <div class="group-head"><span class="group-name">${project.name}</span><${NewSession} project=${project} /></div>

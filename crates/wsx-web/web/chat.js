@@ -606,17 +606,22 @@ function Question({ session, question, onAnswered }) {
     if (text) answer("text", text);
   };
   useEffect(() => { if (typing) field.current.focus(); }, [typing]);
+  // ^ The parsed options say what the dialog says: its raw rows fold, as a hold's do (`held` in Chat).
+  const screen = html`<pre class="question-screen" tabindex="0" aria-label="The agent's screen">${question.screen.join("\n")}</pre>`;
   return html`
     <section class="question" aria-label="The agent asks">
       ${question.request && html`<h2 class="question-title">${question.request.title}</h2>`}
-      <pre class="question-screen" tabindex="0" aria-label="The agent's screen">${question.screen.join("\n")}</pre>
       ${question.options.length ? html`
         <div class="question-options">
           ${question.options.map((option) => html`
             <button key=${option.key} class="button question-option" type="button" disabled=${waiting} onClick=${() => answer(option.key)}>
               <span class="question-key">${option.key}</span><span class="question-label">${option.label}</span>
             </button>`)}
-        </div>` : null}
+        </div>
+        <details class="held">
+          <summary class="held-head"><${Icon} name="chevron" /><span>What the terminal shows</span></summary>
+          ${screen}
+        </details>` : screen}
       ${typing && html`
         <form class="question-text" onSubmit=${submit}>
           <input class="input" ref=${field} type="text" maxlength="2000" aria-label="Answer" autocomplete="off" disabled=${waiting} />
@@ -807,6 +812,7 @@ export function Chat({ session, onModel, finding = false, onFindClose }) {
               ${can("chat_send") && html`<button class="link-action" type="button" onClick=${() => act(`queue/${queued.id}/retry`)}>Send again</button>`}
             </div>
           </article>`)}
+        ${status.key === "error" && html`<p class="note chat-notice" role="status">The agent stopped with an error.</p>`}
         ${working && html`
           <div class="working" role="status">
             <span class="pulse" aria-hidden="true"></span>
