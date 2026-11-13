@@ -808,7 +808,7 @@ def manager_up(created):
                  'then one `wsx task new` or `add` with all', 'with a mermaid diagram',
                  'stands alone, since a worker cannot ask', 'in every task new', 'With `--plan` the worker',
                  'Before `wsx task new`, compare the request', 'Never ask the owner to wait',
-                 'for lean code', 'never send a task back to rebase', 'trust them over the worker',
+                 'for lean code', 'never send a task back to rebase', "Checks are the ledger's `checks`",
                  'Check the fixture rule.', 'runs with `--size small`', 'open with `> message <id>`', 'Say as fact only what wsx reported or you checked',
                  'tell that worker to prove it', 'never skip or fail items', 'only when the owner\'s message of this turn says',
                  '`release` (with open To check items they stay to check on it)', '`wsx task trial <n>`',
