@@ -7111,7 +7111,8 @@ def part_host(created=None):
     (agents / 'pi-fake.json').unlink()
     limit_for(600)
     s4_say = js('task', 'say', 'PIHANG %s STATUS on a hung fallback' % (work / 's4-release'))
-    wait(lambda: lc_rotated('back on claude: pi was refused: no output for'), 'the manager back home from the hung fallback', 80)
+    lc_tail = lambda: '%r %r' % (manager_state(), [(e['kind'], e.get('reason'), e.get('text', '')[:80]) for e in manager_entries()[-10:]])
+    wait(lambda: lc_rotated('back on claude: pi was refused: no output for'), lambda: 'the manager back home from the hung fallback ' + lc_tail(), 80)
     assert 'agent' not in manager_state() and manager_state()['limit']['account'] is True, manager_state()
     limit_file.unlink()
     assert reply_to(s4_say['id'], 40)['text'].startswith('open: '), chat()[-3:]
@@ -7303,7 +7304,7 @@ def part_host(created=None):
     turn_quiet.write_text('40')
     s3_say = js('task', 'say', 'MHANG %s STATUS hung' % (work / 's3m-release'))
     s3_stop = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'stopped' and e.get('reason', '').startswith('no output for')), None),
-                   'the hung manager turn ends', 70)
+                   lambda: 'the hung manager turn ends ' + lc_tail(), 70)
     assert s3_stop and manager_state()['limit']['attempt'] == 1 and 'agent' not in manager_state(), manager_state()
     assert not any(e['kind'] == 'reply' and s3_say['id'] in e['to'] for e in chat()), chat()[-3:]
     assert any(e['kind'] == 'limit' and e.get('until') for e in manager_entries()[-4:]), manager_entries()[-4:]
