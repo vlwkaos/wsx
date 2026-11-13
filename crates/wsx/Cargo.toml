@@ -29,3 +29,12 @@ libc = { workspace = true }
 base64 = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
+
+# ^ use-dev-tty on Linux only. The default mio source (edge-triggered epoll) returns after one
+# 1 KiB read and leaves the rest of a key burst unread until the next key
+# (crossterm-rs/crossterm#1142). macOS keeps the mio source: its pty input queue holds at most
+# 1,022 bytes, so one 1 KiB read empties it and each refill is a new kqueue event. The /dev/tty
+# source waits in select(), whose timeout macOS timer coalescing stretches: the TUI's 4 ms wait
+# took about 30 ms at utility QoS, so pane output showed about 30 ms late.
+[target.'cfg(target_os = "linux")'.dependencies]
+crossterm = { workspace = true, features = ["use-dev-tty"] }
