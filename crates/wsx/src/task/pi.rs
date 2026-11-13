@@ -373,6 +373,14 @@ impl Run {
                 };
                 Some(AgentLine::Progress { text, said: false })
             }
+            // ^ A refused prompt (no API key, an unknown model) starts no run, so no
+            // `agent_settled` follows: the refusal is the turn's failed result, which the host
+            // waits out or moves away from (`refusal`). Before, the turn never ended.
+            "response" if value["success"] == false && value["command"] == "prompt" => {
+                self.stop = "error".into();
+                self.error = value["error"].as_str().unwrap_or("pi refused the prompt").into();
+                Some(AgentLine::Result(Box::new(self.finish(value))))
+            }
             "response" if value["success"] == false => Some(AgentLine::Progress {
                 text: format!(
                     "pi refused {}: {}",

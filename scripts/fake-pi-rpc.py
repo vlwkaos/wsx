@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Model-free stand-in for `pi --mode rpc`, used by test-task.py as a fallback agent.
 
-Each `prompt` command is one run. `PIERROR <file>` ends the run as a provider's refusal, with the
+Each `prompt` command is one run. `PIREFUSE <file>` refuses the prompt command itself with the words
+of <file>, as Pi does without an API key: no run follows. `PIERROR <file>` ends the run as a provider's refusal, with the
 words of <file> as the error; `PICOST <usd>` reports that cost for the run; `PICTX <n>` reports a context of n tokens. A worker (its instructions name a task worker) does
 `WORK <file>` (writes and commits it) and sends its result to `wsx task result -`, as the
 Pi adapter's instructions ask; a manager answers "pi answers: <first line>". The run then
@@ -155,6 +156,13 @@ def main():
             continue
         text = command['message']
         trace({'session': session, 'message': text})
+        refused = next((b for a, b in zip(text.split(), text.split()[1:]) if a == 'PIREFUSE'), None)
+        if refused:
+            # ^ Pi refuses the prompt command itself (no API key): no run, no agent_settled.
+            with open(refused) as reason:
+                emit({'id': command.get('id'), 'type': 'response', 'command': 'prompt', 'success': False,
+                      'error': reason.read().strip()})
+            continue
         emit({'id': command.get('id'), 'type': 'response', 'command': 'prompt', 'success': True,
               'data': {'disposition': 'started'}})
         emit({'type': 'agent_start'})
