@@ -30,7 +30,7 @@ _spec.loader.exec_module(_memory_eval)
 PRICE = _memory_eval.PRICE
 
 CHARS_PER_TOKEN = 4  # ^ Only to share a measured delta between the inputs that made it.
-COLD_WRITE = 20_000  # A cache write this large after the first call means the cache was gone.
+COLD_WRITE = 20_000  # A write of at least half the context, and this large, after the first call: the cache was gone.
 MAX_DELTA = 60_000  # A larger delta is a resume after a zero-usage (limit or error) line.
 CHECK_RE = re.compile(r'check-run|cargo (test|nextest|clippy|build|fmt)|python3 .*test-|scripts/test-|runtime-smoke')
 READ_RE = re.compile(r'^(cat|sed|head|tail|rg|grep|wc|ls|awk|diff|git (show|diff|log|blame))\b')
@@ -76,7 +76,7 @@ def tool_part(name, tool_input):
 def load_session(path):
     """One transcript: its calls in order, each with what arrived before it."""
     calls, pending, seen, tools = [], [], set(), {}
-    shape, attachments, files, entry, first_text = None, collections.Counter(), {}, None, True
+    shape, attachments, files, entry, before_first_host_text = None, collections.Counter(), {}, None, True
     with open(path, encoding='utf-8') as handle:
         for line in handle:
             try:
@@ -115,8 +115,8 @@ def load_session(path):
                         use = tools.get(block.get('tool_use_id'), ('?', {}))
                         pending.append((tool_part(*use), len(body)))
                     elif block.get('type') == 'text':
-                        pending.append(('host: ' + host_kind(block['text'], first_text), len(block['text'])))
-                        first_text = False
+                        pending.append(('host: ' + host_kind(block['text'], before_first_host_text), len(block['text'])))
+                        before_first_host_text = False
             elif kind == 'assistant':
                 message = row['message']
                 usage = message.get('usage') or {}
@@ -166,7 +166,8 @@ def turns(session):
 
 
 def cold_writes(session):
-    return [c['write'] for c in session['calls'][1:] if c['write'] > COLD_WRITE]
+    """Calls after the first whose cache write says the cache was gone."""
+    return [c for c in session['calls'][1:] if c['write'] > COLD_WRITE and c['write'] * 2 >= c['ctx']]
 
 
 def cost(session):
@@ -185,31 +186,39 @@ def cost(session):
     return {part: share * dollars for part, share in by.items()}, dollars
 
 
-SCENARIOS = ('actual', 'prefix -10k', 'tool cap 2k', 'no thinking', 'rotate 100k at turn', 'rotate 150k live', 'fresh per turn', 'live 150k + prefix + cap')
+# Each bound as its rule: `prefix` tokens off every call, `cap` tokens per tool result, `thinking` dropped
+# inside a turn, a fresh conversation past `rotate` tokens (`at_turn`: checked only when a host message
+# arrives, as the host does today; 0 = at every host message).
+SCENARIOS = {
+    'actual': {},
+    'prefix -10k': {'prefix': 10_000},
+    'tool cap 2k': {'cap': 2_000},
+    'no thinking': {'thinking': True},
+    'rotate 100k at turn': {'rotate': 100_000, 'at_turn': True},
+    'rotate 150k live': {'rotate': 150_000},
+    'fresh per turn': {'rotate': 0, 'at_turn': True},
+    'live 150k + prefix + cap': {'rotate': 150_000, 'prefix': 10_000, 'cap': 2_000},
+}
 
 
 def simulate(sessions, start, handover=6_000):
     table = {name: [0, 0] for name in SCENARIOS}
     for session in sessions:
         calls = session['calls']
-        for name in SCENARIOS:
+        for name, rule in SCENARIOS.items():
             read = write = cut = thinking_cut = base = 0
             for i, call in enumerate(calls):
                 if call['turn']:
                     thinking_cut = 0  # ^ The API drops earlier turns' thinking by itself.
-                if name in ('tool cap 2k', 'live 150k + prefix + cap'):
-                    cut += sum(max(0, n // CHARS_PER_TOKEN - 2_000) for part, n in call['inputs'] if not part.startswith('host'))
-                ctx = call['ctx'] - cut - thinking_cut
-                if name in ('prefix -10k', 'live 150k + prefix + cap'):
-                    ctx -= 10_000
-                fresh = (name == 'fresh per turn' and call['turn'] and i > 0) \
-                    or (name == 'rotate 100k at turn' and call['turn'] and ctx - base >= 100_000) \
-                    or (name in ('rotate 150k live', 'live 150k + prefix + cap') and ctx - base >= 150_000)
-                if fresh:
+                if 'cap' in rule:
+                    cut += sum(max(0, n // CHARS_PER_TOKEN - rule['cap']) for part, n in call['inputs'] if not part.startswith('host'))
+                ctx = call['ctx'] - cut - thinking_cut - rule.get('prefix', 0)
+                due = 'rotate' in rule and i > 0 and ctx - base >= rule['rotate'] and (call['turn'] or not rule.get('at_turn'))
+                if due:
                     base = ctx - start - handover
                     write += start + handover
                 ctx = max(ctx - base, 0)
-                if name == 'no thinking':
+                if rule.get('thinking'):
                     thinking_cut += call['thinking']
                 write += min(call['write'], ctx)
                 read += ctx
@@ -281,7 +290,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--project', action='append', type=Path, help='main checkout of a project (default: this repository)')
     parser.add_argument('--projects-dir', type=Path, default=Path.home() / '.claude' / 'projects')
-    parser.add_argument('--last', type=int, default=80, help='newest tasks per project to read')
+    parser.add_argument('--last', type=int, default=80, help='newest tasks per project to read (manager sessions: all)')
     parser.add_argument('--task', action='append', type=int, default=[], help='print each session of this task')
     parser.add_argument('--manager-log', type=Path, help='manager/log.jsonl of the project state folder')
     args = parser.parse_args()
@@ -331,7 +340,7 @@ def main():
         all_turns = [t for s in group for t in turns(s)]
         calls_q, growth_q = quantiles([t[0] for t in all_turns]), quantiles([t[1] for t in all_turns])
         print(f'  host turns {len(all_turns)}: calls per turn median {calls_q[0]:.0f}, p90 {calls_q[1]}; growth per turn median {growth_q[0]:.0f}, p90 {growth_q[1]}, max {growth_q[2]}')
-        cold = [w for s in group for w in cold_writes(s)]
+        cold = [c['write'] for s in group for c in cold_writes(s)]
         writes = sum(c['write'] for s in group for c in s['calls'])
         reads = sum(c['read'] for s in group for c in s['calls'])
         print(f'  cache: reads {reads:,}, writes {writes:,}; cold rewrites {len(cold)} = {sum(cold):,} tokens ({100 * sum(cold) / (writes or 1):.0f}% of writes), median {quantiles(cold)[0]:.0f}')
@@ -371,12 +380,9 @@ def main():
         print(f'\n## task {task}: {len(sessions) or "no"} sessions')
         for session in sessions:
             calls = session['calls']
-            gaps = []
-            for prev, call in zip(calls, calls[1:]):
-                if prev['ts'] and call['ts'] and call['ts'][:16] != prev['ts'][:16] and call['write'] > COLD_WRITE:
-                    gaps.append(f'{call["ts"][11:16]} wrote {call["write"]}')
+            cold = [f'{c["ts"][11:16]} wrote {c["write"]}' for c in cold_writes(session)]
             print(f'  {Path(session["path"]).name[:8]}: {len(calls)} calls, {calls[0]["ctx"]} to {max(c["ctx"] for c in calls)} tokens, '
-                  f'own output {sum(c["out"] for c in calls)} (thinking {sum(c["thinking"] for c in calls)}), cold writes {gaps or "none"}')
+                  f'own output {sum(c["out"] for c in calls)} (thinking {sum(c["thinking"] for c in calls)}), cold writes {cold or "none"}')
             for part, tokens in attribute(session).most_common(6):
                 print(f'    {part:28s} {tokens:>9,}')
 
