@@ -77,6 +77,8 @@ Target: a turn gets the ledger line (from `overview.json`, §2), the open questi
 
 Risk: the owner may want `context.md` memos at start for the manager (eval covered workers only); §12 asks.
 
+What fills each model call, measured from the transcripts, and the bounds ranked by saving: `context-budget.md`.
+
 ## 4. Chats, agents, fallbacks, policy
 
 Intention: a chat is a party the owner talks to; `may` says what the chat can do (#410); a worker is a chat with a copy; trust and role give the tools (`crates/wsx-core/src/task/policy.rs:160` ROLES: Manager ALL; Organizer Read, Answer, Backlog, Note, Recall; Worker Result, Recall, Remember; `Policy::of(trust, role, may)` `:260`). Fallback (`local-model-fallback.md`, #349/#354) gives roles to untrusted local agents; the broker (`broker.rs:76-93`) and the boundary (`boundary.rs`) enforce.
