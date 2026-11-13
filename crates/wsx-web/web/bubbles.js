@@ -152,7 +152,9 @@ const Author = ({ name, target, peer }) => target
 
 // One message. `home` turns its text runs into task chips; a message of another project's
 // manager (not another chat) reads its bare `#n` as that project's task.
-export function Bubble({ project, row, words: home, fresh, onNeed }) {
+// `plain`: the project chat's own manager has no name of its own, the project's, which the top row
+// shows: its bubbles keep no author line.
+export function Bubble({ project, row, words: home, fresh, onNeed, plain }) {
   const out = row.author === "owner";
   const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
   const other = peerProject(peer);
@@ -178,7 +180,7 @@ export function Bubble({ project, row, words: home, fresh, onNeed }) {
       data-quote=${row.quote ?? null} data-id=${row.quote != null ? row.id ?? null : null}
       data-pending=${row.pending ? "" : null} data-asks=${row.asks ? "" : null} data-routine=${row.post ? "" : null} data-level=${row.level ?? null}
       aria-label=${`${row.name}, ${clock(row.at)}${row.asks ? ", Asks you" : row.level ? `, ${tag}` : row.post ? ", Routine" : ""}`}>
-      ${!out && (row.first || target) && html`<${Author} name=${row.name} target=${target} peer=${peer} />`}
+      ${!out && (row.first || target) && !(plain && row.author === "manager") && html`<${Author} name=${row.name} target=${target} peer=${peer} />`}
       <div class="bubble-box">${mark && html`<p class="bubble-tag" role="img" aria-label=${mark[1]} title=${mark[1]}><${Icon} name=${mark[0]} /></p>`}${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>
       ${row.last && html`<p class="bubble-time" aria-hidden="true">${row.pending ? "Sending…" : clock(row.at)}</p>`}
     </article>`;
@@ -186,13 +188,13 @@ export function Bubble({ project, row, words: home, fresh, onNeed }) {
 
 // A To check item in the chat: from the manager, with what to check, its capture and Try, Fail,
 // Skip and Pass, or its result once decided (checks.js `CheckRow`). It counts as a new message.
-export function CheckBubble({ project, row, names, fresh, onReply }) {
+export function CheckBubble({ project, row, names, fresh, onReply, plain }) {
   return html`
     <article class="bubble check-bubble" data-side="in" data-speaker="manager" data-first="" data-last=""
       data-fresh=${fresh ? "" : null} data-at=${row.at} data-key=${row.key} data-in=""
       data-quote=${checkQuote(row.item)} data-id=${row.item.id}
       aria-label=${`${names.manager}, to check, ${clock(row.at)}`}>
-      <p class="bubble-author" aria-hidden="true">${names.manager}</p>
+      ${!plain && html`<p class="bubble-author" aria-hidden="true">${names.manager}</p>`}
       <div class="bubble-box"><p class="bubble-tag">To check</p><${CheckRow} project=${project} item=${row.item} onReply=${onReply} tag="div" /></div>
       <p class="bubble-time" aria-hidden="true">${clock(row.at)}</p>
     </article>`;
@@ -200,9 +202,9 @@ export function CheckBubble({ project, row, names, fresh, onReply }) {
 
 // The manager writes: three dots, still where the user asked for less motion.
 export const Dots = () => html`<span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span>`;
-export const Typing = ({ name }) => html`
+export const Typing = ({ name, plain }) => html`
   <article class="bubble" data-side="in" data-speaker="manager" data-first="" data-last="" role="status">
-    <p class="bubble-author" aria-hidden="true">${name}</p>
+    ${!plain && html`<p class="bubble-author" aria-hidden="true">${name}</p>`}
     <div class="bubble-box typing"><span class="visually-hidden">${name} is typing</span><${Dots} /></div>
   </article>`;
 
@@ -215,14 +217,14 @@ export function StatusLine({ project, row, fresh }) {
 
 // The manager's reply to events: a muted line under its name, in full when it is one sentence,
 // else its first sentence and More.
-export function QuietReply({ row, fresh }) {
+export function QuietReply({ row, fresh, plain }) {
   const [open, setOpen] = useState(false);
   // ^ Its first sentence, or its first line when that ends sooner, never cut inside.
   const first = firstSentence(row.text, Infinity);
   const whole = open || first === row.text;
   return html`
     <article class="reply-line" data-speaker="manager" data-fresh=${fresh ? "" : null} data-key=${row.key} data-at=${row.at} aria-label=${`${row.name}, ${clock(row.at)}`}>
-      ${row.first && html`<p class="bubble-author" aria-hidden="true">${row.name}</p>`}
+      ${row.first && !plain && html`<p class="bubble-author" aria-hidden="true">${row.name}</p>`}
       <p class="reply-text">${whole ? row.text : first}${!whole && html` <button class="link-action" type="button" onClick=${() => setOpen(true)}>More</button>`}</p>
     </article>`;
 }

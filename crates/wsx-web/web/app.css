@@ -42,7 +42,7 @@ p, h1, h2 { margin: 0; }
 #app, .app, .stage, .screen, .page { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .app[data-wide] { flex-direction: row; }
 .rail {
-  flex: 0 0 var(--size-rail); width: var(--size-rail); min-width: 0; min-height: 0; display: flex; flex-direction: column;
+  position: relative; flex: 0 0 var(--size-rail); width: var(--size-rail); min-width: 0; min-height: 0; display: flex; flex-direction: column;
   border-right: var(--border-width) solid var(--color-hairline);
 }
 .rail-head { padding: var(--space-3) var(--space-4) 0; display: flex; flex-direction: column; gap: var(--space-2); }
@@ -100,7 +100,9 @@ body[data-keyboard] .tabbar { padding-bottom: var(--space-2); }
 /* Hook: .home-top — Home's title row; the + that opens a New chat sits at its right gutter. */
 .home-top { display: flex; align-items: center; justify-content: flex-end; padding-right: var(--space-2); }
 .home-top .title { flex: 1; }
-.rail .home-top { padding-top: var(--space-1); }
+/* The rail's + sits at the right of its name row, over the empty line it would take. */
+.rail .home-top { position: absolute; top: 0; right: 0; padding: 0; }
+.rail-name { padding-right: var(--size-control); }
 .sheet .error { margin-top: var(--space-2); }
 .new-chat:focus-visible { color: var(--color-text); }
 @media (hover: hover) { .new-chat:hover { color: var(--color-text); background: var(--color-raised); } }
@@ -140,8 +142,9 @@ div.row-link { cursor: default; }
 .row-remove:disabled { opacity: var(--opacity-disabled); }
 a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row-link[aria-current="page"] { background: var(--color-raised); }
 /* A row whose text opens it while its actions stay buttons: the text is the link. */
-.row-open { align-self: stretch; justify-content: center; text-decoration: none; cursor: pointer; }
-button.row-open { padding: 0; border: 0; background: none; text-align: left; }
+.row-link:has(> .row-open) { padding-block: 0; }
+.row-open { align-self: stretch; justify-content: center; padding-block: var(--space-2); text-decoration: none; cursor: pointer; }
+button.row-open { padding: var(--space-2) 0; border: 0; background: none; text-align: left; }
 /* A row with a state mark: its text, and so its hairline, starts after the mark. */
 .row:has(.mark) { --row-inset: calc(var(--space-4) + var(--space-1) * 1.5 + var(--space-3)); }
 .row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }

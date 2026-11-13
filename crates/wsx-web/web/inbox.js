@@ -89,7 +89,9 @@ export function Inbox({ rail }) {
   const sessions = listedSessions(store.sessions);
   const now = useNow(sessions.some((session) => stateOf(session).key === "working"));
   const currentId = Number(location.hash.split("/")[2]) || null;
-  const row = (session, place) => html`<${SessionRow} key=${session.id} session=${session} now=${now} current=${rail && session.id === currentId} place=${place} />`;
+  // ^ Sessions of one project name it once, not on every row (the rule of a project heading).
+  const one = new Set(sessions.map((session) => session.project.id)).size === 1;
+  const row = (session, place = one ? "project" : undefined) => html`<${SessionRow} key=${session.id} session=${session} now=${now} current=${rail && session.id === currentId} place=${place} />`;
   const grouped = (group) => sessions.filter((session) => stateOf(session).group === group);
   // ^ The newest finish first, by when the session reached its state. Seeing a session
   // never changes that time, so opening one and coming back moves no row.
