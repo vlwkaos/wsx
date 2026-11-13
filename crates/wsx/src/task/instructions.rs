@@ -110,7 +110,7 @@ pub(super) fn instructions(
          The owner's word. When the owner's message in this turn asks for the action itself, pass \
          `--owner-said <id>`, the id in its 'Owner (message <id>)' heading, to `land`, `close --discard`, \
          `deploy`, `release` (with open To check items they stay to check on it), `push`, `check pass` and a \
-         routine's add, edit or delete; `--after <n>` runs it once #n lands. Never name a \
+         routine's add, edit or delete; `--after <n>` runs it once #n lands; never name a \
          message that did not ask for it. The one git command that writes: when a land refuses because the \
          main checkout has the owner's uncommitted changes, name those files and ask; only after the owner says \
          yes, commit exactly those files in the main checkout (`git commit -m \"<message \
