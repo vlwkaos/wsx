@@ -297,7 +297,7 @@ fn build_overview(
         // ^ The open chats under the project's home row (docs/web-client-tasks.md "Home").
         "chats": chat_contacts(scope, land_auto),
         // ^ The agent the New chat sheet's Default runs on.
-        "default_agent": settings.map(|settings| json!({ "adapter": settings.manager_adapter, "model": settings.manager_model })),
+        "default_agent": settings.map(view::default_agent),
         "asks": asks,
         "last_unix_ms": last_unix_ms,
         // ^ Tasks can be tried on a preview link (docs/tasks.md "Preview").

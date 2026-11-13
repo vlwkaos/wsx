@@ -268,9 +268,7 @@ impl TaskList {
         let default = wsx_core::config::project::load_task_config(&self.main)
             .ok()
             .and_then(|config| {
-                wsx_core::task::view::agent_label(&serde_json::json!({
-                    "adapter": config.manager_adapter, "model": config.manager_model,
-                }))
+                wsx_core::task::view::agent_label(&wsx_core::task::view::default_agent(&config))
             });
         self.new_chat = Some(crate::task_new_chat::NewChat::new(&self.store, default));
     }

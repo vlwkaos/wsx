@@ -362,6 +362,15 @@ pub fn manager_agent(dir: &store::ManagerDir, settings: &TaskConfig) -> Value {
     }
 }
 
+/// The agent a project's chats run on unless they name their own: the manager's, as the
+/// New chat form's Default.
+pub fn default_agent(settings: &TaskConfig) -> Value {
+    json!({
+        "adapter": settings.manager_adapter, "model": settings.manager_model,
+        "effort": settings.manager_effort, "fallback": false,
+    })
+}
+
 /// An `agent` field in few words: `sonnet high`, `pi/qwen high`, `fallback pi/qwen`. The
 /// web client writes the same (`agentWords` in `web/tasks.js`).
 pub fn agent_label(agent: &Value) -> Option<String> {

@@ -165,12 +165,12 @@ function RemoveProject({ project, onClose }) {
 // and the time; line 2 the status line, or, while the chat has a message this device has not
 // read, that message in bold (docs/web-client-tasks.md "Home"). `typing`: the manager's name
 // while its turn runs.
-function RowText({ mark, name, asks, counts, last, now, line, news, typing }) {
+function RowText({ name, asks, counts, last, now, line, news, typing }) {
   return html`
     <span class="row-main">
       <span class="row-head">
         <span class="row-work">
-          ${mark ? html`<span class="news-mark" role="img" aria-label="New message"></span>` : null}<span class="row-label" data-tone=${asks ? "accent" : null}>${name}${asks ? html`<span class="visually-hidden">, Asks you</span>` : null}</span>
+          ${news ? html`<span class="news-mark" role="img" aria-label="New message"></span>` : null}<span class="row-label" data-tone=${asks ? "accent" : null}>${name}${asks ? html`<span class="visually-hidden">, Asks you</span>` : null}</span>
         </span>
         <${TrayIcons} counts=${counts} />
         ${last ? html`<span class="time">${ago(now - last)}</span>` : null}
@@ -190,7 +190,7 @@ function ChatRow({ project, chat, current, now }) {
     <li class="row row-chat" data-key=${`${project.id}/c/${chat.name}`}>
       <a class="row-link chat-row" href=${`#/p/${project.id}/c/${encodeURIComponent(chat.name)}`} aria-current=${current ? "page" : null}
         aria-label=${[`Chat ${chat.name} of ${project.name}`, news && "unread", ...shownTrays(counts).map((tray) => trayWords(tray, counts))].filter(Boolean).join(", ")}>
-        <${RowText} mark=${Boolean(news)} name=${chat.name} counts=${counts} last=${chat.last_unix_ms} now=${now}
+        <${RowText} name=${chat.name} counts=${counts} last=${chat.last_unix_ms} now=${now}
           line=${{ text: news ?? (chat.last_reply || chat.goal || "No messages yet") }} news=${Boolean(news)} />
       </a>
     </li>`;
@@ -327,7 +327,7 @@ export function Home({ rail }) {
           return [html`
             <li class=${manage ? "row row-slide" : "row"} onScroll=${manage ? slid : null} key=${row.project.id} data-key=${row.project.id} data-news=${news ? "" : null}>
               <a class="row-link home-row" href=${`#/p/${row.project.id}`} aria-current=${rail && Number(open) === row.project.id && inChat === null ? "page" : null}>
-                <${RowText} mark=${Boolean(news)} name=${row.project.name} asks=${Boolean(row.overview?.asks?.length)} counts=${trayCounts(row.overview)}
+                <${RowText} name=${row.project.name} asks=${Boolean(row.overview?.asks?.length)} counts=${trayCounts(row.overview)}
                   last=${row.last} now=${now} line=${news ? { text: news } : status} news=${Boolean(news)} typing=${row.overview?.busy ? row.overview.manager : null} />
               </a>
               ${manage && html`<button class="row-remove" type="button" onClick=${() => setRemoving(row.project)}

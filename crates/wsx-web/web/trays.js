@@ -9,14 +9,14 @@ import { running } from "./task-words.js";
 // A count of 0 has no pill, except Routines, which shows while there is any routine (its count is
 // the enabled ones; its tone is the worst last run).
 export const TRAYS = [
-  { key: "running", icon: "play", label: "Running", count: (c) => c.running, words: () => "running" },
-  { key: "needs", icon: "unchecked", label: "Needs you", count: (c) => c.needs, words: (count) => count === 1 ? "needs you" : "need you" },
-  { key: "check", icon: "pass", label: "To check", count: (c) => c.check, words: () => "to check" },
-  { key: "routines", icon: "routines", label: "Routines", count: (c) => c.routines.on, shown: (c) => c.routines.total > 0, words: (count, c) => routineWords(c.routines), tone: (c) => c.routines.tone },
+  { key: "running", icon: "play", label: "Running", count: (c) => c.running, words: (c) => `${c.running} running` },
+  { key: "needs", icon: "unchecked", label: "Needs you", count: (c) => c.needs, words: (c) => `${c.needs} ${c.needs === 1 ? "needs you" : "need you"}` },
+  { key: "check", icon: "pass", label: "To check", count: (c) => c.check, words: (c) => `${c.check} to check` },
+  { key: "routines", icon: "routines", label: "Routines", count: (c) => c.routines.on, shown: (c) => c.routines.total > 0, words: (c) => routineWords(c.routines), tone: (c) => c.routines.tone },
 ];
 export const present = (counts, tray) => tray.shown ? tray.shown(counts) : tray.count(counts) > 0;
 export const shownTrays = (counts) => TRAYS.filter((tray) => present(counts, tray));
-export const trayWords = (tray, counts) => tray.key === "routines" ? tray.words(0, counts) : `${tray.count(counts)} ${tray.words(tray.count(counts), counts)}`;
+export const trayWords = (tray, counts) => tray.words(counts);
 
 // The counts of a project from its overview (its `tasks` at work, `waiting`, `needs`, `asks`,
 // `to_check`); `routines` are the server's `routines` counts, newer ones when the caller has

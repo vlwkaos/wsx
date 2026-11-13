@@ -57,7 +57,10 @@ impl NewChat {
         } else if self.asked && name.is_empty() {
             ("name: required".into(), true)
         } else {
-            ("name: a-z, 0-9 and -, up to 24".into(), false)
+            (
+                format!("name: a-z, 0-9 and -, up to {}", chats::MAX_NAME_CHARS),
+                false,
+            )
         }
     }
 
