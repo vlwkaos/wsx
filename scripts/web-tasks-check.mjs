@@ -2881,7 +2881,8 @@ await go(`#/p/${plans}`);
 await until("!!document.querySelector('.pill')", "plans has no reservoir");
 await until("document.querySelectorAll('.log .bubble').length >= 2", "plans' chat shows no managers' bubbles", 30);
 const plansAuthors = await bubbles();
-if (!plansAuthors.some(({ author, tag }) => author === "plans" && tag === "To Atlas") || !plansAuthors.some(({ author }) => author === "Atlas")) await fail(`plans' managers read ${JSON.stringify(plansAuthors)}`);
+// ^ plans' manager has no name of its own: its bubbles keep no author line (the top row names plans); ui's "Atlas" is a peer.
+if (!plansAuthors.some(({ author, tag }) => author === "" && tag === "To Atlas") || !plansAuthors.some(({ author }) => author === "Atlas") || plansAuthors.some(({ author }) => author === "plans")) await fail(`plans' managers read ${JSON.stringify(plansAuthors)}`);
 // ^ An empty `sent` and a `-` reply in plans' older log are no bubbles: no bubble says nothing.
 const emptyBubbles = plansAuthors.filter(({ tag, text }) => ["", "-"].includes(text.slice(tag.length).trim()));
 if (emptyBubbles.length) await fail(`plans' chat shows bubbles that say nothing: ${JSON.stringify(emptyBubbles)}`);

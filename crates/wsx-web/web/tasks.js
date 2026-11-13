@@ -880,18 +880,20 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   // out would move the reply down when it went.
   const typing = Boolean(chat?.busy);
   const names = { manager: chat?.manager.name };
+  // ^ The project chat's manager with no name of its own is named as its project: the top row says so already.
+  const plain = !room && names.manager === project.name;
   const stopped = chat && !chat.running && entries.at(-1)?.danger;
   // ^ The manager's state only when it matters: typing or stopped (docs/web-client-tasks.md "Project screen").
   const managerWord = typing ? "typing" : stopped ? "stopped" : "";
-  const draw = (row, isNew) => row.kind === "message" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} fresh=${isNew} onNeed=${room ? null : showNeed} />`
+  const draw = (row, isNew) => row.kind === "message" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} fresh=${isNew} onNeed=${room ? null : showNeed} plain=${plain} />`
     : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} row=${row} fresh=${isNew} />`
-    : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} fresh=${isNew} />`
+    : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} fresh=${isNew} plain=${plain} />`
     : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} all=${finding} want=${wanted} />`
-    : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${isNew} onReply=${replyTo} />`
+    : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${isNew} onReply=${replyTo} plain=${plain} />`
     : html`<${Note} key=${row.key} row=${row} />`;
   // ^ What the rows read besides their own fields: a new day (a row's time says its day once it is
   // not today's, lib.js `clock`) and the project names (what `<project> #n` reads, `withChips`).
-  const context = `${id} ${finding} ${wanted} ${names.manager} ${store.projects.map((other) => `${other.id}:${other.name}`)} ${new Date().toDateString()}`;
+  const context = `${id} ${finding} ${wanted} ${plain} ${names.manager} ${store.projects.map((other) => `${other.id}:${other.name}`)} ${new Date().toDateString()}`;
   const show = useRowNodes(rows, { ready, own: (row) => (sent && row.id === sent.id) || row.key === "sending", context, draw });
   // ^ A sheet closes as Back does: to the entry under it, else to this chat.
   const leave = () => goBack(`#/p/${id}`);
@@ -933,7 +935,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
               : "No messages yet. Ask the manager for a task or a status; it answers from the ledger."}</p>` : null}
             ${earlier}
             ${withNewLine(recent, firstNew, show)}
-            ${typing && html`<${Typing} name=${names.manager} />`}
+            ${typing && html`<${Typing} name=${names.manager} plain=${plain} />`}
           </div>
           ${away && html`<${JumpButton} unread=${unread} onClick=${around != null ? newest : toEnd} />`}
         </div>
