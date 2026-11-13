@@ -7024,7 +7024,9 @@ def part_host(created=None):
     # fresh own conversation that carries the task's prompt.
     (agents / 'pi-fake.json').unlink()
     limit_for(600)
-    s2 = js('task', 'new', 'WORK s2a.txt')['id']
+    s2 = js('task', 'new', 'born on the fallback')['id']
+    # ^ No WORK in the prompt: the home turn carries the prompt before the added text, and the
+    # fake acts on the first WORK word only.
     assert wait_state(s2, 'ready', 'failed')['record']['adapter'] == 'pi', show(s2)
     limit_file.unlink()
     s2_before = len(traces())
