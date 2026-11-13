@@ -229,13 +229,14 @@ pub fn quiet_after_ms(check_timeout_secs: u64) -> u64 {
     (check_timeout_secs + BASH_MAX_SECS) * 1000
 }
 
-/// `quiet_after_ms` for a host's own turn, or the seconds in `WSX_TEST_TURN_QUIET_SECS`: for
-/// the task scenario only, whose hung turns would otherwise hold 10 minutes; the sweep keeps
-/// the real bound, so no fixture turn reads as a stall.
+/// `quiet_after_ms` for a host's own turn, or the seconds in the file `WSX_TEST_TURN_QUIET_FILE`
+/// names while it exists: for the task scenario only, whose hung turns would otherwise hold 10
+/// minutes, and only around them, since its other fixtures keep a turn quiet on a gate longer
+/// than that; the sweep keeps the real bound, so no fixture turn reads as a stall.
 pub fn turn_quiet_ms(check_timeout_secs: u64) -> u64 {
-    std::env::var("WSX_TEST_TURN_QUIET_SECS")
-        .ok()
-        .and_then(|secs| secs.parse::<u64>().ok())
+    std::env::var_os("WSX_TEST_TURN_QUIET_FILE")
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|secs| secs.trim().parse::<u64>().ok())
         .map_or(quiet_after_ms(check_timeout_secs), |secs| secs * 1000)
 }
 
