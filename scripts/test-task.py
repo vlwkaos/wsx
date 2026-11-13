@@ -7057,9 +7057,27 @@ def part_host(created=None):
         and lc_claude_launches(s2r_before)[0]['session'] == s2r_session, lc_claude_launches(s2r_before)
     s2r_turn = lc_claude_turn(s2r_before, 'WORK s2e.txt')['message']
     assert s2r_turn.startswith('The usage limit has reset') and 'While your agent was unavailable, pi/fake/pi-model worked on the task' in s2r_turn, s2r_turn[:400]
+    assert 'the turn it could not finish' not in s2r_turn, 'the fallback finished its turn: nothing of it is unfinished'
     assert lc_switches(s2r)[-1] == ('claude', 'back on claude') and 'claude usage limit until' in lc_switches(s2r)[0][1], lc_switches(s2r)
     assert not any(e['kind'] == 'rotated' and e.get('reason') == 'back on claude' for e in log(s2r)), 'the own conversation is resumed, not rotated'
     assert (Path(show(s2r)['record']['working_copy']) / 's2e.txt').exists()
+    # S2, refused after it answered: moved again by a long limit, the fallback answers one turn and
+    # is refused on the next while the own account still holds; the task goes home for the wait and
+    # resumes its own conversation with the turn the fallback could not finish.
+    js('task', 'add', s2r, 'LIMIT 600 WORK s2f.txt')
+    wait(lambda: show(s2r)['record']['adapter'] == 'pi', 'the long limit moves the worker again', 40)
+    assert wait_state(s2r, 'ready', 'failed')['state'] == 'ready' and (Path(show(s2r)['record']['working_copy']) / 's2f.txt').exists(), show(s2r)
+    js('task', 'add', s2r, 'PIERROR %s WORK s2g.txt' % refusal)
+    wait(lambda: show(s2r)['state'] == 'waiting' and show(s2r)['record']['adapter'] == 'claude', 'the refused fallback sends the worker home for the wait', 40)
+    assert lc_switches(s2r)[-1][1].startswith('back on claude: was refused: 400') and show(s2r)['record']['agent_session'] == s2r_session, (lc_switches(s2r), show(s2r)['record'])
+    s2x_before = len(traces())
+    limit_file.unlink()
+    assert wait(lambda: show(s2r)['state'] in ('ready', 'failed') and show(s2r), 'the worker resumes at home', 40)['state'] == 'ready', show(s2r)
+    assert (Path(show(s2r)['record']['working_copy']) / 's2g.txt').exists() and show(s2r)['record']['agent_session'] == s2r_session, show(s2r)['record']
+    s2x_turn = lc_claude_turn(s2x_before, 'WORK s2g.txt')['message']
+    assert s2x_turn.startswith('The usage limit has reset') and 'pi/fake/pi-model was refused: 400' in s2x_turn \
+        and 'the turn it could not finish:\nPIERROR' in s2x_turn, s2x_turn[:600]
+    assert len(lc_claude_launches(s2x_before)) == 1 and lc_claude_launches(s2x_before)[0]['resume'], lc_claude_launches(s2x_before)
     for n in (s1, s2, s2r):
         js('task', 'close', n, '--discard')
     # S3, the worker: a turn with no output past the bound ends as the turn's failed result.

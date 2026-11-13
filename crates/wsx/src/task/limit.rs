@@ -33,3 +33,20 @@ pub fn sign_in_reason(until_ms: u64, now_ms: u64) -> String {
         wsx_core::task::status::resume_time(until_ms, now_ms)
     )
 }
+
+/// The reason of a wait on `account` now: its failed sign-in's retry (`sign_in_reason`),
+/// else the window and reset its limit record names (`status::limit_reason`).
+pub fn wait_reason(adapter: &str, account: &str, until_ms: u64, now_ms: u64) -> String {
+    use wsx_core::task::{status, store};
+    match store::sign_in_failed_until(account, now_ms) {
+        Some(retry_ms) => sign_in_reason(retry_ms, now_ms),
+        None => status::limit_reason(
+            adapter,
+            store::account_limit(account, now_ms)
+                .and_then(|limit| limit.window)
+                .as_deref(),
+            until_ms,
+            now_ms,
+        ),
+    }
+}
