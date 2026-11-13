@@ -632,7 +632,7 @@ fn progress(
         "steps": record.steps.iter().map(|step| &step.name).collect::<Vec<_>>(),
         "step": record.step,
         "stuck": stuck,
-        "last_unix_ms": stall::progress_ms(dir),
+        "last_unix_ms": stall::progress_ms(dir, record),
         "now": now,
         "running": if record.state == TaskState::Checking { json!(record.checks) } else { Value::Null },
     })

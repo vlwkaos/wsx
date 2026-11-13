@@ -4246,6 +4246,48 @@ def part_worker(created=None):
     assert stalls(idle) == waited and not stalls(landed_first) and not stalls(added), (stalls(idle), stalls(landed_first), stalls(added))
     js('task', 'close', idle, '--discard')
     configure(LAND_CONFIG, 'review wait over')
+    # A silent worker is one stall per silence: what the manager or the host writes to its log
+    # (an add, a land notice) is no output and starts no new quiet clock; a line of the worker's
+    # does (docs/tasks.md "Manager", Stalls). Its log and record are aged by 3 h by hand, since
+    # the silent bound is `tasks.checkTimeoutSeconds` plus 10 minutes.
+    mark('27q')
+    quiet_gate = base / 'quiet-gate'
+    quiet = js('task', 'new', 'WAIT %s' % quiet_gate, '--files', 'q.txt')['id']
+    wait(lambda: show(quiet)['record']['agent_session'], 'the silent worker runs')
+    quiet_dir = Path(show(quiet)['log']).parent
+    aged_ms = 3 * 3600 * 1000
+
+    def write_log(lines):
+        tmp = quiet_dir / 'log.jsonl.tmp'
+        tmp.write_text(''.join(json.dumps(line) + '\n' for line in lines))
+        os.replace(tmp, quiet_dir / 'log.jsonl')
+
+    write_log([{**e, 'unix_ms': e['unix_ms'] - aged_ms} for e in log(quiet)])
+    record_path = quiet_dir / 'task.json'
+    aged_record = json.loads(record_path.read_text())
+    for key in ('state_unix_ms', 'created_unix_ms'):
+        aged_record[key] -= aged_ms
+    record_path.write_text(json.dumps(aged_record))
+    silent = wait(lambda: stalls(quiet), 'the silence stall event', 150)
+    assert len(silent) == 1 and re.search(r'working for 3 h .*; no log or check output for 3 h .*; its last output 3 h', silent[0]), silent
+    # ^ An add and a land notice (a message the host writes) restart no clock.
+    assert js('task', 'add', quiet, 'WORK q-more.txt')['ok']
+    q_lander = js('task', 'new', 'WORK q.txt')['id']
+    assert wait_state(q_lander, 'ready', 'failed')['state'] == 'ready', log(q_lander)
+    assert land(q_lander)['state'] == 'landed'
+    wait(lambda: any('landed on main' in e.get('text', '') for e in log(quiet) if e['kind'] == 'message'), 'the land notice')
+    sweeps(2)
+    assert stalls(quiet) == silent, stalls(quiet)
+    # ^ A line of the worker's is output: its silence after it is a new stall.
+    with open(quiet_dir / 'log.jsonl', 'a') as out:
+        out.write(json.dumps({'unix_ms': int(time.time() * 1000) - aged_ms + 1000, 'kind': 'agent', 'text': 'cargo build'}) + '\n')
+    again = wait(lambda: len(stalls(quiet)) == 2 and stalls(quiet), 'the stall after new output', 150)
+    assert again[:1] == silent and 'cargo build' in again[1], again
+    sweeps(2)
+    assert stalls(quiet) == again, stalls(quiet)
+    quiet_gate.write_text('go')
+    js('task', 'close', quiet, '--discard')
+    wait_closed(q_lander)
     # A usage limit is no failure: the task waits on `limit` and its session continues after the
     # reset, oldest wait first, one task at a time (docs/tasks.md "Claude adapter").
     traced_before_limits = len(traces())
