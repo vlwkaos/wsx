@@ -434,7 +434,8 @@ impl Chat {
                 crate::question::view(client, target.pane.id, last)
             });
         // ^ A hold the chat cannot name shows the end of the screen: a blocked agent without a
-        // readable question, or a message that waits for more than HELD_MS.
+        // readable question, an agent in error (its reason is on the screen), or a message that
+        // waits for more than HELD_MS.
         let blocked = target
             .pane
             .agent
@@ -446,7 +447,12 @@ impl Chat {
                 && queued.delivered_unix_ms.is_none()
                 && now.saturating_sub(queued.at_unix_ms) > HELD_MS
         });
-        let screen = (((blocked && question.is_none()) || held)
+        let errored = target
+            .pane
+            .agent
+            .as_ref()
+            .is_some_and(|agent| agent.attached && agent.state == AgentState::Error);
+        let screen = (((blocked && question.is_none()) || held || errored)
             && site.allows(Capability::TerminalView))
         .then(|| crate::question::tail(client, target.pane.id, HELD_ROWS))
         .flatten();

@@ -277,6 +277,8 @@ textarea.input { padding: var(--space-2) var(--space-3); resize: vertical; }
 .bar-title .bar-model { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-sm); }
 /* Without the rail the label keeps the row's free width and the state word goes under it. */
 .app:not([data-wide]) .bar-title { flex-direction: column; align-items: stretch; gap: 0; }
+/* A session's model shows in the wide layout only: on a phone it cuts the state row and its label. */
+.app:not([data-wide]) .bar-state .bar-model { display: none; }
 .bar-tools { flex: 0 0 auto; display: flex; }
 [data-tone="danger"].icon-button { color: var(--color-danger); }
 /* Header: bottom (settings.js). One switch: every bar moves to the foot of its column, under the
@@ -1032,8 +1034,8 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .usage-rate { text-align: right; color: var(--color-muted); font-variant-numeric: tabular-nums; }
 /* The Cost / Tokens / Projects tabs over one panel (usage.js). */
 .usage-view { display: flex; gap: var(--space-1); margin-bottom: var(--space-2); }
-.usage-view button, .subtabs a { min-height: var(--size-control); min-width: var(--size-control); justify-content: center; padding: 0 var(--space-3); display: inline-flex; align-items: center; border: 0; border-radius: var(--radius-control); background: none; color: var(--color-muted); font: inherit; text-decoration: none; cursor: pointer; }
-.usage-view button[aria-selected="true"], .subtabs a[aria-current="page"] { background: var(--color-raised); color: var(--color-text); font-weight: var(--font-weight-medium); }
+.usage-view button, .subtabs a, .segment { min-height: var(--size-control); min-width: var(--size-control); justify-content: center; padding: 0 var(--space-3); display: inline-flex; align-items: center; border: 0; border-radius: var(--radius-control); background: none; color: var(--color-muted); font: inherit; text-decoration: none; cursor: pointer; }
+.usage-view button[aria-selected="true"], .subtabs a[aria-current="page"], .segment:has(input:checked) { background: var(--color-raised); color: var(--color-text); font-weight: var(--font-weight-medium); }
 /* Hook: .subtabs — a screen's routed sections (Settings: General, UI, Usage), as the chart switch. */
 .subtabs { display: flex; gap: var(--space-1); padding: 0 var(--space-4) var(--space-2); }
 .usage-total { display: grid; grid-template-columns: calc(var(--space-4) * 4) minmax(0, 1fr) calc(var(--space-4) * 4.5); align-items: center; gap: var(--space-2); min-height: var(--size-control); font-weight: var(--font-weight-medium); }
@@ -1125,6 +1127,23 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .option-text { flex: 1 1 calc(var(--size-rail) * 0.6); min-width: 0; display: flex; flex-direction: column; }
 .option-hint { font-size: var(--font-size-sm); color: var(--color-muted); }
 .option-row input[type="checkbox"] { flex: none; margin: 0; }
+/* A pair of choices (settings.js Segmented): the chart switch's look over native radios, which stay the whole hit area. */
+.segmented { display: flex; gap: var(--space-1); padding: 0 var(--space-4); }
+.segment { position: relative; flex: 1 1 0; }
+.segment input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.segment:has(input:focus-visible) { outline: var(--focus-width) solid var(--color-accent); outline-offset: var(--focus-width); }
+/* A switch: a track and a thumb over the native checkbox, which keeps its role and its checks. */
+.option input[role="switch"] { appearance: none; position: relative; flex: none; width: calc(var(--space-4) * 2.5); height: calc(var(--space-4) * 1.5); margin: 0; border-radius: var(--space-4); background: var(--color-raised); cursor: pointer; }
+.option input[role="switch"]::before { content: ""; position: absolute; top: var(--space-1); left: var(--space-1); width: var(--space-4); height: var(--space-4); border-radius: 50%; background: var(--color-muted); }
+.option input[role="switch"]:checked { background: var(--color-accent); }
+.option input[role="switch"]:checked::before { transform: translateX(var(--space-4)); background: var(--color-accent-text); }
+.option input[role="switch"]:disabled { opacity: var(--opacity-disabled); cursor: default; }
+.version { margin: 0; padding: 0 var(--space-4) var(--space-2); }
+.version-more { padding: 0 var(--space-4); color: var(--color-muted); font-size: var(--font-size-sm); }
+.version-more summary { min-height: var(--size-control); display: flex; align-items: center; cursor: pointer; }
+.version-more .facts { padding: 0 0 var(--space-2); }
+.question .held { border-top: 0; margin-inline: calc(-1 * var(--column-inset)); }
+.held > .question-screen { margin: 0 var(--column-inset) var(--space-2); }
 .option-status { margin: 0; padding: var(--space-2) var(--space-4); font-size: var(--font-size-sm); }
 .device { padding: 0 var(--space-4); font-size: var(--font-size-sm); }
 /* Version facts: the label left, the value beside it. */
@@ -1245,6 +1264,9 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .panel-card h3 { margin: 0; font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); color: var(--color-muted); }
 .panel-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-2); min-width: 0; }
 .panel-label { flex: 1 1 calc(var(--size-key) * 4); overflow-wrap: anywhere; }
+/* The value and its level word stay together: a level never wraps alone under a long label. */
+.panel-end { flex: 0 1 auto; min-width: 0; display: flex; align-items: baseline; gap: var(--space-2); }
+.panel-level { flex: none; }
 .panel-value { font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
 .panel-note { color: var(--color-muted); font-size: var(--font-size-sm); }
 .panel-level { font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); color: var(--panel-level, var(--color-muted)); }
