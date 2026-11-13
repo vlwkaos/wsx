@@ -463,7 +463,7 @@ impl App {
             return true;
         };
         if since.elapsed() < RESIZE_MERGE_MAX
-            // ^ crossterm's /dev/tty source reads nothing in a zero timeout.
+            // ^ crossterm's /dev/tty source (Linux, crates/wsx/Cargo.toml) reads nothing in a zero timeout.
             && crossterm::event::poll(Duration::from_millis(1)).unwrap_or(false)
         {
             return false;
