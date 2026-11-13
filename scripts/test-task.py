@@ -6819,6 +6819,18 @@ def part_host(created=None):
     home_turn = turn_with('PIERROR %s' % refusal)
     assert home_turn and not home_turn.get('adapter') and 'STATUS without credit' in home_turn['message'], home_turn
     pi_limit.unlink()
+    # ^ A prompt Pi refuses outright (no API key) starts no run and sends no `agent_settled`: it still
+    # ends the turn as the fallback's refusal, and the manager goes home once its own agent is free.
+    no_key = work / 'pi-no-key.txt'
+    no_key.write_text('No API key found for anthropic.\n')
+    limit_for(600)
+    keyless = js('task', 'say', 'PIREFUSE %s STATUS without a key' % no_key)
+    wait(lambda: pi_limit.exists(), 'the keyless fallback counted as limited')
+    assert not any(e['kind'] == 'reply' and keyless['id'] in e['to'] for e in chat()), chat()[-3:]
+    limit_file.unlink()
+    assert reply_to(keyless['id'])['text'].startswith('open: '), chat()[-3:]
+    assert 'agent' not in manager_state(), manager_state()
+    pi_limit.unlink()
     # ^ A daily budget: past it the account counts as limited until midnight and is left alone.
     configure(with_fallback('fake-paid-other'), 'budget')
     limit_for(600)
