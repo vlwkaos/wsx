@@ -463,7 +463,8 @@ impl App {
             return true;
         };
         if since.elapsed() < RESIZE_MERGE_MAX
-            && crossterm::event::poll(Duration::ZERO).unwrap_or(false)
+            // ^ crossterm's /dev/tty source reads nothing in a zero timeout.
+            && crossterm::event::poll(Duration::from_millis(1)).unwrap_or(false)
         {
             return false;
         }
