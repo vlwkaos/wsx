@@ -2218,12 +2218,8 @@ impl Manager {
                 false
             }
             Next::Wait(until_ms) => {
-                if self.state.limit.is_none() {
-                    self.log(ManagerEvent::Limit {
-                        until: Some(status::resume_time(until_ms, now)),
-                    });
-                }
-                self.hold_on_account(until_ms, 0, ids, events, false, now);
+                let announce = self.state.limit.is_none();
+                self.hold_on_account(until_ms, 0, ids, events, false, announce, now);
                 self.stand_in_if_duties();
                 true
             }
@@ -2287,9 +2283,9 @@ impl Manager {
         let away = self.state.agent.is_some();
         if away {
             let reason = format!(
-                "{} was refused: {why}; waits on {}",
-                self.current_adapter(),
-                self.adapter
+                "back on {}: {} was refused: {why}; waits for it",
+                self.adapter,
+                self.current_adapter()
             );
             self.say(&reason);
             self.rotate(0, Some(reason));
@@ -2302,15 +2298,13 @@ impl Manager {
                 now,
             ));
         }
-        self.log(ManagerEvent::Limit {
-            until: Some(status::resume_time(until_ms, now)),
-        });
-        self.hold_on_account(until_ms, attempt, ids, events, away, now);
+        self.hold_on_account(until_ms, attempt, ids, events, away, true, now);
     }
 
     /// Hold the turn `ids` on the own account until its record ends (`until_ms` as it reads
     /// now); `switched` when a new conversation must see the messages in full, as when the
-    /// hold before was. ref: docs/tasks.md "Agents"
+    /// hold before was; `announce` logs the hold's `limit` entry. ref: docs/tasks.md "Agents"
+    #[allow(clippy::too_many_arguments)]
     fn hold_on_account(
         &mut self,
         until_ms: u64,
@@ -2318,8 +2312,17 @@ impl Manager {
         ids: Vec<u64>,
         events: bool,
         switched: bool,
+        announce: bool,
         now: u64,
     ) {
+        let auth = store::sign_in_failed_until(&self.current_account(), now).is_some();
+        // ^ A `limit` entry names a reset the owner waits for. A sign-in has none: its `stopped`
+        // entry says to sign in again, and a `limit` would show a pause with a time.
+        if announce && !auth {
+            self.log(ManagerEvent::Limit {
+                until: Some(status::resume_time(until_ms, now)),
+            });
+        }
         let before = self.state.limit.as_ref();
         self.state.limit = Some(LimitHold {
             until_ms,
@@ -2327,7 +2330,7 @@ impl Manager {
             ids,
             events,
             switched: switched || before.is_some_and(|hold| hold.switched),
-            auth: store::sign_in_failed_until(&self.current_account(), now).is_some(),
+            auth,
             account: true,
         });
         self.save();

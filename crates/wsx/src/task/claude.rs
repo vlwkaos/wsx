@@ -530,6 +530,23 @@ impl Turns {
         let Some(info) = info.filter(|info| info["status"] == "rejected") else {
             return;
         };
+        // ^ The top-level `resetsAt` and `rateLimitType` are the representative claim's (Claude
+        // Code copies the `anthropic-ratelimit-unified-representative-claim` and `-reset`
+        // headers), which can be a window that still allows calls: a 7-day reset days ahead
+        // was taken for a 5-hour limit. The binding window is one of `unifiedWindows` with
+        // `status: rejected`; with several, the limit lifts when the last of them resets.
+        let binding = info["unifiedWindows"].as_object().and_then(|windows| {
+            windows
+                .iter()
+                .filter(|(_, window)| window["status"] == "rejected")
+                .filter_map(|(name, window)| window["resetsAt"].as_u64().map(|at| (at, name)))
+                .max()
+        });
+        if let Some((at, name)) = binding {
+            self.resets_at = Some(at);
+            self.window = Some(name.clone());
+            return;
+        }
         if let Some(at) = info.get("resetsAt").and_then(Value::as_u64) {
             self.resets_at = Some(at);
         }
