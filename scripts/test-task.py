@@ -7043,7 +7043,9 @@ def part_host(created=None):
     assert (Path(show(s2)['record']['working_copy']) / 's2b.txt').exists()
     # S2, a kept conversation: switched mid-task by a long limit, the task keeps its own conversation
     # and the turn it could not finish on the record, and resumes that conversation on return.
-    s2r = js('task', 'new', 'WORK s2c.txt')['id']
+    s2r = js('task', 'new', 'kept conversation on its own agent')['id']
+    # ^ No WORK in the prompt either: the fake pi commits the first WORK word's file and exits
+    # when a second write of it leaves nothing to commit.
     assert wait_state(s2r, 'ready', 'failed')['record']['adapter'] == 'claude', show(s2r)
     s2r_session = show(s2r)['record']['agent_session']
     assert s2r_session, show(s2r)['record']
@@ -7069,7 +7071,7 @@ def part_host(created=None):
     # resumes its own conversation with the turn the fallback could not finish.
     js('task', 'add', s2r, 'LIMIT 600 WORK s2f.txt')
     wait(lambda: show(s2r)['record']['adapter'] == 'pi', 'the long limit moves the worker again', 40)
-    assert wait_state(s2r, 'ready', 'failed')['state'] == 'ready' and (Path(show(s2r)['record']['working_copy']) / 's2f.txt').exists(), show(s2r)
+    assert wait_state(s2r, 'ready', 'failed')['state'] == 'ready' and (Path(show(s2r)['record']['working_copy']) / 's2f.txt').exists(), (show(s2r)['record'], log(s2r)[-6:])
     js('task', 'add', s2r, 'PIERROR %s WORK s2g.txt' % refusal)
     wait(lambda: show(s2r)['state'] == 'waiting' and show(s2r)['record']['adapter'] == 'claude', 'the refused fallback sends the worker home for the wait', 40)
     assert lc_switches(s2r)[-1][1].startswith('back on claude: was refused: 400') and show(s2r)['record']['agent_session'] == s2r_session, (lc_switches(s2r), show(s2r)['record'])
