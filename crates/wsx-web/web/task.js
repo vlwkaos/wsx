@@ -6,7 +6,7 @@ import { clock, html, Icon, Loading, plural, short, useCoalescedLoad, useEffect,
 import { can, useEventLoad, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { act } from "./task-api.js";
-import { agentWords, taskStage, TaskChip, TaskTitle, withChips } from "./task-words.js";
+import { taskStage, TaskChip, TaskTitle, withChips } from "./task-words.js";
 import { Bubble } from "./bubbles.js";
 import { quoteSplit } from "./reply.js";
 import { SheetBar } from "./ui.js";
@@ -157,7 +157,6 @@ export function TaskPage({ project, task, onClose, onMention, onReply, grip }) {
     <${SheetBar} grip=${grip} onClose=${onClose}>
       ${detail?.title ? html`<${TaskTitle} title=${detail.title} id=${task} />` : html`<span class="bar-label">#${task}</span>`}
       ${detail && !detail.progress && html`<span class="bar-state" data-tone=${taskStage(detail)[1]}>${taskStage(detail)[0]}</span>`}
-      ${detail && !detail.progress && agentWords(detail.agent) && html`<span class="bar-model" title="Model">${agentWords(detail.agent)}</span>`}
     </${SheetBar}>`;
   if (!detail) return html`<div class="page">${top}${failure ? html`<p class="error empty">${failure}</p>` : html`<${Loading} />`}</div>`;
 
@@ -166,20 +165,19 @@ export function TaskPage({ project, task, onClose, onMention, onReply, grip }) {
   const acting = can("task_act");
   const busy = Boolean(action.busy);
   const approval = (request) => ({ kind: "approval", approval: request.id, label: request.label });
-  // ^ With an icon, a phone shows the icon alone and its words stay the name (app.css).
-  const button = (label, onClick, extra = {}, icon = null) => html`
-    <button class="button" type="button" disabled=${busy} title=${icon ? label : null} onClick=${onClick} ...${extra}>
-      ${icon && html`<${Icon} name=${icon} />`}<span class="button-words">${label}</span></button>`;
+  // ^ Words on every width: the sheet's actions are few, and × and ✓ mean Fail and Pass in To check.
+  const button = (label, onClick, extra = {}) => html`
+    <button class="button" type="button" disabled=${busy} onClick=${onClick} ...${extra}>${label}</button>`;
   // ^ The story above says what each action is for; the row holds the buttons alone.
   const buttons = acting ? [
     ...detail.approvals.map((request) => html`
       ${detail.approvals.length > 1 && html`<p class="task-approval">${request.label}</p>`}
-      ${button("Deny", () => action.run("deny", approval(request)), { "aria-label": `Deny: ${request.label}` }, "fail")}
-      ${button("Approve", () => action.run("approve", approval(request)), { "aria-label": request.label }, "pass")}`),
+      ${button("Deny", () => action.run("deny", approval(request)), { "aria-label": `Deny: ${request.label}` })}
+      ${button("Approve", () => action.run("approve", approval(request)), { "aria-label": request.label })}`),
     // ^ A trial: this revision on the live site before it lands (docs/tasks.md "Hold and trial").
     // Pass lands it; a message to the worker, through the manager, fails it; End only frees the live site.
     trial && html`<p class="task-approval" role="status">${TRIAL_WORDS[trial.stage]}</p>`,
-    actions.includes("pass") && button(action.busy === "pass" ? "Landing…" : "Pass and land", () => action.run("pass"), {}, "pass"),
+    actions.includes("pass") && button(action.busy === "pass" ? "Landing…" : "Pass and land", () => action.run("pass")),
     actions.includes("trial_end") && button(action.busy === "trial_end" ? "Ending…" : "End trial", () => action.run("trial_end")),
     // ^ The owner talks to the manager: the composer gets the mention, and the dialog closes in
     // the tap, since a modal dialog makes the composer inert and a phone raises its keyboard
@@ -187,11 +185,11 @@ export function TaskPage({ project, task, onClose, onMention, onReply, grip }) {
     actions.includes("answer") && button("Answer", (event) => {
       event.currentTarget.closest("dialog").close();
       onMention(task);
-    }, { "aria-label": `Answer #${task}: mention it to the manager` }, "reply"),
-    actions.includes("land") && button(action.busy === "land" ? "Landing…" : "Land", () => action.run("land"), {}, "land"),
+    }, { "aria-label": `Answer #${task}: mention it to the manager` }),
+    actions.includes("land") && button(action.busy === "land" ? "Landing…" : "Land", () => action.run("land")),
     // ^ By hand: the owner's own session in the task's copy, with the worker's conversation.
-    // ^ Its name says what happens; the line under the buttons says the rest (docs/web-client-tasks.md "Task sheet").
-    actions.includes("hand") && button(action.busy === "hand" ? "Taking over…" : "Take over", () => action.run("hand"), { "aria-describedby": "hand-hint" }),
+    // ^ The tooltip says the rest (docs/web-client-tasks.md "Task sheet").
+    actions.includes("hand") && button(action.busy === "hand" ? "Taking over…" : "Take over", () => action.run("hand"), { title: "Stops the worker; you continue in its session" }),
     actions.includes("handback") && button(action.busy === "handback" ? "Handing back…" : "Hand back", () => action.run("handback")),
     actions.includes("try") && html`<${TryButton} project=${project} task=${task} />`,
   ].filter(Boolean) : [];
@@ -200,7 +198,6 @@ export function TaskPage({ project, task, onClose, onMention, onReply, grip }) {
   const blocked = acting && actions.includes("land") && detail.land_blocked_by?.length > 0 && html`
     <p class="task-approval" role="note">Land stops: ${detail.default_branch} has uncommitted changes in ${detail.land_blocked_by.join(", ")}. Commit or stash them in the main checkout first.</p>`;
   const held = detail.hold && html`<p class="task-approval">Held: ${detail.hold}</p>`;
-  const handHint = acting && actions.includes("hand") && html`<p class="task-approval task-hint" id="hand-hint">Stops the worker. You continue in its session.</p>`;
   const report = sections(detail.report);
   const entries = detail.timeline.entries;
   // ^ Open items are the owner's to act on, so they stay outside the folds.
@@ -219,7 +216,7 @@ export function TaskPage({ project, task, onClose, onMention, onReply, grip }) {
           <div class="task-next" role="group" aria-label="Actions">
             <div class="actions">${buttons}</div>
             ${blocked}
-          </div>` : null}${handHint}</${TaskStory}>
+          </div>` : null}</${TaskStory}>
 
         ${toCheck && html`
           <section class="task-section" aria-label="To check">

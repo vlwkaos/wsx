@@ -55,6 +55,7 @@ function DayRows({ days, chart, label }) {
   const most = Math.max(1, ...totals);
   const parts = Object.fromEntries(chart.parts.map(([part]) => [part, partCost(days, chart, part)]));
   const total = sum(parts);
+  if (!total) return html`<p class="empty">No spend</p>`;
   const rate = (amounts) => chart.extra && html`<span class="usage-rate" title="Cache hit rate">${chart.extra(amounts)}</span>`;
   return html`
     <section class="usage-chart" data-chart=${chart.name} aria-label=${chart.title}>
