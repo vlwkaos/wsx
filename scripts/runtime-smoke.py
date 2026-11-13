@@ -2488,7 +2488,9 @@ try:
     # parts of 2,000 characters, each ending in a mark that shows when the TUI has taken the
     # part. Each key costs one redraw (the first part sets the cost of that), so the last part
     # must take about as long as the first; a cost that grows with the line (the old loop, which
-    # cut the line one character at a time) makes it take many times as long.
+    # cut the line one character at a time) makes it take many times as long. Each part is more
+    # than crossterm's 1 KiB read: its default Linux source stalled after the first read
+    # (crossterm-rs/crossterm#1142), so the TUI uses its use-dev-tty source (Cargo.toml).
     remove_tui.send(b"i")
     wait_for(lambda: "Enter: send" in remove_tui.text(), "i did not open the composer", seconds=60)
     part_seconds = []
