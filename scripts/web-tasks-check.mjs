@@ -119,16 +119,15 @@ const statusSays = (n, word) => `${statusLines}.some((node) => node.textContent.
 const nextButtons = () => text(".task-sheet .task-next button");
 const hasNext = (label) => `[...document.querySelectorAll('.task-sheet .task-next button')].some((node) => node.textContent === ${JSON.stringify(label)})`;
 const clickNext = (label) => evaluate(`[...document.querySelectorAll('.task-sheet .task-next button')].find((node) => node.textContent === ${JSON.stringify(label)}).click()`);
-// Button room (docs/web-client-tasks.md "Task sheet"): each button as wide as its words; on a
-// phone a button with an icon shows the icon alone and keeps its words as its name.
+// Button room (docs/web-client-tasks.md "Task sheet"): each button shows its words on every
+// width (× and ✓ mean Fail and Pass in To check) and is as wide as them.
 async function buttonRoom(where) {
   const buttons = await evaluate(`[...document.querySelectorAll('.task-sheet .task-next .button')].map((node) => ({
-    name: node.getAttribute('aria-label') || node.textContent.trim(), icon: !!node.querySelector('.icon'), width: Math.round(node.getBoundingClientRect().width),
-    words: Math.round(node.querySelector('.button-words')?.getBoundingClientRect().width ?? 0), cut: node.scrollWidth > node.clientWidth + 1,
-    control: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--size-control')) }))`);
-  const wrong = buttons.filter((button) => !button.name || button.cut || (button.icon && (phone() ? button.width > button.control + 1 || button.words > 1 : button.words < 10)));
-  if (!buttons.some((button) => button.icon) || wrong.length) await fail(`${where}: the buttons do not size to their words: ${JSON.stringify(buttons)}`);
-  fs.appendFileSync(path.join(captures, "button-room.txt"), `${where} at ${size[0]} px: ${buttons.map((button) => `${button.name} ${button.width}`).join(", ")}\n`);
+    name: node.getAttribute('aria-label') || node.textContent.trim(), words: node.textContent.trim(), icon: !!node.querySelector('.icon'),
+    width: Math.round(node.getBoundingClientRect().width), cut: node.scrollWidth > node.clientWidth + 1 }))`);
+  const wrong = buttons.filter((button) => !button.name || button.cut || button.icon || button.words.length < 3);
+  if (!buttons.length || wrong.length) await fail(`${where}: the buttons do not show their words: ${JSON.stringify(buttons)}`);
+  fs.appendFileSync(path.join(captures, "button-room.txt"), `${where} at ${size[0]} px: ${buttons.map((button) => `${button.words} ${button.width}`).join(", ")}\n`);
 }
 // Nothing the new sheet replaced: no steps and no Review row.
 async function lean(where) {
@@ -987,16 +986,12 @@ if (runningRows.length !== 1 || runningRows[0][0] !== "#6" || !/^keep a worker b
 await click(".pill[data-kind=check]");
 await until("!!document.querySelector('.reservoir-list[aria-label=\"To check\"]') && !document.querySelector('.reservoir-list[aria-label=Running]')", "a tap on To check did not switch the list");
 const checkRows = await rows();
-// ^ One row per open item: its task, its check, what passes it, and Fail and Pass as the sheet has them.
-const openChecks = await evaluate(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.open.map((item) => ['#' + item.task, item.check, 'Passes if ' + item.pass_if, 'Reply+Fail: close it, then tell the manager+Works: close this check']))`);
+// ^ One row per open item: its task, its check, what passes it, and Fail and Pass as the sheet has them (two actions, as an approval's row).
+const openChecks = await evaluate(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.open.map((item) => ['#' + item.task, item.check, 'Passes if ' + item.pass_if, 'Fail: close it, then tell the manager+Works: close this check']))`);
 if ((await pressed()) !== "check" || openChecks.length !== 2 || JSON.stringify(checkRows) !== JSON.stringify(openChecks)) await fail(`the To check list is ${JSON.stringify(checkRows)}, not ${JSON.stringify(openChecks)}, with ${await pressed()} pressed`);
-// ^ Reply quotes the item in the manager's composer (a reply of "x" skips it); the item stays open.
-// Fail and Pass close the item first, then quote it the same way (below, in the sheet).
-await evaluate(`${rowOf("#7")}.querySelector('.need-action[title="Reply"]').click()`);
-await until("!!document.querySelector('.composer .reply-quote')", "Reply on a To check row quoted nothing in the composer");
-await evaluate("document.querySelector('.composer .reply-quote button').click()");
-await until("!document.querySelector('.composer .reply-quote')", "× did not remove the quote of a To check row");
-if ((await rows()).length !== 2) await fail("Reply on a To check row changed the list");
+// ^ The row's check keeps room: its text ends before its first action at 390 px.
+const checkRoom = await evaluate(`[...document.querySelectorAll('.reservoir-list .need')].map((row) => row.querySelector('.row-main').getBoundingClientRect().right <= row.querySelector('.row-actions').getBoundingClientRect().left + 1)`);
+if (checkRoom.includes(false)) await fail(`a To check row's text runs under its actions: ${JSON.stringify(checkRoom)}`);
 await shot("pills-check-open", ".composer-send");
 await click(".pill[data-kind=check]");
 await until("!document.querySelector('.reservoir')", "a tap on the open pill did not close its list");
@@ -1034,6 +1029,13 @@ for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
   if (!atOnce.open || atOnce.loading || !atOnce.story) await fail(`a need's sheet did not show its content at once at ${width} px: ${JSON.stringify(atOnce)}`);
   await shot(`need-open-${width}`, ".composer-send");
   await closeSheet("a need's sheet", chat);
+  // ^ #3's land is a pending approval: its sheet offers Approve and Deny, not a Land beside them (`owner_actions`).
+  await openReservoir();
+  await evaluate(`${rowOf("#3")}.querySelector('.row-open').click()`);
+  await until("!!document.querySelector('dialog.task-sheet .task-next button[aria-label=\"Approve land #3\"]')", `#3's sheet shows no Approve at ${width} px`);
+  if ((await nextButtons()).join() !== "Deny,Approve,Take over") await fail(`#3 with a pending land approval offers ${await nextButtons()} at ${width} px`);
+  if ((await evaluate("fetch('api/tasks/' + location.hash.split('/')[2] + '/t/3').then((r) => r.json()).then((task) => task.actions)")).includes("land")) await fail("the API offers Land beside a pending land approval");
+  await closeSheet("#3's sheet", chat);
 }
 // ^ In the wide layout (900 px) three pills carry their words after the count; with four the composer shows icon and count only, so the field keeps a quarter of the row at least (170 of 680 px at 1280 px).
 await resize([1280, 800, 1]);
@@ -1420,6 +1422,13 @@ const choose = async (name, value) => {
 const usageOnlyToday = await choose("period", "today");
 if (usageOnlyToday.head !== "Today" || usageOnlyToday.days !== 1 || usageOnlyToday.turns !== usageAll.turns) await fail(`Today's usage is ${JSON.stringify(usageOnlyToday)} after ${JSON.stringify(usageAll)}`);
 await choose("period", "week");
+// ^ A slice with no spend says so, with its filters kept (the fake worker's results cost nothing).
+await choose("who", "workers");
+await click("#usage-tab-cost");
+await until("!document.querySelector('.usage-chart') && (document.querySelector('#usage-panel .empty')?.textContent ?? '') === 'No spend' && !!document.querySelector('select[name=who]')", "a Cost slice with no spend does not say so");
+await click("#usage-tab-tokens");
+await until("!!document.querySelector('[data-chart=tokens]')", "the Tokens tab did not come back");
+await choose("who", "");
 const usageManager = await choose("who", "manager");
 if (!(usageManager.turns > 0) || !(usageManager.turns < usageAll.turns)) await fail(`the manager's usage is ${JSON.stringify(usageManager)} of ${JSON.stringify(usageAll)}`);
 await choose("who", "");
@@ -2282,8 +2291,8 @@ const sheetWords = await evaluate("document.querySelector('dialog.task-sheet').i
 if (/Asked|Human Verify|Decisions|Review|Pass r\d|Verified/.test(sheetWords)) await fail(`the sheet still shows the verdict or old sections: ${sheetWords}`);
 if (await count(".task-sheet .label, .task-sheet .story-explain, .verify, .verify-note")) await fail("the sheet still has labels, Explain or the Verify panel");
 if ((await text(".task-next button")).join() !== "Land,Take over,Try") await fail(`a ready task offers ${await text(".task-next button")}`);
-const handHint = await evaluate("(() => { const button = [...document.querySelectorAll('.task-next button')].find((node) => node.textContent === 'Take over'); return document.getElementById(button.getAttribute('aria-describedby'))?.textContent ?? ''; })()");
-if (handHint !== "Stops the worker. You continue in its session.") await fail(`Take over does not say what it does: ${handHint}`);
+const handHint = await evaluate("[...document.querySelectorAll('.task-next button')].find((node) => node.textContent === 'Take over')?.title ?? ''");
+if (handHint !== "Stops the worker; you continue in its session" || await count(".task-hint")) await fail(`Take over does not say what it does in its title: ${handHint}`);
 await resize([1280, 800, 1]);
 await shot("task-sheet-take-over-1280", ".composer-send");
 await resize([390, 844, 2]);
@@ -2598,8 +2607,9 @@ const room = await evaluate(`(() => { const list = document.querySelector('.chec
     under: items.every((node, index) => acts[index].top >= box(node.querySelector('.check-words')).bottom),
     edge: acts.every((place) => Math.abs(place.right - acts[0].right) <= 1),
     muted: getComputedStyle(label).color !== getComputedStyle(value).color,
+    stacked: box(label).bottom <= box(value).top + 1 && box(value).width > box(items[0].querySelector('.check-words')).width * 0.95,
     all: !!document.querySelector('dialog.task-sheet header.bar .check-all'), intro: !!document.querySelector('.check-intro') }; })()`);
-if (!room.inline || !room.full || !room.under || !room.edge || !room.muted || !room.all || room.intro) await fail(`the To check items are not laid out on a phone: ${JSON.stringify(room)}`);
+if (!room.inline || !room.full || !room.under || !room.edge || !room.muted || !room.stacked || !room.all || room.intro) await fail(`the To check items are not laid out on a phone: ${JSON.stringify(room)}`);
 // ^ #8's capture is a video (docs/web-client-tasks.md "To check"): its poster with a play mark,
 // served with byte ranges for iPhone Safari, and the viewer plays it with controls, no autoplay.
 const videoLink = ".check-list .check-item:nth-child(2) .check-capture";
@@ -2762,6 +2772,8 @@ await evaluate("setTimeout(() => history.back())");
 await until("location.href === 'about:blank'", "history.back() after Back on the first entry did not leave the page");
 await send("Page.navigate", { url: `${siteUrl}#/p/${project}/t/3` });
 await until("!!document.querySelector('dialog.task-sheet[open] .story') && !!document.querySelector('.composer-field')", "the deep link did not open again");
+// ^ A done task's top row holds its title and stage word, not its model too.
+if (await count("dialog.task-sheet .bar .bar-model")) await fail("a done task's top row shows its model");
 await evaluate("history.back()");
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "history.back() after the deep link did not close the sheet");
 await evaluate("setTimeout(() => history.back())");
@@ -4284,10 +4296,14 @@ await closeSheet("the page", `#/p/${plansArg}`);
   fs.writeFileSync(path.join(kept, "r1-1.png"), drawn[1]);
   fs.copyFileSync(path.join(folder, "clip.mp4"), path.join(kept, "r1-2.mp4"));
   fs.writeFileSync(path.join(kept, "r1-2.poster.png"), drawn[2]);
+  // ^ A portrait capture (240 x 320) fills its square tile, it does not stretch it to its own height.
+  const tall = await evaluate(`(() => { const canvas = Object.assign(document.createElement('canvas'), { width: 240, height: 320 }); const pen = canvas.getContext('2d');
+    pen.fillStyle = '#7a3d8c'; pen.fillRect(0, 0, 240, 320); pen.fillStyle = '#ffffff'; pen.fillRect(120, 220, 120, 100); return canvas.toDataURL('image/png'); })()`);
+  fs.writeFileSync(path.join(kept, "r1-4.png"), Buffer.from(tall.split(",")[1], "base64"));
   const now = Date.now();
   const item = (id, check, state, capture, poster, at) => JSON.stringify({ id, task: 1, revision: 1, commit: "0".repeat(40), check, pass_if: "it reads well", state, capture, ...(poster && { poster }), unix_ms: at });
   fs.appendFileSync(checksFile, [item("c900", "the chart reads", "passed", "captures/r1-1.png", null, now - 5000), item("c901", "the clip plays", "skipped", "captures/r1-2.mp4", "captures/r1-2.poster.png", now - 4000),
-    item("c902", "the old shot", "failed", "captures/r1-3.png", null, now - 3000)].join("\n") + "\n");
+    item("c902", "the old shot", "failed", "captures/r1-3.png", null, now - 3000), item("c903", "the tall shot", "passed", "captures/r1-4.png", null, now - 2000)].join("\n") + "\n");
   fs.copyFileSync(path.join(folder, "clip.mp4"), path.join(folder, "bare.mp4"));
   reply(9_500_003, `A clip with no picture beside it: ![Bare](files/${base}/bare.mp4)`);
   reply(9_500_004, `A shot that is gone: ![Gone](files/${base}/gone.jpg)`);
@@ -4335,7 +4351,7 @@ await closeSheet("the page", `#/p/${plansArg}`);
     await chip("All");
     await until(`${tiles}.length >= 13`, "All did not bring the list back");
     await evaluate(`(() => { const select = document.querySelector('.media-task select'); select.value = '1'; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-    await until(`${tiles}.length === 3 && [...${tiles}].every((tile) => /#1$/.test(tile.querySelector('.task-chip')?.textContent ?? ''))`, "the task filter does not keep the task's three captures");
+    await until(`${tiles}.length === 4 && [...${tiles}].every((tile) => /#1$/.test(tile.querySelector('.task-chip')?.textContent ?? ''))`, "the task filter does not keep the task's four captures");
     await evaluate(`(() => { const select = document.querySelector('.media-task select'); select.value = ''; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
     await until(`${tiles}.length >= 13`, "the task filter did not clear");
     // ^ A video tile opens the viewer and plays; the poster-less clip plays too.

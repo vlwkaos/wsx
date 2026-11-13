@@ -394,7 +394,7 @@ pub fn agent_label(agent: &Value) -> Option<String> {
 /// read this and no client makes its own rule. The host still decides; this only picks what
 /// is offered. `status_kind` is the status's `kind`, `trial_stage` the stage of the project's
 /// trial when it is this task's, `preview` whether the project sets `tasks.preview`.
-/// - `land`: a ready task with no trial; `pass`: lands the revision on a live trial.
+/// - `land`: a ready task with no trial and no pending approval of its own; `pass`: lands the revision on a live trial.
 /// - `hand`, `handback`: take a build over in its working copy and give it back
 ///   (docs/tasks.md "By hand"); `trial_end` frees the live site (docs/tasks.md "Hold and trial").
 /// - `answer`: the owner talks to the manager: a wait for the owner or a failure.
@@ -419,9 +419,11 @@ pub fn owner_actions(
         (TaskState::Waiting, Some(WaitOn::Hand)) => actions.push("handback"),
         (TaskState::Ready, _) => {
             match trial_stage {
-                None => actions.push("land"),
+                // ^ A pending approval of this task is the owner's deed to decide: no second
+                // button for the same land beside Approve.
+                None if status_kind != Some("approval") => actions.push("land"),
                 Some("live") => actions.push("pass"),
-                Some(_) => {}
+                _ => {}
             }
             actions.push("hand");
         }
