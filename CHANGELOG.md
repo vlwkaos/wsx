@@ -170,6 +170,7 @@
 
 ### Fixed
 
+- Tasks: a silent worker is reported as stalled once per silence. The quiet check counted every write to the task's log, so a land notice, an `add` or a steer restarted the clock and the same hung turn was reported again 31 minutes later (5 times for one task in a day). Only the worker's own output (agent, blocked, result, checks and check-run entries, check logs) counts now ([docs/tasks.md](docs/tasks.md) "Manager").
 - TUI on Linux: keys that arrive faster than the TUI reads them, such as a paste in a terminal without bracketed paste, are no longer cut off after 1 KiB until the next key press. crossterm's default input source read one 1,024-byte chunk and waited for new input before it read the rest (crossterm-rs/crossterm#1142); wsx now reads through crossterm's `/dev/tty` source.
 - TUI on macOS: a key and the pane output it causes show again within about 7 ms, not about 30 ms. The Linux input fix above also changed macOS to crossterm's `/dev/tty` source, which waits in `select()`, and macOS timer coalescing stretched the TUI's 4 ms wait to about 30 ms. The `/dev/tty` source is now used on Linux only; macOS cannot have the 1 KiB stall, because its pty input queue holds at most 1,022 bytes.
 - Chats: a chat other than the first opens with its own log only. The web drew the project's resolutions ("was closed", "approved") into every chat; a chat other than the first now shows only its own log, in the web and the TUI alike ([docs/tasks.md](docs/tasks.md) "Chats").

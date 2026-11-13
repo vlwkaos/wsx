@@ -3,7 +3,7 @@
 //! every `SWEEP` and reports each stall once. ref: docs/tasks.md "Manager" (Stalls)
 
 use super::status::{self, span};
-use super::store::{self, TaskDir, LOG_FILE};
+use super::store::{self, TaskDir};
 use super::{call_host, view, HostRequest, LogEvent, TaskRecord, TaskState, WaitOn};
 use crate::config::project::load_task_config;
 use crate::model::workspace::DEFAULT_MANAGER_REVIEW_SECS;
@@ -137,7 +137,7 @@ fn running(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
         words: format!("{state} for {lasted}; {evidence}"),
         why,
     };
-    let progress = progress_ms(dir);
+    let progress = progress_ms(dir, record);
     if !host_answers(dir) {
         return Some(stall(
             format!("host {progress}"),
@@ -217,7 +217,7 @@ fn running(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
 pub fn stuck(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<String> {
     let stall = running(dir, record, now_ms)?;
     let until = record.waiting.as_ref().and_then(|waiting| waiting.until_ms);
-    let settled = progress_ms(dir).max(until.unwrap_or(0));
+    let settled = progress_ms(dir, record).max(until.unwrap_or(0));
     (now_ms.saturating_sub(settled) > grace().as_millis() as u64).then_some(stall.why)
 }
 
@@ -267,7 +267,7 @@ fn holder_stall(own_project_id: &str, project: &str, id: u32, now_ms: u64) -> Op
     if !host_answers(&dir) {
         return Some("whose host does not answer".into());
     }
-    let progress = progress_ms(&dir);
+    let progress = progress_ms(&dir, &holder);
     quiet(&dir, &holder, progress, now_ms).map(|evidence| format!("which has {evidence}"))
 }
 
@@ -292,8 +292,12 @@ fn host_answers(dir: &TaskDir) -> bool {
     call_host(&dir.socket_path(), &HostRequest::Status, PROBE).is_ok()
 }
 
-/// The newest write to the task's log or a check's output, in unix ms.
-pub fn progress_ms(dir: &TaskDir) -> u64 {
+/// The newest output of the task's worker or its checks, in unix ms: the last agent, blocked,
+/// result, checks or check-run entry of the log, a `check-*.log` write, or the state's start
+/// (a new turn). An entry the manager or the host wrote (a message of any kind, `after`, `hold`,
+/// a land notice) is no progress: it would restart the quiet clock of a hung worker and make a
+/// new marker for the same silence. ref: docs/tasks.md "Manager" (Stalls)
+pub fn progress_ms(dir: &TaskDir, record: &TaskRecord) -> u64 {
     let mtime = |path: &Path| {
         std::fs::metadata(path)
             .and_then(|metadata| metadata.modified())
@@ -301,6 +305,21 @@ pub fn progress_ms(dir: &TaskDir) -> u64 {
             .and_then(|at| at.duration_since(UNIX_EPOCH).ok())
             .map_or(0, |at| at.as_millis() as u64)
     };
+    let output = dir
+        .last_entry(|entry| {
+            matches!(
+                entry.event,
+                LogEvent::Agent { .. }
+                    | LogEvent::Blocked { .. }
+                    | LogEvent::Result { .. }
+                    | LogEvent::Checks { .. }
+                    | LogEvent::CheckRun { .. }
+            )
+            .then_some(entry.unix_ms)
+        })
+        .ok()
+        .flatten()
+        .unwrap_or(0);
     let checks = std::fs::read_dir(&dir.path).into_iter().flatten().flatten();
     checks
         .filter(|entry| {
@@ -309,12 +328,12 @@ pub fn progress_ms(dir: &TaskDir) -> u64 {
             name.starts_with("check-") && name.ends_with(".log")
         })
         .map(|entry| mtime(&entry.path()))
-        .chain([mtime(&dir.file(LOG_FILE))])
+        .chain([output, record.state_unix_ms.max(record.created_unix_ms)])
         .max()
         .unwrap_or(0)
 }
 
-/// "its last write 2 h ago; its log ends with agent \"cargo build\"".
+/// "its last output 2 h ago; its log ends with agent \"cargo build\"".
 fn last_entry(dir: &TaskDir, progress: u64, now_ms: u64) -> String {
     let ago = span(now_ms.saturating_sub(progress));
     let entry = dir
@@ -329,8 +348,8 @@ fn last_entry(dir: &TaskDir, progress: u64, now_ms: u64) -> String {
                 let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
                 format!(" \"{}\"", view::clip(&text, LAST_ENTRY_CHARS))
             });
-            format!("its last write {ago} ago; its log ends with {kind}{text}")
+            format!("its last output {ago} ago; its log ends with {kind}{text}")
         }
-        None => format!("its last write {ago} ago"),
+        None => format!("its last output {ago} ago"),
     }
 }
