@@ -7166,7 +7166,7 @@ def part_host(created=None):
         data['limit'] = {'until_ms': int(time.time() * 1000) - 3600_000, 'attempt': 0, 'ids': [], 'events': True, 'switched': True}
         (manager_log.parent / 'state.json').write_text(json.dumps(data))
         return len(traces()), int(time.time() * 1000)
-    lc_pi_manager = lambda since: [t for t in traces()[since:] if t.get('adapter') == 'pi' and t.get('launch') and t.get('manager')]
+    lc_pi_manager = lambda since: [t for t in traces()[since:] if t.get('adapter') == 'pi' and t.get('launch') and not t.get('worker')]
     lc_rotated_since = lambda at, words: any(e['kind'] == 'rotated' and e.get('reason', '').startswith(words) and e['unix_ms'] >= at for e in manager_entries())
     (agents / 'pi-fake.json').unlink(missing_ok=True)
     limit_file.unlink(missing_ok=True)
