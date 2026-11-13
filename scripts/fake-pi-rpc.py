@@ -2,7 +2,8 @@
 """Model-free stand-in for `pi --mode rpc`, used by test-task.py as a fallback agent.
 
 Each `prompt` command is one run. `PIREFUSE <file>` refuses the prompt command itself with the words
-of <file>, as Pi does without an API key: no run follows. `PIERROR <file>` ends the run as a provider's refusal, with the
+of <file>, as Pi does without an API key: no run follows. `PIHANG <file>` starts a run that writes nothing
+until <file> exists. `PIERROR <file>` ends the run as a provider's refusal, with the
 words of <file> as the error; `PICOST <usd>` reports that cost for the run; `PICTX <n>` reports a context of n tokens. A worker (its instructions name a task worker) does
 `WORK <file>` (writes and commits it) and sends its result to `wsx task result -`, as the
 Pi adapter's instructions ask; a manager answers "pi answers: <first line>". The run then
@@ -23,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 TRACE = os.environ.get('FAKE_CLAUDE_TRACE') or os.path.join(os.getcwd(), '..', 'fake-claude.trace')
 
@@ -172,6 +174,11 @@ def main():
         own = text.split('\n\nNotes that match this message', 1)[0].rsplit('Owner (message', 1)[-1]
         own = own.split('Events (message', 1)[0].split()
         # ^ Event lines name tasks by title, and a title may hold a word of this fake: it is no owner's word.
+        if 'PIHANG' in own and not os.path.exists(own[own.index('PIHANG') + 1]):
+            # ^ A run that writes nothing until the file exists: the host ends it by its quiet bound.
+            trace({'session': session, 'hang': own[own.index('PIHANG') + 1]})
+            while not os.path.exists(own[own.index('PIHANG') + 1]):
+                time.sleep(0.5)
         if 'PIERROR' in own:
             with open(own[own.index('PIERROR') + 1]) as refusal:
                 error = refusal.read().strip()

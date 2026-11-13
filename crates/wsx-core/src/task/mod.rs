@@ -240,6 +240,20 @@ impl Actor {
     }
 }
 
+/// A task's own agent, and while the task is away on a fallback, the conversation and the turn
+/// its return resumes. ref: docs/tasks.md "Agents"
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Home {
+    pub adapter: String,
+    pub model: String,
+    /// The own conversation, kept while the task is away; none when it had not started one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// The turn the own agent could not finish, which the return continues; empty at home.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub turn: String,
+}
+
 /// `task.json`: what the task is and where it runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskRecord {
@@ -258,14 +272,15 @@ pub struct TaskRecord {
     /// ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub effort: String,
-    /// The task runs on a fallback agent: a usage limit switched it (`LogEvent::AgentSwitch`).
-    /// Not set on a record from before it. ref: docs/tasks.md "Agents"
+    /// The task runs on a fallback agent: a usage limit or a failed sign-in switched it
+    /// (`LogEvent::AgentSwitch`). Not set on a record from before it. ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fallback: bool,
-    /// The fallback was a failed sign-in's: with a turn to start, the own agent is tried again
-    /// once its sign-in record ends. ref: docs/tasks.md "Agents"
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub sign_in: bool,
+    /// The agent the task was made for, where it returns once that agent's limit or failed
+    /// sign-in is over. Absent on a record from before it: the host fills it in.
+    /// ref: docs/tasks.md "Agents"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<Home>,
     pub checks: Vec<String>,
     /// `tasks.workflow.steps` as they were when the task was created, and the index of the
     /// step the worker is on. ref: docs/tasks.md "Workflow"
