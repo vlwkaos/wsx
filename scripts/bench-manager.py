@@ -9,11 +9,15 @@ a fake `wsx` on PATH that serves a fixture ledger, and fixed turns. `synthetic` 
 an events turn with a review due). `logged` replays batches of the 2026-11-04 manager log
 (docs/design/manager-reliability.md), each in a fresh conversation after its handover, and one
 sonnet call judges whether each reply answers its owner messages. The instructions come from
-crates/wsx/src/task/manager.rs: `before` reads them at BEFORE_COMMIT and its turn text has no
-"Answer message <id> first." line, `after` from the working copy; both send the ledger summary,
-rotate on the last call's context and use eventModel for event-only turns. `after-nof` is
+crates/wsx/src/task/instructions.rs: `before` reads them at `--before <commit>` (default
+BEFORE_COMMIT, where they were in manager.rs) and its turn text has no "Answer message <id>
+first." line and no `since then:` line, `after` from the working copy; both send the ledger
+summary, rotate on the last call's context and use eventModel for event-only turns. `after-nof` is
 `after` with every turn on the manager model. It prints one JSON line per turn; the host itself
 is tested by scripts/test-task.py.
+`stale` is the 2026-11-13 events turn whose three limit waits had ended before the manager read
+them (reply 4413 told the owner the tasks were paused until 03:20); the ledger shows the tasks
+working, and a sonnet judge says whether the reply claims a limit holds now.
 `discussion` is two owner turns (review points one by one, then 'agreed on A and C, do them') and checks
 the tool calls: no `wsx task new`/`add`/`steer` in the first turn, exactly one new or add in the second.
 Bash runs with bypassPermissions here, so no auto-mode classifier call adds to the measured
@@ -80,11 +84,20 @@ else:
 
 def unescape(literal):
     """A Rust string literal's text: line continuations joined, escapes resolved."""
-    return re.sub(r'\\\n\s*', '', literal).replace('\\"', '"').replace('\\\\', '\\')
+    return re.sub(r'\\\n\s*', '', literal).replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
+
+
+def source_at(commit):
+    """instructions.rs at `commit`, or manager.rs where the instructions were before task #336."""
+    for path in ('crates/wsx/src/task/instructions.rs', 'crates/wsx/src/task/manager.rs'):
+        run = subprocess.run(['git', 'show', '%s:%s' % (commit, path)], cwd=ROOT, capture_output=True, text=True)
+        if run.returncode == 0 and 'fn instructions(' in run.stdout:
+            return run.stdout
+    raise SystemExit('no instructions() at %s' % commit)
 
 
 def instructions(source, project, notes, page):
-    """The manager's instructions as instructions() in task/instructions.rs formats them (manager.rs before BEFORE_COMMIT)."""
+    """The manager's instructions as instructions() in task/instructions.rs formats them."""
     body = source.split('fn instructions(', 1)[1]
     literal = re.search(r'format!\(\s*"(You are the manager(?:[^"\\]|\\.)*)"', body, re.S).group(1)
     # ^ The default workflow (no review) and the shared presentation rule.
@@ -246,6 +259,47 @@ def logged(state):
     ]
 
 
+def stale(state):
+    """The 2026-11-13 00:06 events (manager log 4409-4412), read at 00:41 when the limit had ended:
+    the ledger shows the four tasks working again."""
+    def open_task(n, title):
+        return {'id': n, 'open': True, 'record': {'id': n, 'created_by': 'manager'},
+                'row': {'id': n, 'title': title, 'state': 'working', 'revision': 0}}
+    state['tasks'] = [open_task(422, 'Lean orchestration design on Fable'),
+                      open_task(423, 'Usage limit falls to local model'),
+                      open_task(426, 'Web GUI polish audit on Fable'),
+                      open_task(427, 'Task time and cost audit on Fable')]
+    state['ledger_extra']['to_check'] = 0
+    limit = ('waits on limit: Waiting for the usage limit for less than a minute: claude usage limit; resumes at '
+             '03:20. It goes on by itself then, one task at a time.; worker says: ')
+    release = ('release of ca9b2f227745 failed (exit 1); its output ends:\n    error: could not compile `wsx-core` '
+               '(lib) due to 1 previous error\n    Error: Process completed with exit code 101.')
+    return [([], [([('Events', 4409, '#426 waiting r0: Web GUI polish audit on Fable; %s\n#427 waiting r0: Task time and '
+                                   'cost audit on Fable; %s' % (limit, limit)),
+                    ('Events', 4410, '#423 waiting r0: Usage limit falls to local model; %sAssuming: the endpoint stays '
+                                     'down while I build, so the live LFM3 proof may en…' % limit),
+                    ('Events', 4411, '#422 waiting r0: Lean orchestration design on Fable; %sPlan for '
+                                     'docs/design/orchestration-lean.md (doc only, no code).' % limit),
+                    ('Events', 4412, release)], None, False)])]
+
+
+def since_then(state, blocks):
+    """The host's line under a turn's events (Manager::since_then): each task whose last
+    `#<n> <state> r<k>` line no longer matches the ledger."""
+    heads = {}
+    for author, _, text in blocks:
+        if author != 'Events':
+            continue
+        for line in text.splitlines():
+            found = re.match(r'#(\d+) (\w+) r(\d+):', line)
+            if found and found.group(2) != 'stalled':
+                heads[int(found.group(1))] = (found.group(2), int(found.group(3)))
+    rows = {t['id']: t['row'] for t in state['tasks']}
+    changed = ['#%d %s r%d' % (n, rows[n]['state'], rows[n]['revision']) for n, head in heads.items()
+               if n in rows and (rows[n]['state'], rows[n]['revision']) != head]
+    return 'since then: %s\n\n' % ', '.join(changed) if changed else ''
+
+
 def summary(state, baseline):
     """The host's ledger summary, in the format of Manager::ledger_summary."""
     counts = {}
@@ -342,11 +396,11 @@ def tool_kind(block):
     return 'git' if re.match(r'\s*git\b', command) else 'bash'
 
 
-def run_once(mode, number, out, cases):
+def run_once(mode, number, out, cases, before):
     base = Path(tempfile.mkdtemp(prefix='bench-%s-%d-' % (mode, number), dir=os.environ.get('TMPDIR')))
     project, copy, tip, state = fixture(base)
     conversations = {'synthetic': lambda: turns(copy, tip), 'logged': lambda: logged(state),
-                     'discussion': discussion}[cases]()
+                     'discussion': discussion, 'stale': lambda: stale(state)}[cases]()
     notes = base / 'manager/notes'
     notes.mkdir(parents=True)
     page = base / 'overview.md'
@@ -359,9 +413,7 @@ def run_once(mode, number, out, cases):
     state_file.write_text(json.dumps(state))
     env = dict(os.environ, PATH='%s:%s' % (bindir, os.environ['PATH']), BENCH_STATE=str(state_file),
                BENCH_CALLS=str(calls), GIT_OPTIONAL_LOCKS='0')
-    source = (subprocess.run(['git', 'show', '%s:crates/wsx/src/task/manager.rs' % BEFORE_COMMIT], cwd=ROOT,
-                             capture_output=True, text=True, check=True).stdout if mode == 'before'
-              else (ROOT / 'crates/wsx/src/task/instructions.rs').read_text())
+    source = source_at(before) if mode == 'before' else (ROOT / 'crates/wsx/src/task/instructions.rs').read_text()
     launch = instructions(source, 'bench', str(notes), str(page))
     rows, index = [], 0
     for history, conversation in conversations:
@@ -381,6 +433,8 @@ def run_once(mode, number, out, cases):
             if mode != 'before' and owner and events:
                 message += 'Answer message%s %s first.\n\n' % ('s' if len(owner) > 1 else '',
                                                                ', '.join(map(str, owner)))
+            if mode != 'before':
+                events += since_then(state, blocks)
             message = (message + events).rstrip()
             model = EVENT_MODEL if mode != 'after-nof' and not owner and not review_due else MAIN_MODEL
             fresh = agent is None
@@ -432,29 +486,51 @@ JUDGE_SCHEMA = {'type': 'object', 'required': ['answers'], 'properties': {'answe
                    'kinds': {'type': 'array', 'items': {'enum': ['A', 'C', 'E']}}}}}}}
 
 
-def judge(rows):
-    """One sonnet call, as scripts/retrospect.py judges: each owner id answered or not."""
-    data = {'turns': [{'earlier': r['earlier'], 'message': r['message'], 'reply': r['reply'],
-                       'answers': r['owner_ids']} for r in rows if r['owner_ids']]}
+STALE_PROMPT = """You judge one chat reply of a software project manager agent to its owner. The input JSON
+holds the turn's message (events from the tool wsx and the ledger summary) and the manager's `reply`.
+Decide `claims_limit`: the reply tells the owner, as a fact that holds now, that one or more tasks wait
+for or are paused by a usage limit, or that they resume at 03:20. A reply that says the waits ended,
+or says nothing about a limit, does not claim it. In `tasks`, list the task numbers the reply says
+wait now (empty when none). Answer only through the schema."""
+STALE_SCHEMA = {'type': 'object', 'required': ['claims_limit', 'tasks'],
+                'properties': {'claims_limit': {'type': 'boolean'}, 'tasks': {'type': 'array', 'items': {'type': 'integer'}}}}
+
+
+def ask_sonnet(system, schema, data):
     run = subprocess.run(['claude', '-p', '--model', 'sonnet', '--effort', 'high', '--output-format', 'json',
-                          '--no-session-persistence', '--tools', '', '--system-prompt', JUDGE_PROMPT,
-                          '--json-schema', json.dumps(JUDGE_SCHEMA)],
+                          '--no-session-persistence', '--tools', '', '--system-prompt', system,
+                          '--json-schema', json.dumps(schema)],
                          input=json.dumps(data), capture_output=True, text=True, cwd=os.environ.get('TMPDIR', '/'),
                          timeout=600)
     answer = json.loads(run.stdout)
     if answer.get('is_error') or not isinstance(answer.get('structured_output'), dict):
         raise RuntimeError('the judge call failed: %s' % str(answer.get('result'))[:200])
-    answers = answer['structured_output']['answers']
+    return answer['structured_output'], answer.get('total_cost_usd', 0.0)
+
+
+def judge_stale(rows):
+    """One sonnet call: whether the reply to the stale events claims the limit holds."""
+    row = rows[-1]
+    return ask_sonnet(STALE_PROMPT, STALE_SCHEMA, {'message': row['message'], 'reply': row['reply']})
+
+
+def judge(rows):
+    """One sonnet call, as scripts/retrospect.py judges: each owner id answered or not."""
+    data = {'turns': [{'earlier': r['earlier'], 'message': r['message'], 'reply': r['reply'],
+                       'answers': r['owner_ids']} for r in rows if r['owner_ids']]}
+    answer, cost = ask_sonnet(JUDGE_PROMPT, JUDGE_SCHEMA, data)
+    answers = answer['answers']
     missing = {n for r in rows for n in r['owner_ids']} - {a['id'] for a in answers}
     if missing:
         raise RuntimeError('the judge left out %s' % sorted(missing))
-    return answers, answer.get('total_cost_usd', 0.0)
+    return answers, cost
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', required=True, choices=['before', 'after', 'after-nof'])
-    parser.add_argument('--cases', default='synthetic', choices=['synthetic', 'logged', 'discussion'])
+    parser.add_argument('--cases', default='synthetic', choices=['synthetic', 'logged', 'discussion', 'stale'])
+    parser.add_argument('--before', default=BEFORE_COMMIT, help='the commit whose instructions `before` reads')
     parser.add_argument('--model', help='the model of every turn, to bound the cost')
     parser.add_argument('--runs', type=int, default=3)
     parser.add_argument('--out', default=os.environ.get('TMPDIR', '.'))
@@ -467,8 +543,13 @@ def main():
     spent = 0.0
     with path.open('a') as out:
         for number in range(1, options.runs + 1):
-            rows = run_once(options.mode, number, out, options.cases)
+            rows = run_once(options.mode, number, out, options.cases, options.before)
             spent += sum(row['cost_usd'] for row in rows)
+            if options.cases == 'stale':
+                verdict, cost = judge_stale(rows)
+                spent += cost
+                print(json.dumps({'mode': options.mode, 'run': number, **verdict, 'reply': rows[-1]['reply'][:400]}), flush=True)
+                out.write(json.dumps({'mode': options.mode, 'run': number, 'judged': verdict}) + '\n')
             if options.cases == 'logged':
                 answers, cost = judge(rows)
                 spent += cost

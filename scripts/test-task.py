@@ -809,11 +809,12 @@ def manager_up(created):
                  'stands alone, since a worker cannot ask', 'in every task new', 'With `--plan` the worker',
                  'Before `wsx task new`, compare the request', 'Never ask the owner to wait',
                  'for lean code', 'never send a task back to rebase', 'trust them over the worker',
-                 'Check the fixture rule.', 'runs with `--size small`', 'open with `> message <id>`', 'Only events that need you start a turn',
+                 'Check the fixture rule.', 'runs with `--size small`', 'open with `> message <id>`', 'Say as fact only what wsx reported or you checked',
                  'tell that worker to prove it', 'never skip or fail items', 'only when the owner\'s message of this turn says',
-                 'A release refuses while items are open, unless the owner', '`wsx task trial <n>`',
+                 '`release` (with open To check items they stay to check on it)', '`wsx task trial <n>`',
+                 'the `since then:` line under an Events message', 'come as `worker says (unchecked)`',
                  '`--owner-said <id>`', 'never name a message that did not ask',
-                 'call a change live only when', 'On `hand`, the owner works in its copy',
+                 'live only when a deploy or release event names its task live', 'On `hand`, the owner works in its copy',
                  'Nothing asks you for permission', 'read-only git in Bash', '`wsx task new --into <n>`',
                  'only after the owner says yes, commit', 'also in a pipe or with a heredoc',
                  'the Skill tool as `owner:<name>`', 'check rather than guess',
@@ -2282,7 +2283,7 @@ def part_core(created=None):
     merged = wait(lambda: events_with('#%d ready r1' % first, '#%d ready r1' % second), 'merged events')
     assert len(merged) == 1, merged
     # ^ An event names the host's checks before the worker's own words.
-    assert '#%d ready r1: NOOP; checks 1 of 1 passed; worker says: did: NOOP' % first in merged[0]['text'], merged
+    assert '#%d ready r1: NOOP; checks 1 of 1 passed; worker says (unchecked): did: NOOP' % first in merged[0]['text'], merged
     # ^ A turn takes every waiting message of one author: an earlier events message may share it.
     delivered = wait(lambda: (lambda ids: ids if any(merged[0]['id'] in batch for batch in ids) else None)(
         [e['ids'] for e in manager_entries() if e['kind'] == 'delivered']), 'merged events delivered')
@@ -4402,6 +4403,28 @@ def part_worker(created=None):
     assert wait_state(held, 'ready', 'failed')['state'] == 'ready', log(held)
     js('task', 'close', held, '--discard')
 
+    # 27d. A turn reads its events as wsx wrote them; a line under them says what holds now for
+    # each task that moved on since (docs/tasks.md "Manager", Events): the limit wait of a
+    # task that works again by the time the owner's turn takes the event along.
+    mark('27d')
+    release = base / 'stale-release'
+    stale = js('task', 'new', 'LIMIT 4 WAIT %s WORK ls.txt' % release)['id']
+    wait(lambda: limited(stale), 'the task waits on the limit', 30)
+    stale_event = wait(lambda: events_with('#%d waiting r0' % stale, 'waits on limit'), 'the limit wait event', 30)[0]
+    wait(lambda: show(stale)['state'] == 'working', 'the task works again', 30)
+    asked = js('task', 'say', 'STATUS after the stale wait')
+    reply_to(asked['id'])
+    stale_turn = turn_with('STATUS after the stale wait')['message']
+    assert 'Events (message %d)' % stale_event['id'] in stale_turn and '#%d waiting r0' % stale in stale_turn, stale_turn
+    assert '\n\nsince then: #%d working r0\n\n' % stale in stale_turn, stale_turn
+    assert stale_turn.index('since then:') > stale_turn.index('#%d waiting r0' % stale), stale_turn
+    release.write_text('')
+    assert wait_state(stale, 'ready', 'failed')['state'] == 'ready', log(stale)
+    # ^ The task's last event line is current: no line says what it already says.
+    stale_ready = wait(lambda: turn_with('#%d ready r1' % stale), 'the ready turn', 30)['message']
+    assert 'since then:' not in stale_ready, stale_ready
+    js('task', 'close', stale, '--discard')
+
     # 28. A land deploys by itself with tasks.deploy.auto; deploys run one at a time and a
     mark('28')
     # deploy that waited runs for the newest commit, so quick lands skip the ones between.
@@ -4423,6 +4446,12 @@ def part_worker(created=None):
     deployed_commits = deploy_log.read_text().split()
     assert deployed_commits[0] == tips[0] and deployed_commits[-1] == tips[-1] and tips[1] not in deployed_commits, (tips, deployed_commits)
     assert js('task', 'deployed')['deploy']['commit'] == tips[-1]
+    # ^ A deploy's event names the tasks it put live: those landed since the previous deploy
+    # (docs/tasks.md "Deploy and release"), so no one reads `deploys` to say what is live.
+    first_deploy = wait(lambda: events_with('deploy of %s succeeded after' % tips[0][:12]), 'the first deploy event', 30)[0]['text']
+    assert re.search(r'deploy of %s succeeded after \d+ s: (#\d+, )*#%d( live|, #\d+)' % (tips[0][:12], quick[0]), first_deploy), first_deploy
+    newest_deploy = wait(lambda: events_with('deploy of %s succeeded after' % tips[-1][:12]), 'the newest deploy event', 30)[0]['text']
+    assert re.search(r'deploy of %s succeeded after \d+ s: #%d, #%d live(\n|$)' % (tips[-1][:12], quick[1], quick[2]), newest_deploy), newest_deploy
     for n in quick:
         wait_closed(n)
     follow_up = state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'follow-up.log'

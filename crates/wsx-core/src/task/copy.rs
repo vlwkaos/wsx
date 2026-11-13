@@ -590,9 +590,18 @@ pub fn unlanded_commits(main: &Path, branch: &str, target: &str) -> Result<u32> 
 
 /// Commits in `from..to`, or all of `to` when `from` is none.
 pub fn commits_after(main: &Path, from: Option<&str>, to: &str) -> Result<u32> {
-    let range = from.map_or_else(|| to.to_string(), |from| format!("{from}..{to}"));
-    let count = git(main, &["rev-list", "--count", &range])?;
+    let count = git(main, &["rev-list", "--count", &commit_range(from, to)])?;
     count
         .parse()
         .with_context(|| format!("git rev-list returned {count:?}"))
+}
+
+/// The commits in `from..to` (all of `to` when `from` is none), newest first, full ids.
+pub fn commits_in(main: &Path, from: Option<&str>, to: &str) -> Result<Vec<String>> {
+    let list = git(main, &["rev-list", &commit_range(from, to)])?;
+    Ok(list.lines().map(str::to_string).collect())
+}
+
+fn commit_range(from: Option<&str>, to: &str) -> String {
+    from.map_or_else(|| to.to_string(), |from| format!("{from}..{to}"))
 }

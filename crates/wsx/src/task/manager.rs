@@ -985,8 +985,13 @@ impl Manager {
                 json!({ "commit": record.commit, "exit": record.exit }),
             );
             if record.exit == Some(0) {
+                // ^ A trial puts an unlanded revision live: no landed task is live by it.
+                let live = match record.trial {
+                    Some(_) => String::new(),
+                    None => self.made_live(&records, record),
+                };
                 let line = format!(
-                    "{} of {:.12} succeeded after {} s",
+                    "{} of {:.12} succeeded after {} s{live}",
                     ledger::kind_name(record.kind),
                     record.commit,
                     record.duration_ms / 1000
@@ -1015,6 +1020,45 @@ impl Manager {
             );
             self.pending_events.push((line, Short::plain(&failed)));
             self.last_event = Some(Instant::now());
+        }
+    }
+
+    /// ": #195, #197 live": the landed tasks a deploy or release of `deploy.commit` put live,
+    /// those whose landed commit it holds and the previous success of its kind did not. The
+    /// event says what is live, so no one has to read `deploys` for it.
+    /// ref: docs/tasks.md "Deploy and release"
+    fn made_live(
+        &self,
+        records: &[wsx_core::task::DeployRecord],
+        deploy: &wsx_core::task::DeployRecord,
+    ) -> String {
+        let previous = records
+            .iter()
+            .rev()
+            .find(|record| {
+                record.kind == deploy.kind
+                    && record.exit == Some(0)
+                    && record.unix_ms < deploy.unix_ms
+            })
+            .map(|record| record.commit.as_str());
+        let Ok(commits) = wsx_core::task::copy::commits_in(&self.main, previous, &deploy.commit)
+        else {
+            return String::new();
+        };
+        let mut live: Vec<u32> = project_tasks(&self.dir.project_id)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|(dir, record)| record.as_ref().ok().map(|record| (dir, record)))
+            .filter(|(dir, record)| {
+                wsx_core::memory::manage::landed_commit(dir, record)
+                    .is_some_and(|commit| commits.contains(&commit))
+            })
+            .map(|(_, record)| record.id)
+            .collect();
+        live.sort_unstable();
+        match live.is_empty() {
+            true => String::new(),
+            false => format!(": {} live", view::task_list(live)),
         }
     }
 
@@ -1235,7 +1279,12 @@ impl Manager {
                     .filter(|(_, outcome)| *outcome == "passed")
                     .count();
                 let words = result["result"]["summary"].as_str().unwrap_or_default();
-                let worker = format!("worker says: {}", clip(words, EVENT_SUMMARY_CHARS));
+                // ^ The worker's own words, which nothing checked: the checks and the
+                // recorded runs before them are the host's facts.
+                let worker = format!(
+                    "worker says (unchecked): {}",
+                    clip(words, EVENT_SUMMARY_CHARS)
+                );
                 // ^ A check-run that passed after the worker's result is in the evidence, not in
                 // its words, which may still say the run is pending.
                 let recorded: String = result["result"]["evidence"]
@@ -1998,6 +2047,8 @@ impl Manager {
         // ^ What left the queue, to put back when the agent does not start.
         let mut taken = Vec::new();
         let mut for_owner = false;
+        // ^ The last `#<n> <state> r<k>` line of each task in the turn's events.
+        let mut heads: BTreeMap<u32, (String, u32)> = BTreeMap::new();
         if first != Author::Events {
             while let Some(at) = self
                 .queue
@@ -2015,6 +2066,9 @@ impl Manager {
             let (id, author, body, wakes) = self.queue.pop_front().expect("checked above");
             let heading = author_heading(&author);
             for_owner |= author == Author::Events && body.lines().any(routine_for_owner);
+            if author == Author::Events {
+                heads.extend(body.lines().filter_map(event_head));
+            }
             text.push_str(&format!("{heading} (message {id}):\n{body}\n\n"));
             if author == Author::Owner {
                 said.push_str(&body);
@@ -2037,9 +2091,13 @@ impl Manager {
             ));
         }
         for (id, author, body, wakes) in along {
+            heads.extend(body.lines().filter_map(event_head));
             text.push_str(&format!("Events (message {id}):\n{body}\n\n"));
             ids.push(id);
             taken.push((id, author, body, wakes));
+        }
+        if let Some(since) = self.since_then(&heads) {
+            text.push_str(&format!("{since}\n\n"));
         }
         Batch {
             first,
@@ -2047,6 +2105,41 @@ impl Manager {
             text,
             taken,
             for_owner,
+        }
+    }
+
+    /// "since then: #426 working r1, #427 landed r1": the tasks of the turn's events that are
+    /// in another state or revision now than their last `#<n> <state> r<k>` line says. A turn
+    /// reads events minutes or hours after wsx wrote them (on 11-13 three limit waits were
+    /// read 25 min after the limit ended and relayed as current): the line that says what
+    /// holds now is wsx's, read at the turn's start. None when nothing changed.
+    /// ref: docs/tasks.md "Manager" (Events)
+    fn since_then(&self, heads: &BTreeMap<u32, (String, u32)>) -> Option<String> {
+        if heads.is_empty() {
+            return None;
+        }
+        let tasks = project_tasks(&self.dir.project_id).unwrap_or_default();
+        let changed: Vec<String> = heads
+            .iter()
+            .filter_map(|(id, (word, revision))| {
+                let record = tasks
+                    .iter()
+                    .filter_map(|(_, record)| record.as_ref().ok())
+                    .find(|record| record.id == *id)?;
+                let now = wsx_core::task::status::state_word(record);
+                if (now, record.revision) == (word.as_str(), *revision) {
+                    return None;
+                }
+                let on = match (&record.waiting, record.state) {
+                    (Some(waiting), TaskState::Waiting) => format!(" on {}", waiting.on.as_str()),
+                    _ => String::new(),
+                };
+                Some(format!("#{id} {now} r{}{on}", record.revision))
+            })
+            .collect();
+        match changed.is_empty() {
+            true => None,
+            false => Some(format!("since then: {}", changed.join(", "))),
         }
     }
 
@@ -3609,6 +3702,17 @@ fn clock(secs: i64) -> String {
 fn plain_event(line: String) -> (String, Short) {
     let short = Short::plain(&line);
     (line, short)
+}
+
+/// `(n, state, k)` of a `#<n> <state> r<k>: ...` line `watch_tasks` wrote; none for a stall
+/// line (`stalled` is no state) or another project's line (headed by its name).
+fn event_head(line: &str) -> Option<(u32, (String, u32))> {
+    let (head, _) = line.strip_prefix('#')?.split_once(':')?;
+    let mut parts = head.split(' ');
+    let id = parts.next()?.parse().ok()?;
+    let word = parts.next()?;
+    let revision = parts.next()?.strip_prefix('r')?.parse().ok()?;
+    (parts.next().is_none() && word != "stalled").then(|| (id, (word.to_string(), revision)))
 }
 
 /// "; its output ends:" and the last lines of `output`, indented, or nothing without output.
