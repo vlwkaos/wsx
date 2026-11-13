@@ -24,7 +24,7 @@ step or a message with every tool call in it, and inside one turn nothing bounds
 | peak context of a session | median 146k, p90 249k, max 453k; 33 of 114 past the 200k default | median 143k, p90 235k, max 384k |
 | growth per call | median 2.5k | 1.5k |
 | growth per host turn | median 8k, p90 72k, max 302k (calls per turn median 4, p90 22) | median 3.6k, p90 12k, max 53k (calls median 3, p90 7) |
-| cold cache rewrites (a write over 20k after the first call) | 40 = 4.6M tokens, 23% of all cache writes, median 94k | 35 = 3.1M, 20% |
+| cold cache rewrites (a write of at least half the context after the first call) | 27 = 4.2M tokens, 21% of all cache writes, median 135k | 35 = 3.1M, 20% |
 
 Task 438 shows both: one turn of 77 calls grew from 38k to 353k; the usage limit hit inside that turn, so the
 idle rule (cache gone after 1 hour) saw the size of the last result and the resume rewrote 316k tokens in one call,
