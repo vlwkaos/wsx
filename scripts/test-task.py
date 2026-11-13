@@ -6740,6 +6740,9 @@ def part_host(created=None):
     mark('37')
     agents = state / 'wsx/tasks/agents'
     limit_for = lambda seconds: limit_file.write_text(json.dumps({'until_ms': int((time.time() + seconds) * 1000)}))
+    norate.touch()
+    # ^ The records these sections write by hand must outlive the fake claude turns that end
+    # meanwhile (the manager's events turns): a result that reports `allowed` would end them.
     with open(config_dir / 'config-v2.toml', 'a') as registry:
         registry.write('[[agents]]\nname = "fake-local"\ncommand = ["pi"]\nadapter = "pi"\n'
                        'model = "local/stand-in"\nmay = ["answer"]\n')
@@ -7183,6 +7186,7 @@ def part_host(created=None):
     assert reply_to(pinned_refused['id'], 40)['text'].startswith('open: '), chat()[-3:]
     (agents / 'pi-fake.json').unlink(missing_ok=True)
     configure(CONFIG, 'no fallback')
+    norate.unlink()
 
     # 38. A host that started before this wsx cannot read a request the newer CLI added
     # (docs/tasks.md "Host"). The stand-in is what an older host does with a request it cannot
