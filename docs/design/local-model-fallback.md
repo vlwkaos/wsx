@@ -247,14 +247,14 @@ Only after 3.5 and 3.6, the owner writes `roles = [...]` into the registry from 
 
 ### 3.8 Where roles fit the registry (smallest change)
 
-Today: `[[agents]]` has `name, command, adapter, model, budget_usd_per_day, minimal` (`crates/wsx-core/src/config/global.rs:327`, `deny_unknown_fields`). `agent::fallback(names, now, minimal)` (`crates/wsx/src/task/agent.rs:250`) is the one choke point; callers are `fallback_past_wait`, `worker_next`, `stand_in`, `cmd/new.rs:315`.
+Today: `[[agents]]` has `name, command, adapter, model, budget_usd_per_day, minimal` (`crates/wsx-core/src/config/global.rs:327`, `deny_unknown_fields`). `agent::fallback(names, now, minimal)` (`crates/wsx/src/task/agent.rs:250`) is the one choke point; callers are `agent::next` (through `fallback_past_wait`), `stand_in`, `cmd/new.rs:315`.
 
 | Change | Where |
 |---|---|
 | New optional `roles = ["organizer", ...]` on `[[agents]]`; validate the names | `AgentEntry`, `validate_agents` (global.rs:347) |
 | Own agent (`tasks.*.model`, Claude) holds every role; no registry row needed | `agent::Choice` (231) |
 | `fallback(names, now, role)` replaces the `minimal` bool. An entry qualifies when it lists the role. `minimal` keeps its meaning (a no-tool stand-in) and counts as the organizer without tools | `agent.rs:250` and its 5 callers |
-| An operation names its role from the table in 3.2. No new config key | `manager.rs` (`turn_model`, `ping`, `check_*`), `host.rs` (`start_turn`, `move_after_limit`), `cmd/new.rs` |
+| An operation names its role from the table in 3.2. No new config key | `manager.rs` (`turn_model`, `ping`, `check_*`), `host.rs` (`start_turn`, `ask`), `cmd/new.rs` |
 | New optional `may = [...]` (capabilities, `task::policy`) on `[[agents]]`; serde rejects an unknown name. An operation runs on an agent only when its `may` holds every capability the role needs; `minimal` implies `may = ["answer"]` | `AgentEntry`, `task::policy` |
 | No agent qualifies: behave as today (wait, or stand-in text for owner messages) | existing paths |
 | The owner writes the roles by hand after a test run; the proof stays in the `bench-tier` result file | none |

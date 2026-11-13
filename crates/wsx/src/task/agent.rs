@@ -70,6 +70,30 @@ pub struct UsageLimit {
     pub window: Option<String>,
 }
 
+/// A turn with no line from the agent for `quiet`, ended by its host: the agent is stopped
+/// and this is the turn's error, said as its text. On a fallback (`refusal`) it counts as a
+/// refusal with no reset, so `next` moves on. ref: docs/tasks.md "Agents"
+pub fn hung_turn(quiet: Duration, refusal: bool) -> TurnResult {
+    TurnResult {
+        is_error: true,
+        subtype: "error".into(),
+        text: format!(
+            "no output for {}: the agent was stopped",
+            status::span(quiet.as_millis() as u64)
+        ),
+        structured: None,
+        denials: Vec::new(),
+        usage: TurnUsage::default(),
+        limit: refusal.then_some(UsageLimit {
+            resets_at: None,
+            window: None,
+        }),
+        background: 0,
+        thought: 0,
+        simplified: false,
+    }
+}
+
 /// An error result that says the agent's sign-in failed (Claude's `Failed to authenticate:
 /// OAuth session expired ...`). Only a new sign-in helps, and a running agent process keeps
 /// its old credentials, so the retry needs a new process. ref: docs/tasks.md "Manager"

@@ -6,8 +6,8 @@
 //! idle. ref: docs/tasks.md "Manager", "Chats"
 
 use super::agent::{
-    self, new_session_id, Agent, AgentLine, Ask, Cause, Launch, Next, TurnResult, UsageLimit,
-    KEEP_WARM_PINGS, KEEP_WARM_TEXT, PROMPT_CACHE_MS,
+    self, new_session_id, Agent, AgentLine, Ask, Cause, Launch, Next, TurnResult, KEEP_WARM_PINGS,
+    KEEP_WARM_TEXT, PROMPT_CACHE_MS,
 };
 use super::boundary::Boundary;
 use super::claude::{account_env, config_root, skills_plugin, SKILLS_PLUGIN_NAME};
@@ -38,6 +38,7 @@ use wsx_core::task::manager::{
 };
 use wsx_core::task::policy;
 use wsx_core::task::session_news;
+use wsx_core::task::stall;
 use wsx_core::task::status;
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
@@ -46,7 +47,6 @@ use wsx_core::task::{
     call_host, checks, ledger, now_unix_ms, HostRequest, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
 };
 use wsx_core::task::{chats, owner, usage, Actor};
-use wsx_core::task::{stall, TurnUsage};
 
 use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -2223,7 +2223,7 @@ impl Manager {
                         until: Some(status::resume_time(until_ms, now)),
                     });
                 }
-                self.hold_on_account(until_ms, 0, ids, events, None, now);
+                self.hold_on_account(until_ms, 0, ids, events, false, now);
                 self.stand_in_if_duties();
                 true
             }
@@ -2284,8 +2284,8 @@ impl Manager {
             Next::Wait(until_ms) => until_ms,
             Next::Stay => until_ms,
         };
-        let switched = self.state.agent.is_some().then_some(true);
-        if self.state.agent.is_some() {
+        let away = self.state.agent.is_some();
+        if away {
             let reason = format!(
                 "{} was refused: {why}; waits on {}",
                 self.current_adapter(),
@@ -2295,35 +2295,29 @@ impl Manager {
             self.rotate(0, Some(reason));
             self.state.agent = None;
         } else {
-            let reason = match store::sign_in_failed_until(&self.current_account(), now) {
-                Some(retry_ms) => limit::sign_in_reason(retry_ms, now),
-                None => status::limit_reason(
-                    &self.adapter,
-                    store::account_limit(&self.current_account(), now)
-                        .and_then(|limit| limit.window)
-                        .as_deref(),
-                    until_ms,
-                    now,
-                ),
-            };
-            self.say(&reason);
+            self.say(&limit::wait_reason(
+                &self.adapter,
+                &self.current_account(),
+                until_ms,
+                now,
+            ));
         }
         self.log(ManagerEvent::Limit {
             until: Some(status::resume_time(until_ms, now)),
         });
-        self.hold_on_account(until_ms, attempt, ids, events, switched, now);
+        self.hold_on_account(until_ms, attempt, ids, events, away, now);
     }
 
     /// Hold the turn `ids` on the own account until its record ends (`until_ms` as it reads
-    /// now); `switched` when a new conversation must see the messages in full, else as the
-    /// hold before. ref: docs/tasks.md "Agents"
+    /// now); `switched` when a new conversation must see the messages in full, as when the
+    /// hold before was. ref: docs/tasks.md "Agents"
     fn hold_on_account(
         &mut self,
         until_ms: u64,
         attempt: u32,
         ids: Vec<u64>,
         events: bool,
-        switched: Option<bool>,
+        switched: bool,
         now: u64,
     ) {
         let before = self.state.limit.as_ref();
@@ -2332,7 +2326,7 @@ impl Manager {
             attempt,
             ids,
             events,
-            switched: switched.unwrap_or_else(|| before.is_some_and(|hold| hold.switched)),
+            switched: switched || before.is_some_and(|hold| hold.switched),
             auth: store::sign_in_failed_until(&self.current_account(), now).is_some(),
             account: true,
         });
@@ -2403,32 +2397,14 @@ impl Manager {
         if self.last_line.elapsed() < bound {
             return;
         }
-        let text = format!(
-            "no output for {}: the agent was stopped",
-            status::span(self.last_line.elapsed().as_millis() as u64)
-        );
-        self.say(&text);
+        let turn = agent::hung_turn(self.last_line.elapsed(), self.state.agent.is_some());
+        self.say(&turn.text);
         // ^ A late line of the stopped process is not a turn of the manager's.
         self.generation += 1;
         if let Some(agent) = self.agent.take() {
             agent.stop();
         }
-        let limit = self.state.agent.is_some().then_some(UsageLimit {
-            resets_at: None,
-            window: None,
-        });
-        self.on_result(TurnResult {
-            is_error: true,
-            subtype: "error".into(),
-            text,
-            structured: None,
-            denials: Vec::new(),
-            usage: TurnUsage::default(),
-            limit,
-            background: 0,
-            thought: 0,
-            simplified: false,
-        });
+        self.on_result(turn);
     }
 
     /// During a hold, an owner message with no answer yet gets one from an agent that fills the organizer role, one

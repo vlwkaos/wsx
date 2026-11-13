@@ -5,8 +5,8 @@
 //! send to it over one channel; it answers each request after acting on it.
 
 use super::agent::{
-    self, new_session_id, Agent, AgentLine, Ask, Launch, Next, TurnResult, UsageLimit,
-    KEEP_WARM_PINGS, KEEP_WARM_TEXT, PROMPT_CACHE_MS,
+    self, new_session_id, Agent, AgentLine, Ask, Launch, Next, TurnResult, KEEP_WARM_PINGS,
+    KEEP_WARM_TEXT, PROMPT_CACHE_MS,
 };
 use super::broker;
 use super::hosting;
@@ -39,8 +39,8 @@ use wsx_core::task::{
     report, stall,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
     view, Actor, After, AfterKind, CheckResult, Evidence, Home, HostRequest, HostResponse,
-    HumanVerify, LogEvent, MessageKind, TaskRecord, TaskState, TurnTrigger, TurnUsage, WaitOn,
-    Waiting, WorkerResult, MAX_MESSAGE_BYTES,
+    HumanVerify, LogEvent, MessageKind, TaskRecord, TaskState, TurnTrigger, WaitOn, Waiting,
+    WorkerResult, MAX_MESSAGE_BYTES,
 };
 
 /// A shared failure is posted once in this long (the store keeps a key for a day).
@@ -1463,14 +1463,12 @@ impl Host {
         // ^ Before a turn, the one rule of where the task goes (`agent::next`): home once its
         // own agent is free, to a fallback when the account refuses turns, or a wait. A steer
         // into a running turn goes to that turn. ref: docs/tasks.md "Agents"
+        let mut home = false;
         if !self.turn_active {
             let now = now_unix_ms();
             match self.ask(Ask::Turn, now) {
                 Next::Stay => {}
-                Next::Home => {
-                    self.go_home(text);
-                    return Ok(());
-                }
+                Next::Home => home = true,
                 Next::Move(next, cause) => {
                     let reason = cause.words(&self.record.adapter, now);
                     self.switch_agent(next, reason, text.to_string(), text.to_string());
@@ -1515,8 +1513,18 @@ impl Host {
         if self.wait_for_disk(DiskWait::Turn(text.to_string())) {
             return Ok(());
         }
+        // ^ Going home: a fallback whose conversation answered writes its handoff notes first
+        // (`Handoff::Home`); else the own agent takes the turn now. ref: docs/tasks.md "Agents"
+        if home && !(self.record.agent_session.is_some() && self.context_tokens > 0) {
+            self.return_home(text.to_string(), None);
+            return Ok(());
+        }
         let handoff;
-        let text = match self.rotation_due(trigger) {
+        let why = match home {
+            true => Some(Handoff::Home),
+            false => self.rotation_due(trigger),
+        };
+        let text = match why {
             Some(why) => {
                 handoff = self.handoff_request(&why);
                 self.rotating = Some((text.to_string(), why));
@@ -1756,6 +1764,8 @@ impl Host {
             return;
         }
         self.limit_attempt = 0;
+        // ^ The turn ended: nothing of it is unfinished (`come_home`).
+        self.turn_text.clear();
         self.spend(turn.usage.cost_micro_usd, now_unix_ms());
         if !turn.is_error {
             store::clear_sign_in_failed(&self.account());
@@ -2351,32 +2361,6 @@ impl Host {
         }
     }
 
-    /// The own agent is free: the task goes home with `text` to run. A fallback that answered
-    /// in its conversation writes its handoff notes first (`Handoff::Home`).
-    /// ref: docs/tasks.md "Agents"
-    fn go_home(&mut self, text: &str) {
-        if self.record.agent_session.is_some() && self.context_tokens > 0 {
-            let request = self.handoff_request(&Handoff::Home);
-            self.rotating = Some((text.to_string(), Handoff::Home));
-            match self.send_to_agent(&request) {
-                Ok(()) => {
-                    // ^ No turn of the task's is lost when this one ends: `rotating` holds it.
-                    self.turn_text = String::new();
-                    self.turn_active = true;
-                    self.trigger = TurnTrigger::Message;
-                    self.pings = 0;
-                    self.set_state(TaskState::Working);
-                    return;
-                }
-                Err(error) => {
-                    self.say(&format!("cannot ask for handoff notes: {error:#}"));
-                    self.rotating = None;
-                }
-            }
-        }
-        self.return_home(text.to_string(), None);
-    }
-
     /// Back on the own agent with `text` as the turn that starts now, and `did` what the
     /// fallback answered when it was refused, else what its handoff notes say.
     /// ref: docs/tasks.md "Agents"
@@ -2415,10 +2399,12 @@ impl Host {
         self.stop_agent();
         let fallback = format!("{}/{}", self.record.adapter, self.record.model);
         // ^ The fallback's turn is lost only when its conversation had answered before; its
-        // first turn is the one the own agent left, which that agent has.
-        let unfinished = match self.context_tokens > 0 {
-            true => std::mem::take(&mut self.turn_text),
-            false => String::new(),
+        // first turn is the one the own agent left, which that agent has. A turn that waited
+        // on its handoff notes is the lost one.
+        let unfinished = match self.rotating.take() {
+            Some((waiting, _)) => waiting,
+            None if self.context_tokens > 0 => std::mem::take(&mut self.turn_text),
+            None => String::new(),
         };
         let home = self
             .record
@@ -2433,7 +2419,6 @@ impl Host {
         self.record.fallback = false;
         self.context_tokens = 0;
         self.limit_attempt = 0;
-        self.rotating = None;
         // ^ What a fresh own conversation continues (`fresh_turn`).
         self.turn_text = [turn.as_str(), unfinished.as_str()]
             .into_iter()
@@ -2513,17 +2498,7 @@ impl Host {
     /// The reason of the wait now: the failed sign-in's retry, else the window and reset the
     /// limit record names.
     fn limit_reason(&self, until_ms: u64, now: u64) -> String {
-        match store::sign_in_failed_until(&self.account(), now) {
-            Some(retry_ms) => limit::sign_in_reason(retry_ms, now),
-            None => status::limit_reason(
-                &self.record.adapter,
-                store::account_limit(&self.account(), now)
-                    .and_then(|limit| limit.window)
-                    .as_deref(),
-                until_ms,
-                now,
-            ),
-        }
+        limit::wait_reason(&self.record.adapter, &self.account(), until_ms, now)
     }
 
     /// The account this task's turns run on.
@@ -2536,29 +2511,10 @@ impl Host {
     /// moves on (`refused`); on the own agent it is the turn's failed result.
     /// ref: docs/tasks.md "Agents"
     fn turn_hung(&mut self) {
-        let quiet = self.last_line.elapsed().as_millis() as u64;
-        let text = format!(
-            "no output for {}: the agent was stopped",
-            status::span(quiet)
-        );
-        self.say(&text);
+        let turn = agent::hung_turn(self.last_line.elapsed(), self.away());
+        self.say(&turn.text);
         self.stop_agent();
-        let limit = self.away().then_some(UsageLimit {
-            resets_at: None,
-            window: None,
-        });
-        self.on_result(TurnResult {
-            is_error: true,
-            subtype: "error".into(),
-            text,
-            structured: None,
-            denials: Vec::new(),
-            usage: TurnUsage::default(),
-            limit,
-            background: 0,
-            thought: 0,
-            simplified: false,
-        });
+        self.on_result(turn);
     }
 
     /// How long a turn may stay quiet (`stall::turn_quiet_ms`, the stall sweep's silent bound).
