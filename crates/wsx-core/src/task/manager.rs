@@ -611,10 +611,6 @@ pub struct ManagerAgent {
     pub name: String,
     pub adapter: String,
     pub model: String,
-    /// A failed sign-in of the own agent moved the manager here: with a turn waiting, the own
-    /// agent is tried again once its sign-in record ends. ref: docs/tasks.md "Agents"
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub sign_in: bool,
 }
 
 /// A stable digest of an agent's instructions, to tell whether a conversation began with them.

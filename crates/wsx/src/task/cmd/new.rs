@@ -12,7 +12,8 @@ use wsx_core::task::view::checked_files;
 use wsx_core::task::{
     copy, now_unix_ms,
     store::{self, TaskDir},
-    After, AfterKind, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
+    After, AfterKind, Home, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState,
+    MAX_MESSAGE_BYTES,
 };
 use wsx_core::{ops, runtime};
 
@@ -326,13 +327,18 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
     let own = agent::account(&settings.adapter, &settings.model);
     let moved = agent::blocked_until(&own, now)
         .and_then(|_| agent::fallback(&settings.fallback, now, Role::Worker));
-    // ^ A task born on a fallback is on one like a switched task: it goes home when its own
-    // agent is free (after a failed sign-in, at its first turn once the record ends).
+    // ^ A task born on a fallback is on one like a switched task: its own agent is its home,
+    // where it goes at its first turn with that agent free.
     let on_fallback = moved.is_some();
-    let sign_in = on_fallback && store::sign_in_failed_until(&own, now).is_some();
+    let home = Home {
+        adapter: settings.adapter,
+        model: model.unwrap_or(settings.model),
+        session: None,
+        turn: String::new(),
+    };
     let (adapter, model) = match moved {
         Some(next) => (next.adapter, next.model),
-        None => (settings.adapter, model.unwrap_or(settings.model)),
+        None => (home.adapter.clone(), home.model.clone()),
     };
     let record = TaskRecord {
         id,
@@ -348,7 +354,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         model,
         effort,
         fallback: on_fallback,
-        sign_in,
+        home: Some(home),
         checks: settings.checks,
         steps,
         step: 0,

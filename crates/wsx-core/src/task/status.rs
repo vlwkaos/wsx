@@ -712,7 +712,7 @@ const MONTHS: [&str; 12] = [
 ];
 
 /// "45 min", "3 h 10 min", "2 d 4 h".
-pub(crate) fn span(ms: u64) -> String {
+pub fn span(ms: u64) -> String {
     let minutes = ms / 60_000;
     match minutes {
         0 => "less than a minute".into(),

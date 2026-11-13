@@ -221,13 +221,31 @@ pub fn stuck(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<String> 
     (now_ms.saturating_sub(settled) > grace().as_millis() as u64).then_some(stall.why)
 }
 
+/// How long a turn may run with no output before it counts as hung: one check
+/// (`check_timeout_secs`, `tasks.checkTimeoutSeconds`) plus one Bash call. The manager's
+/// stall sweep reports a worker silent this long, and each host ends its own turn by it
+/// (`turn_quiet_ms`). ref: docs/tasks.md "Agents"
+pub fn quiet_after_ms(check_timeout_secs: u64) -> u64 {
+    (check_timeout_secs + BASH_MAX_SECS) * 1000
+}
+
+/// `quiet_after_ms` for a host's own turn, or the seconds in `WSX_TEST_TURN_QUIET_SECS`: for
+/// the task scenario only, whose hung turns would otherwise hold 10 minutes; the sweep keeps
+/// the real bound, so no fixture turn reads as a stall.
+pub fn turn_quiet_ms(check_timeout_secs: u64) -> u64 {
+    std::env::var("WSX_TEST_TURN_QUIET_SECS")
+        .ok()
+        .and_then(|secs| secs.parse::<u64>().ok())
+        .map_or(quiet_after_ms(check_timeout_secs), |secs| secs * 1000)
+}
+
 /// "no log or check output for 45 min; ..." when a running task is silent past its bound.
 fn quiet(dir: &TaskDir, record: &TaskRecord, progress: u64, now_ms: u64) -> Option<String> {
     let timeout = load_task_config(&record.project_path)
         .map_or(record.check_timeout_secs, |settings| {
             settings.check_timeout_secs
         });
-    let bound_ms = (timeout + BASH_MAX_SECS) * 1000;
+    let bound_ms = quiet_after_ms(timeout);
     (now_ms.saturating_sub(progress) > bound_ms).then(|| {
         format!(
             "no log or check output for {}; {}",

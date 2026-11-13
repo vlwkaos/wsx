@@ -40,6 +40,10 @@ Each user message is a small script of words:
   AUTHFAIL <file>  (manager) fail every turn as Claude's expired sign-in does until <file> exists;
                with AUTHSLOW the failure comes 4 s after the turn starts
   WAUTHFAIL <file>  the same for a worker (a manager's event lines carry task titles, so its own word differs)
+  CFAUTH <file>  (manager) fail the turn as a 403 block page does ("Failed to authenticate. API Error:
+               403 Attention Required! | Cloudflare", no sign-in failure) until <file> exists; WCFAUTH for a worker
+  MHANG <file>  (manager) write nothing in the turn until <file> exists, so the host ends it by its quiet
+               bound (WSX_TEST_TURN_QUIET_SECS); WHANG for a worker
   BIG          a last model call of 400k tokens (two lines of one call), past the worker's rotateTokens
   SIMPLIFY     (worker) a Skill tool call of owner:simplify in the turn; SIMPLIFYLATE does it only in
                the host's send-back ("The simplify skill did not run ...")
@@ -555,6 +559,11 @@ def main():
                 time.sleep(4)
             auth_failure(session)
             continue
+        if project is not None and (blocked := word_after(own_words(text, project), 'CFAUTH')) and not os.path.exists(blocked):
+            blocked_403(session)
+            continue
+        if project is not None and (hung := word_after(own_words(text, project), 'MHANG')) and not os.path.exists(hung):
+            hang(hung)
         if project is not None:
             # ^ The host's ledger summary ends the message; its titles are not this turn's words.
             text = text.split('\n\nLedger summary from wsx', 1)[0]
@@ -604,6 +613,11 @@ def main():
         if 'WAUTHFAIL' in words and not os.path.exists(words[words.index('WAUTHFAIL') + 1]):
             auth_failure(session)
             continue
+        if 'WCFAUTH' in words and not os.path.exists(words[words.index('WCFAUTH') + 1]):
+            blocked_403(session)
+            continue
+        if 'WHANG' in words and not os.path.exists(words[words.index('WHANG') + 1]):
+            hang(words[words.index('WHANG') + 1])
         if no_result:
             no_result = end_without_result(session, no_result)
             continue
@@ -845,6 +859,29 @@ def auth_failure(session):
                       'usage': {'input_tokens': 0, 'output_tokens': 0}}})
     emit({'type': 'result', 'subtype': 'success', 'is_error': True, 'result': words, 'session_id': session,
           'permission_denials': [], 'usage': {'input_tokens': 0, 'output_tokens': 0}})
+
+
+def blocked_403(session):
+    """A 403 block page, as Claude Code wraps it: no sign-in failure, an API error of the turn."""
+    words = 'Failed to authenticate. API Error: 403 Attention Required! | Cloudflare'
+    emit({'type': 'assistant', 'parent_tool_use_id': None, 'session_id': session, 'isApiErrorMessage': True,
+          'message': {'model': '<synthetic>', 'content': [{'type': 'text', 'text': words}],
+                      'usage': {'input_tokens': 0, 'output_tokens': 0}}})
+    emit({'type': 'result', 'subtype': 'success', 'is_error': True, 'result': words, 'session_id': session,
+          'permission_denials': [], 'usage': {'input_tokens': 0, 'output_tokens': 0}})
+
+
+def hang(path):
+    """A turn that writes nothing until <path> exists: the host ends it by its quiet bound."""
+    trace({'hang': path})
+    while not os.path.exists(path):
+        time.sleep(0.5)
+
+
+def word_after(text, word):
+    """The word after `word` in `text`, or None."""
+    words = text.split()
+    return words[words.index(word) + 1] if word in words and words.index(word) + 1 < len(words) else None
 
 
 def background_turn(session, model):

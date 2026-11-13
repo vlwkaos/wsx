@@ -320,6 +320,9 @@ def run(wsx, wsxd, work, owned, part):
            # ^ The limit probe's period (30 s) would put probe traces into every long limit; the
            # limit scenario of part 11 starts a probe by clearing the stamp.
            'WSX_TEST_LIMIT_PROBE_SECS': '600',
+           # ^ A turn quiet this long ends (docs/tasks.md "Agents"): longer than the fakes' LONG (25 s),
+           # shorter than the 10 minutes of a real one; the stall sweep keeps its own bound.
+           'WSX_TEST_TURN_QUIET_SECS': '40',
            'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
            'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp),
            # ^ A fixture git command must never reach the repository this script runs in.
@@ -6815,21 +6818,10 @@ def part_host(created=None):
     back_home = reply_to(no_credit['id'])
     assert back_home['text'].startswith('open: '), back_home
     assert 'agent' not in manager_state(), manager_state()
-    assert any(e['kind'] == 'rotated' and e.get('reason') == 'back on claude' for e in chat()), chat()[-5:]
+    # ^ The fallback's refusal with the own agent still limited: back home for the wait, saying why.
+    assert any(e['kind'] == 'rotated' and e.get('reason', '').startswith('back on claude: pi was refused: 400') for e in chat()), chat()[-5:]
     home_turn = turn_with('PIERROR %s' % refusal)
     assert home_turn and not home_turn.get('adapter') and 'STATUS without credit' in home_turn['message'], home_turn
-    pi_limit.unlink()
-    # ^ A prompt Pi refuses outright (no API key) starts no run and sends no `agent_settled`: it still
-    # ends the turn as the fallback's refusal, and the manager goes home once its own agent is free.
-    no_key = work / 'pi-no-key.txt'
-    no_key.write_text('No API key found for anthropic.\n')
-    limit_for(600)
-    keyless = js('task', 'say', 'PIREFUSE %s STATUS without a key' % no_key)
-    wait(lambda: pi_limit.exists(), 'the keyless fallback counted as limited')
-    assert not any(e['kind'] == 'reply' and keyless['id'] in e['to'] for e in chat()), chat()[-3:]
-    limit_file.unlink()
-    assert reply_to(keyless['id'])['text'].startswith('open: '), chat()[-3:]
-    assert 'agent' not in manager_state(), manager_state()
     pi_limit.unlink()
     # ^ A daily budget: past it the account counts as limited until midnight and is left alone.
     configure(with_fallback('fake-paid-other'), 'budget')
@@ -6849,12 +6841,15 @@ def part_host(created=None):
     configure(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi]\n    maxWaitMinutes: 1\n'),
               'worker fallback')
     limit_for(600)
-    away = js('task', 'new', 'PIERROR %s WORK home.txt' % refusal)['id']
-    wait(lambda: show(away)['state'] == 'waiting' and show(away)['record']['adapter'] == 'pi', 'the worker waits on the fallback')
+    # ^ The wait is at home, on the own account's record; the fake's LIMIT is the refusal the real
+    # Claude would give the turn that comes home while the record holds.
+    away = js('task', 'new', 'LIMIT 600 PIERROR %s WORK home.txt' % refusal)['id']
+    wait(lambda: show(away)['state'] == 'waiting' and show(away)['record']['adapter'] == 'claude', 'the worker waits at home', 40)
     limit_file.unlink()
     assert wait_state(away, 'ready', 'failed')['state'] == 'ready', show(away)
     assert show(away)['record']['adapter'] == 'claude', show(away)['record']
-    assert next(e for e in log(away) if e['kind'] == 'agent_switch')['to'].startswith('claude '), log(away)
+    away_switch = next(e for e in log(away) if e['kind'] == 'agent_switch')
+    assert away_switch['to'].startswith('claude ') and away_switch['reason'].startswith('back on claude: was refused: 400'), away_switch
     js('task', 'close', away, '--discard')
     # ^ A rate limit has no reset time and is backed off. Backoffs in a row on the account add up
     # from the first: past maxWaitMinutes the worker moves on to the next fallback.
@@ -6924,7 +6919,7 @@ def part_host(created=None):
     si_sw = js('task', 'new', 'WAUTHFAIL %s WORK sa.txt' % si_worker_in)['id']
     si_shown = wait_state(si_sw, 'ready', 'failed')
     assert si_shown['state'] == 'ready' and si_shown['record']['adapter'] == 'pi', si_shown
-    assert si_shown['record']['fallback'] is True and si_shown['record']['sign_in'] is True, si_shown['record']
+    assert si_shown['record']['fallback'] is True and si_shown['record']['home']['adapter'] == 'claude', si_shown['record']
     si_switch = next(e for e in log(si_sw) if e['kind'] == 'agent_switch')
     assert si_switch['to'] == 'fake-pi (pi/fake/pi-model)' and si_switch['reason'] == 'sign-in expired', si_switch
     assert kinds(si_sw, 'agent_switch', 'rotated', 'result') == ['agent_switch', 'rotated', 'result'], log(si_sw)
@@ -6933,7 +6928,7 @@ def part_host(created=None):
     assert len(si_pi_turns) == 1 and 'could write no handoff notes' in si_pi_turns[0]['message'], si_pi_turns
     si_skipped = js('task', 'new', 'WORK sb.txt')['id']
     assert wait_state(si_skipped, 'ready', 'failed')['record']['adapter'] == 'pi', show(si_skipped)
-    assert show(si_skipped)['record']['fallback'] is True and show(si_skipped)['record']['sign_in'] is True, show(si_skipped)['record']
+    assert show(si_skipped)['record']['fallback'] is True and show(si_skipped)['record']['home'] == {'adapter': 'claude', 'model': 'fake-model'}, show(si_skipped)['record']
     assert not any(e['kind'] == 'agent_switch' for e in log(si_skipped)), log(si_skipped)
     # ^ Signed in again: both go home once the record ends, on the first turn they have.
     si_signed_in.touch()
@@ -6947,15 +6942,15 @@ def part_host(created=None):
     js('task', 'add', si_sw, 'WORK sc.txt')
     wait(lambda: show(si_sw)['record']['adapter'] == 'claude', 'the worker goes home')
     assert wait_state(si_sw, 'ready', 'failed')['state'] == 'ready', show(si_sw)
-    assert not show(si_sw)['record'].get('fallback') and not show(si_sw)['record'].get('sign_in'), show(si_sw)['record']
+    assert not show(si_sw)['record'].get('fallback') and show(si_sw)['record']['home'] == {'adapter': 'claude', 'model': 'fake-model'}, show(si_sw)['record']
     si_back = [e for e in log(si_sw) if e['kind'] == 'agent_switch'][-1]
-    assert si_back['to'].startswith('claude ') and si_back['reason'] == 'sign-in may work again', si_back
+    assert si_back['to'].startswith('claude ') and si_back['reason'] == 'back on claude', si_back
     # ^ A task born during the record is on the fallback like a switched one and goes home the same way.
     js('task', 'add', si_skipped, 'WORK se.txt')
     wait(lambda: show(si_skipped)['record']['adapter'] == 'claude', 'the task born on the fallback goes home')
     assert wait_state(si_skipped, 'ready', 'failed')['state'] == 'ready', show(si_skipped)
-    assert not show(si_skipped)['record'].get('fallback') and not show(si_skipped)['record'].get('sign_in'), show(si_skipped)['record']
-    assert [e['reason'] for e in log(si_skipped) if e['kind'] == 'agent_switch'] == ['sign-in may work again'], log(si_skipped)
+    assert not show(si_skipped)['record'].get('fallback'), show(si_skipped)['record']
+    assert [e['reason'] for e in log(si_skipped) if e['kind'] == 'agent_switch'] == ['back on claude'], log(si_skipped)
     for n in (si_sw, si_skipped):
         js('task', 'close', n, '--discard')
     # ^ With no usable fallback a worker does not end failed: it waits like a limit, on the sign-in
@@ -6975,6 +6970,144 @@ def part_host(created=None):
     assert 'limit_wait' in [e['kind'] for e in log(si_alone)], log(si_alone)
     assert not (agents / 'claude.auth.json').exists(), 'the try that went through clears the record'
     js('task', 'close', si_alone, '--discard')
+    configure(CONFIG, 'no fallback')
+
+    # 37c. The limit lifecycle's return (docs/tasks.md "Agents"): `agent::next` is the one rule of
+    # where a host goes, asked before every turn and at every look of a wait, and home is the
+    # task's own agent on its record. S1: a fallback that refuses the prompt (Pi without an API
+    # key) makes one launch; the worker and the manager go home for the wait on their own account
+    # and resume there when its record goes. S2: a working fallback goes home at the next turn
+    # after its handoff notes: a task born on the fallback starts a fresh own conversation with the
+    # task's prompt, one switched mid-task resumes the conversation it kept. S3: a turn with no
+    # output past WSX_TEST_TURN_QUIET_SECS ends by its own host: the worker's failed result. S4: a
+    # hung fallback counts as a refusal with no reset: home for the wait. S5: a 403 block page is
+    # no sign-in failure. S6: home keeps the task's own model, never the project's.
+    mark('37c')
+    no_key = work / 'pi-no-key.txt'
+    no_key.write_text('No API key found for anthropic.\n\nUse /login to log into a provider via OAuth or API key.\n')
+    configure(with_fallback('fake-pi').replace('    maxWaitMinutes: 1\n', '    maxWaitMinutes: 1\n    fallback: [fake-pi]\n'),
+              'lifecycle fallbacks')
+    lc_home = lambda n: show(n)['record'].get('home')
+    lc_switches = lambda n: [(e['to'].split(' ')[0], e['reason']) for e in log(n) if e['kind'] == 'agent_switch']
+    lc_pi_launches = lambda since: [t for t in traces()[since:] if t.get('adapter') == 'pi' and t.get('launch') and t.get('worker')]
+    lc_claude_launches = lambda since: [t for t in traces()[since:] if t.get('launch') and not t.get('manager') and t.get('adapter') != 'pi']
+    lc_claude_turn = lambda since, words: next(t for t in traces()[since:] if 'message' in t and t.get('adapter') != 'pi'
+                                               and not t.get('manager') and words in t['message'])
+    lc_rotated = lambda words: next((e for e in manager_entries() if e['kind'] == 'rotated' and e.get('reason', '').startswith(words)), None)
+    for name in ('pi-fake.json', 'claude.auth.json'):
+        (agents / name).unlink(missing_ok=True)
+    # S1, the worker: born on the fallback while the limit holds; the refused prompt sends it home for
+    # the wait, where the own agent's refusal (the fake's LIMIT) is waited out at home.
+    limit_for(600)
+    s1_before = len(traces())
+    s1 = js('task', 'new', 'LIMIT 600 PIREFUSE %s WORK s1.txt' % no_key)['id']
+    wait(lambda: show(s1)['state'] == 'waiting' and show(s1)['record']['adapter'] == 'claude', 'the worker waits at home', 40)
+    assert lc_home(s1) == {'adapter': 'claude', 'model': 'fake-model'} and not show(s1)['record'].get('fallback'), show(s1)['record']
+    assert (agents / 'pi-fake.json').exists(), 'the refused prompt counts as the fallback account limit'
+    assert len(lc_switches(s1)) == 1 and lc_switches(s1)[0][0] == 'claude' \
+        and lc_switches(s1)[0][1].startswith('back on claude: was refused: No API key found'), lc_switches(s1)
+    assert show(s1)['record']['waiting']['on'] == 'limit', show(s1)['record']['waiting']
+    assert len(lc_pi_launches(s1_before)) == 1, lc_pi_launches(s1_before)
+    # S1, the manager: one Pi launch, back home for the wait, the reply once the record goes.
+    (agents / 'pi-fake.json').unlink()
+    s1_say = js('task', 'say', 'PIREFUSE %s STATUS without a key' % no_key)
+    wait(lambda: lc_rotated('back on claude: pi was refused: No API key found'), 'the manager back home for the wait', 40)
+    assert 'agent' not in manager_state() and manager_state()['limit']['account'] is True, manager_state()
+    assert not any(e['kind'] == 'reply' and s1_say['id'] in e['to'] for e in chat()), chat()[-3:]
+    limit_file.unlink()
+    assert reply_to(s1_say['id'], 40)['text'].startswith('open: '), chat()[-3:]
+    assert wait(lambda: show(s1)['state'] in ('ready', 'failed') and show(s1), 'the worker resumes at home', 40)['state'] == 'ready', show(s1)
+    assert show(s1)['record']['adapter'] == 'claude' and (Path(show(s1)['record']['working_copy']) / 's1.txt').exists(), show(s1)
+    assert kinds(s1, 'agent_switch', 'rotated', 'limit_wait', 'result') == ['agent_switch', 'rotated', 'limit_wait', 'result'], log(s1)
+    # S2: born on the fallback, works there, goes home at the next turn after its handoff notes, in a
+    # fresh own conversation that carries the task's prompt.
+    (agents / 'pi-fake.json').unlink()
+    limit_for(600)
+    s2 = js('task', 'new', 'WORK s2a.txt')['id']
+    assert wait_state(s2, 'ready', 'failed')['record']['adapter'] == 'pi', show(s2)
+    limit_file.unlink()
+    s2_before = len(traces())
+    js('task', 'add', s2, 'WORK s2b.txt')
+    assert wait_state(s2, 'ready', 'failed')['state'] == 'ready', show(s2)
+    assert show(s2)['record']['adapter'] == 'claude' and not show(s2)['record'].get('fallback'), show(s2)['record']
+    s2_handoff = [t for t in traces()[s2_before:] if t.get('adapter') == 'pi' and 'message' in t]
+    assert len(s2_handoff) == 1 and 'This conversation ends after this turn and its own conversation continues' in s2_handoff[0]['message'], s2_handoff
+    assert len(lc_claude_launches(s2_before)) == 1 and not lc_claude_launches(s2_before)[0]['resume'], lc_claude_launches(s2_before)
+    s2_turn = lc_claude_turn(s2_before, 'WORK s2b.txt')['message']
+    assert 'The task as it was asked' in s2_turn and 'handoff notes' in s2_turn, s2_turn[:400]
+    assert lc_switches(s2) == [('claude', 'back on claude')], lc_switches(s2)
+    assert [e.get('reason') for e in log(s2) if e['kind'] == 'rotated'] == ['back on claude'], log(s2)
+    assert (Path(show(s2)['record']['working_copy']) / 's2b.txt').exists()
+    # S2, a kept conversation: switched mid-task by a long limit, the task keeps its own conversation
+    # and the turn it could not finish on the record, and resumes that conversation on return.
+    s2r = js('task', 'new', 'WORK s2c.txt')['id']
+    assert wait_state(s2r, 'ready', 'failed')['record']['adapter'] == 'claude', show(s2r)
+    s2r_session = show(s2r)['record']['agent_session']
+    assert s2r_session, show(s2r)['record']
+    js('task', 'add', s2r, 'LIMIT 600 WORK s2d.txt')
+    wait(lambda: show(s2r)['record']['adapter'] == 'pi', 'the long limit moves the worker', 40)
+    assert wait_state(s2r, 'ready', 'failed')['record']['adapter'] == 'pi', show(s2r)
+    assert lc_home(s2r)['session'] == s2r_session and lc_home(s2r)['turn'].startswith('The usage limit has reset'), lc_home(s2r)
+    limit_file.unlink()
+    s2r_before = len(traces())
+    js('task', 'add', s2r, 'WORK s2e.txt')
+    assert wait_state(s2r, 'ready', 'failed')['state'] == 'ready' and show(s2r)['record']['adapter'] == 'claude', show(s2r)
+    assert show(s2r)['record']['agent_session'] == s2r_session and lc_home(s2r) == {'adapter': 'claude', 'model': 'fake-model'}, show(s2r)['record']
+    assert len(lc_claude_launches(s2r_before)) == 1 and lc_claude_launches(s2r_before)[0]['resume'] \
+        and lc_claude_launches(s2r_before)[0]['session'] == s2r_session, lc_claude_launches(s2r_before)
+    s2r_turn = lc_claude_turn(s2r_before, 'WORK s2e.txt')['message']
+    assert s2r_turn.startswith('The usage limit has reset') and 'While your agent was unavailable, pi/fake/pi-model worked on the task' in s2r_turn, s2r_turn[:400]
+    assert lc_switches(s2r)[-1] == ('claude', 'back on claude') and 'claude usage limit until' in lc_switches(s2r)[0][1], lc_switches(s2r)
+    assert not any(e['kind'] == 'rotated' and e.get('reason') == 'back on claude' for e in log(s2r)), 'the own conversation is resumed, not rotated'
+    assert (Path(show(s2r)['record']['working_copy']) / 's2e.txt').exists()
+    for n in (s1, s2, s2r):
+        js('task', 'close', n, '--discard')
+    # S3, the worker: a turn with no output past the bound ends as the turn's failed result.
+    s3 = js('task', 'new', 'WHANG %s WORK s3.txt' % (work / 's3-release'))['id']
+    wait(lambda: show(s3)['state'] in ('ready', 'failed'), 'the hung turn ends', 70)
+    s3_result = next(e for e in log(s3) if e['kind'] == 'result')
+    assert show(s3)['state'] == 'failed' and s3_result['status'] == 'failed' and s3_result['summary'].startswith('no output for'), (show(s3)['state'], s3_result)
+    assert not any(e['kind'] in ('agent_switch', 'limit_wait') for e in log(s3)) and show(s3)['record']['adapter'] == 'claude', log(s3)
+    js('task', 'close', s3, '--discard')
+    # S4, the worker: a hung fallback counts as its refusal with no reset: its account backs off and
+    # the task goes home for the wait.
+    limit_for(600)
+    s4 = js('task', 'new', 'LIMIT 600 PIHANG %s WORK s4.txt' % (work / 's4-release'))['id']
+    wait(lambda: show(s4)['state'] == 'waiting' and show(s4)['record']['adapter'] == 'claude', 'the hung fallback sends the worker home for the wait', 80)
+    assert lc_switches(s4)[0][1].startswith('back on claude: was refused: no output for'), lc_switches(s4)
+    assert json.loads((agents / 'pi-fake.json').read_text())['until_ms'] < (time.time() + 3600) * 1000, 'the hung fallback backs off'
+    limit_file.unlink()
+    assert wait(lambda: show(s4)['state'] in ('ready', 'failed') and show(s4), 'the worker resumes at home', 40)['state'] == 'ready', show(s4)
+    assert show(s4)['record']['adapter'] == 'claude' and (Path(show(s4)['record']['working_copy']) / 's4.txt').exists(), show(s4)
+    js('task', 'close', s4, '--discard')
+    # S4, the manager: the same, back home for the wait, the reply once the record goes.
+    (agents / 'pi-fake.json').unlink()
+    limit_for(600)
+    s4_say = js('task', 'say', 'PIHANG %s STATUS on a hung fallback' % (work / 's4-release'))
+    wait(lambda: lc_rotated('back on claude: pi was refused: no output for'), 'the manager back home from the hung fallback', 80)
+    assert 'agent' not in manager_state() and manager_state()['limit']['account'] is True, manager_state()
+    limit_file.unlink()
+    assert reply_to(s4_say['id'], 40)['text'].startswith('open: '), chat()[-3:]
+    (agents / 'pi-fake.json').unlink()
+    # S5: a 403 block page ("Failed to authenticate. API Error: 403 Attention Required! | Cloudflare")
+    # is no expired sign-in: no record, no move, the turn's error result.
+    s5 = js('task', 'new', 'WCFAUTH %s WORK s5.txt' % (work / 's5-release'))['id']
+    assert wait_state(s5, 'ready', 'failed')['state'] == 'failed', show(s5)
+    assert 'Attention Required' in next(e for e in log(s5) if e['kind'] == 'result')['summary'], log(s5)
+    assert not (agents / 'claude.auth.json').exists() and not any(e['kind'] == 'agent_switch' for e in log(s5)), log(s5)
+    js('task', 'close', s5, '--discard')
+    # S6: home is the task's own model as it started, never the project's default.
+    limit_for(600)
+    s6 = js('task', 'new', '--model', 'sonnet', 'WORK s6a.txt')['id']
+    assert wait_state(s6, 'ready', 'failed')['record']['adapter'] == 'pi', show(s6)
+    assert lc_home(s6) == {'adapter': 'claude', 'model': 'sonnet'}, show(s6)['record']
+    limit_file.unlink()
+    s6_before = len(traces())
+    js('task', 'add', s6, 'WORK s6b.txt')
+    assert wait_state(s6, 'ready', 'failed')['state'] == 'ready', show(s6)
+    assert (show(s6)['record']['adapter'], show(s6)['record']['model']) == ('claude', 'sonnet'), show(s6)['record']
+    assert len(lc_claude_launches(s6_before)) == 1 and lc_claude_launches(s6_before)[0]['model'] == 'sonnet', lc_claude_launches(s6_before)
+    js('task', 'close', s6, '--discard')
     configure(CONFIG, 'no fallback')
 
     # 38. A host that started before this wsx cannot read a request the newer CLI added
@@ -7091,6 +7224,16 @@ def part_host(created=None):
     refused = cli('task', 'hold', lost, 'x', ok=False).stderr
     assert 'no task host answers' in refused or 'closed' in refused, refused
     assert not lost_socket.exists() and not host_pids()
+
+    # 39b. S3, the manager (docs/tasks.md "Agents"): a turn with no output past the bound ends as the
+    # agent's error, which holds and retries with the backoff. Last, since the hold lasts 5 minutes.
+    mark('39b')
+    s3_say = js('task', 'say', 'MHANG %s STATUS hung' % (work / 's3m-release'))
+    s3_stop = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'stopped' and e.get('reason', '').startswith('no output for')), None),
+                   'the hung manager turn ends', 70)
+    assert s3_stop and manager_state()['limit']['attempt'] == 1 and 'agent' not in manager_state(), manager_state()
+    assert not any(e['kind'] == 'reply' and s3_say['id'] in e['to'] for e in chat()), chat()[-3:]
+    assert any(e['kind'] == 'limit' and e.get('until') for e in manager_entries()[-4:]), manager_entries()[-4:]
     return created
 
 

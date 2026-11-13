@@ -6,8 +6,8 @@
 //! idle. ref: docs/tasks.md "Manager", "Chats"
 
 use super::agent::{
-    self, new_session_id, Agent, AgentLine, Launch, TurnResult, KEEP_WARM_PINGS, KEEP_WARM_TEXT,
-    PROMPT_CACHE_MS,
+    self, new_session_id, Agent, AgentLine, Ask, Cause, Launch, Next, TurnResult, UsageLimit,
+    KEEP_WARM_PINGS, KEEP_WARM_TEXT, PROMPT_CACHE_MS,
 };
 use super::boundary::Boundary;
 use super::claude::{account_env, config_root, skills_plugin, SKILLS_PLUGIN_NAME};
@@ -38,7 +38,6 @@ use wsx_core::task::manager::{
 };
 use wsx_core::task::policy;
 use wsx_core::task::session_news;
-use wsx_core::task::stall;
 use wsx_core::task::status;
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
@@ -47,6 +46,7 @@ use wsx_core::task::{
     call_host, checks, ledger, now_unix_ms, HostRequest, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
 };
 use wsx_core::task::{chats, owner, usage, Actor};
+use wsx_core::task::{stall, TurnUsage};
 
 use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -252,6 +252,9 @@ struct Manager {
     last_event: Option<Instant>,
     /// When a message was logged, a turn ran or the host last looked for a recap.
     last_activity: Instant,
+    /// When the agent last wrote a line of the turn, or the turn started: a turn quiet past
+    /// `stall::turn_quiet_ms` is ended (`turn_hung`).
+    last_line: Instant,
     /// The file this host runs from, and whether it must exec its replacement.
     binary: Option<hosting::Binary>,
     reexec: bool,
@@ -365,6 +368,7 @@ pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
         pending_events: Vec::new(),
         last_event: None,
         last_activity: Instant::now(),
+        last_line: Instant::now(),
         binary: hosting::Binary::capture(),
         reexec: false,
         owed: Owed::default(),
@@ -504,8 +508,12 @@ impl Manager {
                 {
                     self.stand_in_done(None)
                 }
-                Event::Tick if self.duties.is_none() => self.leave_when_done(),
+                Event::Tick if self.duties.is_none() => {
+                    self.end_hung_turn();
+                    self.leave_when_done()
+                }
                 Event::Tick => {
+                    self.end_hung_turn();
                     self.fire_checkin();
                     self.watch_tasks();
                     self.watch_stalls();
@@ -1972,60 +1980,6 @@ impl Manager {
         self.state.next_id
     }
 
-    /// Start a turn with every waiting owner message, or else with the waiting events.
-    /// During a limit the messages wait, also when another host met it or a budget is spent;
-    /// after it they go with the held ones. True while they wait.
-    fn waits_for_limit(&mut self) -> bool {
-        let now = now_unix_ms();
-        let account = self.current_account();
-        if account == "claude" {
-            claude::probe_limit();
-        }
-        // ^ A usage-limit hold follows the account's record: a reset the owner used, or one
-        // a probe or another agent's call saw, ends it before the provider's reset time.
-        if let Some(hold) = self
-            .state
-            .limit
-            .as_mut()
-            .filter(|hold| hold.account && now < hold.until_ms)
-        {
-            if store::limited_until(&account, now).is_none() {
-                hold.until_ms = now;
-                self.say("the usage limit has lifted: the manager continues");
-                self.save();
-            }
-        }
-        let waits_until = self
-            .state
-            .limit
-            .as_ref()
-            .map(|hold| hold.until_ms)
-            .filter(|until| now < *until)
-            .or_else(|| store::limited_until(&self.current_account(), now));
-        if let Some(until_ms) = waits_until {
-            if self.state.limit.is_none() && self.work_waiting() {
-                self.log(ManagerEvent::Limit {
-                    until: Some(status::resume_time(until_ms, now)),
-                });
-                self.state.limit = Some(LimitHold {
-                    until_ms,
-                    attempt: 0,
-                    ids: Vec::new(),
-                    events: true,
-                    switched: false,
-                    auth: false,
-                    account: true,
-                });
-                self.save();
-            }
-            if self.duties.is_some() {
-                self.stand_in();
-            }
-            return true;
-        }
-        false
-    }
-
     /// The messages of the next turn, off the queue: those of the first author that wakes the
     /// manager, then the events that need no judgment, which go along after them.
     fn take_batch(&mut self) -> Batch {
@@ -2114,8 +2068,7 @@ impl Manager {
             self.reexec = true;
             return;
         }
-        self.choose_agent();
-        if self.waits_for_limit() {
+        if self.choose_agent() {
             return;
         }
         let held = self.state.limit.clone();
@@ -2223,109 +2176,206 @@ impl Manager {
             .any(|(_, author, _, wakes)| *author != Author::Events || *wakes)
     }
 
-    /// Before every turn, the best agent that can take it: back on the own agent as soon as
-    /// its limit is over, in a fresh conversation; down to a fallback only past
-    /// `maxWaitMinutes` and only when a turn waits. ref: docs/tasks.md "Agents"
-    fn choose_agent(&mut self) {
+    /// Before every turn, the one rule of where the manager goes (`agent::next`): back on its
+    /// own agent as soon as that is free, in a fresh conversation that opens with the handover
+    /// and the held messages in full; down to a fallback for a failed sign-in, or a limit past
+    /// `maxWaitMinutes`; else a hold on the own account's record, which ends when the record
+    /// does. Only with a turn to run. True while the turn waits: a hold on an error's
+    /// backoff waits on its time, one on the account on its record, and the stand-in answers
+    /// the owner meanwhile. ref: docs/tasks.md "Agents"
+    fn choose_agent(&mut self) -> bool {
         let now = now_unix_ms();
-        let own = agent::account(&self.adapter, &self.model);
-        // ^ After a failed sign-in the own agent is tried again with a turn to run, not on an
-        // idle manager: a try that fails again moves it back, and each move is a new conversation.
-        let idle_after_sign_in = self.state.agent.as_ref().is_some_and(|agent| agent.sign_in)
-            && self.state.limit.is_none()
-            && !self.work_waiting();
-        if self.state.agent.is_some()
-            && !idle_after_sign_in
-            && agent::blocked_until(&own, now).is_none()
-        {
-            let reason = format!("back on {}", self.adapter);
-            self.say(&reason);
-            let held = self.state.limit.take();
-            self.rotate(0, Some(reason));
-            self.state.agent = None;
-            self.state.limit = held.map(|hold| LimitHold {
-                until_ms: now,
-                attempt: 0,
-                switched: true,
-                ..hold
-            });
-            self.save();
-            return;
+        // ^ The own account's probe, whatever agent runs now.
+        if self.adapter == "claude" {
+            claude::probe_limit();
         }
         let held = self.state.limit.clone();
         if held.is_none() && !self.work_waiting() {
-            return;
+            return false;
         }
-        if let Some(until_ms) = store::limited_until(&self.current_account(), now) {
-            let (ids, events) = held.map_or((Vec::new(), true), |hold| (hold.ids, hold.events));
-            if self.switch_agent(until_ms, &ids, events) {
-                self.save();
+        let hold = held.as_ref().filter(|hold| now < hold.until_ms);
+        if hold.is_some_and(|hold| !hold.account) {
+            self.stand_in_if_duties();
+            return true;
+        }
+        let (ids, events) = held.map_or((Vec::new(), true), |hold| (hold.ids, hold.events));
+        match self.next(Ask::Look, now) {
+            Next::Stay => {
+                if let Some(hold) = self.state.limit.as_mut().filter(|hold| now < hold.until_ms) {
+                    hold.until_ms = now;
+                    self.say("the usage limit has lifted: the manager continues");
+                    self.save();
+                }
+                false
+            }
+            Next::Home => {
+                self.go_home(ids, events, None);
+                false
+            }
+            Next::Move(next, cause) => {
+                let reason = self.move_words(&next, cause, now);
+                self.move_to(next, reason, ids, events);
+                false
+            }
+            Next::Wait(until_ms) => {
+                if self.state.limit.is_none() {
+                    self.log(ManagerEvent::Limit {
+                        until: Some(status::resume_time(until_ms, now)),
+                    });
+                }
+                self.hold_on_account(until_ms, 0, ids, events, None, now);
+                self.stand_in_if_duties();
+                true
             }
         }
     }
 
-    /// A limit until `until_ms` past `tasks.agent.maxWaitMinutes` moves the manager to the
-    /// first available `tasks.manager.fallback` in a new conversation, whose first turn
-    /// answers the held messages `ids`. A short limit is waited out. Returns whether it moved.
-    /// ref: docs/tasks.md "Agents"
-    fn switch_agent(&mut self, until_ms: u64, ids: &[u64], events: bool) -> bool {
-        let now = now_unix_ms();
+    /// Where the manager goes (`agent::next`): its own agent is `tasks.manager.adapter` and
+    /// `model`, the current one `state.agent` when set.
+    fn next(&self, ask: Ask, now: u64) -> Next {
         let settings = load_task_config(&self.main).unwrap_or_default();
-        let Some(next) = agent::fallback_past_wait(
+        let current = self.current_agent();
+        agent::next(
+            (&self.adapter, &self.model),
+            (&current.0, &current.1),
             &settings.manager_fallback,
             settings.max_wait_secs,
-            &self.current_account(),
             policy::Role::Manager,
-            until_ms,
+            ask,
             now,
-        ) else {
-            return false;
-        };
-        let reason = format!(
-            "switched to {}: {} usage limit until {}",
-            next.name,
-            self.current_adapter(),
-            status::resume_time(until_ms, now)
-        );
-        self.move_to(next, reason, ids, events, false);
-        true
+        )
     }
 
-    /// The manager's sign-in failed on its current account: it moves at once to the first
-    /// `tasks.manager.fallback` that fills the manager role and is not on a limited or signed-out account,
-    /// the same way a long limit does, and the held turn `ids` goes to it. False with none: the
-    /// sign-in hold retries. ref: docs/tasks.md "Agents"
-    fn switch_after_sign_in(&mut self, ids: &[u64], events: bool) -> bool {
-        let now = now_unix_ms();
-        let settings = load_task_config(&self.main).unwrap_or_default();
-        let Some(next) = agent::fallback(&settings.manager_fallback, now, policy::Role::Manager)
-        else {
-            return false;
+    /// The (adapter, model) that runs now: a fallback's, else the own.
+    fn current_agent(&self) -> (String, String) {
+        match &self.state.agent {
+            Some(agent) => (agent.adapter.clone(), agent.model.clone()),
+            None => (self.adapter.clone(), self.model.clone()),
+        }
+    }
+
+    /// The one chat line of a move: "switched to <name>: claude usage limit until 03:20", or
+    /// "claude moved to <name>: sign-in expired".
+    fn move_words(&self, next: &agent::Choice, cause: Cause, now: u64) -> String {
+        let adapter = self.current_adapter();
+        match cause {
+            Cause::Limit(_) => format!("switched to {}: {}", next.name, cause.words(&adapter, now)),
+            Cause::SignIn => format!(
+                "{adapter} moved to {}: {}",
+                next.name,
+                cause.words(&adapter, now)
+            ),
+        }
+    }
+
+    /// The current account refused the turn (a usage limit or a failed sign-in, on record
+    /// until `until_ms`, the `attempt`-th in a row), with `why` its words; the turn's `ids`
+    /// are held. `agent::next` says where: home when the own agent is free, to a free
+    /// fallback, else a hold on the own account, which a fallback leaves for.
+    /// ref: docs/tasks.md "Agents"
+    fn refused(&mut self, until_ms: u64, attempt: u32, ids: Vec<u64>, why: &str, now: u64) {
+        let events = self.turn_events;
+        let until_ms = match self.next(Ask::Refused(until_ms), now) {
+            Next::Home => return self.go_home(ids, events, Some(why)),
+            Next::Move(next, cause) => {
+                let reason = self.move_words(&next, cause, now);
+                return self.move_to(next, reason, ids, events);
+            }
+            Next::Wait(until_ms) => until_ms,
+            Next::Stay => until_ms,
         };
-        let reason = format!(
-            "{} moved to {}: sign-in expired",
-            self.current_adapter(),
-            next.name
-        );
-        self.move_to(next, reason, ids, events, true);
-        true
+        let switched = self.state.agent.is_some().then_some(true);
+        if self.state.agent.is_some() {
+            let reason = format!(
+                "{} was refused: {why}; waits on {}",
+                self.current_adapter(),
+                self.adapter
+            );
+            self.say(&reason);
+            self.rotate(0, Some(reason));
+            self.state.agent = None;
+        } else {
+            let reason = match store::sign_in_failed_until(&self.current_account(), now) {
+                Some(retry_ms) => limit::sign_in_reason(retry_ms, now),
+                None => status::limit_reason(
+                    &self.adapter,
+                    store::account_limit(&self.current_account(), now)
+                        .and_then(|limit| limit.window)
+                        .as_deref(),
+                    until_ms,
+                    now,
+                ),
+            };
+            self.say(&reason);
+        }
+        self.log(ManagerEvent::Limit {
+            until: Some(status::resume_time(until_ms, now)),
+        });
+        self.hold_on_account(until_ms, attempt, ids, events, switched, now);
+    }
+
+    /// Hold the turn `ids` on the own account until its record ends (`until_ms` as it reads
+    /// now); `switched` when a new conversation must see the messages in full, else as the
+    /// hold before. ref: docs/tasks.md "Agents"
+    fn hold_on_account(
+        &mut self,
+        until_ms: u64,
+        attempt: u32,
+        ids: Vec<u64>,
+        events: bool,
+        switched: Option<bool>,
+        now: u64,
+    ) {
+        let before = self.state.limit.as_ref();
+        self.state.limit = Some(LimitHold {
+            until_ms,
+            attempt,
+            ids,
+            events,
+            switched: switched.unwrap_or_else(|| before.is_some_and(|hold| hold.switched)),
+            auth: store::sign_in_failed_until(&self.current_account(), now).is_some(),
+            account: true,
+        });
+        self.save();
+    }
+
+    /// Back on the own agent in a fresh conversation that opens with the handover and the
+    /// held `ids` in full; `refused` names what the fallback answered, when it was refused.
+    fn go_home(&mut self, ids: Vec<u64>, events: bool, refused: Option<&str>) {
+        let reason = format!("back on {}", self.adapter);
+        self.say(&match refused {
+            Some(why) => format!("{reason}: {} was refused: {why}", self.current_adapter()),
+            None => reason.clone(),
+        });
+        self.rotate(0, Some(reason));
+        self.state.agent = None;
+        self.state.limit = Some(LimitHold {
+            until_ms: now_unix_ms(),
+            attempt: 0,
+            ids,
+            events,
+            switched: true,
+            auth: false,
+            account: false,
+        });
+        self.save();
+    }
+
+    /// The stand-in answers the owner during a hold, when this host has the project's duties.
+    fn stand_in_if_duties(&mut self) {
+        if self.duties.is_some() {
+            self.stand_in();
+        }
     }
 
     /// Continue the held turn `ids` in a new conversation on `next`, which opens with the
     /// handover; `reason` is the one chat line.
-    fn move_to(
-        &mut self,
-        next: agent::Choice,
-        reason: String,
-        ids: &[u64],
-        events: bool,
-        sign_in: bool,
-    ) {
+    fn move_to(&mut self, next: agent::Choice, reason: String, ids: Vec<u64>, events: bool) {
         self.say(&reason);
         self.state.limit = Some(LimitHold {
             until_ms: now_unix_ms(),
             attempt: 0,
-            ids: ids.to_vec(),
+            ids,
             events,
             switched: true,
             auth: false,
@@ -2336,7 +2386,48 @@ impl Manager {
             name: next.name,
             adapter: next.adapter,
             model: next.model,
-            sign_in,
+        });
+        self.save();
+    }
+
+    /// A turn with no line from the agent for `stall::turn_quiet_ms` ends: the agent is
+    /// stopped and the turn is its error, which holds and retries; on a fallback it counts as
+    /// a refusal with no reset, so the manager moves on (`refused`).
+    /// ref: docs/tasks.md "Agents"
+    fn end_hung_turn(&mut self) {
+        if self.turn.is_none() || self.stand_in.is_some() {
+            return;
+        }
+        let settings = load_task_config(&self.main).unwrap_or_default();
+        let bound = Duration::from_millis(stall::turn_quiet_ms(settings.check_timeout_secs));
+        if self.last_line.elapsed() < bound {
+            return;
+        }
+        let text = format!(
+            "no output for {}: the agent was stopped",
+            status::span(self.last_line.elapsed().as_millis() as u64)
+        );
+        self.say(&text);
+        // ^ A late line of the stopped process is not a turn of the manager's.
+        self.generation += 1;
+        if let Some(agent) = self.agent.take() {
+            agent.stop();
+        }
+        let limit = self.state.agent.is_some().then_some(UsageLimit {
+            resets_at: None,
+            window: None,
+        });
+        self.on_result(TurnResult {
+            is_error: true,
+            subtype: "error".into(),
+            text,
+            structured: None,
+            denials: Vec::new(),
+            usage: TurnUsage::default(),
+            limit,
+            background: 0,
+            thought: 0,
+            simplified: false,
         });
     }
 
@@ -2851,6 +2942,7 @@ impl Manager {
             agent.set_model(&model)?;
             self.agent_model = model;
         }
+        self.last_line = Instant::now();
         agent.send(text.trim_end())
     }
 
@@ -2944,6 +3036,7 @@ impl Manager {
                 self.say(&text)
             }
             Some(AgentLine::Progress { text, .. }) => {
+                self.last_line = Instant::now();
                 self.say(&text);
                 self.log(ManagerEvent::Agent { text });
             }
@@ -2985,29 +3078,8 @@ impl Manager {
             if let Some(message) = problem {
                 self.say(&message);
             }
-            if self.switch_agent(until_ms, &to, self.turn_events) {
-                self.save();
-                self.report(runtime::AgentState::Idle);
-                return;
-            }
-            self.say(&status::limit_reason(
-                &adapter,
-                reached.window.as_deref(),
-                until_ms,
-                now,
-            ));
-            self.log(ManagerEvent::Limit {
-                until: Some(status::resume_time(until_ms, now)),
-            });
-            self.state.limit = Some(LimitHold {
-                until_ms,
-                attempt,
-                ids: to,
-                events: self.turn_events,
-                switched: false,
-                auth: false,
-                account: true,
-            });
+            let why = clip(result.text.lines().next().unwrap_or_default(), 200);
+            self.refused(until_ms, attempt, to, &why, now);
             self.save();
             self.report(runtime::AgentState::Idle);
             return;
@@ -3022,48 +3094,40 @@ impl Manager {
             // ^ A failed sign-in waits for the owner's new one: no doubling backoff and no new
             // conversation, but a new process each try, since the running one keeps its old
             // credentials. Logged once, not on each try.
-            let auth = agent::auth_failed(&result.text);
-            // ^ A failed sign-in moves to a fallback at once, and every host skips the account.
-            if auth {
-                let (_, problem) = agent::record_sign_in_failed(&adapter, &model, now);
+            // ^ A failed sign-in: every host skips the account, and the running process keeps
+            // its old credentials, so the next try is a new one. The account's record decides
+            // where (`refused`), as for a limit; the chat hears "Sign in again" once per hold.
+            if agent::auth_failed(&result.text) {
+                let (until_ms, problem) = agent::record_sign_in_failed(&adapter, &model, now);
                 if let Some(message) = problem {
                     self.say(&message);
                 }
-                if self.switch_after_sign_in(&to, self.turn_events) {
-                    self.save();
-                    self.report(runtime::AgentState::Idle);
-                    return;
-                }
-            }
-            let was_auth = self.state.limit.as_ref().is_some_and(|hold| hold.auth);
-            let until_ms = match auth {
-                true => now + store::sign_in_retry_ms(),
-                false => limit::resume_at(None, attempt, now),
-            };
-            if auth {
                 if let Some(agent) = self.agent.take() {
                     agent.stop();
                 }
-            }
-            if !(auth && was_auth) {
-                let stopped = match auth {
-                    true => format!(
-                        "{reason}. Sign in again (`claude /login`); the manager retries every \
-                         {} min, and at once when you write.",
-                        store::sign_in_retry_ms().div_ceil(60_000)
-                    ),
-                    false => reason.clone(),
-                };
-                self.log(ManagerEvent::Stopped { reason: stopped });
-                // ^ No pause for a sign-in: its retry time is not the owner's to wait for, and
-                // a `limit` without a time reads as a resume.
-                if !auth {
-                    self.log(ManagerEvent::Limit {
-                        until: Some(status::resume_time(until_ms, now)),
+                let was_auth = self.state.limit.as_ref().is_some_and(|hold| hold.auth);
+                self.refused(until_ms, attempt, to, &reason, now);
+                if self.state.limit.as_ref().is_some_and(|hold| hold.auth) && !was_auth {
+                    self.log(ManagerEvent::Stopped {
+                        reason: format!(
+                            "{reason}. Sign in again (`claude /login`); the manager retries \
+                             every {} min.",
+                            store::sign_in_retry_ms().div_ceil(60_000)
+                        ),
                     });
                 }
+                self.save();
+                self.report(runtime::AgentState::Error);
+                return;
             }
-            let rotate = !auth && attempt == ERROR_ROTATE_ATTEMPTS;
+            let until_ms = limit::resume_at(None, attempt, now);
+            self.log(ManagerEvent::Stopped {
+                reason: reason.clone(),
+            });
+            self.log(ManagerEvent::Limit {
+                until: Some(status::resume_time(until_ms, now)),
+            });
+            let rotate = attempt == ERROR_ROTATE_ATTEMPTS;
             if rotate {
                 self.rotate(0, Some(reason));
             }
@@ -3073,7 +3137,7 @@ impl Manager {
                 ids: to,
                 events: self.turn_events,
                 switched: rotate || self.state.limit.as_ref().is_some_and(|hold| hold.switched),
-                auth,
+                auth: false,
                 account: false,
             });
             self.save();

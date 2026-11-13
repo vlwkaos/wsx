@@ -378,7 +378,10 @@ impl Run {
             // waits out or moves away from (`refusal`). Before, the turn never ended.
             "response" if value["success"] == false && value["command"] == "prompt" => {
                 self.stop = "error".into();
-                self.error = value["error"].as_str().unwrap_or("pi refused the prompt").into();
+                self.error = value["error"]
+                    .as_str()
+                    .unwrap_or("pi refused the prompt")
+                    .into();
                 Some(AgentLine::Result(Box::new(self.finish(value))))
             }
             "response" if value["success"] == false => Some(AgentLine::Progress {

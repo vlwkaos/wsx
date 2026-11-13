@@ -5,8 +5,8 @@
 //! send to it over one channel; it answers each request after acting on it.
 
 use super::agent::{
-    new_session_id, Agent, AgentLine, Launch, TurnResult, KEEP_WARM_PINGS, KEEP_WARM_TEXT,
-    PROMPT_CACHE_MS,
+    self, new_session_id, Agent, AgentLine, Ask, Launch, Next, TurnResult, UsageLimit,
+    KEEP_WARM_PINGS, KEEP_WARM_TEXT, PROMPT_CACHE_MS,
 };
 use super::broker;
 use super::hosting;
@@ -36,11 +36,11 @@ use wsx_core::task::{
     manager::{Author, Short},
     now_unix_ms, owner,
     owner::HOST_TIMEOUT,
-    report,
+    report, stall,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
-    view, Actor, After, AfterKind, CheckResult, Evidence, HostRequest, HostResponse, HumanVerify,
-    LogEvent, MessageKind, TaskRecord, TaskState, TurnTrigger, WaitOn, Waiting, WorkerResult,
-    MAX_MESSAGE_BYTES,
+    view, Actor, After, AfterKind, CheckResult, Evidence, Home, HostRequest, HostResponse,
+    HumanVerify, LogEvent, MessageKind, TaskRecord, TaskState, TurnTrigger, TurnUsage, WaitOn,
+    Waiting, WorkerResult, MAX_MESSAGE_BYTES,
 };
 
 /// A shared failure is posted once in this long (the store keeps a key for a day).
@@ -129,14 +129,23 @@ enum DiskWait {
     Checks,
 }
 
-/// A turn the agent's usage limit ended: the text that continues it, and when it may.
+/// A turn the own agent's usage limit or failed sign-in holds: the text that continues it,
+/// and when it may. The account's record ends the wait (`resume_after_limit`).
 struct LimitWait {
     text: String,
     until_ms: u64,
     /// When the host looks next: `until_ms`, later while another task holds the limit slot.
     next_ms: u64,
-    /// The wait is for a failed sign-in, not a usage limit: the try runs in a new agent process.
-    sign_in: bool,
+}
+
+/// Why the conversation ends after its handoff notes. ref: docs/tasks.md "Context rotation"
+enum Handoff {
+    /// The context reached `tasks.agent.rotateTokens`: a fresh conversation follows.
+    Size,
+    /// Idle past `tasks.agent.rotateIdleSeconds` (the words): the prompt cache is gone.
+    Idle(String),
+    /// The task goes home: its own conversation continues with the fallback's notes.
+    Home,
 }
 
 /// A turn without a result that ended while background jobs ran: Claude starts its own turn
@@ -323,10 +332,10 @@ struct Host {
     carried_verify: Vec<HumanVerify>,
     /// The context of the worker's last model call, from the log when the host starts.
     context_tokens: u64,
-    /// The turn that waits while the worker writes its handoff notes, and the idle reason
-    /// when an idle gap rotated it: it starts the fresh conversation.
+    /// The turn that waits while the worker writes its handoff notes, and why the
+    /// conversation ends: it starts the conversation that follows.
     /// ref: docs/tasks.md "Context rotation"
-    rotating: Option<(String, Option<String>)>,
+    rotating: Option<(String, Handoff)>,
     /// What started the running turn, logged on its result.
     trigger: TurnTrigger,
     /// When the agent last answered (unix ms), from the log when the host starts.
@@ -336,6 +345,9 @@ struct Host {
     pings: u32,
     after_ping: Option<TurnTrigger>,
     started: Instant,
+    /// When the agent last wrote a line of the turn, or the turn started: a turn quiet past
+    /// `stall::turn_quiet_ms` is ended (`turn_hung`).
+    last_line: Instant,
 }
 
 pub fn run(project_id: &str, id: u32) -> Result<()> {
@@ -394,8 +406,25 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         pings: 0,
         after_ping: None,
         started: Instant::now(),
+        last_line: Instant::now(),
     };
     (host.context_tokens, host.answered_ms) = host.last_context();
+    // ^ A record from before `home`: its own agent is the one in use, or when a switch is on
+    // record, the project's configured one.
+    if host.record.home.is_none() {
+        let settings = load_task_config(&host.record.project_path).unwrap_or_default();
+        let (adapter, model) = match host.record.fallback {
+            true => (settings.adapter, settings.model),
+            false => (host.record.adapter.clone(), host.record.model.clone()),
+        };
+        host.record.home = Some(Home {
+            adapter,
+            model,
+            session: None,
+            turn: String::new(),
+        });
+        host.save();
+    }
     let to_host = events.clone();
     let policy = host.policy.clone();
     let (project_id, copy) = (
@@ -517,12 +546,18 @@ impl Host {
             let ping_due = self
                 .ping_due()
                 .map(|due| Duration::from_millis(due.saturating_sub(now_unix_ms())));
+            // ^ A turn with no output for the quiet bound ends: a hung agent must not hold the
+            // task forever. ref: docs/tasks.md "Agents"
+            let quiet_due = self
+                .turn_active
+                .then(|| self.quiet_bound().saturating_sub(self.last_line.elapsed()));
             let event = match disk_due
                 .into_iter()
                 .chain(limit_due)
                 .chain(background_due)
                 .chain(settle_due)
                 .chain(ping_due)
+                .chain(quiet_due)
                 .min()
             {
                 None => receiver.recv().ok(),
@@ -538,6 +573,8 @@ impl Host {
                             self.background_timed_out();
                         } else if ping_due == Some(due) {
                             self.ping();
+                        } else if quiet_due == Some(due) {
+                            self.turn_hung();
                         } else {
                             self.resume_after_limit();
                         }
@@ -822,9 +859,16 @@ impl Host {
                 });
                 self.wait(WaitOn::Owner, reason);
             }
-            // ^ A limit wait outlives its host: the restarted one asks the account's record.
+            // ^ A limit wait outlives its host: the restarted one asks the account's record
+            // at once, as every look of the wait does.
             TaskState::Waiting if self.record.waits_on(WaitOn::Limit) => {
-                self.rejoin_limit_wait(LIMIT_CONTINUE);
+                let now = now_unix_ms();
+                self.limit_wait = Some(LimitWait {
+                    text: LIMIT_CONTINUE.into(),
+                    until_ms: now,
+                    next_ms: now,
+                });
+                self.resume_after_limit();
             }
             state => {
                 self.set_state(state);
@@ -1416,31 +1460,27 @@ impl Host {
             wait.text = format!("{}\n\n{text}", wait.text);
             return Ok(());
         }
-        // ^ A fallback's limit another host met, or its spent budget: no paid call to learn it.
-        // On Claude the refusal costs nothing and the limit queue orders the resumes.
-        // ref: docs/tasks.md "Agents"
-        let now = now_unix_ms();
-        // ^ An account whose sign-in failed lately is skipped with no call; a task on a fallback
-        // for that reason goes home once the record ends.
-        if let Some(until_ms) = store::sign_in_failed_until(&self.account(), now) {
-            if !self.move_after_sign_in(Some(text), now) {
-                self.wait_for_sign_in(text.to_string(), until_ms);
+        // ^ Before a turn, the one rule of where the task goes (`agent::next`): home once its
+        // own agent is free, to a fallback when the account refuses turns, or a wait. A steer
+        // into a running turn goes to that turn. ref: docs/tasks.md "Agents"
+        if !self.turn_active {
+            let now = now_unix_ms();
+            match self.ask(Ask::Turn, now) {
+                Next::Stay => {}
+                Next::Home => {
+                    self.go_home(text);
+                    return Ok(());
+                }
+                Next::Move(next, cause) => {
+                    let reason = cause.words(&self.record.adapter, now);
+                    self.switch_agent(next, reason, text.to_string(), text.to_string());
+                    return Ok(());
+                }
+                Next::Wait(until_ms) => {
+                    self.wait_at_home(text.to_string(), until_ms, now);
+                    return Ok(());
+                }
             }
-            return Ok(());
-        }
-        if self.go_home_after_sign_in(text, now) {
-            return Ok(());
-        }
-        let limited = (self.record.adapter != "claude")
-            .then(|| store::limited_until(&self.account(), now))
-            .flatten();
-        if let Some(until_ms) = limited {
-            if !self.move_after_limit(Some(text), until_ms, now) {
-                self.limit_slot = None;
-                self.log(LogEvent::LimitWait { until_ms });
-                self.wait_for_limit(text.to_string(), until_ms, false);
-            }
-            return Ok(());
         }
         // ^ A message during a disk wait joins the held turn, or follows the held checks: it
         // never starts a turn of its own, which would skip the disk queue and drop the held
@@ -1477,9 +1517,9 @@ impl Host {
         }
         let handoff;
         let text = match self.rotation_due(trigger) {
-            Some(idle) => {
-                handoff = self.handoff_request(idle.as_deref());
-                self.rotating = Some((text.to_string(), idle));
+            Some(why) => {
+                handoff = self.handoff_request(&why);
+                self.rotating = Some((text.to_string(), why));
                 handoff.as_str()
             }
             None => text,
@@ -1515,6 +1555,7 @@ impl Host {
                 move |line| Event::Agent(generation, line),
             )?);
         }
+        self.last_line = Instant::now();
         self.agent
             .as_mut()
             .context("the agent is not running")?
@@ -1620,6 +1661,7 @@ impl Host {
             Some(AgentLine::Progress { text, said }) => {
                 // ^ The agent answers again: the next task in the limit queue may try.
                 self.limit_slot = None;
+                self.last_line = Instant::now();
                 self.say(&text);
                 // ^ A ping's one word is no progress of the task.
                 if !self.pinging() {
@@ -1682,7 +1724,7 @@ impl Host {
         if let Some(limit) = &turn.limit {
             self.limit_attempt += 1;
             let now = now_unix_ms();
-            let (until_ms, problem) = super::agent::record_limit(
+            let (until_ms, problem) = agent::record_limit(
                 &self.record.adapter,
                 &self.record.model,
                 limit,
@@ -1692,30 +1734,25 @@ impl Host {
             if let Some(message) = problem {
                 self.say(&message);
             }
-            if self.move_after_limit(None, until_ms, now) {
-                return;
-            }
+            // ^ The agent has the turn in its history: the resume continues it.
             let mut text = vec![LIMIT_CONTINUE.to_string()];
             text.extend(self.pending.drain(..));
-            self.log(LogEvent::LimitWait { until_ms });
-            self.wait_for_limit(text.join("\n\n"), until_ms, false);
+            self.refused(text.join("\n\n"), &turn.text, until_ms, now);
             return;
         }
-        // ^ A failed sign-in moves the task to a fallback at once. With none usable it waits
-        // like a limit, for the sign-in record's retry time, and does not end failed.
-        if turn.is_error && super::agent::auth_failed(&turn.text) {
+        // ^ A failed sign-in: the running process keeps its old credentials, so the turn is
+        // sent again to a new one, and the sign-in record on the account decides where.
+        if turn.is_error && agent::auth_failed(&turn.text) {
             let now = now_unix_ms();
             let (until_ms, problem) =
-                super::agent::record_sign_in_failed(&self.record.adapter, &self.record.model, now);
+                agent::record_sign_in_failed(&self.record.adapter, &self.record.model, now);
             if let Some(message) = problem {
                 self.say(&message);
             }
-            if self.move_after_sign_in(None, now) {
-                return;
-            }
+            self.stop_agent();
             let mut text = vec![std::mem::take(&mut self.turn_text)];
             text.extend(self.pending.drain(..));
-            self.wait_for_sign_in(text.join("\n\n"), until_ms);
+            self.refused(text.join("\n\n"), &turn.text, until_ms, now);
             return;
         }
         self.limit_attempt = 0;
@@ -1723,12 +1760,16 @@ impl Host {
         if !turn.is_error {
             store::clear_sign_in_failed(&self.account());
         }
-        if let Some((waiting, idle)) = self.rotating.take() {
+        if let Some((waiting, why)) = self.rotating.take() {
             self.log(LogEvent::Agent {
                 said: false,
                 text: format!("handoff notes: {}", first_line(&turn.text)),
             });
-            self.rotate(waiting, idle);
+            match why {
+                Handoff::Home => self.return_home(waiting, None),
+                Handoff::Size => self.rotate(waiting, None),
+                Handoff::Idle(idle) => self.rotate(waiting, Some(idle)),
+            }
             return;
         }
         let structured = turn
@@ -1974,7 +2015,7 @@ impl Host {
     /// prompt cache is gone then and a resume writes the whole context again. Never for the
     /// result the last turn left out, nor while a `check-run` waits (its answer goes to this
     /// conversation).
-    fn rotation_due(&self, trigger: TurnTrigger) -> Option<Option<String>> {
+    fn rotation_due(&self, trigger: TurnTrigger) -> Option<Handoff> {
         let config = load_task_config(&self.record.project_path).unwrap_or_default();
         if self.rotating.is_some()
             || self.check_run.is_some()
@@ -1984,32 +2025,39 @@ impl Host {
             return None;
         }
         if self.context_tokens >= config.rotate_tokens {
-            return Some(None);
+            return Some(Handoff::Size);
         }
         let idle_ms = now_unix_ms().saturating_sub(self.answered_ms);
         (config.rotate_idle_seconds > 0
             && self.answered_ms > 0
             && idle_ms > config.rotate_idle_seconds * 1000
             && self.context_tokens >= config.rotate_tokens / 2)
-            .then(|| Some(format!("idle {} min", idle_ms / 60_000)))
+            .then(|| Handoff::Idle(format!("idle {} min", idle_ms / 60_000)))
     }
 
-    fn handoff_request(&self, idle: Option<&str>) -> String {
-        self.say(&format!(
-            "context {}k{}: the worker writes handoff notes, then a fresh conversation continues",
-            self.context_tokens / 1000,
-            idle.map(|idle| format!(", {idle}")).unwrap_or_default()
-        ));
-        let why = match idle {
-            Some(_) => {
+    fn handoff_request(&self, why: &Handoff) -> String {
+        let context = format!("context {}k", self.context_tokens / 1000);
+        let (said, why, next) = match why {
+            Handoff::Size => (context, "past this task's limit".to_string(), "a fresh one"),
+            Handoff::Idle(idle) => (
+                format!("{context}, {idle}"),
                 "this conversation was idle past this task's limit, so its prompt cache is gone"
-            }
-            None => "past this task's limit",
+                    .to_string(),
+                "a fresh one",
+            ),
+            Handoff::Home => (
+                "its own agent is free again".to_string(),
+                "and this task's own agent is free again".to_string(),
+                "its own conversation",
+            ),
         };
+        self.say(&format!(
+            "{said}: the worker writes handoff notes, then {next} continues"
+        ));
         format!(
             "Your context is {}k tokens, {why}. This conversation ends after \
-             this turn and a fresh one continues the task; your working copy and commits stay. \
-             Do no other work now. Write {} for that fresh conversation, at most 12 KB: what \
+             this turn and {next} continues the task; your working copy and commits stay. \
+             Do no other work now. Write {} for that conversation, at most 12 KB: what \
              the task is doing now, what is done, what remains and the next action, decisions \
              and why, the files and functions that matter, the checks you ran and how they \
              ended, and what you learned that the code does not show. Then return your result: \
@@ -2233,48 +2281,241 @@ impl Host {
     /// holds; with none the turn goes on at the next look. A sign-in wait keeps its retry time.
     /// A long wait from an older host or from before a fallback was configured moves to the
     /// fallback now instead of waiting days. ref: docs/tasks.md "Agents"
-    fn rejoin_limit_wait(&mut self, text: &str) {
-        let now = now_unix_ms();
-        let waiting = self.record.waiting.as_ref();
-        let sign_in = waiting.is_some_and(|w| w.reason.starts_with(limit::SIGN_IN_WORDS));
-        if sign_in {
-            let until_ms = waiting.and_then(|w| w.until_ms).unwrap_or_default();
-            return self.wait_for_limit(text.to_string(), until_ms, true);
+    /// The settings of the project, as every turn reads them.
+    fn settings(&self) -> wsx_core::model::workspace::TaskConfig {
+        load_task_config(&self.record.project_path).unwrap_or_default()
+    }
+
+    /// The task's own agent, filled in at the host's start.
+    fn home(&self) -> &Home {
+        self.record
+            .home
+            .as_ref()
+            .expect("the host fills in the record's home")
+    }
+
+    /// The task runs on a fallback.
+    fn away(&self) -> bool {
+        let home = self.home();
+        (home.adapter.as_str(), home.model.as_str())
+            != (self.record.adapter.as_str(), self.record.model.as_str())
+    }
+
+    /// Where the task goes (`agent::next`, the one rule): asked before every turn and at every
+    /// look of a wait. ref: docs/tasks.md "Agents"
+    fn ask(&self, ask: Ask, now: u64) -> Next {
+        let settings = self.settings();
+        let home = self.home();
+        agent::next(
+            (&home.adapter, &home.model),
+            (&self.record.adapter, &self.record.model),
+            &settings.fallback,
+            settings.max_wait_secs,
+            wsx_core::task::policy::Role::Worker,
+            ask,
+            now,
+        )
+    }
+
+    /// Stop the agent process; its end is no lost turn.
+    fn stop_agent(&mut self) {
+        if let Some(agent) = self.agent.take() {
+            self.stop_requested = true;
+            agent.stop();
         }
-        let until_ms = store::limited_until(&self.account(), now).unwrap_or(now);
-        if !self.move_after_limit(Some(text), until_ms, now) {
-            self.wait_for_limit(text.to_string(), until_ms, false);
+    }
+
+    /// The current account refused the turn (a usage limit or a failed sign-in, on record
+    /// until `until_ms`), with `why` its words: `text` continues the task where `agent::next`
+    /// says. A fallback's refusal with the own agent free goes home; one with it still blocked
+    /// goes home for the wait, since no other fallback took it. ref: docs/tasks.md "Agents"
+    fn refused(&mut self, text: String, why: &str, until_ms: u64, now: u64) {
+        let did = format!("was refused: {}", first_line(why));
+        let until_ms = match self.ask(Ask::Refused(until_ms), now) {
+            Next::Home => return self.return_home(text, Some(did)),
+            Next::Move(next, cause) => {
+                let reason = cause.words(&self.record.adapter, now);
+                let unfinished = std::mem::take(&mut self.turn_text);
+                return self.switch_agent(next, reason, unfinished, text);
+            }
+            Next::Wait(until_ms) => until_ms,
+            Next::Stay => until_ms,
+        };
+        if !self.away() {
+            return self.wait_at_home(text, until_ms, now);
         }
+        let reason = format!("back on {}: {did}; waits for it", self.home().adapter);
+        match self.come_home(&did, reason.clone()) {
+            Some(opening) => self.wait_at_home(opening, until_ms, now),
+            None => self.rotate(self.fresh_turn(&did, ""), Some(reason)),
+        }
+    }
+
+    /// The own agent is free: the task goes home with `text` to run. A fallback that answered
+    /// in its conversation writes its handoff notes first (`Handoff::Home`).
+    /// ref: docs/tasks.md "Agents"
+    fn go_home(&mut self, text: &str) {
+        if self.record.agent_session.is_some() && self.context_tokens > 0 {
+            let request = self.handoff_request(&Handoff::Home);
+            self.rotating = Some((text.to_string(), Handoff::Home));
+            match self.send_to_agent(&request) {
+                Ok(()) => {
+                    // ^ No turn of the task's is lost when this one ends: `rotating` holds it.
+                    self.turn_text = String::new();
+                    self.turn_active = true;
+                    self.trigger = TurnTrigger::Message;
+                    self.pings = 0;
+                    self.set_state(TaskState::Working);
+                    return;
+                }
+                Err(error) => {
+                    self.say(&format!("cannot ask for handoff notes: {error:#}"));
+                    self.rotating = None;
+                }
+            }
+        }
+        self.return_home(text.to_string(), None);
+    }
+
+    /// Back on the own agent with `text` as the turn that starts now, and `did` what the
+    /// fallback answered when it was refused, else what its handoff notes say.
+    /// ref: docs/tasks.md "Agents"
+    fn return_home(&mut self, text: String, did: Option<String>) {
+        let reason = format!("back on {}", self.home().adapter);
+        let did = did.unwrap_or_else(|| self.notes_did());
+        match self.come_home(&did, reason.clone()) {
+            Some(opening) => {
+                let turn = match text.is_empty() || opening.contains(&text) {
+                    true => opening,
+                    false => format!("{opening}\n\n{text}"),
+                };
+                self.start_turn(&turn, TurnTrigger::Limit);
+            }
+            None => self.rotate(self.fresh_turn(&did, &text), Some(reason)),
+        }
+    }
+
+    /// What the fallback did, from its handoff notes.
+    fn notes_did(&self) -> String {
+        match self.dir.read_file(ROTATE_NOTES, MAX_ROTATE_NOTES_BYTES) {
+            Ok(Some(bytes)) if !bytes.trim_ascii().is_empty() => format!(
+                "worked on the task; its handoff notes:\n{}",
+                String::from_utf8_lossy(&bytes)
+            ),
+            _ => "worked on the task and wrote no handoff notes".into(),
+        }
+    }
+
+    /// The record goes back to the own agent and the fallback's process ends, logged as the
+    /// switch `reason`. With the own conversation kept, returns the opening of the turn that
+    /// resumes it: the turn the own agent could not finish, what the fallback `did`, and the
+    /// turn the fallback could not finish when it had answered before. None when the task
+    /// had no own conversation: a fresh one starts (`fresh_turn`, `rotate`).
+    fn come_home(&mut self, did: &str, reason: String) -> Option<String> {
+        self.stop_agent();
+        let fallback = format!("{}/{}", self.record.adapter, self.record.model);
+        // ^ The fallback's turn is lost only when its conversation had answered before; its
+        // first turn is the one the own agent left, which that agent has.
+        let unfinished = match self.context_tokens > 0 {
+            true => std::mem::take(&mut self.turn_text),
+            false => String::new(),
+        };
+        let home = self
+            .record
+            .home
+            .as_mut()
+            .expect("the host fills in the record's home");
+        let to = format!("{} ({}/{})", home.adapter, home.adapter, home.model);
+        self.record.adapter = home.adapter.clone();
+        self.record.model = home.model.clone();
+        self.record.agent_session = home.session.take();
+        let turn = std::mem::take(&mut home.turn);
+        self.record.fallback = false;
+        self.context_tokens = 0;
+        self.limit_attempt = 0;
+        self.rotating = None;
+        // ^ What a fresh own conversation continues (`fresh_turn`).
+        self.turn_text = [turn.as_str(), unfinished.as_str()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        self.save();
+        self.say(&format!("{reason}: {fallback} leaves"));
+        self.log(LogEvent::AgentSwitch {
+            from: fallback.clone(),
+            to,
+            reason,
+        });
+        self.record.agent_session.is_some().then(|| {
+            let turn = match turn.is_empty() {
+                true => LIMIT_CONTINUE.to_string(),
+                false => turn,
+            };
+            let lost = match unfinished.is_empty() {
+                true => String::new(),
+                false => format!("; the turn it could not finish:\n{unfinished}"),
+            };
+            format!(
+                "{turn}\n\nWhile your agent was unavailable, {fallback} {did}{lost}\nCheck what \
+                 the working copy already holds (git status, git log, git diff) before you \
+                 continue."
+            )
+        })
+    }
+
+    /// The turn a fresh own conversation starts with after `come_home` (the rotation text
+    /// carries the task's prompt and the fallback's notes): what the fallback `did` when it
+    /// was refused, the turn the own agent could not finish, and `text`.
+    fn fresh_turn(&self, did: &str, text: &str) -> String {
+        let mut turn = Vec::new();
+        if did.starts_with("was refused") {
+            turn.push(format!("The earlier conversation's agent {did}."));
+        }
+        if !self.turn_text.is_empty() {
+            turn.push(self.turn_text.clone());
+        }
+        if !text.is_empty() && !self.turn_text.contains(text) {
+            turn.push(text.to_string());
+        }
+        turn.join("\n\n")
+    }
+
+    /// Wait at home for the own account until `until_ms` (as the record names it now) with
+    /// `text` the turn that continues; the record ends the wait (`resume_after_limit`).
+    fn wait_at_home(&mut self, text: String, until_ms: u64, now: u64) {
+        // ^ A sign-in's try must run in a new process: the running one keeps its credentials.
+        if store::sign_in_failed_until(&self.account(), now).is_some() {
+            self.stop_agent();
+        }
+        self.limit_slot = None;
+        self.log(LogEvent::LimitWait { until_ms });
+        self.wait_for_limit(text, until_ms);
     }
 
     /// Hold the turn `text` until the account's limit ends, in the machine's limit queue.
     /// `until_ms` is the record's reset as shown, not what ends the wait: the record does
-    /// (`resume_after_limit`). `sign_in`: the wait is for a failed sign-in, which only a new
-    /// agent process can see end, at `until_ms`.
-    fn wait_for_limit(&mut self, text: String, until_ms: u64, sign_in: bool) {
+    /// (`resume_after_limit`).
+    fn wait_for_limit(&mut self, text: String, until_ms: u64) {
         let now = now_unix_ms();
-        // ^ A wait looks every 10 s: for the task's own agent coming free on a fallback, and
-        // for the account's limit record ending early.
-        let next_ms = match sign_in {
-            true => until_ms,
-            false => until_ms.min(now + HOME_POLL_MS),
-        };
+        // ^ A wait looks every 10 s: for the account's record ending early, and for a fallback
+        // coming free past `maxWaitMinutes`.
         self.limit_wait = Some(LimitWait {
             text,
             until_ms,
-            next_ms,
-            sign_in,
+            next_ms: until_ms.min(now + HOME_POLL_MS),
         });
         let reason = self.limit_reason(until_ms, now);
         self.say(&reason);
         self.wait(WaitOn::Limit, reason);
     }
 
-    /// The reason of the limit wait now: the window and reset the record names.
+    /// The reason of the wait now: the failed sign-in's retry, else the window and reset the
+    /// limit record names.
     fn limit_reason(&self, until_ms: u64, now: u64) -> String {
-        match self.limit_wait.as_ref().is_some_and(|wait| wait.sign_in) {
-            true => limit::sign_in_reason(until_ms, now),
-            false => status::limit_reason(
+        match store::sign_in_failed_until(&self.account(), now) {
+            Some(retry_ms) => limit::sign_in_reason(retry_ms, now),
+            None => status::limit_reason(
                 &self.record.adapter,
                 store::account_limit(&self.account(), now)
                     .and_then(|limit| limit.window)
@@ -2285,139 +2526,89 @@ impl Host {
         }
     }
 
-    /// The agent's sign-in failed and no fallback can take the turn: wait like a limit, until
-    /// the sign-in record ends (`until_ms`), then try the turn again in a new agent process that
-    /// resumes the conversation. ref: docs/tasks.md "Agents"
-    fn wait_for_sign_in(&mut self, text: String, until_ms: u64) {
-        // ^ The running process keeps its old credentials.
-        if let Some(agent) = self.agent.take() {
-            self.stop_requested = true;
-            agent.stop();
-        }
-        self.limit_slot = None;
-        self.log(LogEvent::LimitWait { until_ms });
-        self.wait_for_limit(text, until_ms, true);
-    }
-
-    /// After a limit on this task's account until `until_ms`, move to the agent
-    /// `worker_next` names, continuing `unfinished` (else the current turn), and say whether it
-    /// moved; else the caller waits. One conversation is worth more than a switch: a limit
-    /// within `maxWaitMinutes` is waited out. ref: docs/tasks.md "Agents"
-    fn move_after_limit(&mut self, unfinished: Option<&str>, until_ms: u64, now: u64) -> bool {
-        let settings = load_task_config(&self.record.project_path).unwrap_or_default();
-        let Some(next) = super::agent::worker_next(
-            &settings,
-            &self.record.adapter,
-            &self.record.model,
-            until_ms,
-            now,
-        ) else {
-            return false;
-        };
-        if let Some(text) = unfinished {
-            self.turn_text = text.to_string();
-        }
-        let reason = format!(
-            "{} usage limit until {}",
-            self.record.adapter,
-            status::resume_time(until_ms, now)
-        );
-        self.switch_agent(next, reason, false);
-        true
-    }
-
-    /// The agent's sign-in failed: move at once to the first fallback that fills the worker role and is not limited or signed out, continuing `unfinished` (else the
-    /// current turn). False with none: the caller goes on as before. ref: docs/tasks.md "Agents"
-    fn move_after_sign_in(&mut self, unfinished: Option<&str>, now: u64) -> bool {
-        let settings = load_task_config(&self.record.project_path).unwrap_or_default();
-        let Some(next) = super::agent::fallback(
-            &settings.fallback,
-            now,
-            wsx_core::task::policy::Role::Worker,
-        ) else {
-            return false;
-        };
-        if let Some(text) = unfinished {
-            self.turn_text = text.to_string();
-        }
-        self.switch_agent(next, "sign-in expired".into(), true);
-        true
-    }
-
-    /// A task on a fallback because of a failed sign-in tries its own agent again, with a turn
-    /// to start, once the sign-in record has ended. A try that fails moves it back.
-    /// ref: docs/tasks.md "Agents"
-    fn go_home_after_sign_in(&mut self, text: &str, now: u64) -> bool {
-        let settings = load_task_config(&self.record.project_path).unwrap_or_default();
-        let own = super::agent::account(&settings.adapter, &settings.model);
-        if !self.record.sign_in || super::agent::blocked_until(&own, now).is_some() {
-            return false;
-        }
-        self.turn_text = text.to_string();
-        let home = super::agent::Choice {
-            name: settings.adapter.clone(),
-            adapter: settings.adapter,
-            model: settings.model,
-        };
-        self.switch_agent(home, "sign-in may work again".into(), false);
-        true
-    }
-
     /// The account this task's turns run on.
     fn account(&self) -> String {
-        super::agent::account(&self.record.adapter, &self.record.model)
+        agent::account(&self.record.adapter, &self.record.model)
     }
 
-    /// Continue after a usage limit. The account's record decides: it ends the wait when it
-    /// is gone (a probe, or another agent's call, found the account answering) or past, and
-    /// it names the reset shown meanwhile. Tasks resume one at a time, oldest wait first: each
-    /// holds the limit slot until its agent answers, so a limit that has not lifted stops only
-    /// one. ref: docs/tasks.md "Claude adapter"
+    /// A turn with no line from the agent for `quiet_bound` ends: the agent is stopped and
+    /// the turn is its error. On a fallback it counts as a refusal with no reset, so the task
+    /// moves on (`refused`); on the own agent it is the turn's failed result.
+    /// ref: docs/tasks.md "Agents"
+    fn turn_hung(&mut self) {
+        let quiet = self.last_line.elapsed().as_millis() as u64;
+        let text = format!(
+            "no output for {}: the agent was stopped",
+            status::span(quiet)
+        );
+        self.say(&text);
+        self.stop_agent();
+        let limit = self.away().then_some(UsageLimit {
+            resets_at: None,
+            window: None,
+        });
+        self.on_result(TurnResult {
+            is_error: true,
+            subtype: "error".into(),
+            text,
+            structured: None,
+            denials: Vec::new(),
+            usage: TurnUsage::default(),
+            limit,
+            background: 0,
+            thought: 0,
+            simplified: false,
+        });
+    }
+
+    /// How long a turn may stay quiet (`stall::turn_quiet_ms`, the stall sweep's silent bound).
+    fn quiet_bound(&self) -> Duration {
+        Duration::from_millis(stall::turn_quiet_ms(self.settings().check_timeout_secs))
+    }
+
+    /// Continue after a usage limit or a failed sign-in. The account's record decides: it ends
+    /// the wait when it is gone (a probe, or another agent's call, found the account answering)
+    /// or past, and it names the reset shown meanwhile; a fallback free past `maxWaitMinutes`
+    /// takes the turn. Tasks resume one at a time, oldest wait first: each holds the limit
+    /// slot until its agent answers, so a limit that has not lifted stops only one.
+    /// ref: docs/tasks.md "Claude adapter"
     fn resume_after_limit(&mut self) {
         let now = now_unix_ms();
-        let account = self.account();
-        // ^ Not a sign-in wait: only a new agent process sees that end, at its retry time.
-        if self
-            .limit_wait
-            .as_ref()
-            .is_some_and(|wait| !wait.sign_in && wait.next_ms <= now)
-        {
-            if account == "claude" {
-                super::claude::probe_limit();
-            }
-            let until_ms = store::limited_until(&account, now).unwrap_or(now);
-            let shown = self
-                .limit_wait
-                .as_ref()
-                .is_some_and(|wait| wait.until_ms != until_ms);
-            if let Some(wait) = self.limit_wait.as_mut() {
-                wait.until_ms = until_ms;
-            }
-            if shown && until_ms > now {
-                let reason = self.limit_reason(until_ms, now);
-                self.say(&reason);
-                self.wait(WaitOn::Limit, reason);
-            }
-        }
-        // ^ On a fallback, a wait ends as soon as the task's own agent is free.
-        if let Some(wait) = self.limit_wait.take() {
-            if !wait.sign_in && self.move_after_limit(Some(&wait.text), wait.until_ms, now) {
-                return;
-            }
-            self.limit_wait = Some(wait);
-        }
-        let Some(wait) = self.limit_wait.as_mut().filter(|wait| wait.next_ms <= now) else {
+        let Some(wait) = self.limit_wait.as_ref().filter(|wait| wait.next_ms <= now) else {
             return;
         };
-        if now < wait.until_ms {
-            wait.next_ms = wait.until_ms.min(now + HOME_POLL_MS);
-            return;
+        let shown_ms = wait.until_ms;
+        // ^ The own account's probe, whatever agent the task is on now.
+        if self.home().adapter == "claude" {
+            super::claude::probe_limit();
+        }
+        match self.ask(Ask::Look, now) {
+            Next::Wait(until_ms) => {
+                let wait = self.limit_wait.as_mut().expect("the wait is on");
+                wait.until_ms = until_ms;
+                wait.next_ms = until_ms.min(now + HOME_POLL_MS);
+                if shown_ms != until_ms {
+                    let reason = self.limit_reason(until_ms, now);
+                    self.say(&reason);
+                    self.wait(WaitOn::Limit, reason);
+                }
+                return;
+            }
+            Next::Move(next, cause) => {
+                let wait = self.limit_wait.take().expect("the wait is on");
+                self.limit_queue = None;
+                let reason = cause.words(&self.record.adapter, now);
+                self.switch_agent(next, reason, wait.text.clone(), wait.text);
+                return;
+            }
+            Next::Home | Next::Stay => {}
         }
         if let Some(queue) = &self.limit_queue {
             let label = format!("{} t{}", self.record.project, self.record.id);
             match queue.try_take(&label) {
                 Ok(taken) => self.limit_slot = Some(taken),
                 Err(reason) => {
+                    let wait = self.limit_wait.as_mut().expect("the wait is on");
                     wait.next_ms = now + LIMIT_POLL_MS;
                     let reason = format!("usage limit has reset; {reason}");
                     if self.record.waiting.as_ref().map(|w| &w.reason) != Some(&reason) {
@@ -2430,10 +2621,7 @@ impl Host {
         }
         self.limit_queue = None;
         if let Some(wait) = self.limit_wait.take() {
-            self.say(match wait.sign_in {
-                true => "the sign-in record has ended: the agent tries again",
-                false => "the usage limit has reset: the agent continues",
-            });
+            self.say("the account answers again: the agent continues");
             self.start_turn(&wait.text, TurnTrigger::Limit);
         }
     }
@@ -2481,20 +2669,20 @@ impl Host {
         }
     }
 
-    /// Continue the task on `next` in a new conversation: the limited agent wrote no notes,
-    /// so the turn it could not finish opens it after the usual rotation context. The task
-    /// stays on `next` until it ends: a second switch would cost another cold start.
-    /// ref: docs/tasks.md "Agents"
-    fn switch_agent(&mut self, next: super::agent::Choice, reason: String, sign_in: bool) {
+    /// Continue the task on `next` in a new conversation, which opens with `unfinished`, the
+    /// turn the refused agent could not finish, after the usual rotation context. Leaving
+    /// home keeps the own conversation and `home_turn`, the turn its return continues, on the
+    /// record (`come_home`). ref: docs/tasks.md "Agents"
+    fn switch_agent(
+        &mut self,
+        next: agent::Choice,
+        reason: String,
+        unfinished: String,
+        home_turn: String,
+    ) {
         let from = format!("{}/{}", self.record.adapter, self.record.model);
         let to = format!("{} ({}/{})", next.name, next.adapter, next.model);
-        match sign_in {
-            true => self.say(&format!(
-                "{} moved to {}: {reason}",
-                self.record.adapter, next.name
-            )),
-            false => self.say(&format!("switched to {to}: {reason}")),
-        }
+        self.say(&format!("switched to {to}: {reason}"));
         self.log(LogEvent::AgentSwitch {
             from,
             to,
@@ -2502,15 +2690,24 @@ impl Host {
         });
         let unfinished = match self.rotating.take() {
             Some((waiting, _)) => waiting,
-            None => std::mem::take(&mut self.turn_text),
+            None => unfinished,
         };
+        if !self.away() {
+            let session = self.record.agent_session.clone();
+            let home = self
+                .record
+                .home
+                .as_mut()
+                .expect("the host fills in the record's home");
+            home.session = session;
+            home.turn = home_turn;
+        }
         self.record.adapter = next.adapter;
         self.record.model = next.model;
-        let settings = load_task_config(&self.record.project_path).unwrap_or_default();
-        self.record.fallback = (self.record.adapter.as_str(), self.record.model.as_str())
-            != (&*settings.adapter, &*settings.model);
-        self.record.sign_in = sign_in;
+        self.record.fallback = true;
         self.limit_attempt = 0;
+        self.limit_wait = None;
+        self.limit_queue = None;
         let waiting = format!(
             "The earlier conversation's agent could not continue ({reason}) during this turn and \
              could write no handoff notes; another agent continues. Check what the working copy \
