@@ -320,9 +320,10 @@ def run(wsx, wsxd, work, owned, part):
            # ^ The limit probe's period (30 s) would put probe traces into every long limit; the
            # limit scenario of part 11 starts a probe by clearing the stamp.
            'WSX_TEST_LIMIT_PROBE_SECS': '600',
-           # ^ A turn quiet this long ends (docs/tasks.md "Agents"): longer than the fakes' LONG (25 s),
-           # shorter than the 10 minutes of a real one; the stall sweep keeps its own bound.
-           'WSX_TEST_TURN_QUIET_SECS': '40',
+           # ^ While this file holds a number, a turn quiet that many seconds ends (docs/tasks.md
+           # "Agents"): the hung-turn sections write 40, longer than the fakes' LONG (25 s); the
+           # other sections keep the real 10 minutes, since a WAIT gate holds a turn quiet longer.
+           'WSX_TEST_TURN_QUIET_FILE': str(work / 'turn-quiet'),
            'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
            'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp),
            # ^ A fixture git command must never reach the repository this script runs in.
@@ -6979,7 +6980,7 @@ def part_host(created=None):
     # and resume there when its record goes. S2: a working fallback goes home at the next turn
     # after its handoff notes: a task born on the fallback starts a fresh own conversation with the
     # task's prompt, one switched mid-task resumes the conversation it kept. S3: a turn with no
-    # output past WSX_TEST_TURN_QUIET_SECS ends by its own host: the worker's failed result. S4: a
+    # output past the bound (WSX_TEST_TURN_QUIET_FILE) ends by its own host: the worker's failed result. S4: a
     # hung fallback counts as a refusal with no reset: home for the wait. S5: a 403 block page is
     # no sign-in failure. S6: home keeps the task's own model, never the project's.
     mark('37c')
@@ -7081,6 +7082,8 @@ def part_host(created=None):
     for n in (s1, s2, s2r):
         js('task', 'close', n, '--discard')
     # S3, the worker: a turn with no output past the bound ends as the turn's failed result.
+    turn_quiet = work / 'turn-quiet'
+    turn_quiet.write_text('40')
     s3 = js('task', 'new', 'WHANG %s WORK s3.txt' % (work / 's3-release'))['id']
     wait(lambda: show(s3)['state'] in ('ready', 'failed'), 'the hung turn ends', 70)
     s3_result = next(e for e in log(s3) if e['kind'] == 'result')
@@ -7107,6 +7110,7 @@ def part_host(created=None):
     limit_file.unlink()
     assert reply_to(s4_say['id'], 40)['text'].startswith('open: '), chat()[-3:]
     (agents / 'pi-fake.json').unlink()
+    turn_quiet.unlink()
     # S5: a 403 block page ("Failed to authenticate. API Error: 403 Attention Required! | Cloudflare")
     # is no expired sign-in: no record, no move, the turn's error result.
     s5 = js('task', 'new', 'WCFAUTH %s WORK s5.txt' % (work / 's5-release'))['id']
@@ -7290,12 +7294,14 @@ def part_host(created=None):
     # 39b. S3, the manager (docs/tasks.md "Agents"): a turn with no output past the bound ends as the
     # agent's error, which holds and retries with the backoff. Last, since the hold lasts 5 minutes.
     mark('39b')
+    turn_quiet.write_text('40')
     s3_say = js('task', 'say', 'MHANG %s STATUS hung' % (work / 's3m-release'))
     s3_stop = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'stopped' and e.get('reason', '').startswith('no output for')), None),
                    'the hung manager turn ends', 70)
     assert s3_stop and manager_state()['limit']['attempt'] == 1 and 'agent' not in manager_state(), manager_state()
     assert not any(e['kind'] == 'reply' and s3_say['id'] in e['to'] for e in chat()), chat()[-3:]
     assert any(e['kind'] == 'limit' and e.get('until') for e in manager_entries()[-4:]), manager_entries()[-4:]
+    turn_quiet.unlink()
     return created
 
 

@@ -43,7 +43,7 @@ Each user message is a small script of words:
   CFAUTH <file>  (manager) fail the turn as a 403 block page does ("Failed to authenticate. API Error:
                403 Attention Required! | Cloudflare", no sign-in failure) until <file> exists; WCFAUTH for a worker
   MHANG <file>  (manager) write nothing in the turn until <file> exists, so the host ends it by its quiet
-               bound (WSX_TEST_TURN_QUIET_SECS); WHANG for a worker
+               bound (WSX_TEST_TURN_QUIET_FILE); WHANG for a worker
   BIG          a last model call of 400k tokens (two lines of one call), past the worker's rotateTokens
   SIMPLIFY     (worker) a Skill tool call of owner:simplify in the turn; SIMPLIFYLATE does it only in
                the host's send-back ("The simplify skill did not run ...")
