@@ -20,7 +20,7 @@ pub const CLOSED_FILE: &str = "closed";
 /// `{agent?}`: the name of the `[[agents]]` entry the chat runs on; none runs the manager's.
 pub const CHAT_FILE: &str = "chat.json";
 pub const MAX_GOAL_BYTES: usize = 8 * 1024;
-const MAX_NAME_CHARS: usize = 24;
+pub const MAX_NAME_CHARS: usize = 24;
 /// How much of a chat's log is read for its last turn.
 const TAIL_BYTES: u64 = 64 * 1024;
 
