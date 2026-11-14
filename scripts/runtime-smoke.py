@@ -2204,8 +2204,13 @@ try:
     at = lambda word: next((n + 1 for n, line in enumerate(screen) if line.strip().startswith(word)), None)
     print(f"TUI detail at 80x24: State on row {at('State')}, Result on row {at('Result')}, Next on row {at('Next')}, Details on row {at('Details')} of 24")
     remove_tui.resize(40, 120)
+    # ^ The resize clears the screen before the redraw: wait for the wide detail, so the Esc check
+    # below does not pass on the cleared screen and send `j` while the Esc is still read (Alt+j).
+    wait_for(lambda: re.search(r"Waits on\s+#1 to land, its checks fail", remove_tui.text()) and "Details" in remove_tui.text(),
+             lambda: f"the detail did not redraw at 40x120:\n{remove_tui.text()}", seconds=60)
     remove_tui.send(b"\x1b")
-    wait_for(lambda: "Its checks fail" not in " ".join(remove_tui.text().split()), "Esc did not close the detail", seconds=60)
+    wait_for(lambda: "Its checks fail" not in " ".join(remove_tui.text().split()) and re.search(r"#1\s+working", remove_tui.text()),
+             "Esc did not close the detail", seconds=60)
     remove_tui.send(b"j\r")
     wait_for(lambda: re.search(r"Blocks\s+#2", remove_tui.text()) and re.search(r"Goes\s+into main", remove_tui.text()),
              lambda: f"the detail of #1 did not list who waits for it:\n{remove_tui.text()}", seconds=60)

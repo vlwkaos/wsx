@@ -1819,7 +1819,7 @@ def part_core(created=None):
     assert next(r for r in js('task', 'ledger')['open'] if r['id'] == asking)['status']['label'] == asked_status['label']
     assert re.search(r'Checks +0 passed, 1 failed', checked) and re.search(r'failed +test ! -e broken.txt', checked), checked
     # ^ The glance rows first, the per-check lines under Details (docs/tasks.md "TUI").
-    assert re.search(r'Result +.*TASK ', checked) and checked.index('Details') < checked.index('failed  '), checked
+    assert re.search(r'Result +did: The checks failed', checked) and checked.index('Details') < checked.index('failed  '), checked
     assert 'ping' not in checked, checked
     assert 'TASKS' not in shots[-1], shots[-1]
     narrow = tui_screens(wsx, env, project, [(r'WORKSPACE', b't'), (r'Recent', b'')], cols=40)[1]

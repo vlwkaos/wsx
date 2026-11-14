@@ -4597,10 +4597,12 @@ merge_seconds = 3
         reply_to(first, 'X')
         wait(lambda: any(r['text'] == 'Already skipped: ' + first['check'] for r in manager_chat()['rows']), 'the closed item line')
         assert manager_turns() == turns
-        # ^ Other words to an item are a message to the manager, quoted with the item's check; the item stays open.
+        # ^ Other words to an item close it as replied, and the words reach the manager as its note (docs/tasks.md "To check").
         reply_to(third, 'x marks the spot')
         wait(lambda: manager_turns() > turns, 'a turn for words to an item', timeout=60)
-        assert [item['id'] for item in steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open']] == [third['id']]
+        assert steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open'] == []
+        refused = cli('task', 'check', 'pass', third['id'], '-p', 'demo', expect=1)
+        assert 'already replied' in refused.stderr, refused.stderr
         # ^ An "x" that quotes a message is words for the manager, as before.
         wait(lambda: not manager_chat()['busy'], 'the manager idle after the words', timeout=90)
         turns = manager_turns()
@@ -4608,10 +4610,9 @@ merge_seconds = 3
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': '> message %d\n\nx' % quoted['id']})
         assert status == 200 and body['ok'], body
         wait(lambda: manager_turns() > turns, 'a turn for an x to a message', timeout=60)
-        assert [item['id'] for item in steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open']] == [third['id']]
-        js('task', 'check', 'skip', '--all', '-p', 'demo')
+        assert steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open'] == []
         wait(lambda: not manager_chat()['busy'], 'the manager idle after the x to a message', timeout=90)
-        ok('to check: a reply of x or ㅌ skips the item with no manager turn and a line in the chat, a closed item is said so, other words and an x to a message reach the manager')
+        ok('to check: a reply of x or ㅌ skips the item with no manager turn and a line in the chat, a closed item is said so, other words close it as replied and reach the manager, an x to a message reaches the manager')
 
         # --- Refusals: the capability and the grant come from the site file only.
         for method, route, body in (('POST', '/api/tasks/%d/say' % demo, {'text': 'hi'}),
