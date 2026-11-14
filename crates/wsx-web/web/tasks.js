@@ -5,7 +5,7 @@
 import { api } from "./api.js";
 import { html, Icon, keepIn, plural, readMap, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, goBack, leaveFor, shows, state, touch, useEventLoad, useStore } from "./store.js";
-import { Back, MoreMenu, toast } from "./ui.js";
+import { Back, confirmDialog, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, useDraft, useListKeys, useRecent, withNewLine } from "./chat.js";
 import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
 import { FindBar, FindButton } from "./find.js";
@@ -593,6 +593,25 @@ function More({ project }) {
     </${MoreMenu}>`;
 }
 
+// ^ A chat's ⋯ menu: the owner closes it (docs/tasks.md "Chats", `chats::close`), after one
+// confirm, and the page goes to Home, where its row is gone. The first chat has none.
+function ChatMore({ project, chat }) {
+  const close = async () => {
+    const sure = await confirmDialog({ title: `Close ${chat}?`, text: "Its log and notes stay; New chat with the same name opens it again.", confirm: "Close chat" });
+    if (!sure) return;
+    try {
+      await api(`api/tasks/${project}/chats/${encodeURIComponent(chat)}/close`, { method: "POST" });
+      leaveFor("#/");
+    } catch (failure) {
+      toast(failure.message, { failure: true });
+    }
+  };
+  return html`
+    <${MoreMenu}>
+      <button type="button" role="menuitem" onClick=${close}>Close chat</button>
+    </${MoreMenu}>`;
+}
+
 // A task or the project overview over the chat, about 85% of the height (a `fit` sheet only as
 // high as its content): Back, Escape, a tap
 // beside it or a swipe down on its top closes it, and the chat under it keeps its scroll and
@@ -915,6 +934,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
           <a class="icon-button" href=${`#/p/${id}/page`} aria-label="Overview" title="Overview"><${Icon} name="overview" /></a>
           <${PanelsButton} project=${id} />
           <${ProjectShell} project=${project} /><${More} project=${project} />`}
+        ${room && can("task_act") && html`<${ChatMore} project=${id} chat=${room} />`}
       </div>
     </header>`;
   // ^ The header sits at the bottom, above the composer, when this device chose it (settings.js).

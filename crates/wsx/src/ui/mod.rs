@@ -766,7 +766,7 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
                 .map(task_chat::hints)
                 .unwrap_or_default(),
         ),
-        Mode::Tasks { list } if list.confirm.is_some() => (
+        Mode::Tasks { list } if list.confirm.is_some() || list.close_chat.is_some() => (
             "TASK",
             theme::ModeBadge::Info,
             vec!["(y)es".into(), "(n)o".into()],
@@ -800,6 +800,9 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
                 },
                 "(m)anager".into(),
             ];
+            if list.selected_chat().is_some() {
+                hints.push("(d)close chat".into());
+            }
             hints.extend(["(S)hell".into(), "Esc: close".into(), "(?)help".into()]);
             // ^ The agent the spend counts; its name is on the spend line.
             hints.push("(a)gent".into());

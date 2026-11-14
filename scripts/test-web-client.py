@@ -4315,8 +4315,19 @@ merge_seconds = 3
         assert status == 400 and 'already open' in json.dumps(body), (status, body)
         status, body = steady(owner, 'GET', '/api/tasks/agents')
         assert status == 200 and isinstance(body['agents'], list), (status, body)
-        js('task', 'chat', 'close', 'made', '-p', 'demo')
-        ok('chats: the page makes a chat (a bad or an open name refused), the agents list answers')
+        # ^ Close chat (docs/tasks.md "Chats"): the owner's, through `chats::close` as the CLI's;
+        # the first chat, an unknown name and a closed one are refused; the Home row goes.
+        close_url = lambda name: '/api/tasks/%d/chats/%s/close' % (demo, name)
+        assert steady(viewer, 'POST', close_url('made'), {})[0] == 403
+        for name, words in (('manager', 'first chat'), ('nobody', 'no open chat nobody')):
+            status, body = steady(owner, 'POST', close_url(name), {})
+            assert status == 409 and words in json.dumps(body), (name, status, body)
+        status, body = steady(owner, 'POST', close_url('made'), {})
+        assert status == 200 and body == {'ok': True, 'chat': 'made', 'state': 'closed'}, (status, body)
+        assert [(c['name']) for c in overview_chats(1)] == ['notes']
+        assert {c['name']: c['state'] for c in js('task', 'chat', 'list', '-p', 'demo')['chats']}['made'] == 'closed'
+        assert steady(owner, 'POST', close_url('made'), {})[0] == 409
+        ok('chats: the page makes a chat (a bad or an open name refused) and closes it (the first, an unknown or a closed one refused), the agents list answers')
         # A manager turn alone changes the overview: its `busy` (the home row's typing dots) goes
         # true while the turn runs and false after it (docs/web-client-tasks.md "Home").
         watcher = Events(owner)

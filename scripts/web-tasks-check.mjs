@@ -3705,6 +3705,28 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   if ((await note()).alert) await fail("a good name is still refused");
   await evaluate(`document.querySelector('${sheet} form').closest('dialog').close()`);
   await until("!document.querySelector('dialog.sheet')", "the New chat sheet stayed open");
+  // ^ Close chat (docs/tasks.md "Chats"): the chat's ⋯ menu, one confirm, then Home without its
+  // row; `wsx task chat list` has it closed. The first chat's top row has no Close chat.
+  const menuItems = () => evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].map((item) => item.textContent.trim())");
+  await go(`#/p/${project}`);
+  await until("!!document.querySelector('.bar .more-button')", "the manager chat has no ⋯ menu");
+  await click(".bar .more-button");
+  if ((await menuItems()).includes("Close chat")) await fail(`the first chat offers ${await menuItems()}`);
+  await go(`#/p/${project}/c/qa`);
+  await until("document.querySelector('.bar-label')?.textContent === 'qa' && !!document.querySelector('.bar .more-button')", "the qa chat has no ⋯ menu");
+  await click(".bar .more-button");
+  if ((await menuItems()).join() !== "Close chat") await fail(`the qa chat's menu is ${await menuItems()}`);
+  await evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].find((item) => item.textContent.trim() === 'Close chat').click()");
+  await until(`!!document.querySelector('${sheet} #dialog-title')`, "Close chat asked nothing");
+  const asks = await evaluate(`({ title: document.querySelector('${sheet} #dialog-title').textContent, text: document.querySelector('${sheet} p').textContent,
+    buttons: [...document.querySelectorAll('${sheet} button')].map((button) => button.textContent) })`);
+  if (asks.title !== "Close qa?" || asks.text !== "Its log and notes stay; New chat with the same name opens it again." || asks.buttons.join() !== "Cancel,Close chat") await fail(`the Close chat confirm is ${JSON.stringify(asks)}`);
+  await shot("close-chat");
+  await evaluate(`[...document.querySelectorAll('${sheet} button')].find((button) => button.textContent === 'Close chat').click()`);
+  await until(`location.hash === '#/' && !!document.querySelector('.home-row') && !document.querySelector('.row-chat[data-key="${project}/c/qa"]')`, "Close chat did not go Home without the qa row", 30);
+  const cli = JSON.parse(fs.readFileSync(wsxCli));
+  const listed = JSON.parse(execFileSync(cli.wsx, ["task", "chat", "list", "--json", "-p", "ui"], { env: cli.env, cwd: cli.cwd, stdio: "pipe" }));
+  if (listed.chats.find((chat) => chat.name === "qa")?.state !== "closed") await fail(`chat list after Close chat: ${JSON.stringify(listed)}`);
 }
 
 // --- Session news: the host's post for a session that needs the owner links to that session

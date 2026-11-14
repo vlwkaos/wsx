@@ -2384,10 +2384,28 @@ try:
     wait_for(lambda: "name: required" in remove_tui.text(), lambda: f"no name showed no refusal:\n{remove_tui.text()}", seconds=60)
     remove_tui.send(b"\x1b")
     wait_for(lambda: "┌ New chat" not in remove_tui.text(), "Esc did not close the form after the refusals", seconds=60)
+    # Close chat (docs/tasks.md "Chats"): `d` on the chat's row asks with the web's words, `n`
+    # drops it, `y` closes it through `chats::close`; the row goes and `chat list` has it closed.
+    for _ in range(10):
+        if "(d)close chat" in remove_tui.text().splitlines()[-1]:
+            break
+        remove_tui.send(b"j")
+        time.sleep(0.3)
+    wait_for(lambda: "(d)close chat" in remove_tui.text().splitlines()[-1], lambda: f"no chat row to close:\n{remove_tui.text()}", seconds=30)
+    asks = "Close qa? Its log and notes stay; New chat with the same name opens it again. (y)es  (n)o"
+    remove_tui.send(b"d")
+    wait_for(lambda: asks in remove_tui.text(), lambda: f"d did not ask to close qa:\n{remove_tui.text()}", seconds=60)
+    remove_tui.send(b"n")
+    wait_for(lambda: asks not in remove_tui.text() and "Check the notes" in remove_tui.text(), "n did not drop the close", seconds=60)
+    remove_tui.send(b"d")
+    wait_for(lambda: asks in remove_tui.text(), "d did not ask again", seconds=60)
+    remove_tui.send(b"y")
+    wait_for(lambda: "Closed qa; its log and notes stay" in remove_tui.text() and "Check the notes" not in remove_tui.text(),
+             lambda: f"y did not close qa and drop its row:\n{remove_tui.text()}", seconds=60)
+    listed = wsx("task", "chat", "list", "-p", "keep-me", "--json")
+    assert listed.returncode == 0 and {row["name"]: row["state"] for row in json.loads(listed.stdout)["chats"]}.get("qa") == "closed", listed.stdout + listed.stderr
     remove_tui.send(b"q")
     wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close the Tasks view after New chat", seconds=60)
-    closed = wsx("task", "chat", "close", "qa", "-p", "keep-me", "--json")
-    assert closed.returncode == 0, closed.stdout + closed.stderr
     # docs/design/tui-parity-audit.md gaps 3 to 7: the keys the footers and the help name work in the
     # real TUI. The help scrolls to its last section at 40 rows; the footers list the project and
     # routine keys; a bracketed paste lands in the `p` path and the chat line; a routine runs now
