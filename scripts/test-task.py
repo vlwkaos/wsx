@@ -7633,15 +7633,17 @@ def part_host(created=None):
     assert manager_state().get('agent') is None and manager_state()['agent_session'] == session_before, manager_state()
     assert not any(e['kind'] == 'reply' and e.get('provisional') is None and f_second['id'] in e['to'] for e in chat()), chat()[-3:]
     # (d) The limit ends: the same Claude conversation resumes and its turn holds the owner's messages and the floor's replies.
+    # ^ The manager resumes as soon as the record is gone, with the messages still due and the stand-in's
+    # replies: that first Claude turn is the one to read, not a later turn for a new message.
     seen_traces = len(traces())
     limit_file.unlink()
-    f_back = js('task', 'say', 'STATUS back')
     f_dump = lambda: ([(t.get('session', '')[:8], str(t.get('message', t.get('adapter', '')))[:100]) for t in traces()[seen_traces:] if t.get('manager') or t.get('adapter') == 'pi'],
                       [(e['kind'], e.get('provisional'), e.get('to'), str(e.get('text', e.get('until', '')))[:60]) for e in manager_entries() if e['unix_ms'] >= said_at][-14:])
-    assert reply_to(f_back['id'])['text'].startswith('open: '), f_dump()
+    wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and e.get('provisional') is None and f_second['id'] in e['to']), None),
+         'Claude answers the held messages after the limit', 40)
     assert rotations() == rotated_before and manager_state()['agent_session'] == session_before, (rotated_before, manager_state())
-    f_home = turn_with('STATUS back')
-    assert f_home['session'] == session_before and f_home['message'] and 'We decided: the theme is blue' in f_home['message'], (f_home, f_dump())
+    f_home = next(t for t in traces()[seen_traces:] if t.get('manager') and t.get('message') and not t['message'].startswith('wsx keep-alive'))
+    assert f_home['session'] == session_before and 'We decided: the theme is blue' in f_home['message'], (f_home, f_dump())
     for held_word in ('We decided: ship on Friday', 'a stand-in model with no tools answered these',
                       'local-model to message %d: pi answers' % f_first['id'], 'local-model to message %d: pi answers' % f_second['id']):
         assert held_word in f_home['message'], (held_word, f_home['message'])
