@@ -76,15 +76,6 @@ export function clock(ms) {
     : `${date.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
 }
 
-// The first sentence of a text, on one line, at most about `max` characters: what a worker's
-// summary says first ("did x. Then y" → "did x.").
-export function firstSentence(text, max = 200) {
-  const line = (text ?? "").trim().split("\n")[0].trim();
-  const end = /[.!?](\s|$)/.exec(line);
-  const sentence = end ? line.slice(0, end.index + 1) : line;
-  return sentence.length > max ? `${sentence.slice(0, max - 1).trimEnd()}…` : sentence;
-}
-
 // The last whole sentence of a line, or the line when none ends in it. A dot with no space
 // after it (context.md, v1.2, e.g.) does not end a sentence, so a sentence starts only at the
 // text's start or after an end and its space.

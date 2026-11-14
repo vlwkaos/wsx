@@ -4,7 +4,6 @@
 // "Project screen", "Home").
 import { html, Icon } from "./lib.js";
 import { routineCounts, routineWords } from "./routines.js";
-import { running } from "./task-words.js";
 
 // A count of 0 has no pill, except Routines, which shows while there is any routine (its count is
 // the enabled ones; its tone is the worst last run).
@@ -18,18 +17,11 @@ export const present = (counts, tray) => tray.shown ? tray.shown(counts) : tray.
 export const shownTrays = (counts) => TRAYS.filter((tray) => present(counts, tray));
 export const trayWords = (tray, counts) => tray.words(counts);
 
-// The counts of a project from its overview (its `tasks` at work, `waiting`, `needs`, `asks`,
-// `to_check`); `routines` are the server's `routines` counts, newer ones when the caller has
-// them. A chat's row has its own `running`, `needs` and `check` and no routines.
-export function trayCounts(overview, routines = overview?.routines) {
-  return {
-    running: (overview?.tasks ?? []).filter(running).length + (overview?.waiting?.length ?? 0),
-    needs: (overview?.needs?.length ?? 0) + (overview?.asks?.length ?? 0),
-    check: overview?.to_check ?? 0,
-    routines: routineCounts(routines),
-  };
-}
-export const chatCounts = (chat) => ({ running: chat.running, needs: chat.needs, check: chat.check, routines: routineCounts(null) });
+// The counts of the trays: the server's `counts` of a project's overview or of a chat's row
+// (wsx-core `ChatCounts`), and the project's `routines` counts, newer ones when the caller has
+// them. A chat's row has no routines.
+const NONE = { running: 0, needs: 0, check: 0 };
+export const trayCounts = (source, routines = source?.routines) => ({ ...(source?.counts ?? NONE), routines: routineCounts(routines) });
 
 // The icons beside a Home row's name: no button, the row is the link.
 export function TrayIcons({ counts }) {

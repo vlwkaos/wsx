@@ -1393,6 +1393,37 @@ struct SayInput {
     /// To this open chat instead of the manager.
     #[serde(default)]
     chat: Option<String>,
+    /// The chat message the text answers (a Reply); wsx-core writes its quote.
+    #[serde(default)]
+    quote_id: Option<u64>,
+    /// The To check item (`c<n>`) the text answers.
+    #[serde(default)]
+    check: Option<String>,
+}
+
+impl SayInput {
+    /// What the text answers, at most one thing; a check is its `c<n>` id.
+    fn answers(&self) -> Outcome<Option<wsx_core::task::manager::Answers>> {
+        use wsx_core::task::manager::Answers;
+        match (self.quote_id, &self.check) {
+            (None, None) => Ok(None),
+            (Some(id), None) => Ok(Some(Answers::Message(id))),
+            (None, Some(check))
+                if check.len() > 1
+                    && check.len() <= 12
+                    && check.starts_with('c')
+                    && check[1..].bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                Ok(Some(Answers::Check(check.clone())))
+            }
+            (None, Some(_)) => Err(Fault::new(400, "bad_check", "check must be a c<n> item id")),
+            (Some(_), Some(_)) => Err(Fault::new(
+                400,
+                "bad_quote",
+                "a message answers one message or one check, not both",
+            )),
+        }
+    }
 }
 
 async fn tasks_say(
@@ -1402,10 +1433,16 @@ async fn tasks_say(
     Json(input): Json<SayInput>,
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, true)?;
+    let answers = input.answers()?;
     act_budget(&app, &device)?;
     blocking(|| {
         let text =
             crate::chat::with_attachments(&app.site, &app.media, &input.text, &input.attachments)?;
+        // ^ An empty message stays empty: `say` refuses it, quote or not.
+        let text = match text.trim().is_empty() {
+            true => text,
+            false => wsx_core::task::manager::answering(&text, answers.as_ref()),
+        };
         crate::tasks::say(
             &app,
             &crate::tasks::scope(&app, project)?,

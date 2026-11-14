@@ -188,6 +188,8 @@ pub fn session_view(target: &Target) -> Value {
         "branch": target.branch,
         "pane_id": target.pane.id,
         "exited": target.pane.exited,
+        // ^ A task's or a chat's own session: the lists leave it out (wsx-core `is_task_session`).
+        "task_session": is_task_session(target),
         // ^ wsxd's time, so a restart of this server does not reset it (null before revision 28).
         "state_since_unix_ms": target.pane.agent.as_ref().and_then(|agent| agent.state_since_unix_ms),
         "agent": target.pane.agent.as_ref().map(|agent| json!({

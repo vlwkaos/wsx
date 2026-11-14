@@ -3328,6 +3328,9 @@ capabilities = ["terminal_view"]
         wait(lambda: hand_state() in ('idle', 'done'), 'hand agent ready')
         cli('session', 'send-text', hand, 'ask me something')
         wait(lambda: hand_state() == 'blocked', 'hand session blocked')
+        # ^ The session wire says so; the page's lists read it (docs/web-client-tasks.md "List row inputs").
+        session_of = lambda id: steady(owner, 'GET', '/api/chat/%d/timeline' % id)[1]['session']['task_session']
+        assert session_of(hand) is True and session_of(sessions['owner']) is False
         time.sleep(4.5)
         assert len(pushes()) == pushed, pushes()[pushed:]
         hand_row = next(item for item in call('snapshot')['data']['sessions'] if item['id'] == hand)
@@ -4100,6 +4103,10 @@ merge_seconds = 3
         kinds = [(item['kind'], item.get('task')) for item in overview['needs']]
         assert kinds[0] == ('waiting', 1) and sorted(kinds[1:]) == [('land', 2), ('land', 3)], kinds
         assert overview['needs'][0]['waiting']['on'] == 'owner', overview['needs'][0]
+        # ^ The kinds the lists map to a style (docs/web-client-tasks.md "List row inputs"): each need's
+        # rank, most urgent first, and the trays' counts.
+        assert [item['rank'] for item in overview['needs']] == [0, 3, 3] and overview['asks'] == [], overview['needs']
+        assert overview['counts'] == {'running': 0, 'needs': 3, 'check': 0}, overview['counts']
         # ^ wsx-core's status words (docs/tasks.md "Status"): the label in a row, the sentence in the sheet.
         assert overview['needs'][0]['status']['label'] == 'Waiting for your answer', overview['needs'][0]
         assert next(item for item in overview['needs'] if item.get('task') == 2)['status']['label'] == 'Ready, waiting for you to land it' and overview['working'] == 0 and overview['to_check'] == 0, overview
@@ -4154,6 +4161,11 @@ merge_seconds = 3
         say_route = '/api/tasks/%d/say' % demo
         assert steady(owner, 'POST', say_route, {'text': '  '})[0] == 400
         assert steady(owner, 'POST', say_route, {'text': 'x' * (60 * 1024 + 1)})[0] == 400
+        # ^ A message answers one message or one To check item (`c<n>`); wsx-core writes the quote.
+        status, body = steady(owner, 'POST', say_route, {'text': 'hi', 'quote_id': 1, 'check': 'c1'})
+        assert status == 400 and body['error']['code'] == 'bad_quote', body
+        status, body = steady(owner, 'POST', say_route, {'text': 'hi', 'check': '1; rm'})
+        assert status == 400 and body['error']['code'] == 'bad_check', body
         # ^ A second device of the owner: these steps keep to their own request budget.
         trier = Site(ports['owner'], '', origin=public['owner'])
         code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
