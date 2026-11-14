@@ -4617,7 +4617,10 @@ def part_worker(created=None):
     # window runs at once, and the land's waiter finds its commit deployed.
     land(quick[3])
     last = wait(lambda: show(quick[3])['state'] == 'landed' and git('rev-parse', 'main'), 'the later land')
-    assert ran('deploy')['commit'] == last
+    # ^ `ran` is a local of this part below: the by-hand run is spelled out.
+    by_hand = len(deploy_records())
+    assert js('task', 'deploy')['commit'] == last
+    wait(lambda: len(deploy_records()) > by_hand and deploy_lock_free(), 'the deploy by hand', 30)
     assert [r['commit'] for r in deploy_records()[records_before:]] == [tips[-1], last]
     for n in quick:
         wait_closed(n)
