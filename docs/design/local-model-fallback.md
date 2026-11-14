@@ -2,6 +2,8 @@
 
 Superseded in part on 2026-11-12 (#410): an entry's `may` assigns its jobs (`create_task` the manager, `answer` the stand-in, `result` a worker); `[[agents]] roles` and the scribe job are gone (docs/tasks.md "Agents").
 
+Status 2026-11-13 (#423): the local model is a built-in stand-in (`may = [answer]`) with no entry or list edit (docs/tasks.md "Local floor"). A limit pauses the Claude manager's conversation and the stand-in answers from a fresh small context in its own lane; the conversation resumes unchanged. Neither the manager nor a worker moves to it.
+
 Design only, written 2026-11-10 for task #349, revised the same day for owner message 3677 (task #354): roles instead of tiers, strata reserved, Claude reviews local-built work, evaluate then tune then assign. No code changes. Builds on #348 (a failed sign-in moves to the fallback list): this design does not repeat it.
 Model figures from the web are vendor or third-party numbers with their source. The machine figures in 2.2 were measured read-only on this Mac with the command shown. Section 3 defines the test that replaces vendor figures with wsx's own.
 

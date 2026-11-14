@@ -5,6 +5,7 @@ use super::agent::{
     end_stream, read_json_lines, read_lines, thinking_chars, turn_text, AgentLine, AgentProcess,
     Launch, TurnResult, UsageLimit,
 };
+use super::floor;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -60,7 +61,7 @@ static HOMES: AtomicU64 = AtomicU64::new(0);
 
 impl LaunchHome {
     /// `source` is the owner's Pi folder; a missing `models.json` there leaves the folder empty.
-    fn create(source: &Path) -> Result<Self> {
+    fn create(source: &Path, model: &str) -> Result<Self> {
         let path = std::env::temp_dir().join(format!(
             "wsx-pi-{}-{}",
             std::process::id(),
@@ -75,6 +76,8 @@ impl LaunchHome {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error).context("cannot copy Pi's models.json"),
         }
+        // ^ The local floor needs no entry in the owner's file.
+        floor::add_provider(&home.0.join("models.json"), model)?;
         Ok(home)
     }
 
@@ -114,11 +117,7 @@ fn owner_dir() -> PathBuf {
 /// The `extension` of the first registry agent that runs `model` on the Pi adapter. A file
 /// that is gone fails the launch: a lean runner must not start as the plain one.
 fn extension_of(model: &str) -> Result<Option<PathBuf>> {
-    let Ok((config, _)) = wsx_core::config::global::GlobalConfig::load() else {
-        return Ok(None);
-    };
-    let Some(path) = config
-        .agents
+    let Some(path) = super::agent::registry()
         .into_iter()
         .find(|agent| {
             agent.adapter.as_deref() == Some("pi") && agent.model.as_deref() == Some(model)
@@ -144,7 +143,7 @@ impl PiAgent {
         // ^ A worker's check or a manager's quiet hour outlasts Pi's default 5-minute cache, and
         // then the whole context is written again. ref: docs/design/manager-efficiency.md
         let source = owner_dir();
-        let home = LaunchHome::create(&source)?;
+        let home = LaunchHome::create(&source, &launch.model)?;
         // ^ Best effort: Pi reports a folder it cannot write.
         let _ = std::fs::create_dir_all(source.join("sessions/wsx"));
         let dir = home.0.to_str().context("the Pi folder is not UTF-8")?;

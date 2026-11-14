@@ -12,6 +12,7 @@ import atexit
 import datetime
 import fcntl
 import hashlib
+import http.server
 import urllib.request
 import json
 import os
@@ -277,6 +278,43 @@ def main():
             shutil.rmtree(work, ignore_errors=True)
 
 
+# The local floor's endpoint (docs/local-model.md): /health and /v1/models of a llama-server, up
+# or down as FLOOR['up'] says; `asked` counts the answers it gave.
+FLOOR = {'up': False, 'asked': 0, 'key': 'floor-key-1234', 'model': 'lfm3-1.7b'}
+
+
+class FloorEndpoint(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        FLOOR['asked'] += 1
+        body, status = b'{}', 200
+        if not FLOOR['up']:
+            body, status = b'{"error":"loading"}', 503
+        elif self.path == '/v1/models':
+            if self.headers.get('Authorization') != 'Bearer ' + FLOOR['key']:
+                body, status = b'{"error":"key"}', 401
+            else:
+                body = json.dumps({'data': [{'id': FLOOR['model']}]}).encode()
+        elif self.path != '/health':
+            body, status = b'{}', 404
+        self.send_response(status)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def start_floor(work):
+    """Serve FloorEndpoint on a free loopback port; its URL and key file go to the hosts' env."""
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), FloorEndpoint)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    key_file = work / 'local-key'
+    key_file.write_text(FLOOR['key'] + '\n')
+    return {'LOCAL_MODEL_URL': 'http://127.0.0.1:%d' % server.server_address[1],
+            'LOCAL_MODEL_KEY_FILE': str(key_file), 'WSX_TEST_FLOOR_CACHE_SECS': '1'}
+
+
 def run(wsx, wsxd, work, owned, part):
     # ^ Long state and project paths: a socket in the store would pass sun_path's 104 bytes,
     # so the hosts' sockets must live elsewhere (docs/tasks.md "Store").
@@ -316,7 +354,7 @@ def run(wsx, wsxd, work, owned, part):
     env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
            'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(daemon_socket),
            'WSX_TEST_STALL_GRACE_SECS': str(STALL_GRACE), 'WSX_TEST_ALLOW_FILE_CLONE': '1', 'WSX_TEST_PRUNE_SWEEP_SECS': '3',
-           'WSX_TEST_SIGN_IN_RETRY_SECS': str(SIGN_IN_RETRY), 'WSX_TEST_CI_BACKOFF_SECS': '1',
+           'WSX_TEST_SIGN_IN_RETRY_SECS': str(SIGN_IN_RETRY), 'WSX_TEST_CI_BACKOFF_SECS': '1', **start_floor(work),
            # ^ The limit probe's period (30 s) would put probe traces into every long limit; the
            # limit scenario of part 11 starts a probe by clearing the stamp.
            'WSX_TEST_LIMIT_PROBE_SECS': '600',
@@ -3068,7 +3106,7 @@ def part_core(created=None):
     limited = js('task', 'say', 'LIMIT 1 STATUS limited')
     held = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'limit' and e.get('until') and e['unix_ms'] >= before_limit),
                              None), 'the manager limit wait')
-    assert re.fullmatch(r'\d\d:\d\d', held['until']), held
+    assert re.fullmatch(r'\d\d:\d\d \(no stand-in answers; .*\)', held['until']), held
     answer = reply_to(limited['id'])
     assert answer['text'].startswith('open: ') and answer['unix_ms'] >= held['unix_ms'] + 1000, (held, answer)
     assert not any(e['kind'] == 'reply' and 'session limit' in e['text'] for e in chat())
@@ -6583,6 +6621,17 @@ def part_host(created=None):
     assert len(results) == 1 and results[0]['trigger'] == 'limit', results
     session = show(held)['record']['agent_session']
     assert len([t for t in keep_alive() if t['session'] == session]) == 3, keep_alive()
+    # ^ The account is limited while this task checks: no ping, though it waits on the checks. A
+    # Claude call that goes through lifts a limit on record (docs/tasks.md "Agents"), so the limit
+    # is written after the task's step, as an owner's does, and covers its 11 s of checks.
+    cold = js('task', 'new', 'NOOP')['id']
+    wait_state(cold, 'checking')
+    limit_file = state / 'wsx/tasks/agents/claude.json'
+    limit_file.parent.mkdir(parents=True, exist_ok=True)
+    limit_file.write_text(json.dumps({'until_ms': int((time.time() + 14) * 1000)}))
+    assert wait_state(cold, 'ready', 'failed')['state'] == 'ready', show(cold)['result']
+    assert not pings(cold), log(cold)
+    limit_file.unlink(missing_ok=True)
     report = subprocess.run([sys.executable, '-B', str(ROOT / 'scripts' / 'usage-report.py'),
                              str(Path(show(held)['log']).parent.parent), '--task', str(held)],
                             capture_output=True, text=True, check=True).stdout
@@ -7536,6 +7585,67 @@ def part_host(created=None):
     (agents / 'pi-fake.json').unlink(missing_ok=True)
     configure(CONFIG, 'no fallback')
     norate.unlink()
+    # 37f. The local floor is a stand-in with no entry or list (docs/tasks.md "Agents", docs/local-model.md):
+    # a limit of an hour pauses the manager's conversation, the floor answers the owner in its own
+    # lane when its endpoint answers, and the same conversation resumes with what was said.
+    mark('37f')
+    FLOOR['up'] = False
+    start_floor_url = env['LOCAL_MODEL_URL']
+    limit_for(3600)
+    session_before = manager_state()['agent_session']
+    rotations = lambda: len([e for e in manager_entries() if e['kind'] == 'rotated'])
+    rotated_before = rotations()
+    floor_calls = lambda: [t for t in traces() if t.get('adapter') == 'pi' and t.get('launch') and t.get('model') == 'llama-wsx/lfm3-1.7b']
+    # (b) The endpoint down: the manager waits for Claude and the chat says why.
+    said_at = int(time.time() * 1000)
+    f_first = js('task', 'say', 'We decided: the theme is blue. STATUS first')
+    f_held = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'limit' and e.get('until')
+                                and e['unix_ms'] >= said_at), None), 'the hold with the floor down')
+    assert 'does not answer at ' + start_floor_url in f_held['until'], f_held
+    time.sleep(3)
+    assert not any(e['kind'] == 'reply' and f_first['id'] in e['to'] for e in chat()), chat()[-3:]
+    assert not floor_calls()
+    # (a) The endpoint comes up: the floor answers the held message in its own lane (one call, no
+    # tools, no stored conversation), marked as the stand-in's, and says when Claude returns.
+    FLOOR['up'] = True
+    f_answer = wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and e.get('provisional') == 'local-model'
+                                  and f_first['id'] in e['to']), None), 'the floor stands in', 40)
+    assert re.search(r'pi answers: claude is limited until \d\d:\d\d', f_answer['text']), f_answer
+    f_call = floor_calls()[-1]
+    assert f_call['no_tools'] and f_call['no_session'] and f_call['session'] is None, f_call
+    provider = json.loads(f_call['models_json'])['providers']['llama-wsx']
+    assert provider['baseUrl'] == start_floor_url + '/v1' and provider['apiKey'] == FLOOR['key'], provider
+    assert provider['models'][0]['id'] == 'lfm3-1.7b', provider
+    # ^ A second message and its decision: the call builds its context from the chat, not from Claude's conversation.
+    f_second = js('task', 'say', 'We decided: ship on Friday. STATUS second')
+    f_answer2 = wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and e.get('provisional') == 'local-model'
+                                   and f_second['id'] in e['to']), None), 'the floor stands in again', 40)
+    f_prompt = next(t for t in traces() if t.get('adapter') == 'pi' and 'STATUS second' in str(t.get('message')))
+    assert 'We decided: the theme is blue' in f_prompt['message'] and 'We decided: ship on Friday' in f_prompt['message'], f_prompt
+    assert manager_state().get('agent') is None and manager_state()['agent_session'] == session_before, manager_state()
+    assert not any(t.get('manager') and 'STATUS second' in str(t.get('message')) for t in traces()), 'Claude took no turn yet'
+    # (d) The limit ends: the same Claude conversation resumes and its turn holds the owner's messages and the floor's replies.
+    limit_file.unlink()
+    f_back = js('task', 'say', 'STATUS back')
+    assert reply_to(f_back['id'])['text'].startswith('open: '), chat()[-3:]
+    assert rotations() == rotated_before and manager_state()['agent_session'] == session_before, (rotated_before, manager_state())
+    f_home = turn_with('STATUS second')
+    assert f_home['session'] == session_before and f_home['message'] and 'We decided: the theme is blue' in f_home['message'], f_home
+    for held_word in ('We decided: ship on Friday', 'a stand-in model with no tools answered these',
+                      'local-model to message %d: pi answers' % f_first['id'], 'local-model to message %d: pi answers' % f_second['id']):
+        assert held_word in f_home['message'], (held_word, f_home['message'])
+    assert not f_home['message'].startswith('Handover'), f_home['message'][:200]
+    # (c) A worker on an hour's limit still waits for Claude: the floor is no worker's fallback.
+    limit_for(3600)
+    f_worker = js('task', 'new', 'WORK floor.txt')['id']
+    wait(lambda: show(f_worker)['state'] == 'waiting' and show(f_worker)['record']['waiting']['on'] == 'limit', 'the worker waits')
+    time.sleep(3)
+    assert show(f_worker)['record']['adapter'] == 'claude' and not any(e['kind'] == 'agent_switch' for e in log(f_worker)), log(f_worker)
+    limit_file.unlink()
+    assert wait_state(f_worker, 'ready', 'failed')['state'] == 'ready', show(f_worker)
+    js('task', 'close', f_worker, '--discard')
+    FLOOR['up'] = False
+    configure(CONFIG, 'no fallback')
 
     # 38. A host that started before this wsx cannot read a request the newer CLI added
     # (docs/tasks.md "Host"). The stand-in is what an older host does with a request it cannot

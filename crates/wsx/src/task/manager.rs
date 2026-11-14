@@ -11,7 +11,7 @@ use super::agent::{
 };
 use super::boundary::Boundary;
 use super::claude::{account_env, config_root, skills_plugin, SKILLS_PLUGIN_NAME};
-use super::{broker, claude, hosting, limit, notes};
+use super::{broker, claude, floor, hosting, limit, notes};
 use crate::cli::existing_daemon_snapshot;
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -2480,7 +2480,7 @@ impl Manager {
         // entry says to sign in again, and a `limit` would show a pause with a time.
         if announce && !auth {
             self.log(ManagerEvent::Limit {
-                until: Some(status::resume_time(until_ms, now)),
+                until: Some(self.held_until(until_ms, now)),
             });
         }
         let before = self.state.limit.as_ref();
@@ -2573,6 +2573,16 @@ impl Manager {
         self.on_result(turn);
     }
 
+    /// The hold's end for the chat's line, and why no stand-in answers when none does.
+    fn held_until(&self, until_ms: u64, now: u64) -> String {
+        let time = status::resume_time(until_ms, now);
+        let settings = load_task_config(&self.main).unwrap_or_default();
+        match agent::stand_in(&settings.manager_fallback, now) {
+            Some(_) => time,
+            None => format!("{time} ({})", floor::down_note()),
+        }
+    }
+
     /// During a hold, an owner message with no answer yet gets one from an agent that fills the organizer role, one
     /// call with no tools. The message stays due: the own agent answers it after the hold and
     /// is told of this reply. ref: docs/tasks.md "Agents"
@@ -2605,8 +2615,7 @@ impl Manager {
         self.stand_in_look = Some(Instant::now());
         let now = now_unix_ms();
         let settings = load_task_config(&self.main).unwrap_or_default();
-        let Some(agent) = agent::fallback(&settings.manager_fallback, now, policy::Role::Organizer)
-        else {
+        let Some(agent) = agent::stand_in(&settings.manager_fallback, now) else {
             return;
         };
         let account = agent::account(&agent.adapter, &agent.model);
@@ -2634,8 +2643,16 @@ impl Manager {
         let seen = self.state.turn_seen.clone();
         let ledger = self.ledger_summary();
         self.state.turn_seen = seen;
+        let away = match store::limited_until(&self.current_account(), now) {
+            Some(until_ms) => format!(
+                "{} is limited until {}: say so in your reply.\n\n",
+                self.adapter,
+                status::resume_time(until_ms, now)
+            ),
+            None => String::new(),
+        };
         let prompt = format!(
-            "{}The last exchanges:\n{}\n\n{ledger}\n\n{text}",
+            "{away}{}The last exchanges:\n{}\n\n{ledger}\n\n{text}",
             self.notes_preamble(),
             recent.join("\n")
         );
@@ -2996,7 +3013,10 @@ impl Manager {
         // ^ Claude's prompt cache lives 1 hour: a large conversation resumed later writes its
         // whole context again, so it starts afresh with the handover.
         let idle = now_unix_ms().saturating_sub(self.state.last_reply_ms);
+        // ^ A usage limit pauses the conversation, it does not end it: the turn after it
+        // resumes the same session, however long the limit was.
         if self.state.agent_session.is_some()
+            && self.state.limit.is_none()
             && self.state.last_reply_ms > 0
             && idle > PROMPT_CACHE_MS
             && self.state.context_tokens > IDLE_ROTATE_TOKENS
