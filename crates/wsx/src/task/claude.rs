@@ -304,32 +304,41 @@ fn check_run_note(record: &TaskRecord) -> String {
         .enumerate()
         .map(|(index, check)| format!("{}. `{check}`", index + 1))
         .collect();
-    // ^ The scenarios run only by name or number, never after a result (host.rs check_run).
+    // ^ After a done result the host runs the scenarios the change's paths touch
+    // (host.rs run_touched_scenarios); one without paths runs only by name.
     let scenarios = wsx_core::config::project::load_task_config(&record.project_path)
         .map(|settings| settings.scenarios)
         .unwrap_or_default();
-    let scenarios = match scenarios.is_empty() {
-        true => String::new(),
-        false => format!(
-            "The project's end-to-end scenarios run only when you name them, by name or by \
-             number: {}. ",
+    let scenarios =
+        match scenarios.is_empty() {
+            true => String::new(),
+            false => {
+                format!(
+            "Then it runs each end-to-end scenario whose paths your commits touch, and your \
+             result waits for its answer; one without paths runs only when you name it: {}. ",
             scenarios
                 .iter()
                 .enumerate()
-                .map(|(at, (name, command))| {
-                    format!("{}. `{name}` (`{command}`)", record.checks.len() + at + 1)
+                .map(|(at, (name, scenario))| {
+                    format!(
+                        "{}. `{name}` (`{}`{})",
+                        record.checks.len() + at + 1,
+                        scenario.command,
+                        if scenario.paths.is_empty() { ", by name only" } else { "" }
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join(" ")
-        ),
-    };
+        )
+            }
+        };
     format!(
         "After your result wsx runs all of the project's checks once: {}. {scenarios}\
-         `wsx task check-run 2 3` runs checks or scenarios by number or name: the task host \
-         runs them outside your boundary exactly as it will after your result, so a test \
-         that needs a terminal or a browser works there. Run only the checks your change touches, never the full set: \
-         a local run waits for the machine's one check slot, often 20 to 90 minutes, and a \
-         `ci:` scenario runs on CI, 20 minutes or more. Commit first and run it in the \
+         `wsx task check-run 2 3` runs checks or scenarios by number or name before that: the \
+         task host runs them outside your boundary exactly as it will after your result, so a \
+         test that needs a terminal or a browser works there. A local run waits for the \
+         machine's one check slot, often 20 to 90 minutes, and a `ci:` scenario runs on CI, \
+         20 minutes or more. Commit first and run it in the \
          foreground: a run that must wait or runs on CI answers `queued` at once; \
          then do not wait or poll, finish the step and return its result, and the host sends \
          the answer as your next turn. A check that already ran on the \

@@ -362,6 +362,38 @@ pub fn changed_paths(repo: &Path, from: &str, to: &str) -> Result<(Vec<String>, 
     Ok((paths, total))
 }
 
+/// Whether the change of commit `head` since it left `default_branch` touches each scenario that
+/// declares `paths`: a changed path a scenario's glob names touches it. A changed path that no
+/// scenario and no `scenarioFree` glob names, or a list past the caps, touches every one. A
+/// scenario without `paths` is not in the map: it runs only by name.
+/// ref: docs/tasks.md "Scenarios"
+pub fn touched_scenarios(
+    repo: &Path,
+    head: &str,
+    default_branch: &str,
+    config: &crate::model::workspace::TaskConfig,
+) -> Result<std::collections::BTreeMap<String, bool>> {
+    if config.scenarios.values().all(|s| s.paths.is_empty()) {
+        return Ok(Default::default());
+    }
+    let base = merge_base(repo, head, &format!("refs/heads/{default_branch}"))?;
+    let (paths, total) = changed_paths(repo, &base, head)?;
+    let names =
+        |globs: &[String], path: &str| globs.iter().any(|glob| super::view::meet(glob, path));
+    let scenarios = config.scenarios.iter().filter(|(_, s)| !s.paths.is_empty());
+    let unknown = paths.len() < total as usize
+        || paths.iter().any(|path| {
+            !names(&config.scenario_free, path)
+                && !config.scenarios.values().any(|s| names(&s.paths, path))
+        });
+    Ok(scenarios
+        .map(|(name, scenario)| {
+            let touched = unknown || paths.iter().any(|path| names(&scenario.paths, path));
+            (name.clone(), touched)
+        })
+        .collect())
+}
+
 /// The commit where `head` left `target`.
 pub fn merge_base(repo: &Path, head: &str, target: &str) -> Result<String> {
     git(repo, &["merge-base", head, target])

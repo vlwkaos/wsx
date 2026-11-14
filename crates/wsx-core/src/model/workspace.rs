@@ -66,6 +66,14 @@ pub(crate) const DEFAULT_CHECK_TIMEOUT_SECS: u64 = 20 * 60;
 /// 1 GiB: about 17 times the largest project's captures when measured (2026-11-11, 58 MB).
 const DEFAULT_CAPTURE_BUDGET_MB: u64 = 1024;
 
+/// One `tasks.scenarios` entry: its command and the path globs whose change runs it (none: it
+/// runs only when a worker names it). ref: docs/tasks.md "Scenarios"
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scenario {
+    pub command: String,
+    pub paths: Vec<String>,
+}
+
 /// The `tasks:` section of `wsx.config.yml` (docs/tasks.md).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskConfig {
@@ -103,9 +111,11 @@ pub struct TaskConfig {
     pub skills_only: Vec<String>,
     pub workflow: TaskWorkflow,
     pub checks: Vec<String>,
-    /// `tasks.scenarios`: named end-to-end commands a worker runs through `check-run <name>`,
-    /// never after a result (docs/tasks.md "Checks, revisions and report").
-    pub scenarios: std::collections::BTreeMap<String, String>,
+    /// `tasks.scenarios`: named end-to-end commands. The host runs the ones a change's paths
+    /// touch after a result; a worker runs any through `check-run <name>` (docs/tasks.md "Scenarios").
+    pub scenarios: std::collections::BTreeMap<String, Scenario>,
+    /// `tasks.scenarioFree`: globs of paths that need no scenario, such as docs.
+    pub scenario_free: Vec<String>,
     /// `tasks.env`: set for the worker's commands and for the checks, the same in both.
     pub env: std::collections::BTreeMap<String, String>,
     /// Seconds one check may run before its process group is killed.
@@ -262,6 +272,7 @@ impl Default for TaskConfig {
             workflow: TaskWorkflow::default(),
             checks: Vec::new(),
             scenarios: Default::default(),
+            scenario_free: Vec::new(),
             env: Default::default(),
             check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
             min_free_gb: 5,
