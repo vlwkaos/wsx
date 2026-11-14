@@ -657,10 +657,14 @@ pub fn files_meet<'a>(
             let common = if super::status::worker_edits(dir, other) {
                 declared_meetings(files, &[], other)
             } else {
-                // ^ Its commits, also those of a turn a stop cut before its revision.
-                let changed =
-                    super::copy::changed_paths(&other.project_path, &other.base, &other.branch)
-                        .map_or_else(|_| other.paths.clone(), |(paths, _)| paths);
+                // ^ Its own commits, also those of a turn a stop cut before its revision: from
+                // where its branch left the default branch now. The stored `base` is the fork
+                // point of its last revision, older when the branch moved since (a wait's end).
+                let repo = &other.project_path;
+                let default = format!("refs/heads/{}", other.default_branch);
+                let changed = super::copy::merge_base(repo, &other.branch, &default)
+                    .and_then(|fork| super::copy::changed_paths(repo, &fork, &other.branch))
+                    .map_or_else(|_| other.paths.clone(), |(paths, _)| paths);
                 files
                     .iter()
                     .map(String::as_str)
