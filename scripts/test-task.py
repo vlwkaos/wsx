@@ -7592,6 +7592,9 @@ def part_host(created=None):
     # a limit of an hour pauses the manager's conversation, the floor answers the owner in its own
     # lane when its endpoint answers, and the same conversation resumes with what was said.
     mark('37f')
+    # ^ The record written by hand must outlive the fake claude turns that end meanwhile (a worker's, the
+    # manager's events turns): a result that reports `allowed` would end it, as in section 37.
+    norate.touch()
     FLOOR['up'] = False
     start_floor_url = env['LOCAL_MODEL_URL']
     # ^ A record that ends past a probe's period (600 s) is probed at once, and the fake's probe
@@ -7652,6 +7655,7 @@ def part_host(created=None):
     limit_file.unlink()
     assert wait_state(f_worker, 'ready', 'failed')['state'] == 'ready', show(f_worker)
     js('task', 'close', f_worker, '--discard')
+    norate.unlink()
     FLOOR['up'] = False
     configure(CONFIG, 'no fallback')
 
