@@ -2318,6 +2318,8 @@ async function readAndReply(where) {
     if (!/\/t\/\d+/.test(opened.hash) || opened.menu) await fail(`${where}: a tap on a task chip at ${JSON.stringify(chip)} left ${JSON.stringify(opened)}`);
     await evaluate("history.back()");
     await until("!/\\/t\\/\\d+/.test(location.hash)", `${where}: Back did not leave the task`);
+    // ^ The chip was scrolled to the middle: back at the end, as the next screens expect (their capture shows no jump button over a diagram).
+    await toLatest(where);
   }
 }
 await readAndReply("390 px");
