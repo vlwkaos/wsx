@@ -1798,7 +1798,7 @@ def part_core(created=None):
     shots = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
         (r'(?s)Open.*#%d .*Recent' % d3, b'\r'),
-        (r'Status +Waiting for your answer', b'\x1b'),
+        (r'Next +Waiting for your answer', b'\x1b'),
         (r'\(enter\)detail', b'j\r'),
         (r'Checks', b'\x1b'),
         (r'\(enter\)detail', open_gate),
@@ -1815,10 +1815,11 @@ def part_core(created=None):
     asked_status = show(asking)['status']
     assert asked_status['label'] == 'Waiting for your answer' and reason in asked_status['sentence'], asked_status
     assert asked_status['sentence'].startswith('Waiting for your answer for '), asked_status
-    assert re.search(r'Status +Waiting for your answer for ', asked), asked
+    assert re.search(r'Next +Waiting for your answer for ', asked), asked
     assert next(r for r in js('task', 'ledger')['open'] if r['id'] == asking)['status']['label'] == asked_status['label']
     assert re.search(r'Checks +0 passed, 1 failed', checked) and re.search(r'failed +test ! -e broken.txt', checked), checked
-    assert 'Summary' in checked and 'TASK ' in checked, checked
+    # ^ The glance rows first, the per-check lines under Details (docs/tasks.md "TUI").
+    assert re.search(r'Result +.*TASK ', checked) and checked.index('Details') < checked.index('failed  '), checked
     assert 'ping' not in checked, checked
     assert 'TASKS' not in shots[-1], shots[-1]
     narrow = tui_screens(wsx, env, project, [(r'WORKSPACE', b't'), (r'Recent', b'')], cols=40)[1]
