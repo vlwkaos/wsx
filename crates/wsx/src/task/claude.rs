@@ -309,29 +309,27 @@ fn check_run_note(record: &TaskRecord) -> String {
     let scenarios = wsx_core::config::project::load_task_config(&record.project_path)
         .map(|settings| settings.scenarios)
         .unwrap_or_default();
-    let scenarios =
-        match scenarios.is_empty() {
-            true => String::new(),
-            false => {
-                format!(
+    let listed_scenarios: Vec<String> = scenarios
+        .iter()
+        .enumerate()
+        .map(|(at, (name, scenario))| {
+            let by_name = if scenario.paths.is_empty() {
+                ", by name only"
+            } else {
+                ""
+            };
+            let number = record.checks.len() + at + 1;
+            format!("{number}. `{name}` (`{}`{by_name})", scenario.command)
+        })
+        .collect();
+    let scenarios = match listed_scenarios.is_empty() {
+        true => String::new(),
+        false => format!(
             "Then it runs each end-to-end scenario whose paths your commits touch, and your \
              result waits for its answer; one without paths runs only when you name it: {}. ",
-            scenarios
-                .iter()
-                .enumerate()
-                .map(|(at, (name, scenario))| {
-                    format!(
-                        "{}. `{name}` (`{}`{})",
-                        record.checks.len() + at + 1,
-                        scenario.command,
-                        if scenario.paths.is_empty() { ", by name only" } else { "" }
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        )
-            }
-        };
+            listed_scenarios.join(" ")
+        ),
+    };
     format!(
         "After your result wsx runs all of the project's checks once: {}. {scenarios}\
          `wsx task check-run 2 3` runs checks or scenarios by number or name before that: the \
