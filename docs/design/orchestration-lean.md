@@ -213,6 +213,8 @@ Scaling rule: a sentence that a level C model cannot follow is a gate; a sentenc
 
 ## 11. Ordered plan (one task each, with its proof)
 
+Superseded on 2026-11-14 by `root-cause-refactor.md`, which merges this order with `context-budget.md` and places every open task in a step.
+
 | # | Task | Proof |
 |---|---|---|
 | 1 | Instruction lean pass: delete class 1, move class 4 to `wsx task --help`, one rotation | `bench-manager.py` replay same task set; byte count ≤ 5 KB; `test-task.py` prompt asserts |
