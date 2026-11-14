@@ -27,12 +27,12 @@ The money case is small: the relay that this removes costs about 4% of manager s
 | wsx 4284 | roles existed for two things: task scope, and permission for a weaker fallback model; "break this down to the absolute minimum" |
 | wsx 4286 | destructive refactor, "I dont want the code to be additive" |
 | wsx 4639 | spontaneous use; idle gaps start new conversations; wants context kept |
-| decisions 2026-11-12 | on a usage limit fall back at most to a local model and let wsx live |
-| 2026-11-13 | changing the model is risky: a stand-in never takes over the context; Claude resumes it |
+| decisions.md:35, 2026-11-12 | on a usage limit fall back at most to a local model and let wsx live |
+| decisions.md:37, 2026-11-13 | "carrying on by simply changing the model is risky". The manager read it as: a stand-in never takes over the context, and Claude resumes it |
 
 ## 2. The manager's analysis, checked
 
-Source: `notes/chat-model-analysis.md` of the wsx manager. Method: section 6 and the script.
+Source: `notes/chat-model-analysis.md` of the wsx manager. Method: section 7 and the script.
 
 | Claim | Measured | Verdict |
 |---|---|---|
