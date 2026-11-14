@@ -7416,7 +7416,9 @@ def part_host(created=None):
     shutil.copy2(wsx, older / 'wsx')
 
     def on(binary, *argv, extra=None):
-        done = subprocess.run([str(binary), *map(str, argv), '--json'], cwd=project, env={**env, **(extra or {})},
+        if named_project:
+            argv = (*argv, '-p', named_project[0])
+        done =subprocess.run([str(binary), *map(str, argv), '--json'], cwd=project, env={**env, **(extra or {})},
                               capture_output=True, text=True, timeout=120)
         assert done.returncode == 0, (argv, done.stdout, done.stderr)
         return json.loads(done.stdout)
