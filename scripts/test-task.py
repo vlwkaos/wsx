@@ -940,7 +940,8 @@ def manager_up(created):
     # process's running `total_cost_usd`.
     summed = js('task', 'say', 'SUMMED')
     usage = reply_to(summed['id'])['usage']
-    replies = [e for e in manager_entries() if e['kind'] == 'reply']
+    # ^ A post (the sign-in alert above) has no usage: only the agent's replies count.
+    replies = [e for e in manager_entries() if e['kind'] == 'reply' and not e.get('post')]
     assert usage['input_tokens'] + usage['cache_read_tokens'] == 200000 and usage['context_tokens'] == 50000, usage
     assert usage['model'] == 'fake-manager' and usage['adapter'] == 'claude', usage
     # Quotes (docs/tasks.md "Manager"): a reply that opens with `> message <id>` is stored with
@@ -958,6 +959,8 @@ def manager_up(created):
     # after the message. One a manager wrote wins.
     mine = raw_reply(js('task', 'say', 'QUOTE %d keeps mine' % promise['id'])['id'])
     assert mine['quote'] == promise['id'] and mine['text'].startswith('> %s\n\nkeeps mine' % promise['text'].splitlines()[0]), mine
+    # ^ A task event logged during its turn would sit between: the events of earlier tasks land first.
+    manager_settled('the events before one owner message')
     one = js('task', 'say', 'STATUS one owner message')
     own_words = raw_reply(one['id'])
     assert own_words['to'] == [one['id']] and 'quote' not in own_words, own_words
