@@ -410,6 +410,10 @@ pub struct DeployArgs {
     /// Only when the default branch tip is not deployed yet, after a running deploy ends
     #[arg(long, conflicts_with = "commit")]
     pub(crate) if_new: bool,
+    /// After a land: wait until the default branch has stayed unchanged this many seconds, else
+    /// leave the deploy to the land that moved it
+    #[arg(long, hide = true, value_name = "SECS", requires = "if_new")]
+    pub(crate) quiet: Option<u64>,
     /// Deploy the revision in this task's trial slot (the task host starts it)
     #[arg(long, hide = true, value_name = "TASK", conflicts_with_all = ["commit", "if_new"])]
     pub(crate) trial: Option<u32>,

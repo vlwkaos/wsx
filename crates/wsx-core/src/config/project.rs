@@ -269,6 +269,10 @@ struct TaskCommandFile {
     /// Deploy only: run after each land of the default branch.
     #[serde(skip_serializing_if = "Option::is_none")]
     auto: Option<bool>,
+    /// Deploy only: minutes the default branch stays unchanged before the deploy after a land
+    /// runs; 0 deploys at each land. A fraction is allowed.
+    #[serde(rename = "quietMinutes", skip_serializing_if = "Option::is_none")]
+    quiet_minutes: Option<f64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -661,6 +665,16 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
     }
     if let Some(auto) = file.deploy.as_ref().and_then(|deploy| deploy.auto) {
         config.deploy_auto = auto;
+    }
+    if let Some(minutes) = file.deploy.as_ref().and_then(|deploy| deploy.quiet_minutes) {
+        config.deploy_quiet_secs = minutes_to_secs(minutes, "tasks.deploy.quietMinutes")?;
+    }
+    if file
+        .release
+        .as_ref()
+        .is_some_and(|release| release.quiet_minutes.is_some())
+    {
+        return Err("tasks.release.quietMinutes is not a setting: only a deploy waits".into());
     }
     if file
         .release

@@ -203,6 +203,7 @@ pub(crate) fn deploy(
     let DeployArgs {
         commit,
         if_new,
+        quiet,
         trial,
         run,
         said,
@@ -219,6 +220,28 @@ pub(crate) fn deploy(
     let approved = run.approved && !acting_as_manager();
     let name = kind_name(kind);
     let (project_name, main) = project_entry(project)?;
+    // ^ Each answer is JSON with `--json`, else its message.
+    let answer = |value: serde_json::Value| -> Result<()> {
+        if json {
+            return print_json(&value);
+        }
+        println!("{}", value["message"].as_str().unwrap_or_default());
+        Ok(())
+    };
+    let skip =
+        |message: String| answer(json!({ "kind": kind, "skipped": true, "message": message }));
+    // ^ The deploy after a land waits without the lock, and before any check, so a deploy by
+    // hand runs at once and what is open to check is read when the deploy starts. A land that
+    // moved the default branch meanwhile started its own deploy.
+    if let Some(secs) = quiet.filter(|secs| *secs > 0) {
+        let tip = copy::resolve_commit(&main, &default_ref(&main))?;
+        std::thread::sleep(Duration::from_secs(secs));
+        if copy::resolve_commit(&main, &default_ref(&main))? != tip {
+            return skip(format!(
+                "the default branch moved during the {secs} s quiet window; the land after {tip:.12} deploys"
+            ));
+        }
+    }
     let settings =
         load_task_config(&main).map_err(|error| anyhow::anyhow!("{error}; nothing was run"))?;
     let (command, public, approve, action) = match kind {
@@ -282,16 +305,6 @@ pub(crate) fn deploy(
     // ^ While a trial holds the live site, only its own deploy runs; the default branch
     // deploys when it ends. ref: docs/tasks.md "Hold and trial"
     let live_trial = store::read_trial(&project_id)?;
-    // ^ Each answer is JSON with `--json`, else its message.
-    let answer = |value: serde_json::Value| -> Result<()> {
-        if json {
-            return print_json(&value);
-        }
-        println!("{}", value["message"].as_str().unwrap_or_default());
-        Ok(())
-    };
-    let skip =
-        |message: String| answer(json!({ "kind": kind, "skipped": true, "message": message }));
     let revision = match (trial, &live_trial) {
         (Some(task), Some(live)) if live.task == task && live.commit.is_some() => {
             live.commit.clone().unwrap_or_default()

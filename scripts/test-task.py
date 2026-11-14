@@ -4582,37 +4582,47 @@ def part_worker(created=None):
     assert 'since then:' not in stale_ready, stale_ready
     js('task', 'close', stale, '--discard')
 
-    # 28. A land deploys by itself with tasks.deploy.auto; deploys run one at a time and a
+    # 28. A land deploys by itself with tasks.deploy.auto, once per quiet window: lands within
     mark('28')
-    # deploy that waited runs for the newest commit, so quick lands skip the ones between.
+    # tasks.deploy.quietMinutes of each other deploy the newest commit once; a deploy by hand
+    # runs at once (docs/tasks.md "Deploy and release").
     configure(LAND_CONFIG + """  deploy:
-    command: 'sleep 8; echo "$WSX_DEPLOY_COMMIT" >> ../auto-deploy.log'
+    command: 'echo "$WSX_DEPLOY_COMMIT" >> ../auto-deploy.log'
     auto: true
+    quietMinutes: 0.5
 """, 'deploy after land')
-    quick = [js('task', 'new', 'WORK d%d.txt' % i)['id'] for i in range(3)]
+    quick = [js('task', 'new', 'WORK d%d.txt' % i)['id'] for i in range(4)]
     for n in quick:
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
+    records_before = len(deploy_records())
     tips = []
-    for n in quick:
+    for n in quick[:3]:
         land(n)
         tips.append(wait(lambda: show(n)['state'] == 'landed' and git('rev-parse', 'main'), 'quick land'))
     deploy_log = base / 'auto-deploy.log'
-    wait(lambda: deploy_log.exists() and deploy_log.read_text().split()[-1:] == [tips[-1]], 'deploy of the newest land', 60)
-    # ^ The deploy that waited behind the newest one skips it at once.
-    time.sleep(3)
-    deployed_commits = deploy_log.read_text().split()
-    assert deployed_commits[0] == tips[0] and deployed_commits[-1] == tips[-1] and tips[1] not in deployed_commits, (tips, deployed_commits)
+    time.sleep(2)
+    assert not deploy_log.exists() and len(deploy_records()) == records_before, 'a deploy ran inside the quiet window'
+    # ^ The waiters of the first two lands find the branch moved and leave the deploy to the last.
+    wait(lambda: deploy_log.exists() and deploy_lock_free(), 'one deploy of the newest land', 90)
+    time.sleep(1)
+    assert deploy_log.read_text().split() == [tips[-1]], (tips, deploy_log.read_text())
+    assert [r['commit'] for r in deploy_records()[records_before:]] == [tips[-1]], deploy_records()[records_before:]
     assert js('task', 'deployed')['deploy']['commit'] == tips[-1]
     # ^ A deploy's event names the tasks it put live: those landed since the previous deploy
     # (docs/tasks.md "Deploy and release"), so no one reads `deploys` to say what is live.
-    first_deploy = wait(lambda: events_with('deploy of %s succeeded after' % tips[0][:12]), 'the first deploy event', 30)[0]['text']
-    assert re.search(r'deploy of %s succeeded after \d+ s: (#\d+, )*#%d( live|, #\d+)' % (tips[0][:12], quick[0]), first_deploy), first_deploy
-    newest_deploy = wait(lambda: events_with('deploy of %s succeeded after' % tips[-1][:12]), 'the newest deploy event', 30)[0]['text']
-    assert re.search(r'deploy of %s succeeded after \d+ s: #%d, #%d live(\n|$)' % (tips[-1][:12], quick[1], quick[2]), newest_deploy), newest_deploy
+    newest_deploy = wait(lambda: events_with('deploy of %s succeeded after' % tips[-1][:12]), 'the deploy event', 30)[0]['text']
+    assert re.search(r'deploy of %s succeeded after \d+ s: #%d, #%d, #%d live(\n|$)' % (tips[-1][:12], quick[0], quick[1], quick[2]), newest_deploy), newest_deploy
+    # ^ A land after the window deploys again: 4 lands, 2 deploys. A deploy by hand in the next
+    # window runs at once, and the land's waiter finds its commit deployed.
+    land(quick[3])
+    last = wait(lambda: show(quick[3])['state'] == 'landed' and git('rev-parse', 'main'), 'the later land')
+    assert ran('deploy')['commit'] == last
+    assert [r['commit'] for r in deploy_records()[records_before:]] == [tips[-1], last]
     for n in quick:
         wait_closed(n)
     follow_up = state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'follow-up.log'
-    assert 'already deployed' in follow_up.read_text(), follow_up.read_text()[-2000:]
+    wait(lambda: 'already deployed' in follow_up.read_text() and deploy_lock_free(), 'the waiter that found the land deployed', 60)
+    assert len(deploy_records()[records_before:]) == 2, deploy_records()[records_before:]
 
     # 29. A preview on request (docs/tasks.md "Preview"): a fake tailscale records its argv.
     mark('29')
@@ -4780,6 +4790,7 @@ def part_worker(created=None):
     configure(LAND_CONFIG.replace('  land: { auto: false }\n', '') + """  deploy:
     command: 'echo "$WSX_DEPLOY_COMMIT" >> ../trial-deploy.log'
     auto: true
+    quietMinutes: 0
   release:
     command: 'echo released >> ../trial-release.log'
 """, 'hold and trial')
@@ -5873,14 +5884,14 @@ def part_host(created=None):
     assert decision_of(aft_cur['id'])['approved'] is False and js('task', 'ledger')['approvals'] == []
     js('task', 'close', aft_gone, '--discard')
     assert release_log.read_text() == aft_ran + 'released\n'
-    # ^ The land starts the project's own deploy (it sleeps) and the approved release waits for
-    # the same land: the release waits for the deploy lock and runs after the deploy, on the same
-    # run of the owner's go (docs/tasks.md "Deploy and release"). A deploy by hand, no approval,
-    # still refuses while the deploy runs.
+    # ^ The approved release runs at the land. The project's own deploy waits for the quiet
+    # window, then runs for the same commit after it (docs/tasks.md "Deploy and release"). A
+    # deploy by hand, no approval, still refuses while the deploy runs.
     order_log = base / 'order.log'
     configure(LAND_CONFIG + """  deploy:
     command: 'echo start >> ../order.log; sleep 6; echo deploy >> ../order.log'
     auto: true
+    quietMinutes: 0.2
   release:
     command: 'echo release >> ../order.log'
     approve: true
@@ -5891,14 +5902,13 @@ def part_host(created=None):
     assert (ord_req['action'], ord_req['after']) == ('release', ord_task), ord_req
     records_before = len(deploy_records())
     assert land(ord_task)['state'] == 'landed'
-    wait(lambda: order_log.exists() and order_log.read_text() == 'start\n', 'the land\'s deploy starts', 30)
+    wait(lambda: order_log.exists() and order_log.read_text() == 'release\nstart\n', 'the release at the land, then the deploy', 60)
     refused = cli('task', 'deploy', ok=False).stderr
     assert 'a deploy or release of demo runs' in refused and 'Nothing was run' in refused, refused
     ord_dec = decision_of(ord_req['id'])
     assert ord_dec['approved'] and ord_dec['outcome'].startswith('done: release of '), ord_dec
-    assert 'after waiting for the deploy or release that ran' in ord_dec['outcome'] and 'Nothing was run' not in ord_dec['outcome'], ord_dec
-    wait(lambda: order_log.read_text() == 'start\ndeploy\nrelease\n' and deploy_lock_free(), 'the release after the deploy', 30)
-    assert [r['kind'] for r in deploy_records()[records_before:]] == ['deploy', 'release'], deploy_records()[records_before:]
+    wait(lambda: order_log.read_text() == 'release\nstart\ndeploy\n' and deploy_lock_free(), 'the deploy after the quiet window', 30)
+    assert [r['kind'] for r in deploy_records()[records_before:]] == ['release', 'deploy'], deploy_records()[records_before:]
     assert all(r['exit'] == 0 for r in deploy_records()[records_before:]), deploy_records()[records_before:]
     wait(lambda: events_with('approval %s (release) approved; done' % ord_req['id']), 'the release event')
     wait_closed(ord_task)
