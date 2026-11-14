@@ -310,7 +310,7 @@ fn status_of(
             now_ms,
         ),
         (TaskState::Working | TaskState::Waiting, _) => working(record, now_ms),
-        (TaskState::Ready, _) => ready(dir, record, result, waits_on, now_ms),
+        (TaskState::Ready, _) => ready(dir, record, result, entered, waits_on, now_ms),
         (TaskState::Failed, _) => failed(dir, result, now_ms),
         (TaskState::Landed, _) => words(
             "landed",
@@ -576,10 +576,10 @@ fn ready(
     dir: &TaskDir,
     record: &TaskRecord,
     result: Option<&Option<Value>>,
+    entered: u64,
     waits_on: Option<WaitsOn>,
     now_ms: u64,
 ) -> Status {
-    let entered = record.state_unix_ms.max(record.created_unix_ms);
     if let Some(hold) = &record.hold {
         return words(
             "held",
