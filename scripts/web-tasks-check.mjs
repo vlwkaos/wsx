@@ -33,7 +33,7 @@ const { file: mobilePath, source: mobileSource } = mobileAudit();
 if (!mobileSource) await fail(`no mobile audit at ${mobilePath}; set WSX_MOBILE_AUDIT`);
 // The main screens that get the design lint (scripts/design-lint.js), at 390x844 and 1280x800 only.
 const linter = designLint({ evaluate, captures, file: "tasks" });
-const LINTED = new Set(["new-chat", "new-chat-refused", "chats-home-approval", "chats-home", "chats-home-wide", "chat-room", "chat-room-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
+const LINTED = new Set(["new-chat", "new-chat-refused", "chats-home-approval", "chats-home", "chats-home-wide", "home-long-name", "chat-room", "chat-room-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
 let size = [390, 844, 2];
 const phone = () => size[0] < 600;
 const audits = [];
@@ -81,6 +81,16 @@ const sound = soundCheck(cdp, () => size, { free: ".code-block pre, .table-wrap,
 const shot = shooter(cdp, { captures, prefix: "tasks-", size: () => size, fileOf: (name) => `${size[0]}x${size[1]}-${name}`, linter, linted: LINTED, auditSource, mobileSource, before: sound,
   record: (file, mobile) => audits.push(mobile ? { capture: file, contentShare: mobile.contentShare, smallTargets: mobile.smallTargets.items.map((item) => `${item.label || item.el} ${item.size.join("x")}`),
     tinyText: mobile.tinyText.count, outsideGutter: mobile.outsideGutter.count } : { capture: file }) });
+
+// A Home row's first line: the tray icons and the time are one group at the right edge, a --space-2
+// gap apart, and a name that is too long is cut before it moves either (docs/web-client-tasks.md "Home").
+// `longName` sets the name to a long text first; the page is reloaded by the caller afterwards.
+const homeHead = (row, longName = false) => evaluate(`(() => { const row = ${row}, head = row.querySelector('.row-head'), label = row.querySelector('.row-label'), box = (node) => node.getBoundingClientRect();
+  if (${longName}) label.textContent = 'a very long name that does not fit on one line of a phone row and so is cut';
+  const trays = head.querySelector('.trays'), time = head.querySelector('.time'), edge = box(head).right, group = [trays, time].filter(Boolean);
+  return { cut: label.scrollWidth > label.clientWidth, trays: !!trays, time: !!time, edgeGap: group.length ? Math.round(edge - box(group.at(-1)).right) : null,
+    between: trays && time ? Math.round(box(time).left - box(trays).right) : null, nameClear: group.length ? box(label).right <= box(group[0]).left + 1 : true }; })()`);
+const homeHeadFault = (look, longName) => look.edgeGap !== 0 || !look.nameClear || (look.between !== null && Math.abs(look.between - 8) > 1) || (longName && !look.cut) ? JSON.stringify(look) : "";
 
 // Every working state on screen has the one working color (--color-working in app.css): marks,
 // pulses, typing dots and words. `least` is how many working elements this screen must show.
@@ -1508,6 +1518,13 @@ await closeSheet("the usage sheet", chat);
     const lines = await evaluate(`(() => { const row = document.querySelector('.home-rows > .row[data-key="${project}"] .row-link'), head = row.querySelector('.row-head'), main = row.querySelector('.row-main');
       return { children: [...main.children].map((node) => node.className), time: !!head.querySelector('.time'), height: Math.round(row.getBoundingClientRect().height) }; })()`);
     if (lines.children.join() !== "row-head,row-context" || !lines.time) await fail(`the project's row is not two lines: ${JSON.stringify(lines)}`);
+    const projectRow = `document.querySelector('.home-rows > .row[data-key="${project}"] .row-link')`;
+    for (const longName of [false, true]) {
+      const look = await homeHead(projectRow, longName), fault = homeHeadFault(look, longName);
+      if (!look.trays || !look.time || fault) await fail(`the icons and the time of the project's row are not one group at the right edge${longName ? " under a long name" : ""}: ${fault || JSON.stringify(look)}`);
+      if (longName) await shot("home-long-name");
+    }
+    await go("#/");
     await again();
     // The list: the shared row; run now and on/off in the row's actions.
     await openReservoir("routines");
@@ -3581,6 +3598,8 @@ for (const wide of [false, true]) {
   const listed = await evaluate(`(() => { const row = ${chatRow}; const before = row.closest('li').previousElementSibling; return { name: row.querySelector('.row-label').textContent, context: row.querySelector('.row-context').textContent.trim(), dots: row.querySelectorAll('.news-mark').length, under: before && !before.classList.contains('row-chat') ? before.querySelector('.row-label').firstChild.textContent : before?.className }; })()`);
   if (listed.name !== "billing" || !listed.context || listed.context === projectName || (!wide && listed.dots) || listed.under !== projectName) await fail(`Home lists the chat as ${JSON.stringify(listed)}, not billing over ${projectName}`);
   if (await count(".more-menu .chat-row")) await fail("the ⋯ menu lists chats");
+  const chatHead = await homeHead(chatRow), chatFault = homeHeadFault(chatHead, false);
+  if (chatFault) await fail(`the chat row's icons and time are not one group at the right edge: ${chatFault}`);
   await shot(`chats-home${wide ? "-wide" : ""}`);
   await evaluate(`${chatRow}.click()`);
   await until(`location.hash === '#/p/${project}/c/billing' && !!document.querySelector('.log .bubble[data-side=in]')`, "the chat did not open with its reply");
