@@ -51,7 +51,7 @@ pub(crate) fn commit(
             failed.output.trim_end()
         );
     }
-    copy::take_commit(&main, branch, &tip, &commit, files).map_err(refuse)?;
+    copy::take_commit(&main, branch, &tip, &commit, files)?;
     if json {
         return print_json(&json!({
             "commit": commit,
