@@ -7659,7 +7659,6 @@ def part_host(created=None):
     js('task', 'close', f_worker, '--discard')
     norate.unlink()
     FLOOR['up'] = False
-    configure(CONFIG, 'no fallback')
 
     # 38. A host that started before this wsx cannot read a request the newer CLI added
     # (docs/tasks.md "Host"). The stand-in is what an older host does with a request it cannot
