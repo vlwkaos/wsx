@@ -294,7 +294,7 @@ pub(crate) fn review(dir: &TaskDir, json: bool) -> Result<()> {
         revision => format!("refs/wsx/task/{}/r{revision}", record.id),
     };
     let head = copy::resolve_commit(main, &head)?;
-    let base = copy::merge_base(main, &head, &record.default_branch)?;
+    let base = copy::fork_point(main, &head, &record.default_branch)?;
     let range = format!("{base}..{head}");
     let commits = copy::read(main, &["log", "--oneline", "--no-decorate", &range])?;
     let stat = copy::read(main, &["diff", "--stat", &range])?;

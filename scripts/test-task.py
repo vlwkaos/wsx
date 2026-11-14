@@ -5765,8 +5765,9 @@ def part_host(created=None):
     for n in (base_a, base_b, base_c):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
     seen = len(traces())
+    ai_gate = base / 'ai-gate'
     follower, freed, orphan = (
-        manager_new('WORK ai-f%d.txt' % i, '--after', str(other), '--because', 'needs')
+        manager_new('%sWORK ai-f%d.txt' % ('WAIT %s ' % ai_gate if i == 0 else '', i), '--after', str(other), '--because', 'needs')
         for i, other in enumerate((base_a, base_b, base_c)))
     for n in (follower, freed, orphan):
         waiting = wait_state(n, 'waiting')
@@ -5780,6 +5781,12 @@ def part_host(created=None):
     assert js('task', 'after', freed, '--off')['ok']
     assert wait_state(freed, 'ready', 'failed')['state'] == 'ready', log(freed)
     assert land(base_a)['state'] == 'landed'
+    # ^ The wait's end moves the follower's copy onto main with no revision: its stored fork
+    # point follows (`copy::fork_point`), so it never names main's commits as the task's.
+    landed_tip = git('rev-parse', 'main')
+    wait(lambda: (record := show(follower)['record'])['revision'] == 0 and record['base'] == landed_tip,
+         lambda: 'the follower base after its wait %r' % show(follower)['record'], 40)
+    ai_gate.write_text('')
     js('task', 'close', base_c, '--discard')
     for n in (follower, orphan):
         wait(lambda: kinds(n, 'after_ended'), 'the wait of t%s ends' % n, 40)
