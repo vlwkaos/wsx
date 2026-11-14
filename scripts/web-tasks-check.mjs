@@ -4133,7 +4133,7 @@ await closeSheet("the page", `#/p/${plansArg}`);
   const tabSwitches = () => evaluate("Object.fromEntries([...document.querySelectorAll('.options input[name^=tab-]')].map((node) => [node.name, [node.checked, node.disabled]]))");
   if (JSON.stringify(await tabSwitches()) !== JSON.stringify({ "tab-home": [true, false], "tab-inbox": [true, false], "tab-settings": [true, true] })) await fail(`the tab switches are ${JSON.stringify(await tabSwitches())}`);
   const uiSections = await evaluate("[...document.querySelectorAll('.settings section')].map((section) => [section.getAttribute('aria-label'), section.querySelector('h2').textContent].join(':')).join()");
-  if (uiSections !== "Appearance:Appearance,Header:Header,Bottom bar:Bottom bar" || (await text(".options .option")).join() !== "Dark,Light,Top,Bottom,Home,Sessions,SettingsAlways shown") await fail(`Settings > UI is ${uiSections}: ${await text(".options .option")}`);
+  if (uiSections !== "Appearance:Appearance,Header:Header,Bottom bar:Bottom bar" || (await text(".segmented .segment, .options .option")).join() !== "Dark,Light,Top,Bottom,Home,Sessions,SettingsAlways shown") await fail(`Settings > UI is ${uiSections}: ${await text(".segmented .segment, .options .option")}`);
   await shot("settings-ui");
   await click("input[name=tab-inbox]");
   await until("document.querySelectorAll('.tabbar a').length === 2", "hiding Sessions left it in the bar");
