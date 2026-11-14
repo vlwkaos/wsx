@@ -573,7 +573,8 @@ async function chats() {
     await openSession(role);
     await until("!!document.querySelector('.question .question-option')", `the question of the ${role} session did not show`);
     // ^ The parsed options say what the dialog says: its raw rows fold under "What the terminal shows", closed. Open, they are measured as before.
-    const fold = await evaluate(`(() => { const held = document.querySelector('.question details.held'); const raw = document.querySelector('.question .question-screen'); const shown = raw.getBoundingClientRect().height;
+    // ^ Chrome lays out a closed <details>' content (content-visibility: hidden), so its box has a size: read whether it shows.
+    const fold = await evaluate(`(() => { const held = document.querySelector('.question details.held'); const raw = document.querySelector('.question .question-screen'); const shown = raw.checkVisibility();
       const label = held?.querySelector('summary').textContent.trim(); const closed = held && !held.open; held.open = true; return { label, closed, shown, inside: held.contains(raw) }; })()`);
     if (fold.label !== "What the terminal shows" || !fold.closed || fold.shown || !fold.inside) await fail(`the raw dialog of ${role} is not folded under its options: ${JSON.stringify(fold)}`);
     const asked = await evaluate(`(() => { const sheet = document.querySelector('.question'); const screen = sheet.querySelector('.question-screen');
