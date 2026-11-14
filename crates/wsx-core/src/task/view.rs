@@ -661,8 +661,7 @@ pub fn files_meet<'a>(
                 // where its branch left the default branch now. The stored `base` is the fork
                 // point of its last revision, older when the branch moved since (a wait's end).
                 let repo = &other.project_path;
-                let default = format!("refs/heads/{}", other.default_branch);
-                let changed = super::copy::merge_base(repo, &other.branch, &default)
+                let changed = super::copy::fork_point(repo, &other.branch, &other.default_branch)
                     .and_then(|fork| super::copy::changed_paths(repo, &fork, &other.branch))
                     .map_or_else(|_| other.paths.clone(), |(paths, _)| paths);
                 files

@@ -376,7 +376,7 @@ pub fn touched_scenarios(
     if config.scenarios.values().all(|s| s.paths.is_empty()) {
         return Ok(Default::default());
     }
-    let base = merge_base(repo, head, &format!("refs/heads/{default_branch}"))?;
+    let base = fork_point(repo, head, default_branch)?;
     let (paths, total) = changed_paths(repo, &base, head)?;
     let names =
         |globs: &[String], path: &str| globs.iter().any(|glob| super::view::meet(glob, path));
@@ -397,6 +397,12 @@ pub fn touched_scenarios(
 /// The commit where `head` left `target`.
 pub fn merge_base(repo: &Path, head: &str, target: &str) -> Result<String> {
     git(repo, &["merge-base", head, target])
+}
+
+/// Where `head` (a task's branch or commit) leaves its default branch now: `fork..head` is the
+/// task's own work. A record's stored `base` is this as of its last revision or move.
+pub fn fork_point(repo: &Path, head: &str, default_branch: &str) -> Result<String> {
+    merge_base(repo, head, &format!("refs/heads/{default_branch}"))
 }
 
 pub fn is_ancestor(repo: &Path, ancestor: &str, descendant: &str) -> Result<bool> {

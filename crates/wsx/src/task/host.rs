@@ -830,6 +830,10 @@ impl Host {
         if let Rebase::Conflict(paths) = copy::rebase(&self.record.working_copy, &tip)? {
             bail!("cannot move the copy onto {tip:.12}: {}", paths.join(", "));
         }
+        // ^ The copy moved without a revision: the stored fork point follows it.
+        let working_copy = &self.record.working_copy;
+        self.record.base = copy::fork_point(working_copy, "HEAD", &self.record.default_branch)?;
+        self.save();
         self.say(&format!(
             "starts on {} at {tip:.12}",
             self.record.default_branch
@@ -1372,10 +1376,10 @@ impl Host {
         // ^ Commits after the last revision (before the first: after where the branch left the
         // default branch, since a wait's end moves the copy without a revision).
         let since = match self.record.revision {
-            0 => copy::merge_base(
+            0 => copy::fork_point(
                 &self.record.working_copy,
                 "HEAD",
-                &format!("refs/heads/{}", self.record.default_branch),
+                &self.record.default_branch,
             )
             .unwrap_or_else(|_| self.record.base.clone()),
             revision => format!("refs/wsx/task/{}/r{revision}", self.record.id),
@@ -4078,11 +4082,7 @@ impl Host {
             bail!("git update-ref {reference} failed");
         }
         // ^ After a rebase the fork point moved: base..r<k> must name only the task's own work.
-        if let Ok(base) = copy::merge_base(
-            working_copy,
-            &commit,
-            &format!("refs/heads/{}", self.record.default_branch),
-        ) {
+        if let Ok(base) = copy::fork_point(working_copy, &commit, &self.record.default_branch) {
             self.record.base = base;
         }
         let (paths, paths_total) = copy::changed_paths(working_copy, &self.record.base, &commit)?;

@@ -139,10 +139,13 @@ pub(crate) fn push(args: PushArgs, project: Option<&str>, json: bool) -> Result<
             else {
                 continue;
             };
-            if record.state.is_open()
-                && record.default_branch == branch
-                && !contains(&record.base, &target)
-            {
+            if !record.state.is_open() || record.default_branch != branch {
+                continue;
+            }
+            // ^ Where its branch leaves `branch` now; the stored base of an older record may lag.
+            let fork = copy::fork_point(&main, &record.branch, &branch)
+                .unwrap_or_else(|_| record.base.clone());
+            if !contains(&fork, &target) {
                 old_base.push(id);
             }
         }
