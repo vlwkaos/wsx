@@ -3855,7 +3855,20 @@ def part_worker(created=None):
     assert 'ov-a.txt' in review['stat'] and '+++ b/ov-a.txt' in review['diff'], review
     said_review = reply_to(js('task', 'say', 'RUN wsx task review %d -p demo' % ov_first)['id'])['text']
     assert '-> 0' in said_review and '== prompt ' in said_review, said_review
-    for n in (ov_first, ov_after):
+    # ^ A task no worker edits blocks only through the paths its commits changed: #ov_after waits
+    # for #ov_first with no commits, #ov_quiet is stopped with none, #ov_first is stopped after
+    # its commit of ov-a.txt.
+    ov_quiet = js('task', 'new', '--files', 'ovq*.txt', 'WAIT %s WORK ovq.txt' % (work / 'release-23g-q'))['id']
+    js('task', 'add', ov_first, 'WAIT %s' % (work / 'release-23g-2'))
+    for n in (ov_quiet, ov_first):
+        wait(lambda n=n: show(n)['state'] == 'working', 'the 23g worker of #%d' % n)
+        assert js('task', 'stop', n)['state'] == 'waiting'
+    ov_free = next_task()
+    passed = reply_to(js('task', 'say', ov_new.replace('"ov*.txt"', '"ovq*.txt" --files ov-b.txt') % '')['id'])['text']
+    assert '-> 0' in passed, passed
+    refused = reply_to(js('task', 'say', ov_new.replace('"ov*.txt"', 'ov-a.txt') % '')['id'])['text']
+    assert '-> 0' not in refused and '--files ov-a.txt meets open task #%d "Overlap first"' % ov_first in refused, refused
+    for n in (ov_first, ov_after, ov_quiet, ov_free):
         js('task', 'close', n, '--discard')
 
     # 23s. An untrusted agent (Pi with any model) runs under the strict profile and the broker's

@@ -298,6 +298,18 @@ pub fn owner_waits_after(dir: &TaskDir, record: &TaskRecord) -> bool {
         && stop_reason(dir).is_none()
 }
 
+/// Whether a worker may still edit the task's copy, so `new --files` must not meet its
+/// declared globs: every open state but a stop by request and a wait parked until another
+/// task lands. Those hold only the paths their commits changed. ref: docs/tasks.md "Store"
+pub fn worker_edits(dir: &TaskDir, record: &TaskRecord) -> bool {
+    let stopped = record
+        .waiting
+        .as_ref()
+        .is_some_and(|waiting| waiting.on == WaitOn::Owner && waiting.reason == STOPPED_BY_REQUEST);
+    record.state.is_open()
+        && !(record.state == TaskState::Waiting && (stopped || owner_waits_after(dir, record)))
+}
+
 /// The word for a task's state in a line or a count: "paused" for a worker that ended its turn
 /// with a status (`WaitOn::Paused`), else the state's own. ref: docs/tasks.md "Status"
 pub fn state_word(record: &TaskRecord) -> &'static str {

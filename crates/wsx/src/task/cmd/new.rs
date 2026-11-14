@@ -187,16 +187,17 @@ pub(crate) enum Size {
 }
 
 /// Refuse a manager's new task whose `files` meet an open task's globs or changed paths, but
-/// its `--into` parent's and its `--after` task's: two tasks on the same files conflict at
-/// land. The owner's own tasks may overlap. ref: docs/tasks.md "Store"
+/// its `--into` parent's and its `--after` task's: two workers on the same files conflict at
+/// land. A stopped or parked task counts only its changed paths (`view::files_meet`). The
+/// owner's own tasks may overlap. ref: docs/tasks.md "Store"
 fn refuse_overlap(project_id: &str, files: &[String], besides: [Option<u32>; 2]) -> Result<()> {
     if files.is_empty() {
         return Ok(());
     }
     let tasks = view::project_tasks(project_id)?;
-    let records: Vec<&TaskRecord> = tasks
+    let records: Vec<(&TaskDir, &TaskRecord)> = tasks
         .iter()
-        .filter_map(|(_, record)| record.as_ref().ok())
+        .filter_map(|(dir, record)| Some((dir, record.as_ref().ok()?)))
         .collect();
     let besides: Vec<u32> = besides.into_iter().flatten().collect();
     let Some((id, common)) = view::files_meet(files, &records, &besides)
