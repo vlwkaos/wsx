@@ -9,6 +9,7 @@ pub mod broker;
 mod claude;
 mod cmd;
 mod egress;
+mod floor;
 pub mod host;
 mod hosting;
 mod instructions;

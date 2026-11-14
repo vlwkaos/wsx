@@ -13,6 +13,7 @@
 // `sandbox-exec -p <profile>` with a generated Seatbelt profile.
 
 use super::egress::{Egress, Target};
+use super::floor;
 use anyhow::{Context, Result};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -205,7 +206,9 @@ impl Boundary {
                 .as_ref()
                 .and_then(|(dir, _)| models_json_url(dir, provider));
             (
-                configured.or(builtin.map(|(_, url, ..)| url.to_string())),
+                configured
+                    .or_else(|| floor::url_of(provider))
+                    .or(builtin.map(|(_, url, ..)| url.to_string())),
                 builtin,
             )
         } else {

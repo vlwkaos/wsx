@@ -381,6 +381,26 @@ pub struct AgentEntry {
 }
 
 impl AgentEntry {
+    /// A headless agent wsx knows by itself, not from the owner's file (the local floor,
+    /// `task::floor`): `name` runs `model` on `adapter` and passed `may`.
+    pub fn built_in(
+        name: &str,
+        adapter: &str,
+        model: &str,
+        may: Vec<crate::task::policy::Capability>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            command: vec![adapter.into()],
+            adapter: Some(adapter.into()),
+            model: Some(model.into()),
+            budget_usd_per_day: None,
+            extension: None,
+            _roles: None,
+            may: Some(may),
+        }
+    }
+
     /// Whether a fallback choice may give this agent `role` (`Role::filled_by`).
     pub fn allows(&self, role: Role) -> bool {
         role.filled_by(self.may.as_deref())

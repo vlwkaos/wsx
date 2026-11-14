@@ -6,6 +6,7 @@
 use super::boundary::Boundary;
 use super::claude::ClaudeAgent;
 use super::egress::Egress;
+use super::floor;
 use super::pi::PiAgent;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
@@ -16,6 +17,7 @@ use std::process::{Child, ChildStderr, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Sender, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
+use wsx_core::config::global::{AgentEntry, GlobalConfig};
 use wsx_core::task::replace::TREE_ENV;
 use wsx_core::task::{policy, status, store, usage, TurnUsage};
 
@@ -287,10 +289,7 @@ pub fn policy(
         .find(|(name, _)| name == "ANTHROPIC_BASE_URL")
         .map(|(_, value)| value.as_os_str());
     let mut may: Option<Vec<policy::Capability>> = None;
-    let entries = wsx_core::config::global::GlobalConfig::load()
-        .map(|(config, _)| config.agents)
-        .unwrap_or_default();
-    for entry in entries.iter().filter(|entry| {
+    for entry in registry().iter().filter(|entry| {
         entry.adapter.as_deref() == Some(adapter) && entry.model.as_deref() == Some(model)
     }) {
         let Some(list) = entry.may.clone() else {
@@ -303,6 +302,22 @@ pub fn policy(
         });
     }
     policy::Policy::of(policy::trust(adapter, base_url), role, may.as_deref())
+}
+
+/// The agents wsx knows: the owner's global `[[agents]]` and the local floor, which a file
+/// that runs the same adapter and model replaces. ref: docs/tasks.md "Agents"
+pub fn registry() -> Vec<AgentEntry> {
+    let mut agents = GlobalConfig::load()
+        .map(|(config, _)| config.agents)
+        .unwrap_or_default();
+    let floor = floor::entry();
+    if !agents
+        .iter()
+        .any(|agent| agent.adapter == floor.adapter && agent.model == floor.model)
+    {
+        agents.push(floor);
+    }
+    agents
 }
 
 /// A registry agent a host can run headless.
@@ -345,9 +360,9 @@ pub fn fallback(names: &[String], now_ms: u64, role: policy::Role) -> Option<Cho
     if names.is_empty() {
         return None;
     }
-    let (config, _) = wsx_core::config::global::GlobalConfig::load().ok()?;
+    let agents = registry();
     names.iter().find_map(|name| {
-        let entry = config.agents.iter().find(|agent| &agent.name == name)?;
+        let entry = agents.iter().find(|agent| &agent.name == name)?;
         if !entry.allows(role) {
             return None;
         }
@@ -361,6 +376,13 @@ pub fn fallback(names: &[String], now_ms: u64, role: policy::Role) -> Option<Cho
                 model,
             })
     })
+}
+
+/// The agent that answers the owner while the manager's is held: the first of `names` that
+/// fills the stand-in job, else the local floor when its endpoint answers. None: nobody
+/// answers. ref: docs/tasks.md "Agents"
+pub fn stand_in(names: &[String], now_ms: u64) -> Option<Choice> {
+    fallback(names, now_ms, policy::Role::Organizer).or_else(|| floor::choice(now_ms))
 }
 
 /// The first available of `names` when `account`'s limit until `until_ms` is past
