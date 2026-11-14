@@ -1878,7 +1878,14 @@ impl Host {
             .last_result
             .as_ref()
             .is_some_and(|result| result.status == "done");
-        if !done || self.stopped || self.record.plan {
+        // ^ Only a clean tree keeps the answer: on a dirty one each result would run them again.
+        let clean = || {
+            copy::clean_tree(&self.record.working_copy)
+                .ok()
+                .flatten()
+                .is_some()
+        };
+        if !done || self.stopped || self.record.plan || !clean() {
             return false;
         }
         let names: Vec<String> = self
