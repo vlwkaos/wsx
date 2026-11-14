@@ -143,6 +143,7 @@ The event observer decides from the task records, `approvals.jsonl` and the open
 |---|---|
 | a task starts waiting (not on `hand`), a new approval request, new To check items, a reply the manager or a chat starts on its own after events or a recap (`manager/log.jsonl`, `chats/<name>/log.jsonl`) | "Manager needs me": one push that names every open item of these kinds and the new reply, replacing the earlier one |
 | a post with a level (`wsx task post --level warn\|bad`) in `manager/log.jsonl` | "Manager needs me": one push of its own for the post, `<project>: <title>` over its first line; not an item of the push above ([web-client.md](web-client.md) "Notifications") |
+| the ask line (`Asked you: Approve land #3 (a3).`, a post with `approval`, [tasks.md](tasks.md) "Approvals") | none: its approval request is the push item, counted once in the badge; the line shows in the chat only |
 | a task becomes `ready`, `failed` or `landed`, a deploy or a release | no push; a project's digest routine reports them ([tasks.md](tasks.md) "Routines") |
 
 - A change is counted by its (state, revision); a project first seen after a server start notifies nothing, and working, checking and stopped never notify.

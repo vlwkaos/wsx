@@ -187,6 +187,11 @@ pub enum ManagerEvent {
         /// The id of the message its leading quote points at, as on `Message`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         quote: Option<u64>,
+        /// The approval request this post shows in the chat (`post_asks`, the ask line). The
+        /// request owns its push item and badge count, so the web pushes none for this reply.
+        /// ref: docs/tasks.md "Approvals"
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval: Option<String>,
     },
     /// This manager's message to another project's manager (`say --from-chat`).
     Sent {

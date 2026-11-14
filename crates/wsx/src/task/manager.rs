@@ -615,7 +615,7 @@ impl Manager {
                     _ => None,
                 };
                 if refusal.is_none() {
-                    self.post(event, text, level);
+                    self.post(event, text, level, None);
                 }
                 ManagerResponse {
                     ok: refusal.is_none(),
@@ -658,7 +658,13 @@ impl Manager {
     /// Write to the owner with no turn: a delivered events message, so that no restart hands it
     /// to the agent, and the reply to it, which the web pushes like the manager's own. The reply
     /// has no usage and is marked `post`, which the chats read.
-    fn post(&mut self, event: String, text: String, level: Option<Level>) {
+    fn post(
+        &mut self,
+        event: String,
+        text: String,
+        level: Option<Level>,
+        approval: Option<String>,
+    ) {
         let id = self.next_id();
         self.log(ManagerEvent::Message {
             id,
@@ -681,6 +687,7 @@ impl Manager {
             level,
             post: true,
             quote: None,
+            approval,
         });
     }
 
@@ -707,7 +714,7 @@ impl Manager {
             )
         });
         let text = format!("{}.{retry} {open}", reason.trim_end_matches('.'));
-        self.post("turn failed".into(), text, Some(Level::Bad));
+        self.post("turn failed".into(), text, Some(Level::Bad), None);
     }
 
     /// Re-queue messages logged but never delivered, and those delivered to a turn that got no
@@ -1193,7 +1200,7 @@ impl Manager {
         let found = session_news::attention(&snapshot, &self.main);
         let (fresh, keep) = session_news::unposted(found, self.state.sessions_seen.as_ref());
         for news in fresh {
-            self.post(news.event, news.text, None);
+            self.post(news.event, news.text, None, None);
         }
         if self.state.sessions_seen.as_ref() != Some(&keep) {
             self.state.sessions_seen = Some(keep);
@@ -1899,6 +1906,7 @@ impl Manager {
             level: None,
             post: true,
             quote: None,
+            approval: None,
         });
         self.last_activity = Instant::now();
         id
@@ -2698,6 +2706,7 @@ impl Manager {
                     level: None,
                     post: false,
                     quote,
+                    approval: None,
                 });
                 self.state.provisional_to = answered;
                 self.state.provisional = true;
@@ -3330,6 +3339,7 @@ impl Manager {
             level: None,
             post: false,
             quote,
+            approval: None,
         });
         if context > self.rotate_limit() {
             self.rotate(context, None);
@@ -3345,7 +3355,7 @@ impl Manager {
     /// reply needs no words for it. ref: docs/tasks.md "Approvals"
     fn post_asks(&mut self) {
         let lines = self.approval_lines();
-        let asked: Vec<String> = lines
+        let asked: Vec<(String, String)> = lines
             .iter()
             .skip(self.asks_seen)
             .filter(|line| match line {
@@ -3354,14 +3364,19 @@ impl Manager {
                 }
                 ApprovalLine::Decision { .. } => false,
             })
-            .map(|line| format!("{} ({})", owner::approval_label(line), line.id()))
+            .map(|line| {
+                let ask = format!("{} ({})", owner::approval_label(line), line.id());
+                (ask, line.id().to_string())
+            })
             .collect();
         self.asks_seen = lines.len();
-        for ask in asked {
+        // ^ The request owns its push item; the line only shows the ask in the chat.
+        for (ask, id) in asked {
             self.post(
                 format!("asked the owner: {ask}"),
                 format!("Asked you: {ask}."),
                 None,
+                Some(id),
             );
         }
     }
