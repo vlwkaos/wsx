@@ -115,6 +115,9 @@ pub enum WaitOn {
     /// A worker's result waits for its own `check-run`'s answer, at most until `until_ms`
     /// (the run's time limit); the task stays `working`. ref: docs/tasks.md "Check-run"
     CheckRun,
+    /// A landing that started stopped (a dirty main checkout): the task stays `ready` and the
+    /// owner lands it again once that is fixed; `reason` says why. ref: docs/tasks.md "Landing"
+    LandStopped,
 }
 
 impl WaitOn {
@@ -128,6 +131,7 @@ impl WaitOn {
             Self::Limit => "limit",
             Self::Paused => "paused",
             Self::CheckRun => "check_run",
+            Self::LandStopped => "land_stopped",
         }
     }
 }
@@ -361,8 +365,9 @@ pub struct TaskRecord {
     /// The host sent the worker back once to run the simplify skill.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub simplify_asked: bool,
-    /// Set while the state is `waiting`, on `check_slot` while checks wait for the slot, and
-    /// on `check_run` while a result waits for its check-run.
+    /// Set while the state is `waiting`, on `check_slot` while checks wait for the slot, on
+    /// `check_run` while a result waits for its check-run, and on `land_stopped` while a ready
+    /// task's landing stopped. Only `move_to` writes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<Waiting>,
     pub created_unix_ms: u64,
@@ -671,14 +676,16 @@ impl TaskRecord {
 
     /// The one write of `state` and `waiting`: a move the table (`TaskState::may_move`) has, with
     /// a wait its state holds, else an error that names both and leaves the record as it was.
-    /// `waiting` is the whole wait in the new state: `waiting` holds any wait but a check's,
-    /// a check slot's holds in any other state, a check-run's only in `working`.
+    /// `waiting` is the whole wait in the new state: `waiting` holds any wait but a check's and
+    /// a stopped landing's, a check slot's holds in any other state, a check-run's only in
+    /// `working`, a stopped landing's only in `ready`.
     pub fn move_to(&mut self, to: TaskState, waiting: Option<Waiting>) -> anyhow::Result<()> {
         let from = self.state;
         let held = match waiting.as_ref().map(|waiting| waiting.on) {
             None => to != TaskState::Waiting,
             Some(WaitOn::CheckSlot) => to != TaskState::Waiting,
             Some(WaitOn::CheckRun) => to == TaskState::Working,
+            Some(WaitOn::LandStopped) => to == TaskState::Ready,
             Some(_) => to == TaskState::Waiting,
         };
         let words = |state: TaskState, waiting: Option<&Waiting>| match waiting {
@@ -712,19 +719,6 @@ impl TaskRecord {
     /// only. ref: docs/tasks.md "Parent tasks"
     pub fn at_rest(&self) -> bool {
         matches!(self.state, TaskState::Ready | TaskState::Failed)
-    }
-
-    /// A ready task waits for the manager's review when the manager or a chat created it (the
-    /// creator reviews it), or when the
-    /// project lands by itself (`tasks.land.auto`) and checks prove it: an owner task never
-    /// lands by itself. A held one waits for the owner, as does any other ready task; one that
-    /// waits for another task (`after`) waits for that task. A plan
-    /// or a paused worker waits for the manager. ref: docs/tasks.md "Landing"
-    pub fn manager_reviews(&self, land_auto: bool) -> bool {
-        let reviewed = self.created_by != Actor::Owner || (land_auto && !self.checks.is_empty());
-        (self.state == TaskState::Ready && self.hold.is_none() && self.after.is_none() && reviewed)
-            || self.waits_on(WaitOn::Plan)
-            || self.waits_on(WaitOn::Paused)
     }
 }
 

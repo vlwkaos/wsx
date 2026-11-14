@@ -77,8 +77,8 @@ fn manager_wait(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall
         .map_or(DEFAULT_MANAGER_REVIEW_SECS, |s| s.manager_review_secs)
         * 1000;
     if limit_ms == 0
-        || record.after.is_some()
-        || !record.manager_reviews(settings.is_none_or(|s| s.land_auto))
+        || status::waits_on(dir, record, settings.is_none_or(|s| s.land_auto))
+            .is_none_or(|on| on.kind != status::Holder::Manager)
     {
         return None;
     }
