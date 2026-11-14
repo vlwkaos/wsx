@@ -3398,11 +3398,22 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   const wanted = ["editing task.js", "reading y.rs", "running ls -la", "running cargo nextest run --workspace", "searching code", "listing files", "fetching example.com", "using lookup", "using Foo", "pi refused x: no reason"];
   if (worded.join("|") !== wanted.join("|")) await fail(`the now line words tools as ${JSON.stringify(worded)}`);
 
-  // Stuck: wsx's own stall rule, staged by the log's file time; the sheet reads it, no guess.
+  // Stuck: wsx's own stall rule; the sheet reads it, no guess.
+  // ^ The quiet clock counts the worker's log entries and the state's start, not the log's file
+  // time (`stall::progress_ms`): both are an hour older, as test-task.py's silent worker.
   const log = show(working).log;
   if (!log || !fs.existsSync(log)) await fail(`wsx task show names no log: ${log}`);
-  const hourAgo = new Date(Date.now() - 3600_000);
-  fs.utimesSync(log, hourAgo, hourAgo);
+  const aged = (file, change) => {
+    const text = fs.readFileSync(file, "utf8");
+    fs.writeFileSync(`${file}.tmp`, change(text));
+    fs.renameSync(`${file}.tmp`, file);
+  };
+  const older = (entry) => ({ ...entry, unix_ms: entry.unix_ms - 3600_000 });
+  aged(log, (text) => text.split("\n").filter(Boolean).map((line) => JSON.stringify(older(JSON.parse(line)))).join("\n") + "\n");
+  aged(path.join(path.dirname(log), "task.json"), (text) => {
+    const record = JSON.parse(text);
+    return JSON.stringify({ ...record, state_unix_ms: record.state_unix_ms - 3600_000, created_unix_ms: record.created_unix_ms - 3600_000 });
+  });
   await go(`#/p/${plansArg}`);
   await open(working);
   await shows(working, "stuck", { ...workingTop, health: "Stuck", age: "1h ago", next: "Stuck: no output for 1 h 0 min. The manager hears of the stall and decides what to do." });
