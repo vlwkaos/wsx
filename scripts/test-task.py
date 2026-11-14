@@ -7455,34 +7455,60 @@ def part_host(created=None):
     assert process_gone(old_host[0]) and not agent_tree(old_host[0]), agent_tree(old_host[0])
     wait(lambda: resumed(seen), 'the new host resumes the turn', 40)
     assert host_of('task host %s %d' % (project_id, hung)) not in ([], old_host)
-    launch = [t for t in traces()[seen:] if t.get('launch')]
-    assert launch and launch[0]['resume'] and launch[0]['session'] == show(hung)['record']['agent_session'], launch
+    launched = [t for t in traces()[seen:] if t.get('launch')]
+    assert launched and launched[0]['resume'] and launched[0]['session'] == show(hung)['record']['agent_session'], launched
     w_release.touch()
     wait_state(hung, 'ready', 'failed')
     js('task', 'close', hung, '--discard')
-    # A task request: a host from before the status answer named its binary (the stand-in of 38)
-    # counts as older; its task is in a turn with no output past the bound, so an add replaces it.
-    legacy = js('task', 'new', 'WORK a.txt')['id']
-    assert wait_state(legacy, 'ready', 'failed')['state'] == 'ready'
-    legacy_copy = show(legacy)['record']['working_copy']
-    legacy_socket = Path(show(legacy)['socket'])
-    legacy_pid = stale / 'legacy.pid'
-    cli('session', 'delete', 'task-%d' % legacy, '-w', legacy_copy)
-    cli('session', 'create', '--name', 'task-%d' % legacy, '-w', legacy_copy,
-        '--command', 'exec %s %s %s %s %s' % (sys.executable, fake_host, legacy_socket, stale / 'legacy.log', legacy_pid))
-    wait(lambda: legacy_pid.exists() and legacy_pid.read_text() and legacy_socket.exists(), 'the legacy host')
-    legacy_record = Path(show(legacy)['log']).parent / 'task.json'
-    record = json.loads(legacy_record.read_text())
-    record['state'] = 'working'
-    legacy_record.write_text(json.dumps(record))
+    def legacy_host(name, aged_ms=0):
+        # ^ A host from before the status answer named its binary (the stand-in of 38), in front
+        # of a task marked `working`; `aged_ms` moves its log and record back by that much.
+        n = js('task', 'new', 'WORK a.txt')['id']
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
+        copy, socket = show(n)['record']['working_copy'], Path(show(n)['socket'])
+        pid_file = stale / (name + '.pid')
+        cli('session', 'delete', 'task-%d' % n, '-w', copy)
+        cli('session', 'create', '--name', 'task-%d' % n, '-w', copy,
+            '--command', 'exec %s %s %s %s %s' % (sys.executable, fake_host, socket, stale / (name + '.log'), pid_file))
+        wait(lambda: pid_file.exists() and pid_file.read_text() and socket.exists(), 'the %s host' % name)
+        folder = Path(show(n)['log']).parent
+        lines = [{**e, 'unix_ms': e['unix_ms'] - aged_ms} for e in log(n)]
+        (folder / 'log.jsonl.tmp').write_text(''.join(json.dumps(line) + '\n' for line in lines))
+        os.replace(folder / 'log.jsonl.tmp', folder / 'log.jsonl')
+        record = json.loads((folder / 'task.json').read_text())
+        record['state'] = 'working'
+        for key in ('state_unix_ms', 'created_unix_ms'):
+            record[key] -= aged_ms
+        (folder / 'task.json').write_text(json.dumps(record))
+        for check in folder.glob('check-*.log'):
+            os.utime(check, (time.time() - aged_ms / 1000,) * 2)
+        return n, int(pid_file.read_text())
+
+    # A task request: the legacy host counts as older; its task is in a turn with no output past
+    # the bound, so an add replaces it.
+    legacy, legacy_pid = legacy_host('legacy')
     time.sleep(4)
     seen = len(traces())
     assert on(wsx, 'task', 'add', legacy, 'WORK c.txt', extra=caller)['ok']
-    assert process_gone(int(legacy_pid.read_text())) and len(replaced(log(legacy))) == 1, log(legacy)[-4:]
+    assert process_gone(legacy_pid) and len(replaced(log(legacy))) == 1, log(legacy)[-4:]
     assert not (stale / 'legacy.log').exists(), 'the add went to the new host'
     wait(lambda: resumed(seen), 'the new host resumes the legacy turn', 40)
     wait_state(legacy, 'ready', 'failed')
     js('task', 'close', legacy, '--discard')
+    # A manager host that starts on a new wsx sweeps once: a deploy that ran on the older wsx has
+    # no sweep of its own. Its own env keeps the real bound, so the turn is 3 h quiet.
+    unswept, unswept_pid = legacy_host('unswept', aged_ms=3 * 3600 * 1000)
+    manager_socket = js('task', 'manager')['socket']
+    cli('session', 'delete', 'task-manager', '-p', 'demo')
+    wait(lambda: not Path(manager_socket).exists() or subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
+    seen = len(traces())
+    assert js('task', 'manager')['state'] == 'started'
+    wait(lambda: replaced(log(unswept)), 'the starting manager replaces the hung host', 60)
+    assert process_gone(unswept_pid) and len(replaced(log(unswept))) == 1, log(unswept)[-4:]
+    assert re.search(r'turn, started 3 h.* ago, had no agent output for 3 h', replaced(log(unswept))[0]['reason']), replaced(log(unswept))
+    wait(lambda: resumed(seen), 'the new host resumes the unswept turn', 40)
+    assert wait_state(unswept, 'ready', 'failed')['state'] == 'ready', log(unswept)[-6:]
+    js('task', 'close', unswept, '--discard')
     # A say: the manager's turn hangs (MHANG) in a host on the older file; the next say replaces it
     # and the new host answers the queued message.
     socket_path = js('task', 'manager')['socket']
