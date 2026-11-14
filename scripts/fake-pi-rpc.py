@@ -158,10 +158,14 @@ def main():
             continue
         text = command['message']
         trace({'session': session, 'message': text})
-        refused = next((b for a, b in zip(text.split(), text.split()[1:]) if a == 'PIREFUSE'), None)
-        if refused:
+        # ^ A handover quotes earlier messages: only this message's own words steer the fake.
+        # ^ So are the notes the host attaches, which carry earlier messages with their ids.
+        own = text.split('\n\nNotes that match this message', 1)[0].rsplit('Owner (message', 1)[-1]
+        own = own.split('Events (message', 1)[0].split()
+        # ^ Event lines name tasks by title, and a title may hold a word of this fake: it is no owner's word.
+        if 'PIREFUSE' in own:
             # ^ Pi refuses the prompt command itself (no API key): no run, no agent_settled.
-            with open(refused) as reason:
+            with open(own[own.index('PIREFUSE') + 1]) as reason:
                 emit({'id': command.get('id'), 'type': 'response', 'command': 'prompt', 'success': False,
                       'error': reason.read().strip()})
             continue
@@ -169,11 +173,6 @@ def main():
               'data': {'disposition': 'started'}})
         emit({'type': 'agent_start'})
         words = text.split()
-        # ^ A handover quotes earlier messages: only this message's own words steer the fake.
-        # ^ So are the notes the host attaches, which carry earlier messages with their ids.
-        own = text.split('\n\nNotes that match this message', 1)[0].rsplit('Owner (message', 1)[-1]
-        own = own.split('Events (message', 1)[0].split()
-        # ^ Event lines name tasks by title, and a title may hold a word of this fake: it is no owner's word.
         if 'PIHANG' in own and not os.path.exists(own[own.index('PIHANG') + 1]):
             # ^ A run that writes nothing until the file exists: the host ends it by its quiet bound.
             trace({'session': session, 'hang': own[own.index('PIHANG') + 1]})
