@@ -7594,7 +7594,9 @@ def part_host(created=None):
     mark('37f')
     FLOOR['up'] = False
     start_floor_url = env['LOCAL_MODEL_URL']
-    limit_for(3600)
+    # ^ A record that ends past a probe's period (600 s) is probed at once, and the fake's probe
+    # reports `allowed` and ends it: these records last 600 s, as the other sections' do.
+    limit_for(600)
     session_before = manager_state()['agent_session']
     rotations = lambda: len([e for e in manager_entries() if e['kind'] == 'rotated'])
     rotated_before = rotations()
@@ -7639,7 +7641,7 @@ def part_host(created=None):
         assert held_word in f_home['message'], (held_word, f_home['message'])
     assert not f_home['message'].startswith('Handover'), f_home['message'][:200]
     # (c) A worker on an hour's limit still waits for Claude: the floor is no worker's fallback.
-    limit_for(3600)
+    limit_for(600)
     f_worker = js('task', 'new', 'WORK floor.txt')['id']
     wait(lambda: show(f_worker)['state'] == 'waiting' and show(f_worker)['record']['waiting']['on'] == 'limit', 'the worker waits')
     time.sleep(3)
