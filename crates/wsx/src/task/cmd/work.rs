@@ -185,6 +185,7 @@ pub(crate) fn why(dir: &TaskDir, json: bool) -> Result<()> {
         _ => None,
     })?;
     let history = wsx_core::task::history::read(dir, WHY_LINES)?;
+    let turn = wsx_core::task::stall::Turn::read(&dir.path);
     if json {
         return print_json(&json!({
             "task": record.id,
@@ -193,6 +194,7 @@ pub(crate) fn why(dir: &TaskDir, json: bool) -> Result<()> {
             "after": record.after,
             "hold": record.hold,
             "host_running": host,
+            "turn": turn,
             "last_message": last.map(|(unix_ms, mode, text)| json!({
                 "unix_ms": unix_ms, "mode": mode, "text": text,
             })),
@@ -221,6 +223,12 @@ pub(crate) fn why(dir: &TaskDir, json: bool) -> Result<()> {
         println!("hold:    {hold}");
     }
     println!("host:    {}", if host { "running" } else { "not running" });
+    if let Some(turn) = &turn {
+        println!(
+            "turn:    {}",
+            turn_line(turn, wsx_core::task::now_unix_ms())
+        );
+    }
     if let Some((unix_ms, _, text)) = last {
         let text: String = text.chars().take(WHY_MESSAGE_CHARS).collect();
         println!(
@@ -239,6 +247,29 @@ pub(crate) fn why(dir: &TaskDir, json: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// "on claude/opus since 14:02, last output 3 min ago, ended by its host at 14:47 with no
+/// output", or how the turn ended.
+fn turn_line(turn: &wsx_core::task::stall::Turn, now: u64) -> String {
+    use wsx_core::task::history::stamp;
+    use wsx_core::task::status::span;
+    match &turn.ended {
+        Some(end) => format!(
+            "on {} from {} to {}: {}",
+            turn.agent,
+            stamp(turn.started_ms),
+            stamp(end.unix_ms),
+            end.reason
+        ),
+        None => format!(
+            "on {} since {}, last output {} ago, ended by its host at {} with no output",
+            turn.agent,
+            stamp(turn.started_ms),
+            span(now.saturating_sub(turn.output_ms)),
+            stamp(turn.deadline_ms)
+        ),
+    }
 }
 
 /// Most bytes of the diff `review` prints.

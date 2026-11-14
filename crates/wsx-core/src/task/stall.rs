@@ -7,8 +7,9 @@ use super::store::{self, TaskDir};
 use super::{call_host, view, HostRequest, LogEvent, TaskRecord, TaskState, WaitOn};
 use crate::config::project::load_task_config;
 use crate::model::workspace::DEFAULT_MANAGER_REVIEW_SECS;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
 pub const SWEEP: Duration = Duration::from_secs(10);
 /// A stall seen only in the present must last this long: two disk polls of the task host
@@ -149,9 +150,10 @@ fn running(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
         ));
     }
     let Some(waiting) = waiting else {
-        return quiet(dir, record, progress, now_ms).map(|evidence| {
-            let why = format!("no output for {}", span(now_ms.saturating_sub(progress)));
-            stall(format!("quiet {progress}"), evidence, why)
+        return Turn::overdue(&dir.path, now_ms).map(|turn| {
+            let why = format!("no output for {}", span(now_ms - turn.output_ms));
+            let evidence = format!("its {}", silent(dir, &turn, now_ms));
+            stall(format!("quiet {}", turn.output_ms), evidence, why)
         });
     };
     // ^ What shows the wait's cause is gone: a disk wait queues only once there is space.
@@ -221,39 +223,125 @@ pub fn stuck(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<String> 
     (now_ms.saturating_sub(settled) > grace().as_millis() as u64).then_some(stall.why)
 }
 
-/// How long a turn may run with no output before it counts as hung: one check
-/// (`check_timeout_secs`, `tasks.checkTimeoutSeconds`) plus one Bash call. The manager's
-/// stall sweep reports a worker silent this long, and each host ends its own turn by it
-/// (`turn_quiet_ms`). ref: docs/tasks.md "Agents"
-pub fn quiet_after_ms(check_timeout_secs: u64) -> u64 {
-    (check_timeout_secs + BASH_MAX_SECS) * 1000
-}
-
-/// `quiet_after_ms` for a host's own turn, or the seconds in the file `WSX_TEST_TURN_QUIET_FILE`
-/// names while it exists: for the task scenario only, whose hung turns would otherwise hold 10
-/// minutes, and only around them, since its other fixtures keep a turn quiet on a gate longer
-/// than that; the sweep keeps the real bound, so no fixture turn reads as a stall.
+/// How long a turn may run with no output before its host ends it: one check
+/// (`check_timeout_secs`, `tasks.checkTimeoutSeconds`) plus one Bash call, or the seconds in the
+/// file `WSX_TEST_TURN_QUIET_FILE` names while it exists (for the task scenario only, around its
+/// hung turns: its other fixtures keep a turn quiet on a gate longer than that). The host puts
+/// it in the turn's record (`Turn`). ref: docs/tasks.md "Agents"
 pub fn turn_quiet_ms(check_timeout_secs: u64) -> u64 {
     std::env::var_os("WSX_TEST_TURN_QUIET_FILE")
         .and_then(|path| std::fs::read_to_string(path).ok())
         .and_then(|secs| secs.trim().parse::<u64>().ok())
-        .map_or(quiet_after_ms(check_timeout_secs), |secs| secs * 1000)
+        .map_or((check_timeout_secs + BASH_MAX_SECS) * 1000, |secs| {
+            secs * 1000
+        })
 }
 
-/// "no log or check output for 45 min; ..." when a running task is silent past its bound.
-fn quiet(dir: &TaskDir, record: &TaskRecord, progress: u64, now_ms: u64) -> Option<String> {
-    let timeout = load_task_config(&record.project_path)
-        .map_or(record.check_timeout_secs, |settings| {
-            settings.check_timeout_secs
+/// The turn record's file in a task's, the manager's or a chat's folder.
+pub const TURN_FILE: &str = "turn.json";
+
+/// The one record of an agent turn, for workers, the manager and chats alike: its host writes
+/// it at the start, at each line of the agent and at the end, as `turn.json` in its folder (the
+/// next turn overwrites it). The host ends a turn whose `deadline_ms` passes (`hung_turn`); the
+/// stall sweep, `stuck` and `wsx task why` read the same record, so liveness has one clock and
+/// one bound. ref: docs/tasks.md "Agents" (Turn record)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Turn {
+    pub started_ms: u64,
+    /// `<adapter>/<model>` that runs the turn.
+    pub agent: String,
+    /// The agent's last line, or the turn's start.
+    pub output_ms: u64,
+    /// The quiet bound the turn started with (`turn_quiet_ms`).
+    pub quiet_ms: u64,
+    /// `output_ms` plus `quiet_ms`: past it with no line, the host ends the turn.
+    pub deadline_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<TurnEnd>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnEnd {
+    pub unix_ms: u64,
+    /// The result's first line, the error, or what ended the turn (a stop, a close).
+    pub reason: String,
+}
+
+impl Turn {
+    /// A turn that starts now on `agent` in `folder`, ended by its host after `quiet_ms` with
+    /// no line from the agent.
+    pub fn start(folder: &Path, agent: String, quiet_ms: u64) -> Self {
+        let now = super::now_unix_ms();
+        let turn = Self {
+            started_ms: now,
+            agent,
+            output_ms: now,
+            quiet_ms,
+            deadline_ms: now + quiet_ms,
+            ended: None,
+        };
+        turn.save(folder);
+        turn
+    }
+
+    /// A line of the agent: the quiet clock starts again. Only the agent's own lines call it,
+    /// so what the manager or the host writes never moves the deadline.
+    pub fn output(&mut self, folder: &Path) {
+        self.output_ms = super::now_unix_ms();
+        self.deadline_ms = self.output_ms + self.quiet_ms;
+        self.save(folder);
+    }
+
+    /// End the turn with `reason`; the record stays until the next turn.
+    pub fn end(mut self, folder: &Path, reason: &str) {
+        self.ended = Some(TurnEnd {
+            unix_ms: super::now_unix_ms(),
+            reason: view::clip(reason.lines().next().unwrap_or_default(), LAST_ENTRY_CHARS),
         });
-    let bound_ms = quiet_after_ms(timeout);
-    (now_ms.saturating_sub(progress) > bound_ms).then(|| {
-        format!(
-            "no log or check output for {}; {}",
-            span(now_ms - progress),
-            last_entry(dir, progress, now_ms)
-        )
-    })
+        self.save(folder);
+    }
+
+    /// How long until the deadline.
+    pub fn left(&self) -> Duration {
+        Duration::from_millis(self.deadline_ms.saturating_sub(super::now_unix_ms()))
+    }
+
+    /// How long the agent has written no line.
+    pub fn quiet(&self) -> Duration {
+        Duration::from_millis(super::now_unix_ms().saturating_sub(self.output_ms))
+    }
+
+    /// The record in `folder`, if a turn ran there.
+    pub fn read(folder: &Path) -> Option<Self> {
+        let bytes = std::fs::read(folder.join(TURN_FILE)).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// The open turn in `folder` past its deadline: its host did not end it (an older host,
+    /// or one whose loop does not run).
+    pub fn overdue(folder: &Path, now_ms: u64) -> Option<Self> {
+        Self::read(folder).filter(|turn| turn.ended.is_none() && now_ms > turn.deadline_ms)
+    }
+
+    /// ^ A failed write leaves the readers the last record; the host keeps its own in memory.
+    fn save(&self, folder: &Path) {
+        let written = serde_json::to_vec(self)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| store::write_atomic(&folder.join(TURN_FILE), &bytes));
+        if let Err(error) = written {
+            eprintln!("cannot write the turn record: {error:#}");
+        }
+    }
+}
+
+/// "turn on claude/opus is past its quiet bound of 30 min; its last output 2 h ago; ...".
+fn silent(dir: &TaskDir, turn: &Turn, now_ms: u64) -> String {
+    format!(
+        "turn on {} is past its quiet bound of {}; {}",
+        turn.agent,
+        span(turn.quiet_ms),
+        last_entry(dir, turn.output_ms, now_ms)
+    )
 }
 
 /// Why the holder a task queues behind does not hold its slot as it should, or `None`.
@@ -267,8 +355,7 @@ fn holder_stall(own_project_id: &str, project: &str, id: u32, now_ms: u64) -> Op
     if !host_answers(&dir) {
         return Some("whose host does not answer".into());
     }
-    let progress = progress_ms(&dir, &holder);
-    quiet(&dir, &holder, progress, now_ms).map(|evidence| format!("which has {evidence}"))
+    Turn::overdue(&dir.path, now_ms).map(|turn| format!("whose {}", silent(&dir, &turn, now_ms)))
 }
 
 /// The record of `<project> t<id>`: this project first, else any project with that name.
@@ -292,19 +379,11 @@ fn host_answers(dir: &TaskDir) -> bool {
     call_host(&dir.socket_path(), &HostRequest::Status, PROBE).is_ok()
 }
 
-/// The newest output of the task's worker or its checks, in unix ms: the last agent, blocked,
-/// result, checks or check-run entry of the log, a `check-*.log` write, or the state's start
-/// (a new turn). An entry the manager or the host wrote (a message of any kind, `after`, `hold`,
-/// a land notice) is no progress: it would restart the quiet clock of a hung worker and make a
-/// new marker for the same silence. ref: docs/tasks.md "Manager" (Stalls)
+/// The newest output of the task's worker, in unix ms: the last agent, blocked, result, checks
+/// or check-run entry of the log, or the state's start (a new turn). An entry the manager or
+/// the host wrote (a message of any kind, `after`, `hold`, a land notice) is no progress: it
+/// would restart the quiet clock of a hung worker. ref: docs/tasks.md "Manager" (Stalls)
 pub fn progress_ms(dir: &TaskDir, record: &TaskRecord) -> u64 {
-    let mtime = |path: &Path| {
-        std::fs::metadata(path)
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|at| at.duration_since(UNIX_EPOCH).ok())
-            .map_or(0, |at| at.as_millis() as u64)
-    };
     let output = dir
         .last_entry(|entry| {
             matches!(
@@ -320,17 +399,7 @@ pub fn progress_ms(dir: &TaskDir, record: &TaskRecord) -> u64 {
         .ok()
         .flatten()
         .unwrap_or(0);
-    let checks = std::fs::read_dir(&dir.path).into_iter().flatten().flatten();
-    checks
-        .filter(|entry| {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            name.starts_with("check-") && name.ends_with(".log")
-        })
-        .map(|entry| mtime(&entry.path()))
-        .chain([output, record.state_unix_ms.max(record.created_unix_ms)])
-        .max()
-        .unwrap_or(0)
+    output.max(record.state_unix_ms.max(record.created_unix_ms))
 }
 
 /// "its last output 2 h ago; its log ends with agent \"cargo build\"".
