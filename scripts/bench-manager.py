@@ -394,8 +394,9 @@ def tool_kind(block):
         return block['name']
     command = block['input'].get('command', '')
     found = re.search(r'wsx task (\w+)', command)
+    # ^ `--help` reads a command's options (the instructions point there): no task call.
     if found:
-        return 'wsx ' + found.group(1)
+        return 'wsx help' if '--help' in command else 'wsx ' + found.group(1)
     return 'git' if re.match(r'\s*git\b', command) else 'bash'
 
 
@@ -470,6 +471,7 @@ def run_once(mode, number, out, cases, before):
             agent.stop()
     # ^ The task set: every call that starts, changes or ends a task, to compare `before` and `after`.
     writes = [call for call in map(json.loads, calls.read_text().splitlines()) if call['argv'][:1] == ['task'] and
+              '--help' not in call['argv'] and
               call['argv'][1:2] and call['argv'][1] in ('new', 'add', 'steer', 'land', 'after', 'hold', 'close', 'stop')] \
         if calls.exists() else []
     out.write(json.dumps({'mode': mode, 'run': number, 'cases': cases, 'tasks': writes}) + '\n')
