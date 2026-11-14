@@ -140,33 +140,28 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
         ));
     }
     // ^ A land, a hand or a chat's close waiting for `y`, what runs, or how the last action ended.
-    let asks = match (list.detail, list.confirm, &list.close_chat) {
-        (Some(id), Some(what), _) => Some(format!("{} #{id}? (y)es  (n)o", confirm_words(what))),
-        (None, _, Some(chat)) => Some(format!(
-            "Close {chat}? Its log and notes stay; New chat with the same name opens it again. (y)es  (n)o"
-        )),
-        _ => None,
+    // ^ A question first, then what runs, then how the last action ended.
+    let (words, color) = match (list.detail, list.confirm, &list.close_chat, &list.acting, &list.notice) {
+        (Some(id), Some(what), ..) => (
+            format!("{} #{id}? (y)es  (n)o", confirm_words(what)),
+            theme::WARNING,
+        ),
+        (None, _, Some(chat), ..) => (
+            format!("Close {chat}? Its log and notes stay; New chat with the same name opens it again. (y)es  (n)o"),
+            theme::WARNING,
+        ),
+        (.., Some(doing), _) => (doing.clone(), theme::TEXT_MUTED),
+        (.., Some((words, failed))) => (
+            words.clone(),
+            if *failed { theme::ERROR } else { theme::SUCCESS },
+        ),
+        _ => (String::new(), theme::TEXT),
     };
-    {
-        let (words, color) = match (asks, &list.acting, &list.notice) {
-            (Some(asks), _, _) => (asks, theme::WARNING),
-            (_, Some(doing), _) => (doing.clone(), theme::TEXT_MUTED),
-            (_, _, Some((words, failed))) => (
-                words.clone(),
-                if *failed {
-                    theme::ERROR
-                } else {
-                    theme::SUCCESS
-                },
-            ),
-            _ => (String::new(), theme::TEXT),
-        };
-        if !words.is_empty() {
-            lines.push(Line::styled(
-                truncate_to_width(&words, width),
-                Style::default().fg(color),
-            ));
-        }
+    if !words.is_empty() {
+        lines.push(Line::styled(
+            truncate_to_width(&words, width),
+            Style::default().fg(color),
+        ));
     }
     lines.push(Line::raw(""));
     let chrome = lines.len();
@@ -634,12 +629,6 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
         )
     };
     let row = |name: &str, text: String| Line::from(vec![label(name), Span::raw(text)]);
-    let numbers = |rows: &[Value], key: &str| {
-        rows.iter()
-            .map(|row| format!("#{}", row[key].as_u64().unwrap_or_default()))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
     let state = crate::task_list::state_word(task);
     let flow = &task["flow"];
     let mut lines = vec![
@@ -665,7 +654,7 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
             ),
         ]),
     ];
-    // ^ Held, after, step, parent and children: wsx-core `view::flow`, as the web's sheet.
+    // ^ Held, after, step, parent, children and blocks: wsx-core `view::flow`, as the web's sheet.
     let waits: Vec<String> = [
         flow["after"]["task"].as_u64().map(|after| {
             format!(
@@ -692,6 +681,8 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
             "Goes",
             format!("{}into {into}", step.unwrap_or_default()),
         ));
+    } else if let Some(parent) = flow["parent"].as_u64() {
+        lines.push(row("Parent", format!("#{parent}")));
     }
     if let Some(children) = flow["children"].as_array().filter(|rows| !rows.is_empty()) {
         let words: Vec<String> = children
@@ -707,17 +698,20 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
         lines.push(row("Children", words.join(", ")));
     }
     // ^ The open tasks that wait for this one (`wsx task after`), by number.
-    if let Some(waiters) = task["status"]["waited_by"]
-        .as_array()
-        .filter(|waiters| !waiters.is_empty())
-    {
-        lines.push(row("Blocks", numbers(waiters, "task")));
+    if let Some(blocks) = flow["blocks"].as_array().filter(|rows| !rows.is_empty()) {
+        let numbers: Vec<String> = blocks.iter().map(|id| format!("#{id}")).collect();
+        lines.push(row("Blocks", numbers.join(", ")));
     }
     if let Some(agent) = wsx_core::task::view::agent_label(&task["agent"]) {
         lines.push(row("Agent", agent));
     }
-    let checks = task["checks"].as_array().cloned().unwrap_or_default();
-    let outcome = |check: &Value| check["outcome"].as_str().unwrap_or_default().to_string();
+    let checks = task["checks"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    fn outcome(check: &Value) -> &str {
+        check["outcome"].as_str().unwrap_or_default()
+    }
     if !checks.is_empty() {
         let failed: Vec<String> = checks
             .iter()
@@ -763,7 +757,7 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
         }
         more.push(row("Usage", line));
     }
-    for check in &checks {
+    for check in checks {
         let outcome = outcome(check);
         let color = if outcome == "passed" {
             theme::SUCCESS

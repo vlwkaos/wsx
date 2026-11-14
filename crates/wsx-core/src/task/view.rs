@@ -484,29 +484,35 @@ pub fn children(project_id: &str, parent: u32) -> Result<Vec<(TaskDir, TaskRecor
 }
 
 /// Where a task stands among the others and where it goes, the one read every view shows:
-/// `held` (the reason), `after` (`{task, because}`), `parent`, `into` (the branch it lands
-/// into: the default branch or `#<parent>`), `step` (`{name, at, of}` while it works on a
-/// workflow step), `children` (`[{id, state}]`) and `phrase`, the row's few words that the
-/// status label (`status`) does not say already: "build 2/3 · into #451", "after #453",
-/// "held: deploy freeze", "children: 1 ready, 2 working". Empty for a finished task.
+/// `held` (the reason), `after` (`{task, because}`), `parent`, `into` (while open, the branch it
+/// lands into: the default branch or `#<parent>`), `step` (`{name, at, of}` while it works on a
+/// workflow step), `children` (`[{id, state}]`), `blocks` (the open tasks that wait for it,
+/// `status.waited_by`) and `phrase`, the row's few words that the status label (`status`) does
+/// not say already: "build 2/3 · into #451", "after #453", "held: deploy freeze",
+/// "children: 1 ready, 2 working". Empty for a finished task.
 /// `records` are the project's tasks. ref: docs/tasks.md "Where a task goes"
-// ^ Step 5's `waits_on` replaces the reads of `hold` and `after` here; the views stay.
+// ^ Step 5's `waits_on` replaces the reads of `hold`, `after` and `waited_by` here; the views stay.
 pub fn flow(record: &TaskRecord, records: &[&TaskRecord], status: &super::status::Status) -> Value {
     let open = record.state.is_open();
-    let children: Vec<&&TaskRecord> = records
+    let children: Vec<&TaskRecord> = records
         .iter()
+        .copied()
         .filter(|other| other.parent == Some(record.id))
         .collect();
-    let into = record.parent.map_or_else(
-        || record.default_branch.clone(),
-        |parent| format!("#{parent}"),
-    );
-    let step = (open && record.state == TaskState::Working)
-        .then(|| record.steps.get(record.step as usize))
-        .flatten()
-        .map(|step| json!({ "name": step.name, "at": record.step + 1, "of": record.steps.len() }));
+    let into = open.then(|| {
+        record.parent.map_or_else(
+            || record.default_branch.clone(),
+            |parent| format!("#{parent}"),
+        )
+    });
+    let hold = record.hold.as_deref().filter(|_| open);
+    let after = record.after.as_ref().filter(|_| open);
+    let step = record
+        .steps
+        .get(record.step as usize)
+        .filter(|_| record.state == TaskState::Working);
     let mut phrase: Vec<String> = Vec::new();
-    if let (Some(hold), true) = (&record.hold, open) {
+    if let Some(hold) = hold {
         let reason = clip(hold.trim_end_matches('.'), FLOW_REASON_CHARS);
         // ^ The label "Held" says the word already.
         phrase.push(match status.kind {
@@ -514,52 +520,55 @@ pub fn flow(record: &TaskRecord, records: &[&TaskRecord], status: &super::status
             _ => format!("held: {reason}"),
         });
     }
-    if let (Some(after), true) = (&record.after, open) {
+    if let Some(after) = after {
         // ^ The label "Waiting for #m to land" names the task; the reason is what the row adds.
         phrase.push(match status.kind {
             "after" => super::status::kind_words(after.because).to_string(),
             _ => format!("after #{}", after.task),
         });
     }
-    if let Some(step) = &step {
+    if let Some(step) = step {
         phrase.push(format!(
             "{} {}/{}",
-            step["name"].as_str().unwrap_or_default(),
-            step["at"],
-            step["of"]
+            step.name,
+            record.step + 1,
+            record.steps.len()
         ));
     }
     let mut counts: Vec<(&str, usize)> = Vec::new();
-    for child in children.iter().filter(|child| child.state.is_open()) {
+    for child in children
+        .iter()
+        .filter(|child| open && child.state.is_open())
+    {
         let word = child.state.as_str();
         match counts.iter_mut().find(|(state, _)| *state == word) {
             Some((_, count)) => *count += 1,
             None => counts.push((word, 1)),
         }
     }
-    if open && !counts.is_empty() {
+    if !counts.is_empty() {
         let counted: Vec<String> = counts
             .iter()
             .map(|(state, count)| format!("{count} {state}"))
             .collect();
         phrase.push(format!("children: {}", counted.join(", ")));
     }
-    if open
-        && (record.parent.is_some()
-            || matches!(record.state, TaskState::Working | TaskState::Checking))
-    {
+    if let Some(into) = into.as_ref().filter(|_| {
+        record.parent.is_some() || matches!(record.state, TaskState::Working | TaskState::Checking)
+    }) {
         phrase.push(format!("into {into}"));
     }
     json!({
-        "held": record.hold.as_ref().filter(|_| open),
-        "after": record.after.as_ref().filter(|_| open).map(|after| json!({
+        "held": hold,
+        "after": after.map(|after| json!({
             "task": after.task, "because": super::status::kind_words(after.because),
         })),
         "parent": record.parent,
         "into": into,
-        "step": step,
+        "step": step.map(|step| json!({ "name": step.name, "at": record.step + 1, "of": record.steps.len() })),
         "children": children.iter().map(|child| json!({ "id": child.id, "state": child.state })).collect::<Vec<_>>(),
-        "phrase": if open { phrase.join(" · ") } else { String::new() },
+        "blocks": status.waited_by.iter().map(|waiter| waiter.task).collect::<Vec<_>>(),
+        "phrase": phrase.join(" · "),
     })
 }
 

@@ -97,12 +97,7 @@ pub(crate) fn close_checks(
 }
 
 /// A failed item starts a task that fixes it and links both.
-pub(crate) fn fail_check(
-    project: &str,
-    project_id: &str,
-    id: &str,
-    note: &str,
-) -> Result<CheckItem> {
+fn fail_check(project: &str, project_id: &str, id: &str, note: &str) -> Result<CheckItem> {
     let note = note.trim();
     if note.is_empty() {
         bail!("a fail needs --note saying what is wrong; the new task gets it");
