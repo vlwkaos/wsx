@@ -573,12 +573,9 @@ div.steps .steps-summary { cursor: default; }
   border: 0; background: none; text-align: left; cursor: pointer;
 }
 .reply-menu button:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
-/* A message under a finger: a swipe right moves it; a long press opens the menu, not the
-   system's text selection (the menu has Copy). */
+/* A message under a finger: a swipe right moves it; a tap opens the menu; a long press is the
+   system's text selection (reply.js). */
 .log > [data-quote] { touch-action: pan-y; }
-@media (pointer: coarse) {
-  .log > [data-quote] { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
-}
 /* The chat opened at a quoted message: the note over the log says so, with the way back. */
 .note.around { flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2); margin: 0; padding: var(--space-1) var(--column-inset); border-bottom: var(--border-width) solid var(--color-hairline); color: var(--color-muted); }
 /* A message or item found (reply.js `markFound`): an accent tint over its box for 2 s, no line

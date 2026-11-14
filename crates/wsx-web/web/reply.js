@@ -1,5 +1,5 @@
 // Reply to one message in the session chat and the manager chat (docs/web-client-chat.md
-// "Replies"): a swipe right on a message, or a long press (a right click) and Reply, puts a
+// "Replies"): a swipe right on a message, or a tap on it (a right click) and Reply, puts a
 // one-line quote above the composer; the sent text starts with `> <that line>`, and a tap on
 // the quote in the chat scrolls to the quoted message while it is still in the log; a quote with
 // the message's id (`quoted_id`, sent as `> message <id>`) opens the chat there when it is not.
@@ -8,10 +8,11 @@
 import { html, Icon, motion, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
 import { toast } from "./ui.js";
 
-// A swipe this far right replies; a press this long opens the menu; a move past the slop is
-// a scroll or a swipe, not a press.
+// A swipe this far right replies; a touch that lasts less than this and moves less than the slop
+// is a tap, which opens the menu. A longer touch is the system's text selection, which the page
+// leaves alone (no `user-select: none`, no menu).
 const SWIPE_PX = 64;
-const PRESS_MS = 450;
+const TAP_MS = 450;
 const SLOP_PX = 10;
 // ^ Pressing these keeps their own meaning: a link, a control, or a block that scrolls sideways.
 const OWN = "a, button, input, textarea, summary, pre, .table-wrap, .diagram";
@@ -94,7 +95,6 @@ export function useReply(onReply) {
   const end = () => {
     const now = gesture.current;
     if (!now) return;
-    clearTimeout(now.timer);
     if (now.swiping) {
       now.row.style.translate = "";
       delete now.row.dataset.swiping;
@@ -105,9 +105,10 @@ export function useReply(onReply) {
     onPointerDown: (event) => {
       end();
       const found = event.button === 0 && row(event);
-      if (!found) return;
-      const open = () => { setMenu({ row: found, x: event.clientX, y: event.clientY }); end(); };
-      gesture.current = { row: found, id: event.pointerId, x: event.clientX, y: event.clientY, touch: event.pointerType !== "mouse", swiping: false, timer: setTimeout(open, PRESS_MS) };
+      // ^ A mouse selects with its drag and opens the menu with a right click: only a finger gestures.
+      if (!found || event.pointerType === "mouse") return;
+      // A tap that closes the menu or clears a selection does nothing else.
+      gesture.current = { row: found, id: event.pointerId, x: event.clientX, y: event.clientY, at: event.timeStamp, swiping: false, idle: !menu && getSelection().isCollapsed };
     },
     onPointerMove: (event) => {
       const now = gesture.current;
@@ -116,9 +117,8 @@ export function useReply(onReply) {
       const dy = event.clientY - now.y;
       if (!now.swiping) {
         if (Math.hypot(dx, dy) < SLOP_PX) return;
-        clearTimeout(now.timer);
         // ^ Mostly sideways and to the right is a swipe; anything else is the log's scroll.
-        if (!now.touch || dx < SLOP_PX || dx < Math.abs(dy) * 2) { gesture.current = null; return; }
+        if (dx < SLOP_PX || dx < Math.abs(dy) * 2) { gesture.current = null; return; }
         now.swiping = true;
         now.row.dataset.swiping = "";
       }
@@ -129,12 +129,14 @@ export function useReply(onReply) {
       const now = gesture.current;
       if (now?.id !== event.pointerId) return;
       const replied = now.swiping && now.dx >= SWIPE_PX;
+      const tapped = !now.swiping && now.idle && event.timeStamp - now.at < TAP_MS && getSelection().isCollapsed;
       end();
       if (replied) onReply(now.row.dataset.quote, now.row.dataset.id);
+      else if (tapped) setMenu({ row: now.row, x: event.clientX, y: event.clientY });
     },
     onPointerCancel: end,
     onContextMenu: (event) => {
-      const found = row(event);
+      const found = event.pointerType !== "touch" && row(event);
       if (!found) return;
       event.preventDefault();
       end();
@@ -144,7 +146,7 @@ export function useReply(onReply) {
   return [handlers, menu && html`<${Menu} menu=${menu} onReply=${onReply} onClose=${() => setMenu(null)} />`];
 }
 
-// Reply and Copy beside the pressed message. A tap outside, Escape or a scroll closes it.
+// Reply and Copy beside the tapped message. A tap outside, Escape or a scroll closes it.
 function Menu({ menu, onReply, onClose }) {
   const node = useRef();
   useLayoutEffect(() => {
