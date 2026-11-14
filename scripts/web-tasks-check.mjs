@@ -2236,7 +2236,7 @@ async function readAndReply(where) {
     await fail(`${where}: the chat did not open where it was left: ${JSON.stringify({ left, back, line: await count(".log-new"), jump: await jumpWords() })}`);
   }
   // (e) Reply: a swipe right on a phone, the menu of a right click on a wide screen. × removes
-  // the quote; a long press opens the menu too.
+  // the quote; a tap on a phone opens the menu too, and a long press is the system's text selection.
   const point = await pressPoint(fiveColumns);
   const quote = "(document.querySelector('.composer .reply-quote-text')?.textContent ?? '').replace('Replying to: ', '')";
   // ^ The menu closes on any scroll (reply.js), also one the page makes while a capture runs: tap
@@ -2265,8 +2265,23 @@ async function readAndReply(where) {
   await until("!document.querySelector('.composer .reply-quote')", `${where}: × did not remove the quote`);
   // ^ The reply is sent with its quote on every screen.
   if (phone()) {
-    await touch(await pressPoint(fiveColumns), 0, 700);
-    await until("!!document.querySelector('.reply-menu')", `${where}: a long press opened no menu`);
+    // ^ A press of 700 ms is the system's: no menu, and the page leaves its text selectable. A real
+    // long press cannot be sent (Chrome's touch emulation starts no selection), so a double click
+    // selects a word the engine's way, and a tap then only clears that selection (reply.js).
+    const at = await pressPoint(fiveColumns);
+    await touch(at, 0, 700);
+    await pause(300);
+    const css = await evaluate(`(() => { const style = getComputedStyle(${fiveColumns}); return { select: style.userSelect, callout: style.webkitTouchCallout }; })()`);
+    if (await count(".reply-menu") || css.select === "none" || css.callout === "none") await fail(`${where}: a long press opened a menu, or the message is not selectable: ${JSON.stringify(css)}`);
+    for (const clickCount of [1, 2]) for (const type of ["mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", clickCount });
+    const selected = await evaluate(`(() => { const selection = getSelection(); return selection.toString().trim() && ${fiveColumns}.contains(selection.anchorNode) && !document.querySelector('.reply-menu'); })()`);
+    if (!selected) await fail(`${where}: a double click selected no word of the message, or opened a menu`);
+    await touch(at, 0, 60);
+    await pause(300);
+    if (await count(".reply-menu")) await fail(`${where}: a tap that ends a selection opened the menu`);
+    await evaluate("getSelection().removeAllRanges()");
+    await touch(await pressPoint(fiveColumns), 0, 60);
+    await until("!!document.querySelector('.reply-menu')", `${where}: a tap opened no menu`);
     if (!(await evaluate(menuReply))) await fail(`${where}: the reply menu closed before Reply was tapped`);
   } else await replyFromMenu(await pressPoint(fiveColumns));
   await until(`${quote} === 'Five columns:'`, `${where}: Reply in the menu shows no quote`);
@@ -2288,6 +2303,17 @@ async function readAndReply(where) {
   await until(`(() => { const log = document.querySelector('.log').getBoundingClientRect(), box = ${fiveColumns}.getBoundingClientRect();
     return ${fiveColumns}.hasAttribute('data-found') && box.top < log.bottom && box.bottom > log.top; })()`, `${where}: the quote did not go to its message`);
   await toLatest(where);
+  // (g) A tap on a task chip opens the task, not the menu.
+  if (phone()) {
+    const chip = await evaluate(`(() => { const chip = [...document.querySelectorAll('.log .bubble[data-in] a.task-chip')].at(-1); if (!chip) return null; chip.scrollIntoView({ block: 'center' });
+      const rect = chip.getBoundingClientRect(); return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }; })()`);
+    if (!chip) await fail(`${where}: the chat shows no task chip to tap`);
+    await touch(chip, 0, 60);
+    await until("/\\/t\\/\\d+/.test(location.hash) && !!document.querySelector('dialog.task-sheet[open]')", `${where}: a tap on a task chip did not open the task`);
+    if (await count(".reply-menu")) await fail(`${where}: a tap on a task chip opened the menu`);
+    await evaluate("history.back()");
+    await until("!document.querySelector('dialog.task-sheet[open]')", `${where}: Back did not close the task`);
+  }
 }
 await readAndReply("390 px");
 
