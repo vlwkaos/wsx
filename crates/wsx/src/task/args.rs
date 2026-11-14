@@ -65,7 +65,7 @@ pub enum TaskCmd {
         #[arg(long)]
         all: bool,
     },
-    /// Show one task with its latest result
+    /// Show one task with its latest result; --json names its working copy, base and log
     Show { task: String },
     /// Send a message into the running turn
     Steer {
@@ -253,7 +253,8 @@ pub enum TaskCmd {
         #[command(subcommand)]
         action: Option<ChatCmd>,
     },
-    /// Find earlier messages, decisions and task history, ranked: the chats, the notes and the tasks
+    /// Find earlier messages, decisions and task history, ranked: the chats, the notes and the
+    /// tasks; a hit's `quote` line quotes it in a reply
     Search {
         /// The words to find, all of them or some; the best matches come first
         #[arg(required_unless_present = "task", value_name = "WORDS")]
@@ -294,7 +295,8 @@ pub enum TaskCmd {
         #[arg(long)]
         part: Option<String>,
     },
-    /// Serve the task for a person to try on its own tailnet or local port (tasks.preview)
+    /// Serve the task for a person to try on its own tailnet or local port (tasks.preview);
+    /// for a change the live site cannot roll back from (a daemon, a migration)
     Preview {
         task: String,
         /// Stop the running preview

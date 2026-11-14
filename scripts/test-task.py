@@ -669,7 +669,9 @@ def manager_up(created):
     summary = opening.split('\n\nLedger summary from wsx (`wsx task ledger -p demo` has the details):\n', 1)[1]
     assert summary.startswith('- open: ') and 'working; to check: ' in summary, summary
     assert '#%d working r' % running in summary.split('- open tasks:\n', 1)[1], summary
-    assert '`wsx task ledger -p demo` for more' in launch['instructions'], launch['instructions']
+    assert '`wsx task ledger -p demo` are the truth' in launch['instructions'], launch['instructions']
+    # ^ The manager never commits in the main checkout (docs/design/root-cause-refactor.md step 1).
+    assert 'git commit' not in launch['instructions'] and 'only after the owner says yes' not in launch['instructions']
     page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'overview.md')
     assert not old_page.exists() and 'migrated' in Path(page).read_text(), old_page
     # ^ It uses the owner's skills (docs/tasks.md "Manager"); no tool list: nothing prompts.
@@ -798,32 +800,32 @@ def manager_up(created):
     demo_launches = [t for t in traces() if t.get('launch') and t.get('adapter') != 'pi']
     assert demo_launches and all(t['claude_config_dir'] == str(profile_root) for t in demo_launches), \
         {t['claude_config_dir'] for t in demo_launches}
-    # Its rules: chat, not reports; quiet replies to events and no chores for the owner; start
-    # at once; an open task before a new one; a complete prompt; a lean review without rebase
-    # send-backs; one housekeeping task after a request lands; the owner's word; memory.
-    for rule in ('Talk like a person in a chat, not a report', 'The reader sees one screen',
-                 'A turn of only Events is your work', 'or with exactly `-` when nothing',
-                 'Never hand the owner chores', 'A request for work starts at once',
-                 "Judge from the owner's words whether the owner wants to talk it over", 'no task, `add` or `steer` for them until the owner agrees',
-                 'then one `wsx task new` or `add` with all', 'with a mermaid diagram',
-                 'stands alone, since a worker cannot ask', 'in every task new', 'With `--plan` the worker',
-                 'Before `wsx task new`, compare the request', 'Never ask the owner to wait',
-                 'for lean code', 'never send a task back to rebase', "Checks are the ledger's `checks`",
-                 'Check the fixture rule.', 'runs with `--size small`', 'open with `> message <id>`', 'Say as fact only what wsx reported or you checked',
-                 'tell that worker to prove it', 'never skip or fail items', 'only when the owner\'s message of this turn says',
-                 '`release` (with open To check items they stay to check on it)', '`wsx task trial <n>`',
-                 'the `since then:` line under an Events message', 'come as `worker says (unchecked)`',
-                 '`--owner-said <id>`', 'never name a message that did not ask',
-                 'live only when a deploy or release event names its task live', 'On `hand`, the owner works in its copy',
-                 'Nothing asks you for permission', 'read-only git in Bash', '`wsx task new --into <n>`',
-                 'only after the owner says yes, commit', 'also in a pipe or with a heredoc',
-                 'the Skill tool as `owner:<name>`', 'check rather than guess',
-                 '/manager/notes/decisions.md', '/manager/notes/context.md', "wsx adds each finished task's memo",
-                 'Update a section in place', 'answer each Owner message first, every question in it',
-                 'Define each name the owner has not used', 'say how both hold', 'what you said you would report',
-                 'every project and agent adapter', "the task's prompt and each later add", 'naming each ask it missed',
-                 'or call it unchecked',
-                 '--from-chat --reply', 'use it and do not answer it', "'@<project>'"):
+    # Its rules (crates/wsx/src/task/instructions.rs): root cause first; facts, not guesses; chat,
+    # not reports; talk or work; a complete prompt passed on stdin; a lean review; the owner's word;
+    # memory. What commands do or refuse and their options are in `--help`, not here.
+    for rule in ('`wsx task <command> --help` lists the rest', "with a quoted heredoc (`<<'EOF'`) or `--prompt-file`",
+                 "--files <glob> - <<'EOF'\n<prompt>\nEOF\n", 'never in double quotes',
+                 'Root cause first. A finding is its cause, the first state that goes wrong (file:line and log proof)',
+                 'plus the design step that removes it; never a task that fixes a symptom',
+                 'A second fix on one concern stops: name the shared owner of that concern',
+                 'Say as fact only what wsx reported or you checked', '`since then:` line',
+                 "checks from the ledger's `checks`", 'live only when a deploy event names the task', 'or call it unchecked',
+                 'Talk like a person in a chat, not a report', 'The reader sees one screen',
+                 'answer each Owner message first, every question in it', 'Define each name the owner has not used',
+                 'say how both hold', 'A turn of only Events is your work', 'or with exactly `-` when nothing',
+                 "never to a line 'for the owner'", 'Never hand the owner chores or ask the owner to wait',
+                 'open with `> message <id>`', "Judge from the owner's words whether the owner wants to talk it over",
+                 'no task, `add` or `steer` until the owner agrees', 'Work starts at once', 'as a mermaid diagram',
+                 'Similar work goes to the open task with `wsx task add`', 'Every new task names its files',
+                 'stands alone, since a worker cannot ask', 'every project and agent adapter', 'runs with `--size small`',
+                 'one read-only audit task per area', '`--into <n>`', 'for lean code', "its prompt and each later add",
+                 'naming each ask it missed', 'Check the fixture rule.', 'tell that worker to prove it',
+                 "only when the owner's message of this turn says", '`--owner-said <id>`', 'never name a message that did not ask',
+                 'name the files and ask the owner; a task handles them', 'Never `git push` yourself',
+                 'Continue a `paused` task yourself', 'Never touch a task on `hand`', '`wsx task checkin`',
+                 'read-only git', 'the Skill tool as `owner:<name>`', 'check rather than guess', '`wsx memory add --kind rule`',
+                 '/manager/notes/decisions.md', '/manager/notes/context.md', 'update a section in place',
+                 '--from-chat --reply', 'and do not answer it', "'@<project>'"):
         assert rule in launch['instructions'], rule
     # ^ No instruction names a brief or a goal file: only the owner's `chat new` takes one (docs/tasks.md "Chats").
     assert 'brief' not in launch['instructions'].lower().replace('--brief', ''), launch['instructions']

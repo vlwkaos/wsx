@@ -14,7 +14,8 @@ BEFORE_COMMIT, where they were in manager.rs) and its turn text has no "Answer m
 first." line and no `since then:` line, `after` from the working copy; both send the ledger
 summary, rotate on the last call's context and use eventModel for event-only turns. `after-nof` is
 `after` with every turn on the manager model. It prints one JSON line per turn; the host itself
-is tested by scripts/test-task.py.
+is tested by scripts/test-task.py. Each run ends with a `tasks` line: the calls that start, change or end a
+task (argv, and stdin for a `-` prompt), the task set to compare between `before` and `after`.
 `stale` is the 2026-11-13 events turn whose three limit waits had ended before the manager read
 them (reply 4413 told the owner the tasks were paused until 03:20); the ledger shows the tasks
 working, and a sonnet judge says whether the reply claims a limit holds now.
@@ -46,8 +47,10 @@ FAKE_WSX = r'''#!/usr/bin/env python3
 import json, os, sys
 state_file = os.environ['BENCH_STATE']
 state = json.load(open(state_file))
+# ^ A prompt passed as `-` comes on stdin: kept with the call, so the task set holds it.
+stdin = sys.stdin.read() if '-' in sys.argv[2:] else None
 with open(os.environ['BENCH_CALLS'], 'a') as out:
-    out.write(json.dumps(sys.argv[1:]) + '\n')
+    out.write(json.dumps({'argv': sys.argv[1:], 'stdin': stdin}) + '\n')
 args = [a for a in sys.argv[1:] if a not in ('--json',)]
 if args[:1] != ['task']:
     print('wsx: only `wsx task` commands run here', file=sys.stderr); sys.exit(2)
@@ -465,6 +468,12 @@ def run_once(mode, number, out, cases, before):
                 agent = None
         if agent:
             agent.stop()
+    # ^ The task set: every call that starts, changes or ends a task, to compare `before` and `after`.
+    writes = [call for call in map(json.loads, calls.read_text().splitlines()) if call['argv'][1:2] and
+              call['argv'][1] in ('new', 'add', 'steer', 'land', 'after', 'hold', 'close', 'stop')] \
+        if calls.exists() else []
+    out.write(json.dumps({'mode': mode, 'run': number, 'cases': cases, 'tasks': writes}) + '\n')
+    print(json.dumps({'mode': mode, 'run': number, 'tasks': [call['argv'][1:] for call in writes]}), flush=True)
     shutil.rmtree(base, ignore_errors=True)
     if cases == 'discussion':
         check_discussion(rows)
