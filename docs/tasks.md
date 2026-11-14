@@ -87,6 +87,17 @@ One function, `task::status::status` in `crates/wsx-core/src/task/status.rs`, pu
 | `landed` | Landed | on main (the web adds "; the last deploy does not have it yet"). |
 | `closed` | Closed | it ended without landing. |
 
+**Moves.** One write changes `state` and `waiting`: `TaskRecord::move_to` in `crates/wsx-core/src/task/mod.rs`, which the task host and a `close` without a host call. It allows only the moves in `TaskState::may_move`, and staying in the same state is always allowed. A `waiting` task holds any wait except a check's. A check slot wait holds in any other state, and a check-run wait holds only in `working`. The host refuses any other move: it logs `move_refused` with both states and leaves the record as it was. No CLI request reaches such a move, because each one refuses a task in the wrong state first.
+
+| From | To |
+|---|---|
+| `working` | `waiting`, `checking`, `failed`, `closed` |
+| `waiting` | `working`, `checking`, `failed`, `closed` |
+| `checking` | `working`, `waiting`, `ready`, `failed`, `landed`, `closed` |
+| `ready` | `working`, `waiting`, `checking`, `failed`, `landed`, `closed` |
+| `failed` | `working`, `waiting`, `checking`, `closed` |
+| `landed` | `closed` (`close --discard`) |
+
 A slot holder of another project reads `pizzahouse #34`, and a holder that is no task (`scripts/check-slot.py`) by its own label: "<command> (pid 81) runs now". An open task with a hold that is not ready yet adds "Held: <hold>." to its sentence, and one that waits for another task adds "Then it waits for #12 to land." and its reason. The task waited for adds "Waited for by #14, #15." to its sentence (the kinds follow each number when they differ: "#14 (builds on it), #15 (same files)"), `status.waited_by` `[{task, because}]` and, for the task that waits, `status.wait`, the short reason a row shows.
 - A task's title is `--title` (at most 60 characters, no control characters, kept in `task.json` as `title`), else the first line of its prompt, at most 120 characters. Either one is shown without a leading `Owner <words>:` (up to 80 characters before the colon; a colon inside brackets or without a space after it, as in `http://`, does not end it): `Owner report: tool permission` reads `tool permission`. A lead-in with nothing after it reads as the words in its brackets (`Owner report (UX failures):` reads `UX failures`), else as the prompt's next non-empty line. `Owner: x` has no words and stays. Only the shown title changes: `task.json` and the prompt keep what was written. Every title shown (ledger, events, the web) comes from this rule, also for tasks from before `--title`. The web shows a task without `--title` by the first sentence of its latest worker summary while it has one (`view::readable_title`).
 - Each revision records `base` (the merge base with the default branch, so it follows a rebase) and the paths changed in `base..r<k>`: at most 500 paths and 32 KiB in `paths`, the full count in `paths_total`.

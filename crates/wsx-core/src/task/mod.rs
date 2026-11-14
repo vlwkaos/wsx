@@ -68,6 +68,22 @@ impl TaskState {
             Self::Closed => "closed",
         }
     }
+
+    /// The one table of the moves a task makes; staying in a state is always one.
+    /// ref: docs/tasks.md "Status"
+    pub fn may_move(self, to: Self) -> bool {
+        use TaskState::*;
+        self == to
+            || match self {
+                Working => matches!(to, Waiting | Checking | Failed | Closed),
+                Waiting => matches!(to, Working | Checking | Failed | Closed),
+                Checking => matches!(to, Working | Waiting | Ready | Failed | Landed | Closed),
+                Ready => matches!(to, Working | Waiting | Checking | Failed | Landed | Closed),
+                Failed => matches!(to, Working | Waiting | Checking | Closed),
+                Landed => to == Closed,
+                Closed => false,
+            }
+    }
 }
 
 /// What a `waiting` task waits for. ref: docs/tasks.md "Store"
@@ -467,6 +483,11 @@ pub enum LogEvent {
     LandStopped {
         reason: String,
     },
+    /// The host refused a move the table does not have (`TaskRecord::move_to`): the record
+    /// stays as it was. `reason` names both states.
+    MoveRefused {
+        reason: String,
+    },
     Landed {
         commit: String,
     },
@@ -646,6 +667,38 @@ impl TaskRecord {
     /// ref: docs/tasks.md "Workflow"
     pub fn simplify_missing(&self) -> bool {
         self.simplify_asked && !self.simplified
+    }
+
+    /// The one write of `state` and `waiting`: a move the table (`TaskState::may_move`) has, with
+    /// a wait its state holds, else an error that names both and leaves the record as it was.
+    /// `waiting` is the whole wait in the new state: `waiting` holds any wait but a check's,
+    /// a check slot's holds in any other state, a check-run's only in `working`.
+    pub fn move_to(&mut self, to: TaskState, waiting: Option<Waiting>) -> anyhow::Result<()> {
+        let from = self.state;
+        let held = match waiting.as_ref().map(|waiting| waiting.on) {
+            None => to != TaskState::Waiting,
+            Some(WaitOn::CheckSlot) => to != TaskState::Waiting,
+            Some(WaitOn::CheckRun) => to == TaskState::Working,
+            Some(_) => to == TaskState::Waiting,
+        };
+        let words = |state: TaskState, waiting: Option<&Waiting>| match waiting {
+            Some(waiting) => format!("{} on {}", state.as_str(), waiting.on.as_str()),
+            None => state.as_str().to_string(),
+        };
+        if !from.may_move(to) || !held {
+            anyhow::bail!(
+                "task t{} cannot move from {} to {}",
+                self.id,
+                words(from, self.waiting.as_ref()),
+                words(to, waiting.as_ref())
+            );
+        }
+        if from != to {
+            self.state_unix_ms = now_unix_ms();
+        }
+        self.state = to;
+        self.waiting = waiting;
+        Ok(())
     }
 
     /// Whether the task waits for `on`.
