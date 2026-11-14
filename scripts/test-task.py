@@ -7437,10 +7437,10 @@ def part_host(created=None):
     hanging = lambda path: any(t.get('hang') == str(path) for t in traces())
     resumed = lambda since: [t for t in traces()[since:] if str(t.get('message', '')).startswith('the host ran an older wsx')]
     # A deploy: the worker's turn hangs (WHANG) in a host on the older file; the deploy replaces it.
-    release = work / 'hung-release'
-    hung = on(older / 'wsx', 'task', 'new', 'WHANG %s WORK a.txt' % release)['id']
+    w_release = work / 'hung-release'
+    hung = on(older / 'wsx', 'task', 'new', 'WHANG %s WORK a.txt' % w_release)['id']
     project_id = show(hung)['record']['project_id']
-    wait(lambda: hanging(release), 'the worker turn hangs', 40)
+    wait(lambda: hanging(w_release), 'the worker turn hangs', 40)
     old_host = host_of('task host %s %d' % (project_id, hung))
     assert len(old_host) == 1 and agent_tree(old_host[0]), (old_host, leftovers('task host'))
     install()
@@ -7455,7 +7455,7 @@ def part_host(created=None):
     assert host_of('task host %s %d' % (project_id, hung)) not in ([], old_host)
     launch = [t for t in traces()[seen:] if t.get('launch')]
     assert launch and launch[0]['resume'] and launch[0]['session'] == show(hung)['record']['agent_session'], launch
-    release.touch()
+    w_release.touch()
     wait_state(hung, 'ready', 'failed')
     js('task', 'close', hung, '--discard')
     # A task request: a host from before the status answer named its binary (the stand-in of 38)
