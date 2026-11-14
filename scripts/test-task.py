@@ -803,7 +803,7 @@ def manager_up(created):
     # Its rules (crates/wsx/src/task/instructions.rs): root cause first; facts, not guesses; chat,
     # not reports; talk or work; a complete prompt passed on stdin; a lean review; the owner's word;
     # memory. What commands do or refuse and their options are in `--help`, not here.
-    for rule in ('`wsx task <command> --help` lists the rest', "with a quoted heredoc (`<<'EOF'`) or `--prompt-file`",
+    for rule in ('`wsx task <command> --help` lists the rest', 'with a quoted heredoc or `--prompt-file`',
                  "--files <glob> - <<'EOF'\n<prompt>\nEOF\n", 'never in double quotes',
                  'Root cause first. A finding is its cause, the first state that goes wrong (file:line and log proof)',
                  'plus the design step that removes it; never a task that fixes a symptom',
@@ -815,14 +815,14 @@ def manager_up(created):
                  'say how both hold', 'A turn of only Events is your work', 'or with exactly `-` when nothing',
                  "never to a line 'for the owner'", 'Never hand the owner chores or ask them to wait',
                  'open with `> message <id>`', "Judge from the owner's words whether the owner wants to talk it over",
-                 'no task, `add` or `steer` until the owner agrees', 'Work starts at once', 'as a mermaid diagram',
+                 'no task, `add` or `steer` until the owner agrees, then one `new` or `add` with all', 'Work starts at once', 'as a mermaid diagram',
                  'Similar work or the same area goes to the open task', 'Every new task names its files',
                  'stands alone, since a worker cannot ask', 'every project and agent adapter', 'runs with `--size small`',
                  'one read-only audit task per area', '`--into <n>`', 'for lean code', "its prompt and each later add",
                  'naming each ask it missed', 'Check the fixture rule.', 'tell that worker to prove it',
                  "only when the owner's message of this turn says", '`--owner-said <id>` (on `land`, `close --discard`, `deploy`, `release`, `push`)', 'never name a message that did not ask',
                  'name the files and ask the owner; a task handles them', 'Never `git push` yourself',
-                 'Continue a `paused` task yourself', 'Never touch a task on `hand`', '`wsx task checkin`',
+                 'Continue a `paused` task.', 'Never touch a task on `hand`', '`wsx task checkin`',
                  'read-only git', 'the Skill tool as `owner:<name>`', 'check rather than guess', '`wsx memory add --kind rule`',
                  '/manager/notes/decisions.md', '/manager/notes/context.md', 'update a section in place',
                  '--from-chat --reply', 'and do not answer it', "'@<project>'"):

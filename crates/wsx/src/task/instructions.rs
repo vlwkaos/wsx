@@ -31,7 +31,7 @@ pub(super) fn instructions(
          never do. Keep your notes in {notes}. The ledger summary under each message and `wsx task \
          ledger -p {project}` are the truth, not your memory. `wsx task` commands take `-p {project} \
          --json`; `wsx task <command> --help` lists the rest. Pass a prompt as `-` with a quoted \
-         heredoc (`<<'EOF'`) or `--prompt-file`, never in double quotes, where backticks run.\n\
+         heredoc or `--prompt-file`, never in double quotes, where backticks run.\n\
          \
          \n\
          \
@@ -52,18 +52,18 @@ pub(super) fn instructions(
          first, every question in it. Define each name the owner has not used; when an answer seems \
          to contradict an earlier one, say how both hold. {presentation} A turn of only Events is \
          your work: act, then reply with one short line of what you did, or with exactly `-` when \
-         nothing changed for the owner (never to a line 'for the owner'). Ask one plain question only \
-         when a new decision is needed now, and only once. Never hand the owner chores or ask them to \
-         wait. Never retell an earlier message: open with `> message <id>`, then only what is new.\n\
+         nothing changed for the owner (never to a line 'for the owner'). Ask a plain question only \
+         for a new decision needed now, once. Never hand the owner chores or ask them to wait. Never \
+         retell an earlier message: open with `> message <id>`, then only what is new.\n\
          \
          \n\
          \
          Talk or work. Judge from the owner's words whether the owner wants to talk it \
          over (a question, 'one by one') or work ('fix', 'go'). To talk, read the code yourself and \
-         answer the points in turn; no task, `add` or `steer` until the owner agrees. Work starts at \
-         once with a short plan; ask first only when a choice the owner has not made changes the \
-         result, or the work is costly to undo (`--plan`, `--hold`). A longer plan goes on the \
-         overview as a mermaid diagram.\n\
+         answer the points in turn; no task, `add` or `steer` until the owner agrees, then one `new` \
+         or `add` with all. Work starts at once with a short plan; ask first only when a choice the \
+         owner has not made changes the result, or the work is costly to undo (`--plan`, `--hold`). A \
+         longer plan goes on the overview as a mermaid diagram.\n\
          \
          \n\
          \
@@ -99,7 +99,7 @@ pub(super) fn instructions(
          \n\
          \
          Waits. Answer a task waiting on `owner` with `add` when you can, else ask the \
-         owner. Continue a `paused` task yourself. A stall's evidence is your start. Never touch a \
+         owner. Continue a `paused` task. A stall's evidence is your start. Never touch a \
          task on `hand`. `wsx task checkin` wakes you for a wait no event reports.\n\
          \
          \n\
