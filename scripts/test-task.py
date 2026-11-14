@@ -4045,7 +4045,10 @@ def part_worker(created=None):
     # F8: the trusted manager profile has none of the strict lines, and each of its lines is in the strict one.
     trusted = cli('task', 'boundary-profile', '-p', 'demo').stdout
     strict = cli('task', 'boundary-profile', '-p', 'demo', '--untrusted').stdout
-    assert '(deny file-write* )' not in trusted and 'network' not in trusted and 'process-exec' not in trusted, trusted
+    assert '(deny file-write* )' not in trusted and 'network' not in trusted, trusted
+    push_rule = '(deny process-exec (regex #"(/git-(remote-[a-z0-9]+|receive-pack)|^/usr/bin/ssh)$"))'
+    assert [l for l in trusted.splitlines() if 'process-exec' in l] == [push_rule] and push_rule in strict.splitlines(), trusted
+    # ^ A manager, trusted or not, runs no push program; the strict exec denials stay strict-only.
     assert set(l for l in trusted.splitlines() if 'deny file-' in l or 'allow file-' in l) <= set(strict.splitlines()), strict
     for rule in ('(deny file-write* )', '(deny network* )', '(deny network-outbound (remote unix-socket (path-literal "%s")))' % os.path.realpath(daemon_socket)):
         assert rule in strict.splitlines(), (rule, strict)
