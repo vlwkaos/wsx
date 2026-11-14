@@ -67,6 +67,10 @@ pub enum TaskCmd {
     },
     /// Show one task with its latest result; --json names its working copy, base and log
     Show { task: String },
+    /// Why a task is where it is: its state, what it waits on, its last turn and its log's end
+    Why { task: String },
+    /// A task's prompt and adds with its commits and diff against its base, for review
+    Review { task: String },
     /// Send a message into the running turn
     Steer {
         task: String,
@@ -165,6 +169,17 @@ pub enum TaskCmd {
     Release(ReleaseArgs),
     /// Push the default branch, or one commit, to origin's default branch and move the local one there (the manager asks the owner first)
     Push(PushArgs),
+    /// Commit files of the main checkout on the default branch once its light checks pass on
+    /// that commit (the manager: with the owner's message)
+    Commit {
+        /// Paths in the main checkout, as they are on disk
+        #[arg(required = true, num_args = 1..)]
+        files: Vec<String>,
+        #[arg(short, long)]
+        message: String,
+        #[command(flatten)]
+        said: OwnerSaid,
+    },
     /// Print the bounded project state a manager reads first (JSON, at most 16 KiB)
     Ledger,
     /// Show the last deployed and released commits and how far each is behind
@@ -484,6 +499,8 @@ impl TaskCmd {
         match self {
             Self::List { .. }
             | Self::Show { .. }
+            | Self::Why { .. }
+            | Self::Review { .. }
             | Self::Ledger
             | Self::Deployed
             | Self::Chat { action: None, .. }
@@ -499,7 +516,7 @@ impl TaskCmd {
             Self::New(_) => &[CreateTask],
             Self::Close { discard: true, .. } => &[Discard],
             Self::Close { .. } => &[Close],
-            Self::Land { .. } => &[Land],
+            Self::Land { .. } | Self::Commit { .. } => &[Land],
             Self::Trial { .. }
             | Self::Deploy(_)
             | Self::Release(_)

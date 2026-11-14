@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::json;
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::policy::Role;
-use wsx_core::task::view::checked_files;
+use wsx_core::task::view::{self, checked_files};
 use wsx_core::task::{
     copy, now_unix_ms,
     store::{self, TaskDir},
@@ -186,6 +186,37 @@ pub(crate) enum Size {
     Full,
 }
 
+/// Refuse a manager's new task whose `files` meet an open task's globs or changed paths, but
+/// its `--into` parent's and its `--after` task's: two tasks on the same files conflict at
+/// land. The owner's own tasks may overlap. ref: docs/tasks.md "Store"
+fn refuse_overlap(project_id: &str, files: &[String], besides: [Option<u32>; 2]) -> Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    let tasks = view::project_tasks(project_id)?;
+    let records: Vec<&TaskRecord> = tasks
+        .iter()
+        .filter_map(|(_, record)| record.as_ref().ok())
+        .collect();
+    let besides: Vec<u32> = besides.into_iter().flatten().collect();
+    let Some((id, common)) = view::files_meet(files, &records, &besides)
+        .into_iter()
+        .next()
+    else {
+        return Ok(());
+    };
+    let title = tasks
+        .iter()
+        .find(|(dir, _)| dir.id == id)
+        .and_then(|(dir, record)| view::title(dir, record.as_ref().ok()?))
+        .unwrap_or_default();
+    bail!(
+        "--files {} meets open task #{id} \"{title}\": add the work to it with wsx task add {id}, \
+         or start after it with --after {id} --because files; no task was created",
+        common.join(" ")
+    )
+}
+
 /// What `create` starts a task from. `new` builds it from the command line (checked); a failed
 /// To check item builds it for its fix task.
 pub(crate) struct NewTask {
@@ -287,6 +318,9 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
             })
         })
         .transpose()?;
+    if crate::task::acting_as_manager() {
+        refuse_overlap(&project_id, &files, [into, after.map(|(task, _)| task)])?;
+    }
     let dir = TaskDir::allocate(&project_id)?;
     let id = dir.id;
     // ^ A child starts from its parent's tip and lands on its branch; the parent is held so

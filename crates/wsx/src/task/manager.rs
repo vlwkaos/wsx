@@ -214,6 +214,10 @@ struct Duties {
     drift_said: bool,
 }
 
+/// `url.<base>.pushInsteadOf` with an empty prefix rewrites every push URL to `<base><url>`:
+/// `git push` then answers "'remote-wsx-task-push' is not a git command".
+const NO_PUSH_KEY: &str = "url.wsx-task-push::.pushInsteadOf";
+
 struct Manager {
     dir: ManagerDir,
     project: String,
@@ -269,6 +273,8 @@ struct Manager {
     chat_events: BTreeMap<Party, Vec<(String, Short)>>,
     /// The waiting approvals that run now, by id (`run_waiting`).
     running_waits: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    /// The approval lines there were after the last reply: a request after them is new.
+    asks_seen: usize,
     /// A chat host that is closed or idle: it leaves.
     leaving: bool,
     /// Like `overview_asked`, for the request to write an answer that sat in thinking.
@@ -376,6 +382,7 @@ pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
         start_failed: None,
         chat_events: BTreeMap::new(),
         running_waits: Default::default(),
+        asks_seen: store::read_approvals(project_id).map_or(0, |lines| lines.len()),
         leaving: false,
         thought_asked: false,
         pings: 0,
@@ -3059,6 +3066,11 @@ impl Manager {
             (ACTOR_ENV.into(), String::from(self.actor()).into()),
             // ^ Its git reads must not take the index lock of the owner's checkout.
             ("GIT_OPTIONAL_LOCKS".into(), "0".into()),
+            // ^ Every push URL becomes one no helper serves, so `git push` fails with its name;
+            // the profile also denies the programs a push runs (boundary.rs).
+            ("GIT_CONFIG_COUNT".into(), "1".into()),
+            ("GIT_CONFIG_KEY_0".into(), NO_PUSH_KEY.into()),
+            ("GIT_CONFIG_VALUE_0".into(), "".into()),
         ]
         .into_iter()
         .chain(account_env(root.clone()))
@@ -3267,9 +3279,35 @@ impl Manager {
             self.rotate(context, None);
         }
         self.report(runtime::AgentState::Done);
+        self.post_asks();
         self.check_overview();
         self.check_views();
         self.check_thought(in_thinking);
+    }
+
+    /// The ask line of each approval this host's agent asked of the owner in the turn, so the
+    /// reply needs no words for it. ref: docs/tasks.md "Approvals"
+    fn post_asks(&mut self) {
+        let lines = self.approval_lines();
+        let asked: Vec<String> = lines
+            .iter()
+            .skip(self.asks_seen)
+            .filter(|line| match line {
+                ApprovalLine::Request { said, chat, .. } => {
+                    said.is_none() && chat.as_deref() == self.dir.chat.as_deref()
+                }
+                ApprovalLine::Decision { .. } => false,
+            })
+            .map(|line| format!("{} ({})", owner::approval_label(line), line.id()))
+            .collect();
+        self.asks_seen = lines.len();
+        for ask in asked {
+            self.post(
+                format!("asked the owner: {ask}"),
+                format!("Asked you: {ask}."),
+                None,
+            );
+        }
     }
 
     /// A turn whose words are far less than its thinking gets one follow-up, and no second one

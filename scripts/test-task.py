@@ -821,7 +821,8 @@ def manager_up(created):
                  'one read-only audit task per area', '`--into <n>`', 'for lean code', "its prompt and each later add",
                  'naming each ask it missed', 'Check the fixture rule.', 'tell that worker to prove it',
                  "only when the owner's message of this turn says", '`--owner-said <id>` (on `land`, `close --discard`, `deploy`, `release`, `push`)', 'never name a message that did not ask',
-                 'name the files and ask the owner; a task handles them', 'Never `git push` yourself',
+                 'name the files and ask the owner; on yes, `wsx task commit <files>`', 'Read `wsx task review <n>`',
+                 'Start a stall from `wsx task why <n>`.',
                  'Continue a `paused` task.', 'Never touch a task on `hand`', '`wsx task checkin`',
                  'read-only git', 'the Skill tool as `owner:<name>`', 'check rather than guess', '`wsx memory add --kind rule`',
                  '/manager/notes/decisions.md', '/manager/notes/context.md', 'update a section in place',
@@ -3266,6 +3267,10 @@ def part_worker(created=None):
 
     denied, _ = ask_push('')
     assert [(p['id'], p['action'], p['commit']) for p in js('task', 'ledger')['approvals']] == [(denied, 'push', tip)]
+    # ^ The host posts the ask line itself (docs/tasks.md "Approvals"): the reply needs no words for it.
+    asked = wait(lambda: events_with('asked the owner: Approve push', '(%s)' % denied), 'the ask line')
+    assert any(e['kind'] == 'reply' and asked[0]['id'] in e['to'] and e['text'].startswith('Asked you: Approve push')
+               and e['text'].endswith('(%s).' % denied) for e in chat()), asked
     js('task', 'deny', denied)
     wait(lambda: events_with('approval %s (push) denied' % denied), 'the push deny event')
     assert origin_tip() == before
@@ -3741,26 +3746,91 @@ def part_worker(created=None):
     stopped = js('task', 'say', 'RUN wsx task stop %d -p demo --json' % held)
     assert 'ran: wsx task stop %d -p demo --json -> 0' % held in reply_to(stopped['id'])['text']
     assert wait_state(held, 'waiting')['record']['waiting']['on'] == 'owner'
-    # A land refused on the owner's uncommitted change on main that the task's change overlaps:
-    # on the owner's yes the manager commits it in the main checkout, which its boundary allows,
-    # and the land passes.
+    # The manager's boundary denies the main checkout, its git folder and a push (docs/tasks.md
+    # "Permissions"): a write, its own commit and a push from inside it fail and change nothing.
     shared = project / 'shared.txt'
     shared.write_text('one\ntwo\nthree\nfour\nfive\n')
     git('add', 'shared.txt')
     git('commit', '-q', '-m', 'shared file')
     shared.write_text('one\ntwo\nthree\nfour\nowner edit\n')
+    main_tip = git('rev-parse', 'main')
+    denied = reply_to(js('task', 'say', '\n'.join((
+        'RUN echo x > manager-wrote.txt',
+        'RUN git -c user.name=o -c user.email=o@example.invalid commit -q -m "owner edit: shared.txt" -- shared.txt',
+        'RUN git push %s HEAD:refs/heads/manager-pushed' % origin)))['id'])['text']
+    assert denied.count('-> 0') == 0 and "'remote-wsx-task-push' is not a git command" in denied, denied
+    assert not (project / 'manager-wrote.txt').exists() and git('rev-parse', 'main') == main_tip
+    assert git('--git-dir', str(origin), 'for-each-ref', 'refs/heads/manager-pushed') == ''
+    assert git('status', '--porcelain', 'shared.txt') == 'M shared.txt'
+    # A land refused on the owner's uncommitted change on main that the task's change overlaps: on
+    # the owner's yes `wsx task commit`, which runs in the host, commits it once the light checks
+    # pass on that commit (docs/tasks.md "Manager"), and the land passes. It refuses without the
+    # owner's message of this turn, and when a light check fails on the commit.
     dirty = js('task', 'new', 'LINE shared.txt 1')['id']
     assert wait_state(dirty, 'ready', 'failed')['state'] == 'ready'
     refused = land(dirty, ok=False)
     assert 'shared.txt' in refused['message'] and 'land again' in refused['message'], refused
-    commit = js('task', 'say', 'RUN git -c user.name=o -c user.email=o@example.invalid commit -q -m '
-                               '"owner edit: shared.txt" -- shared.txt')
-    assert '-> 0' in reply_to(commit['id'])['text']
-    assert git('log', '-1', '--format=%s', 'main') == 'owner edit: shared.txt'
+    config_text, cargo_fails = (project / 'wsx.config.yml').read_text(), work / 'cargo-fails'
+    assert '  checks:\n' in config_text, config_text
+    (project / 'wsx.config.yml').write_text(config_text.replace('  checks:\n', '  checks:\n    - "cargo fmt --check"\n', 1))
+    (bin_dir / 'cargo').write_text('#!/bin/sh\necho "cargo $* in $PWD" >> %s\nif [ -e %s ]; then echo "Diff in shared.txt"; exit 1; fi\n'
+                                   % (work / 'cargo.log', cargo_fails))
+    (bin_dir / 'cargo').chmod(0o755)
+    cargo_fails.write_text('')
+    commit_line = 'RUN wsx task commit shared.txt -m "owner edit: shared.txt" -p demo --json'
+    stale = js('task', 'say', 'RUN wsx task commit shared.txt -m "owner edit: shared.txt" --owner-said 1 -p demo --json')
+    assert '--owner-said 1: ' in reply_to(stale['id'])['text'], reply_to(stale['id'])['text']
+    unsaid = reply_to(js('task', 'say', commit_line)['id'])['text']
+    assert '-> 0' not in unsaid and 'pass --owner-said <id>; nothing was committed' in unsaid, unsaid
+    failing = reply_to(js('task', 'say', commit_line + ' --owner-said OWNER_SAID')['id'])['text']
+    assert '`cargo fmt --check` failed on the commit (exit 1); nothing was committed' in failing, failing
+    assert 'Diff in shared.txt' in failing and git('rev-parse', 'main') == main_tip
+    assert not list(base.glob('project-commit-*')), 'the scratch copy is left'
+    cargo_fails.unlink()
+    passed = reply_to(js('task', 'say', commit_line + ' --owner-said OWNER_SAID')['id'])['text']
+    assert '-> 0' in passed and '"checks": [\n    "cargo fmt --check"\n  ]' in passed, passed
+    assert git('log', '-1', '--format=%s', 'main') == 'owner edit: shared.txt' and git('rev-parse', 'main~1') == main_tip
+    # ^ Only the named file: the changed config stays uncommitted, and the index matches main again.
+    assert git('status', '--porcelain', 'shared.txt', 'wsx.config.yml') == 'M wsx.config.yml'
+    assert git('diff', '--cached', '--name-only') == ''
+    ran = (work / 'cargo.log').read_text().splitlines()
+    assert len(ran) == 2 and all(line.startswith('cargo fmt --check in ') and '/project-commit-' in line for line in ran), ran
+    assert not list(base.glob('project-commit-*'))
+    (project / 'wsx.config.yml').write_text(config_text)
+    (bin_dir / 'cargo').unlink()
     assert land(dirty)['ok']
     wait_closed(dirty)
     assert git('show', 'main:shared.txt').splitlines()[4] == 'owner edit'
     for n in (probed, held):
+        js('task', 'close', n, '--discard')
+
+    # 23g. The manager's new task names no files an open task names or changes (docs/tasks.md
+    # "Store"): it adds to that task or starts after it. `why` and `review` read a task for the
+    # manager, through its broker as for the owner (docs/tasks.md "Manager").
+    mark('23g')
+    ov_gate = work / 'release-23g'
+    ov_first = js('task', 'new', '--files', 'ov*.txt', '--title', 'Overlap first', 'WAIT %s WORK ov-a.txt' % ov_gate)['id']
+    ov_new = 'RUN wsx task new --files "ov*.txt" -p demo --json%s NOOP'
+    refused = reply_to(js('task', 'say', ov_new % '')['id'])['text']
+    assert '-> 0' not in refused and ('--files ov*.txt meets open task #%d "Overlap first": add the work to it with '
+                                      'wsx task add %d, or start after it with --after %d --because files; no task was '
+                                      'created' % (ov_first, ov_first, ov_first)) in refused, refused
+    ov_after = next_task()
+    assert '-> 0' in reply_to(js('task', 'say', ov_new % (' --after %d --because files' % ov_first))['id'])['text']
+    why = js('task', 'why', ov_after)
+    assert why['after']['task'] == ov_first and why['after']['because'] == 'files' and why['history']['entries'], why
+    assert why['last_message']['mode'] == 'prompt' and why['last_message']['text'] == 'NOOP', why
+    said_why = reply_to(js('task', 'say', 'RUN wsx task why %d -p demo' % ov_after)['id'])['text']
+    assert '-> 0' in said_why and 'after:   #%d lands (files)' % ov_first in said_why, said_why
+    ov_gate.write_text('')
+    assert wait_state(ov_first, 'ready', 'failed')['state'] == 'ready'
+    review = js('task', 'review', ov_first)
+    assert [m['mode'] for m in review['asked']] == ['prompt'] and 'WORK ov-a.txt' in review['asked'][0]['text'], review
+    assert review['base'] == git('merge-base', 'main', review['head']) and len(review['commits']) == 1, review
+    assert 'ov-a.txt' in review['stat'] and '+++ b/ov-a.txt' in review['diff'], review
+    said_review = reply_to(js('task', 'say', 'RUN wsx task review %d -p demo' % ov_first)['id'])['text']
+    assert '-> 0' in said_review and '== prompt ' in said_review, said_review
+    for n in (ov_first, ov_after):
         js('task', 'close', n, '--discard')
 
     # 23s. An untrusted agent (Pi with any model) runs under the strict profile and the broker's

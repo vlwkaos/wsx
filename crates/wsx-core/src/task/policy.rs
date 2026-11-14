@@ -53,7 +53,7 @@ pub enum Capability {
     Close,
     /// `close --discard`.
     Discard,
-    /// `land` onto the default branch.
+    /// `land` onto the default branch, `commit` in the main checkout.
     Land,
     /// `deploy`, `release`, `push`, `trial`.
     Deploy,

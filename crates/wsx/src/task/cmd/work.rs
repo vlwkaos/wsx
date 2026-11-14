@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 use wsx_core::task::checks::{self};
 use wsx_core::task::manager::ApprovalAction;
 use wsx_core::task::owner::HOST_TIMEOUT;
-use wsx_core::task::view::checked_files;
+use wsx_core::task::status::Status;
+use wsx_core::task::view::{checked_files, short_commit};
 use wsx_core::task::view::{
     overlaps, project_tasks, refuse_open_children, task_summary, MAX_RESULT_READ_BYTES,
 };
@@ -22,7 +23,7 @@ use wsx_core::task::MAX_MESSAGE_BYTES;
 use wsx_core::task::{
     call_host, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
-    HostRequest, LogEvent, TaskRecord, TaskState,
+    HostRequest, LogEvent, MessageKind, TaskRecord, TaskState,
 };
 use wsx_core::{ops, process, runtime};
 
@@ -84,23 +85,11 @@ pub(crate) fn show(dir: &TaskDir, json: bool) -> Result<()> {
     let report = report.exists().then_some(report);
     let host = call_host(&dir.socket_path(), &HostRequest::Status, HOST_TIMEOUT).is_ok();
     let mut summary = task_summary(dir, &record);
-    // ^ The words every view shows; one task, so it asks whether it is stuck too.
-    let approvals = store::read_approvals(&dir.project_id).unwrap_or_default();
-    let now = now_unix_ms();
-    let stuck = wsx_core::task::stall::stuck(dir, &record, now);
-    let tasks = project_tasks(&dir.project_id)?;
+    let (status, tasks) = one_status(dir, &record)?;
     let records: Vec<&TaskRecord> = tasks
         .iter()
         .filter_map(|(_, record)| record.as_ref().ok())
         .collect();
-    let waiters = wsx_core::task::status::waiters(records.iter().copied(), record.id);
-    let facts = wsx_core::task::status::Facts {
-        approvals: &wsx_core::task::manager::pending_approvals(&approvals),
-        stuck: stuck.as_deref(),
-        deployed: None,
-        waiters: &waiters,
-    };
-    let status = wsx_core::task::status::status(dir, &record, &facts, now);
     if json {
         summary["status"] = json!(status);
         summary["record"] = serde_json::to_value(&record)?;
@@ -155,6 +144,178 @@ pub(crate) fn show(dir: &TaskDir, json: bool) -> Result<()> {
     if usage.turns > 0 {
         println!("usage:        {}", usage.line());
     }
+    Ok(())
+}
+
+type Tasks = Vec<(TaskDir, Result<TaskRecord>)>;
+
+/// The words every view shows for one task, which asks whether it is stuck too; with the
+/// project's tasks.
+fn one_status(dir: &TaskDir, record: &TaskRecord) -> Result<(Status, Tasks)> {
+    let approvals = store::read_approvals(&dir.project_id).unwrap_or_default();
+    let now = now_unix_ms();
+    let stuck = wsx_core::task::stall::stuck(dir, record, now);
+    let tasks = project_tasks(&dir.project_id)?;
+    let records = tasks.iter().filter_map(|(_, record)| record.as_ref().ok());
+    let waiters = wsx_core::task::status::waiters(records, record.id);
+    let facts = wsx_core::task::status::Facts {
+        approvals: &wsx_core::task::manager::pending_approvals(&approvals),
+        stuck: stuck.as_deref(),
+        deployed: None,
+        waiters: &waiters,
+    };
+    let status = wsx_core::task::status::status(dir, record, &facts, now);
+    Ok((status, tasks))
+}
+
+/// The lines of a task's story `why` shows.
+const WHY_LINES: usize = 15;
+/// Most characters of the last message `why` shows.
+const WHY_MESSAGE_CHARS: usize = 600;
+
+/// `wsx task why <n>`: where a task is and why: its status, what it waits on, the last message
+/// it was given and the end of its story, so nobody reads its log by hand.
+/// ref: docs/tasks.md "Manager"
+pub(crate) fn why(dir: &TaskDir, json: bool) -> Result<()> {
+    let record = dir.read_record()?;
+    let (status, _) = one_status(dir, &record)?;
+    let host = call_host(&dir.socket_path(), &HostRequest::Status, HOST_TIMEOUT).is_ok();
+    let last = dir.last_entry(|entry| match &entry.event {
+        LogEvent::Message { mode, text } => Some((entry.unix_ms, *mode, text.clone())),
+        _ => None,
+    })?;
+    let history = wsx_core::task::history::read(dir, WHY_LINES)?;
+    if json {
+        return print_json(&json!({
+            "task": record.id,
+            "status": status,
+            "waiting": record.waiting,
+            "after": record.after,
+            "hold": record.hold,
+            "host_running": host,
+            "last_message": last.map(|(unix_ms, mode, text)| json!({
+                "unix_ms": unix_ms, "mode": mode, "text": text,
+            })),
+            "history": history,
+        }));
+    }
+    println!(
+        "t{} {}  r{}  {}",
+        record.id,
+        wsx_core::task::status::state_word(&record),
+        record.revision,
+        history.title
+    );
+    println!("status:  {}", status.sentence);
+    if let Some(waiting) = &record.waiting {
+        println!("waiting: {}", waiting.reason);
+    }
+    if let Some(after) = &record.after {
+        println!(
+            "after:   #{} lands ({})",
+            after.task,
+            after.because.as_str()
+        );
+    }
+    if let Some(hold) = &record.hold {
+        println!("hold:    {hold}");
+    }
+    println!("host:    {}", if host { "running" } else { "not running" });
+    if let Some((unix_ms, _, text)) = last {
+        let mut text: String = text.chars().take(WHY_MESSAGE_CHARS).collect();
+        if text.len() < WHY_MESSAGE_CHARS {
+            text = text.trim_end().to_string();
+        }
+        println!(
+            "last message ({}):",
+            wsx_core::task::history::stamp(unix_ms)
+        );
+        println!("{text}");
+    }
+    println!("story:");
+    for entry in &history.entries {
+        println!(
+            "{} {:<8} {}",
+            wsx_core::task::history::stamp(entry.unix_ms),
+            entry.label,
+            entry.text
+        );
+    }
+    Ok(())
+}
+
+/// Most bytes of the diff `review` prints.
+const REVIEW_DIFF_BYTES: usize = 256 * 1024;
+
+/// `wsx task review <n>`: what the task was asked (its prompt, each add and steer) and what
+/// it changed against its base: its commits, the diff's stat and the diff.
+/// ref: docs/tasks.md "Manager"
+pub(crate) fn review(dir: &TaskDir, json: bool) -> Result<()> {
+    let record = dir.read_record()?;
+    let main = &record.project_path;
+    let asked: Vec<(u64, MessageKind, String)> = dir
+        .read_log()?
+        .into_iter()
+        .filter_map(|entry| match entry.event {
+            LogEvent::Message { mode, text } => Some((entry.unix_ms, mode, text)),
+            _ => None,
+        })
+        .collect();
+    let head = match record.revision {
+        0 => format!("refs/heads/{}", record.branch),
+        revision => format!("refs/wsx/task/{}/r{revision}", record.id),
+    };
+    let head = copy::resolve_commit(main, &head)?;
+    let base = copy::merge_base(main, &head, &record.default_branch)?;
+    let range = format!("{base}..{head}");
+    let commits = copy::read(main, &["log", "--oneline", "--no-decorate", &range])?;
+    let stat = copy::read(main, &["diff", "--stat", &range])?;
+    let mut diff = copy::read(main, &["diff", &range])?;
+    let whole = diff.len();
+    if whole > REVIEW_DIFF_BYTES {
+        let cut = (0..=REVIEW_DIFF_BYTES)
+            .rev()
+            .find(|at| diff.is_char_boundary(*at))
+            .unwrap_or(0);
+        diff.truncate(cut);
+        diff += &format!(
+            "\n[the diff has {whole} bytes; the rest: git -C {} diff {range}]\n",
+            main.display()
+        );
+    }
+    if json {
+        return print_json(&json!({
+            "task": record.id,
+            "revision": record.revision,
+            "base": base,
+            "head": head,
+            "asked": asked.iter().map(|(unix_ms, mode, text)| json!({
+                "unix_ms": unix_ms, "mode": mode, "text": text,
+            })).collect::<Vec<_>>(),
+            "commits": commits.lines().collect::<Vec<_>>(),
+            "stat": stat,
+            "diff": diff,
+        }));
+    }
+    println!(
+        "t{} r{}  {}..{}",
+        record.id,
+        record.revision,
+        short_commit(&base),
+        short_commit(&head)
+    );
+    for (unix_ms, mode, text) in &asked {
+        let mode = serde_json::to_value(mode)?;
+        println!(
+            "\n== {} {} ==\n{}",
+            mode.as_str().unwrap_or_default(),
+            wsx_core::task::history::stamp(*unix_ms),
+            text.trim_end()
+        );
+    }
+    println!("\n== commits ==\n{}", commits.trim_end());
+    println!("\n== stat ==\n{}", stat.trim_end());
+    println!("\n== diff ==\n{}", diff.trim_end());
     Ok(())
 }
 

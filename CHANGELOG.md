@@ -5,6 +5,12 @@
 ### Fixed
 
 - Tasks: a manager whose fresh conversation met a usage limit or a failed sign-in in its first turn no longer starts another fresh conversation at each retry. A rotation kept the old conversation's size, so the idle rule rotated again into a conversation that never saw the held message: 5 times in a row at 108k from 2026-11-10 03:52. The turn after the wait now continues the conversation that holds the message.
+### Changed
+
+- Tasks: rules the manager had to remember are now refused by wsx, so its instructions no longer carry them ([docs/tasks.md](docs/tasks.md) "Manager", "Permissions"). The manager's boundary denies writes to the main checkout and its git folder, and denies git's remote helpers, `git-receive-pack` and `ssh`; every `git push` it runs fails at once. Before, it could commit on main by hand and only its instructions kept it from pushing. Its commands still run in its host: a land, an approved `wsx task push`, and the new `wsx task commit <file>... -m <message> --owner-said <id>`. That command commits the main checkout's named files on the default branch only when the owner's message of this turn asks and the project's light checks (`cargo fmt`, `cargo build`) pass on that commit in a scratch copy. A failed check names the check and commits nothing.
+- Tasks: a `wsx task new` by the manager whose `--files` meet an open task's files is refused, naming that task: add the work to it, or start after it with `--after <n> --because files` ([docs/tasks.md](docs/tasks.md) "Store").
+- Tasks: `wsx task why <n>` shows a task's status, what it waits on, its last message and the end of its story; `wsx task review <n>` shows its prompt and adds with its commits and diff against its base. The manager reads no task log by hand.
+- Tasks: when the manager asks the owner for an approval, the host posts the line "Asked you: Approve land #3 (a3)." itself, so the reply needs no words for it ([docs/tasks.md](docs/tasks.md) "Approvals").
 
 ## [0.43.0] - 2026-11-12
 

@@ -28,6 +28,10 @@ const STRICT_SECRETS: [&str; 4] = [".config/gh", ".netrc", ".npmrc", ".claude"];
 /// What a strict agent writes outside its folders: the null device, terminals and PTYs.
 const DEV_WRITE: &str = r"^/dev/(null|zero|tty|ttys[0-9]+|ptmx|fd/[0-9]+)$";
 
+/// What the manager does not run: git's remote helpers, `receive-pack` and ssh, which a push
+/// execs (an https or ssh fetch too).
+const MANAGER_DENIED_EXEC: &str = r"(/git-(remote-[a-z0-9]+|receive-pack)|^/usr/bin/ssh)$";
+
 /// Pi's built-in providers: the endpoint each calls, the variable that holds its key, and
 /// the provider's other endpoints Pi's sign-in calls (a Pi sign-in refreshes its token there).
 const PI_PROVIDERS: [(&str, &str, &str, &[&str]); 2] = [
@@ -91,12 +95,14 @@ impl Boundary {
         Ok(boundary)
     }
 
-    /// The manager: its folder and the project overview.
-    // ^ It may move the default branch: when a land refuses on the owner's uncommitted changes
-    // in the main checkout, it commits them on main after the owner's yes (docs/tasks.md
-    // "Manager"), which writes main's ref and reflog.
+    /// The manager: its folder and the project overview; never the main checkout or its git
+    /// folder. Its `wsx task` commands run in its host through the broker, outside this
+    /// boundary: `land` and `wsx task commit` write main, `wsx task push` the remote.
+    /// ref: docs/tasks.md "Permissions"
     pub fn manager(main: &Path, own: &Path, overview: &Path, policy: Policy) -> Result<Self> {
         let mut boundary = Self::new(main, own, policy)?;
+        let common = boundary.common.clone();
+        boundary.deny_write.extend([real(main), common]);
         boundary.own_prefix.push(real(overview));
         Ok(boundary)
     }
@@ -309,7 +315,7 @@ impl Boundary {
             if let Some(tmp) = std::env::var_os("TMPDIR").filter(|tmp| !tmp.is_empty()) {
                 rule("allow file-write*", subpath(&real(Path::new(&tmp))));
             }
-            // ^ Only a worker commits; the manager's commit on main is for Claude alone.
+            // ^ Only a worker commits; the manager's commits run in its host.
             if self.policy.role == Role::Worker {
                 rule("allow file-write*", subpath(&self.common));
             }
@@ -345,6 +351,11 @@ impl Boundary {
         }
         for path in &self.own_prefix {
             rule("allow file-write*", regex(&format!("^{}", escape(path))));
+        }
+        if self.policy.role == Role::Manager {
+            // ^ No push by hand: git reaches a remote through these programs, and the owner's
+            // approved `wsx task push` runs in the host.
+            rule("deny process-exec", regex(MANAGER_DENIED_EXEC));
         }
         if strict {
             rule("deny network*", String::new());

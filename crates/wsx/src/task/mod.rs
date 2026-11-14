@@ -32,14 +32,15 @@ use cmd::chat::{
     boundary_profile, chat, chat_command, dismiss, manager_command, say_command, search,
 };
 use cmd::check::check;
+use cmd::commit::commit;
 use cmd::deploy::{deploy, deployed, push, trial_command};
 use cmd::land::{after_command, hold_command, land_command, run_batch};
 use cmd::new::new;
 use cmd::project::project;
 use cmd::routine::{checkin, digest, post, routine_command};
 use cmd::work::{
-    add_command, close_command, hand, handback, list, preview_command, show, steer_command,
-    stop_command,
+    add_command, close_command, hand, handback, list, preview_command, review, show, steer_command,
+    stop_command, why,
 };
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -63,6 +64,13 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
         TaskCmd::New(args) => new(args, project, json),
         TaskCmd::List { all } => list(project, all, json),
         TaskCmd::Show { task } => show(&open(project, &task)?, json),
+        TaskCmd::Why { task } => why(&open(project, &task)?, json),
+        TaskCmd::Review { task } => review(&open(project, &task)?, json),
+        TaskCmd::Commit {
+            files,
+            message,
+            said,
+        } => commit(&files, &message, said.owner_said, project, json),
         TaskCmd::Steer { task, text } => steer_command(&task, text, project, json),
         TaskCmd::Add { task, text, files } => add_command(&task, text, &files, project, json),
         TaskCmd::Stop { task } => stop_command(&task, project, json),
