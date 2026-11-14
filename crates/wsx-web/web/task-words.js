@@ -31,8 +31,12 @@ const STAGES = {
 export const taskStage = (task) => STAGES[task?.stage] ?? [task?.stage ?? "", "muted"];
 export const taskLink = (project, task) => `#/p/${project}/t/${task}`;
 
-// A task the agents work on: its chip and its reservoir row pulse.
+// A task the agents work on: under Running.
 export const running = (task) => task?.stage === "working";
+// ^ A task whose worker's turn runs: nothing else holds it (the server's `status.waits_on`,
+// wsx-core `status::waits_on`, holder `host`). Its dot pulses; a ready task, a plan, a paused
+// worker, a hand-off, a limit or its checks keep a calm dot.
+export const live = (task) => task?.status?.waits_on?.kind === "host";
 
 // `#12` in any text: the number and a state dot, the state in its accessible name and the
 // title on hover. The title shows in the sheet and the reservoir, not in the text. Another
@@ -52,14 +56,12 @@ export function TaskChip({ project, id, name = "", plain = false }) {
     </a>`;
 }
 
-// A ready task, a plan or a paused worker waits for the manager: it is under Running, but nothing runs.
-const awaitsManager = (task) => task.state === "ready" || ["plan", "paused"].includes(task.waiting?.on);
-
-// A task's state dot. A task that stops running settles its dot once instead of snapping from the pulse.
+// A task's state dot (`live`). A task that stops running settles its dot once instead of
+// snapping from the pulse.
 function StateMark({ task }) {
-  const live = running(task) && !awaitsManager(task);
-  const settle = useAfter(live, LEAVE_MS * 3);
-  return html`<span class="mark" data-tone=${taskStage(task)[1]} data-running=${live ? "" : null} data-settle=${settle ? "" : null} aria-hidden="true"></span>`;
+  const pulse = live(task);
+  const settle = useAfter(pulse, LEAVE_MS * 3);
+  return html`<span class="mark" data-tone=${taskStage(task)[1]} data-running=${pulse ? "" : null} data-settle=${settle ? "" : null} aria-hidden="true"></span>`;
 }
 
 // A task in a list: its title first, then its number, small and muted, never cut. `state` is
