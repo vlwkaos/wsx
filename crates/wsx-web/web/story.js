@@ -171,15 +171,16 @@ function goalOf(detail) {
 // line): what it waits on, what it lands into while open, its parent's children and the open
 // tasks that wait for it. Each task is its chip, so a tap opens it.
 function Flow({ project, detail }) {
-  const { flow, status } = detail;
+  const { flow } = detail;
   if (!flow) return null;
   const chip = (id) => html`<${TaskChip} project=${project} id=${id} />`;
   const waits = [
     flow.after && html`<span key="after">${chip(flow.after.task)} to land, ${flow.after.because}</span>`,
     flow.held && html`<span key="held">held: ${flow.held}</span>`,
   ].filter(Boolean);
-  const open = detail.progress != null;
-  const blocks = status.waited_by ?? [];
+  // ^ `into` is set while the task is open.
+  const open = flow.into != null;
+  const blocks = flow.blocks ?? [];
   if (!waits.length && !open && !flow.parent && !flow.children.length && !blocks.length) return null;
   const list = (rows) => rows.map((row, index) => html`${index > 0 && ", "}${row}`);
   return html`
@@ -188,7 +189,7 @@ function Flow({ project, detail }) {
       ${open && html`<dt>Lands into</dt><dd>${flow.parent != null ? chip(flow.parent) : flow.into}</dd>`}
       ${!open && flow.parent != null && html`<dt>Parent</dt><dd>${chip(flow.parent)}</dd>`}
       ${flow.children.length > 0 && html`<dt>Children</dt><dd>${list(flow.children.map((child) => html`<span key=${child.id}>${chip(child.id)} ${child.state}</span>`))}</dd>`}
-      ${blocks.length > 0 && html`<dt>Blocks</dt><dd>${list(blocks.map((waiter) => html`<span key=${waiter.task}>${chip(waiter.task)}</span>`))}</dd>`}
+      ${blocks.length > 0 && html`<dt>Blocks</dt><dd>${list(blocks.map((id) => html`<span key=${id}>${chip(id)}</span>`))}</dd>`}
     </dl>`;
 }
 
