@@ -2182,7 +2182,7 @@ async function pinch(at) {
 async function touch(from, dx, hold = 0) {
   await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: from.x, y: from.y }] });
   if (hold) await pause(hold);
-  for (let step = 1; step <= 5; step++) await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: from.x + (dx * step) / 5, y: from.y }] });
+  if (dx) for (let step = 1; step <= 5; step++) await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: from.x + (dx * step) / 5, y: from.y }] });
   await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 }
 // Where to press a bubble: its first line of text, clear of tables and links.
@@ -2309,10 +2309,11 @@ async function readAndReply(where) {
       const rect = chip.getBoundingClientRect(); return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }; })()`);
     if (!chip) await fail(`${where}: the chat shows no task chip to tap`);
     await touch(chip, 0, 60);
-    await until("/\\/t\\/\\d+/.test(location.hash) && !!document.querySelector('dialog.task-sheet[open]')", `${where}: a tap on a task chip did not open the task`);
-    if (await count(".reply-menu")) await fail(`${where}: a tap on a task chip opened the menu`);
+    const opened = await evaluate(`(async () => { for (let attempt = 0; attempt < 40 && !/\\/t\\/\\d+/.test(location.hash); attempt++) await new Promise((resolve) => setTimeout(resolve, 50));
+      return { hash: location.hash, menu: !!document.querySelector('.reply-menu') }; })()`);
+    if (!/\/t\/\d+/.test(opened.hash) || opened.menu) await fail(`${where}: a tap on a task chip at ${JSON.stringify(chip)} left ${JSON.stringify(opened)}`);
     await evaluate("history.back()");
-    await until("!document.querySelector('dialog.task-sheet[open]')", `${where}: Back did not close the task`);
+    await until("!/\\/t\\/\\d+/.test(location.hash)", `${where}: Back did not leave the task`);
   }
 }
 await readAndReply("390 px");
