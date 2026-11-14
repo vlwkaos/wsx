@@ -65,6 +65,8 @@ pub struct ProjectConfig {
 pub(crate) const DEFAULT_CHECK_TIMEOUT_SECS: u64 = 20 * 60;
 /// 1 GiB: about 17 times the largest project's captures when measured (2026-11-11, 58 MB).
 const DEFAULT_CAPTURE_BUDGET_MB: u64 = 1024;
+/// ^ Ten minutes: the lands of one burst deploy once (docs/design/orchestration-lean.md §9).
+const DEFAULT_DEPLOY_QUIET_SECS: u64 = 600;
 
 /// One `tasks.scenarios` entry: its command and the path globs whose change runs it (none: it
 /// runs only when a worker names it). ref: docs/tasks.md "Scenarios"
@@ -136,6 +138,10 @@ pub struct TaskConfig {
     pub deploy_public: bool,
     /// Whether a land of the default branch deploys it (docs/tasks.md "Deploy and release").
     pub deploy_auto: bool,
+    /// `tasks.deploy.quietMinutes` in seconds: the default branch must stay unchanged this long
+    /// before the deploy after a land runs, so a burst of lands deploys once; 0 deploys at each
+    /// land (docs/tasks.md "Deploy and release").
+    pub deploy_quiet_secs: u64,
     /// `tasks.preview`: how a task is tried on request (docs/tasks.md "Preview").
     pub preview: Option<TaskPreview>,
     pub release_approve: bool,
@@ -282,6 +288,7 @@ impl Default for TaskConfig {
             deploy_approve: false,
             deploy_public: false,
             deploy_auto: false,
+            deploy_quiet_secs: DEFAULT_DEPLOY_QUIET_SECS,
             preview: None,
             release_approve: true,
             deploy_command: None,

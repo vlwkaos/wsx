@@ -107,6 +107,7 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
             DeployArgs {
                 commit,
                 if_new: false,
+                quiet: None,
                 trial: None,
                 run,
                 said,
