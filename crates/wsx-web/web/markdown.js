@@ -44,8 +44,31 @@ const endingAtText = (table) => (state, line, end, silent) => {
   return true;
 };
 
+// ^ CommonMark lets a `*` next to punctuation open and close emphasis, so a glob an agent wrote
+// without backticks (`mmproj-*.gguf and mtp-*.gguf`) turned its text between the stars to italics.
+// A `*` or `_` run opens only before a letter, a digit or a mark that wraps words (`, [, (, a quote,
+// another `*` or `_`) and closes only after one of those or a sentence mark (`**Note:**`). The
+// delimiters markdown-it's emphasis rule pushed are cleared here, so the pairing rule that follows
+// pairs the rest as before.
+const OPENS = /[\p{L}\p{N}`\[("'“‘*_~]/u;
+const CLOSES = /[\p{L}\p{N}`\])"'”’*_~.,;:!?]/u;
+const wordEdges = (emphasis) => (state, silent) => {
+  const start = state.pos;
+  const first = state.delimiters.length;
+  const found = emphasis(state, silent);
+  if (!found || silent) return found;
+  const before = state.src[start - 1] ?? "";
+  for (const delim of state.delimiters.slice(first)) {
+    delim.open &&= OPENS.test(state.src[start + delim.length] ?? "");
+    delim.close &&= CLOSES.test(before);
+  }
+  return found;
+};
+
 const makeParser = () => {
   const made = globalThis.markdownit({ html: false, linkify: true });
+  const emphasis = made.inline.ruler.__rules__.find((rule) => rule.name === "emphasis").fn;
+  made.inline.ruler.at("emphasis", wordEdges(emphasis));
   const table = endingAtText(made.block.ruler.__rules__.find((rule) => rule.name === "table").fn);
   made.block.ruler.at("table", table, { alt: ["paragraph", "reference"] });
   made.block.ruler.before("table", "table_after_item", afterItem(table), { alt: ["paragraph"] });

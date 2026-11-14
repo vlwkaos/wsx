@@ -3965,6 +3965,17 @@ await setMotion("no-preference");
   await shot("list-tables-wide", ".composer-send");
   await resize([390, 844, 2]);
 }
+// --- A `*` next to punctuation is no emphasis (docs/web-client-chat.md "Markdown"): file globs an agent
+// wrote without backticks keep their stars; `*word*`, `**two words**` and `_x_` are still emphasis.
+{
+  if (await say("GLOBS") !== 200) await fail("the message for a reply with globs was not taken");
+  await until("!![...document.querySelectorAll('.log .bubble[data-side=in] .markdown')].find((node) => node.textContent.startsWith('Globs:')) && !document.querySelector('.log .typing')", "the reply with globs did not arrive", 120);
+  const marks = await evaluate(`(() => { const root = [...document.querySelectorAll('.log .bubble[data-side=in] .markdown')].findLast((node) => node.textContent.startsWith('Globs:'));
+    const [globs, words] = [...root.children]; const text = (selector) => [...words.querySelectorAll(selector)].map((node) => node.textContent);
+    return { globs: globs.textContent, emphasis: globs.querySelectorAll('em, strong').length, em: text('em'), strong: text('strong') }; })()`);
+  const want = "Globs: scanned for *.gguf up to 4 folder levels deep. Keep a model's mmproj-*.gguf and mtp-*.gguf draft.";
+  if (marks.globs !== want || marks.emphasis || marks.em.join() !== "word,x" || marks.strong.join() !== "two words,Note:") await fail(`the markdown with globs reads ${JSON.stringify(marks)}`);
+}
 await toLatest("390 px");
 // A ready task the manager created waits for the manager's review: under Running, with those words and a calm dot.
 const asked = await say('RUN wsx task new "WORK z.txt" -p ui');
