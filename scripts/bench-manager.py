@@ -709,7 +709,7 @@ def run_idle(options, out):
     the hidden turn writes (`notes`; the turn itself, `ask`, forks the idle conversation after the
     cold resume wrote its cache, so it costs as the warm turn at 55 min does) and the cold resume
     (`resume`). Every arm has read-only tools: no command runs."""
-    spent, ask = 0.0, HANDOVER_ASK
+    spent = 0.0
     source = (ROOT / 'crates/wsx/src/task/instructions.rs').read_text()
     launch = instructions(source, 'wsx', str(MANAGER_DIR / 'notes'), str(MANAGER_DIR / 'overview.md'))
     env = {k: v for k, v in os.environ.items() if not k.startswith('WSX_')}
@@ -725,7 +725,7 @@ def run_idle(options, out):
         try:
             preamble, handover, turn = split_first(case['first'])
             rows = {}
-            for arm, text, resume in (('resume', turn, session), ('ask', ask, session)):
+            for arm, text, resume in (('resume', turn, session), ('ask', HANDOVER_ASK, session)):
                 agent = Agent(launch, env, base, MAIN_MODEL, real=True, resume=resume)
                 rows[arm] = agent.turn(text)
                 agent.stop()
