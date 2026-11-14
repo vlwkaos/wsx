@@ -3399,8 +3399,9 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   if (worded.join("|") !== wanted.join("|")) await fail(`the now line words tools as ${JSON.stringify(worded)}`);
 
   // Stuck: wsx's own stall rule; the sheet reads it, no guess.
-  // ^ The quiet clock counts the worker's log entries and the state's start, not the log's file
-  // time (`stall::progress_ms`): both are an hour older, as test-task.py's silent worker.
+  // ^ A silent turn is an open turn record (`turn.json`) past its deadline, which its host did
+  // not end; the page also waits out a grace from the worker's last log entry and the state's
+  // start (`stall::stuck`): all three are an hour older, as test-task.py's silent worker.
   const log = show(working).log;
   if (!log || !fs.existsSync(log)) await fail(`wsx task show names no log: ${log}`);
   const aged = (file, change) => {
@@ -3413,6 +3414,12 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   aged(path.join(path.dirname(log), "task.json"), (text) => {
     const record = JSON.parse(text);
     return JSON.stringify({ ...record, state_unix_ms: record.state_unix_ms - 3600_000, created_unix_ms: record.created_unix_ms - 3600_000 });
+  });
+  const turnFile = path.join(path.dirname(log), "turn.json");
+  if (!fs.existsSync(turnFile)) await fail(`the working task has no turn record: ${turnFile}`);
+  aged(turnFile, (text) => {
+    const turn = JSON.parse(text);
+    return JSON.stringify({ ...turn, started_ms: turn.started_ms - 3600_000, output_ms: turn.output_ms - 3600_000, deadline_ms: turn.deadline_ms - 3600_000 });
   });
   await go(`#/p/${plansArg}`);
   await open(working);

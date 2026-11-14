@@ -40,7 +40,7 @@ Each user message is a small script of words:
   AUTHFAIL <file>  (manager) fail every turn as Claude's expired sign-in does until <file> exists;
                with AUTHSLOW the failure comes 4 s after the turn starts
   WAUTHFAIL <file>  the same for a worker (a manager's event lines carry task titles, so its own word differs)
-  CFAUTH <file>  (manager) fail the turn as a 403 block page does ("Failed to authenticate. API Error:
+  CFAUTH <file>  (manager or chat) fail the turn as a 403 block page does ("Failed to authenticate. API Error:
                403 Attention Required! | Cloudflare", no sign-in failure) until <file> exists; WCFAUTH for a worker
   MHANG <file>  (manager) write nothing in the turn until <file> exists, so the host ends it by its quiet
                bound (WSX_TEST_TURN_QUIET_FILE); WHANG for a worker
@@ -560,7 +560,8 @@ def main():
                 time.sleep(4)
             auth_failure(session)
             continue
-        if project is not None and (blocked := word_after(own_words(text, project), 'CFAUTH')) and not os.path.exists(blocked):
+        chat = 'a chat of the project' in instructions
+        if (project is not None or chat) and (blocked := word_after(own_words(text, project), 'CFAUTH')) and not os.path.exists(blocked):
             blocked_403(session)
             continue
         if project is not None and (hung := word_after(own_words(text, project), 'MHANG')) and not os.path.exists(hung):

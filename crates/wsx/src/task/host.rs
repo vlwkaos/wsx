@@ -271,7 +271,8 @@ struct Host {
     events: Sender<Event>,
     agent: Option<Agent>,
     generation: u64,
-    turn_active: bool,
+    /// The running turn's record (`stall::Turn`, `turn.json`); none between turns.
+    turn: Option<stall::Turn>,
     /// Adds sent during a turn or a check, delivered when it ends.
     pending: VecDeque<String>,
     /// Land notices: they join a turn that starts anyway and never start one.
@@ -345,9 +346,6 @@ struct Host {
     pings: u32,
     after_ping: Option<TurnTrigger>,
     started: Instant,
-    /// When the agent last wrote a line of the turn, or the turn started: a turn quiet past
-    /// `stall::turn_quiet_ms` is ended (`turn_hung`).
-    last_line: Instant,
 }
 
 pub fn run(project_id: &str, id: u32) -> Result<()> {
@@ -369,7 +367,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         events: events.clone(),
         agent: None,
         generation: 0,
-        turn_active: false,
+        turn: None,
         pending: VecDeque::new(),
         notices: Vec::new(),
         carried: false,
@@ -406,7 +404,6 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         pings: 0,
         after_ping: None,
         started: Instant::now(),
-        last_line: Instant::now(),
     };
     (host.context_tokens, host.answered_ms) = host.last_context();
     // ^ A record from before `home`: its own agent is the one in use, or when a switch is on
@@ -515,7 +512,7 @@ impl Host {
             }
             // ^ The limit slot is held only while the agent runs a turn.
             // ref: docs/tasks.md "Claude adapter"
-            if !self.turn_active {
+            if self.turn.is_none() {
                 self.limit_slot = None;
             }
             if self
@@ -548,9 +545,7 @@ impl Host {
                 .map(|due| Duration::from_millis(due.saturating_sub(now_unix_ms())));
             // ^ A turn with no output for the quiet bound ends: a hung agent must not hold the
             // task forever. ref: docs/tasks.md "Agents"
-            let quiet_due = self
-                .turn_active
-                .then(|| self.quiet_bound().saturating_sub(self.last_line.elapsed()));
+            let quiet_due = self.turn.as_ref().map(stall::Turn::left);
             let event = match disk_due
                 .into_iter()
                 .chain(limit_due)
@@ -741,7 +736,7 @@ impl Host {
                 self.notices.push(answer.text);
             }
             Some(run) if run.result_waits => self.answer_check_run(answer),
-            Some(run) if run.queued && !self.turn_active => self.send_check_answer(answer.text),
+            Some(run) if run.queued && self.turn.is_none() => self.send_check_answer(answer.text),
             // ^ The worker still works after `queued`: its result gets the answer.
             Some(run) if run.queued => {
                 self.check_run = Some(CheckRun {
@@ -926,7 +921,7 @@ impl Host {
                 if let Some(agent) = self.agent.take() {
                     agent.stop();
                 }
-                self.turn_active = false;
+                self.end_turn("the task closed");
                 self.end_trial("the task closed");
                 self.record.after = None;
                 self.log(LogEvent::Closed { discarded: discard });
@@ -966,7 +961,7 @@ impl Host {
     fn steer(&mut self, text: String) -> Result<String> {
         check_message(&text)?;
         self.require_open()?;
-        if !self.turn_active {
+        if self.turn.is_none() {
             self.log(LogEvent::Message {
                 mode: MessageKind::Add,
                 text: text.clone(),
@@ -1005,7 +1000,7 @@ impl Host {
     /// checking, failed) gets nothing, as its own land rebases it. ref: docs/tasks.md "Landing"
     fn notice(&mut self, text: String) -> Result<String> {
         check_message(&text)?;
-        if !self.turn_active && self.record.state != TaskState::Waiting {
+        if self.turn.is_none() && self.record.state != TaskState::Waiting {
             return Ok(format!(
                 "not sent: t{} is {}",
                 self.record.id,
@@ -1226,7 +1221,7 @@ impl Host {
         self.check_retries = 0;
         self.stopped = false;
         self.ci_halt.store(false, Ordering::Relaxed);
-        if self.turn_active || self.record.state == TaskState::Checking {
+        if self.turn.is_some() || self.record.state == TaskState::Checking {
             self.pending.push_back(text);
             "queued until the current turn ends".into()
         } else {
@@ -1259,7 +1254,7 @@ impl Host {
         // Every source that would start work by itself ends here, so a wake in the same second
         // cannot outlive the stop. A `check_run` stays to record its answer.
         self.generation += 1;
-        self.turn_active = false;
+        self.end_turn(STOPPED_BY_REQUEST);
         self.limit_wait = None;
         self.limit_queue = None;
         self.limit_slot = None;
@@ -1317,7 +1312,7 @@ impl Host {
         }
         self.stopped = false;
         self.ci_halt.store(false, Ordering::Relaxed);
-        self.turn_active = false;
+        self.end_turn("the owner took it by hand");
         self.end_trial("the owner took it by hand");
         let dropped = self.pending.len() as u32;
         self.pending.clear();
@@ -1476,7 +1471,7 @@ impl Host {
         // own agent is free, to a fallback when the account refuses turns, or a wait. A steer
         // into a running turn goes to that turn. ref: docs/tasks.md "Agents"
         let mut home = false;
-        if !self.turn_active {
+        if self.turn.is_none() {
             let now = now_unix_ms();
             match self.ask(Ask::Turn, now) {
                 Next::Stay => {}
@@ -1546,7 +1541,6 @@ impl Host {
         };
         self.send_to_agent(text)?;
         self.turn_text = text.to_string();
-        self.turn_active = true;
         self.trigger = trigger;
         self.pings = 0;
         self.set_state(TaskState::Working);
@@ -1575,15 +1569,25 @@ impl Host {
                 move |line| Event::Agent(generation, line),
             )?);
         }
-        self.last_line = Instant::now();
         self.agent
             .as_mut()
             .context("the agent is not running")?
-            .send(text)
+            .send(text)?;
+        let agent = format!("{}/{}", self.record.adapter, self.record.model);
+        let quiet_ms = stall::turn_quiet_ms(self.settings().check_timeout_secs);
+        self.turn = Some(stall::Turn::start(&self.dir.path, agent, quiet_ms));
+        Ok(())
+    }
+
+    /// End the running turn's record with `reason`; none runs after it.
+    fn end_turn(&mut self, reason: &str) {
+        if let Some(turn) = self.turn.take() {
+            turn.end(&self.dir.path, reason);
+        }
     }
 
     fn pinging(&self) -> bool {
-        self.turn_active && self.trigger == TurnTrigger::Ping
+        self.turn.is_some() && self.trigger == TurnTrigger::Ping
     }
 
     /// When the next ping is due (unix ms): the worker waits on the checks or on a queued
@@ -1597,7 +1601,7 @@ impl Host {
         if !waits
             || self.stopped
             || self.record.adapter != "claude"
-            || self.turn_active
+            || self.turn.is_some()
             || self.pings >= KEEP_WARM_PINGS
             || self.answered_ms == 0
             || self.record.agent_session.is_none()
@@ -1631,7 +1635,6 @@ impl Host {
         self.pings += 1;
         match self.send_to_agent(KEEP_WARM_TEXT) {
             Ok(()) => {
-                self.turn_active = true;
                 self.trigger = TurnTrigger::Ping;
                 self.say(&format!(
                     "ping {} of {KEEP_WARM_PINGS}: keeps the prompt cache warm",
@@ -1644,7 +1647,7 @@ impl Host {
 
     /// A ping's answer: logged as `ping`, then the turn that came meanwhile starts.
     fn on_ping(&mut self, turn: TurnResult) {
-        self.turn_active = false;
+        self.end_turn(&turn.ended());
         let now = now_unix_ms();
         if turn.usage.context_tokens > 0 {
             self.context_tokens = turn.usage.context_tokens;
@@ -1681,7 +1684,9 @@ impl Host {
             Some(AgentLine::Progress { text, said }) => {
                 // ^ The agent answers again: the next task in the limit queue may try.
                 self.limit_slot = None;
-                self.last_line = Instant::now();
+                if let Some(turn) = &mut self.turn {
+                    turn.output(&self.dir.path);
+                }
                 self.say(&text);
                 // ^ A ping's one word is no progress of the task.
                 if !self.pinging() {
@@ -1700,10 +1705,10 @@ impl Host {
                 self.rotating = None;
                 // ^ A ping lost with its process costs the task nothing: the next turn resumes.
                 if self.pinging() {
-                    self.turn_active = false;
+                    self.end_turn("the agent process ended");
                     self.after_ping_ends();
-                } else if self.turn_active && !self.stop_requested {
-                    self.turn_active = false;
+                } else if self.turn.is_some() && !self.stop_requested {
+                    self.end_turn("the agent process ended during a turn");
                     self.log(LogEvent::Stopped {
                         reason: "the agent process ended during a turn".into(),
                     });
@@ -1733,7 +1738,7 @@ impl Host {
         let Some(turn) = self.wait_for_background(turn) else {
             return;
         };
-        self.turn_active = false;
+        self.end_turn(&turn.ended());
         self.answered_ms = now_unix_ms();
         // ^ An error without a model call (a session limit) says nothing of the context.
         if turn.usage.context_tokens > 0 {
@@ -2095,7 +2100,7 @@ impl Host {
         };
         // ^ Claude's own turn after a result, or an agent that ended: no turn of the host's
         // waits, and the next one gets its own bound.
-        if !self.turn_active {
+        if self.turn.is_none() {
             self.background_wait = None;
             return;
         }
@@ -2596,20 +2601,19 @@ impl Host {
         agent::account(&self.record.adapter, &self.record.model)
     }
 
-    /// A turn with no line from the agent for `quiet_bound` ends: the agent is stopped and
+    /// A turn with no line from the agent past its record's deadline ends: the agent is stopped and
     /// the turn is its error. On a fallback it counts as a refusal with no reset, so the task
     /// moves on (`refused`); on the own agent it is the turn's failed result.
     /// ref: docs/tasks.md "Agents"
     fn turn_hung(&mut self) {
-        let turn = agent::hung_turn(self.last_line.elapsed(), self.away());
+        let quiet = self
+            .turn
+            .as_ref()
+            .map_or(Duration::ZERO, stall::Turn::quiet);
+        let turn = agent::hung_turn(quiet, self.away());
         self.say(&turn.text);
         self.stop_agent();
         self.on_result(turn);
-    }
-
-    /// How long a turn may stay quiet (`stall::turn_quiet_ms`, the stall sweep's silent bound).
-    fn quiet_bound(&self) -> Duration {
-        Duration::from_millis(stall::turn_quiet_ms(self.settings().check_timeout_secs))
     }
 
     /// Continue after a usage limit or a failed sign-in. The account's record decides: it ends
@@ -2764,7 +2768,7 @@ impl Host {
 
     /// Keep a reported result for the turn that ends next; the last one of a turn counts.
     fn reported(&mut self, text: Option<String>) -> broker::Response {
-        let Some(text) = text.filter(|_| self.turn_active) else {
+        let Some(text) = text.filter(|_| self.turn.is_some()) else {
             return broker::refused(
                 "`wsx task result -` takes the result JSON on stdin during a turn".into(),
             );
@@ -3222,7 +3226,7 @@ impl Host {
     fn send_check_answer(&mut self, answer: String) {
         self.say("check-run: its answer goes to the worker");
         self.pending.push_back(answer);
-        if !self.turn_active {
+        if self.turn.is_none() {
             self.deliver_pending(TurnTrigger::CheckRun);
         } else if self.pinging() {
             self.after_ping.get_or_insert(TurnTrigger::CheckRun);
@@ -3353,7 +3357,7 @@ impl Host {
                 .last_result
                 .as_ref()
                 .is_some_and(|r| matches!(r.status.as_str(), "blocked" | "paused"));
-            if blocked || self.turn_active {
+            if blocked || self.turn.is_some() {
                 self.log(LogEvent::Checks {
                     results: results.to_vec(),
                 });

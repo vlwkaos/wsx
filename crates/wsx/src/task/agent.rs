@@ -149,6 +149,15 @@ pub fn thinking_chars(content: &[Value]) -> usize {
 }
 
 impl TurnResult {
+    /// What ended the turn, for its record (`stall::Turn`): an error's first line, else the
+    /// result's kind.
+    pub fn ended(&self) -> String {
+        match self.text.lines().next().filter(|_| self.is_error) {
+            Some(line) => line.to_string(),
+            None => self.subtype.clone(),
+        }
+    }
+
     /// The turn thought far more than it said (twice its words, at least `THOUGHT_MIN_CHARS`;
     /// a `-` or empty reply has none): the answer may be in the thinking. Both adapters count
     /// the thinking, so one rule serves both; an error result is judged before (`on_result`). ref: docs/tasks.md "Reply text"

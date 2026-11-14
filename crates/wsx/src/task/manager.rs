@@ -257,9 +257,9 @@ struct Manager {
     last_event: Option<Instant>,
     /// When a message was logged, a turn ran or the host last looked for a recap.
     last_activity: Instant,
-    /// When the agent last wrote a line of the turn, or the turn started: a turn quiet past
-    /// `stall::turn_quiet_ms` is ended (`turn_hung`).
-    last_line: Instant,
+    /// The running turn's record (`stall::Turn`, `turn.json`): past its deadline with no line
+    /// from the agent, the turn ends (`end_hung_turn`).
+    turn_record: Option<stall::Turn>,
     /// The file this host runs from, and whether it must exec its replacement.
     binary: Option<Binary>,
     reexec: bool,
@@ -374,7 +374,7 @@ pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
         pending_events: Vec::new(),
         last_event: None,
         last_activity: Instant::now(),
-        last_line: Instant::now(),
+        turn_record: None,
         binary: Binary::capture(),
         reexec: false,
         owed: Owed::default(),
@@ -682,6 +682,32 @@ impl Manager {
             post: true,
             quote: None,
         });
+    }
+
+    /// The first failed turn of a hold (an agent error, a 403, a hung turn, a failed sign-in) or
+    /// a turn whose agent ended reaches the owner at once: a post at level bad, which the web
+    /// pushes, with the reason, the retry and the open tasks. A usage limit and a move to a
+    /// fallback post none: a stand-in or the next agent answers. ref: docs/tasks.md "Manager"
+    fn alert_failed(&mut self, reason: &str, until_ms: Option<u64>) {
+        let records: Vec<TaskRecord> = project_tasks(&self.dir.project_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, record)| record.ok())
+            .collect();
+        let (count, states) = open_counts(&records);
+        let open = match count {
+            0 => "No task is open.".to_string(),
+            1 => format!("1 open task: {states}."),
+            n => format!("{n} open tasks: {states}."),
+        };
+        let retry = until_ms.map_or(String::new(), |until| {
+            format!(
+                " It tries again at {}.",
+                status::resume_time(until, now_unix_ms())
+            )
+        });
+        let text = format!("{}.{retry} {open}", reason.trim_end_matches('.'));
+        self.post("turn failed".into(), text, Some(Level::Bad));
     }
 
     /// Re-queue messages logged but never delivered, and those delivered to a turn that got no
@@ -2502,7 +2528,7 @@ impl Manager {
         self.save();
     }
 
-    /// A turn with no line from the agent for `stall::turn_quiet_ms` ends: the agent is
+    /// A turn with no line from the agent past its record's deadline ends: the agent is
     /// stopped and the turn is its error, which holds and retries; on a fallback it counts as
     /// a refusal with no reset, so the manager moves on (`refused`).
     /// ref: docs/tasks.md "Agents"
@@ -2510,12 +2536,15 @@ impl Manager {
         if self.turn.is_none() || self.stand_in.is_some() {
             return;
         }
-        let settings = load_task_config(&self.main).unwrap_or_default();
-        let bound = Duration::from_millis(stall::turn_quiet_ms(settings.check_timeout_secs));
-        if self.last_line.elapsed() < bound {
+        let Some(quiet) = self
+            .turn_record
+            .as_ref()
+            .filter(|turn| turn.left().is_zero())
+            .map(stall::Turn::quiet)
+        else {
             return;
-        }
-        let turn = agent::hung_turn(self.last_line.elapsed(), self.state.agent.is_some());
+        };
+        let turn = agent::hung_turn(quiet, self.state.agent.is_some());
         self.say(&turn.text);
         // ^ A late line of the stopped process is not a turn of the manager's.
         self.generation += 1;
@@ -2777,19 +2806,9 @@ impl Manager {
                 .into_iter()
                 .filter_map(|(dir, record)| record.ok().map(|record| (dir, record)))
                 .collect();
-        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-        for (_, record) in tasks.iter().filter(|(_, record)| record.state.is_open()) {
-            *counts
-                .entry(wsx_core::task::status::state_word(record))
-                .or_default() += 1;
-        }
-        let open = match counts.is_empty() {
-            true => "none".to_string(),
-            false => counts
-                .iter()
-                .map(|(state, count)| format!("{count} {state}"))
-                .collect::<Vec<_>>()
-                .join(", "),
+        let open = match open_counts(tasks.iter().map(|(_, record)| record)) {
+            (0, _) => "none".to_string(),
+            (_, states) => states,
         };
         let to_check = checks::open_items(&self.dir.project_id).map_or(0, |items| items.len());
         let approvals = pending_approvals(&self.approval_lines()).len();
@@ -2920,6 +2939,7 @@ impl Manager {
             Ok(()) => {
                 self.turn = Some(Vec::new());
                 self.pinging = true;
+                self.start_turn_record(&self.agent_model.clone());
                 self.say(&format!(
                     "ping {} of {KEEP_WARM_PINGS}: keeps the prompt cache warm",
                     self.pings
@@ -3036,8 +3056,28 @@ impl Manager {
             agent.set_model(&model)?;
             self.agent_model = model;
         }
-        self.last_line = Instant::now();
-        agent.send(text.trim_end())
+        agent.send(text.trim_end())?;
+        self.start_turn_record(&self.agent_model.clone());
+        Ok(())
+    }
+
+    /// Start the record of the turn just sent on `model` (`stall::Turn`).
+    fn start_turn_record(&mut self, model: &str) {
+        let (adapter, _) = self.current_agent();
+        let settings = load_task_config(&self.main).unwrap_or_default();
+        let quiet_ms = stall::turn_quiet_ms(settings.check_timeout_secs);
+        self.turn_record = Some(stall::Turn::start(
+            &self.dir.path,
+            format!("{adapter}/{model}"),
+            quiet_ms,
+        ));
+    }
+
+    /// End the running turn's record with `reason`.
+    fn end_turn_record(&mut self, reason: &str) {
+        if let Some(turn) = self.turn_record.take() {
+            turn.end(&self.dir.path, reason);
+        }
     }
 
     /// The launch of the agent that runs now; its policy is the broker's from here on.
@@ -3135,7 +3175,9 @@ impl Manager {
                 self.say(&text)
             }
             Some(AgentLine::Progress { text, .. }) => {
-                self.last_line = Instant::now();
+                if let Some(turn) = &mut self.turn_record {
+                    turn.output(&self.dir.path);
+                }
                 self.say(&text);
                 self.log(ManagerEvent::Agent { text });
             }
@@ -3145,10 +3187,16 @@ impl Manager {
                 // ^ A lost ping is no stopped turn: the next turn resumes the conversation.
                 if std::mem::take(&mut self.pinging) {
                     self.turn = None;
+                    self.end_turn_record("the agent process ended");
                 } else if self.turn.take().is_some() {
+                    let reason = "the manager agent ended during a turn";
+                    self.end_turn_record(reason);
                     self.log(ManagerEvent::Stopped {
-                        reason: "the manager agent ended during a turn".into(),
+                        reason: reason.into(),
                     });
+                    if self.state.limit.is_none() {
+                        self.alert_failed(reason, None);
+                    }
                     self.report(runtime::AgentState::Error);
                 }
             }
@@ -3159,6 +3207,7 @@ impl Manager {
         if result.answers_nothing() {
             return;
         }
+        self.end_turn_record(&result.ended());
         if std::mem::take(&mut self.pinging) {
             return self.on_ping(result);
         }
@@ -3206,6 +3255,7 @@ impl Manager {
                 }
                 let was_auth = self.state.limit.as_ref().is_some_and(|hold| hold.auth);
                 self.refused(until_ms, attempt, to, &reason, now);
+                // ^ A move to a fallback answers the owner; a hold for the sign-in does not.
                 if self.state.limit.as_ref().is_some_and(|hold| hold.auth) && !was_auth {
                     self.log(ManagerEvent::Stopped {
                         reason: format!(
@@ -3214,6 +3264,8 @@ impl Manager {
                             store::sign_in_retry_ms().div_ceil(60_000)
                         ),
                     });
+                    let until = self.state.limit.as_ref().map(|hold| hold.until_ms);
+                    self.alert_failed(&reason, until);
                 }
                 self.save();
                 self.report(runtime::AgentState::Error);
@@ -3226,6 +3278,9 @@ impl Manager {
             self.log(ManagerEvent::Limit {
                 until: Some(status::resume_time(until_ms, now)),
             });
+            if attempt == 1 {
+                self.alert_failed(&reason, Some(until_ms));
+            }
             let rotate = attempt == ERROR_ROTATE_ATTEMPTS;
             if rotate {
                 self.rotate(0, Some(reason));
@@ -3853,4 +3908,18 @@ pub(super) fn read_note(path: &Path) -> String {
         false => 0,
     };
     String::from_utf8(bytes.split_off(start)).unwrap_or_default()
+}
+
+/// The open tasks of `records`: how many, and "2 working, 1 ready" by state word.
+fn open_counts<'a>(records: impl IntoIterator<Item = &'a TaskRecord>) -> (usize, String) {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for record in records.into_iter().filter(|record| record.state.is_open()) {
+        *counts.entry(status::state_word(record)).or_default() += 1;
+    }
+    let states = counts
+        .iter()
+        .map(|(state, count)| format!("{count} {state}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    (counts.values().sum(), states)
 }

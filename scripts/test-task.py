@@ -732,7 +732,12 @@ def manager_up(created):
     assert several['quote'] == after_sign_in['id'] and several['text'].startswith('> STATUS\n\n'), several
     assert js('task', 'chat')['waiting'] == [], 'a message the turn took is a bubble'
     failed = [e for e in entries() if 'OAuth session expired' in str(e)]
-    assert [e['kind'] for e in failed] == ['agent', 'stopped'], failed
+    assert [e['kind'] for e in failed] == ['agent', 'stopped', 'reply'], failed
+    # ^ The hold for the sign-in reaches the owner once, at once: a post at level bad with the
+    # reason, the retry and the open tasks (docs/tasks.md "Manager").
+    alert = failed[2]
+    assert alert['post'] and alert['level'] == 'bad' and 'It tries again at' in alert['text'] \
+        and re.search(r'(\d+ open tasks?: .+|No task is open)\.$', alert['text']), alert
     assert not [e for e in entries() if e['kind'] == 'rotated' and e['unix_ms'] >= failed[0]['unix_ms']], entries()[-20:]
     retries = launches()[first_launch:]
     assert len({t['pid'] for t in retries}) == len(retries) >= 2 and all(t['resume'] for t in retries), retries
@@ -4352,23 +4357,29 @@ def part_worker(created=None):
     assert stalls(idle) == waited and not stalls(landed_first) and not stalls(added), (stalls(idle), stalls(landed_first), stalls(added))
     js('task', 'close', idle, '--discard')
     configure(LAND_CONFIG, 'review wait over')
-    # A silent worker is one stall per silence: what the manager or the host writes to its log
-    # (an add, a land notice) is no output and starts no new quiet clock; a line of the worker's
-    # does (docs/tasks.md "Manager", Stalls). Its log and record are aged by 3 h by hand, since
-    # the silent bound is `tasks.checkTimeoutSeconds` plus 10 minutes.
+    # A silent worker is one stall per silence: its turn record (`turn.json`, docs/tasks.md
+    # "Agents") is past its deadline and still open, so its host did not end it. What the manager
+    # or the host writes (an add, a land notice) moves no deadline; a line of the worker's does
+    # (docs/tasks.md "Manager", Stalls). The record and the turn are aged by 3 h by hand, since
+    # the host's own bound is `tasks.checkTimeoutSeconds` plus 10 minutes.
     mark('27q')
     quiet_gate = base / 'quiet-gate'
     quiet = js('task', 'new', 'WAIT %s' % quiet_gate, '--files', 'q.txt')['id']
     wait(lambda: show(quiet)['record']['agent_session'], 'the silent worker runs')
     quiet_dir = Path(show(quiet)['log']).parent
     aged_ms = 3 * 3600 * 1000
+    turn_path = quiet_dir / 'turn.json'
+    wait(turn_path.exists, 'the silent worker\'s turn record')
+    turn = json.loads(turn_path.read_text())
+    assert turn['agent'].startswith('claude/') and 'ended' not in turn and turn['deadline_ms'] == turn['output_ms'] + turn['quiet_ms'], turn
 
-    def write_log(lines):
-        tmp = quiet_dir / 'log.jsonl.tmp'
-        tmp.write_text(''.join(json.dumps(line) + '\n' for line in lines))
-        os.replace(tmp, quiet_dir / 'log.jsonl')
+    def write_turn(output_ms):
+        tmp = quiet_dir / 'turn.json.tmp'
+        tmp.write_text(json.dumps({**turn, 'started_ms': turn['started_ms'] - aged_ms, 'output_ms': output_ms,
+                                   'deadline_ms': output_ms + turn['quiet_ms']}))
+        os.replace(tmp, turn_path)
 
-    write_log([{**e, 'unix_ms': e['unix_ms'] - aged_ms} for e in log(quiet)])
+    write_turn(turn['output_ms'] - aged_ms)
     record_path = quiet_dir / 'task.json'
     quiet_started = show(quiet)['record']['state_unix_ms']
 
@@ -4387,7 +4398,10 @@ def part_worker(created=None):
 
     assert age_record()
     silent = wait(lambda: stalls(quiet), 'the silence stall event', 150)
-    assert len(silent) == 1 and re.search(r'working for 3 h .*; no log or check output for 3 h .*; its last output 3 h', silent[0]), silent
+    assert len(silent) == 1 and re.search(r'working for 3 h .*; its turn on claude/\S+ is past its quiet bound of .*; its last output 3 h', silent[0]), silent
+    # ^ `wsx task why` reads the same record.
+    why = cli('task', 'why', str(quiet)).stdout
+    assert re.search(r'^turn:    on claude/\S+ since .*, last output 3 h .*ago, ended by its host at .* with no output$', why, re.M), why
     # ^ An add and a land notice (a message the host writes) restart no clock.
     assert js('task', 'add', quiet, 'WORK q-more.txt')['ok']
     q_lander = js('task', 'new', 'WORK q.txt')['id']
@@ -4399,8 +4413,10 @@ def part_worker(created=None):
     assert stalls(quiet) == silent, stalls(quiet)
     assert not age_record(), 'the record kept its aged state start through the sweeps'
     # ^ A line of the worker's is output: its silence after it is a new stall.
+    line_ms = int(time.time() * 1000) - aged_ms + 1000
     with open(quiet_dir / 'log.jsonl', 'a') as out:
-        out.write(json.dumps({'unix_ms': int(time.time() * 1000) - aged_ms + 1000, 'kind': 'agent', 'text': 'cargo build'}) + '\n')
+        out.write(json.dumps({'unix_ms': line_ms, 'kind': 'agent', 'text': 'cargo build'}) + '\n')
+    write_turn(line_ms)
     again = wait(lambda: len(stalls(quiet)) == 2 and stalls(quiet), 'the stall after new output', 150)
     assert again[:1] == silent and 'cargo build' in again[1], again
     sweeps(2)
@@ -7244,6 +7260,10 @@ def part_host(created=None):
     lc_claude_turn = lambda since, words: next(t for t in traces()[since:] if 'message' in t and t.get('adapter') != 'pi'
                                                and not t.get('manager') and words in t['message'])
     lc_rotated = lambda words: next((e for e in manager_entries() if e['kind'] == 'rotated' and e.get('reason', '').startswith(words)), None)
+    lc_turn = lambda folder: json.loads((Path(folder) / 'turn.json').read_text())
+    # ^ The alerts of failed turns posted after message `since` (docs/tasks.md "Manager").
+    lc_alerts = lambda since, entries=None: [e for e in (entries or manager_entries()) if e['kind'] == 'reply' and e.get('post')
+                                             and e.get('level') == 'bad' and e['id'] > since]
     for name in ('pi-fake.json', 'claude.auth.json'):
         (agents / name).unlink(missing_ok=True)
     # S1, the worker: born on the fallback while the limit holds; the refused prompt sends it home for
@@ -7263,6 +7283,11 @@ def part_host(created=None):
     s1_say = js('task', 'say', 'PIREFUSE %s STATUS without a key' % no_key)
     wait(lambda: lc_rotated('back on claude: pi was refused: No API key found'), 'the manager back home for the wait', 40)
     assert 'agent' not in manager_state() and manager_state()['limit']['account'] is True, manager_state()
+    # ^ The refusal ended the turn's record with Pi's words, at once; a move to the own agent is
+    # no failure the owner must hear of (docs/tasks.md "Agents", "Manager").
+    s1_turn = lc_turn(manager_log.parent)
+    assert s1_turn['agent'].startswith('pi/') and s1_turn['ended']['reason'].startswith('No API key found'), s1_turn
+    assert not lc_alerts(s1_say['id']), lc_alerts(s1_say['id'])
     assert not any(e['kind'] == 'reply' and s1_say['id'] in e['to'] for e in chat()), chat()[-3:]
     limit_file.unlink()
     assert reply_to(s1_say['id'], 40)['text'].startswith('open: '), chat()[-3:]
@@ -7342,6 +7367,10 @@ def part_host(created=None):
     s3_result = next(e for e in log(s3) if e['kind'] == 'result')
     assert show(s3)['state'] == 'failed' and s3_result['status'] == 'failed' and s3_result['summary'].startswith('no output for'), (show(s3)['state'], s3_result)
     assert not any(e['kind'] in ('agent_switch', 'limit_wait') for e in log(s3)) and show(s3)['record']['adapter'] == 'claude', log(s3)
+    # ^ The record the host ended the turn by: its bound, its deadline and the reason.
+    s3_turn = lc_turn(Path(show(s3)['log']).parent)
+    assert s3_turn['agent'].startswith('claude/') and s3_turn['quiet_ms'] == 40000 and s3_turn['deadline_ms'] == s3_turn['output_ms'] + 40000, s3_turn
+    assert s3_turn['ended']['reason'].startswith('no output for') and s3_turn['ended']['unix_ms'] >= s3_turn['deadline_ms'], s3_turn
     js('task', 'close', s3, '--discard')
     # S4, the worker: a hung fallback counts as its refusal with no reset: its account backs off and
     # the task goes home for the wait.
@@ -7372,6 +7401,7 @@ def part_host(created=None):
     s5 = js('task', 'new', 'WCFAUTH %s WORK s5.txt' % (work / 's5-release'))['id']
     assert wait_state(s5, 'ready', 'failed')['state'] == 'failed', show(s5)
     assert 'Attention Required' in next(e for e in log(s5) if e['kind'] == 'result')['summary'], log(s5)
+    assert 'Attention Required' in lc_turn(Path(show(s5)['log']).parent)['ended']['reason'], lc_turn(Path(show(s5)['log']).parent)
     assert not (agents / 'claude.auth.json').exists() and not any(e['kind'] == 'agent_switch' for e in log(s5)), log(s5)
     js('task', 'close', s5, '--discard')
     # S6: home is the task's own model as it started, never the project's default.
@@ -7691,16 +7721,42 @@ def part_host(created=None):
     configure(CONFIG, 'no deploys')
 
     # 39b. S3, the manager (docs/tasks.md "Agents"): a turn with no output past the bound ends as the
-    # agent's error, which holds and retries with the backoff. Last, since the hold lasts 5 minutes.
+    # agent's error, which holds and retries with the backoff, and reaches the owner at once as one
+    # alert with the open-task count ("Manager"). Last, since the hold lasts 5 minutes.
     mark('39b')
     turn_quiet.write_text('40')
+    open_tasks = len(js('task', 'list')['tasks'])
     s3_say = js('task', 'say', 'MHANG %s STATUS hung' % (work / 's3m-release'))
     s3_stop = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'stopped' and e.get('reason', '').startswith('no output for')), None),
                    lambda: 'the hung manager turn ends ' + lc_tail(), 70)
     assert s3_stop and manager_state()['limit']['attempt'] == 1 and 'agent' not in manager_state(), manager_state()
     assert not any(e['kind'] == 'reply' and s3_say['id'] in e['to'] for e in chat()), chat()[-3:]
-    assert any(e['kind'] == 'limit' and e.get('until') for e in manager_entries()[-4:]), manager_entries()[-4:]
+    assert any(e['kind'] == 'limit' and e.get('until') for e in manager_entries()[-6:]), manager_entries()[-6:]
+    s3m_turn = lc_turn(manager_log.parent)
+    assert s3m_turn['ended']['reason'].startswith('no output for') and s3m_turn['quiet_ms'] == 40000, s3m_turn
+    open_words = {0: 'No task is open.', 1: '1 open task: '}.get(open_tasks, '%d open tasks: ' % open_tasks)
+    s3_alerts = lc_alerts(s3_say['id'])
+    assert len(s3_alerts) == 1 and s3_alerts[0]['text'].startswith('no output for') and 'It tries again at' in s3_alerts[0]['text'] \
+        and open_words in s3_alerts[0]['text'], s3_alerts
     turn_quiet.unlink()
+
+    # 39c. A chat's turn that hits a 403 block page (docs/tasks.md "Manager", "Chats"): the chat
+    # host holds as the manager does and alerts the owner in its own chat, with the project's open
+    # tasks. The chat holds 5 minutes too, so it is closed after.
+    mark('39c')
+    alert_goal = work / 'alert-goal.md'
+    alert_goal.write_text('Watch the alerts.\n')
+    cli('task', 'chat', 'new', 'alerts', '--goal', str(alert_goal), '-p', 'demo', '--json')
+    alerts_log = manager_log.parent.parent / 'chats' / 'alerts' / 'log.jsonl'
+    alerts_entries = lambda: [json.loads(line) for line in alerts_log.read_text().splitlines()] if alerts_log.exists() else []
+    manager_alerts = len(lc_alerts(0))
+    blocked_say = js('task', 'say', '--to', 'alerts', 'CFAUTH %s STATUS blocked' % (work / 'cf-release'))
+    chat_alerts = wait(lambda: lc_alerts(blocked_say['id'], alerts_entries()), lambda: 'the chat alert %r' % alerts_entries()[-6:], 40)
+    assert len(chat_alerts) == 1 and chat_alerts[0]['text'].startswith('Failed to authenticate. API Error: 403 Attention Required') \
+        and 'It tries again at' in chat_alerts[0]['text'] and re.search(r'(\d+ open tasks?: .+|No task is open)\.$', chat_alerts[0]['text']), chat_alerts
+    assert 'Attention Required' in lc_turn(alerts_log.parent)['ended']['reason'], lc_turn(alerts_log.parent)
+    assert len(lc_alerts(0)) == manager_alerts, 'the chat alerts in its own chat, not the manager\'s'
+    cli('task', 'chat', 'close', 'alerts', '-p', 'demo', '--json')
     return created
 
 
