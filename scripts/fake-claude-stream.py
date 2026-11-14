@@ -65,6 +65,7 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   LISTTABLE      answer with scripts/fixtures/list-tables.md: a manager's reply whose numbered items each
                  have a table under them, not indented (docs/design/list-tables.md)
   LISTPLAIN      answer with a plain table, a plain list and a list followed by a paragraph
+  GLOBS          answer with file globs written without backticks, and real emphasis (docs/web-client-chat.md "Markdown")
   TABLE5         answer "Five columns:" with a table of five columns and 20 rows, and 30 lines after it
   DIAGRAM        answer with a tall mermaid diagram, drawn after the bubble shows
   PAGE <section> <words>  replace that section of the project overview (its instructions name it)
@@ -422,6 +423,9 @@ def manager_turn(text, project, page):
     if 'LISTPLAIN' in text.split():
         replies.append('Plain shapes:\n\n| Key | Value |\n|---|---|\n| one | 1 |\n| two | 2 |\n\n- first bullet\n- second bullet\n\n'
                        '1. only item\n\nA paragraph after the list.')
+    if 'GLOBS' in text.split():
+        replies.append("Globs: scanned for *.gguf up to 4 folder levels deep. Keep a model's mmproj-*.gguf and mtp-*.gguf draft.\n\n"
+                       'Marks: *word* and **two words** and _x_ and **Note:**')
     if 'TABLE5' in text.split():
         rows = [('alpha', 'blocked', 'owner', 'Monday', 'waits for the network grant'),
                 ('beta', 'ready', 'manager', 'Tuesday', 'lands after the checks pass'),
