@@ -918,7 +918,10 @@ def manager_up(created):
         entries = manager_entries()
         delivered = {n for e in entries if e['kind'] == 'delivered' for n in e['ids']}
         turns = [e['kind'] for e in entries if e['kind'] in ('delivered', 'reply')]
-        return all(e['id'] in delivered for e in entries if e['kind'] == 'message') and turns[-1:] != ['delivered']
+        # ^ A quiet event waits in the queue for a turn that runs anyway (Short::any_wakes).
+        waking = [e for e in entries if e['kind'] == 'message'
+                  and (e['from'] != 'events' or not e.get('short') or any(s.get('wakes', True) for s in e['short']))]
+        return all(e['id'] in delivered for e in waking) and turns[-1:] != ['delivered']
 
     def manager_settled(why):
         # ^ An event line is logged as a message 3 s after the last one: idle, then idle again after that.
