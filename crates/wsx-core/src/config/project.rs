@@ -2,7 +2,7 @@
 // ref: docs/configuration.md "Project configuration"
 
 use crate::fs_util::{write_atomic, AtomicWrite, Publish};
-use crate::model::workspace::{DefaultSessionConfig, ProjectConfig, TaskConfig};
+use crate::model::workspace::{DefaultSessionConfig, ProjectConfig, Scenario, TaskConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -104,6 +104,20 @@ impl MemoryFile {
 /// Most areas a project declares.
 const MAX_MEMORY_AREAS: usize = 64;
 
+/// A relative path inside the project: not empty, no `..`, one line.
+fn plain(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 1024
+        && !path.starts_with('/')
+        && !path.chars().any(char::is_control)
+        && !path.split('/').any(|part| part == "..")
+}
+
+/// A valid glob of relative paths.
+fn relative_glob(glob: &str) -> bool {
+    plain(glob) && glob::Pattern::new(glob).is_ok()
+}
+
 /// `memory.areas` checked: each glob valid and relative, each brief a relative path.
 fn memory_areas(file: MemoryFile) -> Result<Vec<(String, String)>, String> {
     if file.areas.len() > MAX_MEMORY_AREAS {
@@ -112,17 +126,10 @@ fn memory_areas(file: MemoryFile) -> Result<Vec<(String, String)>, String> {
             file.areas.len()
         ));
     }
-    let plain = |path: &str| {
-        !path.is_empty()
-            && path.len() <= 1024
-            && !path.starts_with('/')
-            && !path.chars().any(char::is_control)
-            && !path.split('/').any(|part| part == "..")
-    };
     file.areas
         .into_iter()
         .map(|(glob, brief)| {
-            if !plain(&glob) || glob::Pattern::new(&glob).is_err() {
+            if !relative_glob(&glob) {
                 return Err(format!("memory.areas: {glob:?} is not a relative glob"));
             }
             if !plain(&brief) {
@@ -153,6 +160,12 @@ struct TasksFile {
     capture_budget_mb: Option<u64>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     scenarios: BTreeMap<String, String>,
+    /// Kept beside `scenarios`, not in it, so an older wsx reads this config (it ignores an
+    /// unknown key but refuses a map where it reads a command).
+    #[serde(rename = "scenarioPaths", skip_serializing_if = "BTreeMap::is_empty")]
+    scenario_paths: BTreeMap<String, Vec<String>>,
+    #[serde(rename = "scenarioFree", skip_serializing_if = "Vec::is_empty")]
+    scenario_free: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     env: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -612,7 +625,8 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
     }
     config.checks = validate_list(file.checks, "tasks.checks", MAX_DEFAULT_COMMAND_BYTES)?;
-    config.scenarios = validate_scenarios(file.scenarios)?;
+    config.scenarios = validate_scenarios(file.scenarios, file.scenario_paths)?;
+    config.scenario_free = validate_globs(file.scenario_free, "tasks.scenarioFree")?;
     config.env = validate_env(file.env)?;
     if let Some(preview) = file.preview {
         config.preview = Some(preview_config(preview)?);
@@ -852,7 +866,13 @@ fn minutes_to_secs(minutes: f64, field: &str) -> Result<u64, String> {
 /// A scenario name starts with a letter, so it never reads as a check number.
 fn validate_scenarios(
     scenarios: BTreeMap<String, String>,
-) -> Result<BTreeMap<String, String>, String> {
+    mut paths: BTreeMap<String, Vec<String>>,
+) -> Result<BTreeMap<String, Scenario>, String> {
+    if let Some(name) = paths.keys().find(|name| !scenarios.contains_key(*name)) {
+        return Err(format!(
+            "tasks.scenarioPaths: {name:?} is not in tasks.scenarios"
+        ));
+    }
     if scenarios.len() > MAX_TASK_LIST_ITEMS {
         return Err(format!(
             "tasks.scenarios has more than {MAX_TASK_LIST_ITEMS} entries"
@@ -870,9 +890,26 @@ fn validate_scenarios(
             let field = format!("tasks.scenarios.{name}");
             let command = validate_optional_text(Some(command), &field, MAX_DEFAULT_COMMAND_BYTES)?
                 .ok_or_else(|| format!("{field} must not be empty"))?;
-            Ok((name, command))
+            let paths = validate_globs(
+                paths.remove(&name).unwrap_or_default(),
+                &format!("tasks.scenarioPaths.{name}"),
+            )?;
+            Ok((name, Scenario { command, paths }))
         })
         .collect()
+}
+
+/// A list of relative path globs, at most `MAX_TASK_LIST_ITEMS`.
+fn validate_globs(globs: Vec<String>, field: &str) -> Result<Vec<String>, String> {
+    if globs.len() > MAX_TASK_LIST_ITEMS {
+        return Err(format!(
+            "{field} has more than {MAX_TASK_LIST_ITEMS} entries"
+        ));
+    }
+    match globs.iter().find(|glob| !relative_glob(glob)) {
+        Some(glob) => Err(format!("{field}: {glob:?} is not a relative glob")),
+        None => Ok(globs),
+    }
 }
 
 /// `tasks.env`: names a shell can set, never one wsx sets itself (`PATH`, `GIT_EDITOR`,

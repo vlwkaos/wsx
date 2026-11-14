@@ -6040,6 +6040,50 @@ def part_host(created=None):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'no ci run scenarios')
 
+    # 32od. Scenarios by changed paths (docs/tasks.md "Scenarios"): a done result runs, unasked,
+    # each scenario whose `scenarioPaths` name a path the task changed, and records its pass; a change that
+    # only `scenarioFree` names runs none; a path no glob names runs every scenario with paths, and
+    # their failure is the task's. A scenario the worker names whose paths the change does not touch
+    # fails as a finding: host evidence, one manager event, no fix turn. One without paths runs only
+    # by name.
+    mark('32od')
+    path_log = base / 'path-scenarios.log'
+    configure(LAND_CONFIG + '  scenarioFree: [free.txt]\n  scenarioPaths: {near: [near.txt], far: [far.txt]}\n'
+              '  scenarios:\n    near: echo near >> %s\n'
+              '    far: \'echo far >> %s; echo "FAIL: far assert"; exit 1\'\n'
+              '    named: echo named >> %s\n' % (path_log, path_log, path_log), 'path scenarios')
+
+    def path_runs():
+        return path_log.read_text().split() if path_log.exists() else []
+
+    def triggers(n):
+        return [e['trigger'] for e in log(n) if e['kind'] == 'result']
+
+    near = js('task', 'new', 'WORK near.txt')['id']
+    done = wait_state(near, 'ready', 'failed')
+    assert done['state'] == 'ready' and path_runs() == ['near'] and triggers(near) == ['step'], (path_runs(), log(near))
+    assert [e for e in done['result']['result']['evidence'] if e['check'] == 'wsx task check-run near passed (recorded by the host)'], done['result']
+    free = js('task', 'new', 'WORK free.txt')['id']
+    assert wait_state(free, 'ready', 'failed')['state'] == 'ready' and not kinds(free, 'check_run'), log(free)
+    assert path_runs() == ['near'], path_runs()
+    # ^ The worker names `far` after its commit; its answer holds the result, then `near` runs.
+    finding = js('task', 'new', 'CHECKRUN_LATER far WORK near.txt')['id']
+    done = wait_state(finding, 'ready', 'failed')
+    assert done['state'] == 'ready' and triggers(finding) == ['step'] and path_runs()[1:] == ['far', 'near'], (path_runs(), log(finding))
+    proof = [e for e in done['result']['result']['evidence'] if 'check-run far failed outside the task\'s changed paths' in e['check']]
+    assert len(proof) == 1 and 'FAIL: far assert' in proof[0]['check'] and 'not yours' in proof[0]['proof'], done['result']
+    event = wait(lambda: events_with('#%d outside its changed paths' % finding), 'the finding event', 30)
+    assert len(event) == 1 and 'ends with `FAIL: far assert`' in event[0]['text'], event
+    unnamed = js('task', 'new', 'WORK misc.txt')['id']
+    assert wait_state(unnamed, 'ready', 'failed')['state'] == 'ready', log(unnamed)
+    assert sorted(path_runs()[3:]) == ['far', 'near'] and triggers(unnamed) == ['step', 'check_run'], (path_runs(), log(unnamed))
+    # ^ #finding's log has the same assert, so the turn calls it known; it is still no finding.
+    assert not [e for e in show(unnamed)['result']['result']['evidence'] if 'recorded by the host' in e['check']], show(unnamed)['result']
+    assert 'named' not in path_runs(), path_runs()
+    for n in (near, free, finding, unnamed):
+        js('task', 'close', n, '--discard')
+    configure(LAND_CONFIG, 'no path scenarios')
+
     # 32p. A turn with no result (docs/tasks.md "Claude adapter"): Claude's own 0-token turn for
     mark('32p')
     # a background-task notification is ignored; a model turn without a result is asked once.

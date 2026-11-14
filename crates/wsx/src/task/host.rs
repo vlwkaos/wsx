@@ -673,7 +673,8 @@ impl Host {
         // ^ The worker finishes with the proof it asked for, then the checks run.
         let commit = run.as_ref().map_or("", |run| short_commit(&run.commit));
         // ^ Every failing check is one other tasks or main fail with too: a short answer with no
-        // rerun, and when main's own CI run fails the same way, the host records it as evidence.
+        // rerun, and when main's own CI run fails the same way, or the check is a scenario the
+        // change does not touch, the host records it as evidence.
         // ref: docs/tasks.md "Shared failure"
         let answer = match known {
             Some(on_main) => CheckAnswer {
@@ -683,7 +684,11 @@ impl Host {
                 ),
                 proof: (on_main && tree_kept).then(|| Evidence {
                     check: format!(
-                        "wsx task check-run {label} failed on main too: {} {RECORDED_BY_HOST}",
+                        "wsx task check-run {label} failed {}: {} {RECORDED_BY_HOST}",
+                        match found.iter().any(|failure| failure.outside) {
+                            true => "outside the task's changed paths",
+                            false => "on main too",
+                        },
                         found
                             .iter()
                             .map(|failure| failure.shown.as_str())
@@ -750,7 +755,8 @@ impl Host {
 
     /// Whether every check that failed in `results` is a failure `found` shows in other tasks
     /// or on main, and no other check of the tree's kept results failed: `Some(true)` when
-    /// main's latest CI run fails with all of them.
+    /// main's latest CI run fails with all of them or their scenarios' paths name no changed
+    /// path (the host records those as evidence).
     fn known_failure(
         &self,
         results: &[CheckResult],
@@ -763,8 +769,13 @@ impl Host {
             .flat_map(|(_, kept)| kept.values())
             .any(|c| c.exit != Some(0) && !results.iter().any(|r| r.command == c.command));
         let known = |check: &CheckResult| found.iter().find(|f| f.command == check.command);
-        (!failed.is_empty() && !kept_failure && failed.iter().all(|c| known(c).is_some()))
-            .then(|| failed.iter().all(|c| known(c).is_some_and(|f| f.on_main)))
+        (!failed.is_empty() && !kept_failure && failed.iter().all(|c| known(c).is_some())).then(
+            || {
+                failed
+                    .iter()
+                    .all(|c| known(c).is_some_and(|f| f.on_main || f.outside))
+            },
+        )
     }
 
     /// Whether this host must exec the wsx file that replaced it before it starts more work:
@@ -1858,12 +1869,83 @@ impl Host {
         self.settle_result();
     }
 
+    /// A done result runs the scenarios its change touches that have no kept result on this
+    /// tree, as the worker's own check-run of them would, and the result waits for their answer:
+    /// true when they run.
+    /// ref: docs/tasks.md "Scenarios"
+    fn run_touched_scenarios(&mut self) -> bool {
+        let done = self
+            .last_result
+            .as_ref()
+            .is_some_and(|result| result.status == "done");
+        if !done || self.stopped || self.record.plan {
+            return false;
+        }
+        let names: Vec<String> = self
+            .scenarios_touched("HEAD")
+            .into_iter()
+            .filter_map(|(name, _, touched)| touched.then_some(name))
+            .collect();
+        if names.is_empty() {
+            return false;
+        }
+        let argv: Vec<String> = ["task", "check-run"]
+            .into_iter()
+            .map(String::from)
+            .chain(names)
+            .collect();
+        // ^ Nobody waits on the call: the answer goes to the held result.
+        let (reply, _answer) = std::sync::mpsc::channel();
+        self.check_run(&argv, reply);
+        let Some(run) = &mut self.check_run else {
+            return false;
+        };
+        run.result_waits = true;
+        let label = run.label.clone();
+        self.say(&format!(
+            "the result waits for the scenarios its change touches: {label}"
+        ));
+        self.show_held_result();
+        true
+    }
+
+    /// Each scenario with `paths` as (name, command, whether the change of `head` touches
+    /// it); empty when the config or git cannot tell.
+    fn scenarios_touched(&self, head: &str) -> Vec<(String, String, bool)> {
+        let Ok(config) = load_task_config(&self.record.project_path) else {
+            return Vec::new();
+        };
+        let touched = copy::touched_scenarios(
+            &self.record.working_copy,
+            head,
+            &self.record.default_branch,
+            &config,
+        )
+        .unwrap_or_else(|error| {
+            self.say(&format!(
+                "cannot tell the scenarios the change touches: {error:#}"
+            ));
+            BTreeMap::new()
+        });
+        touched
+            .into_iter()
+            .filter_map(|(name, touched)| {
+                let command = config.scenarios.get(&name)?.command.clone();
+                Some((name, command, touched))
+            })
+            .collect()
+    }
+
     /// What follows the worker's result, held in `last_result`: the block, plan and step
     /// rules, then the checks.
     fn settle_result(&mut self) {
         let Some(result) = self.last_result.clone() else {
             return;
         };
+        // ^ The scenarios the change touches answer first, also after a held check-run's answer.
+        if self.run_touched_scenarios() {
+            return;
+        }
         // ^ Claude's own turn (a background task's notice) can answer while the checks of an
         // earlier result run: those checks answer it, never a second run beside them.
         if let Some((_, newer)) = &mut self.gate {
@@ -2759,7 +2841,7 @@ impl Host {
             .map(|settings| settings.scenarios)
             .unwrap_or_default();
         let mut runnable = self.record.checks.clone();
-        runnable.extend(scenarios.values().cloned());
+        runnable.extend(scenarios.values().map(|scenario| scenario.command.clone()));
         let checks = self.record.checks.len();
         let picked: Result<Vec<(usize, String)>, String> = match numbers {
             [] => Ok(runnable.iter().take(checks).cloned().enumerate().collect()),
@@ -4047,10 +4129,32 @@ impl Host {
     /// run it was (and for main's, see `check_run_done`). ref: docs/tasks.md "Checks, revisions and report"
     fn shared_failures(&self, results: &[CheckResult]) -> Vec<failure::SharedFailure> {
         let now = now_unix_ms();
-        let found = failure::shared_failures(&self.record.project_id, self.record.id, results, now);
+        let mut found =
+            failure::shared_failures(&self.record.project_id, self.record.id, results, now);
+        // ^ A scenario whose paths the run's change does not touch fails on main: a finding.
+        let head = self
+            .check_run
+            .as_ref()
+            .map(|run| run.commit.clone())
+            .filter(|commit| !commit.is_empty())
+            .unwrap_or_else(|| "HEAD".into());
+        let outside: Vec<String> = self
+            .scenarios_touched(&head)
+            .into_iter()
+            .filter_map(|(_, command, touched)| (!touched).then_some(command))
+            .collect();
+        for result in results.iter().filter(|r| outside.contains(&r.command)) {
+            match found.iter_mut().find(|f| f.command == result.command) {
+                Some(failure) => failure.outside = true,
+                None => found.extend(failure::outside(self.record.id, result)),
+            }
+        }
         // ^ A failure only main's CI run has is the project's known one: no event, the ready
         // event names it from the evidence.
-        for failure in found.iter().filter(|failure| failure.tasks.len() > 1) {
+        for failure in found
+            .iter()
+            .filter(|f| f.tasks.len() > 1 || (f.outside && !f.on_main))
+        {
             self.tell_manager(failure.key(), failure.event());
         }
         found

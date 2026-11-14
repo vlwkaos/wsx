@@ -38,6 +38,9 @@ pub struct SharedFailure {
     pub tasks: Vec<u32>,
     /// Main's latest CI run of the scenario fails with this line too.
     pub on_main: bool,
+    /// A scenario whose paths the task's change does not touch: a finding on main, not the
+    /// task's failure. ref: docs/tasks.md "Scenarios"
+    pub outside: bool,
 }
 
 impl SharedFailure {
@@ -48,6 +51,15 @@ impl SharedFailure {
 
     /// The event line for the manager.
     pub fn event(&self) -> String {
+        if self.outside && self.tasks.len() < 2 {
+            return format!(
+                "a scenario fails in {} outside its changed paths, likely on main: `{}` ends \
+                 with `{}`; one fix task",
+                self.tasks(),
+                clip(&self.command),
+                self.shown
+            );
+        }
         format!(
             "checks fail the same way in {}, likely on main: `{}` ends with `{}`; one fix task, \
              not one per task",
@@ -66,14 +78,23 @@ impl SharedFailure {
             .map(|task| format!("#{task}"))
             .collect();
         let main = self.on_main.then(|| "on main".to_string());
+        let outside = self
+            .outside
+            .then(|| "outside this task's changed paths".to_string());
         let place: Vec<String> = main
             .into_iter()
             .chain((!others.is_empty()).then(|| format!("in {}", others.join(", "))))
+            .chain(outside)
             .collect();
         format!(
-            "`{}`: fails {} too: `{}`; not yours.",
+            "`{}`: fails {}{}: `{}`; not yours.",
             clip(&self.command),
             place.join(" and "),
+            if self.outside && !self.on_main && others.is_empty() {
+                ""
+            } else {
+                " too"
+            },
             self.shown
         )
     }
@@ -230,7 +251,22 @@ pub fn shared_failures(
                 shown,
                 tasks,
                 on_main,
+                outside: false,
             }
         })
         .collect()
+}
+
+/// `result`'s failure as a finding outside task `task`'s change: its scenario's paths name no
+/// changed path. None when the result passed or its output names no cause.
+pub fn outside(task: u32, result: &CheckResult) -> Option<SharedFailure> {
+    let (shown, line) = failure_line(result)?;
+    Some(SharedFailure {
+        command: result.command.clone(),
+        line,
+        shown,
+        tasks: vec![task],
+        on_main: false,
+        outside: true,
+    })
 }
