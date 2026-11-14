@@ -6681,7 +6681,10 @@ def part_host(created=None):
     assert re.search(r'■ build.*■ manager', costs) and cost_day.rstrip().endswith((before[1], after[1])), costs
     token_day = next(line for line in tokens.splitlines() if re.search(label, line))
     assert re.search(r'■ input +■ cache read +■ cache write +■ output +hit rate', tokens) and '■ build' not in tokens, tokens
-    assert token_day.split()[-2:] in (before[2], after[2]) and '█' in token_day, (token_day, before, after)
+    # ^ Several pings can land while the TUI reads its screens, so the row may be a state between the two.
+    unit = lambda text: float(text.rstrip('kM')) * (1e6 if text.endswith('M') else 1e3 if text.endswith('k') else 1)
+    total, rate = token_day.split()[-2:]
+    assert unit(before[2][0]) <= unit(total) <= unit(after[2][0]) and int(before[2][1][:-1]) <= int(rate[:-1]) <= int(after[2][1][:-1]) and '█' in token_day, (token_day, before, after)
     assert re.search(r'Usage +.* · 3 pings$', detail, re.M), detail
     for n in (held, cold):
         js('task', 'close', n, '--discard')
