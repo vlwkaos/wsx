@@ -6048,7 +6048,7 @@ def part_host(created=None):
     # by name.
     mark('32od')
     path_log = base / 'path-scenarios.log'
-    configure(LAND_CONFIG + '  scenarioFree: [free.txt]\n  scenarioPaths: {near: [near.txt], far: [far.txt]}\n'
+    configure(LAND_CONFIG + '  scenarioFree: [path-free.txt]\n  scenarioPaths: {near: [near.txt], far: [far.txt]}\n'
               '  scenarios:\n    near: echo near >> %s\n'
               '    far: \'echo far >> %s; echo "FAIL: far assert"; exit 1\'\n'
               '    named: echo named >> %s\n' % (path_log, path_log, path_log), 'path scenarios')
@@ -6063,7 +6063,7 @@ def part_host(created=None):
     done = wait_state(near, 'ready', 'failed')
     assert done['state'] == 'ready' and path_runs() == ['near'] and triggers(near) == ['step'], (path_runs(), log(near))
     assert [e for e in done['result']['result']['evidence'] if e['check'] == 'wsx task check-run near passed (recorded by the host)'], done['result']
-    free = js('task', 'new', 'WORK free.txt')['id']
+    free = js('task', 'new', 'WORK path-free.txt')['id']
     assert wait_state(free, 'ready', 'failed')['state'] == 'ready' and not kinds(free, 'check_run'), log(free)
     assert path_runs() == ['near'], path_runs()
     # ^ The worker names `far` after its commit; its answer holds the result, then `near` runs.
