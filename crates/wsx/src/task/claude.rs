@@ -490,11 +490,12 @@ pub(super) fn read_stream(
         }
         let before = turns.context;
         let line = parse_line(&value, &mut turns);
-        // ^ A main-conversation call's size, as it comes: the host bounds a turn by it.
+        // ^ A main-conversation call's size, as it comes: the host bounds a turn by it. A line
+        // without usage says nothing of the context, as a result without one (`on_result`).
         // ref: docs/tasks.md "Context rotation"
-        let size = turns
-            .context
-            .filter(|_| value["type"] == "assistant" && turns.context != before);
+        let size = turns.context.filter(|&tokens| {
+            tokens > 0 && value["type"] == "assistant" && turns.context != before
+        });
         size.is_none_or(|tokens| send(AgentLine::Context(tokens))) && line.is_none_or(&mut send)
     })
 }
