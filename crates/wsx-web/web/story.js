@@ -4,7 +4,7 @@
 import { api } from "./api.js";
 import { ago, firstSentence, html, Icon, lastSentence, plural, short, useEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
-import { agentWords, running, statusTone } from "./task-words.js";
+import { agentWords, running, statusTone, TaskChip } from "./task-words.js";
 
 // `refs/heads/main` reads as `main`, `refs/remotes/origin/main` as `origin/main`.
 const branchName = (ref) => (ref ?? "").replace(/^refs\/(heads|remotes)\//, "");
@@ -167,24 +167,56 @@ function goalOf(detail) {
   return !a || a.startsWith(b) || b.startsWith(a) ? "" : goal;
 }
 
+// Where the task stands among the others and where it goes (wsx-core `view::flow`, one fact a
+// line): what it waits on, what it lands into while open, its parent's children and the open
+// tasks that wait for it. Each task is its chip, so a tap opens it.
+function Flow({ project, detail }) {
+  const { flow, status } = detail;
+  if (!flow) return null;
+  const chip = (id) => html`<${TaskChip} project=${project} id=${id} />`;
+  const waits = [
+    flow.after && html`<span key="after">${chip(flow.after.task)} to land, ${flow.after.because}</span>`,
+    flow.held && html`<span key="held">held: ${flow.held}</span>`,
+  ].filter(Boolean);
+  const open = detail.progress != null;
+  const blocks = status.waited_by ?? [];
+  if (!waits.length && !open && !flow.parent && !flow.children.length && !blocks.length) return null;
+  const list = (rows) => rows.map((row, index) => html`${index > 0 && ", "}${row}`);
+  return html`
+    <dl class="facts task-flow" aria-label="Where it goes">
+      ${waits.length > 0 && html`<dt>Waits on</dt><dd>${list(waits)}</dd>`}
+      ${open && html`<dt>Lands into</dt><dd>${flow.parent != null ? chip(flow.parent) : flow.into}</dd>`}
+      ${!open && flow.parent != null && html`<dt>Parent</dt><dd>${chip(flow.parent)}</dd>`}
+      ${flow.children.length > 0 && html`<dt>Children</dt><dd>${list(flow.children.map((child) => html`<span key=${child.id}>${chip(child.id)} ${child.state}</span>`))}</dd>`}
+      ${blocks.length > 0 && html`<dt>Blocks</dt><dd>${list(blocks.map((waiter) => html`<span key=${waiter.task}>${chip(waiter.task)}</span>`))}</dd>`}
+    </dl>`;
+}
+
 // The top of the task sheet: how an open task is doing and what it does now, what it is about,
-// what changed (the whole summary and what the worker decided) and what the owner should know
-// next with the task's actions beside it (docs/web-client-tasks.md "Task sheet").
-export function TaskStory({ detail, words, children }) {
+// where it stands among the others, what changed (the summary's first paragraph; More shows the
+// rest and what the worker decided) and what the owner should know next with the task's actions
+// beside it (docs/web-client-tasks.md "Task sheet").
+export function TaskStory({ project, detail, words, children }) {
+  const [whole, setWhole] = useState(false);
   const summary = summaryIsCurrent(detail) ? (detail.result?.summary ?? "").trim() : "";
   const decisions = detail.result?.decisions ?? [];
+  const [lead] = summary.split(/\n\s*\n/);
+  const more = !whole && (lead.length < summary.length || decisions.length > 0);
   const goal = goalOf(detail);
   const goalLine = goal && html`<p class="story-goal">${words(goal)}</p>`;
   // ^ What it waits for, why, how long and what comes next (docs/tasks.md "Status").
   const next = detail.status.sentence;
-  if (!detail.progress && !goal && !summary && !next && !children) return null;
+  const flow = html`<${Flow} project=${project} detail=${detail} />`;
+  if (!detail.progress && !goal && !summary && !next && !children && !detail.flow) return null;
   return html`
     <section class="story" aria-label="Where this task stands">
       ${detail.progress ? html`<${Progress} detail=${detail} words=${words} goal=${goalLine} />` : goalLine}
+      ${flow}
       ${summary && html`
         <div class="story-summary">
-          <${Markdown} text=${summary} words=${words} />
-          ${decisions.length ? html`<p>Decided: ${decisions.map((entry) => `${entry.choice} (${entry.reason})`).join("; ")}.</p>` : null}
+          <${Markdown} text=${more ? lead : summary} words=${words} />
+          ${!more && decisions.length ? html`<p>Decided: ${decisions.map((entry) => `${entry.choice} (${entry.reason})`).join("; ")}.</p>` : null}
+          ${more && html`<button class="link-action story-more" type="button" onClick=${() => setWhole(true)}>More</button>`}
         </div>`}
       ${(next || children) && html`<div class="story-act">${next && html`<p class="story-next">${next}</p>`}${children}</div>`}
     </section>`;

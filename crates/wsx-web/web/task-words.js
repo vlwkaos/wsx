@@ -113,9 +113,10 @@ export function withChips(project, source = null) {
 }
 
 export const KIND_TONE = { waiting: "attention", failed: "danger", approval: "attention", land: "accent", ask: "accent" };
-// One open item in words, as the owner would read it: "#4 Waiting for your answer", "Approve
-// land #3". The words are the server's `status` (wsx-core task::status, docs/tasks.md "Status").
-export const needWords = (item) => item.kind === "approval" || item.kind === "ask" ? item.label : `#${item.task} ${item.status.label}`;
+// One open item in words, as the owner would read it: "#4 Waiting for your answer · after #2",
+// "Approve land #3"; a task's `flow` phrase follows its label (wsx-core `view::flow`). The words are the server's `status` (wsx-core task::status, docs/tasks.md "Status").
+export const needWords = (item) => item.kind === "approval" || item.kind === "ask" ? item.label
+  : [`#${item.task} ${item.status.label}`, item.flow?.phrase].filter(Boolean).join(" · ");
 export const needTone = (item) => KIND_TONE[item.kind];
 
 // The tone of a task's status by its `status.kind` (docs/tasks.md "Status"), else its stage's;

@@ -32,7 +32,6 @@ use cmd::chat::{
     boundary_profile, chat, chat_command, dismiss, manager_command, say_command, search,
 };
 use cmd::check::check;
-pub(crate) use cmd::check::fail_check;
 use cmd::deploy::{deploy, deployed, push, trial_command};
 use cmd::land::{after_command, hold_command, land_command, run_batch};
 use cmd::new::new;

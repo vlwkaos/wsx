@@ -599,8 +599,8 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         title: task["title"].as_str().unwrap_or_default().to_string(),
         state: state_word(task),
         // ^ The words of wsx-core `task::status` (docs/tasks.md "Status").
-        // ^ With the reason of a wait for another task (`status.wait`), as the web's row.
-        status: [&task["status"]["label"], &task["status"]["wait"]]
+        // ^ With where it goes (`flow.phrase`: held, after, step, children, into), as the web's row.
+        status: [&task["status"]["label"], &task["flow"]["phrase"]]
             .iter()
             .filter_map(|word| word.as_str().filter(|word| !word.is_empty()))
             .collect::<Vec<_>>()

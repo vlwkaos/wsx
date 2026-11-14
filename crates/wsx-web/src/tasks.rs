@@ -177,6 +177,7 @@ fn build_overview(
             ..Default::default()
         };
         let status = status::status(dir, record, &facts, now);
+        let flow = view::flow(record, &records, &status);
         titles.insert(record.id, title.clone());
         let order = view::attention(record.state);
         listed.push((
@@ -187,13 +188,14 @@ fn build_overview(
                 "revision": record.revision, "updated_unix_ms": record.updated_unix_ms,
                 "waiting": record.waiting,
                 "status": status,
+                "flow": flow,
                 "agent": record.state.is_open().then(|| view::task_agent(record)),
             }),
         ));
         let item = |kind: &str| {
             json!({
                 "kind": kind, "task": record.id, "title": title, "state": record.state, "status": status,
-                "revision": record.revision, "unix_ms": record.updated_unix_ms,
+                "flow": flow, "revision": record.revision, "unix_ms": record.updated_unix_ms,
             })
         };
         if needs::stage(dir, record, land_auto) == Stage::Working {
@@ -529,7 +531,9 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
         deployed: summary["deploy"]["deployed"].as_bool(),
         waiters: &waiters,
     };
-    summary["status"] = json!(status::status(&dir, &record, &facts, now));
+    let status = status::status(&dir, &record, &facts, now);
+    summary["flow"] = view::flow(&record, &records, &status);
+    summary["status"] = json!(status);
     summary["hold"] = json!(record.hold);
     let trial = ledger::trial_status(
         &scope.store,

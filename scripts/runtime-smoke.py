@@ -2168,7 +2168,8 @@ try:
         for n, entry in enumerate(chat_log):
             log_file.write(json.dumps({"unix_ms": at + n * 1000, **entry}) + "\n")
     # A task that waits for another (`wsx task after`): the Tasks view's row adds the reason after
-    # the label, and the detail of the task waited for lists who waits (docs/tasks.md "TUI").
+    # the label, the detail's Waits on row names the task and why, and the detail of the task waited
+    # for says where it goes and lists who waits under Blocks (docs/tasks.md "TUI").
     keep_store = keep_log.parent.parent
     now_ms = int(time.time() * 1000)
     for number, state, after in ((1, "working", None), (2, "ready", {"task": 1, "text": "WORK x.txt", "since_unix_ms": now_ms, "because": "check"})):
@@ -2188,15 +2189,16 @@ try:
              lambda: f"the Tasks view row did not give the reason of the wait:\n{remove_tui.text()}", seconds=60)
     remove_tui.send(b"\r")
     # ^ A narrow detail wraps the sentence: the words are read with their line breaks as one space.
-    wait_for(lambda: "Its checks fail" in " ".join(remove_tui.text().split()),
+    wait_for(lambda: "Its checks fail" in " ".join(remove_tui.text().split())
+             and re.search(r"Waits on\s+#1 to land, its checks fail", remove_tui.text()) and re.search(r"Goes\s+into main", remove_tui.text()),
              lambda: f"the detail did not give the reason:\n{remove_tui.text()}", seconds=60)
     remove_tui.send(b"\x1b")
     wait_for(lambda: "Its checks fail" not in " ".join(remove_tui.text().split()), "Esc did not close the detail", seconds=60)
     remove_tui.send(b"j\r")
-    wait_for(lambda: re.search(r"Waited by\s+#2", remove_tui.text()),
+    wait_for(lambda: re.search(r"Blocks\s+#2", remove_tui.text()) and re.search(r"Goes\s+into main", remove_tui.text()),
              lambda: f"the detail of #1 did not list who waits for it:\n{remove_tui.text()}", seconds=60)
     remove_tui.send(b"\x1b")
-    wait_for(lambda: "Waited by" not in remove_tui.text(), "Esc did not close the detail of #1", seconds=60)
+    wait_for(lambda: "Blocks" not in remove_tui.text(), "Esc did not close the detail of #1", seconds=60)
     shutil.rmtree(keep_store / "1")
     shutil.rmtree(keep_store / "2")
     remove_tui.send(b"m")

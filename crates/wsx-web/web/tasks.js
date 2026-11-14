@@ -144,7 +144,7 @@ function NeedRow({ project, item, index, onActing, onFailed, onMention, onReply,
   }
   // ^ An approval reads as the action it asks for, never as its id (docs/web-client-tasks.md).
   const context = item.kind === "ask" ? "Asks you" : item.kind === "approval" ? item.title ?? item.url ?? item.commit ?? ""
-    : item.kind === "land" && trial?.stage === "live" ? "on the live site: try it" : item.status.label;
+    : item.kind === "land" && trial?.stage === "live" ? "on the live site: try it" : [item.status.label, item.flow?.phrase].filter(Boolean).join(" · ");
   const asks = item.kind === "ask";
   return html`
     <${ListRow} rowKey=${itemKey(item)} leaving=${leaving} project=${project} task=${item.kind === "approval" ? null : item.task} tone=${KIND_TONE[item.kind]}
@@ -160,24 +160,23 @@ const WaitingRow = ({ project, item }) => html`
   <${ListRow} rowKey=${`wait-${item.approval}`} project=${project} label=${item.label}
     context=${`Runs when #${item.after} lands`} href=${taskLink(project, item.after)} />`;
 
-// A working task in the reservoir: its chip, its title, and its status, wait and agent.
+// A working task in the reservoir: its chip, its title, and its status, where it goes and agent.
 const RunningRow = ({ project, task, leaving }) => html`
   <${ListRow} rowKey=${`run-${task.id}`} leaving=${leaving} project=${project} task=${task.id} label=${task.title}
-    context=${[task.status.label, task.status.wait, agentWords(task.agent)].filter(Boolean).join(" · ")}
+    context=${[task.status.label, task.flow?.phrase, agentWords(task.agent)].filter(Boolean).join(" · ")}
     href=${taskLink(project, task.id)} />`;
 
-// An open To check item: its check, what passes it, Fail and Pass as the sheet has them
-// (checks.js `CheckRow`): each closes the item, then quotes it in the composer for the owner's
-// note. Two actions, as an approval's row has, so the check keeps the width; the text opens the
-// sheet at the item, which has the rest (Try, Skip).
+// An open To check item: its check, what passes it, and Reply, Fail and Pass as the sheet has them
+// (checks.js `CheckRow`): Pass and Fail close the item and the row leaves; Reply quotes it in the
+// composer, where the sent words close it as replied. The text opens the sheet at the item (Try).
 function CheckingRow({ project, item, index, onActing, onFailed, onReply, leaving }) {
   const [status, run] = useRowAction(`${project}/check-${item.id}`, item.id, index, onActing, onFailed);
   const button = (...args) => rowButton(status.busy, ...args);
-  // ^ The row leaves with the decision; the composer then quotes the item for the owner's note.
-  const decideAndReply = (decision) => run(async () => { await decideCheck(project, item.id, decision); onReply(checkQuote(item), item.id); });
+  const decide = (decision) => run(() => decideCheck(project, item.id, decision));
   const actions = can("task_act") && html`
-    ${button("Fail: close it, then tell the manager", "fail", "danger", () => decideAndReply("fail"), { "aria-label": `Fail: close it, then tell the manager what is wrong with: ${item.check}` })}
-    ${button("Works: close this check", "pass", "accent", () => decideAndReply("pass"), { "aria-label": `Pass, works: close this check: ${item.check}` })}`;
+    ${button("Reply", "reply", null, () => onReply(checkQuote(item), item.id), { "aria-label": `Reply: ${item.check}` })}
+    ${button("Fail", "fail", "danger", () => decide("fail"), { "aria-label": `Fail: ${item.check}` })}
+    ${button("Pass", "pass", "accent", () => decide("pass"), { "aria-label": `Pass: ${item.check}` })}`;
   return html`
     <${ListRow} rowKey=${item.id} leaving=${leaving} project=${project} task=${item.task} label=${item.check}
       context=${`Passes if ${item.pass_if}`} href=${`#/p/${project}/checks/${item.id}`} actions=${actions} error=${status.error} />`;

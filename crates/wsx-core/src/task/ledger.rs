@@ -227,6 +227,8 @@ fn open_row(
         // ^ Held for the owner to try before it lands (docs/tasks.md "Hold and trial").
         "hold": record.hold,
         "after": record.after,
+        // ^ Held, after, parent, children and where it goes, in the words of every view.
+        "flow": super::view::flow(record, records, &status),
         "usage": usage::task(dir),
     });
     // ^ A parent task and its open children (docs/tasks.md "Parent tasks").

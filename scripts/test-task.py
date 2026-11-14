@@ -3433,8 +3433,9 @@ def part_worker(created=None):
     js('task', 'ledger')
 
     # 22b. The TUI's manager chat (`t`, then `m`; docs/tasks.md "TUI"): the conversation, the
-    # open To check item and the waiting approval; a message goes to the manager's log, `p`
-    # passes the item and `n` then `y` denies the request; 80 columns still show the message.
+    # open To check item and the waiting approval; a message goes to the manager's log, `r` opens
+    # a reply to the item, `p` passes it and `n` then `y` denies the request; 80 columns still show
+    # the message.
     mark('22b')
     seen_item = js('task', 'new', 'WORK tui.txt HV')['id']
     assert wait_state(seen_item, 'ready', 'failed')['state'] == 'ready'
@@ -3472,6 +3473,9 @@ def part_worker(created=None):
         (r'> hello from the tui', b'\r'),
         # ^ "Sent" comes before the next read draws the message: wait for both.
         (r'(?ms)^ Sent$.*^   hello from the tui$', b'\x1b'),
+        # ^ Pass, Fail and Reply on the item; `r` opens the message line as its reply, Esc drops it.
+        (r'\(p\)ass +\(f\)ail +\(r\)eply', b'r'),
+        (r'Reply to “', b'\x1b'),
         (r'\(p\)ass', b'p'),
         (r'%s passed' % item['id'], b'\t'),
         (r'\(n\)deny', b'n'),
@@ -3522,10 +3526,11 @@ def part_worker(created=None):
     # shows, and the two entries only the older log holds do not.
     assert 'hello from the tui' in found[8] and 'quasar' not in found[8].lower(), found[8]
     # 22c. A reply to a To check item (docs/tasks.md "To check"): "x" or "ㅌ" skips an open item with
-    # no manager turn and a quiet line; other words go to the manager quoted with the item's check and
-    # leave an open item open. The web's Pass and Fail close the item first (`check pass`, `check fail`
-    # with no note); the words after them are its note and reach the manager once, a failed item's
-    # marked `To check <id> failed:`. A closed item says so to an "x".
+    # no manager turn and a quiet line; other words close an open item as replied, are its note and go
+    # to the manager quoted with the item's check, marked `To check <id> replied:`. Pass and Fail
+    # (`check pass`, `check fail` with no note) close the item and open nothing; words after them are
+    # its note and reach the manager once, a failed item's marked `To check <id> failed:`. A closed
+    # item says so to an "x".
     mark('22c')
     status_reply = reply_to(js('task', 'say', 'STATUS')['id'])
     replied = []
@@ -3593,23 +3598,26 @@ def part_worker(created=None):
     reply_to(more['id'])
     assert manager_turns() == turns + 3 and row_of(fourth)['note'] == 'the text is cut off'
     assert logged_message(more['id'])['check'] == fourth['id'] and row_of(fourth)['note_said'] == wrong['id']
-    # ^ Words to an open item, and an x that quotes a message, are the manager's to read; the item stays.
+    # ^ Words to an open item are the third verdict: it closes as replied with them as its note, and
+    # the manager reads them marked as a fail's are. An x that quotes a message is the manager's.
     wordy = js('task', 'say', '> check %s\n\nx marks the spot' % fifth['id'])
     reply_to(wordy['id'])
     assert manager_turns() == turns + 4
+    assert 'To check %s replied: x marks the spot' % fifth['id'] in str(turn_with('x marks the spot')), traces()[-1]
     assert fifth['check'] in str(turn_with('x marks the spot')), traces()[-1]
-    assert row_of(fifth)['state'] == 'open' and row_of(fifth).get('note') is None
-    assert logged_message(wordy['id'])['check'] == fifth['id'] and 'owner_said' not in row_of(fifth)
+    assert row_of(fifth)['state'] == 'replied' and row_of(fifth)['note'] == 'x marks the spot', row_of(fifth)
+    assert row_of(fifth)['note_said'] == wordy['id'] and 'owner_said' not in row_of(fifth), row_of(fifth)
+    assert logged_message(wordy['id'])['check'] == fifth['id'] and open_ids() == []
+    assert next(i for i in show(fifth['task'])['to_check'] if i['id'] == fifth['id'])['state'] == 'replied'
+    assert reply_to(js('task', 'say', '> check %s\n\nx' % fifth['id'])['id'])['text'] == 'Already replied: ' + fifth['check']
     quoting = js('task', 'say', '> message %d\n\nx' % status_reply['id'])
     reply_to(quoting['id'])
     assert manager_turns() == turns + 5
-    assert open_ids() == [fifth['id']]
     # ^ An item no one knows: the quote line goes and the words stay.
     stray = js('task', 'say', '> check c9999\n\nx')
     reply_to(stray['id'])
     assert 'check' not in logged_message(stray['id'])
     assert manager_turns() == turns + 6
-    js('task', 'check', 'skip', fifth['id'])
 
     # A quote reaches a message of any age (docs/tasks.md "Log window"): the log rolls to
     # log.1, log.2 and so on, and every file stays. `agent` lines (not in the chat) fill the
@@ -6001,6 +6009,11 @@ def part_host(created=None):
     # ^ The children's '*.txt' meets the parent's parent.txt: only the sibling is an overlap.
     rows = {r['id']: r for r in js('task', 'ledger')['open']}
     assert rows[parent]['children'] == 2 and rows[first]['parent'] == parent, rows
+    # ^ Where each goes (`flow`, docs/tasks.md "Where a task goes"): the parent counts its children
+    # by state, each child lands into the parent.
+    assert rows[parent]['flow']['phrase'].endswith('children: 2 ready'), rows[parent]['flow']
+    assert rows[parent]['flow']['children'] == [{'id': first, 'state': 'ready'}, {'id': second, 'state': 'ready'}], rows[parent]['flow']
+    assert rows[first]['flow']['phrase'] == 'into #%d' % parent and rows[first]['flow']['into'] == '#%d' % parent, rows[first]['flow']
     assert [o['id'] for o in rows[first]['overlaps']] == [second] and rows[parent]['overlaps'] == [], rows
     # The first child is on the parent's tip: its land fast-forwards the parent's branch, not
     # main, and the parent checks the new commit while its gate is closed.
