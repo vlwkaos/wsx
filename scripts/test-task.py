@@ -3276,9 +3276,11 @@ def part_worker(created=None):
     denied, _ = ask_push('')
     assert [(p['id'], p['action'], p['commit']) for p in js('task', 'ledger')['approvals']] == [(denied, 'push', tip)]
     # ^ The host posts the ask line itself (docs/tasks.md "Approvals"): the reply needs no words for it.
+    # It records the request's id (`approval`), so the web pushes the request alone.
     asked = wait(lambda: events_with('asked the owner: Approve push', '(%s)' % denied), 'the ask line')
     assert any(e['kind'] == 'reply' and asked[0]['id'] in e['to'] and e['text'].startswith('Asked you: Approve push')
-               and e['text'].endswith('(%s).' % denied) for e in chat()), asked
+               and e['text'].endswith('(%s).' % denied)
+               and e.get('approval') == denied for e in chat()), asked
     js('task', 'deny', denied)
     wait(lambda: events_with('approval %s (push) denied' % denied), 'the push deny event')
     assert origin_tip() == before

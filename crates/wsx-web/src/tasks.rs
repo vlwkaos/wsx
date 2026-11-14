@@ -1460,6 +1460,7 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
                 text,
                 post,
                 level,
+                approval,
                 ..
             } = &entry.event
             else {
@@ -1482,6 +1483,8 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
                             },
                         ));
                     }
+                    // ^ The ask line: its approval request is the push item (`Key::Approval`).
+                    (true, None) if approval.is_some() => {}
                     (true, None) => watch
                         .pending
                         .add((scope.project, Key::Wrote(text.clone(), url.clone()))),
