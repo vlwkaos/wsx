@@ -439,6 +439,8 @@ async function chats() {
   await until("!!document.querySelector('.chat .chat-notice')", "the chat of an agent in error does not say so");
   if ((await text(".chat .chat-notice")).join() !== "The agent stopped with an error.") await fail(`the error chat says ${await text(".chat .chat-notice")}`);
   await openSession("working");
+  // ^ The top row draws before the chat's data: until the working row shows, the button says Send, not Queue.
+  await until("!!document.querySelector('.working')", "the working row did not show again");
   // A `!` line runs in Claude's shell mode: from the `!` on, the input box takes the shell
   // colour and the button says Run; it sends once a command follows.
   const typeInto = (text) => evaluate(`(() => { const field = document.querySelector('.composer-field'); field.value = ${JSON.stringify(text)};

@@ -461,8 +461,10 @@ async function motion() {
     update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], busy: true } } });
     await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
   })()`);
-  await typingOn();
-  await expectAll("typing dots", ".row-typing .typing-dot", "typing");
+  // ^ A read in between can undo it again (CI run 43549626080: no dots): one of 3 tries must show them.
+  let dots = [];
+  for (let attempt = 0; attempt < 3 && !dots.length; attempt++) { await typingOn(); dots = await names(".row-typing .typing-dot"); }
+  if (!dots.length || dots.some((item) => item !== "typing")) await fail(`motion at ${w}px: typing dots (.row-typing .typing-dot) animate ${JSON.stringify(dots)}, not typing`);
   await expectAll("the tray counts", ".home-row .tray-count", "pop");
   await expectAll("the status line", ".home-row .row-context:not([data-loading])", "arrive");
   await expectAll("the notice", ".notice", "slide-down");
