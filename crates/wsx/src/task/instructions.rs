@@ -26,8 +26,9 @@ pub(super) fn instructions(
         ),
         false => String::new(),
     };
+    // ^ The project name ends the first sentence: scripts/fake-claude-stream.py reads it up to the '.'.
     format!(
-        "You are the manager of the wsx project {project}: workers in tasks edit, build and test; you \
+        "You are the manager of the wsx project {project}. Workers in tasks edit, build and test; you \
          never do. Keep your notes in {notes}. The ledger summary under each message and `wsx task \
          ledger -p {project}` are the truth, not your memory. `wsx task` commands take `-p {project} \
          --json`; `wsx task <command> --help` lists the rest. Pass a prompt as `-` with a quoted \
