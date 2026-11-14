@@ -3906,12 +3906,24 @@ def part_worker(created=None):
     for n in (ov_quiet, ov_first):
         wait(lambda n=n: show(n)['state'] == 'working', 'the 23g worker of #%d' % n)
         assert js('task', 'stop', n)['state'] == 'waiting'
+    # ^ A parked task whose branch moved to main with no commits of its own (a wait's end moves
+    # the copy, no revision follows) keeps an older `base`; it blocks only through its own
+    # commits, so a path main changed after that base is free.
+    (project / 'ovm.txt').write_text('main\n')
+    git('add', 'ovm.txt')
+    git('commit', '-q', '-m', 'ovm.txt on main')
+    quiet = show(ov_quiet)['record']
+    git('merge', '-q', '--ff-only', 'main', cwd=Path(quiet['working_copy']))
+    assert git('rev-list', '--count', 'main..' + quiet['branch']) == '0' and git('rev-list', '--count', quiet['base'] + '..main') != '0', quiet
+    ov_moved = next_task()
+    passed = reply_to(js('task', 'say', ov_new.replace('"ov*.txt"', 'ovm.txt') % '')['id'])['text']
+    assert '-> 0' in passed, passed
     ov_free = next_task()
     passed = reply_to(js('task', 'say', ov_new.replace('"ov*.txt"', '"ovq*.txt" --files ov-b.txt') % '')['id'])['text']
     assert '-> 0' in passed, passed
     refused = reply_to(js('task', 'say', ov_new.replace('"ov*.txt"', 'ov-a.txt') % '')['id'])['text']
     assert '-> 0' not in refused and '--files ov-a.txt meets open task #%d "Overlap first"' % ov_first in refused, refused
-    for n in (ov_first, ov_after, ov_quiet, ov_free):
+    for n in (ov_first, ov_after, ov_quiet, ov_moved, ov_free):
         js('task', 'close', n, '--discard')
 
     # 23s. An untrusted agent (Pi with any model) runs under the strict profile and the broker's

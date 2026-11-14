@@ -1369,9 +1369,14 @@ impl Host {
                 self.record.id
             );
         }
-        // ^ Commits after the last revision (after the base before the first).
+        // ^ Commits after the last revision (before the first: after where the branch left the
+        // default branch, since a wait's end moves the copy without a revision).
         let since = match self.record.revision {
-            0 => self.record.base.clone(),
+            0 => copy::merge_base(
+                &self.record.working_copy,
+                "HEAD",
+                &format!("refs/heads/{}", self.record.default_branch),
+            )?,
             revision => format!("refs/wsx/task/{}/r{revision}", self.record.id),
         };
         let commits = copy::unlanded_commits(&self.record.working_copy, "HEAD", &since)?;
