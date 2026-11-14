@@ -28,9 +28,9 @@ use wsx_core::stale;
 use wsx_core::task::chat;
 use wsx_core::task::checks::{CheckState, ItemReply};
 use wsx_core::task::manager::{
-    asks_owner, decided_request, instructions_digest, open_requests, pending_approvals,
-    quiet_reply, quoted_id, resolve_quote, says_nothing, split_quote, state_wakes, ApprovalLine,
-    QUOTE_REF,
+    answering, asks_owner, decided_request, instructions_digest, open_requests, pending_approvals,
+    quiet_reply, quoted_id, resolve_quote, says_nothing, split_quote, state_wakes, Answers,
+    ApprovalLine, QUOTE_REF,
 };
 use wsx_core::task::manager::{
     Author, Checkin, Level, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest,
@@ -3455,7 +3455,7 @@ impl Manager {
         let text = match explicit {
             true => text,
             false => match chat::quoted_message(&log, to) {
-                Some(id) => format!("{QUOTE_REF}{id}\n\n{text}"),
+                Some(id) => answering(&text, Some(&Answers::Message(id))),
                 None => return (text, None),
             },
         };

@@ -2,7 +2,7 @@
 // task (from the record and the result), in plain words written by wsx, never by a model
 // (docs/web-client-tasks.md "Task sheet").
 import { api } from "./api.js";
-import { ago, firstSentence, html, Icon, lastSentence, plural, short, useEffect, useRef, useState } from "./lib.js";
+import { ago, html, Icon, lastSentence, plural, short, useEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { agentWords, running, statusTone, TaskChip } from "./task-words.js";
 
@@ -161,7 +161,7 @@ function Progress({ detail, words, goal }) {
 // What the task is about: the prompt's opening sentence, "Goal:" lead cut. Nothing when the title
 // (made from the prompt's first line) already says it; a `--title` is another phrase, so both show.
 function goalOf(detail) {
-  const goal = firstSentence((detail.goal ?? "").replace(/^\s*goal:\s*/i, ""), 200);
+  const goal = detail.goal ?? "";
   const plain = (text) => (text ?? "").replace(/^\s*goal:\s*/i, "").replace(/…$/, "").trim().toLowerCase();
   const [a, b] = [plain(goal), plain(detail.title)];
   return !a || a.startsWith(b) || b.startsWith(a) ? "" : goal;

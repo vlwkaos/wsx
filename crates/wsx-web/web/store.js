@@ -114,14 +114,10 @@ const STATES = {
 };
 // A session without an agent is a shell: no inbox group, no chat.
 export const isAgent = (session) => Boolean(session.agent);
-// ^ A task worker (`task-<n>`, `task-<n>-hand`) or the project manager (`task-manager`): its task or the
-// project chat shows it, so the session lists leave it out (docs/web-client-tasks.md "Home").
-// The hosts report as providers `task` and `manager`; the name covers a host not yet reporting.
-// wsx-core `task::session_news::is_task_session` owns the rule; keep this the same.
-const isTaskSession = (session) =>
-  ["task", "manager"].includes(session.agent?.provider) || /^task-(\d+(-hand)?|manager)$/.test(session.label);
-// The sessions a list shows.
-export const listedSessions = (sessions) => sessions.filter((session) => !isTaskSession(session));
+// ^ A task worker (`task-<n>`, `task-<n>-hand`) or a chat's host (`task-manager`): its task or the
+// chat shows it, so the session lists leave it out (the server's `task_session`, wsx-core
+// `session_news::is_task_session`; docs/web-client-tasks.md "Home").
+export const listedSessions = (sessions) => sessions.filter((session) => !session.task_session);
 export function stateOf(session) {
   if (session.exited) return { key: "exited", word: "exited", group: session.agent ? "needs" : null, tone: session.agent ? "danger" : "muted" };
   if (!session.agent) return { key: "shell", word: "open", group: null, tone: "muted" };

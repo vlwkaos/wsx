@@ -438,7 +438,7 @@ function ManagerComposer({ project, room, busy: thinking, reply, onReply, onSent
       const attachments = files.attachments.map((item) => item.hash);
       const text = withQuote(reply?.line, body);
       // ^ A say may start the manager first: up to about 40 s (docs/tasks.md "Manager").
-      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text: reply?.id != null ? `> message ${reply.id}\n\n${body}` : reply?.check ? `> check ${reply.check}\n\n${body}` : text, attachments, ...(room && { chat: room }) }, timeout: 60_000 });
+      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text: reply?.id != null || reply?.check ? body : text, attachments, ...(room && { chat: room }), ...(reply?.id != null && { quote_id: reply.id }), ...(reply?.check && { check: reply.check }) }, timeout: 60_000 });
       field.current.value = "";
       files.attachments = [];
       changed();

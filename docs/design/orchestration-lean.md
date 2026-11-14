@@ -263,6 +263,7 @@ Superseded on 2026-11-14 by `root-cause-refactor.md`, which merges this order wi
 | 0d5a8067 | 14, `crates/wsx/src/task/mod.rs` `after --because` | task | f5c1fe85 | yes / yes |
 | 646b6818 | 23, `wsx-core/src/task/status.rs` minute words | web | c0efcd09 | yes / yes |
 | dd861363 | 17, `crates/wsx/src/task/manager.rs` `post_asks` | web | not yet | yes / yes (by `task/view.rs`) |
+- §11 step 8 (`root-cause-refactor.md` step 8, #444, 11-15): the wire carries the kinds that §6 named, and the web stops deriving them: `needs[].rank` (`home.js` URGENCY), overview and chat-row `counts` (`ChatCounts`; `trays.js` counted tasks), `resolutions[].closed` (`bubbles.js` CLOSED), the session's `task_session` (`store.js` regex), quiet rows' `first_sentence` and the sheet's `goal` sentence (`lib.js` firstSentence), and `say {quote_id | check}` with the prefix from `manager::answering` (web, TUI composer and `Manager::quoted`). No `tone` field: stage, status kind and need kind are on the wire already, and the tone tables map a kind to a style; one tone per state (client-logic audit 2) is a visible change. `live` (the pulsing dot, `awaitsManager`) waits for #443's `waits_on`, so the two stay one fact. The list rows' inputs are named in `docs/web-client-tasks.md`.
 - `check-scheduling-audit.md` fixes 1-3: 1 partly (#293), 2 and 3 not built; task 3 and 4 cover them.
 
 ## Appendix A. Manager instruction sentence classes

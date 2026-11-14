@@ -20,7 +20,8 @@ use wsx_core::task::{
     chat::{self, ChatRow, Page, Reading, RowKind, Speaker, Window},
     checks::{self, CheckItem, CheckState},
     manager::{
-        activity, pending_approvals, waiting_approvals, ManagerRequest, ManagerResponse, Party,
+        activity, answering, pending_approvals, waiting_approvals, Answers, ManagerRequest,
+        ManagerResponse, Party,
     },
     media::{self, Kind},
     owner,
@@ -340,9 +341,9 @@ pub struct ManagerChat {
     /// ^ The rows wrapped for the last width and link, until the rows change; the draw, a key
     /// and the find's count all read it, so a frame wraps nothing new.
     wrapped: RefCell<Option<Wrapped>>,
-    /// What a message answers (`r` on an open question or a To check item): its line and the
-    /// quote's reference, `message <id>` or `check <id>`, sent as `> <reference>`.
-    reply: Option<(String, String)>,
+    /// What a message answers (`r` on an open question or a To check item): its line and what
+    /// it answers, sent with its quote (`manager::answering`).
+    reply: Option<(String, Answers)>,
     /// The project whose manager chat `P` asked for; the Tasks view takes it and switches.
     pub peer: Option<String>,
     /// What runs now ("Sending", "Failing c3"), until its answer comes.
@@ -590,9 +591,9 @@ impl ManagerChat {
         if text.is_empty() || self.acting.is_some() {
             return;
         }
-        // ^ The owner's quote format (`split_quote`): the web's reply writes the same.
-        if let Some((_, reference)) = self.reply.take() {
-            text = format!("> {reference}\n\n{text}");
+        // ^ The owner's quote format: the web's say route writes the same.
+        if let Some((_, answers)) = self.reply.take() {
+            text = answering(&text, Some(&answers));
         }
         self.newest();
         self.composer = InputState::new("> ");
@@ -625,13 +626,13 @@ impl ManagerChat {
         });
     }
 
-    /// The message line, focused, as an answer to `quote` (sent as `> <reference>`).
-    fn reply_to(&mut self, quote: String, reference: String) {
+    /// The message line, focused, as an answer to `quote`.
+    fn reply_to(&mut self, quote: String, answers: Answers) {
         self.composer = InputState::with_value(
             format!("Reply to “{}”: ", view::clip(&quote, 40)),
             self.composer.value().to_string(),
         );
-        self.reply = Some((quote, reference));
+        self.reply = Some((quote, answers));
         self.focus = Focus::Compose;
     }
 
@@ -874,10 +875,10 @@ impl ManagerChat {
             // ^ A reply to an item closes it as replied, its words the manager's note; "x" skips
             // it (wsx-core `checks::item_reply`).
             (Action::InputChar('r'), Some(Item::Check(item))) => {
-                self.reply_to(item.check, format!("check {}", item.id))
+                self.reply_to(item.check, Answers::Check(item.id))
             }
             (Action::InputChar('r'), Some(Item::Ask { id, quote, .. })) => {
-                self.reply_to(quote, format!("message {id}"))
+                self.reply_to(quote, Answers::Message(id))
             }
             (Action::InputChar('d'), Some(Item::Ask { id, .. })) => self.dismiss(id),
             (Action::InputChar(key @ ('y' | 'n')), Some(Item::Approval { id, label })) => {

@@ -5,24 +5,21 @@ import { api } from "./api.js";
 import { can, isAgent, listedSessions, stateOf, useStore } from "./store.js";
 import { loadTasks } from "./task-api.js";
 import { agentWords, needTone, needWords } from "./task-words.js";
-import { chatCounts, shownTrays, TrayIcons, trayCounts, trayWords } from "./trays.js";
+import { shownTrays, TrayIcons, trayCounts, trayWords } from "./trays.js";
 import { Dots } from "./bubbles.js";
 import { slid } from "./ui.js";
 
-// The order of need kinds, most urgent first, as the server ranks them.
-const URGENCY = { waiting: 0, failed: 1, approval: 2, land: 3 };
-
 // Projects with needs first, by their most urgent kind and then their oldest need of that
-// kind; then those with a message this device has not read, newest message first; then the
-// rest by their last owner-facing activity, newest first (docs/web-client-tasks.md "Home").
+// kind (the server sends `needs` in that order, each with its kind's `rank`); then those with a
+// message this device has not read, newest message first; then the rest by their last
+// owner-facing activity, newest first (docs/web-client-tasks.md "Home").
 // `viewing` is the project whose chat this device shows: read at once.
 function homeOrder(projects, tasks, sessions, viewing) {
   const rows = projects.map((project) => {
     const overview = tasks[project.id];
     const needs = overview?.needs ?? [];
-    const rank = needs.length ? Math.min(...needs.map((item) => URGENCY[item.kind] ?? 5)) : null;
-    const first = needs.filter((item) => (URGENCY[item.kind] ?? 5) === rank)
-      .reduce((oldest, item) => (oldest && oldest.unix_ms <= item.unix_ms ? oldest : item), null);
+    const first = needs[0] ?? null;
+    const rank = first?.rank ?? null;
     const agents = sessions.filter((session) => session.project.id === project.id);
     const last = Math.max(overview?.last_unix_ms ?? 0, ...agents.map((session) => session.state_since_unix_ms ?? 0)) || null;
     const news = project.id === viewing ? null : newsOf(project.id, overview);
@@ -185,7 +182,7 @@ function RowText({ name, asks, counts, last, now, line, news, typing }) {
 // is its unread reply, else its last reply, else its goal.
 function ChatRow({ project, chat, current, now }) {
   const news = unreadNews(`project-${project.id}-c-${chat.name}`, chat.news)?.text.split("\n")[0] ?? null;
-  const counts = chatCounts(chat);
+  const counts = trayCounts(chat);
   return html`
     <li class="row row-chat" data-key=${`${project.id}/c/${chat.name}`}>
       <a class="row-link chat-row" href=${`#/p/${project.id}/c/${encodeURIComponent(chat.name)}`} aria-current=${current ? "page" : null}
