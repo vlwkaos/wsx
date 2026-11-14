@@ -8,7 +8,7 @@ import { TaskChip } from "./task-words.js";
 import { Capture } from "./viewer.js";
 
 const KINDS = [["", "All"], ["image", "Images"], ["video", "Videos"]];
-const VERDICTS = { passed: "Passed", failed: "Failed", skipped: "Skipped" };
+const VERDICTS = { passed: "Passed", failed: "Failed", replied: "Replied", skipped: "Skipped" };
 
 // What a tile says about its file: a capture's verdict, where a file came from, and why it is
 // not shown (a capture the budget removed, a file off the checkout or an upload past its TTL).

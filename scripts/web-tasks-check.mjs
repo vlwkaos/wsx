@@ -107,7 +107,7 @@ async function managerWidth(where) {
 }
 
 // The top of the task sheet as words: what changed, what to know next, and whether a step path is left.
-const story = () => evaluate(`({ summary: document.querySelector('.story-summary')?.textContent.trim() ?? '',
+const story = () => evaluate(`({ summary: document.querySelector('.story-summary .markdown')?.textContent.trim() ?? '',
   next: document.querySelector('.story-next')?.textContent.trim() ?? '', steps: document.querySelectorAll('.story-steps').length })`);
 // The muted lines, folded runs opened first (a closed one is opened, an open one stays).
 const statusLines = "(document.querySelectorAll('.log .fold-toggle[aria-expanded=\"false\"]').forEach((node) => node.click()), [...document.querySelectorAll('.status-line')])";
@@ -986,8 +986,8 @@ if (runningRows.length !== 1 || runningRows[0][0] !== "#6" || !/^keep a worker b
 await click(".pill[data-kind=check]");
 await until("!!document.querySelector('.reservoir-list[aria-label=\"To check\"]') && !document.querySelector('.reservoir-list[aria-label=Running]')", "a tap on To check did not switch the list");
 const checkRows = await rows();
-// ^ One row per open item: its task, its check, what passes it, and Fail and Pass as the sheet has them (two actions, as an approval's row).
-const openChecks = await evaluate(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.open.map((item) => ['#' + item.task, item.check, 'Passes if ' + item.pass_if, 'Fail: close it, then tell the manager+Works: close this check']))`);
+// ^ One row per open item: its task, its check, what passes it, and Reply, Fail and Pass as the sheet has them.
+const openChecks = await evaluate(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.open.map((item) => ['#' + item.task, item.check, 'Passes if ' + item.pass_if, 'Reply+Fail+Pass']))`);
 if ((await pressed()) !== "check" || openChecks.length !== 2 || JSON.stringify(checkRows) !== JSON.stringify(openChecks)) await fail(`the To check list is ${JSON.stringify(checkRows)}, not ${JSON.stringify(openChecks)}, with ${await pressed()} pressed`);
 // ^ The row's check keeps room: its text ends before its first action at 390 px.
 const checkRoom = await evaluate(`[...document.querySelectorAll('.reservoir-list .need')].map((row) => row.querySelector('.row-main').getBoundingClientRect().right <= row.querySelector('.row-actions').getBoundingClientRect().left + 1)`);
@@ -2276,7 +2276,7 @@ await readAndReply("390 px");
 await go(page(2));
 await until("document.querySelectorAll('dialog.task-sheet[open] .task-fold').length >= 1", "the task sheet did not show the folded report");
 let told = await story();
-if (told.steps || !/^did: WORK a\.txt HV\s*Decided: fake choice \(fixture\)\.$/.test(told.summary) || !/^Ready, waiting for you to land it for [^:]+: checks 1 of 1 passed\. Land it to put it on main\.$/.test(told.next)) await fail(`the top of a ready task reads ${JSON.stringify(told)}`);
+if (told.steps || told.summary !== "did: WORK a.txt HV" || !/^Ready, waiting for you to land it for [^:]+: checks 1 of 1 passed\. Land it to put it on main\.$/.test(told.next)) await fail(`the top of a ready task reads ${JSON.stringify(told)}`);
 if (await sheetState() !== "Ready, waiting for you to land it") await fail(`a ready task's state reads ${await sheetState()}`);
 // ^ The top row reads the title first, then the number, small and muted.
 const sheetTitle = await evaluate("(() => { const title = document.querySelector('.task-sheet .bar .row-title'); return title && [title.firstElementChild.className, title.querySelector('.task-number').textContent]; })()");
@@ -2298,9 +2298,11 @@ await shot("task-sheet-take-over-1280", ".composer-send");
 await resize([390, 844, 2]);
 if (await evaluate("/\\br\\d+\\b/.test(document.querySelector('.task-sheet .bar').textContent + document.querySelector('.task-next').textContent)")) await fail("the sheet names a revision");
 await shot("task-sheet", ".composer-send");
-// ^ The summary shows whole with the decisions and has no control to fold it.
+// ^ The summary shows its first paragraph; More shows the rest with the decisions and goes.
 const decided = "/Decided: fake choice \\(fixture\\)\\./.test(document.querySelector('.story').textContent)";
-if (!(await evaluate(decided)) || await count(".story .link-action")) await fail("the sheet does not show the whole summary and its decisions, or it can fold it");
+if ((await evaluate(decided)) || (await count(".story .story-more")) !== 1) await fail("the sheet shows the decisions before More, or has no More");
+await click(".story .story-more");
+await until(`${decided} && !document.querySelector('.story .story-more')`, "More did not show the decisions");
 await shot("task-sheet-summary", ".composer-send");
 // Evidence opens to the checks and what the worker showed.
 await evaluate("document.querySelector('.task-fold > .fold-head').click()");
@@ -2315,7 +2317,7 @@ if (told.next !== "Landed: on main; the last deploy does not have it yet.") awai
 await until("[...document.querySelectorAll('.task-sheet .scroll > .task-section > .task-heading')].some((node) => node.textContent === 'To check · 1 open')", "#2's item is not open under To check, outside the folds", 60);
 const offers = await evaluate("[...document.querySelectorAll('.task-sheet .scroll > .task-section .check-item .check-act')].map((node) => node.title).join()");
 if (await count(".task-sheet .progress, .task-sheet .progress-now, .task-sheet .progress-steps")) await fail("a finished task still shows the progress view, its steps or a now line");
-if (offers !== "Try it on a preview,Fail: close it, then tell the manager,Not checking: close it without a verdict,Works: close this check") await fail(`#2's item offers ${offers}`);
+if (offers !== "Try it on a preview,Reply,Fail,Pass") await fail(`#2's item offers ${offers}`);
 await evaluate("document.querySelector('.timeline > .fold-head').click()");
 const history = await text(".timeline-what");
 if ((await text(".timeline > .fold-head")).join() !== "History" || !history.includes("Landed") || history.some((line) => /Verified|without verification/.test(line))) await fail(`the history reads ${history}`);
@@ -2510,23 +2512,22 @@ if (sentText !== longPaste) await fail(`the attached file holds ${JSON.stringify
 if (await count(".composer .chips li")) await fail("the sent pasted text stayed in the composer");
 
 
-// Fail on #7's item closes it as failed at once, closes the sheet and quotes the item in the
-// manager's composer (`> check <id>`): the owner's words there are the item's note, and the manager
-// starts the fix from them.
+// Reply on #7's item closes the sheet and quotes the item in the manager's composer
+// (`> check <id>`) and leaves it open; the sent words close it as replied, are its note, and the
+// manager gets them (docs/tasks.md "To check").
 const firstItem = "document.querySelector('.check-list .check-item')";
-async function failClosesAndQuotes(back) {
-  const failButton = "[...document.querySelectorAll('.check-list .check-item')].find((node) => node.querySelector('.task-chip').textContent.trim() === '#7').querySelector('.check-acts .check-act[data-tone=\"danger\"]')";
-  await evaluate(`${failButton}.click()`);
-  await until("!document.querySelector('dialog.task-sheet[open]') && !!document.querySelector('.composer .reply-quote')", "Fail did not close the sheet and quote the item in the manager's composer");
-  if (await evaluate("document.activeElement !== document.querySelector('.composer-field')")) await fail("Fail did not focus the composer");
-  const failedState = await evaluate(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.items.find((item) => item.task === 7)?.state)`);
-  if (failedState !== "failed") await fail(`Fail left #7's item ${failedState}`);
-  // ^ The words are the note: the host stores them on the failed item and the manager gets them.
+async function replyQuotesAndCloses(back) {
+  const replyButton = "[...document.querySelectorAll('.check-list .check-item')].find((node) => node.querySelector('.task-chip').textContent.trim() === '#7').querySelector('.check-acts .check-act[title=\"Reply\"]')";
+  await evaluate(`${replyButton}.click()`);
+  await until("!document.querySelector('dialog.task-sheet[open]') && !!document.querySelector('.composer .reply-quote')", "Reply did not close the sheet and quote the item in the manager's composer");
+  if (await evaluate("document.activeElement !== document.querySelector('.composer-field')")) await fail("Reply did not focus the composer");
+  const quotedState = await evaluate(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.items.find((item) => item.task === 7)?.state)`);
+  if (quotedState !== "open") await fail(`Reply left #7's item ${quotedState} before the words were sent`);
   await typeInto(".composer-field", "the text is cut off");
   await click(".composer-send");
-  await until(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.items.find((item) => item.task === 7)?.note === 'the text is cut off')`, "the reply to the failed item was not kept as its note", 300);
+  await until(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.items.find((item) => item.task === 7)).then((item) => item?.state === 'replied' && item.note === 'the text is cut off')`, "the reply did not close #7's item as replied with its note", 300);
   await go(back);
-  await until("document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 2", "the failed item stayed in the list after Fail");
+  await until("document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 2", "the replied item stayed in the list after the reply");
 }
 
 // --- To check: the reservoir's row opens the list; Fail closes the item and quotes it for the
@@ -2639,10 +2640,10 @@ await viewImages("to-check", ".check-list .check-item:first-child .check-capture
 await evaluate(`${firstItem}.querySelector('.check-act[title="Try it on a preview"]').click()`);
 await until(`!!${firstItem}.querySelector('a.check-act[href^="https://host.example.ts.net:"]')`, "Try did not become a preview link", 300);
 await shot("to-check-try", ".composer-send");
-await failClosesAndQuotes(`#/p/${project}/checks`);
-await closeSheet("the To check list after a fail", chat);
+await replyQuotesAndCloses(`#/p/${project}/checks`);
+await closeSheet("the To check list after a reply", chat);
 // ^ Each To check item is also a bubble in the chat at the time it was added: its words, its
-// capture (the image viewer opens it) and Try, Fail, Skip and Pass; a decided one shows its result
+// capture (the image viewer opens it) and Try, Reply, Fail and Pass; a decided one shows its result
 // (docs/web-client-tasks.md "Project screen").
 const checkBubbles = "[...document.querySelectorAll('.log .check-bubble')]";
 // ^ The chat renders its newest rows; these items are older, so show the earlier ones. The wide
@@ -2652,13 +2653,13 @@ const showEarlier = async () => { for (let n = 0; n < 10 && (await count(".log-e
 await showEarlier();
 await until(`${checkBubbles}.length >= 3`, "the chat has no To check bubbles", 60);
 const bubbleOf = (task) => `${checkBubbles}.find((node) => node.querySelector('.check-task .task-chip')?.textContent.trim() === '#${task}')`;
-await until(`(${bubbleOf(8)}?.querySelector('.check-capture img')?.naturalWidth ?? 0) > 0 && /^Failed: the text is cut off$/.test(${bubbleOf(7)}?.querySelector('.check-state')?.textContent ?? '')`, "the To check bubbles did not load their capture and result", 100);
+await until(`(${bubbleOf(8)}?.querySelector('.check-capture img')?.naturalWidth ?? 0) > 0 && /^Replied: the text is cut off$/.test(${bubbleOf(7)}?.querySelector('.check-state')?.textContent ?? '')`, "the To check bubbles did not load their capture and result", 100);
 const inChat = await evaluate(`(() => { const open = ${bubbleOf(8)}, failed = ${bubbleOf(7)};
   return { tag: open?.querySelector('.bubble-tag')?.textContent, author: open?.querySelector('.bubble-author')?.textContent, image: open?.querySelector('.check-capture img')?.naturalWidth ?? 0,
     acts: [...(open?.querySelectorAll('.check-acts .check-act') ?? [])].map((node) => node.title), failed: failed?.querySelector('.check-state')?.textContent ?? '',
     failedActs: failed?.querySelectorAll('.check-acts').length ?? -1, unread: open?.hasAttribute('data-in') }; })()`);
-if (inChat.tag !== "To check" || inChat.author !== "Atlas" || inChat.image !== 480 || !["Fail: close it, then tell the manager", "Not checking: close it without a verdict", "Works: close this check"].every((act) => inChat.acts.includes(act))
-  || inChat.failed !== "Failed: the text is cut off" || inChat.failedActs !== 0 || !inChat.unread) await fail(`the To check bubbles read ${JSON.stringify(inChat)}`);
+if (inChat.tag !== "To check" || inChat.author !== "Atlas" || inChat.image !== 480 || inChat.acts.filter((act) => act !== "Try it on a preview").join() !== "Reply,Fail,Pass"
+  || inChat.failed !== "Replied: the text is cut off" || inChat.failedActs !== 0 || !inChat.unread) await fail(`the To check bubbles read ${JSON.stringify(inChat)}`);
 await evaluate(`${bubbleOf(8)}.scrollIntoView({ block: 'center' })`);
 await pause(300);
 await shot("to-check-bubble", ".composer-send");
@@ -2677,9 +2678,10 @@ await until(`(() => { if (!${bubbleOf(8)}) document.querySelector('.log-earlier'
 const chatPlace = `(() => { const log = document.querySelector('.log'); return { keys: [...log.children].map((node) => node.dataset.key ?? '').join(), at: ${bubbleOf(8)}.dataset.at,
   jump: document.querySelector('.jump')?.textContent ?? '', fresh: ${bubbleOf(8)}.hasAttribute('data-fresh') }; })()`;
 const beforePass = await evaluate(chatPlace);
-// ^ Pass in the reservoir's To check row: the row leaves, the composer quotes the item with the focus, and the bubble settles.
+// ^ Pass in the reservoir's To check row: the row leaves, nothing opens, and the bubble settles.
 await openReservoir("check");
-await clearRow("#8", "Works: close this check", 300, true);
+await clearRow("#8", "Pass");
+if (await count(".composer .reply-quote")) await fail("Pass in a To check row quoted the item in the composer");
 await closeReservoir();
 await until(`(${bubbleOf(8)}?.querySelector('.check-state')?.textContent ?? '') === 'Passed' && !${bubbleOf(8)}.querySelector('.check-acts')`, "Pass in the To check row did not settle the bubble", 60);
 await pause(500);
@@ -2691,17 +2693,18 @@ if (!samePlace) await fail(`a passed item's bubble moved or counts as new: ${JSO
 await until("document.querySelector('.pill[data-kind=check]')?.getAttribute('aria-label') === '1 to check'", "Pass in the To check row did not drop the To check count", 60);
 await go(`#/p/${project}/checks`);
 await until("document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 1", "the item passed in the chat stayed in the list", 60);
-// ^ Skip closes an item without a verdict and no task (docs/tasks.md "To check"). Its bubble shows
-// "Skipped" at once, and the count of the reservoir drops (the list is closed first: Skip is
+// ^ Fail closes an item at once and opens nothing (docs/tasks.md "To check"). Its bubble shows
+// "Failed" at once, and the count of the reservoir drops (the list is closed first: Fail is
 // pressed on #2's bubble, which has no other way to show a result).
 await closeSheet("the To check list", chat);
 await showEarlier();
-await until(`!!${bubbleOf(2)}?.querySelector('.check-act[title="Not checking: close it without a verdict"]')`, "#2's bubble has no Skip");
-if (await evaluate(`${bubbleOf(2)}.querySelector('.check-act[title="Works: close this check"]').getAttribute('aria-label')`) !== "Pass, works: close this check: open the file") await fail("Pass has no clear label");
-await evaluate(`${bubbleOf(2)}.querySelector('.check-act[title="Not checking: close it without a verdict"]').click()`);
-await until(`(${bubbleOf(2)}?.querySelector('.check-state')?.textContent ?? '') === 'Skipped' && !${bubbleOf(2)}.querySelector('.check-acts')`, "Skip in the bubble did not show Skipped", 60);
+await until(`!!${bubbleOf(2)}?.querySelector('.check-act[title="Fail"]')`, "#2's bubble has no Fail");
+if (await evaluate(`${bubbleOf(2)}.querySelector('.check-act[title="Pass"]').getAttribute('aria-label')`) !== "Pass: open the file") await fail("Pass has no clear label");
+await evaluate(`${bubbleOf(2)}.querySelector('.check-act[title="Fail"]').click()`);
+await until(`(${bubbleOf(2)}?.querySelector('.check-state')?.textContent ?? '') === 'Failed' && !${bubbleOf(2)}.querySelector('.check-acts')`, "Fail in the bubble did not show Failed", 60);
+if (await count(".composer .reply-quote")) await fail("Fail on a bubble quoted the item in the composer");
 await go(`#/p/${project}/checks`);
-await until("(document.querySelector('dialog.task-sheet .empty')?.textContent ?? '') === 'Nothing to check.'", "the skipped item stayed in the list", 60);
+await until("(document.querySelector('dialog.task-sheet .empty')?.textContent ?? '') === 'Nothing to check.'", "the failed item stayed in the list", 60);
 await shot("to-check-done");
 await closeSheet("the To check list", chat);
 await until("!document.querySelector('.pill[data-kind=check]')", "the pills still count items to check", 60);
@@ -3428,22 +3431,25 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   // ^ The server publishes the overview on its next watch step, up to 2 s after the wait began.
   await until(`${rowOf(`#${behind}`)}?.querySelector('.row-context').textContent.startsWith(${JSON.stringify(shownStatus.label)}) ?? false`,
     `the scenario wait's Running row does not read "${shownStatus.label}"`, 10);
-  // A wait for another task (`wsx task after`): the Running row gives the reason beside the
-  // label, the sheet's sentence gives it too, and the sheet of the task waited for lists who waits
-  // as chips (docs/tasks.md "After another task").
+  // A wait for another task (`wsx task after`): the Running row says what it waits after
+  // (`flow.phrase`), the sheet's Waits on row and sentence give the reason, and the sheet of the
+  // task waited for lists who waits as chips under Blocks (docs/tasks.md "After another task").
   wsx("task", "after", behind, scenario, "WORK after.txt", "--because", "check");
   const reason = `then waits for #${scenario}: its checks fail`;
   if (show(behind).status.wait !== reason || show(scenario).status.waited_by?.[0]?.task !== behind) await fail(`wsx task show says ${JSON.stringify([show(behind).status, show(scenario).status])}`);
-  await until(`(${rowOf(`#${behind}`)}?.querySelector('.row-context').textContent ?? '').includes(${JSON.stringify(reason)})`,
-    `the waiting task's Running row does not give its reason: ${reason}`, 10);
+  await until(`(${rowOf(`#${behind}`)}?.querySelector('.row-context').textContent ?? '').includes(${JSON.stringify(`after #${scenario}`)})`,
+    `the waiting task's Running row does not say after #${scenario}`, 10);
   await shot("running-after-reason", ".composer-send");
   await open(scenario);
   await until(`document.querySelector('.story-next')?.textContent.endsWith('Waited for by #${behind}.')`, `#${scenario}'s sheet does not say who waits for it`, 10);
-  const chips = await evaluate("[...document.querySelectorAll('.task-sheet [aria-label=\"Waited for by\"] .task-chip')].map((chip) => chip.textContent.trim())");
+  const chips = await evaluate("(() => { const term = [...document.querySelectorAll('.task-sheet .task-flow dt')].find((node) => node.textContent === 'Blocks'); return [...(term?.nextElementSibling?.querySelectorAll('.task-chip') ?? [])].map((chip) => chip.textContent.trim()); })()");
   if (chips.join() !== `#${behind}`) await fail(`the sheet of #${scenario} lists ${JSON.stringify(chips)} as waiting for it`);
   await shot("task-waited-for-by", ".composer-send");
   await open(behind);
   await until(`/Then it waits for #${scenario} to land\\. Its checks fail on main until #${scenario} lands\\./.test(document.querySelector('.story-next')?.textContent ?? '')`, `#${behind}'s sheet does not say why it waits`, 10);
+  const waitsOn = await evaluate("(() => { const term = [...document.querySelectorAll('.task-sheet .task-flow dt')].find((node) => node.textContent === 'Waits on'); return term?.nextElementSibling?.textContent.replace(/\\s+/g, ' ').trim() ?? ''; })()");
+  if (!new RegExp(`^#${scenario}\\b.* to land, its checks fail$`).test(waitsOn)) await fail(`#${behind}'s Waits on row reads ${JSON.stringify(waitsOn)}`);
+  await shot("task-waits-on", ".composer-send");
   wsx("task", "after", behind, "--off");
   await go(`#/p/${plansArg}`);
   await until("!document.querySelector('dialog.task-sheet')", "the wait's sheet did not close");

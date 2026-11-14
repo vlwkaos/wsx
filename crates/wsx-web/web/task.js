@@ -197,7 +197,6 @@ export function TaskPage({ project, task, onClose, onMention, onReply, grip }) {
   // (docs/tasks.md "Landing"); Land stays, it refuses until they are committed or stashed.
   const blocked = acting && actions.includes("land") && detail.land_blocked_by?.length > 0 && html`
     <p class="task-approval" role="note">Land stops: ${detail.default_branch} has uncommitted changes in ${detail.land_blocked_by.join(", ")}. Commit or stash them in the main checkout first.</p>`;
-  const held = detail.hold && html`<p class="task-approval">Held: ${detail.hold}</p>`;
   const report = sections(detail.report);
   const entries = detail.timeline.entries;
   // ^ Open items are the owner's to act on, so they stay outside the folds.
@@ -212,7 +211,7 @@ export function TaskPage({ project, task, onClose, onMention, onReply, grip }) {
     <div class="page task-page">
       ${top}
       <div class="scroll">
-        <${TaskStory} detail=${detail} words=${words}>${held}${buttons.length ? html`
+        <${TaskStory} project=${project} detail=${detail} words=${words}>${buttons.length ? html`
           <div class="task-next" role="group" aria-label="Actions">
             <div class="actions">${buttons}</div>
             ${blocked}
@@ -223,13 +222,6 @@ export function TaskPage({ project, task, onClose, onMention, onReply, grip }) {
             <h2 class="task-heading">To check<span class="fold-note"> · ${checkNote("", detail)}</span></h2>
             ${checkRows}
           </section>`}
-        ${detail.status.waited_by?.length ? html`
-          <section class="task-section" aria-label="Waited for by">
-            <h2 class="task-heading">Waited for by</h2>
-            <ul class="task-overlaps">
-              ${detail.status.waited_by.map((waiter) => html`<li key=${waiter.task}><${TaskChip} project=${project} id=${waiter.task} /></li>`)}
-            </ul>
-          </section>` : null}
         ${detail.conflict && detail.overlaps.length ? html`
           <section class="task-section" aria-label="Shared files">
             <h2 class="task-heading">Shared files</h2>

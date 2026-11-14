@@ -4170,7 +4170,11 @@ merge_seconds = 3
         assert held['hold'] == 'the owner holds it' and held['status']['label'] == 'Held', held
         assert held['status']['sentence'].endswith(': the owner holds it. It lands only when you say so, or after a trial you pass.'), held['status']
         assert held['actions'] == ['land', 'hand', 'try'] and held['trial'] is None, held['actions']
+        # ^ Where it goes (wsx-core `view::flow`): the label says Held, so the row adds the reason only.
+        assert held['flow']['held'] == 'the owner holds it' and held['flow']['into'] == 'main', held['flow']
+        assert held['flow']['phrase'] == 'the owner holds it' and held['flow']['children'] == [], held['flow']
         overview = steady(trier, 'GET', '/api/tasks/%d' % demo)[1]
+        assert next(t for t in overview['tasks'] if t['id'] == 2)['flow']['phrase'] == 'the owner holds it', overview['tasks']
         assert overview['try_live'] is True and overview['trial'] is None, overview
         assert act(2, 'trial', {}, site=trier)[0] == 200
         # ^ The CLI polls: the device's request budget stays for the steps that follow.

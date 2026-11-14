@@ -29,6 +29,9 @@ pub enum CheckState {
     Failed,
     /// Closed by the owner without a verdict: not passed, not failed, no fix task.
     Skipped,
+    /// Closed by the owner's reply: between passed and failed, its words are the `note` the
+    /// manager gets, as a fail's note is. ref: docs/tasks.md "To check"
+    Replied,
 }
 
 /// One line of `checks.jsonl`. The file only grows: a later line with the same id is the
@@ -186,7 +189,7 @@ pub fn collect(
     })
 }
 
-/// Close open items as `state` (passed, failed or skipped): the named ones, or every open one when
+/// Close open items as `state` (passed, failed or skipped; replied is `item_reply`'s): the named ones, or every open one when
 /// `ids` is empty. An unknown id or one that is not open refuses the whole call.
 /// `owner_said` is kept on the row when the manager passed on the owner's message.
 pub fn close(
@@ -232,7 +235,7 @@ pub fn find_open<'a>(items: &'a [CheckItem], id: &str) -> Result<&'a CheckItem> 
 }
 
 /// The first line of an owner reply to a To check item: `> check c12`, then an empty line and the
-/// owner's words. The web's Reply on an item writes it, as do its Pass and Fail after they close the item. ref: docs/tasks.md "To check"
+/// owner's words. The web's and the TUI's Reply on an item writes it. ref: docs/tasks.md "To check"
 pub const QUOTE_REF: &str = "> check ";
 
 /// What the host does with an owner message that quotes a To check item.
@@ -259,7 +262,8 @@ fn is_skip_key(words: &str) -> bool {
 /// Read an owner message that opens with `> check <id>`; `message` is the id it is logged with.
 /// None for any other message. A reply of only the skip key skips an open item with `close`, as
 /// `wsx task check skip` does, and the item keeps `message` as `owner_said`. Other words go to
-/// the manager; on an item that was passed or failed they are also its note (`note_said`).
+/// the manager; they close an open item as `replied` with the words as its note, and on an item
+/// that was passed or failed they are its note (`note_said` keeps `message` in both).
 pub fn item_reply(project_id: &str, text: &str, message: u64) -> Option<ItemReply> {
     let rest = text.trim_start().strip_prefix(QUOTE_REF)?;
     let (id, words) = rest.split_once('\n').unwrap_or((rest, ""));
@@ -279,6 +283,18 @@ pub fn item_reply(project_id: &str, text: &str, message: u64) -> Option<ItemRepl
     let text = format!("> {quote}\n\n{words}");
     let item_id = Some(item.id.clone());
     if !is_skip_key(words) {
+        // ^ Words on an open item are the owner's verdict: the item closes as replied and the
+        // manager gets them marked, as a failed item's words are. Over the note limit it stays open.
+        let replied = item.state == CheckState::Open
+            && !words.is_empty()
+            && words.len() <= MAX_NOTE_BYTES
+            && reply(project_id, &item.id, words, message).is_ok();
+        if replied {
+            return Some(ItemReply::Words {
+                text: format!("> {quote}\n\nTo check {} replied: {words}", item.id),
+                item: item_id,
+            });
+        }
         // ^ Words on an item the owner passed or failed with a button are their note on it, once.
         let noted = matches!(item.state, CheckState::Passed | CheckState::Failed)
             && item.note.is_none()
@@ -353,6 +369,21 @@ fn set_note(project_id: &str, id: &str, note: &str, message: u64) -> Result<()> 
     .map(drop)
 }
 
+/// Close the open item `id` as replied, with the owner's words as its note.
+fn reply(project_id: &str, id: &str, note: &str, message: u64) -> Result<()> {
+    change(project_id, |items| {
+        let item = find_open(items, id)?;
+        Ok(vec![CheckItem {
+            state: CheckState::Replied,
+            note: Some(note.to_string()),
+            note_said: Some(message),
+            unix_ms: now_unix_ms(),
+            ..item.clone()
+        }])
+    })
+    .map(drop)
+}
+
 /// Mark the open item `id` failed with the owner's note and the task that fixes it.
 pub fn fail(project_id: &str, id: &str, note: &str, fix_task: u32) -> Result<CheckItem> {
     let rows = change(project_id, |items| {
@@ -374,6 +405,7 @@ pub fn state_name(state: CheckState) -> &'static str {
         CheckState::Passed => "passed",
         CheckState::Failed => "failed",
         CheckState::Skipped => "skipped",
+        CheckState::Replied => "replied",
     }
 }
 

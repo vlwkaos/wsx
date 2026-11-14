@@ -11,6 +11,8 @@ pub const MAX_RESULT_READ_BYTES: u64 = 1024 * 1024;
 /// Paths shown per overlapping task in `show`.
 const OVERLAP_PATHS_SHOWN: usize = 20;
 const TITLE_CHARS: usize = 120;
+/// A hold's reason in a row's few words.
+const FLOW_REASON_CHARS: usize = 40;
 
 /// Attention order (knowledge "Manager Mode Attention UX"): what needs the owner first.
 pub fn attention(state: TaskState) -> u8 {
@@ -479,6 +481,86 @@ pub fn children(project_id: &str, parent: u32) -> Result<Vec<(TaskDir, TaskRecor
         .filter_map(|(dir, record)| record.ok().map(|record| (dir, record)))
         .filter(|(_, record)| record.parent == Some(parent))
         .collect())
+}
+
+/// Where a task stands among the others and where it goes, the one read every view shows:
+/// `held` (the reason), `after` (`{task, because}`), `parent`, `into` (the branch it lands
+/// into: the default branch or `#<parent>`), `step` (`{name, at, of}` while it works on a
+/// workflow step), `children` (`[{id, state}]`) and `phrase`, the row's few words that the
+/// status label (`status`) does not say already: "build 2/3 · into #451", "after #453",
+/// "held: deploy freeze", "children: 1 ready, 2 working". Empty for a finished task.
+/// `records` are the project's tasks. ref: docs/tasks.md "Where a task goes"
+// ^ Step 5's `waits_on` replaces the reads of `hold` and `after` here; the views stay.
+pub fn flow(record: &TaskRecord, records: &[&TaskRecord], status: &super::status::Status) -> Value {
+    let open = record.state.is_open();
+    let children: Vec<&&TaskRecord> = records
+        .iter()
+        .filter(|other| other.parent == Some(record.id))
+        .collect();
+    let into = record.parent.map_or_else(
+        || record.default_branch.clone(),
+        |parent| format!("#{parent}"),
+    );
+    let step = (open && record.state == TaskState::Working)
+        .then(|| record.steps.get(record.step as usize))
+        .flatten()
+        .map(|step| json!({ "name": step.name, "at": record.step + 1, "of": record.steps.len() }));
+    let mut phrase: Vec<String> = Vec::new();
+    if let (Some(hold), true) = (&record.hold, open) {
+        let reason = clip(hold.trim_end_matches('.'), FLOW_REASON_CHARS);
+        // ^ The label "Held" says the word already.
+        phrase.push(match status.kind {
+            "held" => reason,
+            _ => format!("held: {reason}"),
+        });
+    }
+    if let (Some(after), true) = (&record.after, open) {
+        // ^ The label "Waiting for #m to land" names the task; the reason is what the row adds.
+        phrase.push(match status.kind {
+            "after" => super::status::kind_words(after.because).to_string(),
+            _ => format!("after #{}", after.task),
+        });
+    }
+    if let Some(step) = &step {
+        phrase.push(format!(
+            "{} {}/{}",
+            step["name"].as_str().unwrap_or_default(),
+            step["at"],
+            step["of"]
+        ));
+    }
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for child in children.iter().filter(|child| child.state.is_open()) {
+        let word = child.state.as_str();
+        match counts.iter_mut().find(|(state, _)| *state == word) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((word, 1)),
+        }
+    }
+    if open && !counts.is_empty() {
+        let counted: Vec<String> = counts
+            .iter()
+            .map(|(state, count)| format!("{count} {state}"))
+            .collect();
+        phrase.push(format!("children: {}", counted.join(", ")));
+    }
+    if open
+        && (record.parent.is_some()
+            || matches!(record.state, TaskState::Working | TaskState::Checking))
+    {
+        phrase.push(format!("into {into}"));
+    }
+    json!({
+        "held": record.hold.as_ref().filter(|_| open),
+        "after": record.after.as_ref().filter(|_| open).map(|after| json!({
+            "task": after.task, "because": super::status::kind_words(after.because),
+        })),
+        "parent": record.parent,
+        "into": into,
+        "step": step,
+        "children": children.iter().map(|child| json!({ "id": child.id, "state": child.state })).collect::<Vec<_>>(),
+        "phrase": if open { phrase.join(" · ") } else { String::new() },
+    })
 }
 
 /// Refuse to `act` on a task while it has open children, naming them.

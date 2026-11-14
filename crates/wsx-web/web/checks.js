@@ -18,8 +18,8 @@ export async function decideCheck(project, id, decision) {
 
 // The first line of an item's check as a chat quote of it, cut as the server cuts a message's
 // (wsx-core `quote_of`): what the item's bubble carries as `data-quote`, and what a reply to the
-// item shows over the composer. A reply of only "x" skips an open item; words to a passed or failed
-// one are its note (`item_reply`, wsx-core).
+// item shows over the composer. A reply of only "x" skips an open item; other words close it as
+// replied, with the words as its note (`item_reply`, wsx-core).
 export function checkQuote(item) {
   const line = item.check.split("\n").map((each) => each.trim()).find(Boolean) ?? "";
   const chars = [...line];
@@ -62,11 +62,11 @@ function Place({ where }) {
 }
 
 // One item: the task chip with what the task did as its title, then the check, where to look,
-// its capture and when it passes as labeled lines. Try, Fail, Skip and Pass are icons in one place on
-// every item: the bottom right on a phone, a column right of the words on a wide screen.
-// Each decision shows its result at once and closes the item. Pass and Fail then open the manager's
-// composer as a reply to the item (`onReply`, the quote `> check <id>`): what the owner writes is
-// their note on the verdict, and a failed item's note starts the fix. Skip opens nothing.
+// its capture and when it passes as labeled lines. Try, Reply, Fail and Pass are icons in one place
+// on every item: the bottom right on a phone, a column right of the words on a wide screen.
+// Pass and Fail close the item at once and open nothing. Reply opens the manager's composer as a
+// reply to the item (`onReply`, the quote `> check <id>`): the sent words close it as replied and
+// are the manager's note; a reply of only "x" skips it.
 // `revision` is the task's current one: an item of an older revision names its own.
 // `tag`: an `li` in the list, a `div` in its chat bubble (bubbles.js `CheckBubble`).
 export function CheckRow({ project, item: listed, revision, onChanged, onReply, tag = "li" }) {
@@ -75,25 +75,24 @@ export function CheckRow({ project, item: listed, revision, onChanged, onReply, 
   // ^ The decision answers with the item's new state; a chat bubble has no list to read again.
   const [decided, setDecided] = useState(null);
   const item = decided?.id === listed.id && listed.state === "open" ? decided : listed;
-  const decide = async (decision, event) => {
-    const dialog = event.currentTarget.closest("dialog");
+  const decide = async (decision) => {
     setBusy(true);
     setError("");
     try {
       const answer = await decideCheck(project, item.id, decision);
-      setDecided({ ...item, ...answer.changed?.find((changed) => changed.id === item.id), state: { pass: "passed", fail: "failed", skip: "skipped" }[decision] });
+      setDecided({ ...item, ...answer.changed?.find((changed) => changed.id === item.id), state: { pass: "passed", fail: "failed" }[decision] });
       onChanged?.();
-      // ^ The dialog closes first, as the Answer of task.js does, so the composer can take the focus.
-      if (decision !== "skip" && onReply) {
-        dialog?.close();
-        onReply(checkQuote(item), item.id);
-      }
     } catch (failure) {
       setError(failure.message);
     }
     setBusy(false);
   };
   const acting = can("task_act") && item.state === "open";
+  // ^ The dialog closes first, as the Answer of task.js does, so the composer can take the focus.
+  const reply = (event) => {
+    event.currentTarget.closest("dialog")?.close();
+    onReply(checkQuote(item), item.id);
+  };
   const older = revision != null && item.revision !== revision ? ` (r${item.revision})` : "";
   const capture = `api/tasks/${project}/checks/${item.id}/capture`;
   // ^ A video capture shows its poster (or a blank frame) with a play mark; the viewer plays it.
@@ -116,17 +115,18 @@ export function CheckRow({ project, item: listed, revision, onChanged, onReply, 
               label=${`${video ? "Video" : "Capture"} of: ${item.check}`} />`}
           ${item.state === "failed" && html`<p class="check-state">Failed${item.note ? `: ${item.note}` : ""}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
           ${item.state === "passed" && html`<p class="check-state">Passed${item.note ? `: ${item.note}` : ""}</p>`}
+          ${item.state === "replied" && html`<p class="check-state">Replied: ${item.note}</p>`}
           ${item.state === "skipped" && html`<p class="check-state">Skipped</p>`}
         </div>
         ${acting && html`
           <span class="check-acts">
             <${TryButton} project=${project} task=${item.task} icon />
-            <button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy}
-              title="Fail: close it, then tell the manager" aria-label=${`Fail: close it, then tell the manager what is wrong with: ${item.check}`} onClick=${(event) => decide("fail", event)}><${Icon} name="fail" /></button>
-            <button class="icon-button check-act" type="button" disabled=${busy} title="Not checking: close it without a verdict"
-              aria-label=${`Skip, not checking: close it without a verdict: ${item.check}`} onClick=${(event) => decide("skip", event)}><${Icon} name="skip" /></button>
-            <button class="icon-button check-act" type="button" data-tone="accent" disabled=${busy} title="Works: close this check"
-              aria-label=${`Pass, works: close this check: ${item.check}`} onClick=${(event) => decide("pass", event)}><${Icon} name="pass" /></button>
+            ${onReply && html`<button class="icon-button check-act" type="button" disabled=${busy} title="Reply"
+              aria-label=${`Reply: ${item.check}`} onClick=${reply}><${Icon} name="reply" /></button>`}
+            <button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy} title="Fail"
+              aria-label=${`Fail: ${item.check}`} onClick=${() => decide("fail")}><${Icon} name="fail" /></button>
+            <button class="icon-button check-act" type="button" data-tone="accent" disabled=${busy} title="Pass"
+              aria-label=${`Pass: ${item.check}`} onClick=${() => decide("pass")}><${Icon} name="pass" /></button>
           </span>`}
       </div>
       ${error && html`<p class="error need-error" role="alert">${error}</p>`}

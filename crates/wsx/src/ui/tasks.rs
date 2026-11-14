@@ -617,8 +617,11 @@ fn limit_line(limits: &Value, width: usize) -> Option<Line<'static>> {
     ))
 }
 
-/// One task's ledger entry as labeled rows: state, its status sentence, its checks, its
-/// To check items, then the worker's summary or memo.
+/// One task's ledger entry: first what the owner needs at a glance, one labeled row each
+/// (state and status, what it waits on, where it goes, its parent, children and the tasks that
+/// wait for it, the agent, the checks in one line, To check, the summary's first paragraph and
+/// the status sentence), then under "Details" the rest: usage, each check, the whole summary and
+/// the memo. ref: docs/tasks.md "TUI"
 fn detail(task: &Value) -> Vec<Line<'static>> {
     let label = |text: &str| {
         Span::styled(
@@ -626,7 +629,15 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
             Style::default().fg(theme::TEXT_SUBTLE),
         )
     };
+    let row = |name: &str, text: String| Line::from(vec![label(name), Span::raw(text)]);
+    let numbers = |rows: &[Value], key: &str| {
+        rows.iter()
+            .map(|row| format!("#{}", row[key].as_u64().unwrap_or_default()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let state = crate::task_list::state_word(task);
+    let flow = &task["flow"];
     let mut lines = vec![
         Line::from(vec![
             Span::styled(
@@ -641,11 +652,100 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
         Line::from(vec![
             label("State"),
             Span::styled(state.clone(), Style::default().fg(state_color(&state))),
+            Span::styled(
+                task["status"]["label"]
+                    .as_str()
+                    .map(|status| format!("  {status}"))
+                    .unwrap_or_default(),
+                Style::default().fg(theme::TEXT_MUTED),
+            ),
         ]),
     ];
-    if let Some(agent) = wsx_core::task::view::agent_label(&task["agent"]) {
-        lines.push(Line::from(vec![label("Agent"), Span::raw(agent)]));
+    // ^ Held, after, step, parent and children: wsx-core `view::flow`, as the web's sheet.
+    let waits: Vec<String> = [
+        flow["after"]["task"].as_u64().map(|after| {
+            format!(
+                "#{after} to land, {}",
+                flow["after"]["because"].as_str().unwrap_or_default()
+            )
+        }),
+        flow["held"].as_str().map(|held| format!("held: {held}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !waits.is_empty() {
+        lines.push(row("Waits on", waits.join(", ")));
     }
+    if let Some(into) = flow["into"].as_str() {
+        let step = flow["step"]["name"].as_str().map(|name| {
+            format!(
+                "{name} {}/{}, then ",
+                flow["step"]["at"], flow["step"]["of"]
+            )
+        });
+        lines.push(row(
+            "Goes",
+            format!("{}into {into}", step.unwrap_or_default()),
+        ));
+    }
+    if let Some(children) = flow["children"].as_array().filter(|rows| !rows.is_empty()) {
+        let words: Vec<String> = children
+            .iter()
+            .map(|child| {
+                format!(
+                    "#{} {}",
+                    child["id"].as_u64().unwrap_or_default(),
+                    child["state"].as_str().unwrap_or_default()
+                )
+            })
+            .collect();
+        lines.push(row("Children", words.join(", ")));
+    }
+    // ^ The open tasks that wait for this one (`wsx task after`), by number.
+    if let Some(waiters) = task["status"]["waited_by"]
+        .as_array()
+        .filter(|waiters| !waiters.is_empty())
+    {
+        lines.push(row("Blocks", numbers(waiters, "task")));
+    }
+    if let Some(agent) = wsx_core::task::view::agent_label(&task["agent"]) {
+        lines.push(row("Agent", agent));
+    }
+    let checks = task["checks"].as_array().cloned().unwrap_or_default();
+    let outcome = |check: &Value| check["outcome"].as_str().unwrap_or_default().to_string();
+    if !checks.is_empty() {
+        let failed: Vec<String> = checks
+            .iter()
+            .filter(|check| outcome(check) != "passed")
+            .map(|check| check["command"].as_str().unwrap_or_default().to_string())
+            .collect();
+        let mut words = format!("{} passed", checks.len() - failed.len());
+        if !failed.is_empty() {
+            words += &format!(", {} failed: {}", failed.len(), failed.join(", "));
+        }
+        lines.push(row("Checks", words));
+    }
+    if let Some(items) = task["human_verify"].as_u64().filter(|items| *items > 0) {
+        lines.push(row(
+            "To check",
+            format!("{items} item{}", if items == 1 { "" } else { "s" }),
+        ));
+    }
+    let summary = task["summary"].as_str().map(str::trim).unwrap_or_default();
+    let lead = summary
+        .split("\n\n")
+        .next()
+        .unwrap_or_default()
+        .replace('\n', " ");
+    if !lead.is_empty() {
+        lines.push(row("Result", lead.clone()));
+    }
+    if let Some(status) = task["status"]["sentence"].as_str() {
+        lines.push(row("Next", status.to_string()));
+    }
+    // ^ One scroll deeper: what the rows above sum up.
+    let mut more: Vec<Line<'static>> = Vec::new();
     if let Some(spent) = Usage::deserialize(&task["usage"])
         .ok()
         .filter(|usage| usage.turns > 0)
@@ -659,70 +759,39 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
                 if spent.pings == 1 { "" } else { "s" }
             );
         }
-        lines.push(Line::from(vec![label("Usage"), Span::raw(line)]));
+        more.push(row("Usage", line));
     }
-    if let Some(status) = task["status"]["sentence"].as_str() {
-        lines.push(Line::from(vec![
-            label("Status"),
-            Span::raw(status.to_string()),
+    for check in &checks {
+        let outcome = outcome(check);
+        let color = if outcome == "passed" {
+            theme::SUCCESS
+        } else {
+            theme::ERROR
+        };
+        more.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(format!("{outcome:<10}"), Style::default().fg(color)),
+            Span::raw(check["command"].as_str().unwrap_or_default().to_string()),
         ]));
     }
-    // ^ The open tasks that wait for this one (`wsx task after`), by number.
-    if let Some(waiters) = task["status"]["waited_by"]
-        .as_array()
-        .filter(|waiters| !waiters.is_empty())
-    {
-        let numbers: Vec<String> = waiters
-            .iter()
-            .map(|waiter| format!("#{}", waiter["task"].as_u64().unwrap_or_default()))
-            .collect();
-        lines.push(Line::from(vec![
-            label("Waited by"),
-            Span::raw(numbers.join(", ")),
-        ]));
-    }
-    if let Some(checks) = task["checks"]
-        .as_array()
-        .filter(|checks| !checks.is_empty())
-    {
-        let outcome = |check: &Value| check["outcome"].as_str().unwrap_or_default().to_string();
-        let passed = checks
-            .iter()
-            .filter(|check| outcome(check) == "passed")
-            .count();
-        lines.push(Line::from(vec![
-            label("Checks"),
-            Span::raw(format!("{passed} passed, {} failed", checks.len() - passed)),
-        ]));
-        for check in checks {
-            let outcome = outcome(check);
-            let color = if outcome == "passed" {
-                theme::SUCCESS
-            } else {
-                theme::ERROR
-            };
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(format!("{outcome:<10}"), Style::default().fg(color)),
-                Span::raw(check["command"].as_str().unwrap_or_default().to_string()),
-            ]));
-        }
-    }
-    if let Some(items) = task["human_verify"].as_u64().filter(|items| *items > 0) {
-        lines.push(Line::from(vec![
-            label("To check"),
-            Span::raw(format!("{items} item{}", if items == 1 { "" } else { "s" })),
-        ]));
-    }
-    for (key, heading) in [("summary", "Summary"), ("memo", "Memo")] {
+    // ^ The whole summary only when it has more than the Result row shows.
+    let rest = (summary.len() > lead.len()).then_some(("summary", "Summary"));
+    for (key, heading) in rest.into_iter().chain([("memo", "Memo")]) {
         if let Some(text) = task[key].as_str().filter(|text| !text.trim().is_empty()) {
-            lines.push(Line::raw(""));
-            lines.push(Line::styled(
+            more.push(Line::styled(
                 heading,
                 Style::default().fg(theme::ACCENT).bold(),
             ));
-            lines.extend(text.lines().map(|line| Line::raw(line.to_string())));
+            more.extend(text.lines().map(|line| Line::raw(line.to_string())));
         }
+    }
+    if !more.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            "Details",
+            Style::default().fg(theme::TEXT_SUBTLE).bold(),
+        ));
+        lines.extend(more);
     }
     lines
 }

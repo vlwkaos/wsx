@@ -262,7 +262,6 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
             hints.extend(["(j/k)select".into(), "Esc: back".into()]);
             hints
         }
-        Focus::Fail(_) => vec!["Enter: fail it".into(), "Esc: cancel".into()],
         Focus::Confirm { .. } => vec!["(y)es".into(), "(n)o".into()],
         Focus::Chat => {
             if chat.around.is_some() && chat.find.value().is_empty() {
@@ -299,7 +298,7 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
             }
             match chat.selected_item() {
                 Some(Item::Check(_)) => {
-                    hints.extend(["(p)ass".into(), "(s)kip".into(), "(f)ail".into()])
+                    hints.extend(["(p)ass".into(), "(f)ail".into(), "(r)eply".into()])
                 }
                 Some(Item::Approval { .. }) => {
                     hints.extend(["(y)approve".into(), "(n)deny".into()])
@@ -852,7 +851,6 @@ fn composer(chat: &ManagerChat, width: usize) -> (Line<'static>, Option<u16>) {
             None,
         ),
         Focus::File | Focus::Media => (Line::raw(""), None),
-        Focus::Fail(_) => typed(&chat.note),
         Focus::Confirm { label, approve, .. } => {
             let words = if *approve {
                 label.clone()

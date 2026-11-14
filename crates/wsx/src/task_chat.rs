@@ -251,7 +251,7 @@ impl Item {
     }
 }
 
-/// Where keys go: the chat, the message line, the find line, a fail's note, or a y/N question.
+/// Where keys go: the chat, the message line, the find line, or a y/N question.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Focus {
     Chat,
@@ -261,7 +261,6 @@ pub enum Focus {
     File,
     /// The project's media list, in place of the chat (`ManagerChat::media`).
     Media,
-    Fail(String),
     Confirm {
         id: String,
         label: String,
@@ -320,7 +319,6 @@ pub struct ManagerChat {
     pub file: Option<FileView>,
     pub media: Option<MediaList>,
     pub composer: InputState,
-    pub note: InputState,
     /// What `/` finds in the conversation, case-insensitive; empty when no find is on.
     pub find: InputState,
     /// The current match, counted from the oldest; a new query starts at the newest.
@@ -342,9 +340,9 @@ pub struct ManagerChat {
     /// ^ The rows wrapped for the last width and link, until the rows change; the draw, a key
     /// and the find's count all read it, so a frame wraps nothing new.
     wrapped: RefCell<Option<Wrapped>>,
-    /// The question a message answers (`r` on an open question): its line and id, sent as the
-    /// quote (`> message <id>`).
-    reply: Option<(String, u64)>,
+    /// What a message answers (`r` on an open question or a To check item): its line and the
+    /// quote's reference, `message <id>` or `check <id>`, sent as `> <reference>`.
+    reply: Option<(String, String)>,
     /// The project whose manager chat `P` asked for; the Tasks view takes it and switches.
     pub peer: Option<String>,
     /// What runs now ("Sending", "Failing c3"), until its answer comes.
@@ -405,7 +403,6 @@ impl ManagerChat {
             file: None,
             media: None,
             composer: InputState::new("> "),
-            note: InputState::new(""),
             find: InputState::new("/"),
             found: 0,
             area: Cell::new((0, 0)),
@@ -594,8 +591,8 @@ impl ManagerChat {
             return;
         }
         // ^ The owner's quote format (`split_quote`): the web's reply writes the same.
-        if let Some((_, id)) = self.reply.take() {
-            text = format!("> message {id}\n\n{text}");
+        if let Some((_, reference)) = self.reply.take() {
+            text = format!("> {reference}\n\n{text}");
         }
         self.newest();
         self.composer = InputState::new("> ");
@@ -628,7 +625,17 @@ impl ManagerChat {
         });
     }
 
-    /// Pass or skip the selected To check item.
+    /// The message line, focused, as an answer to `quote` (sent as `> <reference>`).
+    fn reply_to(&mut self, quote: String, reference: String) {
+        self.composer = InputState::with_value(
+            format!("Reply to “{}”: ", view::clip(&quote, 40)),
+            self.composer.value().to_string(),
+        );
+        self.reply = Some((quote, reference));
+        self.focus = Focus::Compose;
+    }
+
+    /// Pass or fail the selected To check item at once.
     pub fn close_check(&mut self, state: CheckState) {
         let Some(Item::Check(item)) = self.selected_item() else {
             return;
@@ -656,29 +663,6 @@ impl ManagerChat {
                 Err(error) => (format!("Not dismissed: {error:#}"), true, None),
             }
         });
-    }
-
-    /// Fail item `id` with the note: it starts the task that fixes it, as `check fail` does.
-    pub fn fail_check(&mut self, id: String) {
-        let note = self.note.value().trim().to_string();
-        if note.is_empty() {
-            return;
-        }
-        self.focus = Focus::Chat;
-        self.run(
-            format!("Failing {id}"),
-            move |project, _, store| match crate::task::fail_check(&project, &store, &id, &note) {
-                Ok(item) => (
-                    format!(
-                        "{id} failed; #{} fixes it",
-                        item.fix_task.unwrap_or_default()
-                    ),
-                    false,
-                    None,
-                ),
-                Err(error) => (format!("{id} not failed: {error:#}"), true, None),
-            },
-        );
     }
 
     /// The message line, focused, starting with `#id `: the owner answers about that task.
@@ -848,13 +832,6 @@ impl ManagerChat {
                 Action::InputChar('g') => self.scroll_file(i32::MIN),
                 _ => {}
             },
-            Focus::Fail(id) => match action {
-                Action::Select => self.fail_check(id),
-                Action::InputEscape => self.focus = Focus::Chat,
-                _ => {
-                    dispatch_text_edit(&mut self.note, action);
-                }
-            },
             Focus::Confirm { id, approve, .. } => match action {
                 Action::InputChar('y') | Action::Select => self.decide(id, approve),
                 Action::InputChar('n') | Action::InputEscape => self.focus = Focus::Chat,
@@ -893,18 +870,14 @@ impl ManagerChat {
             (Action::Select, Some(Item::Ask { id, .. })) => self.show_quoted("", Some(id)),
             (Action::InputChar('i') | Action::Select, _) => self.focus = Focus::Compose,
             (Action::InputChar('p'), Some(Item::Check(_))) => self.close_check(CheckState::Passed),
-            (Action::InputChar('s'), Some(Item::Check(_))) => self.close_check(CheckState::Skipped),
-            (Action::InputChar('f'), Some(Item::Check(item))) => {
-                self.note = InputState::new(format!("Fail {}, what is wrong: ", item.id));
-                self.focus = Focus::Fail(item.id);
+            (Action::InputChar('f'), Some(Item::Check(_))) => self.close_check(CheckState::Failed),
+            // ^ A reply to an item closes it as replied, its words the manager's note; "x" skips
+            // it (wsx-core `checks::item_reply`).
+            (Action::InputChar('r'), Some(Item::Check(item))) => {
+                self.reply_to(item.check, format!("check {}", item.id))
             }
             (Action::InputChar('r'), Some(Item::Ask { id, quote, .. })) => {
-                self.composer = InputState::with_value(
-                    format!("Reply to “{}”: ", view::clip(&quote, 40)),
-                    self.composer.value().to_string(),
-                );
-                self.reply = Some((quote, id));
-                self.focus = Focus::Compose;
+                self.reply_to(quote, format!("message {id}"))
             }
             (Action::InputChar('d'), Some(Item::Ask { id, .. })) => self.dismiss(id),
             (Action::InputChar(key @ ('y' | 'n')), Some(Item::Approval { id, label })) => {
