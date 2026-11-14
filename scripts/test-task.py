@@ -7650,7 +7650,7 @@ def part_host(created=None):
     assert not f_home['message'].startswith('Handover'), f_home['message'][:200]
     # (c) A worker on an hour's limit still waits for Claude: the floor is no worker's fallback.
     limit_for(600)
-    f_worker = js('task', 'new', 'WORK floor.txt')['id']
+    f_worker = js('task', 'new', 'LIMIT 600 WORK floor.txt')['id']
     wait(lambda: show(f_worker)['state'] == 'waiting' and show(f_worker)['record']['waiting']['on'] == 'limit', 'the worker waits')
     time.sleep(3)
     assert show(f_worker)['record']['adapter'] == 'claude' and not any(e['kind'] == 'agent_switch' for e in log(f_worker)), log(f_worker)
