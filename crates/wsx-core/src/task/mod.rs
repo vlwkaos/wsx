@@ -681,9 +681,9 @@ impl TaskRecord {
 
     /// The one write of `state` and `waiting`: a move the table (`TaskState::may_move`) has, with
     /// a wait its state holds, else an error that names both and leaves the record as it was.
-    /// `waiting` is the whole wait in the new state: `waiting` holds any wait but a check's and
-    /// a stopped landing's, a check slot's holds in any other state, a check-run's only in
-    /// `working`, a stopped landing's only in `ready`.
+    /// `waiting` is the whole wait in the new state: `waiting` holds any wait but a check's, a
+    /// stopped landing's and a question's, a check slot's holds in any other state, a check-run's
+    /// only in `working`, a stopped landing's and a question's (`asks`) only in `ready`.
     pub fn move_to(&mut self, to: TaskState, waiting: Option<Waiting>) -> anyhow::Result<()> {
         let from = self.state;
         let held = match waiting.as_ref().map(|waiting| waiting.on) {
