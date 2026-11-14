@@ -7657,8 +7657,6 @@ def part_host(created=None):
         for key in ('state_unix_ms', 'created_unix_ms'):
             record[key] -= aged_ms
         (folder / 'task.json').write_text(json.dumps(record))
-        for check in folder.glob('check-*.log'):
-            os.utime(check, (time.time() - aged_ms / 1000,) * 2)
         return n, int(pid_file.read_text())
 
     # A task request: the legacy host counts as older; its task is in a turn with no output past

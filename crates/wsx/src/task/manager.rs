@@ -2939,7 +2939,7 @@ impl Manager {
             Ok(()) => {
                 self.turn = Some(Vec::new());
                 self.pinging = true;
-                self.start_turn_record(&self.agent_model.clone());
+                self.start_turn_record();
                 self.say(&format!(
                     "ping {} of {KEEP_WARM_PINGS}: keeps the prompt cache warm",
                     self.pings
@@ -3057,13 +3057,14 @@ impl Manager {
             self.agent_model = model;
         }
         agent.send(text.trim_end())?;
-        self.start_turn_record(&self.agent_model.clone());
+        self.start_turn_record();
         Ok(())
     }
 
-    /// Start the record of the turn just sent on `model` (`stall::Turn`).
-    fn start_turn_record(&mut self, model: &str) {
+    /// Start the record of the turn just sent (`stall::Turn`).
+    fn start_turn_record(&mut self) {
         let (adapter, _) = self.current_agent();
+        let model = &self.agent_model;
         let settings = load_task_config(&self.main).unwrap_or_default();
         let quiet_ms = stall::turn_quiet_ms(settings.check_timeout_secs);
         self.turn_record = Some(stall::Turn::start(
