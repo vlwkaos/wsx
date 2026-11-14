@@ -1430,7 +1430,8 @@ await choose("who", "workers");
 await click("#usage-tab-cost");
 await until("!document.querySelector('.usage-chart') && (document.querySelector('#usage-panel .empty')?.textContent ?? '') === 'No spend' && !!document.querySelector('select[name=who]')", "a Cost slice with no spend does not say so");
 await click("#usage-tab-tokens");
-await until("!!document.querySelector('[data-chart=tokens]')", "the Tokens tab did not come back");
+// ^ Back on Tokens with the workers kept: their chart, or "No spend" when they used no tokens either (CI run 43553934252).
+await until("document.querySelector('#usage-tab-tokens').getAttribute('aria-selected') === 'true' && document.querySelector('select[name=who]').value === 'workers' && (!!document.querySelector('[data-chart=tokens]') || (document.querySelector('#usage-panel .empty')?.textContent ?? '') === 'No spend')", "the Tokens tab did not come back");
 await choose("who", "");
 const usageManager = await choose("who", "manager");
 if (!(usageManager.turns > 0) || !(usageManager.turns < usageAll.turns)) await fail(`the manager's usage is ${JSON.stringify(usageManager)} of ${JSON.stringify(usageAll)}`);
