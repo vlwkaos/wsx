@@ -166,7 +166,6 @@ fn build_overview(
     let all_pending = pending_approvals(&all_approvals);
     let approvals = task::chats::approvals_of(all_approvals.clone(), None, &open_chats);
     let pending = pending_approvals(&approvals);
-    let approved = needs::approved_tasks(&pending);
     for (dir, record) in &tasks {
         let Ok(record) = record else { continue };
         let title = view::readable_title(dir, record).unwrap_or_default();
@@ -201,8 +200,7 @@ fn build_overview(
             working += 1;
             continue;
         }
-        let Some(kind) = NeedKind::of(record.state).filter(|_| !approved.contains(&record.id))
-        else {
+        let Some(kind) = NeedKind::of(record.state) else {
             continue;
         };
         let (rank, mut row) = (kind.rank(), item(kind.name()));
