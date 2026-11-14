@@ -7630,12 +7630,15 @@ def part_host(created=None):
     assert manager_state().get('agent') is None and manager_state()['agent_session'] == session_before, manager_state()
     assert not any(e['kind'] == 'reply' and e.get('provisional') is None and f_second['id'] in e['to'] for e in chat()), chat()[-3:]
     # (d) The limit ends: the same Claude conversation resumes and its turn holds the owner's messages and the floor's replies.
+    seen_traces = len(traces())
     limit_file.unlink()
     f_back = js('task', 'say', 'STATUS back')
-    assert reply_to(f_back['id'])['text'].startswith('open: '), chat()[-3:]
+    f_dump = lambda: ([(t.get('session', '')[:8], str(t.get('message', t.get('adapter', '')))[:100]) for t in traces()[seen_traces:] if t.get('manager') or t.get('adapter') == 'pi'],
+                      [(e['kind'], e.get('provisional'), e.get('to'), str(e.get('text', e.get('until', '')))[:60]) for e in manager_entries() if e['unix_ms'] >= said_at][-14:])
+    assert reply_to(f_back['id'])['text'].startswith('open: '), f_dump()
     assert rotations() == rotated_before and manager_state()['agent_session'] == session_before, (rotated_before, manager_state())
     f_home = turn_with('STATUS back')
-    assert f_home['session'] == session_before and f_home['message'] and 'We decided: the theme is blue' in f_home['message'], f_home
+    assert f_home['session'] == session_before and f_home['message'] and 'We decided: the theme is blue' in f_home['message'], (f_home, f_dump())
     for held_word in ('We decided: ship on Friday', 'a stand-in model with no tools answered these',
                       'local-model to message %d: pi answers' % f_first['id'], 'local-model to message %d: pi answers' % f_second['id']):
         assert held_word in f_home['message'], (held_word, f_home['message'])
