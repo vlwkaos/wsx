@@ -4,7 +4,7 @@
 import { api } from "./api.js";
 import { ago, html, Icon, lastSentence, plural, short, useEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
-import { agentWords, running, statusTone, TaskChip } from "./task-words.js";
+import { agentWords, live, statusTone, TaskChip } from "./task-words.js";
 
 // `refs/heads/main` reads as `main`, `refs/remotes/origin/main` as `origin/main`.
 const branchName = (ref) => (ref ?? "").replace(/^refs\/(heads|remotes)\//, "");
@@ -126,7 +126,6 @@ function Progress({ detail, words, goal }) {
   const [, setTick] = useState(0);
   const health = [detail.status.label, statusTone(detail)];
   const { steps, step, stuck, last_unix_ms: last } = detail.progress;
-  const working = ["working", "checking"].includes(detail.state);
   const ended = ["ready", "failed"].includes(detail.state);
   // ^ The timer runs only while the age shows.
   const aged = !ended && last > 0;
@@ -141,7 +140,7 @@ function Progress({ detail, words, goal }) {
   return html`
     <div class="progress">
       <p class="progress-head">
-        <span class="mark" data-tone=${health[1]} data-running=${running(detail) && working && !stuck ? "" : null} aria-hidden="true"></span>
+        <span class="mark" data-tone=${health[1]} data-running=${live(detail) && !stuck ? "" : null} aria-hidden="true"></span>
         <span class="progress-health" data-tone=${health[1]}>${health[0]}</span>
         ${agentWords(detail.agent) && html`<span class="progress-model" title="Model">${agentWords(detail.agent)}</span>`}
         ${aged && html`<span class="progress-age">${ago(Date.now() - last)}</span>`}
