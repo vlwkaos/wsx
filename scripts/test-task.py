@@ -914,6 +914,18 @@ def manager_up(created):
         found = [json.loads(line) for line in manager_log.read_text().splitlines()]
         return found if raw else [unquoted(e) for e in found]
 
+    def manager_idle():
+        entries = manager_entries()
+        delivered = {n for e in entries if e['kind'] == 'delivered' for n in e['ids']}
+        turns = [e['kind'] for e in entries if e['kind'] in ('delivered', 'reply')]
+        return all(e['id'] in delivered for e in entries if e['kind'] == 'message') and turns[-1:] != ['delivered']
+
+    def manager_settled(why):
+        # ^ An event line is logged as a message 3 s after the last one: idle, then idle again after that.
+        wait(manager_idle, why, 60)
+        time.sleep(3.5)
+        wait(manager_idle, why, 60)
+
     # Usage (docs/tasks.md "Manager"): rotation looks at the last main model call's context, not
     # the result's sum over the turn's calls, nor a subagent's; a reply's cost is its own, not the
     # process's running `total_cost_usd`.
@@ -2267,14 +2279,7 @@ def part_core(created=None):
     assert (row['last']['status'], row['last']['exit']) == ('failed', 3) and row['last']['duration_ms'] >= 0, row
     assert re.search(r'sched \[1\]', tui_text(wsx, env, project, r'sched \[1\]'))
     # ^ The close events of the tasks above may still run a turn: SLOW must start its own.
-    def manager_idle():
-        entries = manager_entries()
-        delivered = {n for e in entries if e['kind'] == 'delivered' for n in e['ids']}
-        turns = [e['kind'] for e in entries if e['kind'] in ('delivered', 'reply')]
-        return all(e['id'] in delivered for e in entries if e['kind'] == 'message') and turns[-1:] != ['delivered']
-    wait(manager_idle, 'the manager idle before SLOW', 60)
-    time.sleep(3.5)
-    wait(manager_idle, 'the manager idle before SLOW', 60)
+    manager_settled('the manager idle before SLOW')
     busy = js('task', 'say', 'SLOW')
     first = js('task', 'new', 'NOOP')['id']
     second = js('task', 'new', 'NOOP')['id']
@@ -4409,6 +4414,9 @@ def part_worker(created=None):
     # each task that moved on since (docs/tasks.md "Manager", Events): the limit wait of a
     # task that works again by the time the owner's turn takes the event along.
     mark('27d')
+    # ^ The events of 27c may still be queued: a waking line merged with the limit wait's would
+    # take it into a turn before the owner's.
+    manager_settled('the manager idle before the stale wait')
     release = base / 'stale-release'
     stale = js('task', 'new', 'LIMIT 4 WAIT %s WORK ls.txt' % release)['id']
     wait(lambda: limited(stale), 'the task waits on the limit', 30)
