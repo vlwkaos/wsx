@@ -4591,6 +4591,12 @@ def part_worker(created=None):
     auto: true
     quietMinutes: 0.5
 """, 'deploy after land')
+    # ^ A deploy is due while the default branch is ahead of the last deploy: the part starts level
+    # with it, so a manager host that starts in the window starts no waiter of its own.
+    level = len(deploy_records())
+    js('task', 'deploy')
+    wait(lambda: len(deploy_records()) > level and deploy_lock_free(), 'the deploy by hand that levels the part', 30)
+    (base / 'auto-deploy.log').unlink()
     quick = [js('task', 'new', 'WORK d%d.txt' % i)['id'] for i in range(4)]
     for n in quick:
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
@@ -4627,6 +4633,24 @@ def part_worker(created=None):
     follow_up = state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'follow-up.log'
     wait(lambda: 'already deployed' in follow_up.read_text() and deploy_lock_free(), 'the waiter that found the land deployed', 60)
     assert len(deploy_records()[records_before:]) == 2, deploy_records()[records_before:]
+    # ^ A waiter killed in its window (a reboot does the same) leaves the deploy due: a manager host
+    # that starts starts the waiter again, and the deploy runs once.
+    lost = js('task', 'new', 'WORK d4.txt')['id']
+    assert wait_state(lost, 'ready', 'failed')['state'] == 'ready'
+    land(lost)
+    lost_tip = wait(lambda: show(lost)['state'] == 'landed' and git('rev-parse', 'main'), 'the land whose waiter dies')
+    waiters = lambda: leftovers('task deploy -p demo --if-new --quiet')
+    for line in wait(waiters, 'the waiter of the land'):
+        os.kill(int(line.split()[0]), 9)
+    wait(lambda: not waiters(), 'the waiter killed')
+    records_before = len(deploy_records())
+    stop_manager_now()
+    assert js('task', 'manager')['state'] == 'started'
+    wait(waiters, 'the waiter the starting manager host started')
+    wait(lambda: len(deploy_records()) > records_before and deploy_lock_free(), 'the deploy after the restart', 90)
+    time.sleep(2)
+    assert [r['commit'] for r in deploy_records()[records_before:]] == [lost_tip], deploy_records()[records_before:]
+    wait_closed(lost)
 
     # 29. A preview on request (docs/tasks.md "Preview"): a fake tailscale records its argv.
     mark('29')
