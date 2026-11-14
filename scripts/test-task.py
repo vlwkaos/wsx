@@ -6047,11 +6047,11 @@ def part_host(created=None):
     # fails as a finding: host evidence, one manager event, no fix turn. One without paths runs only
     # by name.
     mark('32od')
-    path_log = base / 'path-scenarios.log'
+    path_log, far_gate = base / 'path-scenarios.log', base / 'far-gate'
     configure(LAND_CONFIG + '  scenarioFree: [path-free.txt]\n  scenarioPaths: {near: [near.txt], far: [far.txt]}\n'
               '  scenarios:\n    near: echo near >> %s\n'
-              '    far: \'echo far >> %s; echo "FAIL: far assert"; exit 1\'\n'
-              '    named: echo named >> %s\n' % (path_log, path_log, path_log), 'path scenarios')
+              '    far: \'%s; echo far >> %s; echo "FAIL: far assert"; exit 1\'\n'
+              '    named: echo named >> %s\n' % (path_log, gate_cmd(far_gate), path_log, path_log), 'path scenarios')
 
     def path_runs():
         return path_log.read_text().split() if path_log.exists() else []
@@ -6067,7 +6067,10 @@ def part_host(created=None):
     assert wait_state(free, 'ready', 'failed')['state'] == 'ready' and not kinds(free, 'check_run'), log(free)
     assert path_runs() == ['near'], path_runs()
     # ^ The worker names `far` after its commit; its answer holds the result, then `near` runs.
+    # The gate opens once the result is in, so the answer cannot reach the worker's own call.
     finding = js('task', 'new', 'CHECKRUN_LATER far WORK near.txt')['id']
+    wait(lambda: kinds(finding, 'result'), 'the result before the far answer', 30)
+    far_gate.touch()
     done = wait_state(finding, 'ready', 'failed')
     assert done['state'] == 'ready' and triggers(finding) == ['step'] and path_runs()[1:] == ['far', 'near'], (path_runs(), log(finding))
     proof = [e for e in done['result']['result']['evidence'] if 'check-run far failed outside the task\'s changed paths' in e['check']]
