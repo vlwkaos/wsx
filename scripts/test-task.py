@@ -605,6 +605,11 @@ def run(wsx, wsxd, work, owned, part):
     for name, body in (('core', part_core), ('worker', part_worker), ('host', part_host)):
         if part in (None, name):
             created = body(created)
+    # ^ Every move the hosts made is one of the table's (docs/tasks.md "Status"): a host logs a
+    # move the table refuses as `move_refused`, and no CLI request reaches one.
+    refused = [line for path in (state / 'wsx/tasks').glob('*/*/log.jsonl')
+               for line in path.read_text().splitlines() if '"kind":"move_refused"' in line]
+    assert not refused, refused
 
 
 def login_agent_socket():

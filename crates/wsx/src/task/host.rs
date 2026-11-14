@@ -647,8 +647,7 @@ impl Host {
         let known = self.known_failure(&results, &found);
         let run = self.check_run.take();
         if self.record.waits_on(WaitOn::CheckRun) {
-            self.record.waiting = None;
-            self.save();
+            self.move_to(self.record.state, None);
         }
         let label = run
             .as_ref()
@@ -2702,12 +2701,12 @@ impl Host {
             WaitOn::Limit => self.limit_wait.as_ref().map(|wait| wait.until_ms),
             _ => None,
         };
-        self.record.waiting = Some(Waiting {
+        let waiting = Waiting {
             on,
             reason,
             until_ms,
-        });
-        self.set_state(TaskState::Waiting);
+        };
+        self.move_to(TaskState::Waiting, Some(waiting));
     }
 
     /// "ready", "waiting (the owner works on it by hand)" or "checking (queued for ...)".
@@ -3254,12 +3253,12 @@ impl Host {
             });
         }
         self.say(&reason);
-        self.record.waiting = Some(Waiting {
+        let waiting = Waiting {
             on: WaitOn::CheckSlot,
             reason,
             until_ms: None,
-        });
-        self.save();
+        };
+        self.move_to(self.record.state, Some(waiting));
     }
 
     /// A `ci:` run of the worker's check-run ended outside the tree and runs again after `wait`:
@@ -3300,8 +3299,7 @@ impl Host {
         }
         if self.record.waits_on(WaitOn::CheckSlot) {
             self.say("took the check slot");
-            self.record.waiting = None;
-            self.save();
+            self.move_to(self.record.state, None);
         }
         // ^ The checks after a result never run beside a check-run: this slot is the run's.
         if self.record.state != TaskState::Checking {
@@ -3334,7 +3332,7 @@ impl Host {
         {
             return;
         }
-        self.record.waiting = Some(Waiting {
+        let waiting = Waiting {
             on: WaitOn::CheckRun,
             reason: format!(
                 "the result waits for check-run {}{}",
@@ -3342,8 +3340,8 @@ impl Host {
                 if run.ci { " on CI" } else { "" }
             ),
             until_ms: run.deadline_ms,
-        });
-        self.save();
+        };
+        self.move_to(TaskState::Working, Some(waiting));
     }
 
     /// Results that decide nothing now: a result that came during the checks (a block keeps its
@@ -4092,17 +4090,28 @@ impl Host {
         }
     }
 
+    /// Move to `state`: a wait stays only in `waiting` (see `wait`).
     fn set_state(&mut self, state: TaskState) {
+        let waiting = self
+            .record
+            .waiting
+            .clone()
+            .filter(|_| state == TaskState::Waiting);
+        self.move_to(state, waiting);
+    }
+
+    /// Every move of the task goes through `TaskRecord::move_to`'s table; a refused one is
+    /// logged and changes nothing. ref: docs/tasks.md "Status"
+    fn move_to(&mut self, state: TaskState, waiting: Option<Waiting>) {
         let changed = self.record.state != state;
-        if changed {
-            self.record.state_unix_ms = now_unix_ms();
+        if let Err(error) = self.record.move_to(state, waiting) {
+            let reason = format!("{error:#}");
+            self.say(&reason);
+            self.log(LogEvent::MoveRefused { reason });
+            return;
         }
-        self.record.state = state;
         if !matches!(state, TaskState::Working | TaskState::Checking) {
             self.disk_slot = None;
-        }
-        if state != TaskState::Waiting {
-            self.record.waiting = None;
         }
         self.save();
         if changed {

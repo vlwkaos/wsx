@@ -547,8 +547,7 @@ pub(crate) fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
         dir.append(LogEvent::Closed { discarded: discard })?;
         // ^ A landed task keeps `landed`: its work is on the default branch.
         if record.state != TaskState::Landed || discard {
-            record.state = TaskState::Closed;
-            record.state_unix_ms = now_unix_ms();
+            record.move_to(TaskState::Closed, None)?;
         }
         record.updated_unix_ms = now_unix_ms();
         dir.write_record(&record)?;
