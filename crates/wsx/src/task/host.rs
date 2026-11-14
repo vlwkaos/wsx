@@ -874,6 +874,26 @@ impl Host {
                 });
                 self.resume_after_limit();
             }
+            // ^ A stopped landing stays: its reason is the last landing event after the revision,
+            // also in a record from before `WaitOn::LandStopped`.
+            TaskState::Ready => {
+                let waiting = self
+                    .dir
+                    .last_event(|event| match event {
+                        LogEvent::LandStopped { reason } => Some(Some(reason.clone())),
+                        LogEvent::Revision { .. } => Some(None),
+                        _ => None,
+                    })
+                    .ok()
+                    .flatten()
+                    .flatten()
+                    .map(|reason| Waiting {
+                        on: WaitOn::LandStopped,
+                        reason,
+                        until_ms: None,
+                    });
+                self.move_to(TaskState::Ready, waiting);
+            }
             state => {
                 self.set_state(state);
             }
@@ -3517,11 +3537,18 @@ impl Host {
         match finished {
             Ok(message) => self.say(&message),
             Err(error) => {
-                self.say(&format!("landing stopped: {error:#}"));
+                let reason = format!("{error:#}");
+                self.say(&format!("landing stopped: {reason}"));
                 self.log(LogEvent::LandStopped {
-                    reason: format!("{error:#}"),
+                    reason: reason.clone(),
                 });
-                self.set_state(state);
+                // ^ A ready task waits on the owner to land it again; a failed one is failed.
+                let waiting = (state == TaskState::Ready).then_some(Waiting {
+                    on: WaitOn::LandStopped,
+                    reason,
+                    until_ms: None,
+                });
+                self.move_to(state, waiting);
             }
         }
     }

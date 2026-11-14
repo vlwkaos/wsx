@@ -491,7 +491,6 @@ pub fn children(project_id: &str, parent: u32) -> Result<Vec<(TaskDir, TaskRecor
 /// not say already: "build 2/3 · into #451", "after #453", "held: deploy freeze",
 /// "children: 1 ready, 2 working". Empty for a finished task.
 /// `records` are the project's tasks. ref: docs/tasks.md "Where a task goes"
-// ^ Step 5's `waits_on` replaces the reads of `hold`, `after` and `waited_by` here; the views stay.
 pub fn flow(record: &TaskRecord, records: &[&TaskRecord], status: &super::status::Status) -> Value {
     let open = record.state.is_open();
     let children: Vec<&TaskRecord> = records
@@ -568,6 +567,8 @@ pub fn flow(record: &TaskRecord, records: &[&TaskRecord], status: &super::status
         "step": step.map(|step| json!({ "name": step.name, "at": record.step + 1, "of": record.steps.len() })),
         "children": children.iter().map(|child| json!({ "id": child.id, "state": child.state })).collect::<Vec<_>>(),
         "blocks": status.waited_by.iter().map(|waiter| waiter.task).collect::<Vec<_>>(),
+        // ^ Who it waits on (`status::waits_on`): clients group and word by it, never derive it.
+        "waits_on": status.waits_on,
         "phrase": phrase.join(" · "),
     })
 }

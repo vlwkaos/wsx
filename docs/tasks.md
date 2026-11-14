@@ -34,7 +34,7 @@ wsx task commit <file>... -m <message> [--owner-said <id>] --json   # commit mai
 
 | File | Content | Limit |
 |---|---|---|
-| `task.json` | id, project, base, branch `wsx/t<n>`, working copy, pane, adapter, model, tools, checks, agent session, state, revision, `created_by` (`owner`, `manager`, `chat:<name>`, or `manager@<project>` for a task the manager of another project created here: see Managers talk), `small`, `simplified`, `simplify_asked` (the simplify check, see Workflow), `hold` (why the owner tries it first), `after` (`{task, text, since_unix_ms}`: it waits for that task to land), `files` (expected path globs), `plan` (true until a `--plan` task's first result), `waiting` (`{on, reason}` while the state is `waiting`, on `check_slot` while checks wait for the check slot, and on `check_run` while a result waits for its check-run; on `limit` and `check_run` also `until_ms`) | 64 KiB |
+| `task.json` | id, project, base, branch `wsx/t<n>`, working copy, pane, adapter, model, tools, checks, agent session, state, revision, `created_by` (`owner`, `manager`, `chat:<name>`, or `manager@<project>` for a task the manager of another project created here: see Managers talk), `small`, `simplified`, `simplify_asked` (the simplify check, see Workflow), `hold` (why the owner tries it first), `after` (`{task, text, since_unix_ms}`: it waits for that task to land), `files` (expected path globs), `plan` (true until a `--plan` task's first result), `waiting` (`{on, reason}` while the state is `waiting`, on `check_slot` while checks wait for the check slot, on `check_run` while a result waits for its check-run, and on `land_stopped` while a ready task's landing stopped; on `limit` and `check_run` also `until_ms`) | 64 KiB |
 | `log.jsonl` | append-only: `created`, `message{prompt\|steer\|add}`, `agent` (short progress; `said: true` on the worker's own words, not a tool call), `blocked{denials}`, `result`, `checks`, `check_retry`, `check_run`, `ci_retry`, `check_queued{reason}`, `disk_wait{free_mb, min_gb}`, `revision`, `preview{url, port}`, `hand{by, dropped}`, `handback{by, commits}`, `hold{reason, by}`, `after{task, text, by}` (`task` null: the wait was ended by hand), `after_ended{task, landed}`, `limit_wait{until_ms}`, `ping{usage}`, `trial{revision, commit}`, `trial_ended{reason}`, `stopped`, `closed` | 8 MiB for progress, 16 MiB hard |
 | `result.json` | latest worker result and check results and `denials` | 256 KiB |
 | `report.md` | report of the latest revision | |
@@ -78,7 +78,7 @@ One function, `task::status::status` in `crates/wsx-core/src/task/status.rs`, pu
 | `checking` | Running checks | 3 checks of r2 run now. When they pass it is ready; a failed check goes back to the worker. |
 | `working`, resolving a landing conflict | Resolving a conflict | the worker rebases it onto main. It lands when its checks pass. |
 | `working` | Working on build (2 of 3), or Working | the worker runs its turn. Its checks run after its result (or: it is ready after its result; its plan goes to the manager). |
-| `ready`, its landing stopped | Landing stopped | <why>. Land it again when that is fixed. |
+| `land_stopped` (state `ready`) | Landing stopped | <why>. Land it again when that is fixed. |
 | `ready`, waiting for another task (`after`) | Waiting for #12 to land | #12 is working. Its checks fail on main until #12 lands (the reason of `--because`). When it lands, wsx sends the task the manager's next instruction. If it is closed instead, the manager is told. |
 | `ready`, held | Held | <the hold>. It lands only when you say so, or after a trial you pass. |
 | `ready`, the manager reviews it (see Landing) | Ready, waiting for the manager's review | checks 3 of 3 passed. The manager reads the diff, then lands it or asks for changes. |
@@ -87,7 +87,23 @@ One function, `task::status::status` in `crates/wsx-core/src/task/status.rs`, pu
 | `landed` | Landed | on main (the web adds "; the last deploy does not have it yet"). |
 | `closed` | Closed | it ended without landing. |
 
-**Moves.** One write changes `state` and `waiting`: `TaskRecord::move_to` in `crates/wsx-core/src/task/mod.rs`, which the task host and a `close` without a host call. It allows only the moves in `TaskState::may_move`, and staying in the same state is always allowed. A `waiting` task holds any wait except a check's. A check slot wait holds in any other state, and a check-run wait holds only in `working`. The host refuses any other move: it logs `move_refused` with both states and leaves the record as it was. No CLI request reaches such a move, because each one refuses a task in the wrong state first.
+**Who it waits on.** `task::status::waits_on` is the one rule that says who holds an open task now. It reads `state`, `waiting`, `hold` and `after`, and keeps no stored copy. It gives `{kind, task, since_unix_ms}`, where `kind` is one of `owner`, `manager`, `task` (with the number in `task`), `host`, `check`, `limit` or `disk`. A landed or closed task gives none. `status.waits_on` and `flow.waits_on` carry it, so the web and the TUI read it and never work it out themselves. The stall check, the needs of the owner and the manager's event model read it too.
+
+| Facts | `kind` |
+|---|---|
+| `checking`, or a wait on `check_slot` or `check_run` | `check` |
+| a wait on `disk` or `limit` | `disk`, `limit` |
+| a wait on `hand` or `land_stopped`; `ready` and held; `failed` | `owner` |
+| a wait on `plan` or `paused` | `manager`, or `task` with an `after` |
+| a wait on `owner` | `owner`, or `task` when the idle worker waits for another to land (`owner_waits_after`) |
+| `ready` with an `after` | `task` |
+| `ready` that the manager or a chat created, or that auto land with checks reviews | `manager` |
+| any other `ready` | `owner` |
+| `working` | `host` |
+
+A task needs the owner (web Home, TUI marks) when it waits on `owner`, `disk` or `limit`, unless the owner works on it by hand.
+
+**Moves.** One write changes `state` and `waiting`: `TaskRecord::move_to` in `crates/wsx-core/src/task/mod.rs`, which the task host and a `close` without a host call. It allows only the moves in `TaskState::may_move`, and staying in the same state is always allowed. A `waiting` task holds any wait except a check's or a stopped landing's. A check slot wait holds in any other state, a check-run wait holds only in `working`, and a `land_stopped` wait holds only in `ready`. The host refuses any other move: it logs `move_refused` with both states and leaves the record as it was. No CLI request reaches such a move, because each one refuses a task in the wrong state first.
 
 | From | To |
 |---|---|
@@ -357,9 +373,9 @@ The owner can take a build over and work on it directly, with the worker's conte
    - when git refuses the merge with `index.lock: File exists`, the host looks at that checkout's own `index.lock` (a linked worktree's git dir for its own). Stale means older than 5 minutes by mtime and no process has it open (`lsof -t`; a missing or failing `lsof` is not stale): the host removes that file, logs `lock_cleared{path, age_s}` and runs the merge once more (a batch land's own git steps do the same and print a `lock_cleared:` line in the follow-up log). Removing the file is itself a file event, so a watcher's `git status` may take a new lock at that moment (seen on 2026-11-05 in pizzahouse, where `lsof -t index.lock` found no file and a moment later pid 85218: some process there retakes the lock briefly, likely an editor or a git GUI): a refused run waits for a lock that is gone or young, looking every 0.2 s for up to 3 s, before it refuses; a merge that fails after a removal says which lock wsx had removed. An old lock that a process holds, or whose holder cannot be checked, refuses at once. Otherwise the land refuses and the message names the lock, its age and the holder's pid when known, for the owner to settle. wsx removes no other lock file and no lock younger than 5 minutes;
 5. add the To check items, log `landed{commit}` and set `landed`. An `add` or `steer` that waited for the worker while the checks ran is not delivered: the host drops it, and the manager gets one event `#<n> landed at <commit> while <k> add(s) to it waited for the worker; they were not delivered because the task landed:` with each first line. A landed or closed task refuses `add` and `steer` and starts no turn, so the `close` that follows leaves it `landed`. After a rebase the task goes from `checking` straight to `landed`, back to `checking` or `working` when the default branch moved meanwhile, or to `ready` with `land_stopped`.
 
-**Auto land** (`tasks.land.auto`, default `true`): the project lands without the owner's hands. A ready task the owner created, with at least one check declared and not held (see Hold and trial), no longer lands by itself on passing checks: it waits for the manager's review like a manager task, and the manager lands it without approval. Only a landing's own revision lands at once: after a conflict's resolving turn whose checks pass, the host lands from `checking` without a stop at `ready`. A landing that stops (a dirty main checkout, uncommitted work) logs `land_stopped` and leaves the task `ready`. With no checks nothing proves the work, so an owner task waits `ready` for a land by hand; so does every owner task with `auto: false`.
+**Auto land** (`tasks.land.auto`, default `true`): the project lands without the owner's hands. A ready task the owner created, with at least one check declared and not held (see Hold and trial), no longer lands by itself on passing checks: it waits for the manager's review like a manager task, and the manager lands it without approval. Only a landing's own revision lands at once: after a conflict's resolving turn whose checks pass, the host lands from `checking` without a stop at `ready`. A landing that stops (a dirty main checkout, uncommitted work) logs `land_stopped` and leaves the task `ready` with a wait on `land_stopped` (its reason). That wait is the owner's (`status::waits_on`): the task is no manager-review stall, and it counts as a need of the owner. The next move out of `ready` ends the wait. A host that starts again reads it from the log, also for a record from before the wait existed. With no checks nothing proves the work, so an owner task waits `ready` for a land by hand; so does every owner task with `auto: false`.
 
-**Manager review.** A task the manager created (`created_by: manager`) never lands by itself. It waits `ready`, with or without checks, and so does an owner task under auto land (`TaskRecord::manager_reviews`); its event asks the manager to review: the manager reads `git -C <working copy> diff <base>..HEAD` against the owner's words and for lean code (and `tasks.workflow.review`), then runs `wsx task land <n>` or `wsx task add <n> "<what is missing>"`. The manager never sends a task back to rebase: the land rebases and checks again. The web shows such a task under Running ("Ready, waiting for the manager's review", see Status), not as a need of the owner.
+**Manager review.** A task the manager created (`created_by: manager`) never lands by itself. It waits `ready`, with or without checks, and so does an owner task under auto land (`status::waits_on` gives `manager`); its event asks the manager to review: the manager reads `git -C <working copy> diff <base>..HEAD` against the owner's words and for lean code (and `tasks.workflow.review`), then runs `wsx task land <n>` or `wsx task add <n> "<what is missing>"`. The manager never sends a task back to rebase: the land rebases and checks again. The web shows such a task under Running ("Ready, waiting for the manager's review", see Status), not as a need of the owner.
 
 **Land notice.** After a land on the default branch the host sends each open task that shares files with it (the ledger's `overlaps`, also through declared `--files`) a message: the landed commit, the shared files, and to run `git rebase <commit>` at its next step boundary without a `check-run`. It is logged as an `add` message and joins a turn that starts anyway (a step, an add, a check answer, a check retry, a conflict): it never starts one. A notice that finds the worker's turn ending (the result, then the checks) is dropped when the checks end without a turn of the worker's, since the land rebases it. A task without a running turn or a wait (ready, checking, failed) gets nothing, as its own land rebases it.
 
@@ -418,7 +434,7 @@ Long work in several steps lands on main once. Any open task becomes a parent wh
 
 ## Where a task goes
 
-`wsx_core::task::view::flow` is the one read of where an open task stands among the others and where it goes. The ledger's open rows, the web overview's task and need rows and the task sheet carry it as `flow`, and every view shows it (step 5 of `docs/design/root-cause-refactor.md` changes only what it reads):
+`wsx_core::task::view::flow` is the one read of where an open task stands among the others and where it goes. The ledger's open rows, the web overview's task and need rows and the task sheet carry it as `flow`, and every view shows it:
 
 | Field | From | Example |
 |---|---|---|
@@ -428,6 +444,7 @@ Long work in several steps lands on main once. Any open task becomes a parent wh
 | `step` | `steps`, `step` while it works: `{name, at, of}` | `{name: "build", at: 2, of: 3}` |
 | `children` | the tasks with `parent` = this one, `[{id, state}]` | `[{id: 455, state: "ready"}]` |
 | `blocks` | the open tasks that wait for it (`status.waited_by`), by number | `[456]` |
+| `waits_on` | `status.waits_on`, who the task waits on now | `{kind: "task", task: 433, since_unix_ms: …}` |
 | `phrase` | the few words a row adds after the status label, " · " between them | `build 2/3 · into #451` |
 
 The phrase has, in order: the hold (`held: <reason>`, only the reason when the label is "Held"), the wait for another task (`after #m`, only the reason when the label is "Waiting for #m to land"), the step, the open children by state (`children: 1 ready, 2 working`) and `into <branch>` for a child or a working or checking task. A finished task has an empty phrase. Examples: `build 2/3 · into #451`, `held: deploy freeze · after #453`, `parent of #455 · children: 1 ready, 1 working`.

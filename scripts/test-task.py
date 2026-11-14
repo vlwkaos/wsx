@@ -4421,17 +4421,33 @@ def part_worker(created=None):
     # wait (docs/tasks.md "Manager", Stalls). The fake manager reviews nothing by itself.
     configure(LAND_CONFIG.replace('tasks:\n', 'tasks:\n  manager: { reviewMinutes: 0.2 }\n'), 'review wait')
 
-    idle, landed_first, added = (manager_new('WORK rw%d.txt' % i) for i in range(3))
-    for n in (landed_first, added):
+    idle, landed_first, added, stopped = (manager_new('WORK rw%d.txt' % i) for i in range(4))
+    for n in (landed_first, added, stopped):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', show(n)
     assert land(landed_first)['state'] == 'landed'
+    # ^ A landing that stops on the main checkout (a file in its way) waits on the owner, not
+    # the manager: `ready` on `land_stopped`, and no manager-review stall after it
+    # (docs/design/root-cause-refactor.md step 5, cause 3).
+    (project / 'rw3.txt').write_text('in the way\n')
+    land(stopped)
+    wait(lambda: kinds(stopped, 'land_stopped'), 'the landing stops', 120)
+    stopped_row = next(r for r in js('task', 'ledger')['open'] if r['id'] == stopped)
+    assert stopped_row['state'] == 'ready' and stopped_row['waiting']['on'] == 'land_stopped' and 'rw3.txt' in stopped_row['waiting']['reason'], stopped_row
+    assert stopped_row['status']['kind'] == 'land_stopped' and stopped_row['status']['waits_on']['kind'] == 'owner', stopped_row['status']
+    assert stopped_row['flow']['waits_on'] == stopped_row['status']['waits_on'], stopped_row['flow']
+    stopped_stalls = stalls(stopped)
     js('task', 'add', added, 'WORK rw-more.txt')
     js('task', 'close', added, '--discard')
     waited = wait(lambda: stalls(idle), 'the manager-wait stall event', 150)
     assert len(waited) == 1 and re.search(r'^#%d stalled r1: .*; ready for .*; the manager has not reviewed it$' % idle, waited[0]), waited
     sweeps(1)
     assert stalls(idle) == waited and not stalls(landed_first) and not stalls(added), (stalls(idle), stalls(landed_first), stalls(added))
+    stays(lambda: time.time() * 1000 - show(stopped)['record']['state_unix_ms'] > (12 + STALL_GRACE + 2 * SWEEP + 2) * 1000,
+          lambda: stalls(stopped) == stopped_stalls, 'a stopped landing is no manager wait', 150)
+    assert next(r for r in js('task', 'ledger')['open'] if r['id'] == idle)['status']['waits_on']['kind'] == 'manager'
+    (project / 'rw3.txt').unlink()
     js('task', 'close', idle, '--discard')
+    js('task', 'close', stopped, '--discard')
     configure(LAND_CONFIG, 'review wait over')
     # A silent worker is one stall per silence: its turn record (`turn.json`, docs/tasks.md
     # "Agents") is past its deadline and still open, so its host did not end it. What the manager

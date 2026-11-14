@@ -2318,7 +2318,12 @@ impl Manager {
             project_tasks(&self.dir.project_id)
                 .unwrap_or_default()
                 .into_iter()
-                .any(|(_, record)| record.is_ok_and(|record| record.manager_reviews(land_auto)))
+                .any(|(dir, record)| {
+                    record.is_ok_and(|record| {
+                        status::waits_on(&dir, &record, land_auto)
+                            .is_some_and(|on| on.kind == status::Holder::Manager)
+                    })
+                })
         };
         // ^ A fallback runs its own model: the event model names one of the own agent's.
         if let Some(agent) = &self.state.agent {

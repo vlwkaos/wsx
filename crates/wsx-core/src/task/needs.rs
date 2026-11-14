@@ -3,7 +3,7 @@
 use super::{
     chats, checks,
     manager::{pending_approvals, waiting_approvals},
-    status,
+    status::{self, Holder},
     store::{self, TaskDir},
     view, TaskRecord, TaskState, WaitOn,
 };
@@ -30,20 +30,18 @@ impl Stage {
     }
 }
 
-/// A ready task waits for a land by hand: auto land is off, there are no checks, or it stopped.
-/// One the manager created waits for the manager's review, not the owner. An idle worker whose
-/// task waits for another to land asks nobody either.
+/// An open task needs the owner when it waits on the owner (`status::waits_on`), or on disk or
+/// the usage limit, which nobody else can act on. ref: docs/tasks.md "Status"
 pub fn stage(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Stage {
-    if record.manager_reviews(land_auto) || status::owner_waits_after(dir, record) {
-        return Stage::Working;
-    }
-    match record.state {
+    match (record.state, status::waits_on(dir, record, land_auto)) {
+        (TaskState::Landed, _) => Stage::Done,
+        (TaskState::Closed, _) => Stage::Closed,
         // ^ The owner works on it: not a need of the owner, and not done.
-        TaskState::Waiting if record.waits_on(WaitOn::Hand) => Stage::Working,
-        TaskState::Working | TaskState::Checking => Stage::Working,
-        TaskState::Waiting | TaskState::Failed | TaskState::Ready => Stage::NeedsYou,
-        TaskState::Landed => Stage::Done,
-        TaskState::Closed => Stage::Closed,
+        _ if record.waits_on(WaitOn::Hand) => Stage::Working,
+        (_, Some(on)) if matches!(on.kind, Holder::Owner | Holder::Disk | Holder::Limit) => {
+            Stage::NeedsYou
+        }
+        _ => Stage::Working,
     }
 }
 

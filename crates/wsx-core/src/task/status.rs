@@ -6,7 +6,7 @@
 use super::manager::ApprovalLine;
 use super::store::TaskDir;
 use super::view::{check_outcomes, clip, read_result, resolving_conflict};
-use super::{AfterKind, LogEvent, TaskRecord, TaskState, WaitOn, Waiting};
+use super::{Actor, AfterKind, LogEvent, TaskRecord, TaskState, WaitOn, Waiting};
 use crate::config::project::load_task_config;
 use serde::Serialize;
 use serde_json::Value;
@@ -37,6 +37,78 @@ pub struct Status {
     /// The open tasks that wait for this one (`Facts::waiters`); the sentence names them too.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub waited_by: Vec<Waiter>,
+    /// Who the open task waits on now (`waits_on`); none for a landed or closed one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waits_on: Option<WaitsOn>,
+}
+
+/// Who holds an open task now: whose deed, or which resource, it waits on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Holder {
+    Owner,
+    Manager,
+    /// Another task's landing (`after`): `WaitsOn::task` names it.
+    Task,
+    /// Its own host: the worker's turn runs.
+    Host,
+    /// Its checks, the check slot or its own check-run.
+    Check,
+    Limit,
+    Disk,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct WaitsOn {
+    pub kind: Holder,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<u32>,
+    pub since_unix_ms: u64,
+}
+
+/// The one rule of who an open task waits on, read from its `state`, `waiting`, `hold` and
+/// `after`; none for a landed or closed task. A ready task waits for the manager's review when
+/// the manager or a chat created it (the creator reviews it), or when the project lands by
+/// itself (`land_auto`, `tasks.land.auto`) and checks prove it: an owner task never lands by
+/// itself. A held one, a stopped landing and a failed task wait on the owner; one that waits
+/// for another task (`after`) waits on that task, also a plan or a pause the manager answered
+/// with an `after`. ref: docs/tasks.md "Status", "Landing"
+pub fn waits_on(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Option<WaitsOn> {
+    let entered = record.state_unix_ms.max(record.created_unix_ms);
+    let on = |kind| WaitsOn {
+        kind,
+        task: None,
+        since_unix_ms: entered,
+    };
+    let after = record.after.as_ref().map(|after| WaitsOn {
+        kind: Holder::Task,
+        task: Some(after.task),
+        since_unix_ms: after.since_unix_ms,
+    });
+    let reviewed = record.created_by != Actor::Owner || (land_auto && !record.checks.is_empty());
+    Some(
+        match (record.state, record.waiting.as_ref().map(|w| w.on)) {
+            (TaskState::Landed | TaskState::Closed, _) => return None,
+            (TaskState::Checking, _) | (_, Some(WaitOn::CheckSlot | WaitOn::CheckRun)) => {
+                on(Holder::Check)
+            }
+            (_, Some(WaitOn::Disk)) => on(Holder::Disk),
+            (_, Some(WaitOn::Limit)) => on(Holder::Limit),
+            (_, Some(WaitOn::Hand | WaitOn::LandStopped)) => on(Holder::Owner),
+            (_, Some(WaitOn::Plan | WaitOn::Paused)) => after.unwrap_or(on(Holder::Manager)),
+            (_, Some(WaitOn::Owner)) if owner_waits_after(dir, record) => {
+                after.unwrap_or(on(Holder::Owner))
+            }
+            (_, Some(WaitOn::Owner)) => on(Holder::Owner),
+            (TaskState::Ready, None) if record.hold.is_some() => on(Holder::Owner),
+            (TaskState::Ready, None) => after.unwrap_or(on(match reviewed {
+                true => Holder::Manager,
+                false => Holder::Owner,
+            })),
+            (TaskState::Failed, None) => on(Holder::Owner),
+            (TaskState::Working | TaskState::Waiting, None) => on(Holder::Host),
+        },
+    )
 }
 
 /// An open task that waits for another task to land, and why.
@@ -132,7 +204,11 @@ pub fn status_with_result(
     result: Option<&Option<Value>>,
     now_ms: u64,
 ) -> Status {
-    let mut status = status_of(dir, record, facts, result, now_ms);
+    let land_auto = record.state == TaskState::Ready
+        && load_task_config(&record.project_path).is_ok_and(|s| s.land_auto);
+    let waits_on = waits_on(dir, record, land_auto);
+    let mut status = status_of(dir, record, facts, result, waits_on, now_ms);
+    status.waits_on = waits_on;
     if let (Some(after), true) = (&record.after, record.state.is_open()) {
         // ^ A ready row already says "Waiting for #m to land"; the reason is what it adds.
         status.wait = Some(
@@ -168,6 +244,7 @@ fn status_of(
     record: &TaskRecord,
     facts: &Facts,
     result: Option<&Option<Value>>,
+    waits_on: Option<WaitsOn>,
     now_ms: u64,
 ) -> Status {
     let entered = record.state_unix_ms.max(record.created_unix_ms);
@@ -201,10 +278,14 @@ fn status_of(
         );
     }
     let mut status = match (record.state, record.waiting.as_ref()) {
-        // ^ A check wait holds in any state; every other wait only in Waiting.
+        // ^ A check wait holds in any state, a stopped landing in Ready; every other wait only
+        // in Waiting.
         (state, Some(waiting))
             if state == TaskState::Waiting
-                || matches!(waiting.on, WaitOn::CheckSlot | WaitOn::CheckRun) =>
+                || matches!(
+                    waiting.on,
+                    WaitOn::CheckSlot | WaitOn::CheckRun | WaitOn::LandStopped
+                ) =>
         {
             waiting_on(dir, record, waiting, entered, now_ms)
         }
@@ -229,7 +310,7 @@ fn status_of(
             now_ms,
         ),
         (TaskState::Working | TaskState::Waiting, _) => working(record, now_ms),
-        (TaskState::Ready, _) => ready(dir, record, result, entered, now_ms),
+        (TaskState::Ready, _) => ready(dir, record, result, waits_on, now_ms),
         (TaskState::Failed, _) => failed(dir, result, now_ms),
         (TaskState::Landed, _) => words(
             "landed",
@@ -329,6 +410,14 @@ fn waiting_on(
     now_ms: u64,
 ) -> Status {
     match waiting.on {
+        WaitOn::LandStopped => words(
+            "land_stopped",
+            "Landing stopped",
+            Some(entered),
+            &waiting.reason,
+            "Land it again when that is fixed.",
+            now_ms,
+        ),
         WaitOn::Owner => {
             match stop_reason(dir) {
                 Some(reason) if reason == STOPPED_BY_REQUEST => words(
@@ -487,28 +576,10 @@ fn ready(
     dir: &TaskDir,
     record: &TaskRecord,
     result: Option<&Option<Value>>,
-    entered: u64,
+    waits_on: Option<WaitsOn>,
     now_ms: u64,
 ) -> Status {
-    let stopped = dir
-        .last_event(|event| match event {
-            LogEvent::LandStopped { reason } => Some(Some(reason.clone())),
-            LogEvent::Revision { .. } => Some(None),
-            _ => None,
-        })
-        .ok()
-        .flatten()
-        .flatten();
-    if let Some(reason) = stopped {
-        return words(
-            "land_stopped",
-            "Landing stopped",
-            Some(entered),
-            &reason,
-            "Land it again when that is fixed.",
-            now_ms,
-        );
-    }
+    let entered = record.state_unix_ms.max(record.created_unix_ms);
     if let Some(hold) = &record.hold {
         return words(
             "held",
@@ -531,8 +602,7 @@ fn ready(
     if record.simplify_missing() {
         checks.push_str(&format!("; {}", super::SIMPLIFY_MISSING));
     }
-    let land_auto = load_task_config(&record.project_path).is_ok_and(|s| s.land_auto);
-    match record.manager_reviews(land_auto) {
+    match waits_on.is_some_and(|on| on.kind == Holder::Manager) {
         true => words(
             "review",
             "Ready, waiting for the manager's review",
@@ -656,6 +726,7 @@ fn words(
         since_unix_ms: since,
         wait: None,
         waited_by: Vec::new(),
+        waits_on: None,
     }
 }
 
