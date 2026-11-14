@@ -2595,6 +2595,19 @@ def part_core(created=None):
     assert warm_launch['resume'], warm_launch
     assert len([e for e in manager_entries() if e['kind'] == 'rotated']) == rotations
     assert turn_with('WARM CHANGE')['message'].startswith('Your instructions changed'), turn_with('WARM CHANGE')
+    # ^ An idle rotation whose fresh turn meets a usage limit: that conversation has no context yet,
+    # so the turn after the reset continues it, where the held message is. Before, the rotation kept
+    # the old size and the idle rule rotated again at each try (5 times in a row on 2026-11-10),
+    # into a conversation that never saw the message.
+    edit_state(last_reply_ms=int((time.time() - 7200) * 1000), context_tokens=70000)
+    rotations = len([e for e in manager_entries() if e['kind'] == 'rotated'])
+    held_back = js('task', 'say', 'LIMIT 1 BACK INTO A LIMIT')
+    reply_to(held_back['id'], 60)
+    assert len([e for e in manager_entries() if e['kind'] == 'rotated']) == rotations + 1, manager_entries()[-8:]
+    limited_turn = turn_with('BACK INTO A LIMIT')
+    after_reset = [t for t in traces()[traces().index(limited_turn) + 1:]
+                   if t.get('manager') and str(t.get('message', '')).startswith('The usage limit has reset')]
+    assert after_reset and after_reset[0]['session'] == limited_turn['session'], (limited_turn, after_reset)
     put('decisions.md', '- 2026-10-22 keep the store in sqlite\n')
     # 21a3. decisions.md over what a fresh conversation shows (docs/tasks.md "Notes budget"): the rules
     # that fit the larger part of the start budget show, what is left out is named with the archive, and
