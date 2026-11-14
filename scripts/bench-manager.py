@@ -469,8 +469,8 @@ def run_once(mode, number, out, cases, before):
         if agent:
             agent.stop()
     # ^ The task set: every call that starts, changes or ends a task, to compare `before` and `after`.
-    writes = [call for call in map(json.loads, calls.read_text().splitlines()) if call['argv'][1:2] and
-              call['argv'][1] in ('new', 'add', 'steer', 'land', 'after', 'hold', 'close', 'stop')] \
+    writes = [call for call in map(json.loads, calls.read_text().splitlines()) if call['argv'][:1] == ['task'] and
+              call['argv'][1:2] and call['argv'][1] in ('new', 'add', 'steer', 'land', 'after', 'hold', 'close', 'stop')] \
         if calls.exists() else []
     out.write(json.dumps({'mode': mode, 'run': number, 'cases': cases, 'tasks': writes}) + '\n')
     print(json.dumps({'mode': mode, 'run': number, 'tasks': [call['argv'][1:] for call in writes]}), flush=True)
