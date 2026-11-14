@@ -152,7 +152,7 @@ const TASKS: &[&str] = &[
     "  o             Project overview",
     "  S             Shell",
     "  Tab           Next item to answer",
-    "  p / s / f     To check: pass, skip, fail with a note",
+    "  p / f / r     To check: pass, fail, reply (x skips)",
     "  y / n         Approval: approve, deny",
     "  r / d         Question: reply, dismiss",
     "  Esc           Back",

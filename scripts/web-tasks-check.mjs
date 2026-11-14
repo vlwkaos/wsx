@@ -2297,12 +2297,39 @@ await resize([1280, 800, 1]);
 await shot("task-sheet-take-over-1280", ".composer-send");
 await resize([390, 844, 2]);
 if (await evaluate("/\\br\\d+\\b/.test(document.querySelector('.task-sheet .bar').textContent + document.querySelector('.task-next').textContent)")) await fail("the sheet names a revision");
+// ^ What shows above the fold of the sheet (text lines of the scroll whose box ends inside it),
+// and whether the Flow facts and every action button are there: printed as the overhaul's measure.
+const aboveFold = `(() => { const scroll = document.querySelector('dialog.task-sheet[open] .scroll'); const limit = scroll.getBoundingClientRect().bottom + 1;
+  const tops = new Set(); const walker = document.createTreeWalker(scroll, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) { if (!node.textContent.trim() || !node.parentElement.checkVisibility()) continue;
+    const range = document.createRange(); range.selectNodeContents(node);
+    for (const rect of range.getClientRects()) if (rect.height && rect.bottom <= limit) tops.add(Math.round(rect.top / 4)); }
+  const buttons = [...document.querySelectorAll('dialog.task-sheet[open] .task-next button')];
+  return { lines: tops.size, flow: (document.querySelector('dialog.task-sheet[open] .task-flow')?.getBoundingClientRect().bottom ?? Infinity) <= limit,
+    actions: buttons.length > 0 && buttons.every((button) => button.getBoundingClientRect().bottom <= limit) }; })()`;
+const glance = await evaluate(aboveFold);
+if (!glance.flow || !glance.actions) await fail(`the ready task's Flow facts or actions are below the fold at 390 px: ${JSON.stringify(glance)}`);
+// ^ The glance in both schemes at 375, 390 and 1280 px (a resize across 900 px mounts the sheet again).
+for (const scheme of ["dark", "light"]) {
+  await inScheme(scheme);
+  for (const next of [[375, 812, 2], [1280, 800, 1], [390, 844, 2]]) {
+    await resize(next);
+    await until("!!document.querySelector('dialog.task-sheet[open] .task-flow')", `the sheet lost its Flow facts at ${next[0]} px`);
+    await shot(`task-sheet-glance-${scheme}`, ".composer-send");
+  }
+}
+await inScheme("dark");
 await shot("task-sheet", ".composer-send");
 // ^ The summary shows its first paragraph; More shows the rest with the decisions and goes.
 const decided = "/Decided: fake choice \\(fixture\\)\\./.test(document.querySelector('.story').textContent)";
 if ((await evaluate(decided)) || (await count(".story .story-more")) !== 1) await fail("the sheet shows the decisions before More, or has no More");
 await click(".story .story-more");
 await until(`${decided} && !document.querySelector('.story .story-more')`, "More did not show the decisions");
+// ^ The sheet as it was before the overhaul: the whole summary and its decisions, no Flow facts.
+await evaluate("document.querySelector('dialog.task-sheet[open] .task-flow').style.display = 'none'");
+const whole = await evaluate(aboveFold);
+await evaluate("document.querySelector('dialog.task-sheet[open] .task-flow').style.display = ''");
+console.log(`task sheet above the fold at 390x844: ${glance.lines} lines with the Flow facts and actions; ${whole.lines} lines as before, whole summary and no Flow`);
 await shot("task-sheet-summary", ".composer-send");
 // Evidence opens to the checks and what the worker showed.
 await evaluate("document.querySelector('.task-fold > .fold-head').click()");

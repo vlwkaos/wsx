@@ -2182,6 +2182,10 @@ try:
         (keep_store / str(number)).mkdir(mode=0o700)
         (keep_store / str(number) / "task.json").write_text(json.dumps(record))
         (keep_store / str(number) / "log.jsonl").write_text("")
+    # ^ #2's result: a summary and four checks, one failed, as a real task has them.
+    (keep_store / "2" / "result.json").write_text(json.dumps({
+        "result": {"status": "done", "summary": "Rows show where each task goes. " * 5, "human_verify": [{"check": "the row", "where": "Home", "capture": "", "poster": "", "pass_if": "it reads"}]},
+        "checks": [{"command": command, "exit": exit} for command, exit in (("cargo fmt --check", 0), ("cargo build", 0), ("cargo clippy", 0), ("cargo nextest run", 1))]}))
     select_in_tui("keep-me")
     remove_tui.send(b"t")
     wait_for(lambda: "All projects" in remove_tui.text(), "t opened no Tasks view for keep-me", seconds=60)
@@ -2192,6 +2196,14 @@ try:
     wait_for(lambda: "Its checks fail" in " ".join(remove_tui.text().split())
              and re.search(r"Waits on\s+#1 to land, its checks fail", remove_tui.text()) and re.search(r"Goes\s+into main", remove_tui.text()),
              lambda: f"the detail did not give the reason:\n{remove_tui.text()}", seconds=60)
+    # ^ At 80x24 the glance rows show above the fold; the per-check lines wait under Details.
+    remove_tui.resize(24, 80)
+    wait_for(lambda: re.search(r"(?s)State .*Waits on .*Goes .*Checks +3 passed, 1 failed: cargo nextest run.*To check +1 item.*Result +Rows show", remove_tui.text()),
+             lambda: f"the 80x24 detail does not show the glance rows:\n{remove_tui.text()}", seconds=60)
+    screen = remove_tui.text().splitlines()
+    at = lambda word: next((n + 1 for n, line in enumerate(screen) if line.strip().startswith(word)), None)
+    print(f"TUI detail at 80x24: State on row {at('State')}, Result on row {at('Result')}, Next on row {at('Next')}, Details on row {at('Details')} of 24")
+    remove_tui.resize(40, 120)
     remove_tui.send(b"\x1b")
     wait_for(lambda: "Its checks fail" not in " ".join(remove_tui.text().split()), "Esc did not close the detail", seconds=60)
     remove_tui.send(b"j\r")

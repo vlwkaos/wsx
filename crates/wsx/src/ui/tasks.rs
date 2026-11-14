@@ -619,9 +619,9 @@ fn limit_line(limits: &Value, width: usize) -> Option<Line<'static>> {
 
 /// One task's ledger entry: first what the owner needs at a glance, one labeled row each
 /// (state and status, what it waits on, where it goes, its parent, children and the tasks that
-/// wait for it, the agent, the checks in one line, To check, the summary's first paragraph and
-/// the status sentence), then under "Details" the rest: usage, each check, the whole summary and
-/// the memo. ref: docs/tasks.md "TUI"
+/// wait for it, the agent, the checks in one line, To check, the summary and the status
+/// sentence), then under "Details" the rest: usage, each check and a closed task's memo.
+/// ref: docs/tasks.md "TUI"
 fn detail(task: &Value) -> Vec<Line<'static>> {
     let label = |text: &str| {
         Span::styled(
@@ -732,14 +732,12 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
             format!("{items} item{}", if items == 1 { "" } else { "s" }),
         ));
     }
-    let summary = task["summary"].as_str().map(str::trim).unwrap_or_default();
-    let lead = summary
-        .split("\n\n")
-        .next()
-        .unwrap_or_default()
-        .replace('\n', " ");
-    if !lead.is_empty() {
-        lines.push(row("Result", lead.clone()));
+    // ^ The ledger's summary is its first line, cut (`ledger::open_row`).
+    if let Some(summary) = task["summary"]
+        .as_str()
+        .filter(|text| !text.trim().is_empty())
+    {
+        lines.push(row("Result", summary.to_string()));
     }
     if let Some(status) = task["status"]["sentence"].as_str() {
         lines.push(row("Next", status.to_string()));
@@ -774,16 +772,12 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
             Span::raw(check["command"].as_str().unwrap_or_default().to_string()),
         ]));
     }
-    // ^ The whole summary only when it has more than the Result row shows.
-    let rest = (summary.len() > lead.len()).then_some(("summary", "Summary"));
-    for (key, heading) in rest.into_iter().chain([("memo", "Memo")]) {
-        if let Some(text) = task[key].as_str().filter(|text| !text.trim().is_empty()) {
-            more.push(Line::styled(
-                heading,
-                Style::default().fg(theme::ACCENT).bold(),
-            ));
-            more.extend(text.lines().map(|line| Line::raw(line.to_string())));
-        }
+    if let Some(memo) = task["memo"].as_str().filter(|text| !text.trim().is_empty()) {
+        more.push(Line::styled(
+            "Memo",
+            Style::default().fg(theme::ACCENT).bold(),
+        ));
+        more.extend(memo.lines().map(|line| Line::raw(line.to_string())));
     }
     if !more.is_empty() {
         lines.push(Line::raw(""));
