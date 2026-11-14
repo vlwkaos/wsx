@@ -4000,28 +4000,22 @@ impl Host {
     fn after_landing(&self) {
         let project = self.record.project.as_str();
         let id = self.record.id.to_string();
-        let mut follow_ups = vec![vec!["task", "close", id.as_str(), "-p", project, "--json"]];
-        // ^ A child's land moves its parent's branch, not the default branch. The deploy waits
-        // for a quiet default branch: each land starts one, and only the newest still finds the
-        // branch unchanged, so a burst of lands deploys once.
-        let quiet = load_task_config(&self.record.project_path)
-            .ok()
-            .filter(|settings| settings.deploy_auto && settings.deploy_command.is_some())
-            .map(|settings| settings.deploy_quiet_secs.to_string());
-        if let (None, Some(quiet)) = (self.record.parent, &quiet) {
-            follow_ups.insert(
-                0,
-                vec![
-                    "task", "deploy", "-p", project, "--if-new", "--quiet", quiet, "--json",
-                ],
-            );
-        }
-        for args in follow_ups {
-            let started = store::follow_up_log(&self.record.project_id)
-                .and_then(|log| hosting::spawn_wsx(&args, log, None));
-            if let Err(error) = started {
-                self.say(&format!("cannot start wsx {}: {error:#}", args.join(" ")));
-            }
+        // ^ The deploy is due when the default branch is ahead of the last deploy: a child's land
+        // moves its parent's branch, so it starts none.
+        let deploy = super::cmd::deploy::spawn_quiet_deploy(
+            project,
+            &self.record.project_id,
+            &self.record.project_path,
+        );
+        let close = store::follow_up_log(&self.record.project_id).and_then(|log| {
+            hosting::spawn_wsx(
+                &["task", "close", id.as_str(), "-p", project, "--json"],
+                log,
+                None,
+            )
+        });
+        for error in [deploy, close].into_iter().filter_map(Result::err) {
+            self.say(&format!("cannot start a follow-up of the land: {error:#}"));
         }
     }
 

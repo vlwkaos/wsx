@@ -441,6 +441,17 @@ pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
             }
         });
     }
+    // ^ A deploy waiting for a quiet branch dies with a reboot or a killed process: a manager
+    // that starts starts it again when the last deploy is not the default branch tip.
+    if chat.is_none() {
+        if let Err(error) = super::cmd::deploy::spawn_quiet_deploy(
+            &manager.project,
+            &manager.dir.project_id,
+            &manager.main,
+        ) {
+            manager.say(&format!("cannot start the deploy that is due: {error:#}"));
+        }
+    }
     manager.say(&format!(
         "{} of {} in {}",
         manager.dir.name(),

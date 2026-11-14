@@ -8,6 +8,7 @@ use crate::task::{host, hosting, trial};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use std::os::unix::io::AsRawFd;
+use std::path::Path;
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::git::{output_with_timeout_tail, ssh_agent};
@@ -187,6 +188,37 @@ pub(crate) fn push(args: PushArgs, project: Option<&str>, json: bool) -> Result<
     Ok(())
 }
 
+/// Whether the last successful deploy or release of `kind` ran `commit`.
+fn last_deployed(project_id: &str, kind: DeployKind, commit: &str) -> Result<bool> {
+    Ok(store::read_deploys(project_id)?
+        .into_iter()
+        .rev()
+        .find(|record| record.kind == kind && record.exit == Some(0))
+        .is_some_and(|record| record.commit == commit))
+}
+
+/// Start the detached `deploy --if-new --quiet`, which waits for a quiet default branch, when
+/// the project deploys by itself and the last deploy did not run the default branch tip.
+/// `deploys.jsonl` and the branch say it is due, so a land, a manager host that starts and a
+/// waiter that died (a reboot, a replaced host) all start it the same way: a deploy is late by
+/// one quiet window at most, and a second waiter finds the first one's deploy done.
+/// ref: docs/tasks.md "Deploy and release"
+pub(crate) fn spawn_quiet_deploy(project: &str, project_id: &str, main: &Path) -> Result<()> {
+    let settings = match load_task_config(main) {
+        Ok(settings) if settings.deploy_auto && settings.deploy_command.is_some() => settings,
+        _ => return Ok(()),
+    };
+    let tip = copy::resolve_commit(main, &default_ref(main))?;
+    if last_deployed(project_id, DeployKind::Deploy, &tip)? {
+        return Ok(());
+    }
+    let quiet = settings.deploy_quiet_secs.to_string();
+    let args = [
+        "task", "deploy", "-p", project, "--if-new", "--quiet", &quiet, "--json",
+    ];
+    hosting::spawn_wsx(&args, store::follow_up_log(project_id)?, None)
+}
+
 /// Run the project's deploy or release command in a temporary copy of one commit.
 /// ^ Never from a task's working copy: what runs is always a default-branch commit.
 /// `if_new`: skip a commit that is already deployed, so the deploys that follow quick lands
@@ -327,12 +359,7 @@ pub(crate) fn deploy(
     };
     if if_new {
         let tip = copy::resolve_commit(&main, &revision)?;
-        let deployed = store::read_deploys(&project_id)?
-            .into_iter()
-            .rev()
-            .find(|record| record.kind == kind && record.exit == Some(0))
-            .is_some_and(|record| record.commit == tip);
-        if deployed {
+        if last_deployed(&project_id, kind, &tip)? {
             let message = format!("{name} of {tip:.12}: already deployed");
             return answer(
                 json!({ "kind": kind, "commit": tip, "skipped": true, "message": message }),
