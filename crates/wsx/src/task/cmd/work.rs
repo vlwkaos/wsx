@@ -222,15 +222,12 @@ pub(crate) fn why(dir: &TaskDir, json: bool) -> Result<()> {
     }
     println!("host:    {}", if host { "running" } else { "not running" });
     if let Some((unix_ms, _, text)) = last {
-        let mut text: String = text.chars().take(WHY_MESSAGE_CHARS).collect();
-        if text.len() < WHY_MESSAGE_CHARS {
-            text = text.trim_end().to_string();
-        }
+        let text: String = text.chars().take(WHY_MESSAGE_CHARS).collect();
         println!(
             "last message ({}):",
             wsx_core::task::history::stamp(unix_ms)
         );
-        println!("{text}");
+        println!("{}", text.trim_end());
     }
     println!("story:");
     for entry in &history.entries {
@@ -273,10 +270,10 @@ pub(crate) fn review(dir: &TaskDir, json: bool) -> Result<()> {
     let mut diff = copy::read(main, &["diff", &range])?;
     let whole = diff.len();
     if whole > REVIEW_DIFF_BYTES {
-        let cut = (0..=REVIEW_DIFF_BYTES)
-            .rev()
-            .find(|at| diff.is_char_boundary(*at))
-            .unwrap_or(0);
+        let mut cut = REVIEW_DIFF_BYTES;
+        while !diff.is_char_boundary(cut) {
+            cut -= 1;
+        }
         diff.truncate(cut);
         diff += &format!(
             "\n[the diff has {whole} bytes; the rest: git -C {} diff {range}]\n",

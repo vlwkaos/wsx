@@ -620,10 +620,13 @@ pub fn take_commit(
             commit,
             tip,
         ],
-    )?;
+    )
+    .context("nothing was committed")?;
     let mut reset = vec!["reset", "--quiet", commit, "--"];
     reset.extend(files.iter().map(String::as_str));
-    git_clearing_lock(main, &reset).map(drop)
+    git_clearing_lock(main, &reset)
+        .with_context(|| format!("{branch} is at {commit}, but the index of the files is not"))
+        .map(drop)
 }
 
 /// How long a call to the remote may take: `git_cmd`'s ssh never asks (BatchMode), but a
