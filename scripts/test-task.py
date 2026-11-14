@@ -4610,8 +4610,9 @@ def part_worker(created=None):
     assert js('task', 'deployed')['deploy']['commit'] == tips[-1]
     # ^ A deploy's event names the tasks it put live: those landed since the previous deploy
     # (docs/tasks.md "Deploy and release"), so no one reads `deploys` to say what is live.
+    # The first deploy of the part names every earlier land too: those before it deployed none.
     newest_deploy = wait(lambda: events_with('deploy of %s succeeded after' % tips[-1][:12]), 'the deploy event', 30)[0]['text']
-    assert re.search(r'deploy of %s succeeded after \d+ s: #%d, #%d, #%d live(\n|$)' % (tips[-1][:12], quick[0], quick[1], quick[2]), newest_deploy), newest_deploy
+    assert re.search(r'deploy of %s succeeded after \d+ s: (#\d+, )*#%d, #%d, #%d live(\n|$)' % (tips[-1][:12], quick[0], quick[1], quick[2]), newest_deploy), newest_deploy
     # ^ A land after the window deploys again: 4 lands, 2 deploys. A deploy by hand in the next
     # window runs at once, and the land's waiter finds its commit deployed.
     land(quick[3])
