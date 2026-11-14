@@ -4420,8 +4420,8 @@ def part_worker(created=None):
     # ^ The events of 27c may still be queued: a waking line merged with the limit wait's would
     # take it into a turn before the owner's.
     manager_settled('the manager idle before the stale wait')
-    release = base / 'stale-release'
-    stale = js('task', 'new', 'LIMIT 4 WAIT %s WORK ls.txt' % release)['id']
+    stale_release = base / 'stale-release'
+    stale = js('task', 'new', 'LIMIT 4 WAIT %s WORK ls.txt' % stale_release)['id']
     wait(lambda: limited(stale), 'the task waits on the limit', 30)
     stale_event = wait(lambda: events_with('#%d waiting r0' % stale, 'waits on limit'), 'the limit wait event', 30)[0]
     wait(lambda: show(stale)['state'] == 'working', 'the task works again', 30)
@@ -4431,7 +4431,7 @@ def part_worker(created=None):
     assert 'Events (message %d)' % stale_event['id'] in stale_turn and '#%d waiting r0' % stale in stale_turn, stale_turn
     assert '\n\nsince then: #%d working r0\n\n' % stale in stale_turn, stale_turn
     assert stale_turn.index('since then:') > stale_turn.index('#%d waiting r0' % stale), stale_turn
-    release.write_text('')
+    stale_release.write_text('')
     assert wait_state(stale, 'ready', 'failed')['state'] == 'ready', log(stale)
     # ^ The task's last event line is current: no line says what it already says.
     stale_ready = wait(lambda: turn_with('#%d ready r1' % stale), 'the ready turn', 30)['message']
