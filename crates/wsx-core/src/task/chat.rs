@@ -265,7 +265,8 @@ pub fn chat_window<'a>(
             let before = log[..at].iter().filter(|e| in_chat(e)).count();
             let skipped = before.saturating_sub(AROUND_BEFORE);
             let entries = log.iter().filter(|e| in_chat(e));
-            return (entries.skip(skipped).take(CHAT_ENTRIES).collect(), skipped);
+            let entries = entries.skip(skipped).take(CHAT_ENTRIES).collect();
+            return (divider_first(log, entries), skipped);
         }
     }
     let (start, limit) = match window {
@@ -285,7 +286,7 @@ pub fn chat_window<'a>(
     let mut entries: Vec<&ManagerEntry> = log[start..].iter().filter(|e| in_chat(e)).collect();
     let skipped = entries.len().saturating_sub(limit);
     entries.drain(..skipped);
-    (entries, skipped)
+    (divider_first(log, entries), skipped)
 }
 
 /// The oldest entry of `log` whose row shows `words`, case-insensitive: its author's name, its
@@ -764,6 +765,47 @@ pub fn chat_rows(
     }
     rows.extend(queued);
     rows
+}
+
+/// The window `shown` of `log` in the order its rows show: a new conversation's divider goes
+/// directly above the first message it answers, one logged before the rotation and delivered in
+/// the first `Delivered` after it (the host rotates as it takes the waiting messages for a turn).
+/// The log keeps its order. A rotation at idle, one with a stop or pause between it and that
+/// message, or one whose message is outside the window keeps its place, so holds fold as before.
+/// ref: docs/tasks.md "Manager" (New conversation)
+fn divider_first<'a>(
+    log: &'a [ManagerEntry],
+    mut shown: Vec<&'a ManagerEntry>,
+) -> Vec<&'a ManagerEntry> {
+    let place = |list: &[&ManagerEntry], entry: &ManagerEntry| {
+        list.iter().position(|item| std::ptr::eq(*item, entry))
+    };
+    for (at, rotated) in log.iter().enumerate() {
+        if !matches!(rotated.event, ManagerEvent::Rotated { .. }) {
+            continue;
+        }
+        let Some(from) = place(&shown, rotated) else {
+            continue;
+        };
+        let Some(ids) = log[at + 1..].iter().find_map(|entry| match &entry.event {
+            ManagerEvent::Delivered { ids } => Some(ids),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let first = log[..at].iter().position(
+            |entry| matches!(&entry.event, ManagerEvent::Message { id, .. } if ids.contains(id)),
+        );
+        let Some(first) = first.filter(|&first| !log[first..at].iter().any(held_kind)) else {
+            continue;
+        };
+        if place(&shown, &log[first]).is_some() {
+            let moved = shown.remove(from);
+            let to = place(&shown, &log[first]).unwrap_or(from);
+            shown.insert(to, moved);
+        }
+    }
+    shown
 }
 
 /// The key of an entry's row: its kind and id, else its time.

@@ -1043,10 +1043,15 @@ def manager_up(created):
     # the generic guidance.
     shutil.rmtree(owner_skills)
     big = js('task', 'say', 'BIG')
-    reply_to(big['id'])
+    big_reply = reply_to(big['id'])
     assert wait(lambda: any(e['kind'] == 'rotated' for e in chat()), 'rotated')
     after_rotation = js('task', 'say', 'STATUS')
     reply_to(after_rotation['id'])
+    # ^ A rotation after a reply took no waiting message: its divider keeps its place, under that
+    # reply and above the next message (`chat::chat_window`, docs/tasks.md "Manager").
+    shown = [(e['kind'], e.get('id')) for e in js('task', 'chat')['entries']]
+    divider = max(at for at, (kind, _) in enumerate(shown) if kind == 'rotated')
+    assert shown.index(('reply', big_reply['id'])) < divider < shown.index(('message', after_rotation['id'])), shown[-8:]
     manager_launches = [t for t in traces() if t.get('launch') and t.get('manager')]
     assert not manager_launches[-1]['resume'] and manager_launches[-1]['session'] != launch['session']
     bare = manager_launches[-1]
@@ -2427,6 +2432,16 @@ def part_core(created=None):
     assert not fresh['resume'] and fresh['session'] != launches[-1]['session'], fresh
     rotated = [e for e in manager_entries() if e['kind'] == 'rotated']
     assert rotated[-1].get('reason') == "the manager's instructions changed", rotated
+    # ^ The host rotated as it took the waiting message: the log keeps the message first, and the
+    # chat shows the divider above it, in the JSON entries and in the rows (`chat::chat_window`).
+    raw = manager_entries()
+    at_rotation = max(at for at, e in enumerate(raw) if e['kind'] == 'rotated')
+    assert next(at for at, e in enumerate(raw) if e.get('id') == changed['id']) < at_rotation, raw[-8:]
+    shown = [(e['kind'], e.get('id')) for e in js('task', 'chat')['entries']]
+    divider = max(at for at, (kind, _) in enumerate(shown) if kind == 'rotated')
+    assert divider < shown.index(('message', changed['id'])), shown[-8:]
+    rows = cli('task', 'chat').stdout
+    assert rows.rindex("(New conversation: the manager's instructions changed") < rows.index('[%d] You: STATUS after the change' % changed['id']), rows[-800:]
     opened = turn_with('STATUS after the change')['message']
     # ^ The notes come first, then the handover.
     assert opened.startswith("The owner's decisions") and '\n\nHandover (this is a new conversation' in opened and re.search(r'You \(reply \d+\): noted events', opened) and 'Owner (message ' in opened, opened
