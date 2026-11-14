@@ -23,7 +23,7 @@ use wsx_core::task::{
         activity, decided_request, pending_approvals, waiting_approvals, ApprovalLine, Author,
         ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse,
     },
-    needs::{self, NeedKind, Stage, APPROVAL_RANK},
+    needs::{self, ChatCounts, NeedKind, Stage, APPROVAL_RANK},
     owner, stall, status,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
     view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
@@ -272,11 +272,22 @@ fn build_overview(
         }))
         .chain(news.as_ref().and_then(|news| news["unix_ms"].as_u64()))
         .max();
+    // ^ The Running, Needs you and To check trays, as a chat row counts its own (`ChatCounts`).
+    let counts = ChatCounts {
+        running: working + waiting_approvals(&approvals).len(),
+        needs: needs.len() + asks.len(),
+        check: open_checks.len(),
+    };
     json!({
         "project": scope.project,
         "manager": settings.map_or(scope.name.as_str(), |settings| settings.manager_shown_name(&scope.name)),
-        "needs": needs.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
+        // ^ Most urgent first, then oldest: a need's `rank` is its kind's (`NeedKind::rank`).
+        "needs": needs.into_iter().map(|(rank, _, mut row)| {
+            row["rank"] = json!(rank);
+            row
+        }).collect::<Vec<_>>(),
         "working": working,
+        "counts": counts,
         // ^ What the owner approved in the chat that runs when a task lands (docs/tasks.md "Approvals").
         "waiting": waiting_approvals(&approvals)
             .into_iter()
@@ -327,7 +338,8 @@ fn resolutions(
         .collect();
     recent.sort_by_key(|(_, record)| std::cmp::Reverse(record.updated_unix_ms));
     recent.truncate(RESOLUTION_TASKS);
-    let mut rows: Vec<(u64, Option<u32>, String)> = Vec::new();
+    // ^ `closed`: the line says the task was closed, as its event line does too (bubbles.js).
+    let mut rows: Vec<(u64, Option<u32>, String, bool)> = Vec::new();
     for (dir, record) in recent {
         let id = record.id;
         let mut blocked = false;
@@ -352,7 +364,8 @@ fn resolutions(
                 }
             };
             blocked = false;
-            rows.push((entry.unix_ms, Some(id), text));
+            let closed = matches!(entry.event, LogEvent::Closed { .. });
+            rows.push((entry.unix_ms, Some(id), text, closed));
         }
     }
     for (at, line) in lines.iter().enumerate() {
@@ -374,6 +387,7 @@ fn resolutions(
             *unix_ms,
             task,
             owner::decision_words(&label, *approved, outcome),
+            false,
         ));
     }
     // ^ A failed check says which task fixes it; passes are the owner's own taps.
@@ -383,14 +397,15 @@ fn resolutions(
                 item.unix_ms,
                 Some(item.task),
                 format!("#{} failed a check; #{fix} fixes it", item.task),
+                false,
             ));
         }
     }
-    rows.sort_by_key(|(unix_ms, _, _)| std::cmp::Reverse(*unix_ms));
+    rows.sort_by_key(|(unix_ms, _, _, _)| std::cmp::Reverse(*unix_ms));
     rows.truncate(RESOLUTIONS_SHOWN);
     json!(rows
         .into_iter()
-        .map(|(unix_ms, task, text)| json!({ "unix_ms": unix_ms, "task": task, "text": text }))
+        .map(|(unix_ms, task, text, closed)| json!({ "unix_ms": unix_ms, "task": task, "text": text, "closed": closed }))
         .collect::<Vec<_>>())
 }
 
@@ -647,7 +662,8 @@ fn progress(
     })
 }
 
-/// The prompt's opening paragraph, for the sheet to cut to its goal sentence.
+/// The goal sentence of the prompt: its opening paragraph's first sentence, without a leading
+/// `Goal:`, at most 200 characters.
 fn goal(dir: &TaskDir) -> Value {
     let prompt = dir.prompt().ok().flatten().unwrap_or_default();
     let paragraph = prompt
@@ -656,8 +672,15 @@ fn goal(dir: &TaskDir) -> Value {
         .next()
         .unwrap_or_default()
         .replace('\n', " ");
-    json!(Some(view::clip(paragraph.trim(), 400)).filter(|text| !text.is_empty()))
+    let paragraph = paragraph.trim_start();
+    let paragraph = match paragraph.get(..5) {
+        Some(lead) if lead.eq_ignore_ascii_case("goal:") => paragraph[5..].trim_start(),
+        _ => paragraph,
+    };
+    let sentence = view::first_sentence(paragraph);
+    json!(Some(view::clip(&sentence, GOAL_CHARS)).filter(|text| !text.is_empty()))
 }
+const GOAL_CHARS: usize = 200;
 
 /// The messages the owner or the manager added or steered after the prompt, in order.
 fn talk(log: &[task::LogEntry]) -> Value {
@@ -839,9 +862,7 @@ fn chat_contacts(scope: &Scope, land_auto: bool) -> Vec<Value> {
                 "last_reply": last,
                 "news": news,
                 "last_unix_ms": task::chats::last_active_ms(dir),
-                "running": own.running,
-                "needs": own.needs,
-                "check": own.check,
+                "counts": own,
             })
         })
         .collect()

@@ -469,6 +469,10 @@ pub struct ChatRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quoted: Option<String>,
     pub text: String,
+    /// A quiet reply's first sentence (`view::first_sentence`) when it says more: the chats show
+    /// it and a More that opens the rest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_sentence: Option<String>,
     /// The line a quote of this message carries (`quote_of`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quote: Option<String>,
@@ -518,6 +522,7 @@ impl ChatRow {
             tag: None,
             quoted: None,
             text,
+            first_sentence: None,
             quote: None,
             quoted_id: None,
             quoted_check: None,
@@ -909,14 +914,17 @@ fn reply_row(
     // ^ A quiet reply is a muted line under the manager's name unless it carries an
     // approval; `-` or nothing says nothing changed and shows nothing.
     if *quiet && approvals.is_empty() {
+        let text = text.trim();
+        let first = super::view::first_sentence(text);
         return (!says_nothing(text)).then(|| ChatRow {
             author: Some(Speaker::Manager),
             name: Some(names.own.to_string()),
+            first_sentence: (first != text).then_some(first),
             ..ChatRow::new(
                 RowKind::Quiet,
                 row_key(entry, "reply"),
                 entry,
-                text.trim().to_string(),
+                text.to_string(),
             )
         });
     }

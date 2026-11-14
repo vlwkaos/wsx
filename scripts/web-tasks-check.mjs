@@ -936,10 +936,10 @@ await oneWorkingColor("the chat's chips", 0);
 
 // Counts change as events change them (docs/web-client-tasks.md "Motion"): a number ticks, and
 // under reduced motion it does not. A pill with a count of 0 is gone. The store is changed in
-// the page, as an event would.
+// the page, as an event would, with the server's `counts` the pills read.
 const original = await inStore(`return JSON.parse(JSON.stringify(state.tasks[${project}]))`);
 const runners = () => inStore(`const ov = state.tasks[${project}], base = ov.tasks.find((task) => task.stage === 'working');
-  update({ tasks: { ...state.tasks, [${project}]: { ...ov, tasks: [...ov.tasks, { ...base, id: 91, title: 'second runner' }, { ...base, id: 92, title: 'third runner' }] } } })`);
+  update({ tasks: { ...state.tasks, [${project}]: { ...ov, tasks: [...ov.tasks, { ...base, id: 91, title: 'second runner' }, { ...base, id: 92, title: 'third runner' }], counts: { ...ov.counts, running: ov.counts.running + 2 } } } })`);
 const restored = () => inStore(`update({ tasks: { ...state.tasks, [${project}]: ${JSON.stringify(original)} } })`);
 await runners();
 const runningIs = (label, where) => until(`document.querySelector('.pill[data-kind=running]')?.getAttribute('aria-label') === '${label}'`, where);
@@ -948,10 +948,10 @@ if ((await evaluate("getComputedStyle(document.querySelector('.pill-count .tick'
 await restored();
 await runningIs("1 running", "the Running pill did not go back to one task");
 // ^ Nothing waits and nothing is left to check: only Running stays; with nothing, no pill at all.
-await inStore(`const ov = state.tasks[${project}]; update({ tasks: { ...state.tasks, [${project}]: { ...ov, needs: [], asks: [], to_check: 0, check_items: [] } } })`);
+await inStore(`const ov = state.tasks[${project}]; update({ tasks: { ...state.tasks, [${project}]: { ...ov, needs: [], asks: [], to_check: 0, check_items: [], counts: { ...ov.counts, needs: 0, check: 0 } } } })`);
 await until("(document.querySelector('.pills')?.textContent ?? '').includes('1') && !document.querySelector('.pill[data-kind=needs]') && !document.querySelector('.pill[data-kind=check]')", "a pill with a count of 0 is still shown");
 if ((await pillWords()) !== "1 running | 2 routines") await fail(`with nothing to answer or check the pills read ${await pillWords()}`);
-await inStore(`const ov = state.tasks[${project}]; update({ tasks: { ...state.tasks, [${project}]: { ...ov, tasks: ov.tasks.filter((task) => task.stage !== 'working') } } })`);
+await inStore(`const ov = state.tasks[${project}]; update({ tasks: { ...state.tasks, [${project}]: { ...ov, tasks: ov.tasks.filter((task) => task.stage !== 'working'), counts: { ...ov.counts, running: 0 } } } })`);
 await until("document.querySelectorAll('.pill').length === 1 && !!document.querySelector('.pill[data-kind=routines]')", "with the three counts at 0 a pill other than Routines is still shown");
 await restored();
 await until("document.querySelectorAll('.pill').length === 4", "the pills did not come back");
@@ -1134,7 +1134,7 @@ const noEmptyBlock = async (where) => {
 // only by the list that scrolls it, which sits whole inside the reservoir, its last row whole at its end.
 const beforeRunners = await inStore(`return JSON.parse(JSON.stringify(state.tasks[${project}]))`);
 await inStore(`const ov = state.tasks[${project}], base = ov.tasks.find((task) => task.stage === 'working');
-  update({ tasks: { ...state.tasks, [${project}]: { ...ov, needs: [], to_check: 16, check_items: Array.from({ length: 16 }, (_, n) => ({ id: 'c' + (90 + n), task: 7, check: 'check ' + n + ' with words long enough to be cut at the end of its line', pass_if: 'it passes' })), tasks: [base, { ...base, id: 91, title: 'a second running task' }] } } })`);
+  update({ tasks: { ...state.tasks, [${project}]: { ...ov, needs: [], to_check: 16, check_items: Array.from({ length: 16 }, (_, n) => ({ id: 'c' + (90 + n), task: 7, check: 'check ' + n + ' with words long enough to be cut at the end of its line', pass_if: 'it passes' })), tasks: [base, { ...base, id: 91, title: 'a second running task' }], counts: { running: 2 + ov.waiting.length, needs: ov.asks.length, check: 16 } } } })`);
 await resize([390, 844, 2]);
 await openReservoir("running");
 await until("document.querySelectorAll('.reservoir-list[aria-label=Running] .need').length === 2", "the Running list does not show two running tasks");
@@ -1144,7 +1144,7 @@ await openReservoir("check");
 await noEmptyBlock("To check at 390x844");
 await inStore(`update({ tasks: { ...state.tasks, [${project}]: ${JSON.stringify(beforeRunners)} } })`);
 await inStore(`const ov = state.tasks[${project}], base = ov.tasks.find((task) => task.stage === 'working');
-  update({ tasks: { ...state.tasks, [${project}]: { ...ov, tasks: [...ov.tasks, ...[1, 2, 3, 4, 5, 6].map((n) => ({ ...base, id: 90 + n, title: 'runner ' + n + ' with a title long enough to be cut at the end' }))] } } })`);
+  update({ tasks: { ...state.tasks, [${project}]: { ...ov, tasks: [...ov.tasks, ...[1, 2, 3, 4, 5, 6].map((n) => ({ ...base, id: 90 + n, title: 'runner ' + n + ' with a title long enough to be cut at the end' }))], counts: { ...ov.counts, running: ov.counts.running + 6 } } } })`);
 for (const [width, height, scale] of [[390, 844, 2], [390, 560, 2], [900, 700, 1]]) {
   await resize([width, height, scale]);
   await openReservoir("running");

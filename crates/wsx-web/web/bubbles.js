@@ -1,7 +1,7 @@
 // The manager chat as messages: one bubble per owner message and manager reply, each with its
 // author and time, task changes as muted lines, one each, and the manager's replies to them as
 // lines under its name (docs/web-client-tasks.md "Project screen").
-import { clock, firstSentence, html, Icon, useLayoutEffect, useState } from "./lib.js";
+import { clock, html, Icon, useLayoutEffect, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
 import { Quote } from "./reply.js";
@@ -13,8 +13,6 @@ import { can, sessionLink, shows, state } from "./store.js";
 const GROUP_MS = 5 * 60_000;
 // A resolution this close to an event line that says it too shows once.
 const NEAR_MS = 10 * 60_000;
-
-const CLOSED = /^#\d+ was closed\b/;
 
 // ^ A line's leading task: the chip, and the words after it (wsx-core `chat_rows` sets `task`
 // only on a line that starts with it).
@@ -37,8 +35,7 @@ export function conversation(entries, resolutions, approvals = [], checks = [], 
     const near = (row) => Math.abs(row.at - resolution.unix_ms) < NEAR_MS;
     // ^ A close is a task change the events say too ("#7 closed", "#7 done"): the event line
     // about that task stays. An answer or a failed check has no event line of its own.
-    const closed = CLOSED.test(resolution.text);
-    const same = (row) => row.text === resolution.text || (closed && row.task === resolution.task);
+    const same = (row) => row.text === resolution.text || (resolution.closed && row.task === resolution.task);
     if (said.some((row) => near(row) && same(row))) return;
     rows.push({ kind: "line", at: resolution.unix_ms, key: `res-${resolution.unix_ms}-${resolution.text}`, text: resolution.text, task: resolution.task });
   });
@@ -219,12 +216,11 @@ export function StatusLine({ project, row, fresh }) {
 // else its first sentence and More.
 export function QuietReply({ row, fresh, plain }) {
   const [open, setOpen] = useState(false);
-  // ^ Its first sentence, or its first line when that ends sooner, never cut inside.
-  const first = firstSentence(row.text, Infinity);
-  const whole = open || first === row.text;
+  // ^ Its first sentence (wsx-core `first_sentence`, none when that is all of it), never cut inside.
+  const whole = open || row.first_sentence == null;
   return html`
     <article class="reply-line" data-speaker="manager" data-fresh=${fresh ? "" : null} data-key=${row.key} data-at=${row.at} aria-label=${`${row.name}, ${clock(row.at)}`}>
       ${row.first && !plain && html`<p class="bubble-author" aria-hidden="true">${row.name}</p>`}
-      <p class="reply-text">${whole ? row.text : first}${!whole && html` <button class="link-action" type="button" onClick=${() => setOpen(true)}>More</button>`}</p>
+      <p class="reply-text">${whole ? row.text : row.first_sentence}${!whole && html` <button class="link-action" type="button" onClick=${() => setOpen(true)}>More</button>`}</p>
     </article>`;
 }

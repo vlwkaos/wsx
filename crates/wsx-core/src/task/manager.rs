@@ -366,6 +366,24 @@ const QUOTE_CHARS: usize = 120;
 /// A reply that opens with this and a message id quotes that message.
 pub const QUOTE_REF: &str = "> message ";
 
+/// What an owner's message answers: a chat message by its id, or a To check item by its `c<n>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answers {
+    Message(u64),
+    Check(String),
+}
+
+/// `text` with the quote of what it answers ahead of it, the one form the host reads
+/// (`QUOTE_REF`, `checks::QUOTE_REF`): the web's say route, the TUI's composer and a reply's
+/// own quote build it here.
+pub fn answering(text: &str, answers: Option<&Answers>) -> String {
+    match answers {
+        None => text.to_string(),
+        Some(Answers::Message(id)) => format!("{QUOTE_REF}{id}\n\n{text}"),
+        Some(Answers::Check(id)) => format!("{}{id}\n\n{text}", super::checks::QUOTE_REF),
+    }
+}
+
 /// The id a reply quotes with `> message <id>` on its first line.
 pub fn quoted_id(text: &str) -> Option<u64> {
     let line = text.trim_start().strip_prefix(QUOTE_REF)?;
