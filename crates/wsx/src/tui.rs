@@ -73,6 +73,16 @@ fn append_mode_event_at(
     error: Option<&io::Error>,
     source: &std::panic::Location<'_>,
 ) -> io::Result<()> {
+    let file = open_private_append(path)?;
+    // Best-effort evidence cannot block terminal restoration or contend on a live UI lock.
+    if !wsx_core::fs_util::flock(file.as_raw_fd(), true)? {
+        return Err(io::ErrorKind::WouldBlock.into());
+    }
+    append_mode_record(file, event, error, source)
+}
+
+/// A file only this user can reach, opened to append: no link, no shared folder.
+fn open_private_append(path: &std::path::Path) -> io::Result<File> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let parent = path
         .parent()
@@ -88,7 +98,7 @@ fn append_mode_event_at(
             "unsafe terminal diagnostics directory",
         ));
     }
-    let mut file = File::options()
+    let file = File::options()
         .append(true)
         .create(true)
         .mode(0o600)
@@ -105,10 +115,16 @@ fn append_mode_event_at(
             "unsafe terminal diagnostics file",
         ));
     }
-    // Best-effort evidence cannot block terminal restoration or contend on a live UI lock.
-    if !wsx_core::fs_util::flock(file.as_raw_fd(), true)? {
-        return Err(io::ErrorKind::WouldBlock.into());
-    }
+    Ok(file)
+}
+
+fn append_mode_record(
+    mut file: File,
+    event: &'static str,
+    error: Option<&io::Error>,
+    source: &std::panic::Location<'_>,
+) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
     let timestamp = wsx_core::task::now_unix_ms();
     // Observe the same stdin-or-controlling-terminal selection as the mode owner.
     let flags = TerminalAttributes::capture().ok().map(|attributes| {
@@ -140,6 +156,37 @@ fn append_mode_event_at(
     file.write_all(&encoded)?;
     // Closing the descriptor releases the advisory lock even when an earlier step fails.
     Ok(())
+}
+
+/// The terminal's stderr and the log that takes its place while the TUI owns the screen.
+static STDERR: std::sync::OnceLock<Option<(std::os::fd::OwnedFd, File)>> =
+    std::sync::OnceLock::new();
+
+/// `aside`: stderr goes to `ui-stderr.log` in the cache; else back to the terminal. A write
+/// to the terminal under the TUI (a background config warning) stays on cells ratatui does
+/// not repaint. ref: docs/ui-state-ownership.md
+fn stderr_aside(aside: bool) {
+    let Some((terminal, log)) = STDERR.get_or_init(stderr_log) else {
+        return;
+    };
+    let from = if aside {
+        log.as_raw_fd()
+    } else {
+        terminal.as_raw_fd()
+    };
+    // SAFETY: both descriptors stay open in the static; dup2 only replaces fd 2.
+    unsafe { libc::dup2(from, libc::STDERR_FILENO) };
+}
+
+fn stderr_log() -> Option<(std::os::fd::OwnedFd, File)> {
+    if !io::stderr().is_terminal() {
+        return None;
+    }
+    let log = open_private_append(&dirs::cache_dir()?.join("wsx/ui-stderr.log")).ok()?;
+    if log.metadata().ok()?.len() > 1024 * 1024 {
+        log.set_len(0).ok()?;
+    }
+    Some((io::stderr().as_fd().try_clone_to_owned().ok()?, log))
 }
 
 // ^ docs/ui-state-ownership.md: crossterm's raw-mode flag does not own changes made by external editors.
@@ -230,6 +277,7 @@ impl TerminalSession {
                     hook_active.store(false, Ordering::Release);
                     let restored =
                         restore_modes(&mut hook_output.as_ref(), Some(hook_attributes.as_ref()));
+                    stderr_aside(false);
                     record_mode_event_at(
                         if restored.is_ok() {
                             "owner_panic_released"
@@ -281,6 +329,7 @@ impl TerminalSession {
             }
             previous(info);
         }));
+        stderr_aside(true);
         Ok(Self {
             active,
             worker_failure,
@@ -340,6 +389,7 @@ impl TerminalSession {
 
     pub fn restore(&mut self) -> Result<()> {
         if self.active.swap(false, Ordering::AcqRel) {
+            stderr_aside(false);
             let result = restore_modes(&mut self.output.as_ref(), Some(self.attributes.as_ref()));
             record_mode_event(
                 if result.is_ok() {
@@ -574,7 +624,10 @@ where
         suspension.as_ref().err(),
     );
     let (result, attributes) = match suspension.and_then(|_| TerminalAttributes::capture()) {
-        Ok(attributes) => (f(), Some(attributes)),
+        Ok(attributes) => {
+            stderr_aside(false);
+            (f(), Some(attributes))
+        }
         Err(error) => (Err(error.into()), None),
     };
     // Restore the borrowed baseline before crossterm captures it again as its normal mode.
@@ -587,6 +640,7 @@ where
     enable_raw_mode().map_err(|error| TerminalModeError::at("editor_raw_resume_failed", error))?;
     enter_modes(terminal.backend_mut())
         .map_err(|error| TerminalModeError::at("editor_output_resume_failed", error))?;
+    stderr_aside(true);
     terminal
         .clear()
         .map_err(|error| TerminalModeError::at("editor_redraw_failed", error))?;

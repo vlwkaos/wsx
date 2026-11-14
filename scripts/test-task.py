@@ -4854,6 +4854,9 @@ def part_worker(created=None):
     # ^ The TUI shows it as the project notice, not on stderr over its screen.
     notice = tui_text(wsx, env, project, r'futureTop')
     assert 'unknown keys ignored' in notice and 'tasks.futureSetting' in notice, notice[-3000:]
+    # ^ A background config read's stderr warning goes to ui-stderr.log, not over the TUI's cells.
+    stderr_log = (home / 'Library/Caches' if sys.platform == 'darwin' else work / 'k') / 'wsx/ui-stderr.log'
+    wait(lambda: stderr_log.exists() and 'futureTop' in stderr_log.read_text(), 'the TUI keeps its stderr in ui-stderr.log', 10)
     assert warned.stderr.count('warning:') == 1, warned.stderr
     newer = cli('task', 'new', 'WORK newer.txt', '--json')
     assert 'tasks.futureSetting' in newer.stderr, newer.stderr
