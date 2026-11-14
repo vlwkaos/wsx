@@ -184,9 +184,9 @@ def turns(copy, tip):
         ('Owner', 'What is the status of the project?', None, False),
         ('Owner', 'Please add a --version flag to the CLI.', None, False),
         ('Owner', 'Yes, go ahead as one task; --version should also print the short git commit.', None, False),
-        ('Events', '#5 landed r1: Fix a typo in the README; checks 1 of 1 passed; worker says: fixed the typo',
+        ('Events', '#5 landed r1: Fix a typo in the README; checks 1 of 1 passed; worker says (unchecked): fixed the typo',
          lambda state: (landed(state), started(state)), False),
-        ('Events', '#7 ready r1: Add a --version flag; checks 1 of 1 passed; worker says: added --version with '
+        ('Events', '#7 ready r1: Add a --version flag; checks 1 of 1 passed; worker says (unchecked): added --version with '
                    'the commit', ready, True),
     ]
     return [([], [([(author, n, text)], change, due)
@@ -243,7 +243,7 @@ def logged(state):
             '2. Nothing compared the fake with the real Claude. 3. The loss gave no signal. To stop this class '
             'of bug, I would add one check: record a few real Claude turns once, then test the adapter against '
             'those recordings as well as the fake.')
-    landed = ('#195 landed r3: Web Home: add and remove projects; checks 3 of 3 passed; worker says: The whole web '
+    landed = ('#195 landed r3: Web Home: add and remove projects; checks 3 of 3 passed; worker says (unchecked): The whole web '
               'check (7) passes, exit 0, on the last commit. That includes my "Projects: add and remove" '
               'scenario and scripts/web-projects-check.mjs. The working…; memo: The web client lists '
               "wsxd's snapshot, not the config.")
@@ -274,7 +274,7 @@ def stale(state):
                       open_task(427, 'Task time and cost audit on Fable')]
     state['ledger_extra']['to_check'] = 0
     limit = ('waits on limit: Waiting for the usage limit for less than a minute: claude usage limit; resumes at '
-             '03:20. It goes on by itself then, one task at a time.; worker says: ')
+             '03:20. It goes on by itself then, one task at a time.; worker says (unchecked): ')
     release = ('release of ca9b2f227745 failed (exit 1); its output ends:\n    error: could not compile `wsx-core` '
                '(lib) due to 1 previous error\n    Error: Process completed with exit code 101.')
     return [([], [([('Events', 4409, '#426 waiting r0: Web GUI polish audit on Fable; %s\n#427 waiting r0: Task time and '
