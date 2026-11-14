@@ -620,7 +620,7 @@ pub fn overlaps(record: &TaskRecord, others: &[&TaskRecord], with_paths: bool) -
                 .collect();
             let declared = common.is_empty();
             if declared {
-                common = declared_meetings(record, other);
+                common = declared_meetings(&record.files, &record.paths, other);
             }
             if common.is_empty() {
                 return None;
@@ -640,15 +640,39 @@ pub fn overlaps(record: &TaskRecord, others: &[&TaskRecord], with_paths: bool) -
     json!(rows)
 }
 
-/// This task's paths and globs that meet one of `other`'s through a declared glob.
-fn declared_meetings<'a>(record: &'a TaskRecord, other: &TaskRecord) -> Vec<&'a str> {
-    fn entries(task: &TaskRecord) -> impl Iterator<Item = (&str, bool)> {
-        let globs = task.files.iter().map(|glob| (glob.as_str(), true));
-        globs.chain(task.paths.iter().map(|path| (path.as_str(), false)))
+/// The open tasks, but `besides`, whose globs or changed paths meet `files`, the globs of a
+/// task not created yet, each with the globs that meet it. ref: docs/tasks.md "Store"
+pub fn files_meet<'a>(
+    files: &'a [String],
+    others: &[&TaskRecord],
+    besides: &[u32],
+) -> Vec<(u32, Vec<&'a str>)> {
+    others
+        .iter()
+        .filter(|other| other.state.is_open() && !besides.contains(&other.id))
+        .map(|other| (other.id, declared_meetings(files, &[], other)))
+        .filter(|(_, common)| !common.is_empty())
+        .collect()
+}
+
+/// The globs `files` and paths `paths` of a task that meet one of `other`'s through a
+/// declared glob.
+fn declared_meetings<'a>(
+    files: &'a [String],
+    paths: &'a [String],
+    other: &TaskRecord,
+) -> Vec<&'a str> {
+    fn entries<'b>(
+        files: &'b [String],
+        paths: &'b [String],
+    ) -> impl Iterator<Item = (&'b str, bool)> {
+        let globs = files.iter().map(|glob| (glob.as_str(), true));
+        globs.chain(paths.iter().map(|path| (path.as_str(), false)))
     }
-    entries(record)
+    entries(files, paths)
         .filter(|&(mine, my_glob)| {
-            entries(other).any(|(their, their_glob)| (my_glob || their_glob) && meet(mine, their))
+            entries(&other.files, &other.paths)
+                .any(|(their, their_glob)| (my_glob || their_glob) && meet(mine, their))
         })
         .map(|(mine, _)| mine)
         .collect()

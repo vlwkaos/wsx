@@ -60,7 +60,7 @@ pub const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10)
 
 /// `git` that reads and gives up after `READ_TIMEOUT`: a git that hangs is an error (an
 /// `io::Error` of kind `TimedOut` at the root), not a caller that waits for ever.
-fn read_git(repo: &Path, args: &[&str]) -> Result<String> {
+pub fn read(repo: &Path, args: &[&str]) -> Result<String> {
     let output = crate::git::output_with_timeout(git_cmd(repo).args(args), READ_TIMEOUT)
         .with_context(|| format!("cannot run git {}", args.join(" ")))?;
     finished(args, output)
@@ -444,10 +444,10 @@ fn checkout_of(main: &Path, branch: &str) -> Result<Option<PathBuf>> {
 /// HEAD) changes too: moving the checkout there would overwrite them. Other changes stay as
 /// they are. ref: docs/tasks.md "Landing"
 fn overlapping_changes(checkout: &Path, landing: &str) -> Result<Vec<String>> {
-    let landing = read_git(checkout, &["diff", "--name-only", "--no-renames", landing])?;
+    let landing = read(checkout, &["diff", "--name-only", "--no-renames", landing])?;
     let landing: std::collections::HashSet<&str> = landing.lines().collect();
-    let tracked = read_git(checkout, &["diff", "--name-only", "--no-renames", "HEAD"])?;
-    let new = read_git(checkout, &["ls-files", "--others", "--exclude-standard"])?;
+    let tracked = read(checkout, &["diff", "--name-only", "--no-renames", "HEAD"])?;
+    let new = read(checkout, &["ls-files", "--others", "--exclude-standard"])?;
     Ok(tracked
         .lines()
         .chain(new.lines())
@@ -523,6 +523,107 @@ pub fn move_branch(
         )
         .map(|_| None),
     }
+}
+
+/// A commit of the main checkout's `files` as they are on disk, on top of `branch`'s tip,
+/// which must be the checkout's HEAD; the checkout, its index and the branch stay as they are.
+/// Gives back the commit and the tip it is on; `take_commit` moves the branch there.
+/// ref: docs/tasks.md "Manager"
+pub fn commit_files(
+    main: &Path,
+    branch: &str,
+    files: &[String],
+    message: &str,
+) -> Result<(String, String)> {
+    let head = git(main, &["symbolic-ref", "--quiet", "HEAD"]).unwrap_or_default();
+    if head.trim() != format!("refs/heads/{branch}") {
+        bail!(
+            "{} has {} checked out, not {branch}",
+            main.display(),
+            head.trim().trim_start_matches("refs/heads/")
+        );
+    }
+    if let Some(bad) = files.iter().find(|file| {
+        let path = Path::new(file);
+        file.is_empty()
+            || path.is_absolute()
+            || path
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    }) {
+        bail!("{bad:?} is not a path inside the checkout");
+    }
+    let tip = resolve_commit(main, "HEAD")?;
+    // ^ A private index, so the owner's staged changes stay out of the commit and in place.
+    let index = std::env::temp_dir().join(format!("wsx-commit-index-{}", std::process::id()));
+    let with_index = |args: &[&str]| -> Result<String> {
+        let output = git_cmd(main)
+            .env("GIT_INDEX_FILE", &index)
+            .args(args)
+            .output()
+            .with_context(|| format!("cannot run git {}", args.join(" ")))?;
+        finished(args, output)
+    };
+    let tree = (|| {
+        with_index(&["read-tree", &tip])?;
+        let mut add = vec!["update-index", "--add", "--remove", "--"];
+        add.extend(files.iter().map(String::as_str));
+        with_index(&add)?;
+        let changed = with_index(&[
+            "diff-index",
+            "--cached",
+            "--name-only",
+            "--no-renames",
+            &tip,
+        ])?;
+        let changed: std::collections::HashSet<&str> = changed.lines().collect();
+        let unchanged: Vec<&str> = files
+            .iter()
+            .map(String::as_str)
+            .filter(|file| !changed.contains(file))
+            .collect();
+        if !unchanged.is_empty() {
+            bail!("{} has no change to commit", unchanged.join(", "));
+        }
+        with_index(&["write-tree"])
+    })();
+    let _ = fs::remove_file(&index);
+    let tree = tree?;
+    let commit = git(
+        main,
+        &["commit-tree", tree.trim(), "-p", &tip, "-m", message],
+    )?;
+    Ok((commit.trim().to_string(), tip))
+}
+
+/// Move `branch`, checked out in `main`, from `tip` to `commit` of `commit_files` (refused when
+/// the branch moved meanwhile), and match the index of `files` to it; the files on disk and
+/// the owner's other staged changes stay.
+pub fn take_commit(
+    main: &Path,
+    branch: &str,
+    tip: &str,
+    commit: &str,
+    files: &[String],
+) -> Result<()> {
+    let reflog = format!(
+        "commit: {}",
+        read(main, &["log", "-1", "--format=%s", commit])?.trim()
+    );
+    git(
+        main,
+        &[
+            "update-ref",
+            "-m",
+            &reflog,
+            &format!("refs/heads/{branch}"),
+            commit,
+            tip,
+        ],
+    )?;
+    let mut reset = vec!["reset", "--quiet", commit, "--"];
+    reset.extend(files.iter().map(String::as_str));
+    git_clearing_lock(main, &reset).map(drop)
 }
 
 /// How long a call to the remote may take: `git_cmd`'s ssh never asks (BatchMode), but a

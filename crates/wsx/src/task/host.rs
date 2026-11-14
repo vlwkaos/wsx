@@ -4279,7 +4279,7 @@ fn queued_response(ci: bool) -> broker::Response {
 
 /// Checks a worker's `check-run` runs without the slot: one plain command that only formats
 /// or compiles, so no timing test meets the load of another task's checks.
-fn light(command: &str) -> bool {
+pub(super) fn light(command: &str) -> bool {
     const LIGHT: [&str; 3] = ["cargo fmt", "cargo build", "cargo check"];
     let plain = !command.contains(['&', '|', ';', '\n', '`', '$', '(', '<', '>']);
     let words: Vec<&str> = command.split_whitespace().take(2).collect();

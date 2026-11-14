@@ -1,6 +1,7 @@
 pub(super) mod approve;
 pub(super) mod chat;
 pub(super) mod check;
+pub(super) mod commit;
 pub(super) mod deploy;
 pub(super) mod land;
 pub(super) mod new;
