@@ -44,6 +44,7 @@ Each user message is a small script of words:
                403 Attention Required! | Cloudflare", no sign-in failure) until <file> exists; WCFAUTH for a worker
   MHANG <file>  (manager) write nothing in the turn until <file> exists, so the host ends it by its quiet
                bound (WSX_TEST_TURN_QUIET_FILE); WHANG for a worker
+  DRIP <file>  (worker) write a text line every second of the turn until <file> exists: a long turn with output
   BIG          a last model call of 400k tokens (two lines of one call), past the worker's rotateTokens
   SIMPLIFY     (worker) a Skill tool call of owner:simplify in the turn; SIMPLIFYLATE does it only in
                the host's send-back ("The simplify skill did not run ...")
@@ -618,6 +619,10 @@ def main():
             continue
         if 'WHANG' in words and not os.path.exists(words[words.index('WHANG') + 1]):
             hang(words[words.index('WHANG') + 1])
+        if 'DRIP' in words:
+            while not os.path.exists(words[words.index('DRIP') + 1]):
+                emit({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'still working'}]}})
+                time.sleep(1)
         if no_result:
             no_result = end_without_result(session, no_result)
             continue

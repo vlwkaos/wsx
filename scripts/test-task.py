@@ -7401,6 +7401,120 @@ def part_host(created=None):
     assert 'no task host answers' in refused or 'closed' in refused, refused
     assert not lost_socket.exists() and not host_pids()
 
+    # 40. A host hung in a turn under an older wsx (docs/tasks.md "A host hung in a turn"): it answers
+    # its socket, but its code never ends the turn, so a deploy cannot reach it. A caller on this wsx
+    # (a deploy, a task request, a say) closes it once the turn is quiet past the bound (the caller's
+    # own WSX_TEST_TURN_QUIET_FILE; the hosts keep the real bound), stops its agent's tree, logs one
+    # `stopped` entry and starts a host on this wsx: the task resumes its conversation, the manager
+    # answers the queued message. A stale host whose turn still writes output is left alone.
+    mark('40')
+    configure(DEPLOY_CONFIG.replace('  checks:\n', '  agent:\n    model: fake-model\n  checks:\n'), 'deploys for hung hosts')
+    caller = {'WSX_TEST_TURN_QUIET_FILE': str(work / 'caller-quiet')}
+    (work / 'caller-quiet').write_text('3')
+    older = work / 'older'
+    older.mkdir(mode=0o700)
+    shutil.copy2(wsx, older / 'wsx')
+
+    def on(binary, *argv, extra=None):
+        done = subprocess.run([str(binary), *map(str, argv), '--json'], cwd=project, env={**env, **(extra or {})},
+                              capture_output=True, text=True, timeout=120)
+        assert done.returncode == 0, (argv, done.stdout, done.stderr)
+        return json.loads(done.stdout)
+
+    def install():
+        # ^ A deploy renames a new file over the path: every host started from it is now older.
+        shutil.copy2(wsx, older / 'wsx.new')
+        os.replace(older / 'wsx.new', older / 'wsx')
+
+    def host_of(args):
+        return [int(line.split()[0]) for line in leftovers(args) if line.rstrip().endswith(args)]
+
+    def agent_tree(pid):
+        ps = subprocess.run(['ps', '-axwwE', '-o', 'pid=,command='], capture_output=True, text=True).stdout
+        return [line for line in ps.splitlines() if 'WSX_AGENT_TREE=%d-' % pid in line]
+
+    replaced = lambda entries: [e for e in entries if e['kind'] == 'stopped' and e.get('reason', '').startswith('the host ran an older wsx')]
+    hanging = lambda path: any(t.get('hang') == str(path) for t in traces())
+    resumed = lambda since: [t for t in traces()[since:] if str(t.get('message', '')).startswith('the host ran an older wsx')]
+    # A deploy: the worker's turn hangs (WHANG) in a host on the older file; the deploy replaces it.
+    release = work / 'hung-release'
+    hung = on(older / 'wsx', 'task', 'new', 'WHANG %s WORK a.txt' % release)['id']
+    project_id = show(hung)['record']['project_id']
+    wait(lambda: hanging(release), 'the worker turn hangs', 40)
+    old_host = host_of('task host %s %d' % (project_id, hung))
+    assert len(old_host) == 1 and agent_tree(old_host[0]), (old_host, leftovers('task host'))
+    install()
+    time.sleep(4)
+    seen = len(traces())
+    before = len(deploy_records())
+    assert on(wsx, 'task', 'deploy', extra=caller)['started']
+    wait(lambda: len(deploy_records()) > before and deploy_lock_free(), 'the deploy and its sweep', 60)
+    assert len(replaced(log(hung))) == 1 and 'had no agent output for' in replaced(log(hung))[0]['reason'], log(hung)[-4:]
+    assert process_gone(old_host[0]) and not agent_tree(old_host[0]), agent_tree(old_host[0])
+    wait(lambda: resumed(seen), 'the new host resumes the turn', 40)
+    assert host_of('task host %s %d' % (project_id, hung)) not in ([], old_host)
+    launch = [t for t in traces()[seen:] if t.get('launch')]
+    assert launch and launch[0]['resume'] and launch[0]['session'] == show(hung)['record']['agent_session'], launch
+    release.touch()
+    wait_state(hung, 'ready', 'failed')
+    js('task', 'close', hung, '--discard')
+    # A task request: a host from before the status answer named its binary (the stand-in of 38)
+    # counts as older; its task is in a turn with no output past the bound, so an add replaces it.
+    legacy = js('task', 'new', 'WORK a.txt')['id']
+    assert wait_state(legacy, 'ready', 'failed')['state'] == 'ready'
+    legacy_copy = show(legacy)['record']['working_copy']
+    legacy_socket = Path(show(legacy)['socket'])
+    legacy_pid = stale / 'legacy.pid'
+    cli('session', 'delete', 'task-%d' % legacy, '-w', legacy_copy)
+    cli('session', 'create', '--name', 'task-%d' % legacy, '-w', legacy_copy,
+        '--command', 'exec %s %s %s %s %s' % (sys.executable, fake_host, legacy_socket, stale / 'legacy.log', legacy_pid))
+    wait(lambda: legacy_pid.exists() and legacy_pid.read_text() and legacy_socket.exists(), 'the legacy host')
+    legacy_record = Path(show(legacy)['log']).parent / 'task.json'
+    record = json.loads(legacy_record.read_text())
+    record['state'] = 'working'
+    legacy_record.write_text(json.dumps(record))
+    time.sleep(4)
+    seen = len(traces())
+    assert on(wsx, 'task', 'add', legacy, 'WORK c.txt', extra=caller)['ok']
+    assert process_gone(int(legacy_pid.read_text())) and len(replaced(log(legacy))) == 1, log(legacy)[-4:]
+    assert not (stale / 'legacy.log').exists(), 'the add went to the new host'
+    wait(lambda: resumed(seen), 'the new host resumes the legacy turn', 40)
+    wait_state(legacy, 'ready', 'failed')
+    js('task', 'close', legacy, '--discard')
+    # A say: the manager's turn hangs (MHANG) in a host on the older file; the next say replaces it
+    # and the new host answers the queued message.
+    socket_path = js('task', 'manager')['socket']
+    cli('session', 'delete', 'task-manager', '-p', 'demo')
+    wait(lambda: not Path(socket_path).exists() or subprocess.run(['nc', '-zU', socket_path]).returncode != 0, 'manager down')
+    m_release = work / 'mhang-release'
+    on(older / 'wsx', 'task', 'say', 'MHANG %s STATUS hung under an older wsx' % m_release)
+    wait(lambda: hanging(m_release), 'the manager turn hangs', 40)
+    old_manager = host_of('task manager-host %s' % project_id)
+    assert len(old_manager) == 1 and agent_tree(old_manager[0]), old_manager
+    stopped_before = len(replaced(manager_entries()))
+    install()
+    time.sleep(4)
+    queued = on(wsx, 'task', 'say', 'STATUS after the hang', extra=caller)
+    assert queued['ok'], queued
+    assert process_gone(old_manager[0]) and not agent_tree(old_manager[0]), agent_tree(old_manager[0])
+    assert len(replaced(manager_entries())) == stopped_before + 1, manager_entries()[-4:]
+    # ^ The new host queues the hung turn's message again; released, it no longer hangs.
+    m_release.touch()
+    assert reply_to(queued['id'], 60)['text'].startswith('open: '), chat()[-3:]
+    # A stale host whose turn writes output keeps its turn: it follows at its next one.
+    drip = work / 'drip-release'
+    busy = on(older / 'wsx', 'task', 'new', 'DRIP %s WORK a.txt' % drip)['id']
+    wait(lambda: any(e['kind'] == 'agent' and 'still working' in e.get('text', '') for e in log(busy)), 'the dripping turn', 40)
+    busy_host = host_of('task host %s %d' % (project_id, busy))
+    install()
+    time.sleep(5)
+    assert on(wsx, 'task', 'add', busy, 'WORK d.txt', extra=caller)['ok']
+    assert host_of('task host %s %d' % (project_id, busy)) == busy_host and not replaced(log(busy)), log(busy)[-4:]
+    drip.touch()
+    assert wait_state(busy, 'ready', 'failed')['state'] == 'ready', log(busy)[-6:]
+    js('task', 'close', busy, '--discard')
+    configure(CONFIG, 'no deploys')
+
     # 39b. S3, the manager (docs/tasks.md "Agents"): a turn with no output past the bound ends as the
     # agent's error, which holds and retries with the backoff. Last, since the hold lasts 5 minutes.
     mark('39b')

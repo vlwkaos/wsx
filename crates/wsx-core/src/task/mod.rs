@@ -18,6 +18,7 @@ pub mod media;
 pub mod needs;
 pub mod owner;
 pub mod policy;
+pub mod replace;
 pub mod report;
 /// `wsx task search` is the built-in index of the memory contract. ref: docs/tasks.md "Search"
 pub use crate::memory::index as search;
@@ -799,6 +800,9 @@ pub struct HostResponse {
     pub state: TaskState,
     /// What happened, or why the request was refused.
     pub message: String,
+    /// The wsx file the host runs; a host older than this field sends none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<replace::Binary>,
 }
 
 const MAX_HOST_RESPONSE_BYTES: u64 = 64 * 1024;
@@ -878,6 +882,11 @@ pub fn call_task_host(
 ) -> anyhow::Result<HostResponse> {
     use anyhow::Context;
     let socket = dir.socket_path();
+    // ^ A host hung in a turn under an older wsx answers, but its code never ends the turn.
+    if replace::replace_hung_task(dir)? {
+        return call_retrying(&socket, request, timeout, HOST_BIND_WAIT)
+            .context("the host hung in a turn under an older wsx and was replaced");
+    }
     let error = match call_host_waiting(&socket, request, timeout) {
         Err(error) => error,
         answer => return answer,
@@ -923,7 +932,7 @@ pub fn call_task_host(
             );
         }
     }
-    restart_host(dir, &record).with_context(|| format!("{error:#}"))?;
+    restart_host(dir, &record, || ()).with_context(|| format!("{error:#}"))?;
     // ^ The new host loads the task, binds its socket and may start the agent again.
     call_retrying(
         &socket,
@@ -934,17 +943,17 @@ pub fn call_task_host(
     .with_context(|| format!("the host of task t{} was restarted on this wsx", record.id))
 }
 
-/// The session `task-<n>` of the task's working copy, if the daemon has one.
-fn host_session<'a>(
+/// The session `label` of the worktree at `folder`, if the daemon has one.
+fn session_in<'a>(
     snapshot: &'a crate::runtime::Snapshot,
-    record: &TaskRecord,
+    label: &str,
+    folder: &std::path::Path,
 ) -> Option<&'a crate::runtime::Session> {
-    let label = format!("task-{}", record.id);
     snapshot.sessions.iter().find(|session| {
         session.label == label
             && snapshot.worktrees.iter().any(|worktree| {
                 worktree.id == session.worktree_id
-                    && crate::fs_util::same_folder(&worktree.path, &record.working_copy)
+                    && crate::fs_util::same_folder(&worktree.path, folder)
             })
     })
 }
@@ -952,24 +961,40 @@ fn host_session<'a>(
 /// True when the host session has a pane whose program has not exited.
 fn host_pane_live(record: &TaskRecord) -> anyhow::Result<bool> {
     let snapshot = crate::ops::runtime_snapshot(&crate::runtime::Client::local())?;
-    Ok(host_session(&snapshot, record).is_some_and(|session| {
-        snapshot
-            .panes
-            .iter()
-            .any(|pane| pane.session_id == session.id && !pane.exited)
-    }))
+    let label = format!("task-{}", record.id);
+    Ok(
+        session_in(&snapshot, &label, &record.working_copy).is_some_and(|session| {
+            snapshot
+                .panes
+                .iter()
+                .any(|pane| pane.session_id == session.id && !pane.exited)
+        }),
+    )
 }
 
-/// Replace the host session `task-<n>` by a new one that runs this wsx's host. A live pane
-/// cannot be restarted (wsxd restarts only an exited one), so the old session is closed
-/// first (none is left to close when the daemon lost it); the host keeps no state the task
-/// record lacks, and the new one sets its own pane.
-fn restart_host(dir: &store::TaskDir, record: &TaskRecord) -> anyhow::Result<()> {
+/// Close the session `label` of the worktree at `folder`; none is left to close when the
+/// daemon lost it. A live pane cannot be restarted (wsxd restarts only an exited one).
+fn close_session(label: &str, folder: &std::path::Path) -> anyhow::Result<()> {
     use anyhow::Context;
-    let label = format!("task-{}", record.id);
     let client = crate::runtime::Client::local();
     let snapshot = crate::ops::runtime_snapshot(&client)?;
-    let session = host_session(&snapshot, record).map(|session| session.id);
+    if let Some(session) = session_in(&snapshot, label, folder) {
+        crate::ops::kill_session(&client, session.id)
+            .with_context(|| format!("cannot close the host session {label}"))?;
+    }
+    Ok(())
+}
+
+/// Replace the host session `task-<n>` by a new one that runs this wsx's host: the old session
+/// is closed first, `between` runs, then the new one starts; the host keeps no state the task
+/// record lacks, and the new one sets its own pane.
+fn restart_host(
+    dir: &store::TaskDir,
+    record: &TaskRecord,
+    between: impl FnOnce(),
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let label = format!("task-{}", record.id);
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
     let argv = vec![
         exe.to_string_lossy().into_owned(),
@@ -979,12 +1004,17 @@ fn restart_host(dir: &store::TaskDir, record: &TaskRecord) -> anyhow::Result<()>
         record.id.to_string(),
     ];
     let (config, _) = crate::config::global::GlobalConfig::load()?;
-    if let Some(session) = session {
-        crate::ops::kill_session(&client, session)
-            .with_context(|| format!("cannot close the host session {label}"))?;
-    }
-    crate::ops::create_session_launch(&client, &config, &record.working_copy, label, argv, None)
-        .context("the old host session is closed but its replacement did not start")?;
+    close_session(&label, &record.working_copy)?;
+    between();
+    crate::ops::create_session_launch(
+        &crate::runtime::Client::local(),
+        &config,
+        &record.working_copy,
+        label,
+        argv,
+        None,
+    )
+    .context("the old host session is closed but its replacement did not start")?;
     Ok(())
 }
 

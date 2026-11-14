@@ -16,6 +16,7 @@ use std::process::{Child, ChildStderr, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Sender, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
+use wsx_core::task::replace::TREE_ENV;
 use wsx_core::task::{policy, status, store, usage, TurnUsage};
 
 /// Ping turns in a row, without a real turn between: three keep a conversation warm for
@@ -596,15 +597,8 @@ pub(super) fn end_stream<E>(
     let _ = events.send(wrap(None));
 }
 
-/// Set on every agent, unique to its process: the processes of its tree that left its
-/// process group (Claude's Bash tool starts each shell in its own session) still carry it.
-const TREE_ENV: &str = "WSX_AGENT_TREE";
 /// Lines that wait for a slow agent's stdin before `write` refuses the next one.
 const INPUT_LINES: usize = 64;
-/// The wsxd argument of a resumable session's supervisor, which a stop never signals.
-/// ref: crates/wsx-daemon/src/lib.rs `RESUME_SUPERVISOR_ARG`
-#[cfg(target_os = "macos")]
-const RESUME_SUPERVISOR_ARG: &[u8] = b"__wsx_resume_supervisor";
 static SPAWNED: AtomicU64 = AtomicU64::new(0);
 
 /// One agent process. It leads its own process group, a thread writes its stdin so a hung
@@ -789,41 +783,9 @@ fn exited(pid: libc::pid_t) -> bool {
     ended != 0
 }
 
-/// The processes, other than this host, whose environment holds `marker`. A wsxd session
-/// supervisor is never one. Another user's process does not answer `KERN_PROCARGS2`.
-#[cfg(target_os = "macos")]
+/// The processes, other than this host, whose environment holds `marker`.
 fn marked(marker: &[u8]) -> Vec<libc::pid_t> {
-    let me = std::process::id() as libc::pid_t;
-    let mut args = wsx_core::process::ProcArgs::default();
-    wsx_core::process::pids()
-        .into_iter()
-        .filter(|pid| *pid > 1 && *pid != me)
-        .filter(|pid| args.read(*pid).is_some_and(|args| in_tree(args, marker)))
-        .collect()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn marked(_marker: &[u8]) -> Vec<libc::pid_t> {
-    Vec::new()
-}
-
-/// `KERN_PROCARGS2` is argc, the exec path, NUL padding, the arguments, then the environment,
-/// each NUL-ended.
-#[cfg(target_os = "macos")]
-fn in_tree(args: &[u8], marker: &[u8]) -> bool {
-    let Some((argc, rest)) = args.split_first_chunk::<4>() else {
-        return false;
-    };
-    let argc = i32::from_ne_bytes(*argc).max(0) as usize;
-    let mut strings = rest
-        .split(|byte| *byte == 0)
-        .filter(|text| !text.is_empty());
-    let _path = strings.next();
-    let supervisor = strings
-        .by_ref()
-        .take(argc)
-        .any(|arg| arg == RESUME_SUPERVISOR_ARG);
-    !supervisor && strings.any(|variable| variable == marker)
+    wsx_core::process::find(|_, env| env.contains(&marker))
 }
 
 /// Drop the rest of an oversized line one buffer at a time. Returns false at end of input.

@@ -452,6 +452,13 @@ pub(crate) fn deploy(
     if !status.success() {
         bail!("tasks.{name}.command failed ({status}); the failure is recorded and nothing else changed");
     }
+    // ^ A deploy that installed wsx reaches a host only before its next turn; one hung in a turn
+    // under the older wsx is replaced now. ref: docs/tasks.md "Host"
+    if trial.is_none() {
+        for error in wsx_core::task::replace::sweep() {
+            eprintln!("cannot replace a hung host: {error}");
+        }
+    }
     Ok(())
 }
 

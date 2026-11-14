@@ -27,7 +27,7 @@ const AFTER_STALL_SECS: u64 = 24 * 60 * 60;
 /// The longest silence of a worker that still runs: a background job's wait or one check
 /// (`tasks.checkTimeoutSeconds`), plus one Bash call (Claude's 10 minute maximum).
 const BASH_MAX_SECS: u64 = 10 * 60;
-const PROBE: Duration = Duration::from_secs(2);
+pub(super) const PROBE: Duration = Duration::from_secs(2);
 const LAST_ENTRY_CHARS: usize = 120;
 
 pub struct Stall {

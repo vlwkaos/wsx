@@ -815,4 +815,7 @@ pub struct ManagerResponse {
     pub id: Option<u64>,
     pub busy: bool,
     pub message: String,
+    /// The wsx file the host runs, in a status answer; a host older than this field sends none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary: Option<super::replace::Binary>,
 }
