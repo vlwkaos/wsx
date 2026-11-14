@@ -165,11 +165,11 @@ button.row-open { padding: var(--space-2) 0; border: 0; background: none; text-a
 /* A project whose chat has a message this device has not read: an accent mark before its name
    and the message's first line under it (docs/web-client-tasks.md "Home"). */
 .news-mark { flex: none; align-self: center; width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-accent); }
-/* A Home row is two lines (docs/web-client-tasks.md "Home"): the name, the tray icons and the time;
+/* A Home row is two lines (docs/web-client-tasks.md "Home"): the name, then the tray icons and the time as one group at the right edge;
    then the status line, or the unread message in bold. */
 .row-head { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
-.row-head > .row-work { flex: 0 1 auto; }
-.row-head > .time { flex: none; margin-left: auto; font-size: var(--font-size-sm); }
+.row-head > .row-work { flex: 0 1 auto; margin-right: auto; }
+.row-head > .time { flex: none; font-size: var(--font-size-sm); }
 .row-context[data-news] { font-weight: var(--font-weight-strong); color: var(--color-text); }
 .row-context:empty { display: none; }
 /* Hook: .row-chat — an open chat under its project's row on Home: the row's text and hairline
