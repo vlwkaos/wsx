@@ -641,16 +641,33 @@ pub fn overlaps(record: &TaskRecord, others: &[&TaskRecord], with_paths: bool) -
 }
 
 /// The open tasks, but `besides`, whose globs or changed paths meet `files`, the globs of a
-/// task not created yet, each with the globs that meet it. ref: docs/tasks.md "Store"
+/// task not created yet, each with the globs that meet it. A task no worker edits now
+/// (`status::worker_edits`) meets them only through the paths its commits changed since
+/// `base`. ref: docs/tasks.md "Store"
 pub fn files_meet<'a>(
     files: &'a [String],
-    others: &[&TaskRecord],
+    others: &[(&TaskDir, &TaskRecord)],
     besides: &[u32],
 ) -> Vec<(u32, Vec<&'a str>)> {
     others
         .iter()
-        .filter(|other| other.state.is_open() && !besides.contains(&other.id))
-        .map(|other| (other.id, declared_meetings(files, &[], other)))
+        .filter(|(_, other)| other.state.is_open() && !besides.contains(&other.id))
+        .map(|&(dir, other)| {
+            let common = if super::status::worker_edits(dir, other) {
+                declared_meetings(files, &[], other)
+            } else {
+                // ^ Its commits, also those of a turn a stop cut before its revision.
+                let changed =
+                    super::copy::changed_paths(&other.project_path, &other.base, &other.branch)
+                        .map_or_else(|_| other.paths.clone(), |(paths, _)| paths);
+                files
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|glob| changed.iter().any(|path| meet(glob, path)))
+                    .collect()
+            };
+            (other.id, common)
+        })
         .filter(|(_, common)| !common.is_empty())
         .collect()
 }
