@@ -1035,7 +1035,8 @@ for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
   await openReservoir();
   await evaluate(`${rowOf("#3")}.querySelector('.row-open').click()`);
   await until("!!document.querySelector('dialog.task-sheet .task-next button[aria-label=\"Approve land #3\"]')", `#3's sheet shows no Approve at ${width} px`);
-  if ((await nextButtons()).join() !== "Deny,Approve,Take over") await fail(`#3 with a pending land approval offers ${await nextButtons()} at ${width} px`);
+  // ^ Try stays: the project sets a preview, as for the ready task below ("Land,Take over,Try").
+  if ((await nextButtons()).join() !== "Deny,Approve,Take over,Try") await fail(`#3 with a pending land approval offers ${await nextButtons()} at ${width} px`);
   if ((await evaluate("fetch('api/tasks/' + location.hash.split('/')[2] + '/t/3').then((r) => r.json()).then((task) => task.actions)")).includes("land")) await fail("the API offers Land beside a pending land approval");
   await closeSheet("#3's sheet", chat);
 }
