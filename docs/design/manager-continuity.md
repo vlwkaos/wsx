@@ -86,3 +86,32 @@ Handover: notes at most 10 KiB, with what is left out named (`notes::preamble`, 
 Recommendation: E and F first (measurable gain, small), then B guarded by a warm, under-100k conversation. Leave the size limit at 150k: cost is flat between 100k and 150k per turn and the data above 150k is too thin.
 
 Limits: one project, one owner, cost per turn includes the number of calls (the first turns call recall and ledger), so "resume instead" is a median of similar turns, not a replay. Continuity counts are lower bounds from keywords and a manual read of the first two owner messages after each rotation.
+
+## 5. Written handover (task #456, 2026-11-14)
+
+Question: before the cache ends (about 55 min after the last answer), should the manager write handoff notes in one hidden turn, so the fresh conversation after an idle rotation opens with them before the 4 clipped exchanges? Owner's rule: ship it only if it beats today's handover.
+
+Method: `python3 -B scripts/bench-manager.py --mode after --cases idle --returns 7 --budget 25`, $15.87. It replays the 7 newest real idle returns: an owner message more than 60 min after the last reply, which the host answered with `rotated{reason: "idle over 60 min ..."}`. Each return runs 3 ways:
+- **fresh**: today's real first message, taken from the fresh conversation's transcript.
+- **notes**: the same message, with the notes put before `Handover (`. The idle conversation wrote the notes when asked with `HANDOVER_ASK` in the bench.
+- **resume**: a cold resume of a copy of the real transcript, cut at the gap.
+
+All arms have read-only tools (no Bash), so no arm can read the ledger. A sonnet judge reads each return with labels hidden. It sees the chat before the gap, the owner's next messages and the real reply. It decides whether each reply picks up the owner's open thread. Cost is priced from tokens (opus-5-5 rates fitted on 170 one-call turns of this log, median error 0.3%), because a forked resume reports the session's restored running total. *+ask* is the hidden turn as it would run warm: the whole context read from cache, plus the notes as output.
+
+| Msg | Gap min | Context | Owner said | fresh $ | notes $ (+ask) | resume $ |
+|---|---|---|---|---|---|---|
+| 2284 | 110 | 142k | waiting fir the managers review means what? | 0.07 yes | 0.06 + 0.06 yes | 1.09 yes |
+| 2388 | 570 | 76k | > succeeded after 1 s (what is this) | 0.13 yes | 0.11 + 0.04 partly | 0.56 partly |
+| 2489 | 61 | 159k | bottom to be designed like this ... | 0.13 yes | 0.12 + 0.07 yes | 1.27 yes |
+| 3008 | 156 | 110k | why #264 stop running ... | 0.12 no | 0.10 + 0.05 no | 0.83 no |
+| 3511 | 581 | 277k | 짤려서 뭔말인지 모름 + a screenshot | 0.13 no | 0.11 + 0.09 no | 2.31 no |
+| 3625 | 758 | 38k | when message is sent on usage limit just show it as queue | 0.12 yes | 0.11 + 0.04 yes | 0.31 yes |
+| 4503 | 128 | 136k | fix this push | 0.12 partly | 0.12 + 0.07 yes | 1.00 yes |
+| **Picks up the thread** | | | | **4 yes, 1 partly** | **4 yes, 1 partly** | **4 yes, 1 partly** |
+| **Mean cost** | | | | **$0.12** | **$0.10 + $0.06** | **$1.05** |
+
+- **Quality: a tie.** The notes won on 4503: the pilot run gave the same verdicts, and the notes held the open question "push main?". They lost on 2388, where the notes arm stated a deploy state that the earlier chat contradicts. All three arms failed 3008 and 3511 the same way: those messages need the ledger or the attached screenshot, which no arm could read. The thin handover lost no thread here that a cold resume kept, except 4503.
+- **Cost.** The notes were 2.4 to 4.6 KB. The hidden turn costs about $0.06 (mean of 7) at 55 min. That is cheap, but it buys nothing measurable in this sample. A cold resume costs 9x a fresh start ($1.05 against $0.12 here; $0.34 against $0.57-0.86 in section 1 with tools).
+- **Verdict: not shipped.** The written handover is not better than today's handover, so the hidden turn is not in wsx. `HANDOVER_ASK` and the replay stay in `scripts/bench-manager.py` (`--cases idle`) to measure a later design.
+- **Root cause found instead.** `rotate()` in `manager.rs` kept `context_tokens`. A fresh conversation whose first turn never answered (a usage limit, a failed sign-in) still counted as the old size, with the old `last_reply_ms`, so each retry rotated again into a new conversation. That conversation never saw the held message: 5 rotations at 108k in a row from 2026-11-10 03:52, each after "OAuth session expired". A rotation now sets `context_tokens` to 0, as the worker's does. `scripts/test-task.py` 21a proves this with an idle rotation whose turn meets a limit.
+- **Limits.** n = 7 from one project. The notes come from today's instructions, while the real first messages hold the notes and ledger of their own day. The judge is one sonnet call per return. With no tools in any arm, continuity is measured apart from what a tool call could recover.

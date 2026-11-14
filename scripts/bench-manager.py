@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Benchmark one manager conversation against the real claude CLI (it spends real money).
 
-  python3 -B scripts/bench-manager.py --mode before|after|after-nof [--cases synthetic|logged|discussion] [--model sonnet] [--runs 3] [--out DIR]
+  python3 -B scripts/bench-manager.py --mode before|after|after-nof [--cases synthetic|logged|discussion|stale|idle] [--model sonnet] [--runs 3] [--out DIR]
 
 It plays the manager host of docs/tasks.md "Manager" for a throwaway project: a fixture repo,
 a fake `wsx` on PATH that serves a fixture ledger, and fixed turns. `synthetic` is five turns
@@ -19,6 +19,10 @@ task (argv, and stdin for a `-` prompt), the task set to compare between `before
 `stale` is the 2026-11-13 events turn whose three limit waits had ended before the manager read
 them (reply 4413 told the owner the tasks were paused until 03:20); the ledger shows the tasks
 working, and a sonnet judge says whether the reply claims a limit holds now.
+`idle` replays real idle returns of the wsx manager log (an owner message after a gap over 60 min that
+the host rotated for) three ways: today's fresh start, the fresh start with notes the conversation
+wrote at the warm moment, and a cold resume of a copy of the real transcript cut at the gap; read-only
+tools, a sonnet judge per return (`--returns`, `--budget`; a return already in the out file is skipped).
 `discussion` is two owner turns (review points one by one, then 'agreed on A and C, do them') and checks
 the tool calls: no `wsx task new`/`add`/`steer` in the first turn, exactly one new or add in the second.
 Bash runs with bypassPermissions here, so no auto-mode classifier call adds to the measured
@@ -27,6 +31,7 @@ cost; the real manager runs in auto mode.
 import argparse
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -34,6 +39,8 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -323,12 +330,16 @@ def summary(state, baseline):
 
 
 class Agent:
-    def __init__(self, launch, env, cwd, model):
+    def __init__(self, launch, env, cwd, model, real=False, resume=None):
+        # ^ `real` runs on the owner's real conversations (`idle`): read-only tools, so it acts on
+        # nothing; `resume` forks one of them.
+        tools = (['--permission-mode', 'default', '--tools', 'Read,Glob,Grep']
+                 + (['--resume', resume, '--fork-session'] if resume else [])
+                 if real else ['--permission-mode', 'bypassPermissions', '--allowedTools', 'Read', 'Glob', 'Grep',
+                               'WebFetch', 'WebSearch', 'Skill', 'Agent'])
         self.proc = subprocess.Popen(['claude', '-p', '--input-format', 'stream-json', '--output-format',
                                       'stream-json', '--verbose', '--setting-sources', 'project,local',
-                                      '--permission-mode', 'bypassPermissions', '--model', model,
-                                      '--append-system-prompt', launch, '--allowedTools', 'Read', 'Glob', 'Grep',
-                                      'WebFetch', 'WebSearch', 'Skill', 'Agent'],
+                                      '--model', model, '--append-system-prompt', launch, *tools],
                                      cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         self.model, self.cost_base, self.requests = model, 0.0, 0
 
@@ -537,10 +548,226 @@ def judge(rows):
     return answers, cost
 
 
+MANAGER_DIR = Path.home() / '.local/state/wsx/tasks/wsx-8cbe3f08/manager'
+TRANSCRIPTS = Path.home() / '.claude/projects/-Users-vlwkaos-ws-wsx'
+IDLE_MS = 3_600_000
+NOTES_HEAD = "The earlier conversation's handoff notes:\n"
+# ^ USD per million tokens of claude-opus-5-5: input, cache read, cache write, output, fitted on the
+# 170 one-call opus-5-5 turns of the manager log (median error 0.3%). A forked resume reports the
+# session's restored running total, not its own cost, so every arm is priced from its tokens.
+PRICE = {'input': 4.0, 'cache_read': 0.2, 'cache_write': 8.0, 'output': 20.0}
+ASK_TOKENS = 500
+
+
+def priced(row):
+    return round(sum(row[k] * rate for k, rate in PRICE.items()) / 1e6, 4)
+
+
+def warm_ask(row):
+    """The hidden turn as it runs at 55 min: the whole context read from the warm cache, only the
+    request written. The bench's fork cannot read the resume's cache, so it pays a cold write."""
+    context = row['last_context'] or 0
+    return round(((context - ASK_TOKENS) * PRICE['cache_read'] + ASK_TOKENS * PRICE['cache_write']
+                  + row['output'] * PRICE['output']) / 1e6, 4)
+
+
+# ^ The hidden turn's request that `idle` measured (docs/design/manager-continuity.md "Written
+# handover"): sent about 55 min after the last answer, while the prompt cache is warm.
+HANDOVER_ASK = ("wsx handover: the owner has been away for about an hour and this conversation's prompt "
+                "cache ends soon. If the owner comes back later, a fresh conversation continues from your "
+                "notes, the notes files and the ledger; if sooner, this conversation goes on. Do no other "
+                "work now: run no command and change no file. Answer only with handoff notes for that "
+                "conversation, at most 6 KB: the open threads (what the owner was asking or discussing, in "
+                "the owner's words where they matter), what you promised and have not done, the decisions "
+                "still open with their options, and what the ledger, decisions.md and context.md do not "
+                "hold. Leave out what the ledger shows. The owner does not see this answer.")
+
+
+def stamp_ms(line):
+    stamp = line.get('timestamp')
+    return int(datetime.fromisoformat(stamp.replace('Z', '+00:00')).timestamp() * 1000) if stamp else None
+
+
+def transcript(path):
+    lines = []
+    for raw in path.read_text().splitlines():
+        try:
+            line = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(line, dict):
+            lines.append(line)
+    return lines
+
+
+def holding(text):
+    """The manager transcripts that hold `text` (a run with no quote or backslash, as JSON keeps it)."""
+    probe = max(re.findall(r'[^"\\\n]{1,60}', text) or [''], key=len)
+    if len(probe) < 8:
+        return []
+    found = subprocess.run(['rg', '-l', '-F', probe, str(TRANSCRIPTS)], capture_output=True, text=True).stdout
+    return [Path(f) for f in found.split() if not Path(f).name.startswith('agent-')]
+
+
+def first_text(lines):
+    for line in lines:
+        if line.get('type') == 'user':
+            content = line['message'].get('content')
+            if isinstance(content, list):
+                content = ''.join(b.get('text', '') for b in content if b.get('type') == 'text')
+            if content:
+                return content
+    return ''
+
+
+def idle_returns(count):
+    """The newest `count` owner returns after an idle gap that the host rotated for: the owner's
+    message, the exchanges before the gap, the conversation that went idle (its transcript up to
+    the gap) and the fresh conversation's first message (today's handover)."""
+    entries = [json.loads(line) for line in (MANAGER_DIR / 'log.jsonl').read_text().splitlines() if line.strip()]
+    found, last = [], None
+    for k, entry in enumerate(entries):
+        if entry['kind'] == 'reply' and entry.get('usage') and not entry.get('post'):
+            last = entry
+        elif (entry['kind'] == 'message' and entry.get('from') == 'owner' and last
+              and entry['unix_ms'] - last['unix_ms'] > IDLE_MS):
+            after = next((e for e in entries[k + 1:k + 8] if e['kind'] in ('rotated', 'reply')), {})
+            if str(after.get('reason', '')).startswith('idle over 60 min'):
+                found.append((k, last))
+            last = None
+    cases = []
+    for k, last in reversed(found):
+        gap = entries[k]['unix_ms']
+        said = [e for e in entries[:k] if e['kind'] == 'reply' and e.get('text') and e.get('usage')
+                and not e.get('post') and not e.get('provisional')]
+        # ^ The conversation that went idle: the newest transcript with the last reply before the
+        # gap whose last line is before it.
+        before = [(max(filter(None, map(stamp_ms, lines)), default=0), path, lines) for path in holding(said[-1]['text'])
+                  for lines in [transcript(path)]]
+        before = [b for b in before if said[-1]['unix_ms'] - 600_000 <= b[0] < gap]
+        fresh = [first_text(lines) for path in holding(entries[k]['text']) for lines in [transcript(path)]
+                 if 'Handover (' in first_text(lines) and (min(filter(None, map(stamp_ms, lines)), default=0) >= gap)]
+        if not before or not fresh:
+            print('idle return %d: no transcripts, left out' % entries[k]['id'], flush=True)
+            continue
+        talk = [e for e in entries[:k] if e['kind'] == 'message' and e.get('from') == 'owner'
+                or e['kind'] == 'reply' and e.get('text') and not e.get('post')][-8:]
+        later = entries[k + 1:]
+        cases.append({'id': entries[k]['id'], 'gap_min': (gap - last['unix_ms']) // 60000,
+                      'message': entries[k]['text'], 'gap_ms': gap,
+                      'earlier': ['%s %d: %s' % ('Owner' if e['kind'] == 'message' else 'Manager', e['id'],
+                                                 e['text'][:1500]) for e in talk],
+                      'real_reply': next((e['text'][:2000] for e in later if e['kind'] == 'reply' and e.get('text')), ''),
+                      'followups': [e['text'][:600] for e in later if e['kind'] == 'message' and e.get('from') == 'owner'][:2],
+                      'idle': max(before, key=lambda b: b[0])[2], 'first': min(fresh, key=len)})
+        if len(cases) == count:
+            break
+    return list(reversed(cases))
+
+
+def split_first(first):
+    """Today's first message: (notes preamble, handover block, the turn's own text)."""
+    at = first.index('Handover (')
+    end = first.index('\n\n', at)
+    if first[end + 2:].startswith('Routine results ('):
+        end = first.index('\n\n', end + 2)
+    return first[:at], first[at:end + 2], first[end + 2:].lstrip('\n')
+
+
+def fork_copy(lines, gap_ms, cwd):
+    """The idle conversation up to the gap, as a new session of `cwd` for `--resume`."""
+    session = str(uuid.uuid4())
+    kept = []
+    for line in lines:
+        if (stamp_ms(line) or 0) >= gap_ms:
+            break
+        kept.append(json.dumps({**line, 'sessionId': session}) if 'sessionId' in line else json.dumps(line))
+    folder = Path.home() / '.claude/projects' / re.sub(r'[^A-Za-z0-9]', '-', str(cwd.resolve()))
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / ('%s.jsonl' % session)).write_text('\n'.join(kept) + '\n')
+    return session, folder
+
+
+IDLE_JUDGE = """You judge replies of a software project manager agent to its owner, who came back after
+more than an hour away. `earlier` holds the chat before the gap, `message` the owner's message on
+return, `followups` the owner's next messages (they show what the owner meant) and `real_reply` the
+reply the owner got then (a reference, not always right). For each of `replies` decide `thread`:
+"yes" when it picks up the open thread the owner refers to and acts on or answers it; "partly" when
+it finds the thread but misses or mistakes part of it; "no" when it takes the wrong thread, asks what
+the owner means though the earlier chat makes it clear, or answers generically. One short question
+when the earlier chat truly leaves it open is "yes". Judge continuity with the earlier chat only, not
+style or length; the replies could run no command. In `why`, at most 20 words. Answer only through
+the schema."""
+IDLE_SCHEMA = {'type': 'object', 'required': ['replies'], 'properties': {'replies': {'type': 'array', 'items': {
+    'type': 'object', 'required': ['label', 'thread', 'why'],
+    'properties': {'label': {'type': 'string'}, 'thread': {'enum': ['yes', 'partly', 'no']},
+                   'why': {'type': 'string'}}}}}}
+
+
+def run_idle(options, out):
+    """Each idle return three ways: today's fresh start (`fresh`), the fresh start with the notes
+    the hidden turn writes (`notes`; the turn itself, `ask`, forks the idle conversation after the
+    cold resume wrote its cache, so it costs as the warm turn at 55 min does) and the cold resume
+    (`resume`). Every arm has read-only tools: no command runs."""
+    spent, ask = 0.0, HANDOVER_ASK
+    source = (ROOT / 'crates/wsx/src/task/instructions.rs').read_text()
+    launch = instructions(source, 'wsx', str(MANAGER_DIR / 'notes'), str(MANAGER_DIR / 'overview.md'))
+    env = {k: v for k, v in os.environ.items() if not k.startswith('WSX_')}
+    path = Path(out.name)
+    done = {json.loads(line).get('id') for line in path.read_text().splitlines() if line.strip()}
+    cases = idle_returns(options.returns)
+    for case in cases:
+        if case['id'] in done:
+            print('idle return %d: in %s already' % (case['id'], path), flush=True)
+            continue
+        base = Path(tempfile.mkdtemp(prefix='bench-idle-', dir=os.environ.get('TMPDIR')))
+        session, folder = fork_copy(case['idle'], case['gap_ms'], base)
+        try:
+            preamble, handover, turn = split_first(case['first'])
+            rows = {}
+            for arm, text, resume in (('resume', turn, session), ('ask', ask, session)):
+                agent = Agent(launch, env, base, MAIN_MODEL, real=True, resume=resume)
+                rows[arm] = agent.turn(text)
+                agent.stop()
+            notes = rows['ask']['reply']
+            for arm, text in (('fresh', case['first']),
+                              ('notes', preamble + NOTES_HEAD + notes + '\n\n' + handover + turn)):
+                agent = Agent(launch, env, base, MAIN_MODEL, real=True)
+                rows[arm] = agent.turn(text)
+                agent.stop()
+        finally:
+            # ^ The copy, its forks and the scratch folder.
+            shutil.rmtree(folder, ignore_errors=True)
+            shutil.rmtree(base, ignore_errors=True)
+        labels = dict(zip(('fresh', 'notes', 'resume'), random.Random(case['id']).sample('XYZ', 3)))
+        verdict, cost = ask_sonnet(IDLE_JUDGE, IDLE_SCHEMA, {
+            **{k: case[k] for k in ('earlier', 'message', 'followups', 'real_reply')},
+            'replies': sorted(({'label': labels[a], 'reply': rows[a]['reply'][:3000]} for a in labels),
+                              key=lambda r: r['label'])})
+        by_label = {r['label']: r for r in verdict['replies']}
+        spent += cost + sum(priced(r) for r in rows.values())
+        row = {'id': case['id'], 'gap_min': case['gap_min'], 'message': case['message'][:200],
+               'notes_bytes': len(notes.encode()), 'ask_warm_usd': warm_ask(rows['ask']),
+               **{arm: {'usd': priced(rows[arm]), **{k: rows[arm][k] for k in
+                                                       ('input', 'cache_write', 'cache_read', 'output', 'last_context')}}
+                  for arm in rows},
+               **{'%s_thread' % arm: by_label.get(labels[arm], {}).get('thread') for arm in labels},
+               **{'%s_why' % arm: by_label.get(labels[arm], {}).get('why') for arm in labels},
+               'replies': {arm: rows[arm]['reply'] for arm in rows}}
+        out.write(json.dumps(row) + '\n')
+        out.flush()
+        print(json.dumps({k: v for k, v in row.items() if k != 'replies'}), flush=True)
+        print('spent so far: %.3f USD' % spent, flush=True)
+        if spent > options.budget:
+            sys.exit('over the budget of %.0f USD' % options.budget)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', required=True, choices=['before', 'after', 'after-nof'])
-    parser.add_argument('--cases', default='synthetic', choices=['synthetic', 'logged', 'discussion', 'stale'])
+    parser.add_argument('--cases', default='synthetic', choices=['synthetic', 'logged', 'discussion', 'stale', 'idle'])
+    parser.add_argument('--returns', type=int, default=6, help='idle: how many idle returns')
+    parser.add_argument('--budget', type=float, default=BUDGET_USD)
     parser.add_argument('--before', default=BEFORE_COMMIT, help='the commit whose instructions `before` reads')
     parser.add_argument('--model', help='the model of every turn, to bound the cost')
     parser.add_argument('--runs', type=int, default=3)
@@ -553,6 +780,8 @@ def main():
     path = Path(options.out) / ('bench-%s-%s.jsonl' % (options.cases, options.mode))
     spent = 0.0
     with path.open('a') as out:
+        if options.cases == 'idle':
+            return run_idle(options, out)
         for number in range(1, options.runs + 1):
             rows = run_once(options.mode, number, out, options.cases, options.before)
             spent += sum(row['cost_usd'] for row in rows)
@@ -568,8 +797,8 @@ def main():
                     print(json.dumps({'mode': options.mode, 'run': number, **row}), flush=True)
                     out.write(json.dumps({'mode': options.mode, 'run': number, 'judged': row}) + '\n')
             print('spent so far: %.3f USD' % spent, flush=True)
-            if spent > BUDGET_USD:
-                sys.exit('over the budget of %.0f USD' % BUDGET_USD)
+            if spent > options.budget:
+                sys.exit('over the budget of %.0f USD' % options.budget)
     print('rows in', path)
 
 

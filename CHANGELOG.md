@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Tasks: a manager whose fresh conversation met a usage limit or a failed sign-in in its first turn no longer starts another fresh conversation at each retry. A rotation kept the old conversation's size, so the idle rule rotated again into a conversation that never saw the held message: 5 times in a row at 108k from 2026-11-10 03:52. The turn after the wait now continues the conversation that holds the message.
+
 ## [0.43.0] - 2026-11-12
 
 ### Added

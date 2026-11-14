@@ -284,9 +284,8 @@ struct Manager {
 pub(super) const CONTEXT_FILE: &str = "context.md";
 /// The owner's decisions, one line each, appended by the manager as they are made.
 pub(super) const DECISIONS_FILE: &str = "decisions.md";
-/// A conversation idle this long lost Claude's prompt cache (1 hour): past `IDLE_ROTATE_TOKENS`
-/// of context, a fresh conversation costs less than the cold resume.
-const IDLE_ROTATE_MS: u64 = 60 * 60_000;
+/// A conversation idle past `PROMPT_CACHE_MS` lost Claude's prompt cache: past this context, a
+/// fresh conversation costs less than the cold resume.
 const IDLE_ROTATE_TOKENS: u64 = 60_000;
 /// Changed instructions go to a warm conversation under this context as a message.
 const INSTRUCTION_MESSAGE_TOKENS: u64 = 100_000;
@@ -2952,7 +2951,7 @@ impl Manager {
         let idle = now_unix_ms().saturating_sub(self.state.last_reply_ms);
         if self.state.agent_session.is_some()
             && self.state.last_reply_ms > 0
-            && idle > IDLE_ROTATE_MS
+            && idle > PROMPT_CACHE_MS
             && self.state.context_tokens > IDLE_ROTATE_TOKENS
         {
             let tokens = self.state.context_tokens;
@@ -2973,7 +2972,7 @@ impl Manager {
                 // rotation costs a cold start. A state with no digest cannot tell what changed.
                 let warm = self.state.instructions.is_some()
                     && self.state.context_tokens < INSTRUCTION_MESSAGE_TOKENS
-                    && now_unix_ms().saturating_sub(self.state.last_reply_ms) < IDLE_ROTATE_MS;
+                    && now_unix_ms().saturating_sub(self.state.last_reply_ms) < PROMPT_CACHE_MS;
                 if warm {
                     text = format!(
                         "Your instructions changed. These replace the ones this conversation \
@@ -3403,6 +3402,9 @@ impl Manager {
         self.state.instructions = None;
         self.state.turn_seen = None;
         self.state.handover = true;
+        // ^ The fresh conversation has no context yet: a turn of it that never answers (a limit,
+        // a failed sign-in) must not count as the old size, or the idle rule rotates it again.
+        self.state.context_tokens = 0;
         self.save();
         self.log(ManagerEvent::Rotated { tokens, reason });
     }
