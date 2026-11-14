@@ -118,6 +118,10 @@ pub enum WaitOn {
     /// A landing that started stopped (a dirty main checkout): the task stays `ready` and the
     /// owner lands it again once that is fixed; `reason` says why. ref: docs/tasks.md "Landing"
     LandStopped,
+    /// A ready task whose worker's result ends with a question for the owner (`asks_owner` of
+    /// its summary): the owner's need, not the manager's review. `reason` is the question; the
+    /// next move out of `ready` ends it. ref: docs/tasks.md "Manager"
+    Asks,
 }
 
 impl WaitOn {
@@ -132,6 +136,7 @@ impl WaitOn {
             Self::Paused => "paused",
             Self::CheckRun => "check_run",
             Self::LandStopped => "land_stopped",
+            Self::Asks => "asks",
         }
     }
 }
@@ -685,7 +690,7 @@ impl TaskRecord {
             None => to != TaskState::Waiting,
             Some(WaitOn::CheckSlot) => to != TaskState::Waiting,
             Some(WaitOn::CheckRun) => to == TaskState::Working,
-            Some(WaitOn::LandStopped) => to == TaskState::Ready,
+            Some(WaitOn::LandStopped | WaitOn::Asks) => to == TaskState::Ready,
             Some(_) => to == TaskState::Waiting,
         };
         let words = |state: TaskState, waiting: Option<&Waiting>| match waiting {

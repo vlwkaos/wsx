@@ -26,6 +26,7 @@ use wsx_core::git::{git_cmd, output_with_timeout_tail};
 use wsx_core::memory::start::{self as memory_start, Start};
 use wsx_core::memory::{manage as memory_manage, Store};
 use wsx_core::runtime;
+use wsx_core::task::manager::asks_owner;
 use wsx_core::task::replace::{Binary, HANDOFF_FILE};
 use wsx_core::task::status::{self, STOPPED_BY_REQUEST};
 use wsx_core::task::view::{checked_files, short_commit};
@@ -879,7 +880,8 @@ impl Host {
                 self.resume_after_limit();
             }
             // ^ A stopped landing stays: its reason is the last landing event after the revision,
-            // also in a record from before `WaitOn::LandStopped`.
+            // also in a record from before `WaitOn::LandStopped`. So does a question to the owner.
+            TaskState::Ready if self.record.waits_on(WaitOn::Asks) => {}
             TaskState::Ready => {
                 let waiting = self
                     .dir
@@ -1727,6 +1729,10 @@ impl Host {
                 }
                 self.on_result(*result)
             }
+            Some(AgentLine::Context(tokens)) => {
+                self.context_tokens = tokens;
+                self.rotate_inside_turn();
+            }
             None => {
                 self.agent = None;
                 // ^ A handoff turn that never ended leaves no notes: no later result is one.
@@ -2166,6 +2172,27 @@ impl Host {
             && idle_ms > config.rotate_idle_seconds * 1000
             && self.context_tokens >= config.rotate_tokens / 2)
             .then(|| Handoff::Idle(format!("idle {} min", idle_ms / 60_000)))
+    }
+
+    /// A turn whose context passes `tasks.agent.rotateTokens` gets the handoff request as a
+    /// steer: the worker writes its notes at its next tool boundary and ends the turn, and the
+    /// turn's message goes on in a fresh conversation (`rotate`). The size is checked after each
+    /// model call, not only when a turn starts. ref: docs/tasks.md "Context rotation"
+    fn rotate_inside_turn(&mut self) {
+        if self.turn.is_none()
+            || self.pinging()
+            || !matches!(self.rotation_due(self.trigger), Some(Handoff::Size))
+        {
+            return;
+        }
+        let request = self.handoff_request(&Handoff::Size);
+        let Some(agent) = self.agent.as_mut() else {
+            return;
+        };
+        match agent.send(&request) {
+            Ok(()) => self.rotating = Some((self.turn_text.clone(), Handoff::Size)),
+            Err(error) => self.say(&format!("cannot ask for the handoff notes: {error:#}")),
+        }
     }
 
     fn handoff_request(&self, why: &Handoff) -> String {
@@ -3473,6 +3500,19 @@ impl Host {
             {
                 let landed = self.land(true, false, None);
                 self.finish_landing(landed, state);
+            }
+            // ^ A result that ends with a question for the owner is the owner's need, not the
+            // manager's review: the task waits ready on the answer. ref: docs/tasks.md "Manager"
+            None if state == TaskState::Ready && asks_owner(&result.summary) => {
+                let question = result.summary.trim_end().lines().last().unwrap_or_default();
+                self.move_to(
+                    state,
+                    Some(Waiting {
+                        on: WaitOn::Asks,
+                        reason: question.trim().to_string(),
+                        until_ms: None,
+                    }),
+                );
             }
             None => self.set_state(state),
             Some(AfterRebase::Land { tried }) => {

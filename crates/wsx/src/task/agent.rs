@@ -41,6 +41,9 @@ pub enum AgentLine {
         said: bool,
     },
     Result(Box<TurnResult>),
+    /// The context of the main conversation's newest model call, in tokens, as the call comes
+    /// (Claude only): the task host bounds a turn's size by it. ref: docs/tasks.md "Context rotation"
+    Context(u64),
 }
 
 pub struct TurnResult {
