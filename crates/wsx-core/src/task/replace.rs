@@ -1,6 +1,6 @@
 //! A host whose own code cannot end its turn: a deploy reaches a host only before its next
 //! turn, so one that hangs inside a turn under an older wsx never follows. Callers replace it:
-//! a deploy, `call_task_host` and `ensure_manager` find a host that runs an older wsx and whose
+//! a deploy, a starting manager host, `call_task_host` and `ensure_manager` find a host that runs an older wsx and whose
 //! turn shows no agent output past `stall::turn_quiet_ms`, stop it and its agent's tree, and
 //! start one on this wsx. ref: docs/tasks.md "Host" (A host hung in a turn)
 
@@ -195,7 +195,8 @@ pub(super) fn close_hung_manager(
     Ok(true)
 }
 
-/// After a deploy: replace each hung host that runs an older wsx, of every registered project.
+/// After a deploy and when a project's manager host starts: replace each hung host that runs
+/// an older wsx, of every registered project.
 /// A host that answers no status is left to `call_task_host` and `ensure_manager`.
 pub fn sweep() -> Vec<String> {
     let mut errors = Vec::new();

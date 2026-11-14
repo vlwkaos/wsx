@@ -425,6 +425,16 @@ pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
             std::thread::sleep(Duration::from_secs(1));
         }
     });
+    // ^ A manager starts on a new wsx after any install (it follows the file before its next
+    // turn), also one whose deploy ran on the older wsx, which has no sweep of its own.
+    // ref: docs/tasks.md "Host" (A host hung in a turn)
+    if chat.is_none() {
+        std::thread::spawn(|| {
+            for error in wsx_core::task::replace::sweep() {
+                eprintln!("cannot replace a hung host: {error}");
+            }
+        });
+    }
     manager.say(&format!(
         "{} of {} in {}",
         manager.dir.name(),
