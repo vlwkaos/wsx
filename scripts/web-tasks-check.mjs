@@ -2305,12 +2305,15 @@ async function readAndReply(where) {
   await toLatest(where);
   // (g) A tap on a task chip opens the task, not the menu.
   if (phone()) {
-    const last = "[...document.querySelectorAll('.log .bubble[data-in] a.task-chip')].at(-1)";
-    if (!await evaluate(`!!${last}`)) await fail(`${where}: the chat shows no task chip to tap`);
-    await evaluate(`${last}.scrollIntoView({ block: 'center' })`);
-    await pause(400);
-    const chip = await evaluate(`(() => { const chip = ${last}, rect = chip.getBoundingClientRect(), x = Math.round(rect.left + rect.width / 2), y = Math.round(rect.top + rect.height / 2);
-      return { x, y, href: chip.getAttribute('href'), hit: document.elementFromPoint(x, y)?.closest('a.task-chip')?.getAttribute('href') ?? document.elementFromPoint(x, y)?.outerHTML.slice(0, 120) }; })()`);
+    // ^ The log may scroll back to its end once more (a late diagram, a pinned log): the chip is
+    // brought to the middle again until it is what is under its own point.
+    const chip = await evaluate(`(async () => { const last = () => [...document.querySelectorAll('.log .bubble[data-in] a.task-chip')].at(-1); let found = null;
+      for (let attempt = 0; attempt < 20; attempt++) { const chip = last(); if (!chip) return null; chip.scrollIntoView({ block: 'center' });
+        await new Promise((resolve) => setTimeout(resolve, 150)); const rect = chip.getBoundingClientRect(), x = Math.round(rect.left + rect.width / 2), y = Math.round(rect.top + rect.height / 2);
+        found = { x, y, href: chip.getAttribute('href'), hit: document.elementFromPoint(x, y)?.closest('a.task-chip')?.getAttribute('href') ?? document.elementFromPoint(x, y)?.outerHTML.slice(0, 120) };
+        if (found.hit === found.href) break; }
+      return found; })()`);
+    if (!chip) await fail(`${where}: the chat shows no task chip to tap`);
     if (chip.hit !== chip.href) await fail(`${where}: the task chip is not what is under the point ${JSON.stringify(chip)}`);
     await touch(chip, 0, 60);
     const opened = await evaluate(`(async () => { for (let attempt = 0; attempt < 40 && !/\\/t\\/\\d+/.test(location.hash); attempt++) await new Promise((resolve) => setTimeout(resolve, 50));
