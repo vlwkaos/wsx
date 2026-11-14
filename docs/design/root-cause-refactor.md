@@ -63,25 +63,19 @@ Step 0 is not a child: #438 lands, then #450 lands as is (CI passed). Every late
 |---|---|---|---|---|---|
 | #438, #450 | proven | CI passed | 0: land on their own | n/a | nothing; steps 3 and 4 own their rules from then on |
 | #431 manager instructions | 2: `4909432e`, `1a670f25` | CI failed in `manager_up` on a phrase assert; `1a670f25` fixed it; rerun unproven | 1 | both, by cherry-pick | the phrase asserts move with step 1's rewrite |
-| #440 gates | none | waiting | 2 | none | all |
 | #423 local model fallback | 6: `e4be2752`, `7fc6a482`, `fac0dd2e`, `4bc59bf9`, `dd6ccfb8`, `bb980da4` | `task` CI failed; 37f rewritten, never run | 4 | rule and docs, as the reference | redone on `agent::next` |
-| #443 transition table | none | waiting | 5 | none | all |
 | #420 Home pills, New chat | 12: `a55ba258`, `023ec18d`, `78f9d3ae`, `d81909f0`, `5c98cdd5`, `c98e9dd4`, `8206652d`, `866aaf86`, `5dac5f87`, `6795deff`, `c92fb170`, `ba4d8d7d` | review done; `web`, `task` and smoke passed on its base | 7 | all 12 | rerun the three checks on the parent |
 | #432 web polish A | 1: `196e82ac` (rows 1, 3, 12, 14, 15, 19, 21, 23) | `web` and `task` failed (failure not read here) | 7 | the commit | row 3 redone on `waits_on`; fix the failures |
 | #433 task sheet, To check | 1: `43347a3a` (8 rows) | `web` and `task` failed | 7 | the commit | fix the failures; row 4's lint `overlap` cause is unconfirmed |
 | #434 sessions, settings, machine | 1: `8c57a1aa` (rows 7, 8, 13, 16, 18, 20, 22) | `web` failed; no row proven | 7 | the commit | fix and prove each row |
-| #444 view model | none | waiting | 8 | none | all |
-| #441 scenarios by paths | none | waiting | 9 | none | all |
-| #442 deploy window | none | waiting | 10 | none | all |
-| #439 per-message model | none | waiting | 11 | none | all |
-| #446 broker, #447 cleanup | none | waiting | 12 | none | all; Q1 and Q4 set the scope |
+| #439 to #444, #446, #447 (the orchestration-lean steps, not #445) | none | waiting | #440 → 2, #443 → 5, #444 → 8, #441 → 9, #442 → 10, #439 → 11, #446 and #447 → 12 | none | all; Q1 and Q4 set step 12's scope |
 | #445 prompt by capability | none | waiting | close | none | obsolete: step 1 writes one judgment prompt for every level, and step 2 makes the rest gates. The level B reply schema waits on Q2. |
 
 When a step starts, the manager closes the tasks it absorbs (`wsx task close <n>`). The branch stays until the parent lands, so the cherry-picks keep their source.
 
 ## 4. Decision for problem 7: refuse at `new`, no host queue
 
-- **Measured:** 26 `wsx task after` calls in the whole manager log, 4 of them `--because files`. `new --after` was used 4 times in 344 `new` calls. All 8 open `files` links come from one ordered plan, on `crates/**` globs.
+- **Measured:** 26 `wsx task after` calls in the whole manager log, 4 of them `--because files`; `new --after` 4 times in 344 `new` calls. The open `files` links are in §1, row 7.
 - **A host queue** would automate the same guess. On crate-wide globs every task overlaps, so it would serialize everything. `after` already starts the waiting task when the other task lands.
 - **Choice:** `new` refuses when its `--files` overlap an open task, and prints the task and its files. A glob wider than one folder below `crates/<crate>/` is refused as too broad. The manager then chooses one of three: `add` to the open task, `--into` a parent, or `--after` with the overlap named. Ordered plans become children of one parent, so they run in parallel when their files differ. Built in step 2.
 
