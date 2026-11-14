@@ -267,9 +267,9 @@ async function inbox() {
   if (states("Needs you") !== "error,exited,needs input,needs input") await fail(`Needs you shows ${JSON.stringify(sections["Needs you"])}`);
   const running = sections.Running[0];
   if (sections.Running.length !== 1 || running.activity !== "List the files" || !/^working ?\d+[smh]/.test(running.state)) await fail(`Running shows ${JSON.stringify(sections.Running)}`);
-  // The work first, project › worktree, each with its own look; the session under it.
-  if (running.work !== "design › main" || running.session !== "release notes · claude") await fail(`the running row reads ${JSON.stringify(running)}`);
-  if (new Set(running.looks).size !== 3) await fail(`project, separator and worktree share a look: ${running.looks}`);
+  // The work first, the session under it. Every session here is in one project, so the rows leave
+  // the project out (docs/web-client.md, a list whose sessions all share one project).
+  if (running.work !== "main" || running.looks.length !== 1 || running.session !== "release notes · claude") await fail(`the running row reads ${JSON.stringify(running)}`);
   if (sections.Sessions.find((row) => row.state === "idle")?.work !== "fix/login") await fail(`a row under its project heading repeats the project: ${JSON.stringify(sections.Sessions)}`);
   if (!sections.Finished.some((row) => /^done new$/.test(row.state))) await fail(`Finished marks nothing as new: ${JSON.stringify(sections.Finished)}`);
   // A shell is listed with its project, with no state group of its own.
