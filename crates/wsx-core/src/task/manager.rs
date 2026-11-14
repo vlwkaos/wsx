@@ -3,6 +3,7 @@
 //!
 //! The manager host is the only writer of these files; `wsx task chat` reads the log.
 
+use super::stall::Stall;
 use super::status::{owner_waits_after, STOPPED_BY_REQUEST};
 use super::store::TaskDir;
 use super::{LogEvent, TaskRecord, TaskState, TurnUsage, WaitOn};
@@ -306,15 +307,27 @@ pub fn says_nothing(text: &str) -> bool {
     matches!(text.trim(), "" | "-")
 }
 
-/// Whether a task's new state needs the manager's judgment now. The others (a landing, a close,
-/// a wait on `limit` or `disk`, a stop the owner or the manager asked for, an idle worker whose
-/// task waits for another to land, a held parent that is ready again because a child landed on
-/// it with its checks passed) go along with its next turn. ref: docs/tasks.md "Manager"
+/// Whether a task's new state needs the manager's judgment now: the one wake rule of task
+/// events with `stall_wakes`. A ready task wakes it (its review, or a held task's own result,
+/// which it reports to the owner), and so do a failure and a question from the worker. The
+/// others (a landing, a close, a wait on `limit` or `disk`, a stop the owner or the manager
+/// asked for, an idle worker whose task waits for another to land, a ready task that waits for
+/// another to land, for the owner's answer to its result's question or after a stopped landing,
+/// a held parent that is ready again because a child landed on it with its checks passed) go
+/// along with its next turn. ref: docs/tasks.md "Manager"
 pub fn state_wakes(dir: &TaskDir, record: &TaskRecord) -> bool {
     match record.state {
         TaskState::Landed | TaskState::Closed => false,
-        // ^ Ready means the checks passed; failed ones are `Failed` and wake. The newest of a
-        // child's land, a handback and a worker result before the current revision made it.
+        // ^ Ready means the checks passed; failed ones are `Failed` and wake.
+        TaskState::Ready
+            if record.waits_on(WaitOn::Asks)
+                || record.waits_on(WaitOn::LandStopped)
+                || (record.after.is_some() && record.hold.is_none()) =>
+        {
+            false
+        }
+        // ^ The newest of a child's land, a handback and a worker result before the current
+        // revision made it.
         TaskState::Ready if record.hold.is_some() => !revision_from_child(dir, record.revision),
         TaskState::Waiting => {
             !owner_waits_after(dir, record)
@@ -329,6 +342,14 @@ pub fn state_wakes(dir: &TaskDir, record: &TaskRecord) -> bool {
         }
         _ => true,
     }
+}
+
+/// Whether a stall needs the manager's judgment now: only when its task's host does not answer.
+/// A live host acts on the rest itself (it ends an overdue turn, resumes a limit or disk wait),
+/// and a task waiting for the manager's review already woke it with its own event; those stalls
+/// go along with the next turn. ref: docs/tasks.md "Manager" (Stalls)
+pub fn stall_wakes(stall: &Stall) -> bool {
+    stall.host_gone
 }
 
 /// Whether revision `revision` was made by a child's land: the newest `child_landed`, `handback`

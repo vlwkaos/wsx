@@ -193,8 +193,9 @@ def task_row(task, events, turns):
     }
 
 
-# ^ Event kinds that start no turn (`state_wakes`, docs/tasks.md "Manager"): a turn they join is
-# named by its other events.
+# ^ Event kinds that start no turn, for a message logged before its lines carried `short[].wakes`
+# (`state_wakes`, `stall_wakes`, docs/tasks.md "Manager"): a turn they join is named by its other
+# events.
 ALONG = ("landed", "closed", "stopped", "waiting:limit", "waiting:disk")
 # ^ `wsx task` verbs that only read.
 READ_VERBS = ("ledger", "show", "chat", "log", "status")
@@ -219,6 +220,17 @@ def event_kind(line):
     return " ".join(m.groups()) if m else line.split(" ", 1)[0]
 
 
+def event_lines(message):
+    """An events message's lines, each with whether it starts a turn: the logged `short[].wakes`
+    (one per line), else not one of ALONG."""
+    # ^ An output line of a routine or deploy is indented.
+    lines = [line for line in message.get("text", "").split("\n") if line and not line.startswith(" ")]
+    short = message.get("short") or []
+    if len(short) == len(lines):
+        return [(line, s.get("wakes", True)) for line, s in zip(lines, short)]
+    return [(line, event_kind(line) not in ALONG) for line in lines]
+
+
 def manager_turns(events):
     """Each reply or ping with usage: `kind` by who wrote its messages, `trigger` the event kind
     that woke an events turn, `acted` whether it ran a `wsx task` verb that changes something."""
@@ -237,10 +249,8 @@ def manager_turns(events):
             "recap" if "recap" in froms else "events" if froms == {"events"} else "other"
         trigger = kind
         if kind == "events":
-            # ^ An output line of a routine or deploy is indented.
-            kinds = [event_kind(line) for m in to for line in m.get("text", "").split("\n")
-                     if line and not line.startswith(" ")]
-            trigger = next((k for k in kinds if k not in ALONG), kinds[0] if kinds else "events")
+            kinds = [(event_kind(line), waking) for m in to for line, waking in event_lines(m)]
+            trigger = next((k for k, waking in kinds if waking), kinds[0][0] if kinds else "events")
         text = (e.get("text") or "").strip()
         verbs = [m.group(1) for step in steps for m in re.finditer(r"\bwsx task (\w+)", step)]
         out.append({"ms": e["unix_ms"], "kind": kind, "trigger": trigger, "u": e["usage"],

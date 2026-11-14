@@ -45,7 +45,10 @@ Each user message is a small script of words:
   MHANG <file>  (manager) write nothing in the turn until <file> exists, so the host ends it by its quiet
                bound (WSX_TEST_TURN_QUIET_FILE); WHANG for a worker
   DRIP <file>  (worker) write a text line every second of the turn until <file> exists: a long turn with output
-  BIG          a last model call of 400k tokens (two lines of one call), past the worker's rotateTokens
+  BIG          a model call of 400k tokens (two lines of one call), past the worker's rotateTokens, then a
+               tool boundary where a message the host sends during the turn (its handoff request) is
+               taken, as Claude takes a steer; none in a conversation that opens with handoff notes
+  OWNERQ       (worker) the summary's last line is a question for the owner
   SIMPLIFY     (worker) a Skill tool call of owner:simplify in the turn; SIMPLIFYLATE does it only in
                the host's send-back ("The simplify skill did not run ...")
 The host's request for handoff notes ("Write <path> for that fresh conversation") makes it
@@ -508,6 +511,7 @@ def main():
            'mode': options.get('--permission-mode'), 'settings': json.loads(options.get('--settings', '{}')),
            'wsx_env': sorted(name for name in os.environ if name.startswith('WSX_')),
            'git_optional_locks': os.environ.get('GIT_OPTIONAL_LOCKS'),
+           'bash_max_output': os.environ.get('BASH_MAX_OUTPUT_LENGTH'),
            'broker': os.environ.get('WSX_TASK_BROKER'),
            'task_probe': os.environ.get('TASK_PROBE'),
            'manager': project is not None, 'actor': os.environ.get('WSX_TASK_ACTOR'),
@@ -809,16 +813,25 @@ def main():
         if 'NORESULT' in words:
             no_result = end_without_result(session, int(words[words.index('NORESULT') + 1]))
             continue
-        handoff = re.search(r'Write (\S+) for that (?:fresh )?conversation', text)
-        if handoff:
-            with open(handoff.group(1), 'w') as out:
-                out.write('NOTES from the fixture\n')
-        if 'BIG' in words:
+        if 'BIG' in words and 'NOTES from the fixture' not in text:
             # ^ Claude writes one line per content block of a call, each with the call's id.
             for _ in range(2):
                 model_call(model, {'input_tokens': 10, 'cache_read_input_tokens': 399990, 'output_tokens': 5},
                            call='msg_big')
+            ready, _, _ = select.select([stdin], [], [], 2.0)
+            if ready:
+                extra = stdin.readline()
+                if not extra:
+                    return
+                text = json.loads(extra)['message']['content']
+                trace({'steer_in_turn': text, 'session': session})
+        handoff = re.search(r'Write (\S+) for that (?:fresh )?conversation', text)
+        if handoff:
+            with open(handoff.group(1), 'w') as out:
+                out.write('NOTES from the fixture\n')
         summary = 'did: ' + text + (' | steers: ' + '; '.join(steers) if steers else '')
+        if 'OWNERQ' in words:
+            summary += '\nWhich of the two layouts do you want?'
         if 'BGRESULT' in words:
             emit({'type': 'system', 'subtype': 'background_tasks_changed', 'session_id': session,
                   'tasks': [{'task_id': 'bg1', 'task_type': 'local_bash', 'description': 'check-run wait'}]})

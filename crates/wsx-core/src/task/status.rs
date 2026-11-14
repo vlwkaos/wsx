@@ -70,9 +70,9 @@ pub struct WaitsOn {
 /// `after`; none for a landed or closed task. A ready task waits for the manager's review when
 /// the manager or a chat created it (the creator reviews it), or when the project lands by
 /// itself (`land_auto`, `tasks.land.auto`) and checks prove it: an owner task never lands by
-/// itself. A held one, a stopped landing and a failed task wait on the owner; one that waits
-/// for another task (`after`) waits on that task, also a plan or a pause the manager answered
-/// with an `after`. ref: docs/tasks.md "Status", "Landing"
+/// itself. A held one, a stopped landing, a result that asks the owner and a failed task wait
+/// on the owner; one that waits for another task (`after`) waits on that task, also a plan or a
+/// pause the manager answered with an `after`. ref: docs/tasks.md "Status", "Landing"
 pub fn waits_on(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Option<WaitsOn> {
     let entered = record.state_unix_ms.max(record.created_unix_ms);
     let on = |kind| WaitsOn {
@@ -94,7 +94,7 @@ pub fn waits_on(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Option<W
             }
             (_, Some(WaitOn::Disk)) => on(Holder::Disk),
             (_, Some(WaitOn::Limit)) => on(Holder::Limit),
-            (_, Some(WaitOn::Hand | WaitOn::LandStopped)) => on(Holder::Owner),
+            (_, Some(WaitOn::Hand | WaitOn::LandStopped | WaitOn::Asks)) => on(Holder::Owner),
             (_, Some(WaitOn::Plan | WaitOn::Paused)) => after.unwrap_or(on(Holder::Manager)),
             (_, Some(WaitOn::Owner)) if owner_waits_after(dir, record) => {
                 after.unwrap_or(on(Holder::Owner))
@@ -278,13 +278,13 @@ fn status_of(
         );
     }
     let mut status = match (record.state, record.waiting.as_ref()) {
-        // ^ A check wait holds in any state, a stopped landing in Ready; every other wait only
-        // in Waiting.
+        // ^ A check wait holds in any state, a stopped landing and a question in Ready; every
+        // other wait only in Waiting.
         (state, Some(waiting))
             if state == TaskState::Waiting
                 || matches!(
                     waiting.on,
-                    WaitOn::CheckSlot | WaitOn::CheckRun | WaitOn::LandStopped
+                    WaitOn::CheckSlot | WaitOn::CheckRun | WaitOn::LandStopped | WaitOn::Asks
                 ) =>
         {
             waiting_on(dir, record, waiting, entered, now_ms)
@@ -416,6 +416,14 @@ fn waiting_on(
             Some(entered),
             &waiting.reason,
             "Land it again when that is fixed.",
+            now_ms,
+        ),
+        WaitOn::Asks => words(
+            "owner",
+            "Waiting for your answer",
+            Some(entered),
+            &waiting.reason,
+            "The work is ready and checked. Answer the question, or land it as it is.",
             now_ms,
         ),
         WaitOn::Owner => {

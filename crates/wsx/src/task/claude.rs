@@ -268,7 +268,9 @@ fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: boo
          When you cannot continue, return status blocked and say what you need; when the \
          boundary refuses something the task needs, name it. When your turn must end while \
          something outside goes on (a run you started) and you ask nobody anything, return \
-         status paused with what runs and what is left: the manager continues you. \
+         status paused with what runs and what is left: the manager continues you. When \
+         your finished work leaves a question only the owner can answer, end the summary \
+         with that question. \
          {steps}Write the summary and the report by this rule. {presentation}",
         record.branch,
         steps = steps_note(record),
@@ -367,7 +369,7 @@ impl ClaudeAgent {
             "claude",
             claude_args(launch, session, resume),
             KEPT_ENV,
-            &[],
+            &[("BASH_MAX_OUTPUT_LENGTH", BASH_MAX_OUTPUT)],
             std::process::Stdio::inherit(),
         )?;
         std::thread::spawn(move || {
@@ -416,6 +418,18 @@ impl ClaudeAgent {
     }
 }
 
+/// Tool schemas no wsx agent calls. Each one rides in every model call of every conversation:
+/// a disallowed tool leaves the request's tool list, and these with Agent were 7.4k of a fresh
+/// request's 32k tokens (a `claude -p` call with and without `--disallowedTools`, 2026-11-15).
+/// Agent stays: the worker and the manager instructions send searches to subagents.
+/// ref: docs/design/context-budget.md (bound 2)
+const NEVER_TOOLS: &str = "Workflow,ScheduleWakeup,ReportFindings";
+/// The longest Bash output Claude keeps in the conversation (characters; Claude Code's own default
+/// is 30,000): a file read or a log through Bash is a third of a conversation's growth, and every
+/// later call reads it again. About 2k tokens, the cap the replay measured.
+/// ref: docs/design/context-budget.md (bound 3)
+const BASH_MAX_OUTPUT: &str = "8000";
+
 /// Claude's argv: stream JSON both ways, no prompt for any tool (`bypassPermissions`: the
 /// boundary decides), and only project and local settings.
 fn claude_args(launch: &Launch, session: &str, resume: bool) -> Vec<std::ffi::OsString> {
@@ -454,6 +468,7 @@ fn claude_args(launch: &Launch, session: &str, resume: bool) -> Vec<std::ffi::Os
     for dir in &launch.plugin_dirs {
         args.extend(["--plugin-dir".into(), dir.clone().into_os_string()]);
     }
+    args.extend(["--disallowedTools".into(), NEVER_TOOLS.into()]);
     args
 }
 
@@ -473,7 +488,14 @@ pub(super) fn read_stream(
         if value["type"] == "rate_limit_event" {
             limit(&value["rate_limit_info"]);
         }
-        parse_line(&value, &mut turns).is_none_or(&mut send)
+        let before = turns.context;
+        let line = parse_line(&value, &mut turns);
+        // ^ A main-conversation call's size, as it comes: the host bounds a turn by it.
+        // ref: docs/tasks.md "Context rotation"
+        let size = turns
+            .context
+            .filter(|_| value["type"] == "assistant" && turns.context != before);
+        size.is_none_or(|tokens| send(AgentLine::Context(tokens))) && line.is_none_or(&mut send)
     })
 }
 

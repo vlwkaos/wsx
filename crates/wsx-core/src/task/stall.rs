@@ -38,6 +38,8 @@ pub struct Stall {
     pub words: String,
     /// The cause alone, for the owner: never a quoted log line.
     pub why: String,
+    /// Its task's host does not answer: no process acts on the task (`manager::stall_wakes`).
+    pub host_gone: bool,
 }
 
 /// The stall of an open task, if it has one now.
@@ -62,6 +64,7 @@ fn after_wait(record: &TaskRecord, now_ms: u64) -> Option<Stall> {
             after.task
         ),
         why: format!("waiting for #{} to land", after.task),
+        host_gone: false,
     })
 }
 
@@ -112,6 +115,7 @@ fn manager_wait(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall
                 span(now_ms.saturating_sub(entered))
             ),
             why: "the manager has not reviewed it".into(),
+            host_gone: false,
         }
     })
 }
@@ -137,17 +141,21 @@ fn running(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
         marker,
         words: format!("{state} for {lasted}; {evidence}"),
         why,
+        host_gone: false,
     };
     let progress = progress_ms(dir, record);
     if !host_answers(dir) {
-        return Some(stall(
-            format!("host {progress}"),
-            format!(
-                "its host does not answer; {}",
-                last_entry(dir, progress, now_ms)
-            ),
-            "its host does not answer".into(),
-        ));
+        return Some(Stall {
+            host_gone: true,
+            ..stall(
+                format!("host {progress}"),
+                format!(
+                    "its host does not answer; {}",
+                    last_entry(dir, progress, now_ms)
+                ),
+                "its host does not answer".into(),
+            )
+        });
     }
     let Some(waiting) = waiting else {
         return Turn::overdue(&dir.path, now_ms).map(|turn| {

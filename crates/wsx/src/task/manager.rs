@@ -29,8 +29,8 @@ use wsx_core::task::chat;
 use wsx_core::task::checks::{CheckState, ItemReply};
 use wsx_core::task::manager::{
     answering, asks_owner, decided_request, instructions_digest, open_requests, pending_approvals,
-    quiet_reply, quoted_id, resolve_quote, says_nothing, split_quote, state_wakes, Answers,
-    ApprovalLine, QUOTE_REF,
+    quiet_reply, quoted_id, resolve_quote, says_nothing, split_quote, stall_wakes, state_wakes,
+    Answers, ApprovalLine, QUOTE_REF,
 };
 use wsx_core::task::manager::{
     Author, Checkin, Level, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest,
@@ -1632,13 +1632,10 @@ impl Manager {
                 clip(&title, EVENT_TITLE_CHARS),
                 found.words
             );
+            let mut short = Short::task(record.id, "stalled");
+            short.wakes = stall_wakes(&found);
             self.duty().observed_stalls.insert(record.id, found.marker);
-            self.task_event(
-                &record,
-                &open_chats,
-                line,
-                Short::task(record.id, "stalled"),
-            );
+            self.task_event(&record, &open_chats, line, short);
         }
         self.duty().stall_suspects = suspects;
         // ^ Saved with the next event's `seen`.
@@ -3199,6 +3196,9 @@ impl Manager {
 
     fn on_agent(&mut self, line: Option<AgentLine>) {
         match line {
+            // ^ The manager's size is checked after each reply: a turn grew at most 53k tokens
+            // in 7 days to 2026-11-15, never past `rotateTokens`. ref: docs/tasks.md "Manager"
+            Some(AgentLine::Context(_)) => {}
             // ^ A stand-in's call is no conversation of the manager's.
             Some(AgentLine::Init(_)) if self.stand_in.is_some() => {}
             Some(AgentLine::Progress { .. }) if self.stand_in.is_some() => {}

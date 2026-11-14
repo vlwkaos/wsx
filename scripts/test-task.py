@@ -717,8 +717,11 @@ def manager_up(created):
     assert 'git commit' not in launch['instructions'] and 'only after the owner says yes' not in launch['instructions']
     page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'overview.md')
     assert not old_page.exists() and 'migrated' in Path(page).read_text(), old_page
-    # ^ It uses the owner's skills (docs/tasks.md "Manager"); no tool list: nothing prompts.
-    assert not {'--allowedTools', '--disallowedTools'} & set(launch['argv']), launch['argv']
+    # ^ It uses the owner's skills (docs/tasks.md "Manager"); no allow list: nothing prompts. Only
+    # the tools no wsx agent calls leave its request, and Bash output is capped (context-budget.md).
+    assert '--allowedTools' not in launch['argv'], launch['argv']
+    assert launch['argv'][launch['argv'].index('--disallowedTools') + 1] == 'Workflow,ScheduleWakeup,ReportFindings', launch['argv']
+    assert launch['bash_max_output'] == '8000', launch
     plugin = Path(launch['plugin_dir'])
     assert plugin.parent.name == 'manager' and plugin.resolve().is_relative_to(state.resolve()), plugin
     assert json.loads((plugin / '.claude-plugin/plugin.json').read_text())['name'] == 'owner'
@@ -1328,7 +1331,9 @@ def part_core(created=None):
     # ^ One wsx variable: the host's broker for `wsx task check-run`.
     assert launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_BROKER'] and launch['schema']
     assert launch['model'] == 'fake-model' and not launch['resume'] and launch['mode'] == 'bypassPermissions'
-    assert not {'--allowedTools', '--disallowedTools'} & set(launch['argv']), launch['argv']
+    assert '--allowedTools' not in launch['argv'], launch['argv']
+    assert launch['argv'][launch['argv'].index('--disallowedTools') + 1] == 'Workflow,ScheduleWakeup,ReportFindings', launch['argv']
+    assert launch['bash_max_output'] == '8000', launch
     assert "put in the result's memo a short, lean memo of durable" in launch['instructions'], launch['instructions']
     assert 'memo' in launch['schema_required'], launch['schema_required']
     # One permission model (docs/tasks.md "Permissions"): wsx's boundary, no agent settings for it.
@@ -1626,9 +1631,9 @@ def part_core(created=None):
     (project / 'wsx.config.yml').write_text(area_text)
     shutil.rmtree(project / 'briefs')
     forget_notes(Path(sharing['task_dir']).parent / 'manager' / 'notes')
-    # 13r. Context rotation: a step that ends past tasks.agent.rotateTokens writes handoff notes
-    # in its conversation; the next step runs in a fresh one that opens with the task's prompt,
-    # those notes and the step.
+    # 13r. Context rotation inside a turn: a model call past tasks.agent.rotateTokens gets the
+    # handoff request as a steer at its tool boundary; the worker writes its notes there, and the
+    # same step goes on in a fresh conversation that opens with the task's prompt and those notes.
     mark('13r')
     owner_config.write_text('tasks:\n  workflow:\n    steps:\n'
                             '      - name: plan\n        prompt: BIG PLAN\n'
@@ -1648,12 +1653,15 @@ def part_core(created=None):
     assert not zombies(rotated), zombies(rotated)
     assert [e['tokens'] for e in log(rotated) if e['kind'] == 'rotated'] == [400000], log(rotated)
     sent = [t for t in traces() if 'message' in t and t.get('manager') is False]
-    asked = [t for t in sent if "past this task's limit" in t['message']]
+    asked = [t for t in traces() if "past this task's limit" in t.get('steer_in_turn', '')]
     fresh = [t for t in sent if 'handoff notes:\nNOTES from the fixture' in t['message']]
     assert len(asked) == 1 and len(fresh) == 1, [t['message'][:80] for t in sent[-4:]]
+    assert not [t for t in sent if "past this task's limit" in t['message']], 'no turn of its own'
     assert asked[0]['session'] != fresh[0]['session'], (asked, fresh)
+    # ^ The step that grew goes on in the fresh conversation; the build step follows it there.
     opening = fresh[0]['message']
-    assert 'The task as it was asked:\nNOOP' in opening and 'Step 2 of 2, build: WORK r.txt' in opening, opening
+    assert 'The task as it was asked:\nNOOP' in opening and 'BIG PLAN' in opening, opening
+    assert any('Step 2 of 2, build: WORK r.txt' in t['message'] and t['session'] == fresh[0]['session'] for t in sent), sent[-3:]
     # ^ The handoff turn is not a result: one per step.
     assert len([e for e in log(rotated) if e['kind'] == 'result']) == 2, log(rotated)
     # ^ The notes are also an episode of the project's memory, written by the host (docs/memory.md "Capture").
@@ -4452,6 +4460,9 @@ def part_worker(created=None):
     js('task', 'close', added, '--discard')
     waited = wait(lambda: stalls(idle), 'the manager-wait stall event', 150)
     assert len(waited) == 1 and re.search(r'^#%d stalled r1: .*; ready for .*; the manager has not reviewed it$' % idle, waited[0]), waited
+    # ^ Its host answers, so the stall starts no manager turn (`stall_wakes`): it goes along with the next.
+    stall_event = events_with('#%d stalled r1' % idle)[0]
+    assert [x for x in stall_event['short'] if x.get('task') == idle] == [{'text': '#%d stalled' % idle, 'task': idle, 'wakes': False}], stall_event
     sweeps(1)
     assert stalls(idle) == waited and not stalls(landed_first) and not stalls(added), (stalls(idle), stalls(landed_first), stalls(added))
     stays(lambda: time.time() * 1000 - show(stopped)['record']['state_unix_ms'] > (12 + STALL_GRACE + 2 * SWEEP + 2) * 1000,
@@ -5832,6 +5843,42 @@ def part_host(created=None):
     for n in (pausing, questioning):
         js('task', 'close', n, '--discard')
     for n in (pausing, questioning):
+        wait_state(n, 'closed')
+    # 32wk. One wake rule (docs/tasks.md "Manager"; root-cause-refactor step 6): a ready task
+    # parked behind another and a ready result that asks the owner start no manager turn; they
+    # go along with the next one, here the review of a third ready task. The asking task waits
+    # ready on the owner.
+    mark('32wk')
+    hold_gate, quiet_gate, review_gate = (base / ('wk-%s-gate' % name) for name in ('hold', 'quiet', 'review'))
+    holder = manager_new('WAIT %s WORK wk-h.txt' % hold_gate)
+    parked, asking = manager_new('WAIT %s WORK wk-p.txt' % quiet_gate), manager_new('WAIT %s OWNERQ WORK wk-a.txt' % quiet_gate)
+    review = manager_new('WAIT %s WORK wk-r.txt' % review_gate)
+    manager_after(parked, holder, 'WORK wk-p2.txt', because='files')
+    manager_settled('before the burst')
+    manager_turns = lambda: [t for t in traces() if t.get('manager') and 'message' in t]
+    before = len(manager_turns())
+    quiet_gate.touch()
+    for n in (parked, asking):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+    asked = show(asking)
+    assert asked['record']['waiting'] == {'on': 'asks', 'reason': 'Which of the two layouts do you want?'}, asked['record']
+    assert asked['status']['kind'] == 'owner' and asked['status']['label'] == 'Waiting for your answer', asked['status']
+    assert asked['status']['waits_on']['kind'] == 'owner', asked['status']
+    assert show(parked)['status']['waits_on']['kind'] == 'task', show(parked)['status']
+    for n in (parked, asking):
+        event = wait(lambda: events_with('#%d ready r' % n), 'the quiet ready event of #%d' % n)[0]
+        assert [x for x in event['short'] if x.get('task') == n] == [{'text': '#%d ready' % n, 'task': n, 'wakes': False}], event
+    manager_settled('after the quiet events')
+    assert len(manager_turns()) == before, manager_turns()[before:]
+    review_gate.touch()
+    assert wait_state(review, 'ready', 'failed')['state'] == 'ready', log(review)
+    turn = wait(lambda: turn_with('#%d ready r' % review), 'the review turn')
+    assert '#%d ready r' % parked in turn['message'] and '#%d ready r' % asking in turn['message'], turn['message']
+    manager_settled('after the review turn')
+    assert len(manager_turns()) == before + 1, [t['message'][:120] for t in manager_turns()[before:]]
+    for n in (holder, parked, asking, review):
+        js('task', 'close', n, '--discard')
+    for n in (holder, parked, asking, review):
         wait_state(n, 'closed')
     # 32e. Approval from the owner's words (docs/tasks.md "Approvals"): in a turn that began with
     # an owner message, the manager names that message and the action runs without a new request;

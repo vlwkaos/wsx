@@ -412,7 +412,7 @@ pub fn owner_actions(
     preview: bool,
 ) -> Vec<&'static str> {
     let mut actions = Vec::new();
-    if (waiting == Some(WaitOn::Owner) && status_kind != Some("after"))
+    if (matches!(waiting, Some(WaitOn::Owner | WaitOn::Asks)) && status_kind != Some("after"))
         || state == TaskState::Failed
     {
         actions.push("answer");
