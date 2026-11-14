@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- TUI: a config warning with unknown keys no longer appears as broken text over the top rows. A background config read printed it on stderr, which is the TUI's own terminal, and the next frame repainted only part of it. While the TUI owns the terminal, stderr now goes to `ui-stderr.log` in the wsx cache folder. The startup warning notice also shows its file path on its own line, not glued to the last key.
 - Tasks: the "New conversation" divider of a manager or chat now shows above the messages that the new conversation answered, not below them. The host rotates as it takes the waiting messages for a turn, so the log has the messages first; the shown order now follows what the conversation answered, and the log keeps its order ([docs/tasks.md](docs/tasks.md) "Manager").
 - Web: an approval request pushed twice, once as itself and once as its ask line ("Asked you: Approve land #19 (a4)."), and counted twice in the badge. The ask line now records the request it shows (`approval`), so only the request pushes; the line still shows in the chat ([docs/web-client-tasks.md](docs/web-client-tasks.md) "Notifications").
 - Tasks: a manager whose fresh conversation met a usage limit or a failed sign-in in its first turn no longer starts another fresh conversation at each retry. A rotation kept the old conversation's size, so the idle rule rotated again into a conversation that never saw the held message: 5 times in a row at 108k from 2026-11-10 03:52. The turn after the wait now continues the conversation that holds the message.

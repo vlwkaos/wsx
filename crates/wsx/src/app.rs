@@ -1451,12 +1451,8 @@ impl App {
             adaptive_collapse,
             review: None,
             review_available: false,
-            notice: initial_notice.clone().map(|title| Notice {
-                level: NoticeLevel::Warning,
-                title,
-                body: None,
-            }),
-            notice_started: initial_notice.as_ref().map(|_| Instant::now()),
+            notice: None,
+            notice_started: None,
             notice_queue: VecDeque::new(),
             jobs: vec![],
             next_job_id: 0,
@@ -1568,6 +1564,10 @@ impl App {
             dismissed_integration_prompts,
             persist_group_selection: true,
         };
+        // ^ set_notice splits a config warning's path line into the body.
+        if let Some(notice) = initial_notice {
+            app.set_notice(NoticeLevel::Warning, notice);
+        }
         if let Some(identity) = cursor_identity.as_ref() {
             if let Some(index) =
                 wsx_core::cache::find_cursor_index(&app.workspace, app.flat(), identity)
