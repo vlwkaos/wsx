@@ -1,0 +1,49 @@
+/* Task views mockup: the rules the build step adds to app.css. Tokens only. */
+.glyph { display: inline-flex; }
+.glyph .icon { width: var(--space-4); height: var(--space-4); }
+.glyph[data-tone="muted"] { color: var(--color-muted); }
+.glyph[data-tone="working"] { color: var(--color-working); }
+.glyph[data-tone="attention"] { color: var(--color-attention); }
+.glyph[data-tone="danger"] { color: var(--color-danger); }
+
+/* One row: the glyph, then the title with its number, then one line of what it does or waits for. */
+.reservoir .r2 { display: flex; align-items: flex-start; gap: var(--space-3); min-height: var(--size-row); padding: 0 var(--column-inset, var(--space-4)); font-size: var(--font-size-sm); }
+.r2-glyph { margin-top: var(--space-2); }
+.r2-glyph { flex: 0 0 auto; display: flex; align-items: center; height: calc(var(--font-size-sm) * var(--line-height)); }
+.r2-main { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; align-self: stretch; padding-block: var(--space-2); text-decoration: none; }
+.r2-open { display: flex; flex-direction: column; justify-content: center; min-height: var(--size-control); text-decoration: none; min-width: 0; max-width: 100%; }
+.r2-head { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; }
+.r2-head .row-label { flex: 0 1 auto; min-width: 0; }
+.r2-head .task-number { margin-left: auto; }
+.r2-wrap { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.r2-line { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-muted); }
+.seg + .seg::before { content: "·"; margin-inline: var(--space-2); color: var(--color-faint); }
+.r2-line [data-tone="working"] { color: var(--color-working); }
+.r2-line [data-tone="danger"] { color: var(--color-danger); }
+
+/* A task under the task it waits for: one rail under the parent's glyph, one step in per level. */
+.reservoir .chain { list-style: none; margin: 0 0 0 calc(var(--column-inset, var(--space-4)) + var(--space-2)); padding: 0; border-left: var(--border-width) solid var(--color-hairline); }
+.reservoir .chain > .need { border-top: 0; }
+.reservoir .chain .r2 { padding-left: var(--space-3); min-height: var(--size-control); }
+
+/* To check: the buttons in their own line, Pass at the right edge. */
+.r2-acts { display: flex; gap: var(--space-2); }
+.r2-acts .need-action { background: var(--color-raised); }
+.r2-pass { margin-left: auto; }
+
+/* The task page: what it does now, where it sits in the chain, the one action. */
+.story.now { gap: var(--space-3); }
+.now-line { display: flex; align-items: center; gap: var(--space-2); font-weight: var(--font-weight-strong); }
+.now-age { font-weight: normal; font-size: var(--font-size-sm); color: var(--color-muted); }
+.chain-strip { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); }
+.chain-chip { display: inline-flex; align-items: center; gap: var(--space-1); min-height: var(--size-control); padding: 0 var(--space-2); border-radius: var(--radius-key); text-decoration: none; font-variant-numeric: tabular-nums; font-weight: var(--font-weight-medium); }
+.chain-this { background: var(--color-raised); }
+.chain-sep { color: var(--color-faint); }
+.chain-more { margin: 0; font-size: var(--font-size-sm); color: var(--color-muted); }
+.now-actions { padding: 0; }
+.now-goal { font-size: var(--font-size-sm); color: var(--color-muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* Wide: the number and the action stay beside what they belong to, and the list keeps a readable measure. */
+.app[data-wide] .r2-head .task-number, .app[data-wide] .r2-pass { margin-left: 0; }
+.app[data-wide] .reservoir-list { max-width: calc(var(--size-prose) + 2 * var(--space-4)); }
+.r2-line.r2-wrap { display: -webkit-box; white-space: normal; }
