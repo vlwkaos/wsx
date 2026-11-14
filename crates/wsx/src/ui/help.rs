@@ -124,6 +124,7 @@ const TASKS: &[&str] = &[
     "  Enter         Task detail (a chat: opens it)",
     "  m             Manager chat",
     "  n             New chat: name, goal, agent (no name: the manager)",
+    "  d             Close the chat selected (y confirms; its log and notes stay)",
     "  S             Shell in the project",
     "  a             Pick the agent the spend counts",
     "  u             Usage: cost or tokens",

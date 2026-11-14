@@ -263,9 +263,12 @@ pub fn create(
     Ok(dir)
 }
 
-/// Close a chat; its host sees the file and leaves. The notes and the log stay.
-pub fn close(dir: &ManagerDir, why: &str) -> Result<()> {
-    store::write_atomic(&dir.path.join(CLOSED_FILE), why.as_bytes())
+/// The owner closes an open chat (`wsx task chat close`, the web's and the TUI's Close chat):
+/// its host sees the file and leaves. The notes and the log stay; `create` of the same name
+/// opens it again. The first chat (`manager`), an unknown or a closed name is refused.
+pub fn close(project_id: &str, name: &str) -> Result<()> {
+    let dir = open_chat(project_id, name)?;
+    store::write_atomic(&dir.path.join(CLOSED_FILE), b"closed by the owner")
 }
 
 /// When the chat last had anything in its conversation, else when it was opened.

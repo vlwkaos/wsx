@@ -862,6 +862,14 @@ pub fn new_chat(
     Ok(json!({ "ok": true, "chat": name }))
 }
 
+/// The owner closes an open chat from its header menu; its log and notes stay (docs/tasks.md
+/// "Chats"). The first chat, an unknown or a closed name is refused.
+pub fn close_chat(scope: &Scope, name: &str) -> Outcome<Value> {
+    task::chats::close(&scope.store, name)
+        .map_err(|error| Fault::new(409, "invalid_chat", format!("{error:#}")))?;
+    Ok(json!({ "ok": true, "chat": name, "state": "closed" }))
+}
+
 /// The `[[agents]]` entries a chat may run on, for the New chat sheet.
 pub fn chat_agents() -> Value {
     json!(task::chats::agent_entries()

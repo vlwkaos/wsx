@@ -124,6 +124,8 @@ pub struct TaskList {
     pub help: Option<crate::ui::help::HelpView>,
     /// A land or a hand of the task shown, waiting for `y` (the action's name in `owner_actions`).
     pub confirm: Option<&'static str>,
+    /// The chat row's close (`d`), waiting for `y` (docs/tasks.md "Chats").
+    pub close_chat: Option<String>,
     /// What an owner action of the detail is doing now, and how the last one ended (a failure
     /// stays until the next key).
     pub acting: Option<String>,
@@ -159,6 +161,7 @@ impl TaskList {
             overview: None,
             help: None,
             confirm: None,
+            close_chat: None,
             acting: None,
             notice: None,
             answer: None,
@@ -302,6 +305,39 @@ impl TaskList {
             .get(self.selected)
             .filter(|row| row.section == Section::Chats && row.state == "open")
             .map(|row| row.title.as_str())
+    }
+
+    /// A key on the list for a chat row's close: `d` asks, `y` or `Enter` closes it through
+    /// `chats::close` (as `wsx task chat close`), `n` or `Esc` drops it. False when the key is not
+    /// for it. The first chat is the project's row, not a chat row, so it has no close.
+    pub fn close_chat_key(&mut self, action: &Action) -> bool {
+        // ^ How the last close ended shows until the next key.
+        if self.detail.is_none() {
+            self.notice = None;
+        }
+        let Some(name) = self.close_chat.take() else {
+            if *action == Action::Delete {
+                if let Some(chat) = self.selected_chat() {
+                    self.close_chat = Some(chat.to_string());
+                    return true;
+                }
+            }
+            return false;
+        };
+        if matches!(action, Action::ConfirmYes | Action::Select) {
+            self.notice = Some(match wsx_core::task::chats::close(&self.store, &name) {
+                Ok(()) => (format!("Closed {name}; its log and notes stay"), false),
+                Err(error) => (format!("{error:#}"), true),
+            });
+            self.stamp = None;
+            self.check();
+        } else if !matches!(
+            action,
+            Action::NextAttention | Action::InputEscape | Action::Quit
+        ) {
+            self.close_chat = Some(name);
+        }
+        true
     }
 
     /// `Enter`: an open chat, else a task's detail.

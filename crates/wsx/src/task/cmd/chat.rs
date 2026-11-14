@@ -333,8 +333,7 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
         }
         ChatCmd::Close { name } => {
             owner_only("chat close")?;
-            let dir = chats::open_chat(&project_id, &name)?;
-            chats::close(&dir, "closed by the owner")?;
+            chats::close(&project_id, &name)?;
             let message = format!("chat {name} is closed; its notes stay");
             if json {
                 return print_json(&json!({ "chat": name, "state": "closed", "message": message }));

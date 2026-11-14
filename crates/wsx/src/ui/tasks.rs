@@ -139,13 +139,17 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
             Style::default().fg(theme::WARNING),
         ));
     }
-    // ^ A land or a hand waiting for `y`, what runs, or how the last action ended.
-    if let Some(id) = list.detail {
-        let (words, color) = match (&list.confirm, &list.acting, &list.notice) {
-            (Some(what), _, _) => (
-                format!("{} #{id}? (y)es  (n)o", confirm_words(what)),
-                theme::WARNING,
-            ),
+    // ^ A land, a hand or a chat's close waiting for `y`, what runs, or how the last action ended.
+    let asks = match (list.detail, list.confirm, &list.close_chat) {
+        (Some(id), Some(what), _) => Some(format!("{} #{id}? (y)es  (n)o", confirm_words(what))),
+        (None, _, Some(chat)) => Some(format!(
+            "Close {chat}? Its log and notes stay; New chat with the same name opens it again. (y)es  (n)o"
+        )),
+        _ => None,
+    };
+    {
+        let (words, color) = match (asks, &list.acting, &list.notice) {
+            (Some(asks), _, _) => (asks, theme::WARNING),
             (_, Some(doing), _) => (doing.clone(), theme::TEXT_MUTED),
             (_, _, Some((words, failed))) => (
                 words.clone(),
