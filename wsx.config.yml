@@ -40,22 +40,19 @@ tasks:
     boundary: cargo build -p wsx -p wsx-daemon && python3 -B scripts/test-manager-boundary.py
     memory: cargo build -p wsx && python3 -B scripts/test-memory.py "target/debug/wsx memory"
   scenarioPaths:
-    task: [crates/wsx/src/task, crates/wsx-core/src/task, crates/wsx-core/src/memory,
-      crates/wsx-core/src/config, crates/wsx-core/src/routine, crates/wsx-core/src/process.rs,
-      crates/wsx-core/src/stale.rs, crates/wsx/src/cli/memory.rs, scripts/test-task.py,
-      "scripts/fake-*", scripts/ci-scenario.py, scripts/test-memory.py]
-    web: [crates/wsx-web, scripts/test-web-client.py, "scripts/*-check.mjs", scripts/web-cdp.mjs,
-      "scripts/design-lint*", crates/wsx-core/src/task/view.rs, crates/wsx-core/src/task/needs.rs,
-      crates/wsx-core/src/task/chats.rs, crates/wsx-core/src/task/chat.rs,
-      crates/wsx-core/src/task/status.rs, crates/wsx-core/src/panel.rs]
-    smoke: [crates/wsx-daemon, crates/wsx-terminal, crates/wsx-core/src/runtime,
-      "crates/wsx/src/*.rs", crates/wsx/src/app, crates/wsx/src/ui, crates/wsx/src/cli,
-      crates/wsx-core/src/model, crates/wsx-core/src/git, crates/wsx-core/src/integration,
-      crates/wsx-core/src/lib.rs, crates/wsx-core/src/ops.rs, crates/wsx-core/src/fs_util.rs,
-      crates/wsx-core/src/cache.rs, crates/wsx-core/src/hooks.rs, scripts/runtime-smoke.py,
-      scripts/tui_pty.py, scripts/wsxd_client.py]
-    boundary: [crates/wsx/src/task/boundary.rs, crates/wsx/src/task/egress.rs,
-      crates/wsx/src/task/broker.rs, scripts/test-manager-boundary.py]
+    # ^ Each scenario names every path whose output its journey reads, not its crate edges: the
+    # task, web and boundary journeys drive the real task host, manager and wsxd through the CLI,
+    # and task and smoke drive the TUI. Proof against main's breaks: docs/design/orchestration-lean.md §13.
+    task: [crates/wsx, crates/wsx-core, crates/wsx-daemon, crates/wsx-terminal, scripts/test-task.py,
+      "scripts/fake-*", scripts/ci-scenario.py, scripts/tui_pty.py, scripts/wsxd_client.py]
+    web: [crates/wsx-web, crates/wsx-core, crates/wsx-daemon, crates/wsx-terminal, crates/wsx/src/task,
+      crates/wsx/src/cli, crates/wsx/src/cli.rs, crates/wsx/src/main.rs, scripts/test-web-client.py,
+      "scripts/*-check.mjs", scripts/web-cdp.mjs, "scripts/design-lint*", "scripts/fake-*",
+      scripts/ci-scenario.py, scripts/wsxd_client.py]
+    smoke: [crates/wsx, crates/wsx-core, crates/wsx-daemon, crates/wsx-terminal,
+      scripts/runtime-smoke.py, scripts/tui_pty.py, scripts/wsxd_client.py]
+    boundary: [crates/wsx/src/task, crates/wsx/src/cli, crates/wsx/src/cli.rs, crates/wsx/src/main.rs,
+      crates/wsx-core, crates/wsx-daemon, crates/wsx-terminal, scripts/test-manager-boundary.py]
     memory: [crates/wsx-core/src/memory, crates/wsx/src/cli/memory.rs, scripts/test-memory.py,
       scripts/fake-memory-backend.py]
   # ^ Changed paths that need no scenario: with only these, no scenario runs.
