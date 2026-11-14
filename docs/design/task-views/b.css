@@ -1,0 +1,53 @@
+/* Option B mockup: three bands by who has the ball, groups by what holds the work, the number in a
+   fixed column. Tokens only. */
+.b-band { padding-bottom: var(--space-2); }
+.b-head { display: flex; align-items: center; gap: var(--space-2); min-height: var(--size-key); margin: 0; padding-inline: var(--column-inset, var(--space-4)); font-size: var(--font-size-label); font-weight: var(--font-weight-strong); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-muted); }
+.b-head .icon { width: var(--space-4); height: var(--space-4); }
+.b-head[data-band="you"] { color: var(--color-attention); }
+.b-head[data-band="run"] { color: var(--color-working); }
+.b-count { font-variant-numeric: tabular-nums; }
+
+/* A row: the task number in a column of its own, then the title, then one line. */
+.b-row { --b-num: calc(var(--space-4) * 3); display: grid; grid-template-columns: var(--b-num) minmax(0, 1fr); align-items: baseline; column-gap: var(--space-1); min-height: var(--size-control); padding: var(--space-2) var(--column-inset, var(--space-4)); text-decoration: none; color: inherit; font-size: var(--font-size-sm); }
+.b-num { color: var(--color-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.b-main { display: flex; flex-direction: column; min-width: 0; }
+.b-title { font-size: var(--font-size-md); }
+.b-line { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-muted); }
+.b-wrap, .b-line.b-wrap { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.b-line [data-tone="working"] { color: var(--color-working); }
+.b-line [data-tone="danger"] { color: var(--color-danger); }
+.b-line .seg + .seg::before { content: "·"; margin-inline: var(--space-2); color: var(--color-faint); }
+.b-item { border-top: var(--border-width) solid var(--color-hairline); }
+.b-band > .reservoir-list > .b-item:first-child { border-top: 0; }
+.b-item[data-moved] { box-shadow: inset calc(var(--border-width) * 3) 0 0 var(--color-working); }
+
+/* For you: the answer in its own line under the check, Pass at the right edge. */
+.b-acts { display: flex; gap: var(--space-2); padding: 0 var(--column-inset, var(--space-4)) var(--space-2) calc(var(--column-inset, var(--space-4)) + var(--space-4) * 3 + var(--space-1)); }
+.b-acts .need-action { background: var(--color-raised); }
+.b-pass { margin-left: auto; }
+
+/* Waiting: one region per holder; the header says what holds the work, the rows say only what differs. */
+.b-group { list-style: none; margin: 0 var(--space-2) var(--space-2); background: var(--color-raised); border-radius: var(--radius-control); overflow: hidden; }
+.b-held { display: flex; align-items: center; gap: var(--space-2); min-height: var(--size-control); padding-inline: var(--space-2); font-size: var(--font-size-sm); color: var(--color-muted); text-decoration: none; }
+.b-ref { color: var(--color-text); font-variant-numeric: tabular-nums; font-weight: var(--font-weight-medium); }
+.b-now { color: var(--color-working); }
+.b-rows { list-style: none; margin: 0; padding: 0; }
+.b-rows > .b-item { border-top: 0; }
+.b-group .b-row { padding-inline: var(--space-2); }
+
+/* The task page: the answer first, then the chain as a connected list. */
+.b-story { gap: var(--space-3); }
+.b-barnum { margin-right: var(--space-2); }
+.b-state { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3); border-radius: var(--radius-control); background: var(--color-raised); }
+.b-state-line { display: flex; align-items: center; gap: var(--space-2); margin: 0; font-weight: var(--font-weight-strong); color: var(--color-muted); }
+.b-state-line .icon { width: var(--space-4); height: var(--space-4); }
+.b-age { margin-left: var(--space-1); font-weight: normal; font-size: var(--font-size-sm); }
+.b-you { margin: 0; font-size: var(--font-size-sm); color: var(--color-muted); }
+.b-chain { list-style: none; margin: 0; padding: 0; border-left: calc(var(--border-width) * 2) solid var(--color-hairline); }
+.b-chain .b-row { padding-inline: var(--space-3) 0; }
+.b-chain .b-link[aria-current="page"] { background: var(--color-raised); border-radius: 0 var(--radius-control) var(--radius-control) 0; }
+.b-chain .b-link[aria-current="page"] .b-title { font-weight: var(--font-weight-strong); }
+.b-actions { padding: 0; }
+.b-goal { font-size: var(--font-size-sm); color: var(--color-muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.app[data-wide] .b-band, .app[data-wide] .b-chain { max-width: calc(var(--size-prose) + 2 * var(--space-4)); }
+.app[data-wide] .b-pass { margin-left: 0; }
