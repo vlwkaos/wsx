@@ -27,6 +27,7 @@ use wsx_core::git::{git_cmd, output_with_timeout_tail};
 use wsx_core::memory::start::{self as memory_start, Start};
 use wsx_core::memory::{manage as memory_manage, Store};
 use wsx_core::runtime;
+use wsx_core::task::replace::{Binary, HANDOFF_FILE};
 use wsx_core::task::status::{self, STOPPED_BY_REQUEST};
 use wsx_core::task::view::{checked_files, short_commit};
 use wsx_core::task::{
@@ -54,7 +55,6 @@ const PLAN_REQUEST: &str = "First write a short plan and stop: edit no file and 
 in this turn. Put the plan in your result's summary with status done: the goal in one line, the \
 files you expect to change, the approach, and how you will prove the result. The manager reads \
 it and answers with go or what to change.";
-const HANDOFF_FILE: &str = "handoff.txt";
 /// The first line of a handoff names the trigger of the turn it carries.
 const HANDOFF_TRIGGER: &str = "trigger: ";
 const MAX_HANDOFF_BYTES: u64 = 4 * 1024 * 1024;
@@ -296,7 +296,7 @@ struct Host {
     /// The worker was asked once this turn for the result its last turn left out.
     result_asked: bool,
     /// The file this host runs from, and whether it must exec its replacement.
-    binary: Option<hosting::Binary>,
+    binary: Option<Binary>,
     reexec: bool,
     /// A `land` or a `trial` waits for the checks of its rebased revision.
     after_rebase: Option<AfterRebase>,
@@ -381,7 +381,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         last_denials: Vec::new(),
         check_retries: 0,
         result_asked: false,
-        binary: hosting::Binary::capture(),
+        binary: Binary::capture(),
         reexec: false,
         after_rebase: None,
         disk_wait: None,
@@ -773,7 +773,7 @@ impl Host {
     fn must_follow_binary(&self) -> bool {
         self.check_run.is_none()
             && self.limit_slot.is_none()
-            && self.binary.as_ref().is_some_and(hosting::Binary::replaced)
+            && self.binary.as_ref().is_some_and(Binary::replaced)
     }
 
     /// The turn a replaced host handed over, and what started it. A file from an older host
@@ -934,6 +934,7 @@ impl Host {
             ok,
             state: self.record.state,
             message,
+            binary: self.binary.clone(),
         }
     }
 

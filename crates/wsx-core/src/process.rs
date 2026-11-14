@@ -408,6 +408,63 @@ impl ProcArgs {
     }
 }
 
+/// The wsxd argument of a resumable session's supervisor, which no search here finds.
+/// ref: crates/wsx-daemon/src/lib.rs `RESUME_SUPERVISOR_ARG`
+#[cfg(target_os = "macos")]
+const RESUME_SUPERVISOR_ARG: &[u8] = b"__wsx_resume_supervisor";
+
+/// The processes, other than this one and a wsxd session supervisor, whose arguments
+/// (`argv[0]` first) and environment `pick` accepts. Another user's process does not answer
+/// `KERN_PROCARGS2`; on Linux none is found.
+#[cfg(target_os = "macos")]
+pub fn find(pick: impl Fn(&[&[u8]], &[&[u8]]) -> bool) -> Vec<libc::pid_t> {
+    let me = std::process::id() as libc::pid_t;
+    let mut reader = ProcArgs::default();
+    pids()
+        .into_iter()
+        .filter(|pid| *pid > 1 && *pid != me)
+        .filter(|pid| {
+            reader.read(*pid).is_some_and(|block| {
+                // ^ argc, the exec path, NUL padding, the arguments, then the environment.
+                let Some((argc, rest)) = block.split_first_chunk::<4>() else {
+                    return false;
+                };
+                let argc = i32::from_ne_bytes(*argc).max(0) as usize;
+                let mut strings = rest
+                    .split(|byte| *byte == 0)
+                    .filter(|text| !text.is_empty());
+                let _path = strings.next();
+                let args: Vec<&[u8]> = strings.by_ref().take(argc).collect();
+                let env: Vec<&[u8]> = strings.collect();
+                !args.contains(&RESUME_SUPERVISOR_ARG) && pick(&args, &env)
+            })
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn find(_pick: impl Fn(&[&[u8]], &[&[u8]]) -> bool) -> Vec<libc::pid_t> {
+    Vec::new()
+}
+
+/// SIGTERM to each process `find` gives for `pick`, `grace` for all to go, then SIGKILL to
+/// those `pick` still accepts (a pid may be a newer process by then). Returns how many it found.
+pub fn stop_found(pick: impl Fn(&[&[u8]], &[&[u8]]) -> bool, grace: Duration) -> usize {
+    let found = find(&pick);
+    for pid in &found {
+        // SAFETY: a plain signal to a process `pick` accepted a moment ago.
+        unsafe { libc::kill(*pid, libc::SIGTERM) };
+    }
+    if !wait_until(grace, || found.iter().all(|pid| pid_gone(*pid))) {
+        for pid in find(&pick).into_iter().filter(|pid| found.contains(pid)) {
+            // SAFETY: as above, and it still matches.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        wait_until(KILL_WAIT, || found.iter().all(|pid| pid_gone(*pid)));
+    }
+    found.len()
+}
+
 // ^ A tuple struct, so `ProcArgs::default()` is a call on both targets (a unit struct makes clippy
 // say `default_constructed_unit_structs` on Linux).
 #[cfg(not(target_os = "macos"))]

@@ -40,8 +40,11 @@ pub fn ensure_manager(
     let status = || {
         call_socket::<_, ManagerResponse>(&dir.socket_path(), &ManagerRequest::Status, HOST_TIMEOUT)
     };
-    if status().is_ok() {
-        return Ok((false, dir));
+    // ^ A host hung in a turn under an older wsx is closed and started again here.
+    if let Ok(answer) = status() {
+        if !super::replace::close_hung_manager(&dir, main, &answer)? {
+            return Ok((false, dir));
+        }
     }
     let mut argv = vec![
         wsx.to_string_lossy().into_owned(),

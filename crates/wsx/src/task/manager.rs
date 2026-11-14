@@ -37,6 +37,7 @@ use wsx_core::task::manager::{
     ManagerResponse, ManagerState, Party, Seen, Short,
 };
 use wsx_core::task::policy;
+use wsx_core::task::replace::Binary;
 use wsx_core::task::session_news;
 use wsx_core::task::stall;
 use wsx_core::task::status;
@@ -256,7 +257,7 @@ struct Manager {
     /// `stall::turn_quiet_ms` is ended (`turn_hung`).
     last_line: Instant,
     /// The file this host runs from, and whether it must exec its replacement.
-    binary: Option<hosting::Binary>,
+    binary: Option<Binary>,
     reexec: bool,
     owed: Owed,
     /// The policy of the agent that runs now, which the broker checks commands against.
@@ -369,7 +370,7 @@ pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
         last_event: None,
         last_activity: Instant::now(),
         last_line: Instant::now(),
-        binary: hosting::Binary::capture(),
+        binary: Binary::capture(),
         reexec: false,
         owed: Owed::default(),
         policy: broker::SharedPolicy::default(),
@@ -565,6 +566,7 @@ impl Manager {
                 ok: true,
                 id: None,
                 busy,
+                binary: self.binary.clone(),
                 message: format!("{} message(s) waiting", self.queue.len()),
             },
             ManagerRequest::Say { text, from, short } => {
@@ -573,6 +575,7 @@ impl Manager {
                         ok: true,
                         id: Some(id),
                         busy,
+                        binary: None,
                         message: if busy {
                             "queued until the manager's turn ends".into()
                         } else {
@@ -583,6 +586,7 @@ impl Manager {
                         ok: false,
                         id: None,
                         busy,
+                        binary: None,
                         message: format!("{error:#}"),
                     },
                 }
@@ -601,6 +605,7 @@ impl Manager {
                     ok: refusal.is_none(),
                     id: None,
                     busy,
+                    binary: None,
                     message: refusal.unwrap_or("posted to the chat").into(),
                 }
             }
@@ -611,6 +616,7 @@ impl Manager {
                     ok: true,
                     id: None,
                     busy,
+                    binary: None,
                     message: "check-in set".into(),
                 }
             }
@@ -2155,7 +2161,7 @@ impl Manager {
         // to the wait reaches a held host. The messages stay logged and not delivered, so
         // the new host queues them again (`restore`); a hold stays in the state.
         if (self.state.limit.is_some() || self.work_waiting())
-            && self.binary.as_ref().is_some_and(hosting::Binary::replaced)
+            && self.binary.as_ref().is_some_and(Binary::replaced)
         {
             self.say("the wsx binary was replaced: the manager restarts with it");
             self.reexec = true;
