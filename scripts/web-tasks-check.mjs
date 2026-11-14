@@ -2305,9 +2305,13 @@ async function readAndReply(where) {
   await toLatest(where);
   // (g) A tap on a task chip opens the task, not the menu.
   if (phone()) {
-    const chip = await evaluate(`(() => { const chip = [...document.querySelectorAll('.log .bubble[data-in] a.task-chip')].at(-1); if (!chip) return null; chip.scrollIntoView({ block: 'center' });
-      const rect = chip.getBoundingClientRect(); return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }; })()`);
-    if (!chip) await fail(`${where}: the chat shows no task chip to tap`);
+    const last = "[...document.querySelectorAll('.log .bubble[data-in] a.task-chip')].at(-1)";
+    if (!await evaluate(`!!${last}`)) await fail(`${where}: the chat shows no task chip to tap`);
+    await evaluate(`${last}.scrollIntoView({ block: 'center' })`);
+    await pause(400);
+    const chip = await evaluate(`(() => { const chip = ${last}, rect = chip.getBoundingClientRect(), x = Math.round(rect.left + rect.width / 2), y = Math.round(rect.top + rect.height / 2);
+      return { x, y, href: chip.getAttribute('href'), hit: document.elementFromPoint(x, y)?.closest('a.task-chip')?.getAttribute('href') ?? document.elementFromPoint(x, y)?.outerHTML.slice(0, 120) }; })()`);
+    if (chip.hit !== chip.href) await fail(`${where}: the task chip is not what is under the point ${JSON.stringify(chip)}`);
     await touch(chip, 0, 60);
     const opened = await evaluate(`(async () => { for (let attempt = 0; attempt < 40 && !/\\/t\\/\\d+/.test(location.hash); attempt++) await new Promise((resolve) => setTimeout(resolve, 50));
       return { hash: location.hash, menu: !!document.querySelector('.reply-menu') }; })()`);
