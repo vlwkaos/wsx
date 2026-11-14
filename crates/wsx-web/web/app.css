@@ -222,13 +222,9 @@ button.row-open { padding: var(--space-2) 0; border: 0; background: none; text-a
 }
 .button-primary { background: var(--color-accent); color: var(--color-accent-text); }
 .button-danger { color: var(--color-danger); }
-/* Buttons take the width of their words. A button with an icon shows the icon alone on a phone
-   and keeps its words as its accessible name, so the text beside it gets the row. */
+/* Buttons take the width of their words; an icon button is square on a phone. */
 .button:has(> .icon) { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); text-decoration: none; }
 .app:not([data-wide]) .button:has(> .icon) { width: var(--size-control); padding: 0; }
-.app:not([data-wide]) .button:has(> .icon) > .button-words {
-  position: absolute; width: var(--border-width); height: var(--border-width); overflow: hidden; clip-path: inset(50%); white-space: nowrap;
-}
 .button:disabled, .link-action:disabled, .icon-button:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
 .link-action {
   flex: 0 0 auto; padding: 0; border: 0; background: none; color: var(--color-text); cursor: pointer;
