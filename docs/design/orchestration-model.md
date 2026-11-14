@@ -90,7 +90,7 @@ flowchart TB
 
 - `wsx task chat attach <chat> <repo>` and `detach` are the owner's commands. When a chat asks to attach a repo, an approval card comes up, as for `project add`. `chat new <name> [--repo ...]` defaults to the folder's repo.
 - A repo is attached to any number of chats. Task numbers, branches `wsx/t<n>` and copies `<repo>-t<n>` are per repo, so nothing collides. Deploy and push locks stay per repo.
-- **Web Home** shows one row per chat: name, goal line, repo labels, and the tray counts of what the chat owns (`home.js:186 ChatRow`, `trays.js:32 chatCounts`). Routes: `#/c/<chat>` for a chat and `#/p/<pid>` for a repo view (tasks, deploys, routines, panels, a link to the home chat). Task chips read `<repo> #<n>` when the repo is not the chat's default.
+- **Web Home** shows one row per chat: name, goal line, repo labels, and the tray counts of what the chat owns (`home.js` `ChatRow`, `trays.js` `trayCounts` of the row's `counts`). Routes: `#/c/<chat>` for a chat and `#/p/<pid>` for a repo view (tasks, deploys, routines, panels, a link to the home chat). Task chips read `<repo> #<n>` when the repo is not the chat's default.
 - **TUI**: the tree stays per repo, and `t` lists the repo's tasks. The chat list (`crates/wsx/src/task_list.rs:666`) lists every chat, with its repos before its goal.
 - For pizzahouse ("manage this machine"), the owner renames its chat to `machine`, attaches dotfiles and the other repos, and sets it as their home. Two managers no longer relay to each other.
 

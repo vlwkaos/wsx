@@ -1376,7 +1376,8 @@ impl Host {
                 &self.record.working_copy,
                 "HEAD",
                 &format!("refs/heads/{}", self.record.default_branch),
-            )?,
+            )
+            .unwrap_or_else(|_| self.record.base.clone()),
             revision => format!("refs/wsx/task/{}/r{revision}", self.record.id),
         };
         let commits = copy::unlanded_commits(&self.record.working_copy, "HEAD", &since)?;
