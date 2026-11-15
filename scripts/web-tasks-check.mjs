@@ -3749,6 +3749,7 @@ for (const wide of [false, true]) {
     await typeInto(".composer-field", "STATUS");
     await click(".composer-send");
     await until(`document.querySelectorAll('.log .bubble[data-side=in]').length > ${answered}`, "the chat did not answer the page", 60);
+    await entered();
   }
   await shot(`chat-room${wide ? "-wide" : ""}`, ".composer-send");
   await evaluate("document.querySelector('.bar a.icon-button').click()");
