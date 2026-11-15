@@ -55,7 +55,7 @@ const DEPLOY_EVENT_LINES: usize = 10;
 /// An idle task runs at most this often.
 const IDLE_EVERY_MS: u64 = 24 * 3_600_000;
 /// A named chat with no message and no open task of its own for this long is suggested for
-/// closing, or the seconds in `WSX_TEST_CHAT_IDLE_SECS`: for the task scenario only.
+/// closing (the scenario backdates the chat's log instead of waiting).
 const CHAT_IDLE_MS: u64 = 7 * 24 * 3_600_000;
 
 /// How often the project's stale worktrees and idle chats are swept, or the seconds in
@@ -65,13 +65,6 @@ fn prune_sweep() -> Duration {
         .ok()
         .and_then(|secs| secs.parse().ok())
         .map_or(Duration::from_secs(60 * 60), Duration::from_secs)
-}
-
-fn chat_idle_ms() -> u64 {
-    std::env::var("WSX_TEST_CHAT_IDLE_SECS")
-        .ok()
-        .and_then(|secs| secs.parse::<u64>().ok())
-        .map_or(CHAT_IDLE_MS, |secs| secs * 1000)
 }
 
 enum Event {
@@ -538,7 +531,7 @@ impl Repo {
                     .state
                     .suggested_close
                     .get(&name)
-                    .is_some_and(|at| now.saturating_sub(*at) < chat_idle_ms())
+                    .is_some_and(|at| now.saturating_sub(*at) < CHAT_IDLE_MS)
             {
                 continue;
             }
@@ -553,7 +546,7 @@ impl Repo {
                     record.state.is_open() && record.created_by.chat() == Some(name.as_str())
                 })
             });
-            if written < chat_idle_ms() || owns {
+            if written < CHAT_IDLE_MS || owns {
                 continue;
             }
             self.state.suggested_close.insert(name.clone(), now);

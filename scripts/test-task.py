@@ -8238,6 +8238,129 @@ def part_host(created=None):
     assert 'Attention Required' in lc_turn(alerts_log.parent)['ended']['reason'], lc_turn(alerts_log.parent)
     assert len(lc_alerts(0)) == manager_alerts, 'the chat alerts in its own chat, not the manager\'s'
     cli('task', 'chat', 'close', 'alerts', '-p', 'demo', '--json')
+
+    # M2. The repo service and equal chat hosts (docs/tasks.md "Chats", docs/design/orchestration-model.md
+    # 3.2): one `repo-host` per repo turns the events of the store into messages and sends each to the
+    # chat that owns it, else to the home chat; every chat's host (the home chat's too) only talks and
+    # leaves 20 s after its queue is empty. Two repos here, each with a home chat, and named chats in demo.
+    mark('m2')
+    m2_registry = registry.read_text()
+    twin = base / 'twin'
+    twin.mkdir()
+    git('init', '-q', '-b', 'main', cwd=twin)
+    (twin / 'README').write_text('twin\n')
+    (twin / 'wsx.config.yml').write_text('tasks:\n  minFreeGb: 0\n')
+    git('add', '.', cwd=twin)
+    git('commit', '-q', '-m', 'start', cwd=twin)
+    registry.write_text(m2_registry + '[[projects]]\nname = "twin"\npath = ' + json.dumps(str(twin)) + '\n')
+    twin_id = 'twin-' + hashlib.sha256(str(twin).encode()).hexdigest()[:8]
+    chat_host = lambda name: [l for l in leftovers('task chat-host ') if l.split()[-1] == name]
+    service = lambda rid: [l for l in leftovers('task repo-host ') if l.split()[-1] == rid]
+    rows = lambda name, *needles: [e for e in chat_entries(name) if e['kind'] == 'message' and e['from'] == 'events'
+                                   and all(needle in e['text'] for needle in needles)]
+    twin_chats = lambda: {c['name']: c for c in js('task', 'chat', 'list', '-p', 'twin')['chats']}
+    repo_json = Path(created['task_dir']).parent / 'repo.json'
+    seen_of = lambda n: (json.loads(repo_json.read_text()).get('seen') or {}).get(str(n)) if repo_json.exists() else None
+    m2_goal = base / 'm2-goal.md'
+    m2_goal.write_text('Talk, nothing else.\n')
+    # ^ A chat's name never starts with `repo-`: `task-repo-<id>` is the service's session.
+    assert 'does not start with repo-' in cli('task', 'chat', 'new', 'repo-x', '--goal', str(m2_goal), '-p', 'demo', ok=False).stderr
+    # ^ Each repo has its home chat and one service; the service has no agent and no chat folder.
+    twin_say = js('task', 'say', '-p', 'twin', 'STATUS')
+    chat_reply('twin', twin_say['id'])
+    wait(lambda: service(twin_id) and service(repo_id), 'a service for each repo', 30)
+    assert len(service(twin_id)) == 1 and len(service(repo_id)) == 1, (service(twin_id), service(repo_id))
+    assert twin_chats()['twin']['home'] and chats()['demo']['home']
+    cli('task', 'chat', 'new', 'm2n', '--goal', str(m2_goal), '-p', 'demo', '--json')
+    # ^ A task event goes to the chat that owns the task, though that chat's host has left: the service
+    # starts it, and saves the task as seen only after the host took the line.
+    gate = base / 'm2-gate'
+    made = js('task', 'say', '--to', 'm2n', 'RUN wsx task new "WAIT %s WORK a.txt" -p demo --json' % gate)
+    chat_reply('m2n', made['id'])
+    m2_task = max(t['id'] for t in js('task', 'list')['tasks'])
+    assert show(m2_task)['record']['created_by'] == 'chat:m2n', show(m2_task)['record']
+    wait(lambda: not chat_host('m2n'), 'the idle chat host leaves after the linger', 60)
+    assert len(service(repo_id)) == 1 and len(service(twin_id)) == 1, 'the services stay when the chat hosts leave'
+    home_rows = len(rows('demo', '#%d ' % m2_task))
+    gate.touch()
+    assert wait_state(m2_task, 'ready', 'failed')['state'] == 'ready'
+    wait(lambda: (seen_of(m2_task) or {}).get('state') == 'ready', 'the task is saved as seen', 60)
+    assert rows('m2n', '#%d ready' % m2_task), 'the line is at the chat before the service saves it as seen'
+    assert len(rows('demo', '#%d ' % m2_task)) == home_rows, 'the home chat did not hear its chat\'s task'
+    # ^ A routine result has no chat: it goes to the home chat of its repo, not to a named chat or
+    # the other repo's home chat. A closed home chat is opened again for it.
+    js('task', 'routine', 'add', 'm2r', '-p', 'twin', '--cron', '0 5 * * *', '--arg=sh', '--arg=-c', '--arg=echo twinproof; exit 4')
+    js('task', 'routine', 'run', 'm2r', '-p', 'twin')
+    wait(lambda: rows('twin', 'routine m2r failed (exit 4)'), 'the routine result at the home chat of twin', 60)
+    assert not rows('demo', 'routine m2r') and not rows('m2n', 'routine m2r')
+    wait(lambda: not chat_host('twin'), 'the home chat host leaves too', 60)
+    (chats_dir / 'twin/closed').write_text('closed by the owner')
+    assert twin_chats()['twin']['state'] == 'closed'
+    js('task', 'routine', 'run', 'm2r', '-p', 'twin')
+    wait(lambda: len(rows('twin', 'routine m2r failed (exit 4)')) == 2, 'the closed home chat is opened again and hears the event', 60)
+    assert twin_chats()['twin']['state'] == 'open' and not (chats_dir / 'twin/closed').exists()
+    js('task', 'routine', 'delete', 'm2r', '-p', 'twin')
+    # ^ A check-in belongs to the chat that set it; the service fires it, also to a chat whose host left.
+    text = chat_reply('m2n', js('task', 'say', '--to', 'm2n', 'RUN wsx task checkin -p demo --in 1m --why "m2 look"')['id'])['text']
+    assert '-> 0 check-in at ' in text, text
+    assert json.loads(repo_json.read_text())['checkins']['m2n']['why'] == 'm2 look'
+    wait(lambda: not chat_host('m2n'), 'the host of the chat that set the check-in leaves', 60)
+    wait(lambda: rows('m2n', 'check-in: m2 look'), 'the check-in fires to its chat', 120)
+    assert not rows('demo', 'm2 look') and not (json.loads(repo_json.read_text()).get('checkins') or {}).get('m2n')
+    js('task', 'close', m2_task, '--discard')
+    wait_state(m2_task, 'closed')
+    # ^ The idle sweep: a named chat with no message and no open task of its own for 7 days is suggested
+    # for closing, once, as a line to the home chat that starts no turn. The chat stays open.
+    cli('task', 'chat', 'new', 'm2idle', '--goal', str(m2_goal), '-p', 'demo', '--json')
+    idle_log = chats_dir / 'm2idle/log.jsonl'
+    idle_log.touch()
+    wait(lambda: not chat_host('m2n') and not chat_host('demo'), 'no chat host runs', 60)
+    m2_turns = len(manager_turns())
+    aged = time.time() - 8 * 24 * 3600
+    os.utime(idle_log, (aged, aged))
+    suggested = wait(lambda: rows('demo', 'chat m2idle has had no message and no open task'), 'the idle chat is suggested for closing', 60)
+    assert len(suggested) == 1 and suggested[0]['short'] and all(x.get('wakes') is False for x in suggested[0]['short']), suggested
+    time.sleep(8)
+    assert len(rows('demo', 'chat m2idle has had no message')) == 1 and chats()['m2idle']['state'] == 'open'
+    assert len(manager_turns()) == m2_turns, manager_turns()[m2_turns:]
+    # ^ The old argv `manager-host <repo> [--chat n]` still works for one release: the process becomes the chat's
+    # host and starts the service. A message queued before it started is answered once, none lost.
+    for name, rid, args, cname in (('m2o', repo_id, ['--chat', 'm2o'], 'm2o'), ('twin', twin_id, [], 'twin')):
+        if name == 'm2o':
+            cli('task', 'chat', 'new', 'm2o', '--goal', str(m2_goal), '-p', 'demo', '--json')
+        wait(lambda: not chat_host(cname), 'no host of ' + cname, 60)
+        log_path = chats_dir / cname / 'log.jsonl'
+        log_path.touch()
+        queued_id = max([json.loads(l).get('id', 0) for l in log_path.read_text().splitlines()] + [0]) + 1
+        with log_path.open('a') as out:
+            out.write(json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': queued_id, 'from': 'owner', 'text': 'STATUS queued before the old host'}) + '\n')
+        old_host = subprocess.Popen([str(wsx), 'task', 'manager-host', rid, *args], cwd=project, env=env,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            chat_reply(cname, queued_id)
+            time.sleep(2)
+            assert len([e for e in chat_entries(cname) if e['kind'] == 'reply' and queued_id in e['to']]) == 1
+            assert len(service(rid)) == 1, service(rid)
+        finally:
+            old_host.terminate()
+            old_host.wait(timeout=60)
+    # ^ The stand-in answers in a named chat while the own agent waits out a limit (docs/tasks.md "Agents").
+    norate.touch()
+    configure(with_fallback('fake-backlog, fake-local, fake-pi'), 'm2 stand-in')
+    limit_for(15)
+    stand_say = js('task', 'say', '--to', 'm2n', 'STATUS during the limit')
+    stood = wait(lambda: next((e for e in chat_entries('m2n') if e['kind'] == 'reply' and e.get('provisional') == 'fake-local'
+                               and stand_say['id'] in e['to']), None), 'the stand-in answers in the named chat', 60)
+    assert stood['text'].startswith('pi answers: '), stood
+    wait(lambda: next((e for e in chat_entries('m2n') if e['kind'] == 'reply' and not e.get('provisional')
+                       and stand_say['id'] in e['to']), None), 'the own agent answers after the limit', 60)
+    limit_file.unlink(missing_ok=True)
+    norate.unlink()
+    configure(CONFIG, 'm2 done')
+    for name in ('m2n', 'm2idle', 'm2o'):
+        js('task', 'chat', 'close', name, '-p', 'demo')
+    wait(lambda: not chat_host('twin') and not chat_host('m2n'), 'the chat hosts leave', 60)
+    registry.write_text(m2_registry)
     return created
 
 

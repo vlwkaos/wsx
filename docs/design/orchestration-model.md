@@ -184,7 +184,7 @@ The move is a rename on one filesystem. Nothing stays under the old paths, and a
 | Refactor step (docs/design/root-cause-refactor.md) | State (task.json) | Change |
 |---|---|---|
 | 1, 2, 3, 3a, 9, 10 | landed (#452, #458, #459, #453, #441, #442) | none. Step 2's main-checkout denial becomes the union in section 4 |
-| 4 local floor, #423 | working | keep. M2 moves the stand-in from `Duties` to every chat |
+| 4 local floor, #423 | working | keep. M2 moved the stand-in from `Duties` to every chat (built, #472) |
 | 5 `waits_on`, #443 | waiting | keep. `waits_on: manager` reads as "the owning chat" |
 | 6 turns by need | not started | do before M. Its wake rule (`state_wakes`, core `manager.rs:313`) moves into the repo service in M2 |
 | **M1 to M4 (new)** | | after 6, before 7 |
@@ -204,6 +204,8 @@ flowchart LR
 ```
 
 **M1 built (task #471):** chats at `tasks/chats/<id>/`, `home.json`, `created_by: chat:<id>`, one move of the old folders (the live host of a moved folder is stopped and started on the new path), the web route `#/c/<chat>`, and the chat lifecycle on the owner's word (`chat new|close --owner-said`, `chat home`). Not in M1, for later steps: a chat's decisions that concern a repo written to the repo's memory scope (M4, with `record_memo_at`'s copy into the origin scope, which M4 deletes), and a stall sweep that suggests closing an idle chat (M2, the repo service).
+
+**M2 built (task #472):** the repo service `wsx task repo-host <repo-id>` (session `task-repo-<repo-id>`, state `repo.json`) owns what `Duties` did and routes each event through `chats::owner` to its chat, else the home chat, which it opens again when it is closed; every chat host, the home chat's too, is `wsx task chat-host <chat>`, which only talks and leaves after the 20 s linger; the stand-in and the notes-view checks run in every chat host; the manager's keep-alive pings are gone; an idle named chat gets one quiet suggestion line at the home chat after 7 days; the old `manager-host` argv hands over for one release. Names starting with `repo-` are no chat names. Proof: `scripts/test-task.py` section `m2`.
 
 Each M step proves itself with `task` (a new `test-task.py` section: two fixture repos, a chat that attaches both, a task in each, events to the right chat, an unowned routine result to the home chat, a refused unattached repo, and a migrated fixture store with no file left behind). M3 also needs `boundary`, M4 needs `memory`, and Home in step 7 needs `web`.
 
