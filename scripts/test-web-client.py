@@ -3868,8 +3868,8 @@ def task_journey(args):
             assert json.loads(failed.stdout)['started'] is True, (failed.stdout, failed.stderr)
             wait(lambda: js('task', 'deployed', '-p', 'plans')['deploy'].get('failed_since') == 1,
                  'the failed deploy of plans was recorded', timeout=60)
-            # Sessions without tasks, oldest first: an agent that exited (`gone`), one done
-            # (`quiet`), two working (`busy`).
+            # Sessions without tasks, oldest first: an agent that exited and one in an error (`gone`),
+            # one done (`quiet`), two working (`busy`).
             agent_script = work / 'session-agent.py'
             agent_script.write_text(wsxd_client.fixture(SESSION_AGENT))
 
@@ -3878,7 +3878,7 @@ def task_journey(args):
             snapshot = call('snapshot', None)['data']
             names = {item['id']: Path(item['path']).name for item in snapshot['projects']}
             worktrees = {names[item['project_id']]: item['id'] for item in snapshot['worktrees']}
-            for name, state_name, then in (('gone', 'working', 'end'), ('quiet', 'done', 'stay'),
+            for name, state_name, then in (('gone', 'working', 'end'), ('gone', 'error', 'stay'), ('quiet', 'done', 'stay'),
                                            ('busy', 'working', 'stay'), ('busy', 'working', 'stay')):
                 created = call('session_create', {'worktree_id': worktrees[name], 'label': name,
                     'command': [sys.executable, str(agent_script), state_name, then], 'rows': 12, 'cols': 80})
