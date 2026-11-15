@@ -3622,8 +3622,11 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   wsx("task", "after", behind, scenario, "WORK after.txt", "--because", "check");
   const reason = `then waits for #${scenario}: its checks fail`;
   if (show(behind).status.wait !== reason || show(scenario).status.waited_by?.[0]?.task !== behind) await fail(`wsx task show says ${JSON.stringify([show(behind).status, show(scenario).status])}`);
-  await until(`(${rowOf(`#${behind}`)}?.querySelector('.row-context').textContent ?? '').includes(${JSON.stringify(`after #${scenario}`)})`,
-    `the waiting task's Running row does not say after #${scenario}`, 10);
+  const afterRow = `(${rowOf(`#${behind}`)}?.querySelector('.row-context').textContent ?? '')`;
+  for (let waited = 0; !(await evaluate(`${afterRow}.includes(${JSON.stringify(`after #${scenario}`)})`)); waited += 200) {
+    if (waited > 10_000) await fail(`the waiting task's Running row does not say after #${scenario}: ${JSON.stringify([await evaluate(afterRow), await evaluate("[...document.querySelectorAll('.reservoir-list .need')].map((row) => row.textContent.trim().slice(0, 80))"), show(behind).status])}`);
+    await pause(200);
+  }
   await shot("running-after-reason", ".composer-send");
   await open(scenario);
   await until(`document.querySelector('.story-next')?.textContent.endsWith('Waited for by #${behind}.')`, `#${scenario}'s sheet does not say who waits for it`, 10);

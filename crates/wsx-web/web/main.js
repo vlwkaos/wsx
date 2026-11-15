@@ -191,7 +191,7 @@ let shown, streamUp = false;
 function tellPresence(force) {
   if (!streamUp || !can("task_view") || !can("push")) return;
   const route = parseRoute(location.hash);
-  const project = document.visibilityState === "visible" && ["project", "sessions", "task", "files"].includes(route.screen) ? route.id : null;
+  const project = document.visibilityState === "visible" && (["project", "sessions", "task", "files"].includes(route.screen) || (route.screen === "chat" && !route.room)) ? route.id ?? null : null;
   if (project === shown && !force) return;
   shown = project;
   api("api/presence", { method: "POST", json: { page: pageId, project } }).catch(() => { shown = undefined; });
