@@ -650,7 +650,7 @@ for (const want of [/^busy working/, /^quiet done/, /^gone exited/, /^gone error
 }
 await until("document.querySelectorAll('.home-row').length >= 3", "home did not come back after the session states");
 await tabsInView();
-await oneWorkingColor("home", 1);
+await oneWorkingColor("home", 0);
 // ^ The server runs this page's build: no new-version pill.
 if (await count(".build-pill")) await fail("the new-version pill shows on the same build");
 await shot("home");
