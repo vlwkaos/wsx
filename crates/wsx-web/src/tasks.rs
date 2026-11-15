@@ -1473,7 +1473,9 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
         // ^ A chat seen for the first time, as at a server start, notifies nothing.
         let last = watch.replies.get(&key).copied();
         let url = format!("#/c/{}", dir.chat);
-        let name = dir.named().map_or_else(|| manager_name(scope), str::to_string);
+        let name = dir
+            .named()
+            .map_or_else(|| manager_name(scope), str::to_string);
         let mut news = false;
         for entry in &log {
             let ManagerEvent::Reply {

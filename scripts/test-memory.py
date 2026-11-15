@@ -455,15 +455,20 @@ def project_scope():
     exits(2, 'add', '--kind', 'fact', '--slug', 'f4', '--text-file', '-', '--source', 'task:1', '--verified-by', 'check:c1', text='x', scope=pid)
     check(pid in [row['scope'] for row in ok('list', scope=None, cwd=sub)], 'list names the project')
     # ^ A project scope also searches the project's transcripts; the manager's notes are the simplest to stage.
-    notes = os.path.join(ENV['XDG_STATE_HOME'], 'wsx', 'tasks', pid, 'manager', 'notes')
+    # ^ The repo's home chat holds the notes: `home.json` names it and its `chat.json` lists the repo (docs/tasks.md "Chats").
+    tasks_root = os.path.join(ENV['XDG_STATE_HOME'], 'wsx', 'tasks')
+    notes = os.path.join(tasks_root, 'chats', 'proj', 'notes')
     os.makedirs(notes)
-    for folder in (os.path.dirname(notes), notes):
+    os.makedirs(os.path.join(tasks_root, pid), exist_ok=True)
+    open(os.path.join(tasks_root, 'chats', 'proj', 'chat.json'), 'w').write(json.dumps({'repos': [pid]}))
+    open(os.path.join(tasks_root, pid, 'home.json'), 'w').write(json.dumps({'chat': 'proj'}))
+    for folder in (os.path.join(tasks_root, pid), os.path.join(tasks_root, 'chats'), os.path.join(tasks_root, 'chats', 'proj'), notes):
         os.chmod(folder, 0o700)  # ^ wsx refuses a state folder others can read.
     open(os.path.join(notes, 'decisions.md'), 'w').write('- 2026-11-01 Always ship small changes with a readme.\n')
     mixed = ok('search', 'readme', scope=pid)
     check([h['slug'] for h in mixed] == ['readme', 'proj:notes/decisions.md'] or {h['slug'] for h in mixed} == {'readme', 'proj:notes/decisions.md'}, mixed)
     note = next(h for h in mixed if h['kind'] == 'decision')
-    check(note['status'] == 'active' and note['scope'] == pid and note['path'].endswith('manager/notes/decisions.md') and note['by'] == 'notes', note)
+    check(note['status'] == 'active' and note['scope'] == pid and note['path'].endswith('chats/proj/notes/decisions.md') and note['by'] == 'notes', note)
     check(all(0 < h['score'] <= 1 for h in mixed), mixed)
     check([h['slug'] for h in ok('search', 'readme', '--kind', 'decision', scope=pid)] == ['proj:notes/decisions.md'], '--kind decision')
     check([h['slug'] for h in ok('search', 'readme', '--kind', 'fact', scope=pid)] == ['readme'], '--kind fact leaves the transcripts out')

@@ -125,6 +125,21 @@ DAEMON = Path(os.environ.get("WSX_SMOKE_DAEMON", ROOT / "target" / "debug" / "ws
 WSX = Path(os.environ.get("WSX_SMOKE_WSX", ROOT / "target" / "debug" / "wsx"))
 
 
+def home_folder(name, path):
+    """Stage the home chat of a repo in the store layout of docs/tasks.md "Chats": `tasks/chats/<name>/` with its
+    `chat.json`, and `home.json` in the repo's own store folder. Returns the chat's folder."""
+    project_id = f"{name}-{hashlib.sha256(str(path).encode()).hexdigest()[:8]}"
+    store = STATE / "wsx" / "tasks" / project_id
+    folder = STATE / "wsx" / "tasks" / "chats" / name
+    for each in (store, folder):
+        each.mkdir(parents=True, exist_ok=True)
+        each.chmod(0o700)
+    folder.parent.chmod(0o700)
+    (store / "home.json").write_text(json.dumps({"chat": name}))
+    (folder / "chat.json").write_text(json.dumps({"repos": [project_id]}))
+    return folder
+
+
 def raw_call(payload):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(5)
@@ -2113,8 +2128,7 @@ try:
     # ^ The store id is `<name>-<first 8 hex of sha256(path)>` (wsx-core task/store.rs `project_id`).
     # Each reply names its adapter and model, so `a` counts one agent (docs/tasks.md "Usage").
     for name, micro, adapter, model in (("halt-me", 30000, "claude", "m1"), ("keep-me", 12000, "pi", "local")):
-        manager = STATE / "wsx" / "tasks" / f"{name}-{hashlib.sha256(str(removal[name]).encode()).hexdigest()[:8]}" / "manager"
-        manager.mkdir(parents=True, mode=0o700)
+        manager = home_folder(name, removal[name])
         (manager / "log.jsonl").write_text(json.dumps(
             {"unix_ms": int(time.time() * 1000), "kind": "reply", "id": 1, "to": [], "text": "ok",
              "usage": {"cost_micro_usd": micro, "turns": 1, "adapter": adapter, "model": model}}) + "\n")
@@ -2163,7 +2177,7 @@ try:
         {"kind": "stopped", "reason": "agent exited"},
         {"kind": "stopped", "reason": "agent exited"},
     ]
-    keep_log = STATE / "wsx" / "tasks" / f"keep-me-{hashlib.sha256(str(removal['keep-me']).encode()).hexdigest()[:8]}" / "manager" / "log.jsonl"
+    keep_log = home_folder("keep-me", removal["keep-me"]) / "log.jsonl"
     with keep_log.open("a") as log_file:
         for n, entry in enumerate(chat_log):
             log_file.write(json.dumps({"unix_ms": at + n * 1000, **entry}) + "\n")
@@ -2277,27 +2291,8 @@ try:
     rows_in_order([r"^You\s+\d\d:\d\d", r"^Where is #3\?", r"^#3 done$", r"^Atlas$", r"^#3 is on main\.$",
                    r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.", r"^elsewhere\s+\d\d:\d\d",
                    r"^Hello from elsewhere\."])
-    # ^ `P` opens the chat of the other manager whose message is nearest the bottom of the view
-    # (docs/tasks.md "TUI"): a chat of keep-me (`chat:qa`, the newest) is no project's and is
-    # passed over; elsewhere is no registered project and stays a notice; halt-me is one, and its
-    # message, the newest, opens halt-me's own chat in place of keep-me's.
-    wait_for(lambda: "(P)eer chat" in remove_tui.text(), lambda: f"the footer lists no P key:\n{remove_tui.text()}", seconds=60)
-    with keep_log.open("a") as log_file:
-        log_file.write(json.dumps({"unix_ms": int(time.time() * 1000), "kind": "message", "id": 900,
-                                   "from": "chat:qa", "text": "Hello from the qa chat."}) + "\n")
-    remove_tui.send(b"G")
-    wait_for(lambda: "Hello from the qa chat." in remove_tui.text(), "the TUI chat did not show the qa chat's message", seconds=60)
-    remove_tui.send(b"P")
-    wait_for(lambda: "elsewhere: not a registered project" in remove_tui.text(), "P on an unregistered manager gave no notice", seconds=60)
-    assert "chat:qa" not in remove_tui.text(), remove_tui.text()
-    with keep_log.open("a") as log_file:
-        log_file.write(json.dumps({"unix_ms": int(time.time() * 1000), "kind": "message", "id": 901,
-                                   "from": "manager:halt-me", "text": "Hello from halt-me."}) + "\n")
-    remove_tui.send(b"G")
-    wait_for(lambda: "Hello from halt-me." in remove_tui.text(), "the TUI chat did not show halt-me's message", seconds=60)
-    remove_tui.send(b"P")
-    wait_for(lambda: "Hello from halt-me." not in remove_tui.text() and "Atlas" not in remove_tui.text() and "halt-me" in remove_tui.text(),
-             lambda: f"P did not open halt-me's manager chat:\n{remove_tui.text()}", seconds=60)
+    # ^ Another chat's message is a row under its name; there is no peer key: a chat names its peer in `wsx task say`.
+    assert "(P)eer chat" not in remove_tui.text(), remove_tui.text()
     remove_tui.send(b"\x1b")
     wait_for(lambda: "press i to write a message" not in remove_tui.text(), "Esc did not close the manager chat", seconds=60)
     remove_tui.send(b"q")
@@ -2482,7 +2477,7 @@ try:
     # MiB (the log rolls over at 8 MiB) reads only the end of it, and a 20 KB line in the
     # composer costs the same as a short one. The find in the chat is in scripts/test-task.py.
     MiB = 1024 * 1024
-    halt_log = STATE / "wsx" / "tasks" / f"halt-me-{hashlib.sha256(str(removal['halt-me']).encode()).hexdigest()[:8]}" / "manager" / "log.jsonl"
+    halt_log = home_folder("halt-me", removal["halt-me"]) / "log.jsonl"
     filler = "lorem ipsum dolor sit amet " * 11
     filler_count = 0
     base = int(time.time() * 1000) - 7_200_000

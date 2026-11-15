@@ -407,7 +407,10 @@ const bubbles = () => evaluate(`[...document.querySelectorAll('.log .bubble')].m
 
 await resize([390, 844, 2]);
 await pair(cdp, siteUrl, code);
-const chat = `#/p/${project}`;
+const homeOf = (id) => evaluate(`fetch('api/tasks/${id}').then((r) => r.json()).then((view) => view.home_chat)`);
+// ^ A project's chat is at #/c/<home chat>; its sheets and lists stay under #/p/<id> (docs/web-client.md "Routes").
+const repoBase = `#/p/${project}`;
+const chat = `#/c/${await homeOf(project)}`;
 const page = (n) => `#/p/${project}/t/${n}`;
 
 // The tabs: each one link in the bar, inside the first screen. Home lists the projects.
@@ -1901,7 +1904,7 @@ await go(`#/p/${project}/t/2`);
 await until("!!document.querySelector('dialog.task-sheet[open]')", "the task sheet did not open over the long turn");
 await stand();
 await evaluate("history.back()");
-await until(`location.hash === '#/p/${project}' && !document.querySelector('dialog.task-sheet')`, "history.back() did not close the sheet");
+await until(`location.hash === '${chat}' && !document.querySelector('dialog.task-sheet')`, "history.back() did not close the sheet");
 await runs("after history.back()", ".log .typing .typing-dot");
 await stand();
 await evaluate("dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))");
@@ -2977,10 +2980,10 @@ await sameBack("a project's chat", opens(`a.home-row[href="${chat}"]`, "!!docume
 await go(chat);
 await until("!!document.querySelector('.composer-field')", "the chat did not open");
 const sheetOpen = (part) => `!!document.querySelector('dialog.task-sheet[open]') && location.hash.startsWith(${JSON.stringify(chat + part)})`;
-await sameBack("the overview", opens(`.manager > .bar a[href="${chat}/page"]`, sheetOpen("/page"), "the overview"), sheetBack);
-await sameBack("the task sheet", opens(`.log a.task-chip[href^="${chat}/t/"]`, sheetOpen("/t/"), "the task sheet"), sheetBack);
-await sameBack("the usage sheet", fromMenu(`a[href="${chat}/usage"]`, sheetOpen("/usage"), "the usage sheet"), sheetBack);
-await sameBack("the project's sessions", fromMenu(`a[href="${chat}/sessions"]`, "!!document.querySelector('#main .worktree')", "the project's sessions"), topBack);
+await sameBack("the overview", opens(`.manager > .bar a[href="${repoBase}/page"]`, sheetOpen("/page"), "the overview"), sheetBack);
+await sameBack("the task sheet", opens(`.log a.task-chip[href^="${repoBase}/t/"]`, sheetOpen("/t/"), "the task sheet"), sheetBack);
+await sameBack("the usage sheet", fromMenu(`a[href="${repoBase}/usage"]`, sheetOpen("/usage"), "the usage sheet"), sheetBack);
+await sameBack("the project's sessions", fromMenu(`a[href="${repoBase}/sessions"]`, "!!document.querySelector('#main .worktree')", "the project's sessions"), topBack);
 await go("#/sessions");
 await until("[...document.querySelectorAll('a[href*=\"#/s/\"]')].some((node) => node.textContent.includes('old chat'))", "the inbox does not list old chat");
 const oldChat = await evaluate("[...document.querySelectorAll('a[href*=\"#/s/\"]')].find((node) => node.textContent.includes('old chat')).getAttribute('href')");
@@ -3043,7 +3046,8 @@ if (safari.sent.join() !== "true,true" || !safari.viewport.includes("maximum-sca
 // the answer, the field says so, and the answer is a bubble; then the list cleared one row
 // after another: Land #2, Land #1, and then no reservoir with the focus on the composer.
 const plans = Number(plansArg);
-await go(`#/p/${plans}`);
+const plansChat = `#/c/${await homeOf(plans)}`;
+await go(plansChat);
 await until("!!document.querySelector('.pill')", "plans has no reservoir");
 await until("document.querySelectorAll('.log .bubble').length >= 2", "plans' chat shows no managers' bubbles", 30);
 const plansAuthors = await bubbles();
@@ -3163,7 +3167,7 @@ if (costly.length) await fail(`a read with no new message rendered bubbles again
 // ^ The find above left the whole log among the rows (docs/web-client-chat.md "Find"), the old
 // questions with them; the chat read anew shows only its newest part.
 await go("#/");
-await go(`#/p/${plans}`);
+await go(plansChat);
 await until("!!document.querySelector('.log .bubble') && !document.querySelector('.find')", "plans' chat did not come back after the find");
 const plansAsks = () => evaluate(`fetch('api/tasks/${plansArg}').then((r) => r.json()).then((data) => data.asks)`);
 // ^ The fake manager answers ASK with "Should I land it now?" (scripts/fake-claude-stream.py).
@@ -3254,7 +3258,7 @@ const inTap = await evaluate(`(() => {
   return { open: document.querySelector('dialog.task-sheet').open, focused: document.activeElement === field, value: field.value, caret: field.selectionStart, end: field.selectionEnd };
 })()`);
 if (inTap.open || !inTap.focused || inTap.value !== "#1 " || inTap.caret !== 3 || inTap.end !== 3) await fail(`the sheet's Answer did not focus the composer inside the tap: ${JSON.stringify(inTap)}`);
-await until(`location.hash === ${JSON.stringify(`#/p/${plans}`)} && !document.querySelector('dialog.task-sheet')`, "the sheet's Answer did not close the sheet");
+await until(`location.hash === ${JSON.stringify(plansChat)} && !document.querySelector('dialog.task-sheet')`, "the sheet's Answer did not close the sheet");
 await composerHas("#1 ", "the sheet's Answer did not put #1 into the composer");
 await typeInto(".composer-field", `#1 go on\nRUN wsx task add 1 "WORK keys.txt" -p plans --json`);
 await click(".composer-send");
@@ -3262,7 +3266,7 @@ await go(`#/p/${plans}/t/1`);
 await until("document.querySelectorAll('.task-talk .bubble').length === 1", "the answer is not a bubble", 60);
 if (await evaluate("document.querySelector('.task-talk .bubble').dataset.side") !== "out") await fail("the answer is not the owner's bubble");
 await until(`(document.querySelector('.task-sheet .progress-health')?.textContent ?? '') === 'Ready, waiting for you to land it' && ${hasNext("Land")}`, "#1 did not get ready after the answer", 120);
-await closeSheet("the waiting sheet", `#/p/${plans}`);
+await closeSheet("the waiting sheet", plansChat);
 // ^ Closing the sheet gives the composer the focus.
 await until("document.activeElement?.classList.contains('composer-field') && !document.activeElement.closest('dialog')", "closing the sheet did not focus the composer");
 // --- An uncommitted change in the main checkout to the file #2 writes: Land stays, a line
@@ -3283,11 +3287,11 @@ if (stops.top < stops.below || stops.right > stops.width || stops.sideways.lengt
 await shot("land-stops");
 git("add", longName);
 git("-c", "user.name=owner", "-c", "user.email=owner@example.invalid", "commit", "-q", "-m", "the owner's draft");
-await closeSheet("the land-stops sheet", `#/p/${plans}`);
+await closeSheet("the land-stops sheet", plansChat);
 await go(`#/p/${plans}/t/2`);
 await until("!!document.querySelector('dialog.task-sheet[open] .story') && !document.querySelector('.task-sheet .task-approval[role=note]')", "the Land stops line stayed after the commit", 30);
 git("reset", "-q", "--hard", "HEAD~1");
-await closeSheet("the committed sheet", `#/p/${plans}`);
+await closeSheet("the committed sheet", plansChat);
 
 // --- plans' failed deploy: its fold opens to the last lines, monospace, at most half the screen.
 await go(`#/p/${plans}/page`);
@@ -3302,7 +3306,7 @@ const fold = await evaluate(`(() => { const pre = document.querySelector('.deplo
 if (fold.last !== "deploy step 60" || !fold.end) await fail(`the fold does not open to the last lines: ${JSON.stringify(fold)}`);
 if (!/mono/i.test(fold.font) || fold.height > 844 / 2 || fold.sideways) await fail(`the fold's box is ${JSON.stringify(fold)}`);
 await shot("deploy-output");
-await closeSheet("plans' page", `#/p/${plans}`);
+await closeSheet("plans' page", plansChat);
 
 await openReservoir();
 await until(`(${rowOf("#1")}?.querySelector('.need-action')?.title ?? '') === 'Land'`, "#1's row does not offer Land", 60);
@@ -3550,7 +3554,7 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
     const turn = JSON.parse(text);
     return JSON.stringify({ ...turn, started_ms: turn.started_ms - 3600_000, output_ms: turn.output_ms - 3600_000, deadline_ms: turn.deadline_ms - 3600_000 });
   });
-  await go(`#/p/${plansArg}`);
+  await go(plansChat);
   await open(working);
   await shows(working, "stuck", { ...workingTop, health: "Stuck", age: "1h ago", next: "Stuck: no output for 1 h 0 min. The manager hears of the stall and decides what to do." });
   // ^ A stuck task stands out from a working one: its own color, no pulse, Take over on the screen.
@@ -3603,7 +3607,7 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   await open(behind);
   await shows(behind, "scenario test slot", { health: shownStatus.label, steps: "", now: "", next: slotWords });
   await shot("progress-scenario-slot", ".composer-send");
-  await go(`#/p/${plansArg}`);
+  await go(plansChat);
   await until("!document.querySelector('dialog.task-sheet')", "the scenario wait's sheet did not close");
   await openReservoir("running");
   // ^ The server publishes the overview on its next watch step, up to 2 s after the wait began.
@@ -3629,7 +3633,7 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   if (!new RegExp(`^#${scenario}\\b.* to land, its checks fail$`).test(waitsOn)) await fail(`#${behind}'s Waits on row reads ${JSON.stringify(waitsOn)}`);
   await shot("task-waits-on", ".composer-send");
   wsx("task", "after", behind, "--off");
-  await go(`#/p/${plansArg}`);
+  await go(plansChat);
   await until("!document.querySelector('dialog.task-sheet')", "the wait's sheet did not close");
   fs.writeFileSync(gate, "go");
   for (const task of [scenario, behind]) {
@@ -3714,7 +3718,7 @@ for (const wide of [false, true]) {
   if (chatFault) await fail(`the chat row's icons and time are not one group at the right edge: ${chatFault}`);
   await shot(`chats-home${wide ? "-wide" : ""}`);
   await evaluate(`${chatRow}.click()`);
-  await until(`location.hash === '#/p/${project}/c/billing' && !!document.querySelector('.log .bubble[data-side=in]')`, "the chat did not open with its reply");
+  await until(`location.hash === '#/c/billing' && !!document.querySelector('.log .bubble[data-side=in]')`, "the chat did not open with its reply");
   if (await count(".reservoir")) await fail("another chat shows the manager's reservoir");
   if ((await text(".bar-label"))[0] !== "billing") await fail(`the chat's title is ${await text(".bar-label")}, not its name`);
   // ^ The chat shows its own model, as the manager's chat shows the manager's (billing opened with --agent haiku-chat).
@@ -3824,14 +3828,14 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await choose("project", String(project));
   await evaluate(`document.querySelector('${sheet} form').requestSubmit()`);
   await until(`/required/.test(document.querySelector('${sheet} .field-note')?.textContent ?? '')`, "an empty name showed no refusal");
-  if (!(await evaluate(`document.activeElement?.name === 'name' && location.hash !== '#/p/${project}'`))) await fail("an empty name left the name field or the sheet");
+  if (!(await evaluate(`document.activeElement?.name === 'name' && location.hash !== '${chat}'`))) await fail("an empty name left the name field or the sheet");
   // ^ A name makes the chat with its goal and agent, and opens it, titled by its name.
   await choose("name", "QA");
   if ((await evaluate(`document.querySelector('${sheet} input[name=name]').value`)) !== "qa") await fail("the name was not lower-cased as typed");
   await choose("goal", "Check the release notes.\nSecond line.");
   await choose("agent", "haiku-chat");
   await evaluate(`document.querySelector('${sheet} form').requestSubmit()`);
-  await until(`location.hash === '#/p/${project}/c/qa' && document.querySelector('.bar-label')?.textContent === 'qa'`, "the new chat did not open under its name", 30);
+  await until(`location.hash === '#/c/qa' && document.querySelector('.bar-label')?.textContent === 'qa'`, "the new chat did not open under its name", 30);
   const made = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((data) => data.chats.find((chat) => chat.name === 'qa'))`);
   if (!made || made.goal !== "Check the release notes.") await fail(`the new chat is ${JSON.stringify(made)}`);
   // ^ An open name and a name the store would refuse are refused in the sheet, with no request.
@@ -3858,10 +3862,12 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   // row; `wsx task chat list` has it closed. The first chat's top row has no Close chat.
   const menuItems = () => evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].map((item) => item.textContent.trim())");
   await go(`#/p/${project}`);
+  await until(`location.hash === '${chat}'`, "the old route #/p/<id> did not redirect to the home chat");
   await until("!!document.querySelector('.bar .more-button')", "the manager chat has no ⋯ menu");
   await click(".bar .more-button");
   if ((await menuItems()).includes("Close chat")) await fail(`the first chat offers ${await menuItems()}`);
   await go(`#/p/${project}/c/qa`);
+  await until("location.hash === '#/c/qa'", "the old route #/p/<id>/c/<chat> did not redirect to #/c/<chat>");
   await until("document.querySelector('.bar-label')?.textContent === 'qa' && !!document.querySelector('.bar .more-button')", "the qa chat has no ⋯ menu");
   await click(".bar .more-button");
   if ((await menuItems()).join() !== "Close chat") await fail(`the qa chat's menu is ${await menuItems()}`);
@@ -3902,7 +3908,7 @@ await go(chat);
 {
   const cli = JSON.parse(fs.readFileSync(wsxCli));
   execFileSync(cli.wsx, ["task", "digest", "-p", "plans", "--since", "0"], { env: cli.env, cwd: cli.cwd, stdio: "pipe" });
-  await go(`#/p/${plansArg}`);
+  await go(plansChat);
   await until("!!document.querySelector('.bubble[data-routine]')", "the digest's bubble has no routine mark", 30);
   const look = () => evaluate(`(() => { const probe = (name) => { const node = Object.assign(document.createElement('i'), {}); node.style.color = 'var(--' + name + ')'; document.body.append(node);
     const color = getComputedStyle(node).color; node.remove(); return color; };
@@ -4113,7 +4119,7 @@ if (reviewed.running || reviewed.needs) await fail(`the review-waiting row is ${
     await fail(`the review-waiting task reads ${JSON.stringify({ rowWords, sheetWords, json })}`);
   }
   await shot("review-sheet", ".composer-send");
-  await go(`#/p/${project}`);
+  await go(chat);
   await until("!document.querySelector('dialog.task-sheet')", "the review-waiting sheet did not close");
 }
 // --- An overview over the cap: the sheet cuts it to 60 lines and 4,000 characters and says so.
@@ -4124,12 +4130,12 @@ if (reviewed.running || reviewed.needs) await fail(`the review-waiting row is ${
   fs.writeFileSync(path.join(path.dirname(path.dirname(shown.log)), "overview.md"), "# plans\n" + "a line of the overview\n".repeat(69));
 }
 // ^ Opened from plans' chat: the close is history back, which from ui's chat would return there.
-await go(`#/p/${plansArg}`);
+await go(plansChat);
 await go(`#/p/${plansArg}/page`);
 await until("!!document.querySelector('dialog.task-sheet[open] .project-overview .over-limit')", "the over-cap overview shows no note", 60);
 const cut = await evaluate("({ lines: (document.querySelector('.project-overview .task-body').textContent.match(/a line of the overview/g) ?? []).length, note: document.querySelector('.over-limit').textContent })");
 if (cut.lines > 59 || !/Over the size limit/.test(cut.note)) await fail(`the over-cap overview is not cut: ${JSON.stringify(cut)}`);
-await closeSheet("the page", `#/p/${plansArg}`);
+await closeSheet("the page", plansChat);
 
 // --- A task mention of another project (docs/web-client-tasks.md "Project screen"): ui and plans
 // both have a #1. "plans #1" in ui's own reply and a bare #1 in plans' manager's message open plans'
@@ -4179,22 +4185,22 @@ await closeSheet("the page", `#/p/${plansArg}`);
     const name = bubble?.querySelector('.bubble-author'); return name && { tag: name.tagName, href: name.getAttribute('href'), label: name.getAttribute('aria-label'), text: name.textContent.trim(),
       color: getComputedStyle(name).color, plain: getComputedStyle(bubble.closest('.log').querySelector('.bubble[data-speaker="manager"] .bubble-author') ?? name).color }; })()`;
   const nameLink = await evaluate(nameOf);
-  if (nameLink?.tag !== "A" || nameLink.href !== `#/p/${plansArg}` || nameLink.label !== "Open plans manager chat" || nameLink.text !== "plans" || nameLink.color === nameLink.plain) {
+  if (nameLink?.tag !== "A" || nameLink.href !== plansChat || nameLink.label !== "Open chat plans" || nameLink.text !== "plans" || nameLink.color === nameLink.plain) {
     await fail(`plans' name over its message reads ${JSON.stringify(nameLink)}`);
   }
   await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(peerWords)})).scrollIntoView({ block: 'center' })`);
   await capture(`${size[0]}x${size[1]}-peer-name`);
   await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(peerWords)})).querySelector('a.bubble-author').click()`);
-  await until(`location.hash === '#/p/${plansArg}' && document.querySelector('.bar-label')?.textContent === 'plans'`, "plans' name did not open plans' manager chat", 60);
+  await until(`location.hash === '${plansChat}' && document.querySelector('.bar-label')?.textContent === 'plans'`, "plans' name did not open plans' manager chat", 60);
   await evaluate("history.back()");
-  await until(`(location.hash === '${chat}' || location.hash === '#/p/${project}') && [...document.querySelectorAll('.log .bubble')].some((node) => node.textContent.includes(${JSON.stringify(plansMark)}))`, "Back did not return to ui's chat from plans'", 100);
+  await until(`location.hash === '${chat}' && [...document.querySelectorAll('.log .bubble')].some((node) => node.textContent.includes(${JSON.stringify(plansMark)}))`, "Back did not return to ui's chat from plans'", 100);
   // ^ A tap moves to plans' chat with #1's sheet over it; Back returns to ui's chat.
   await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).querySelector('a.task-chip').click()`);
   await until(`location.hash === '#/p/${plansArg}/t/1' && !!document.querySelector('dialog.task-sheet[open]')`, "plans #1 did not open from ui's chat", 60);
   // ^ The sheet shows "#1" until the task's detail is read; plans' #1 is the one that mentions "jump between projects".
   await until("/jump between projects/.test(document.querySelector('dialog.task-sheet[open]')?.textContent ?? '')", "the sheet is not plans' #1", 100);
   await evaluate("history.back()");
-  await until(`location.hash === '${chat}' || location.hash === '#/p/${project}'`, "Back did not return to ui's chat", 60);
+  await until(`location.hash === '${chat}'`, "Back did not return to ui's chat", 60);
   // ^ The own project's bare #1 opens ui's #1.
   await until(`[...document.querySelectorAll('.log .bubble')].some((node) => node.textContent.includes(${JSON.stringify(plansMark)}))`, "ui's chat did not come back", 60);
   await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).querySelectorAll('a.task-chip')[1].click()`);
@@ -4434,7 +4440,7 @@ await closeSheet("the page", `#/p/${plansArg}`);
   const opened = () => evaluate("[...document.querySelectorAll('.viewer-bar .time')].find((node) => / of /.test(node.textContent))?.textContent ?? ''");
   for (const wide of [false, true]) {
     await resize(wide ? [1280, 800, 1] : [390, 844, 2]);
-    await go(`#/p/${plansArg}`);
+    await go(plansChat);
     // ^ What the server grants: the files of each message, once, with the path they were named by.
     const rows = await evaluate(`fetch('api/tasks/${plansArg}/chat').then((r) => r.json()).then((data) => data.rows.filter((row) => row.id >= 9500000 && row.id <= 9500002)
       .map((row) => [row.id, row.key, (row.attachments ?? []).map((file) => [file.src, file.mime, !!file.poster])]))`);
@@ -4586,7 +4592,7 @@ await closeSheet("the page", `#/p/${plansArg}`);
   fs.rmSync(kept, { recursive: true });
   fs.rmSync(path.join(plansCheckout, ".studio-data"), { recursive: true });
   fs.rmSync(path.join(plansCheckout, ".env"));
-  await go(`#/p/${plansArg}`);
+  await go(plansChat);
 }
 console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail closing the item and its reply kept as the note, Pass in a bubble that stays in place, Skip), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Chats (a Home row under its project with its unread dot, none in the ⋯ menu, its chat at #/p/<project>/c/<chat> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await linter.finish(fail);

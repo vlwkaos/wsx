@@ -1555,7 +1555,13 @@ impl Manager {
     /// Queue a task's event line. Only the task's owner hears of it: the open chat that created
     /// it (`chats::owner`), else this repo's home chat, which is this manager.
     /// ref: docs/tasks.md "Chats"
-    fn task_event(&mut self, record: &TaskRecord, open_chats: &[String], line: String, short: Short) {
+    fn task_event(
+        &mut self,
+        record: &TaskRecord,
+        open_chats: &[String],
+        line: String,
+        short: Short,
+    ) {
         let owner = chats::owner(record.created_by.chat(), open_chats, self.dir.name());
         match owner == self.dir.name() {
             true => self.pending_events.push((line, short)),

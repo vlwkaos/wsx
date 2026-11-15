@@ -127,7 +127,7 @@ def run(wsx, wsxd, claude, model, work, owned):
         time.sleep(1)
     assert reply, 'no reply in 10 minutes'
     page = next(state.glob('wsx/tasks/*/overview.md'))
-    notes = next(state.glob('wsx/tasks/*/manager/notes'))
+    notes = next(state.glob('wsx/tasks/chats/*/notes'))
     events = [json.loads(line) for line in stream.read_text().splitlines() if line.startswith('{')]
     results = [block for e in events if e.get('type') == 'user'
                for block in e['message'].get('content', []) if isinstance(block, dict) and block.get('type') == 'tool_result']

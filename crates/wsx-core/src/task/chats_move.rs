@@ -74,7 +74,10 @@ pub(super) fn run(project_id: &str, project: &Path) -> Result<Vec<Stopped>> {
         let new = if !root.join(folder).exists() && !taken.contains(folder) {
             folder.clone()
         } else {
-            free(&format!("{}-{folder}", chats::home_base(project_id)), &taken)
+            free(
+                &format!("{}-{folder}", chats::home_base(project_id)),
+                &taken,
+            )
         };
         taken.push(new.clone());
         names.insert(folder.clone(), new);
@@ -87,8 +90,13 @@ pub(super) fn run(project_id: &str, project: &Path) -> Result<Vec<Stopped>> {
     for folder in &folders {
         let new = &names[folder.name.as_deref().unwrap_or("manager")];
         let target = root.join(new);
-        std::fs::rename(&folder.path, &target)
-            .with_context(|| format!("cannot move {} to {}", folder.path.display(), target.display()))?;
+        std::fs::rename(&folder.path, &target).with_context(|| {
+            format!(
+                "cannot move {} to {}",
+                folder.path.display(),
+                target.display()
+            )
+        })?;
         let mut file: Value = store::read_bounded_if_exists(&target.join(CHAT_FILE), 4096)?
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_else(|| serde_json::json!({}));
@@ -206,7 +214,10 @@ fn rewrite(
         return Ok(());
     };
     let mut out = Vec::with_capacity(bytes.len());
-    for line in bytes.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()) {
+    for line in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
         match serde_json::from_slice::<Value>(line) {
             Ok(mut value) if value["kind"] == "request" => {
                 value["chat"] = match value["chat"].as_str() {
@@ -254,7 +265,8 @@ fn rename_value(value: &mut Value, names: &BTreeMap<String, String>, home_by: &s
                         true
                     }
                     (true, Some(by)) if by.starts_with("manager@") => {
-                        *item = format!("chat:{}", chats::slug_name(&by["manager@".len()..])).into();
+                        *item =
+                            format!("chat:{}", chats::slug_name(&by["manager@".len()..])).into();
                         true
                     }
                     _ => rename_value(item, names, home_by),

@@ -471,7 +471,11 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
     let from_elsewhere = record
         .created_by
         .chat()
-        .and_then(|chat| wsx_core::task::store::ManagerDir::existing(chat).ok().flatten())
+        .and_then(|chat| {
+            wsx_core::task::store::ManagerDir::existing(chat)
+                .ok()
+                .flatten()
+        })
         .is_some_and(|chat| chat.project_id != record.project_id);
     if from_elsewhere {
         if let Err(error) = super::chat::ensure_manager(Some(&project.name)) {

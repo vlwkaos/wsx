@@ -91,7 +91,7 @@ impl Fixture {
     /// `wsx` as the manager runs it: a push or a force push asks the owner.
     fn manager(&self, args: &[&str]) -> Output {
         self.command(Path::new(env!("CARGO_BIN_EXE_wsx")))
-            .env("WSX_TASK_ACTOR", "manager")
+            .env("WSX_TASK_ACTOR", "chat:demo")
             .args(args)
             .output()
             .unwrap_or_else(|error| panic!("run wsx {args:?}: {error}"))
