@@ -3790,7 +3790,9 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
 {
   const state = JSON.parse(fs.readFileSync(wsxCli)).env.XDG_STATE_HOME;
   const found = fs.readdirSync(state, { recursive: true }).find((file) => file.endsWith(path.join("chats", "billing", "log.jsonl")));
-  const approvals = path.join(state, path.dirname(path.dirname(path.dirname(found))), "approvals.jsonl");
+  // ^ Chats live in tasks/chats/<name>/; the approvals are in the store of the repo the chat works in (its chat.json).
+  const repo = JSON.parse(fs.readFileSync(path.join(state, path.dirname(found), "chat.json"))).repos[0];
+  const approvals = path.join(state, path.dirname(path.dirname(path.dirname(found))), repo, "approvals.jsonl");
   const line = (entry) => fs.appendFileSync(approvals, `${JSON.stringify(entry)}\n`);
   const chatCount = "(document.querySelector('.home-rows .chat-row .tray[data-kind=needs] .tray-count')?.textContent ?? '')";
   const firstCount = `(document.querySelector('.home-rows .row[data-key="${project}"] .tray[data-kind=needs] .tray-count')?.textContent ?? '')`;
