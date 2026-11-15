@@ -667,6 +667,6 @@ pub fn run_message(
     view: &wsx_core::routine::RoutineView,
 ) -> Option<u64> {
     let run = view.latest_run.as_ref()?;
-    let dir = store::ManagerDir::existing(&store::project_id(project, main)).ok()??;
+    let dir = store::ManagerDir::home(&store::project_id(project, main)).ok()??;
     wsx_core::task::chat::run_messages(&dir, &[run]).pop()?
 }

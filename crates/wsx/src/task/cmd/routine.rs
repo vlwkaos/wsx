@@ -101,7 +101,7 @@ pub(crate) fn digest(project: Option<&str>, since: Option<u64>) -> Result<()> {
     let project_id = store::project_id(&name, &main);
     let after_ms = since.map_or_else(
         || {
-            let log = ManagerDir::existing(&project_id)
+            let log = ManagerDir::home(&project_id)
                 .ok()
                 .flatten()
                 .and_then(|dir| dir.read_log().ok())
