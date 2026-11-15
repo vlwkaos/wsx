@@ -4769,8 +4769,8 @@ merge_seconds = 3
             home_order = sorted((name for name in ids if name in ('ui', 'demo', 'plans', 'calm')), key=home_key)
             # ^ ui and plans have a waiting task, demo only tasks to land.
             assert sorted(home_order[:2]) == ['plans', 'ui'] and home_order[2:] == ['demo', 'calm'], home_order
-            # ^ Projects with sessions and no task follow by their newest session (created in this order).
-            home_order[-1:-1] = ['busy', 'quiet', 'gone']
+            # ^ Projects with no task, session or not, have no activity and stay in the project list's order (calm, busy, quiet, gone).
+            home_order += ['busy', 'quiet', 'gone']
             # A chat in ui with a reply and an agent of its own, for the page's Chats contact and room.
             with open(config / 'config-v2.toml', 'a') as agents:
                 agents.write('[[agents]]\nname = "haiku-chat"\ncommand = ["claude"]\nadapter = "claude"\nmodel = "haiku"\n')

@@ -611,8 +611,8 @@ const uiRow = homeRows.find((row) => row.name === "ui");
 // ^ The tray icons are the pills' (trays.js): the needs tray reads the needs count, and a row with nothing to count shows none.
 if (!uiRow.trays.split(",").includes("needs:6:true") || homeRows.find((row) => row.name === "calm").trays) await fail(`the Home trays read ${JSON.stringify(homeRows.map((row) => [row.name, row.trays]))}`);
 if (uiRow.count !== "6" || uiRow.status !== "#1 Waiting for your answer" || !/ago|now/.test(uiRow.state)) await fail(`the ui row reads ${JSON.stringify(uiRow)}`);
-const calmRow = homeRows.at(-1);
-if (calmRow.name !== "calm" || calmRow.count || calmRow.status !== "No tasks yet" || calmRow.state) await fail(`the calm row reads ${JSON.stringify(calmRow)}`);
+const calmRow = homeRows.find((row) => row.name === "calm");
+if (!calmRow || calmRow.count || calmRow.status !== "No tasks yet" || calmRow.state) await fail(`the calm row reads ${JSON.stringify(calmRow)}`);
 const plansRow = homeRows.find((row) => row.name === "plans");
 // ^ #1 waits for an answer; #2 is ready to land. The needs tray counts them with the project's open questions, as the pill does.
 const plansView = await evaluate(`fetch('api/tasks/${plansArg}').then((r) => r.json()).then((view) => ({ needs: view.needs.length, asks: view.asks.length }))`);
@@ -2274,9 +2274,8 @@ async function readAndReply(where) {
   if (back === null || Math.abs(back - left.down) > 2 || await count(".log-new") || await jumpWords() !== "Jump to latest") {
     await fail(`${where}: the chat did not open where it was left: ${JSON.stringify({ left, back, line: await count(".log-new"), jump: await jumpWords() })}`);
   }
-  // (e) Reply: the menu of a right click on a wide screen. × removes the quote; a tap on a phone
-  // opens the menu too, a long press is the system's text selection, and a drag sideways on a
-  // bubble is nothing: it quotes nothing and opens no menu.
+  // (e) Reply: the menu of a swipe right on a phone or a right click on a wide screen; Reply in it
+  // quotes, × removes the quote. A tap, a long press, a short or a leftward drag open no menu.
   const point = await pressPoint(fiveColumns);
   const quote = "(document.querySelector('.composer .reply-quote-text')?.textContent ?? '').replace('Replying to: ', '')";
   // ^ The menu closes on any scroll (reply.js), also one the page makes while a capture runs: tap
@@ -2286,28 +2285,34 @@ async function readAndReply(where) {
     await evaluate(`${fiveColumns}.querySelector('.bubble-body p').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: ${at.x}, clientY: ${at.y}, button: 2 }))`);
     await until("!!document.querySelector('.reply-menu')", `${where}: a right click opened no menu`);
   };
+  const swipeMenu = async (at) => {
+    await touch(at, 90);
+    await until("!!document.querySelector('.reply-menu')", `${where}: a swipe right opened no menu`);
+  };
+  const openMenu = phone() ? swipeMenu : rightClickMenu;
   const replyFromMenu = async (at) => {
     for (let attempt = 0; attempt < 5; attempt++) {
-      await rightClickMenu(at);
+      await openMenu(at);
       if (await evaluate(menuReply)) return;
     }
     await fail(`${where}: the reply menu closed before Reply was tapped`);
   };
-  if (phone()) {
-    await touch(point, 90);
-    await pause(300);
-    const dragged = await evaluate(`({ quote: ${quote}, menu: !!document.querySelector('.reply-menu') })`);
-    if (dragged.quote || dragged.menu) await fail(`${where}: a drag sideways on a bubble quoted or opened a menu: ${JSON.stringify(dragged)}`);
-  } else {
-    await rightClickMenu(point);
-    await shot("reply-menu");
-    if (!(await evaluate(menuReply))) await replyFromMenu(point);
-    await until(`${quote} === 'Five columns:'`, `${where}: the reply shows no quote over the composer`);
-    await evaluate("document.querySelector('.composer .reply-quote button').click()");
-    await until("!document.querySelector('.composer .reply-quote')", `${where}: × did not remove the quote`);
-  }
+  await openMenu(point);
+  await shot("reply-menu");
+  if (!(await evaluate(menuReply))) await replyFromMenu(point);
+  await until(`${quote} === 'Five columns:'`, `${where}: the reply shows no quote over the composer`);
+  if (await evaluate(`${fiveColumns}.style.translate`)) await fail(`${where}: the swiped bubble did not come back`);
+  await evaluate("document.querySelector('.composer .reply-quote button').click()");
+  await until("!document.querySelector('.composer .reply-quote')", `${where}: × did not remove the quote`);
   // ^ The reply is sent with its quote on every screen.
   if (phone()) {
+    // ^ A drag left or one under 64 px is no swipe: no menu, no quote.
+    for (const dx of [-90, 40]) {
+      await touch(await pressPoint(fiveColumns), dx);
+      await pause(300);
+      const dragged = await evaluate(`({ quote: ${quote}, menu: !!document.querySelector('.reply-menu') })`);
+      if (dragged.quote || dragged.menu) await fail(`${where}: a drag of ${dx} px on a bubble quoted or opened a menu: ${JSON.stringify(dragged)}`);
+    }
     // ^ A press of 700 ms is the system's: no menu, and the page leaves its text selectable. A real
     // long press cannot be sent (Chrome's touch emulation starts no selection), so a double click
     // selects a word the engine's way, and a tap then only clears that selection (reply.js).
@@ -2324,9 +2329,10 @@ async function readAndReply(where) {
     if (await count(".reply-menu")) await fail(`${where}: a tap that ends a selection opened the menu`);
     await evaluate("getSelection().removeAllRanges()");
     await touch(await pressPoint(fiveColumns), 0, 60);
-    await until("!!document.querySelector('.reply-menu')", `${where}: a tap opened no menu`);
-    if (!(await evaluate(menuReply))) await fail(`${where}: the reply menu closed before Reply was tapped`);
-  } else await replyFromMenu(await pressPoint(fiveColumns));
+    await pause(300);
+    if (await count(".reply-menu")) await fail(`${where}: a tap on a message opened the menu`);
+  }
+  await replyFromMenu(await pressPoint(fiveColumns));
   await until(`${quote} === 'Five columns:'`, `${where}: Reply in the menu shows no quote`);
   if (await evaluate("document.activeElement?.matches('.composer-field')") !== true) await fail(`${where}: the reply did not focus the composer`);
   await shot("reply-quote", ".composer-send");
