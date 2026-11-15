@@ -1,7 +1,8 @@
-//! Chats: a manager with a name and a goal. The project's first chat is `manager/`; each other
-//! is `tasks/<project-id>/chats/<name>/` with its own log, `notes/`, an optional `goal.md` and
-//! `chat.json {agent?}`. The project (files, tasks, rules, memory) is shared; a chat reaches
-//! another's context by search or by `say`. ref: docs/tasks.md "Chats"
+//! Chats: a manager with a name and a goal. Each is `tasks/chats/<name>/` (the name is its id,
+//! unique on the machine) with its own log, `notes/`, an optional `goal.md` and `chat.json
+//! {agent?, repos, from?}`. A repo's `home.json` names its home chat, which hears what no chat
+//! owns. The repo (files, tasks, rules, memory) is shared; a chat reaches another's context by
+//! search or by `say`. ref: docs/tasks.md "Chats"
 
 use super::checks::CheckItem;
 use super::manager::ApprovalLine;
@@ -59,10 +60,9 @@ pub fn name_problem(name: &str, open: &[String]) -> Option<String> {
     }
 }
 
-/// The project's chat folders besides `manager/`, open or closed, by name.
-pub fn all(project_id: &str) -> Vec<ManagerDir> {
-    let Ok(entries) = store::chats_dir(project_id).and_then(|dir| Ok(std::fs::read_dir(dir)?))
-    else {
+/// Every chat folder of the machine, open or closed, by name.
+fn machine_chats() -> Vec<ManagerDir> {
+    let Ok(entries) = std::fs::read_dir(store::chats_root()) else {
         return Vec::new();
     };
     let mut names: Vec<String> = entries
@@ -72,52 +72,114 @@ pub fn all(project_id: &str) -> Vec<ManagerDir> {
     names.sort();
     names
         .iter()
-        .filter_map(|name| ManagerDir::existing_as(project_id, Some(name)).ok()?)
+        .filter_map(|name| ManagerDir::existing(name).ok()?)
+        .collect()
+}
+
+/// The chats that run in the repo `project_id`, open or closed, by name.
+pub fn all(project_id: &str) -> Vec<ManagerDir> {
+    machine_chats()
+        .into_iter()
+        .filter(|dir| repos(dir).iter().any(|repo| repo == project_id))
         .collect()
 }
 
 pub fn is_open(dir: &ManagerDir) -> bool {
-    dir.chat.is_some() && !dir.path.join(CLOSED_FILE).exists()
+    !dir.path.join(CLOSED_FILE).exists()
 }
 
-/// The open chats' folders, by name.
+/// The open chats of the repo, by name.
 pub fn open_chats(project_id: &str) -> Vec<ManagerDir> {
     all(project_id).into_iter().filter(is_open).collect()
 }
 
 /// The open chat of that name, or an error that says why there is none.
-pub fn open_chat(project_id: &str, name: &str) -> Result<ManagerDir> {
-    match ManagerDir::existing_as(project_id, Some(name))? {
+pub fn open_chat(name: &str) -> Result<ManagerDir> {
+    match ManagerDir::existing(name)? {
         Some(dir) if is_open(&dir) => Ok(dir),
-        _ => bail!("the project has no open chat {name}; `wsx task chat list` names them"),
+        _ => bail!("there is no open chat {name}; `wsx task chat list` names them"),
     }
 }
 
-/// The names of the open chats.
-pub fn open_names(project_id: &str) -> Vec<String> {
-    open_chats(project_id)
+/// The names of the open chats of the machine: a task made in one repo by a chat of another
+/// belongs to that chat (`owner`).
+pub fn open_names() -> Vec<String> {
+    machine_chats()
         .iter()
+        .filter(|dir| is_open(dir))
         .map(|dir| dir.name().to_string())
         .collect()
 }
 
-/// The one ownership rule: a task (`created_by`) or an approval request (`chat`) made by an
-/// open chat belongs to that chat; every other one, also one of a closed chat, belongs to the
-/// first chat (`None`). The chat hears the task's events and the request's decision, and its
-/// view shows the request and the task's To check items.
-pub fn owner<'a>(made_by: Option<&'a str>, open: &[String]) -> Option<&'a str> {
-    made_by.filter(|chat| open.iter().any(|name| name == chat))
+/// The name of the repo's own chat before its home is set: the repo's name, in a chat's name
+/// form, and one that no chat has yet.
+pub fn home_name(project_id: &str) -> String {
+    free_name(&home_base(project_id))
 }
 
-/// The lines of `approvals.jsonl` that chat `viewer` (`None`: the first) shows: its own
-/// requests and their decisions.
+/// The repo's name, from its store id, in a chat's name form.
+pub(super) fn home_base(project_id: &str) -> String {
+    let slug = project_id
+        .rsplit_once('-')
+        .filter(|(_, hash)| hash.len() == 8 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map_or(project_id, |(slug, _)| slug);
+    slug_name(slug)
+}
+
+/// `name` as a chat's name: lowercase letters, digits and `-`, from a letter, at most
+/// `MAX_NAME_CHARS`.
+pub(super) fn slug_name(name: &str) -> String {
+    let mut slug: String = name
+        .chars()
+        .map(|c| match c.to_ascii_lowercase() {
+            c if c.is_ascii_lowercase() || c.is_ascii_digit() => c,
+            _ => '-',
+        })
+        .collect();
+    slug = slug.trim_matches('-').to_string();
+    if !slug.starts_with(|c: char| c.is_ascii_lowercase()) {
+        slug.insert(0, 'r');
+    }
+    slug.truncate(MAX_NAME_CHARS - 3);
+    let slug = slug.trim_end_matches('-');
+    if slug == "manager" {
+        "manager-repo".into()
+    } else {
+        slug.to_string()
+    }
+}
+
+/// `base`, or `base-<n>` for the first n that is not the name of a chat folder.
+fn free_name(base: &str) -> String {
+    (1..)
+        .map(|n| match n {
+            1 => base.to_string(),
+            n => format!("{base}-{n}"),
+        })
+        .find(|name| !store::chats_root().join(name).exists())
+        .expect("a free chat name")
+}
+
+/// The one ownership rule: a task (`created_by`) or an approval request (`chat`) made by an
+/// open chat belongs to that chat; every other one, also one of a closed chat, belongs to the
+/// repo's home chat (`home`). The chat hears the task's events and the request's decision, and
+/// its view shows the request and the task's To check items.
+pub fn owner<'a>(made_by: Option<&'a str>, open: &[String], home: &'a str) -> &'a str {
+    made_by
+        .filter(|chat| open.iter().any(|name| name == chat))
+        .unwrap_or(home)
+}
+
+/// The lines of `approvals.jsonl` that chat `viewer` shows: its own requests and their
+/// decisions.
 pub fn approvals_of(
     lines: Vec<ApprovalLine>,
-    viewer: Option<&str>,
+    viewer: &str,
     open: &[String],
+    home: &str,
 ) -> Vec<ApprovalLine> {
     let mine = |line: &ApprovalLine| match line {
-        ApprovalLine::Request { chat, .. } => owner(chat.as_deref(), open) == viewer,
+        ApprovalLine::Request { chat, .. } => owner(chat.as_deref(), open, home) == viewer,
         ApprovalLine::Decision { .. } => false,
     };
     let ids: HashSet<String> = lines
@@ -131,12 +193,13 @@ pub fn approvals_of(
         .collect()
 }
 
-/// The To check items of the tasks that chat `viewer` (`None`: the first) owns.
+/// The To check items of the tasks that chat `viewer` owns.
 pub fn checks_of(
     project_id: &str,
     items: Vec<CheckItem>,
-    viewer: Option<&str>,
+    viewer: &str,
     open: &[String],
+    home: &str,
 ) -> Vec<CheckItem> {
     items
         .into_iter()
@@ -144,7 +207,7 @@ pub fn checks_of(
             let made_by = store::TaskDir::open(project_id, item.task)
                 .and_then(|dir| dir.read_record())
                 .map(|record| record.created_by);
-            owner(made_by.as_ref().ok().and_then(|by| by.chat()), open) == viewer
+            owner(made_by.as_ref().ok().and_then(|by| by.chat()), open, home) == viewer
         })
         .collect()
 }
@@ -168,10 +231,23 @@ pub fn checked_goal(goal: &str) -> Result<&str> {
     Ok(goal)
 }
 
+/// The chat and the message that asked for a chat (`chat new --owner-said`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatFrom {
+    pub chat: String,
+    pub message: u64,
+}
+
+/// `chat.json`: the chat's own agent, the repos it runs in (the first is its own, where its
+/// host runs) and the message that asked for it.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ChatFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
+    #[serde(default)]
+    repos: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    from: Option<ChatFrom>,
 }
 
 fn chat_file(dir: &ManagerDir) -> ChatFile {
@@ -180,6 +256,32 @@ fn chat_file(dir: &ManagerDir) -> ChatFile {
         .flatten()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
+}
+
+fn write_chat_file(dir: &ManagerDir, file: &ChatFile) -> Result<()> {
+    store::write_atomic(&dir.path.join(CHAT_FILE), &serde_json::to_vec(file)?)
+}
+
+/// The repos the chat runs in; the first is its own.
+pub fn repos(dir: &ManagerDir) -> Vec<String> {
+    chat_file(dir).repos
+}
+
+/// A new chat folder gets its `chat.json` with its repo.
+pub(super) fn ensure_file(dir: &ManagerDir) -> Result<()> {
+    if dir.path.join(CHAT_FILE).exists() {
+        return Ok(());
+    }
+    let file = ChatFile {
+        repos: vec![dir.project_id.clone()],
+        ..ChatFile::default()
+    };
+    write_chat_file(dir, &file)
+}
+
+/// The message that asked for the chat, if a chat's agent did.
+pub fn from(dir: &ManagerDir) -> Option<ChatFrom> {
+    chat_file(dir).from
 }
 
 /// A chat's own agent: an `[[agents]]` entry's adapter and model.
@@ -230,30 +332,36 @@ pub fn agent(dir: &ManagerDir) -> Option<ChatAgent> {
     entry_agent(&chat_file(dir).agent?)
 }
 
-/// Open the chat: a new folder, or a closed one again with its notes. A new `goal` replaces
-/// the old.
+/// Open the chat in the repo `project_id`: a new folder, or a closed one again with its notes.
+/// A new `goal` replaces the old; `from` is the message of a chat's agent that asked for it.
 pub fn create(
     project_id: &str,
     name: &str,
     goal: Option<&str>,
     agent: Option<&str>,
+    from: Option<ChatFrom>,
 ) -> Result<ManagerDir> {
     let name = checked_name(name)?;
     let agent = agent.map(checked_agent).transpose()?;
     if let Some(goal) = goal {
         checked_goal(goal)?;
     }
-    if ManagerDir::existing_as(project_id, Some(name))?.is_some_and(|dir| is_open(&dir)) {
-        bail!("chat {name} is already open");
+    if let Some(dir) = ManagerDir::existing(name)? {
+        if is_open(&dir) {
+            bail!("chat {name} is already open");
+        }
+        if repos(&dir).first().map(String::as_str) != Some(project_id) {
+            bail!("chat {name} is a closed chat of another repo; choose another name");
+        }
     }
-    let dir = ManagerDir::open_as(project_id, Some(name))?;
+    let dir = ManagerDir::open_as(project_id, name)?;
     if let Some(goal) = goal {
         store::write_atomic(&dir.path.join(GOAL_FILE), goal.as_bytes())?;
     }
-    let file = ChatFile {
-        agent: agent.map(str::to_string),
-    };
-    store::write_atomic(&dir.path.join(CHAT_FILE), &serde_json::to_vec(&file)?)?;
+    let mut file = chat_file(&dir);
+    file.agent = agent.map(str::to_string);
+    file.from = from;
+    write_chat_file(&dir, &file)?;
     match std::fs::remove_file(dir.path.join(CLOSED_FILE)) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
             return Err(error).context("cannot open the closed chat again")
@@ -263,12 +371,63 @@ pub fn create(
     Ok(dir)
 }
 
-/// The owner closes an open chat (`wsx task chat close`, the web's and the TUI's Close chat):
-/// its host sees the file and leaves. The notes and the log stay; `create` of the same name
-/// opens it again. The first chat (`manager`), an unknown or a closed name is refused.
-pub fn close(project_id: &str, name: &str) -> Result<()> {
-    let dir = open_chat(project_id, name)?;
-    store::write_atomic(&dir.path.join(CLOSED_FILE), b"closed by the owner")
+/// Close an open chat (`wsx task chat close`, the web's and the TUI's Close chat): its host sees
+/// the file and leaves. The notes and the log stay; `create` of the same name opens it again.
+/// A repo's home chat, an unknown or a closed name is refused: repoint the home first. Returns
+/// the hand-back for the home chat (`hand_back`); the caller says it there.
+pub fn close(name: &str) -> Result<(String, String)> {
+    let dir = open_chat(name)?;
+    let project_id = dir.project_id.clone();
+    let home = store::home_chat(&project_id).unwrap_or_default();
+    if home == name {
+        bail!("{name} is the home chat of its repo; repoint the home first");
+    }
+    let text = hand_back(&dir);
+    store::write_atomic(&dir.path.join(CLOSED_FILE), b"closed by the owner")?;
+    Ok((home, text))
+}
+
+/// How many of the closed chat's last decisions lines the hand-back carries.
+const HAND_BACK_DECISIONS: usize = 5;
+
+/// What a closing chat hands to the home chat: its goal, its open tasks, its last decisions.
+/// The open tasks belong to the home chat from then on (`owner`).
+fn hand_back(dir: &ManagerDir) -> String {
+    let goal = goal(dir);
+    let goal = goal.lines().map(str::trim).find(|line| !line.is_empty());
+    let tasks: Vec<String> = store::task_numbers(&dir.project_id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|id| store::TaskDir::open(&dir.project_id, id).ok()?.read_record().ok())
+        .filter(|record| record.created_by.chat() == Some(dir.name()) && record.state.is_open())
+        .map(|record| format!("#{} {} ({})", record.id, record.title.as_deref().unwrap_or_default(), record.state.as_str()))
+        .collect();
+    let notes = dir.path.join("notes/decisions.md");
+    let decisions: Vec<String> = store::read_bounded_if_exists(&notes, 256 * 1024)
+        .ok()
+        .flatten()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .take(HAND_BACK_DECISIONS)
+        .rev()
+        .collect();
+    let list = |items: &[String]| match items.is_empty() {
+        true => "none".to_string(),
+        false => format!("\n{}", items.iter().map(|item| format!("- {item}")).collect::<Vec<_>>().join("\n")),
+    };
+    format!(
+        "Chat {name} is closed; its open tasks are yours now. Its notes stay readable in its folder.\nGoal: {goal}\nOpen tasks: {tasks}\nLast decisions: {decisions}",
+        name = dir.name(),
+        goal = goal.unwrap_or("none"),
+        tasks = list(&tasks),
+        decisions = list(&decisions),
+    )
 }
 
 /// When the chat last had anything in its conversation, else when it was opened.
@@ -289,6 +448,7 @@ pub fn last_active_ms(dir: &ManagerDir) -> u64 {
 /// last_unix_ms, agent?, adapter?, model?}`. `goal` is the goal's first line; `agent` is the
 /// entry's name, `adapter` and `model` its own, left out for a chat on the manager's.
 pub fn rows(project_id: &str) -> Vec<Value> {
+    let home = store::home_chat(project_id);
     all(project_id)
         .into_iter()
         .map(|dir| {
@@ -298,6 +458,7 @@ pub fn rows(project_id: &str) -> Vec<Value> {
                 "state": if is_open(&dir) { "open" } else { "closed" },
                 "goal": goal.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
                 "last_unix_ms": last_active_ms(&dir),
+                "home": home.as_deref() == Some(dir.name()),
             });
             if let (Some(entry), Some(own)) = (chat_file(&dir).agent, agent(&dir)) {
                 row["agent"] = entry.into();
@@ -312,17 +473,64 @@ pub fn rows(project_id: &str) -> Vec<Value> {
 /// A project not yet migrated in this process; `migrate` runs once for each.
 static CHECKED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
-/// Run `migrate` on `project` the first time this process opens its store.
+/// Run `migrate` on `project` the first time this process opens its store, then start again
+/// the hosts the move stopped.
 pub(super) fn migrate_once(project_id: &str, project: &Path) {
     let first = CHECKED
         .lock()
         .expect("migration lock")
         .get_or_insert_default()
         .insert(project.display().to_string());
-    if first {
-        if let Err(error) = migrate(project_id, project) {
-            eprintln!("wsx: cannot move the roles of {project_id} to chats: {error:#}");
-        }
+    if !first {
+        return;
+    }
+    if let Err(error) = migrate(project_id, project) {
+        eprintln!("wsx: cannot move the chats of {project_id}: {error:#}");
+    }
+}
+
+/// The two moves of a store from before: roles to chats, then the chats out of the repo's
+/// folder (`chats_move`). Idempotent; a step that fails leaves the rest for the next run.
+fn migrate(project_id: &str, project: &Path) -> Result<()> {
+    migrate_roles(project_id, project)?;
+    for stopped in super::chats_move::run(project_id, project)? {
+        start_again(project_id, &stopped);
+    }
+    Ok(())
+}
+
+/// Start the host the move stopped, on the new folder, when this is a `wsx`: the other
+/// binaries leave it to the next `ensure_manager`.
+fn start_again(project_id: &str, stopped: &super::chats_move::Stopped) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let is_wsx = exe.file_stem().is_some_and(|stem| stem == "wsx");
+    let Some(main) = super::chats_move::main_of(project_id).filter(|_| is_wsx) else {
+        return;
+    };
+    let Ok((config, _)) = crate::config::global::GlobalConfig::load() else {
+        return;
+    };
+    let name = config
+        .projects
+        .iter()
+        .find(|project| project.path == main)
+        .map_or_else(String::new, |project| project.name.clone());
+    let launch = |label, argv| {
+        crate::ops::create_session_launch(
+            &crate::runtime::Client::local(),
+            &config,
+            &main,
+            label,
+            argv,
+            None,
+        )
+        .map(drop)
+    };
+    let chat = (!stopped.home).then_some(stopped.chat.as_str());
+    if let Err(error) = super::owner::ensure_manager(&name, &main, &exe, chat, launch) {
+        eprintln!("wsx: cannot start chat {} again: {error:#}", stopped.chat);
     }
 }
 
@@ -332,7 +540,7 @@ pub(super) fn migrate_once(project_id: &str, project: &Path) {
 /// in task records and logs to `chat:<n>` and `chat-reply:<n>`, and drops the approval lines of
 /// the removed `role` action, and deletes the search digest if it has a `role` field (it is
 /// rebuilt on the next search). A step that fails leaves the rest for the next run.
-fn migrate(project_id: &str, project: &Path) -> Result<()> {
+fn migrate_roles(project_id: &str, project: &Path) -> Result<()> {
     let approvals = project.join(store::APPROVALS_FILE);
     let old = project.join("roles");
     let digest = project.join(crate::memory::index::DIGEST_FILE);
@@ -382,8 +590,9 @@ fn migrate(project_id: &str, project: &Path) -> Result<()> {
             .iter()
             .map(|id| project.join(id.to_string())),
     );
+    let rename = |value: &mut Value| rename_peers(value, &names);
     for dir in &dirs {
-        rewrite_dir(dir, &names)?;
+        rewrite_dir(dir, &[b"role:", b"role-reply:"], &rename)?;
     }
     let agents = crate::config::global::GlobalConfig::load()
         .map(|(config, _)| config.agents)
@@ -433,8 +642,13 @@ fn move_role(name: &str, path: &Path, agents: &[crate::config::global::AgentEntr
     Ok(())
 }
 
-/// Rewrite the `.json` and `.jsonl` files of `dir` that hold a role's peer key.
-fn rewrite_dir(dir: &Path, names: &[&str]) -> Result<()> {
+/// Rewrite the `.json` and `.jsonl` files of `dir` that hold one of `needles` (a quick look
+/// before the parse): `rename` changes a value and tells whether it did.
+pub(super) fn rewrite_dir(
+    dir: &Path,
+    needles: &[&[u8]],
+    rename: &dyn Fn(&mut Value) -> bool,
+) -> Result<()> {
     for entry in std::fs::read_dir(dir)?.filter_map(|entry| entry.ok()) {
         let path = entry.path();
         let jsonl = path.extension().is_some_and(|ext| ext == "jsonl");
@@ -444,9 +658,7 @@ fn rewrite_dir(dir: &Path, names: &[&str]) -> Result<()> {
         let Some(bytes) = store::read_bounded_if_exists(&path, 64 << 20)? else {
             continue;
         };
-        if !store::contains_bytes(&bytes, b"role:")
-            && !store::contains_bytes(&bytes, b"role-reply:")
-        {
+        if !needles.iter().any(|needle| store::contains_bytes(&bytes, needle)) {
             continue;
         }
         let mut changed = false;
@@ -459,7 +671,7 @@ fn rewrite_dir(dir: &Path, names: &[&str]) -> Result<()> {
             let rewritten = serde_json::from_slice::<Value>(line)
                 .ok()
                 .and_then(|mut value| {
-                    rename_peers(&mut value, names).then(|| serde_json::to_vec(&value).ok())?
+                    rename(&mut value).then(|| serde_json::to_vec(&value).ok())?
                 });
             changed |= rewritten.is_some();
             out.extend_from_slice(rewritten.as_deref().unwrap_or(line));

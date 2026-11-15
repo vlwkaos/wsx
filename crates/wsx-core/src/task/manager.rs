@@ -28,55 +28,39 @@ impl Level {
     }
 }
 
-/// The other side of a peer message: a chat of this project (`manager` is the first chat) or
-/// another project's manager. Its key is `chat:<name>` or the project's name, as `owed`,
-/// `sent{to}` and a row's peer carry it. ref: docs/tasks.md "Chats", "Managers talk"
+/// The other side of a peer message: a chat. Its key is `chat:<name>`, as `owed`, `sent{to}` and
+/// a row's peer carry it; a row of before chats shared a store carries a manager's project name
+/// instead, read as the name of that project's chat. ref: docs/tasks.md "Chats"
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Party {
     Chat(String),
-    Project(String),
 }
 
 impl Party {
     pub fn key(&self) -> String {
-        match self {
-            Self::Chat(name) => format!("chat:{name}"),
-            Self::Project(project) => project.clone(),
-        }
+        format!("chat:{}", self.name())
     }
 
     pub fn name(&self) -> &str {
         match self {
-            Self::Chat(name) | Self::Project(name) => name,
+            Self::Chat(name) => name,
         }
     }
 
     pub fn from_key(key: &str) -> Self {
-        match key.strip_prefix("chat:") {
-            Some(name) => Self::Chat(name.into()),
-            None => Self::Project(key.into()),
-        }
+        Self::Chat(key.strip_prefix("chat:").unwrap_or(key).into())
     }
 
-    /// The name that heads the party's author on the wire: `chat:<n>`, or `manager:<project>`;
-    /// an answer to a message this side sent is `chat-reply:<n>` or `manager-reply:<project>`.
+    /// The name that heads the party's author on the wire: `chat:<n>`; an answer to a message
+    /// this side sent is `chat-reply:<n>`.
     pub fn label(&self, reply: bool) -> String {
-        let word = match self {
-            Self::Chat(_) => "chat",
-            Self::Project(_) => "manager",
-        };
-        format!(
-            "{word}{}:{}",
-            if reply { "-reply" } else { "" },
-            self.name()
-        )
+        format!("chat{}:{}", if reply { "-reply" } else { "" }, self.name())
     }
 }
 
-/// Who wrote a message the manager receives: `owner`, `events`, a peer or `recap`. A peer is
-/// another project's manager (`manager:<project>`) or a chat of this one (`chat:<name>`; the
-/// first chat is `manager`); `-reply` after the word marks the answer to a message this side
-/// sent.
+/// Who wrote a message the manager receives: `owner`, `events`, a peer or `recap`. A peer is a
+/// chat (`chat:<name>`; `manager:<project>` of before is read the same); `-reply` after the
+/// word marks the answer to a message this side sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 pub enum Author {
@@ -113,19 +97,19 @@ impl TryFrom<String> for Author {
             _ => {}
         }
         let peer = [
-            ("manager:", false, Party::Project as fn(String) -> Party),
-            ("manager-reply:", true, Party::Project),
-            ("chat:", false, Party::Chat),
-            ("chat-reply:", true, Party::Chat),
+            ("manager:", false),
+            ("manager-reply:", true),
+            ("chat:", false),
+            ("chat-reply:", true),
         ]
         .into_iter()
-        .find_map(|(prefix, reply, party)| {
+        .find_map(|(prefix, reply)| {
             let name = text.strip_prefix(prefix)?;
-            Some((name.to_string(), reply, party))
+            Some((name.to_string(), reply))
         });
         match peer {
-            Some((name, reply, party)) if !name.is_empty() => Ok(Self::Peer {
-                from: party(name),
+            Some((name, reply)) if !name.is_empty() => Ok(Self::Peer {
+                from: Party::Chat(name),
                 reply,
             }),
             Some(_) => Err(format!("{text} names no sender")),

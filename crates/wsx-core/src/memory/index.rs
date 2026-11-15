@@ -280,15 +280,12 @@ pub(super) fn rank<'a>(texts: impl Iterator<Item = &'a str>, terms: &[String]) -
 /// The file a doc was read from, for the `path` of a memory hit; empty when its folder is gone.
 pub(super) fn source_path(project_id: &str, doc: &Doc) -> String {
     let path = match (doc.kind, doc.task) {
-        (Kind::Message | Kind::Reply, _) => ManagerDir::existing_as(
-            project_id,
-            Some(doc.chat.as_str()).filter(|r| !r.is_empty()),
-        )
-        .ok()
-        .flatten()
-        .map(|dir| dir.path.join(LOG_FILE)),
+        (Kind::Message | Kind::Reply, _) => ManagerDir::existing(&doc.chat)
+            .ok()
+            .flatten()
+            .map(|dir| dir.path.join(LOG_FILE)),
         (Kind::Decision | Kind::Memo, _) => {
-            ManagerDir::existing(project_id).ok().flatten().map(|dir| {
+            ManagerDir::home(project_id).ok().flatten().map(|dir| {
                 dir.path.join("notes").join(match doc.kind {
                     Kind::Decision => "decisions.md",
                     _ => "context.md",
@@ -481,9 +478,8 @@ fn supersede(docs: &mut Vec<Doc>) {
 /// The manager's and each chat's messages and replies newer than the digest holds. Ids grow,
 /// so the read from the log's end stops at the newest one it has.
 fn catch_up_chats(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Result<()> {
-    let first = ManagerDir::existing(project_id)?;
-    for dir in first.into_iter().chain(chats::all(project_id)) {
-        let chat = dir.chat.clone().unwrap_or_default();
+    for dir in chats::all(project_id) {
+        let chat = dir.chat.clone();
         let seen = docs
             .iter()
             .filter(|doc| doc.chat == chat)

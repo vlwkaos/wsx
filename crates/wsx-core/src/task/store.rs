@@ -1012,7 +1012,6 @@ pub fn task_numbers(project_id: &str) -> Result<Vec<u32>> {
     Ok(numbers)
 }
 
-const MANAGER_DIR: &str = "manager";
 const MANAGER_LOG: &str = "log.jsonl";
 const MANAGER_STATE: &str = "state.json";
 const MANAGER_SOCKET: &str = "manager.sock";
@@ -1021,74 +1020,156 @@ const MANAGER_SOCKET: &str = "manager.sock";
 const MAX_MANAGER_LOG_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_MANAGER_STATE_BYTES: u64 = 256 * 1024;
 
-/// The project's first chat's folder, `tasks/<project-id>/manager/`, or another chat's,
-/// `tasks/<project-id>/chats/<name>/` (docs/tasks.md "Chats").
+/// A chat's folder, `tasks/chats/<name>/` (docs/tasks.md "Chats"). `project_id` is the repo the
+/// chat runs in, the first of its `chat.json` `repos`.
 #[derive(Debug, Clone)]
 pub struct ManagerDir {
     pub project_id: String,
     pub path: PathBuf,
-    /// The chat's name; none is the first chat, the manager.
-    pub chat: Option<String>,
+    /// The chat's name, its id.
+    pub chat: String,
 }
 
-const CHATS_DIR: &str = "chats";
+pub(super) const CHATS_DIR: &str = "chats";
+
+/// The host's socket and its agent's broker socket of a chat folder.
+pub(super) fn sockets_of(folder: &Path) -> (PathBuf, PathBuf) {
+    (
+        socket_for('m', &folder.join(MANAGER_SOCKET)),
+        socket_for('b', &folder.join("broker.sock")),
+    )
+}
+const HOME_FILE: &str = "home.json";
+
+/// `tasks/chats/`, which holds one folder per chat of the machine, open or closed.
+pub fn chats_root() -> PathBuf {
+    tasks_root().join(CHATS_DIR)
+}
+
+/// The name of the chat that is the repo's home, from `tasks/<project-id>/home.json`: it hears
+/// what no chat owns. ref: docs/tasks.md "Chats"
+pub fn home_chat(project_id: &str) -> Option<String> {
+    let bytes = read_bounded_if_exists(&project_dir(project_id).ok()?.join(HOME_FILE), 4096)
+        .ok()
+        .flatten()?;
+    serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()?
+        .get("chat")?
+        .as_str()
+        .map(str::to_string)
+}
+
+pub fn set_home_chat(project_id: &str, chat: &str) -> Result<()> {
+    write_atomic(
+        &ensure_project_dir(project_id)?.join(HOME_FILE),
+        &serde_json::to_vec(&serde_json::json!({ "chat": chat }))?,
+    )
+}
 
 impl ManagerDir {
-    /// Open the folder, creating it owner-only when it is missing.
-    pub fn open(project_id: &str) -> Result<Self> {
-        Self::open_as(project_id, None)
-    }
-
-    /// Open the manager's folder or a chat's, creating it owner-only when it is missing.
-    pub fn open_as(project_id: &str, chat: Option<&str>) -> Result<Self> {
-        let project = ensure_project_dir(project_id)?;
-        let path = match chat {
-            None => project.join(MANAGER_DIR),
-            Some(name) => {
-                create_private_dir(&project.join(CHATS_DIR))?;
-                project
-                    .join(CHATS_DIR)
-                    .join(super::chats::checked_name(name)?)
+    /// The repo's home chat, opened: the one `home.json` names, else a chat named after the repo
+    /// that becomes its home. A closed home is opened again.
+    pub fn open_home(project_id: &str) -> Result<Self> {
+        let chat = match home_chat(project_id) {
+            Some(chat) => chat,
+            None => {
+                let name = super::chats::home_name(project_id);
+                set_home_chat(project_id, &name)?;
+                name
             }
         };
+        let dir = Self::open_as(project_id, &chat)?;
+        match fs::remove_file(dir.path.join(super::chats::CLOSED_FILE)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                Err(error).context("cannot open the home chat again")
+            }
+            _ => Ok(dir),
+        }
+    }
+
+    /// Open the chat's folder in `project_id`, creating it owner-only when it is missing. A new
+    /// folder gets its `chat.json` with that repo.
+    pub fn open_as(project_id: &str, chat: &str) -> Result<Self> {
+        ensure_project_dir(project_id)?;
+        create_private_dir(&chats_root())?;
+        let path = chats_root().join(super::chats::checked_name(chat)?);
         create_private_dir(&path)?;
-        Ok(Self {
+        let dir = Self {
             project_id: project_id.into(),
             path,
-            chat: chat.map(str::to_string),
-        })
-    }
-
-    /// The folder when it exists; a reader never creates it.
-    pub fn existing(project_id: &str) -> Result<Option<Self>> {
-        Self::existing_as(project_id, None)
-    }
-
-    pub fn existing_as(project_id: &str, chat: Option<&str>) -> Result<Option<Self>> {
-        let path = match chat {
-            None => project_dir(project_id)?.join(MANAGER_DIR),
-            Some(name) => chats_dir(project_id)?.join(super::chats::checked_name(name)?),
+            chat: chat.into(),
         };
-        Ok(require_real_dir(&path).is_ok().then(|| Self {
-            project_id: project_id.into(),
-            path,
-            chat: chat.map(str::to_string),
-        }))
+        super::chats::ensure_file(&dir)?;
+        Ok(dir)
     }
 
-    /// The name the owner reads and the session label's end: the chat's, or `manager`.
+    /// The repo's home chat when its folder exists; a reader never creates it.
+    pub fn home(project_id: &str) -> Result<Option<Self>> {
+        match home_chat(project_id) {
+            Some(chat) => Self::existing(&chat),
+            None => Ok(None),
+        }
+    }
+
+    /// The chat's folder when it exists; a reader never creates it. Its repo is the first of
+    /// its `chat.json` `repos`.
+    pub fn existing(chat: &str) -> Result<Option<Self>> {
+        let path = chats_root().join(super::chats::checked_name(chat)?);
+        if require_real_dir(&path).is_err() {
+            return Ok(None);
+        }
+        let dir = Self {
+            project_id: String::new(),
+            path,
+            chat: chat.into(),
+        };
+        Ok(super::chats::repos(&dir)
+            .into_iter()
+            .next()
+            .map(|project_id| Self { project_id, ..dir }))
+    }
+
+    /// The chat `chat` of the repo, or its home chat when none is named.
+    pub fn existing_in(project_id: &str, chat: Option<&str>) -> Result<Option<Self>> {
+        match chat {
+            None => Self::home(project_id),
+            Some(chat) => Self::existing(chat),
+        }
+    }
+
+    /// The name the owner reads and the session label's end.
     pub fn name(&self) -> &str {
-        self.chat.as_deref().unwrap_or("manager")
+        &self.chat
+    }
+
+    /// Whether this is its repo's home chat.
+    pub fn is_home(&self) -> bool {
+        home_chat(&self.project_id).as_deref() == Some(self.chat.as_str())
+    }
+
+    /// The arguments after the program of this chat's host: the home chat's has no `--chat`.
+    pub fn host_args(&self) -> Vec<String> {
+        let mut args: Vec<String> = ["task", "manager-host", self.project_id.as_str()]
+            .map(String::from)
+            .into();
+        args.extend(self.named().into_iter().flat_map(|chat| ["--chat".into(), chat.into()]));
+        args
+    }
+
+    /// The chat's name, unless it is the repo's home: the home chat is the repo's manager, and
+    /// the views name it so.
+    pub fn named(&self) -> Option<&str> {
+        (!self.is_home()).then_some(self.chat.as_str())
     }
 
     pub fn socket_path(&self) -> PathBuf {
-        socket_for('m', &self.path.join(MANAGER_SOCKET))
+        sockets_of(&self.path).0
     }
 
     /// The socket on which the manager host runs the manager agent's `wsx task` commands.
     /// ref: docs/tasks.md "Permissions"
     pub fn broker_path(&self) -> PathBuf {
-        socket_for('b', &self.path.join("broker.sock"))
+        sockets_of(&self.path).1
     }
 
     /// `manager/notes/`, the manager's notes and decisions; created owner-only.
@@ -1250,19 +1331,15 @@ impl ManagerDir {
     }
 }
 
-/// The chat whose folder holds `path`: `Some(None)` is the manager's, `Some(Some(name))` another's;
-/// none for any other file of the store.
-pub fn chat_of(path: &Path) -> Option<Option<&str>> {
+/// The chat whose folder holds `path`; none for any other file of the store.
+pub fn chat_of(path: &Path) -> Option<&str> {
     let dir = path.parent()?;
     let name = dir.file_name()?;
-    if name == MANAGER_DIR {
-        return Some(None);
-    }
-    let chat = dir
-        .parent()?
+    dir.parent()?
         .file_name()
-        .is_some_and(|parent| parent == CHATS_DIR);
-    chat.then(|| name.to_str()).flatten().map(Some)
+        .is_some_and(|parent| parent == CHATS_DIR)
+        .then(|| name.to_str())
+        .flatten()
 }
 
 /// A reader of the manager's log (the chat, the search catch-up) reads this much of its end
@@ -1275,18 +1352,13 @@ pub(crate) fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
 
 pub(super) const APPROVALS_FILE: &str = "approvals.jsonl";
 
-/// `tasks/<project-id>/chats/`, which holds one folder per chat besides the manager's.
-pub fn chats_dir(project_id: &str) -> Result<PathBuf> {
-    Ok(project_dir(project_id)?.join(CHATS_DIR))
-}
-
 /// The files a reader follows to see every change to a project's tasks, its chats'
 /// conversations and its approvals. Missing ones are left out.
 pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
     let dir = project_dir(project_id)?;
     let mut files = vec![
         dir.join(APPROVALS_FILE),
-        dir.join(MANAGER_DIR).join(MANAGER_LOG),
+        dir.join(HOME_FILE),
         dir.join(OVERVIEW_FILE),
         dir.join(super::checks::CHECKS_FILE),
         dir.join(TRIAL_FILE),
