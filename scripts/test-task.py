@@ -2989,7 +2989,7 @@ def part_core(created=None):
     trend.unlink()
     (project / '.studio-data').rmdir()
     everything, only_images, only_videos, one_task = listed[3], listed[8], listed[9], listed[11]
-    assert re.search(r'img +- +removed +\.studio-data/gone\.jpg', everything) and re.search(r'img +- +manager +\.studio-data/trend\.jpg', everything), everything
+    assert re.search(r'img +- +removed +\.studio-data/gone\.jpg', everything) and re.search(r'img +- +demo +\.studio-data/trend\.jpg', everything), everything
     assert re.search(r'img +#%d +passed' % shot, everything) and re.search(r'vid +#%d +removed' % video, everything), everything
     assert 'img ' in only_images and 'vid ' not in only_images, only_images
     assert 'vid ' in only_videos and 'img ' not in only_videos, only_videos
@@ -7075,7 +7075,7 @@ def part_host(created=None):
         '    open(log, "a").close()\n'
         '    time.sleep(0.2)\n')
     os.symlink(sys.executable, stand / 'wsx')
-    host = subprocess.Popen([str(stand / 'wsx'), 'task', 'manager-host', mig_id, str(old_home / 'log.jsonl')], cwd=stand,
+    host = subprocess.Popen([str(stand / 'wsx'), 'task', 'manager-host', mig_id], cwd=stand,
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             env={**env, 'STAND_LOG': str(old_home / 'log.jsonl')})
     wait(lambda: leftovers('task manager-host ' + mig_id), 'the stand-in host runs')
