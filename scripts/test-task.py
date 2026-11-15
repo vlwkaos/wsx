@@ -977,7 +977,8 @@ def manager_up(created):
         """Delete the repo's service session, as a reboot does: its next start sweeps captures and
         hung hosts again, reads `repo.json` and fires a check-in that came due (docs/tasks.md "Chats")."""
         service = Path(created['task_dir']).parent.name
-        cli('session', 'delete', 'task-repo-' + service, '-p', 'demo')
+        # ^ A service that is not running has no session: the delete's exit code is no matter.
+        subprocess.run([str(wsx), 'session', 'delete', 'task-repo-' + service, '-p', 'demo'], cwd=project, env=env, capture_output=True, timeout=60)
         wait(lambda: not leftovers('task repo-host ' + service), 'the repo service is down', 30)
 
     def manager_idle():
@@ -7854,6 +7855,8 @@ def part_host(created=None):
         sock = js('task', 'manager')['socket']
         cli('session', 'delete', 'task-demo', '-p', 'demo')
         wait(lambda: not Path(sock).exists() or subprocess.run(['nc', '-zU', sock]).returncode != 0, 'manager down')
+        # ^ The service would start the home chat's host with an event before the pinned state is written.
+        stop_repo_service()
         data = manager_state()
         data['agent'] = {'name': 'fake-pi', 'adapter': 'pi', 'model': 'fake/pi-model'}
         data['limit'] = {'until_ms': int(time.time() * 1000) - 3600_000, 'attempt': 0, 'ids': [], 'events': True, 'switched': True}
