@@ -36,7 +36,7 @@ Switch only if all three hold on at least 40 replayed real event-only turns:
 ## Result: no switch
 
 Rule 3 fails before any quality measurement. The cost model shows a loss under every routing,
-and the 45-turn paid replay was stopped by the owner's call. `wsx.config.yml` is unchanged.
+and the manager stopped the 45-turn paid replay because rule 3 had already failed. `wsx.config.yml` is unchanged.
 
 | Routing (`--cases events --samples 0`) | Window | Turns on Sonnet | Opus $/wk | Sonnet $/wk | Extra writes $/wk (Sonnet + Opus) | Net |
 |---|---|---|---|---|---|---|
