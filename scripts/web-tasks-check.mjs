@@ -1280,7 +1280,8 @@ await until(`${statusLines}.some((node) => /#1 got an answer/.test(node.textCont
 // takes it in.
 await typeInto(".composer-field", "STATUS after the answer");
 await click(".composer-send");
-const answeredOpen = "[...document.querySelectorAll('.log .bubble[data-side=in]')].at(-1)?.textContent.includes('open:') && !document.querySelector('.log .typing')";
+// ^ An `open:` reply after the owner's last message; a reply to the events of the steps before may come after it (CI run 43697878989: "noted events" was the last bubble).
+const answeredOpen = "(() => { const bubbles = [...document.querySelectorAll('.log .bubble')]; return bubbles.slice(bubbles.findLastIndex((node) => node.dataset.side === 'out') + 1).some((node) => node.dataset.side === 'in' && node.textContent.includes('open:')) && !document.querySelector('.log .typing'); })()";
 await until(answeredOpen, "no reply after the answer", 300);
 // ^ A reply that ends with a question carries "Asks you" in the accent, and the overview's
 // `asks` lists it, until an owner message answers it (docs/web-client-tasks.md "Project screen").
