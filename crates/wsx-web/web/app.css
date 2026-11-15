@@ -500,8 +500,6 @@ div.steps .steps-summary { cursor: default; }
   .message-user:not([data-pending]) { animation: settle calc(var(--motion-duration) * 3) var(--motion-easing); }
   .bubble-box, [data-tone], .bar-state { transition: color calc(var(--motion-duration) * 3) var(--motion-easing), background-color calc(var(--motion-duration) * 3) var(--motion-easing); }
   .jump { animation: arrive var(--motion-duration) var(--motion-easing); }
-  /* A swiped message springs back. */
-  .log > [data-quote]:not([data-swiping]) { transition: translate var(--motion-duration) var(--motion-easing); }
   .jump[data-leaving] { opacity: 0; transition: opacity var(--motion-duration) var(--motion-easing); pointer-events: none; }
   [data-uploading] .note { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
   .notice { animation: slide-down calc(var(--motion-duration) * 1.5) var(--motion-easing); }
@@ -573,9 +571,6 @@ div.steps .steps-summary { cursor: default; }
   border: 0; background: none; text-align: left; cursor: pointer;
 }
 .reply-menu button:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
-/* A message under a finger: a swipe right moves it; a tap opens the menu; a long press is the
-   system's text selection (reply.js). */
-.log > [data-quote] { touch-action: pan-y; }
 /* The chat opened at a quoted message: the note over the log says so, with the way back. */
 .note.around { flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2); margin: 0; padding: var(--space-1) var(--column-inset); border-bottom: var(--border-width) solid var(--color-hairline); color: var(--color-muted); }
 /* A message or item found (reply.js `markFound`): an accent tint over its box for 2 s, no line

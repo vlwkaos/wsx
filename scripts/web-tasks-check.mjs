@@ -2249,8 +2249,9 @@ async function readAndReply(where) {
   if (back === null || Math.abs(back - left.down) > 2 || await count(".log-new") || await jumpWords() !== "Jump to latest") {
     await fail(`${where}: the chat did not open where it was left: ${JSON.stringify({ left, back, line: await count(".log-new"), jump: await jumpWords() })}`);
   }
-  // (e) Reply: a swipe right on a phone, the menu of a right click on a wide screen. × removes
-  // the quote; a tap on a phone opens the menu too, and a long press is the system's text selection.
+  // (e) Reply: the menu of a right click on a wide screen. × removes the quote; a tap on a phone
+  // opens the menu too, a long press is the system's text selection, and a drag sideways on a
+  // bubble is nothing: it quotes nothing and opens no menu.
   const point = await pressPoint(fiveColumns);
   const quote = "(document.querySelector('.composer .reply-quote-text')?.textContent ?? '').replace('Replying to: ', '')";
   // ^ The menu closes on any scroll (reply.js), also one the page makes while a capture runs: tap
@@ -2267,16 +2268,19 @@ async function readAndReply(where) {
     }
     await fail(`${where}: the reply menu closed before Reply was tapped`);
   };
-  if (phone()) await touch(point, 90);
-  else {
+  if (phone()) {
+    await touch(point, 90);
+    await pause(300);
+    const dragged = await evaluate(`({ quote: ${quote}, menu: !!document.querySelector('.reply-menu') })`);
+    if (dragged.quote || dragged.menu) await fail(`${where}: a drag sideways on a bubble quoted or opened a menu: ${JSON.stringify(dragged)}`);
+  } else {
     await rightClickMenu(point);
     await shot("reply-menu");
     if (!(await evaluate(menuReply))) await replyFromMenu(point);
+    await until(`${quote} === 'Five columns:'`, `${where}: the reply shows no quote over the composer`);
+    await evaluate("document.querySelector('.composer .reply-quote button').click()");
+    await until("!document.querySelector('.composer .reply-quote')", `${where}: × did not remove the quote`);
   }
-  await until(`${quote} === 'Five columns:'`, `${where}: the reply shows no quote over the composer`);
-  if (await evaluate(`${fiveColumns}.style.translate`)) await fail(`${where}: the swiped bubble did not come back`);
-  await evaluate("document.querySelector('.composer .reply-quote button').click()");
-  await until("!document.querySelector('.composer .reply-quote')", `${where}: × did not remove the quote`);
   // ^ The reply is sent with its quote on every screen.
   if (phone()) {
     // ^ A press of 700 ms is the system's: no menu, and the page leaves its text selectable. A real
