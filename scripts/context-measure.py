@@ -8,7 +8,7 @@ the cost of a task by part, and a replay of each candidate bound. Method and fin
 docs/design/context-budget.md.
 
     python3 -B scripts/context-measure.py [--project <main checkout>]... [--last 80]
-        [--task <n>]... [--manager-log <manager/log.jsonl>] [--projects-dir ~/.claude/projects]
+        [--task <n>]... [--manager-log <chats/<name>/log.jsonl>] [--projects-dir ~/.claude/projects]
 """
 
 import argparse
@@ -292,7 +292,7 @@ def main():
     parser.add_argument('--projects-dir', type=Path, default=Path.home() / '.claude' / 'projects')
     parser.add_argument('--last', type=int, default=80, help='newest tasks per project to read (manager sessions: all)')
     parser.add_argument('--task', action='append', type=int, default=[], help='print each session of this task')
-    parser.add_argument('--manager-log', type=Path, help='manager/log.jsonl of the project state folder')
+    parser.add_argument('--manager-log', type=Path, help='chats/<name>/log.jsonl of the project state folder')
     args = parser.parse_args()
     if not args.project:
         common = subprocess.run(['git', 'rev-parse', '--git-common-dir'], capture_output=True, text=True, check=True).stdout.strip()

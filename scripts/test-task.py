@@ -523,7 +523,8 @@ def run(wsx, wsxd, work, owned, part):
         assert wait_state(n, 'ready', 'landed', 'failed')['state'] == 'ready', show(n)
         return land(n)
 
-    manager_env = dict(env, WSX_TASK_ACTOR='manager')
+    manager_env = dict(env, WSX_TASK_ACTOR='chat:demo')
+    # ^ The repo's own chat is named after the repo; a task's agent of that chat acts as `chat:demo` (docs/tasks.md "Chats").
 
     def next_task():
         return max(row['id'] for row in js('task', 'list', '--all')['tasks']) + 1
@@ -698,6 +699,11 @@ def manager_up(created):
         """The first manager turn whose message holds `text`."""
         return next((t for t in traces() if t.get('manager') and text in str(t.get('message', ''))), None)
 
+    def home_dir(store=None):
+        """The repo's own chat folder: `home.json` of the repo's store names it (docs/tasks.md "Chats")."""
+        store = store or Path(created['task_dir']).parent
+        return store.parent / 'chats' / json.loads((store / 'home.json').read_text())['chat']
+
     running = js('task', 'new', 'SLOW SLOW SLOW WORK r.txt')['id']
     # ^ A project with the old `page.md` and no overview gets it moved once, when the manager starts.
     old_page = state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md'
@@ -723,7 +729,7 @@ def manager_up(created):
     assert launch['argv'][launch['argv'].index('--disallowedTools') + 1] == 'Workflow,ScheduleWakeup,ReportFindings', launch['argv']
     assert launch['bash_max_output'] == '8000', launch
     plugin = Path(launch['plugin_dir'])
-    assert plugin.parent.name == 'manager' and plugin.resolve().is_relative_to(state.resolve()), plugin
+    assert plugin.parent == home_dir() and plugin.resolve().is_relative_to(state.resolve()), plugin
     assert json.loads((plugin / '.claude-plugin/plugin.json').read_text())['name'] == 'owner'
     assert os.readlink(plugin / 'skills') == str(owner_skills), os.readlink(plugin / 'skills')
     # ^ No prompts inside wsx's boundary (docs/tasks.md "Permissions").
@@ -742,7 +748,7 @@ def manager_up(created):
     # ^ An expired sign-in (docs/tasks.md "Manager"): one `stopped` that says to sign in, no new
     # conversation, a new agent process for each try, and an owner message tries at once.
     signed_in = work / 'signed-in'
-    manager_log = Path(page).parent / 'manager/log.jsonl'
+    manager_log = home_dir(Path(page).parent) / 'log.jsonl'
     entries = lambda: [json.loads(line) for line in manager_log.read_text().splitlines()]
     launches = lambda: [t for t in traces() if t.get('launch') and t.get('manager')]
     tried = lambda n: [t for t in traces() if t.get('manager') and 'AUTHFAIL' in str(t.get('message', ''))][n - 1:]
@@ -844,7 +850,7 @@ def manager_up(created):
     reset_mark.unlink()
     # ^ A stamp a day ahead: no later section sees a probe clear its own short limit.
     probe_stamp.write_text(json.dumps({'unix_ms': int((time.time() + 86400) * 1000)}))
-    assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
+    assert launch['actor'] == 'chat:demo' and launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
     assert launch['git_optional_locks'] == '0', launch
     # ^ docs/configuration.md "Profiles": the manager and every Claude worker so far run under demo's profile
     # root. Part 13t's Pi worker reads no CLAUDE_CONFIG_DIR.
@@ -876,7 +882,7 @@ def manager_up(created):
                  'Start a stall from `wsx task why <n>`.',
                  'Continue a `paused` task.', 'Never touch a task on `hand`', '`wsx task checkin`',
                  'read-only git', 'the Skill tool as `owner:<name>`', 'check rather than guess', '`wsx memory add --kind rule`',
-                 '/manager/notes/decisions.md', '/manager/notes/context.md', 'update a section in place',
+                 '/chats/demo/notes/decisions.md', '/chats/demo/notes/context.md', 'update a section in place',
                  '--from-chat --reply', 'and do not answer it', "'@<project>'"):
         assert rule in launch['instructions'], rule
     # ^ No instruction names a brief or a goal file: only the owner's `chat new` takes one (docs/tasks.md "Chats").
@@ -960,7 +966,7 @@ def manager_up(created):
     assert direct['code'] == 2 and 'only `wsx task` commands' in direct['stderr'], direct
     assert wait_state(running, 'ready', 'failed')['state'] == 'ready'
     assert [e['mode'] for e in log(running) if e['kind'] == 'message'] == ['prompt', 'add']
-    manager_log = Path(created['task_dir']).parent / 'manager' / 'log.jsonl'
+    manager_log = home_dir() / 'log.jsonl'
 
     def manager_entries(raw=False):
         found = [json.loads(line) for line in manager_log.read_text().splitlines()]
@@ -1323,7 +1329,7 @@ def part_core(created=None):
     task_dir = Path(created['task_dir'])
     assert oct(task_dir.stat().st_mode & 0o777) == '0o700'
     host_socket = Path(show(1)['socket'])
-    assert len(str(task_dir / 'manager/manager.sock')) > 104 and len(str(host_socket)) < 104, host_socket
+    assert len(str(host_socket)) < 104, host_socket
     assert oct(host_socket.stat().st_mode & 0o777) == '0o600'
     assert host_socket.parent == tmp / ('wsx-%d' % os.getuid()), host_socket
     assert oct(host_socket.parent.stat().st_mode & 0o777) == '0o700'
@@ -1630,7 +1636,7 @@ def part_core(created=None):
     assert 'cannot be used with' in cli('task', 'new', '--size', 'small', '--skip', 'plan', 'NOOP', ok=False).stderr
     (project / 'wsx.config.yml').write_text(area_text)
     shutil.rmtree(project / 'briefs')
-    forget_notes(Path(sharing['task_dir']).parent / 'manager' / 'notes')
+    forget_notes(home_dir(Path(sharing['task_dir']).parent) / 'notes')
     # 13r. Context rotation inside a turn: a model call past tasks.agent.rotateTokens gets the
     # handoff request as a steer at its tool boundary; the worker writes its notes there, and the
     # same step goes on in a fresh conversation that opens with the task's prompt and those notes.
@@ -1826,7 +1832,7 @@ def part_core(created=None):
     mark('14c1')
     traced = cli_env({'WSX_TRACE_READ_LOG': '1'}, 'task', 'ledger', '--json').stderr.splitlines()
     reads = [line.split(' ', 2)[2] for line in traced if line.startswith('wsx-trace read_log ')]
-    task_logs = [path for path in reads if path.endswith('/log.jsonl') and '/manager/' not in path]
+    task_logs = [path for path in reads if path.endswith('/log.jsonl') and '/chats/' not in path]
     assert task_logs and len(task_logs) == len(set(task_logs)), task_logs
     print('14c1 task log reads per ledger build: %d for %d logs' % (len(task_logs), len(set(task_logs))), file=sys.stderr)
     # 14c2. A git that hangs: the ledger answers after the 10 s wait with a note, its rows kept
@@ -2600,7 +2606,7 @@ def part_core(created=None):
         assert not (line.startswith('- #') and line in head_text and number in hidden), number
     assert fixture[9] not in head_text and 10 in hidden and len(hidden) > 10, (sorted(hidden), first_turn)
     # ^ The notice names the file, whose path is absolute and is the one the manager reads.
-    assert notice.group(2) == str((notes / 'context.md').resolve()) or notice.group(2).endswith('/manager/notes/context.md'), notice.group(2)
+    assert notice.group(2) == str((notes / 'context.md').resolve()) or notice.group(2).endswith('/chats/demo/notes/context.md'), notice.group(2)
     # ^ The first message holds at most the 10 KiB budget of the notes.
     assert len(head_text.encode()) < 10 * 1024 + 400, len(head_text)
     # ^ A fresh conversation, an owner message whose key word matches a line it did not show:
@@ -6412,7 +6418,8 @@ def part_host(created=None):
     # 32r. Chats (docs/tasks.md "Chats"): a chat is the manager host with a name, a goal, its own
     # log and notes. Only the owner opens, lists and closes them. A chat hears only its own tasks.
     mark('32r')
-    chats_dir = Path(created['task_dir']).parent / 'chats'
+    chats_dir = Path(created['task_dir']).parent.parent / 'chats'
+    repo_id = Path(created['task_dir']).parent.name
     goal = base / 'chat-goal.md'
     goal.write_text('Drive the billing rewrite.\n')
     registry = config_dir / 'config-v2.toml'
@@ -6438,15 +6445,15 @@ def part_host(created=None):
     assert not (chats_dir / 'odd').exists()
     opened = js('task', 'chat', 'new', 'billing', '--goal', goal, '--agent', 'haiku-chat')
     assert opened['state'] == 'open' and (chats_dir / 'billing/goal.md').read_text() == goal.read_text(), opened
-    assert json.loads((chats_dir / 'billing/chat.json').read_text()) == {'agent': 'haiku-chat'}
+    assert json.loads((chats_dir / 'billing/chat.json').read_text()) == {'agent': 'haiku-chat', 'repos': [repo_id]}
     assert 'already open' in cli('task', 'chat', 'new', 'billing', '--goal', goal, ok=False).stderr
     # A new chat holds none of the project's earlier events, though the project has closed tasks.
     assert len(js('task', 'list', '--all')['tasks']) > len(js('task', 'list')['tasks'])
     assert not chat_entries('billing') and js('task', 'chat', '--chat', 'billing')['entries'] == []
-    # The manager does not open a chat: it is the owner's.
+    # An agent opens a chat only on the owner's word (--owner-said): without it, none.
     asked = js('task', 'say', 'RUN wsx task chat new qa --goal %s -p demo --json' % goal)
     text = reply_to(asked['id'])['text']
-    assert 'chat new is for the owner' in text and 'qa' not in chats(), text
+    assert "chat new is the owner's" in text and 'qa' not in chats(), text
     # A chat is the manager host with its goal, its own folder, session and actor; it starts
     # on say. It runs with the manager's policy: only the owner's `chat new` and another project's
     # work (the first chat's) are refused to it.
@@ -6456,7 +6463,7 @@ def part_host(created=None):
               'RUN wsx task chat new more --goal %s -p demo --json\n'
               'RUN wsx task routine list -p other --json' % goal)
     text = chat_reply('billing', talk['id'])['text']
-    assert 'chat new is for the owner' in text and "only a project's manager acts in another project" in text, text
+    assert "chat new is the owner's" in text and "only a project's manager acts in another project" in text, text
     chat_task = max(t['id'] for t in js('task', 'list')['tasks'])
     assert show(chat_task)['record']['created_by'] == 'chat:billing', show(chat_task)['record']
     chat_launch = next(t for t in traces() if t.get('launch') and t.get('actor') == 'chat:billing')
@@ -6501,7 +6508,7 @@ def part_host(created=None):
     answered = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'reply' and received['id'] in e['to']), None),
                     'the manager answers the chat', 60)
     assert "--reply 'chat answer' -> 0" in answered['text'] and 'no message from billing waits' in answered['text'], answered
-    wait(lambda: [e for e in chat_entries('billing') if e['kind'] == 'message' and e['from'] == 'chat-reply:manager'
+    wait(lambda: [e for e in chat_entries('billing') if e['kind'] == 'message' and e['from'] == 'chat-reply:demo'
                   and e['text'] == 'chat answer'], 'the answer at the chat', 60)
     assert 'not itself' in chat_reply('billing', js('task', 'say', '--to', 'billing',
                                                     'RUN wsx task say -p demo --to billing --from-chat hi')['id'])['text']
@@ -6520,7 +6527,7 @@ def part_host(created=None):
     # ^ The manager says something in the chat: a third speaker next to the owner and the chat.
     with (chats_dir / 'billing/log.jsonl').open('a') as chat_log:
         chat_log.write(json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': 9000001,
-                                   'from': 'chat:manager', 'text': 'MANAGER PING'}) + '\n')
+                                   'from': 'chat:demo', 'text': 'MANAGER PING'}) + '\n')
     for cols in (120, 80):
         shots = tui_screens(wsx, env, project, [
             (r'WORKSPACE', b't'),
@@ -6531,9 +6538,9 @@ def part_host(created=None):
             (r'WORKSPACE', b'')], cols=cols)
         talk = shots[3]
         assert 'to check' not in talk and re.search(r'(?m)^ billing +\d\d:\d\d$', talk), talk
-        # ^ The title is the chat's name and its model; the manager's message is under "<name> manager", not the bare project name.
+        # ^ The title is the chat's name and its model; the home chat's message is under its own name.
         assert 'billing · haiku' in talk and 'demo · billing' not in talk and 'MANAGER PING' in talk, talk
-        assert re.search(r'(?m)^ demo manager +\d\d:\d\d$', talk) and not re.search(r'(?m)^ demo +\d\d:\d\d$', talk), talk
+        assert re.search(r'(?m)^ demo +\d\d:\d\d$', talk), talk
     # chat close keeps the notes; the chat's tasks go back to the manager.
     (chats_dir / 'billing/notes/context.md').write_text('billing notes\n')
     assert js('task', 'chat', 'close', 'billing')['state'] == 'closed'
@@ -6542,15 +6549,15 @@ def part_host(created=None):
     assert 'no open chat billing' in cli('task', 'say', '--to', 'billing', 'hi', ok=False).stderr
     js('task', 'add', chat_task, 'WORK chat2.txt')
     wait(lambda: events_with('#%d ready r2' % chat_task), 'a closed chat\'s task reaches the manager', 60)
-    # ^ The manager cannot close a chat either; the owner's close is final until `chat new` again.
-    assert 'chat close is for the owner' in reply_to(js('task', 'say', 'RUN wsx task chat close billing -p demo --json')['id'])['text']
+    # ^ The manager cannot close a chat without the owner's word either; the owner's close is final until `chat new` again.
+    assert "chat close is the owner's" in reply_to(js('task', 'say', 'RUN wsx task chat close billing -p demo --json')['id'])['text']
     assert js('task', 'chat', 'new', 'keep', '--goal', goal)['state'] == 'open'
     js('task', 'chat', 'close', 'keep')
     for n in (manager_task, chat_task):
         js('task', 'close', n, '--discard')
 
     # 32rm. A store from before chats moves at its first open (docs/tasks.md "Chats"): `roles/research`
-    # with its brief, role.json, a log and notes becomes `chats/research`; the values `role:research`
+    # with its brief, role.json, a log and notes becomes `tasks/chats/research`; the values `role:research`
     # in a task record and the logs, and the approval lines of the removed `role` action, are rewritten
     # or dropped; the argv wsxd stored for the role's session, `manager-host <id> --role research`, starts the chat.
     mark('32rm')
@@ -6576,20 +6583,17 @@ def part_host(created=None):
     record = json.loads(record_path.read_text())
     record['created_by'] = 'role:research'
     record_path.write_text(json.dumps(record))
-    with (mig_store / 'manager/log.jsonl').open('a') as mig_log:
-        mig_log.write(json.dumps({'unix_ms': now_ms, 'kind': 'message', 'id': 9000002, 'from': 'role:research', 'text': 'RESEARCH SAYS'}) + '\n')
     migrated = chats()
     assert 'research' in migrated and migrated['research']['state'] == 'open', migrated
-    assert not (mig_store / 'roles').exists()
-    new_chat = mig_store / 'chats/research'
+    assert not (mig_store / 'roles').exists() and not (mig_store / 'chats').exists()
+    new_chat = chats_dir / 'research'
     assert (new_chat / 'goal.md').read_text() == 'Research the market.\n' and not (new_chat / 'brief.md').exists()
     assert (new_chat / 'notes/context.md').read_text() == 'research notes\n' and not (new_chat / 'role.json').exists()
     # ^ role.json's adapter and model map to the [[agents]] entry with the same two (haiku-chat above).
-    assert json.loads((new_chat / 'chat.json').read_text()) == {'agent': 'haiku-chat'}, (new_chat / 'chat.json').read_text()
-    assert [(e['kind'], e.get('from')) for e in chat_entries('research')][:2] == [('message', 'owner'), ('message', 'chat:manager')]
+    assert json.loads((new_chat / 'chat.json').read_text()) == {'agent': 'haiku-chat', 'repos': [repo_id]}, (new_chat / 'chat.json').read_text()
+    assert [(e['kind'], e.get('from')) for e in chat_entries('research')][:2] == [('message', 'owner'), ('message', 'chat:demo')]
     assert json.loads(record_path.read_text())['created_by'] == 'chat:research'
     assert show(old_task)['record']['created_by'] == 'chat:research'
-    assert any(e['kind'] == 'message' and e['from'] == 'chat:research' for e in manager_entries())
     assert '"action":"role"' not in (mig_store / 'approvals.jsonl').read_text().replace(' ', '')
     assert all(a['action'] != 'role' for a in js('task', 'ledger')['approvals'])
     assert not (mig_store / 'search.jsonl').exists(), 'the search digest with a role field is dropped (rebuilt on the next search)'
@@ -6799,7 +6803,7 @@ def part_host(created=None):
     with open(config_dir / 'config-v2.toml', 'a') as registry:
         registry.write('[[projects]]\nname = "other"\npath = ' + json.dumps(str(other)) + '\n')
     other_id = 'other-' + hashlib.sha256(str(other).encode()).hexdigest()[:8]
-    other_log = state / 'wsx/tasks' / other_id / 'manager' / 'log.jsonl'
+    other_log = state / 'wsx/tasks/chats/other/log.jsonl'
     asked = js('task', 'say', "SCRIPT\nwsx task ledger -p other --json >/dev/null && wsx task say -p other --from-chat --json - <<'EOF'\n"
                "RUN wsx task say -p demo --from-chat --reply 'first answer'\n"
                "RUN wsx task say -p demo --from-chat --reply 'second answer'\nEOF")
@@ -6808,7 +6812,7 @@ def part_host(created=None):
     def other_entries():
         return [unquoted(json.loads(line)) for line in other_log.read_text().splitlines()] if other_log.exists() else []
 
-    received = wait(lambda: next((e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'manager:demo'), None),
+    received = wait(lambda: next((e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'chat:demo'), None),
                     'message at the other manager', 60)
     assert 'first answer' in received['text']
     answered = wait(lambda: next((e for e in other_entries() if e['kind'] == 'reply' and received['id'] in e['to']), None),
@@ -6838,11 +6842,11 @@ def part_host(created=None):
     tui_screens(wsx, env, project, [(r'(?s) default ▾ (?!.*\bdemo\b).*\bother\b', b'\x1b[<0;3;1M\x1b[<0;3;1m'),
                                     (r'(?s) work ▾ (?!.*\bother\b).*\bdemo\b', b'')])
     assert 'profile = "work"' in selection.read_text(), selection.read_text()
-    replies = wait(lambda: [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'manager-reply:other'],
+    replies = wait(lambda: [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'chat-reply:other'],
                    'reply at demo', 60)
     assert len(replies) == 1 and replies[0]['text'] == 'first answer', replies
-    assert any(e['kind'] == 'sent' and e['to'] == 'other' and 'first answer' in e['text'] for e in manager_entries())
-    wait(lambda: turn_with('Manager other replies (message'), 'the reply reaches the demo agent')
+    assert any(e['kind'] == 'sent' and e['to'] == 'chat:other' and 'first answer' in e['text'] for e in manager_entries())
+    wait(lambda: turn_with('Chat other replies (message'), 'the reply reaches the demo agent')
     crossing = js('task', 'say', 'RUN wsx task deploy -p other --json\nRUN wsx task say -p demo --from-chat hi')
     text = reply_to(crossing['id'])['text']
     assert 'a manager acts in another project only with' in text and "messages another chat, not itself" in text, text
@@ -6881,7 +6885,7 @@ def part_host(created=None):
     reached = wait(lambda: other_ids() - seen_ids, 'the task in other', 60)
     n = reached.pop()
     record = b_show(n)['record']
-    assert record['created_by'] == 'manager@demo' and record['project'] == 'other' and record['branch'] == 'wsx/t%d' % n, record
+    assert record['created_by'] == 'chat:demo' and record['project'] == 'other' and record['branch'] == 'wsx/t%d' % n, record
     assert record['project_id'] == other_id, record
     assert other_state(n, 'ready', 'failed')['state'] == 'ready', b_show(n)
     # ^ The creator reviews it: it waits ready, and the event is demo's.
@@ -6938,15 +6942,177 @@ def part_host(created=None):
     text = reply_to(refused['id'], 60)['text']
     assert text.count('a manager acts in another project only with') == 2 and "project 'ghost' not found" in text, text
     assert other_ids() == before
-    # A task of demo's own by its manager is as before: `manager`, not `manager@`.
+    # A task of demo's own by its home chat records the same `chat:demo`.
     mine = js('task', 'say', 'RUN wsx task new "WORK own.txt" -p demo --json')
     reply_to(mine['id'], 60)
     own_task = max(t['id'] for t in js('task', 'list', '--all')['tasks'])
-    assert show(own_task)['record']['created_by'] == 'manager', show(own_task)['record']
+    assert show(own_task)['record']['created_by'] == 'chat:demo', show(own_task)['record']
     js('task', 'close', own_task, '--discard')
     js('task', 'chat', 'close', 'reachr')
     reach_task = n
     # ^ Demo's manager left a landed task in other: the recap and the task counts below include it.
+    # 33c. Chats on the owner's word, and the home chat (docs/tasks.md "Chats"): a chat's agent opens
+    # and closes a chat only with --owner-said, the new chat records where it came from, a closed
+    # chat's open tasks and last decisions go back to the home chat in one row, and the home chat
+    # sees every open task whichever chat made it.
+    mark('33c')
+    qa_goal = base / 'qa-goal.md'
+    qa_goal.write_text('Own the QA of the checkout flow.\n')
+    new_line = 'RUN wsx task chat new qa --goal %s -p demo --json' % qa_goal
+    for line, why in ((new_line, "chat new is the owner's"), (new_line + ' --owner-said 1', '--owner-said 1: ')):
+        text = reply_to(js('task', 'say', line)['id'])['text']
+        assert why in text and 'qa' not in chats(), text
+    asked = js('task', 'say', 'open a chat qa for the checkout QA\n' + new_line + ' --owner-said OWNER_SAID')
+    assert '-> 0' in reply_to(asked['id'], 60)['text']
+    assert chats()['qa']['state'] == 'open' and not chats()['qa']['home'] and chats()['demo']['home'], chats()
+    meta = json.loads((chats_dir / 'qa/chat.json').read_text())
+    assert meta['repos'] == [repo_id] and meta['from'] == {'chat': 'demo', 'message': asked['id']}, meta
+    assert (chats_dir / 'qa/goal.md').read_text() == qa_goal.read_text()
+    # ^ The new chat's first row links back to the asking message, and costs no turn.
+    first_row = wait(lambda: next(iter(chat_entries('qa')), None), 'the first row of qa')
+    assert first_row['kind'] == 'message' and first_row['from'] == 'events', first_row
+    assert first_row['text'] == 'Opened from chat demo, message %d.' % asked['id'], first_row
+    # The chat's task is the home chat's to see; its events go to the chat that made it.
+    made = js('task', 'say', '--to', 'qa', 'RUN wsx task new "WORK qa.txt" -p demo --json')
+    chat_reply('qa', made['id'])
+    qa_task = max(t['id'] for t in js('task', 'list')['tasks'])
+    assert show(qa_task)['record']['created_by'] == 'chat:qa', show(qa_task)['record']
+    assert qa_task in [i['id'] for i in js('task', 'ledger')['open']], 'the home chat sees the chat task in its ledger'
+    assert wait_state(qa_task, 'ready', 'failed')['state'] == 'ready'
+    wait(lambda: any(e['kind'] == 'message' and e['from'] == 'events' and '#%d ready' % qa_task in e['text']
+                     for e in chat_entries('qa')), 'qa hears its task', 60)
+    time.sleep(4)
+    assert not events_with('#%d ' % qa_task)
+    # ^ A routine result has no chat: it goes to the home chat, not to qa.
+    js('task', 'routine', 'add', 'chatproof', '-p', 'demo', '--cron', '0 5 * * *', '--arg=sh', '--arg=-c', '--arg=echo qaproof; exit 3')
+    js('task', 'routine', 'run', 'chatproof', '-p', 'demo')
+    wait(lambda: events_with('routine chatproof failed (exit 3)'), 'the routine result at the home chat', 60)
+    assert not any('chatproof' in e.get('text', '') for e in chat_entries('qa') if e['kind'] == 'message')
+    js('task', 'routine', 'delete', 'chatproof', '-p', 'demo')
+    # Close: refused without the word, once with it; one hand-back row at the home chat.
+    close_line = 'RUN wsx task chat close qa -p demo --json'
+    assert "chat close is the owner's" in reply_to(js('task', 'say', close_line)['id'])['text'] and chats()['qa']['state'] == 'open'
+    (chats_dir / 'qa/notes').mkdir(exist_ok=True)
+    (chats_dir / 'qa/notes/decisions.md').write_text('- QA signs off on checkout\n- smoke runs nightly\n')
+    closing = js('task', 'say', 'close the qa chat\n' + close_line + ' --owner-said OWNER_SAID')
+    assert '-> 0' in reply_to(closing['id'], 60)['text']
+    assert chats()['qa']['state'] == 'closed'
+    handed = wait(lambda: [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events' and 'Chat qa is closed' in e['text']],
+                  'the hand-back row at the home chat', 60)
+    assert len(handed) == 1 and 'Goal: Own the QA of the checkout flow.' in handed[0]['text'], handed
+    assert '#%d' % qa_task in handed[0]['text'] and 'smoke runs nightly' in handed[0]['text'], handed[0]['text']
+    assert (chats_dir / 'qa/notes/decisions.md').exists()
+    # ^ The closed chat's open task is the home chat's: its next event reaches the home chat.
+    js('task', 'add', qa_task, 'WORK qa2.txt')
+    wait(lambda: events_with('#%d ready r2' % qa_task), 'the closed chat task reaches the home chat', 60)
+    assert not [e for e in chat_entries('qa') if e['kind'] == 'message' and 'r2' in e['text']]
+    # The home chat is not closed; only the owner repoints it.
+    assert 'home chat' in cli('task', 'chat', 'close', 'demo', ok=False).stderr
+    assert 'chat home is for the owner' in reply_to(js('task', 'say', 'RUN wsx task chat home qa -p demo --json')['id'])['text']
+    js('task', 'close', qa_task, '--discard')
+
+    # 33m. A store from before the chats folder moves at its first open, with its host live
+    # (docs/tasks.md "Chats", "Old layout"): a process that runs `wsx task manager-host <id>` on the old
+    # folder is stopped before the folder moves, the owner message it never answered is answered once by
+    # the host the move starts, the log reads on at the new path, and nothing is written at the old one.
+    mark('33m')
+    registry_file = config_dir / 'config-v2.toml'
+    registry_plain = registry_file.read_text()
+    mig = base / 'mig'
+    mig.mkdir()
+    git('init', '-q', '-b', 'main', cwd=mig)
+    (mig / 'README').write_text('mig\n')
+    (mig / 'wsx.config.yml').write_text('tasks:\n  minFreeGb: 0\n')
+    git('add', '.', cwd=mig)
+    git('commit', '-q', '-m', 'start', cwd=mig)
+    registry_file.write_text(registry_plain + '[[projects]]\nname = "mig"\npath = ' + json.dumps(str(mig)) + '\n')
+    mig_id = 'mig-' + hashlib.sha256(str(mig).encode()).hexdigest()[:8]
+    mig_store = state / 'wsx/tasks' / mig_id
+    mig_n = js('task', 'new', '-p', 'mig', 'WORK m.txt')['id']
+    wait(lambda: js('task', 'show', mig_n, '-p', 'mig')['state'] == 'ready', 'the task of the mig repo', 60)
+    cli('session', 'delete', 'task-manager', '-p', 'mig')
+    wait(lambda: not leftovers('task manager-host ' + mig_id), 'the mig manager host leaves', 30)
+    # ^ Put the store back as before chats: the home chat's folder is `manager/`, a second chat is `chats/side/`.
+    old_home, old_side = mig_store / 'manager', mig_store / 'chats/side'
+    (chats_dir / 'mig').rename(old_home)
+    (old_home / 'chat.json').unlink()
+    for stale_socket in old_home.glob('*.sock'):
+        stale_socket.unlink()
+    (mig_store / 'home.json').unlink()
+    (old_side / 'notes').mkdir(parents=True)
+    (old_side / 'goal.md').write_text('Side work.\n')
+    side_line = json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': 1, 'from': 'owner', 'text': 'side hello'}) + '\n'
+    (old_side / 'log.jsonl').write_text(side_line)
+    record_file = mig_store / str(mig_n) / 'task.json'
+    mig_record = json.loads(record_file.read_text())
+    assert mig_record['created_by'] == 'owner', mig_record
+    mig_record['created_by'] = 'manager@demo'
+    record_file.write_text(json.dumps(mig_record))
+    now_ms = int(time.time() * 1000)
+    with open(mig_store / 'approvals.jsonl', 'a') as out:
+        for key, extra in (('a-mig', {}), ('a-side', {'chat': 'side'})):
+            out.write(json.dumps({'kind': 'request', 'id': key, 'action': 'discard', 'task': mig_n, 'unix_ms': now_ms, **extra}) + '\n')
+    (mig_store / 'search.jsonl').write_text(json.dumps({'kind': 'message', 'role': 'x', 'id': 1, 'at': 1, 'text': 'old'}) + '\n')
+    old_ids = [json.loads(line).get('id', 0) for line in (old_home / 'log.jsonl').read_text().splitlines()]
+    queued_id = max(old_ids) + 1
+    with (old_home / 'log.jsonl').open('a') as out:
+        out.write(json.dumps({'unix_ms': now_ms, 'kind': 'message', 'id': queued_id, 'from': 'owner', 'text': 'STATUS after the move'}) + '\n')
+    before_lines = (old_home / 'log.jsonl').read_text().splitlines()
+    # ^ The live old host: a process whose arguments are `task manager-host <id>`, which keeps writing the old log.
+    stand = base / 'stand-in'
+    stand.mkdir()
+    (stand / 'task').write_text(
+        'import os, sys, time\n'
+        'log = os.environ["STAND_LOG"]\n'
+        'while True:\n'
+        '    os.makedirs(os.path.dirname(log), exist_ok=True)\n'
+        '    open(log, "a").close()\n'
+        '    time.sleep(0.2)\n')
+    os.symlink(sys.executable, stand / 'wsx')
+    host = subprocess.Popen([str(stand / 'wsx'), 'task', 'manager-host', mig_id, str(old_home / 'log.jsonl')], cwd=stand,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            env={**env, 'STAND_LOG': str(old_home / 'log.jsonl')})
+    wait(lambda: leftovers('task manager-host ' + mig_id), 'the stand-in host runs')
+    # ^ The first `wsx task` that opens the store moves it: the stand-in is stopped first, the home chat starts on the new folder.
+    listed = {c['name']: c for c in js('task', 'chat', 'list', '-p', 'mig')['chats']}
+    assert listed['mig']['home'] and 'side' in listed, listed
+    assert host.wait(timeout=30) is not None, 'the move stopped the old host'
+    new_log = chats_dir / 'mig/log.jsonl'
+    answered = wait(lambda: next((e for e in (json.loads(l) for l in new_log.read_text().splitlines())
+                                  if e['kind'] == 'reply' and queued_id in e['to']), None), 'the queued message is answered at the new path', 90)
+    lines = new_log.read_text().splitlines()
+    assert lines[:len(before_lines)] == before_lines, 'the log reads on from the old one'
+    assert len([l for l in lines if json.loads(l)['kind'] == 'reply' and queued_id in json.loads(l)['to']]) == 1, lines[-6:]
+    time.sleep(3)
+    for old in ('manager', 'chats', 'roles'):
+        assert not (mig_store / old).exists(), old
+    assert not (mig_store / 'search.jsonl').exists()
+    assert json.loads((mig_store / 'home.json').read_text()) == {'chat': 'mig'}
+    assert json.loads((chats_dir / 'mig/chat.json').read_text())['repos'] == [mig_id]
+    assert (chats_dir / 'side/log.jsonl').read_text() == side_line and (chats_dir / 'side/goal.md').read_text() == 'Side work.\n'
+    assert json.loads((chats_dir / 'side/chat.json').read_text())['repos'] == [mig_id]
+    assert json.loads(record_file.read_text())['created_by'] == 'chat:demo'
+    approvals = {a['id']: a for a in map(json.loads, (mig_store / 'approvals.jsonl').read_text().splitlines())}
+    assert (approvals['a-mig']['chat'], approvals['a-side']['chat']) == ('mig', 'side'), approvals
+    # ^ A second open changes nothing.
+    snapshot = {p: p.read_bytes() for p in (chats_dir / 'side').rglob('*') if p.is_file()}
+    js('task', 'chat', 'list', '-p', 'mig')
+    assert snapshot == {p: p.read_bytes() for p in (chats_dir / 'side').rglob('*') if p.is_file()}
+    # The owner repoints the home chat; a chat that is home is not closed.
+    js('task', 'chat', 'new', 'mside', '--goal', goal, '-p', 'mig')
+    js('task', 'chat', 'home', 'mside', '-p', 'mig')
+    assert json.loads((mig_store / 'home.json').read_text()) == {'chat': 'mside'}
+    assert 'home chat' in cli('task', 'chat', 'close', 'mside', '-p', 'mig', ok=False).stderr
+    js('task', 'chat', 'home', 'mig', '-p', 'mig')
+    js('task', 'chat', 'close', 'mside', '-p', 'mig')
+    js('task', 'close', mig_n, '--discard', '-p', 'mig')
+    cli('session', 'delete', 'task-manager', '-p', 'mig')
+    wait(lambda: not leftovers('task manager-host ' + mig_id), 'the mig hosts leave', 30)
+    registry_file.write_text(registry_plain)
+    shutil.rmtree(mig_store)
+    for chat_name in ('mig', 'side', 'mside'):
+        shutil.rmtree(chats_dir / chat_name)
+
     # 33s. Search (docs/tasks.md "Search"): a manager finds an old decision across projects, ranked,
     mark('33s')
     # and quotes it by id; the digest keeps what was said when the log goes; a hit quotes by id
@@ -6978,8 +7144,12 @@ def part_host(created=None):
     third.mkdir(mode=0o700)
     registry_path.write_text(registry_before + '[[projects]]\nname = "third"\npath = ' + json.dumps(str(third)) + '\n')
     third_id = 'third-' + hashlib.sha256(str(third).encode()).hexdigest()[:8]
-    third_log = state / 'wsx/tasks' / third_id / 'manager' / 'log.jsonl'
+    third_log = state / 'wsx/tasks/chats/third/log.jsonl'
     third_log.parent.mkdir(parents=True, mode=0o700)
+    (third_log.parent / 'chat.json').write_text(json.dumps({'repos': [third_id]}))
+    third_store = state / 'wsx/tasks' / third_id
+    third_store.mkdir(mode=0o700)
+    (third_store / 'home.json').write_text(json.dumps({'chat': 'third'}))
 
     def third_says(*lines):
         third_log.write_text(''.join(json.dumps(line, separators=(',', ':')) + '\n' for line in lines))
@@ -7019,7 +7189,7 @@ def part_host(created=None):
     t0 = 1_700_100_000_000
 
     def third_task(n, task_state, revision, events):
-        folder = third_log.parent.parent / str(n)
+        folder = third_store / str(n)
         folder.mkdir(mode=0o700)
         (folder / 'task.json').write_text(json.dumps({
             'id': n, 'project': 'third', 'project_id': third_id, 'project_path': str(third), 'default_branch': 'main',
@@ -7072,7 +7242,8 @@ def part_host(created=None):
     # ^ A search of nothing, and of a project with no history, says so.
     assert 'needs some words' in cli('task', 'search', '-p', 'demo', '!!', ok=False).stderr
     registry_path.write_text(registry_before)
-    shutil.rmtree(third_log.parent.parent)
+    shutil.rmtree(third_store)
+    shutil.rmtree(third_log.parent)
     # 34. Recap (docs/tasks.md "Recap"): once the other project is quiet for its 12 s after a
     mark('34')
     # land, wsx asks its manager for one recap with the token cost since the last one, and the
@@ -7122,7 +7293,7 @@ def part_host(created=None):
     assert len(idle) == 1 and len(other_tasks()) == 3 and len(recaps()) == 1, (other_tasks(), recaps())
     idle_shown = other_state(idle[0]['id'], 'ready', 'failed')
     # ^ The manager's own task: it waits for the manager's review, never lands by itself.
-    assert idle_shown['state'] == 'ready' and idle_shown['record']['created_by'] == 'manager', idle_shown
+    assert idle_shown['state'] == 'ready' and idle_shown['record']['created_by'] == 'chat:other', idle_shown
     prompt = json.loads(Path(idle_shown['log']).read_text().splitlines()[1])
     assert prompt['kind'] == 'message' and prompt['text'] == idle_text, prompt
     # ^ One turn: the idle task runs no workflow steps (`task new --no-steps`).

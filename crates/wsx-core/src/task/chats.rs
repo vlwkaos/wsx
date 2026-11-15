@@ -398,9 +398,21 @@ fn hand_back(dir: &ManagerDir) -> String {
     let tasks: Vec<String> = store::task_numbers(&dir.project_id)
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|id| store::TaskDir::open(&dir.project_id, id).ok()?.read_record().ok())
+        .filter_map(|id| {
+            store::TaskDir::open(&dir.project_id, id)
+                .ok()?
+                .read_record()
+                .ok()
+        })
         .filter(|record| record.created_by.chat() == Some(dir.name()) && record.state.is_open())
-        .map(|record| format!("#{} {} ({})", record.id, record.title.as_deref().unwrap_or_default(), record.state.as_str()))
+        .map(|record| {
+            format!(
+                "#{} {} ({})",
+                record.id,
+                record.title.as_deref().unwrap_or_default(),
+                record.state.as_str()
+            )
+        })
         .collect();
     let notes = dir.path.join("notes/decisions.md");
     let decisions: Vec<String> = store::read_bounded_if_exists(&notes, 256 * 1024)
@@ -419,7 +431,14 @@ fn hand_back(dir: &ManagerDir) -> String {
         .collect();
     let list = |items: &[String]| match items.is_empty() {
         true => "none".to_string(),
-        false => format!("\n{}", items.iter().map(|item| format!("- {item}")).collect::<Vec<_>>().join("\n")),
+        false => format!(
+            "\n{}",
+            items
+                .iter()
+                .map(|item| format!("- {item}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
     };
     format!(
         "Chat {name} is closed; its open tasks are yours now. Its notes stay readable in its folder.\nGoal: {goal}\nOpen tasks: {tasks}\nLast decisions: {decisions}",
@@ -658,7 +677,10 @@ pub(super) fn rewrite_dir(
         let Some(bytes) = store::read_bounded_if_exists(&path, 64 << 20)? else {
             continue;
         };
-        if !needles.iter().any(|needle| store::contains_bytes(&bytes, needle)) {
+        if !needles
+            .iter()
+            .any(|needle| store::contains_bytes(&bytes, needle))
+        {
             continue;
         }
         let mut changed = false;

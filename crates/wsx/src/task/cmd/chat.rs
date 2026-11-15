@@ -18,9 +18,9 @@ use wsx_core::task::manager::{
 };
 use wsx_core::task::owner::{self};
 use wsx_core::task::store::ManagerDir;
+use wsx_core::task::store::{self, TaskDir};
 use wsx_core::task::MAX_MESSAGE_BYTES;
 use wsx_core::task::{search, text};
-use wsx_core::task::store::{self, TaskDir};
 
 pub(crate) fn ensure_manager(project: Option<&str>) -> Result<(bool, ManagerDir)> {
     let (name, main) = project_entry(project)?;
@@ -117,8 +117,8 @@ pub(crate) fn chat(
 ) -> Result<()> {
     let (name, main) = project_entry(project)?;
     let project_id = store::project_id(&name, &main);
-    let dir = ManagerDir::existing_in(&project_id, chat)?
-        .filter(|dir| dir.project_id == project_id);
+    let dir =
+        ManagerDir::existing_in(&project_id, chat)?.filter(|dir| dir.project_id == project_id);
     if chat.is_some() && dir.is_none() {
         bail!("the project has no chat {}", chat.unwrap_or_default());
     }
@@ -296,7 +296,13 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
             let ((project, main), from) = lifecycle("chat new", project, said.owner_said)?;
             let project_id = store::project_id(&project, &main);
             let goal = goal.as_deref().map(read_goal).transpose()?;
-            chats::create(&project_id, &name, goal.as_deref(), agent.as_deref(), from.clone())?;
+            chats::create(
+                &project_id,
+                &name,
+                goal.as_deref(),
+                agent.as_deref(),
+                from.clone(),
+            )?;
             // ^ The first row of a chat that a chat's agent opened links to the message that asked.
             if let Some(from) = from {
                 let short = Short {
@@ -304,10 +310,7 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
                     task: None,
                     wakes: false,
                 };
-                let text = format!(
-                    "Opened from chat {}, message {}.",
-                    from.chat, from.message
-                );
+                let text = format!("Opened from chat {}, message {}.", from.chat, from.message);
                 let exe = std::env::current_exe().context("cannot find the wsx binary")?;
                 owner::say(
                     &project,
@@ -358,7 +361,11 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
                     row["agent"]
                         .as_str()
                         .map_or(String::new(), |agent| format!(" {agent}")),
-                    if row["home"].as_bool() == Some(true) { " home" } else { "" }
+                    if row["home"].as_bool() == Some(true) {
+                        " home"
+                    } else {
+                        ""
+                    }
                 );
             }
             Ok(())
@@ -407,13 +414,19 @@ fn lifecycle(
     let asker = actor().chat().map(str::to_string).unwrap_or_default();
     let said = crate::task::owner_said(said).with_context(|| {
         format!(
-            "wsx task {command} is the owner's; a chat's agent runs it when the owner's message              of this turn asks: pass --owner-said <id>; nothing was done"
+            "wsx task {command} is the owner's; a chat's agent runs it when the owner's message of this turn asks: pass --owner-said <id>; nothing was done"
         )
     })?;
     let own = ManagerDir::existing(&asker)?.context("the asking chat has no folder")?;
     owner::check_owner_said(&own.project_id, Some(&asker), said)?;
     let entry = crate::task::project_by_id(&own.project_id)?;
-    Ok((entry, Some(ChatFrom { chat: asker, message: said })))
+    Ok((
+        entry,
+        Some(ChatFrom {
+            chat: asker,
+            message: said,
+        }),
+    ))
 }
 
 /// The open chat `name`, which must run in the repo `project_id`.

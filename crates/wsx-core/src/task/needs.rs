@@ -151,8 +151,7 @@ pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCou
     }
     for (dir, record) in view::project_tasks(project_id).unwrap_or_default() {
         let Ok(record) = record else { continue };
-        let Some(own) = counts.get_mut(chats::owner(record.created_by.chat(), &open, &home))
-        else {
+        let Some(own) = counts.get_mut(chats::owner(record.created_by.chat(), &open, &home)) else {
             continue;
         };
         match stage(&dir, &record, land_auto) {

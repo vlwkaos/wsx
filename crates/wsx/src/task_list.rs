@@ -314,7 +314,10 @@ impl TaskList {
                 .map_err(|error| error.to_string())
                 .and_then(|wsx| owner::run_as_owner(&wsx, &self.project, argv));
             self.notice = Some(match closed {
-                Ok(_) => (format!("Closed {name}; its open tasks are the home chat's"), false),
+                Ok(_) => (
+                    format!("Closed {name}; its open tasks are the home chat's"),
+                    false,
+                ),
                 Err(said) => (said, true),
             });
             self.stamp = None;

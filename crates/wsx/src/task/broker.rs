@@ -15,8 +15,8 @@ use std::time::Duration;
 use wsx_core::git::output_with_timeout_limit;
 use wsx_core::task::manager::Party;
 use wsx_core::task::owner::ACTOR_ENV;
-use wsx_core::task::store;
 use wsx_core::task::policy::{Capability, Policy, Role, Trust, RULES_ENV, TRUST_ENV};
+use wsx_core::task::store;
 
 pub const BROKER_ENV: &str = "WSX_TASK_BROKER";
 /// The manager's own project; set only by the manager host. Memory commands read it for the

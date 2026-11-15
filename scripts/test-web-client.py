@@ -3700,8 +3700,14 @@ def task_journey(args):
         # another owner message and an event with a long reply. The page folds the first run (docs/web-client-tasks.md
         # "Project screen"). Delivered turns, so its manager never takes them as new; ids far past
         # the ones it counts from.
-        manager_dir = state / 'wsx/tasks' / ('plans-' + hashlib.sha256(str(plans).encode()).hexdigest()[:8]) / 'manager'
-        manager_dir.mkdir(mode=0o700, parents=True)
+        # ^ The repo's home chat in the store layout of docs/tasks.md "Chats": `tasks/chats/plans` and `home.json`.
+        plans_id = 'plans-' + hashlib.sha256(str(plans).encode()).hexdigest()[:8]
+        manager_dir = state / 'wsx/tasks/chats/plans'
+        (state / 'wsx/tasks/chats').mkdir(mode=0o700, parents=True, exist_ok=True)
+        manager_dir.mkdir(mode=0o700)
+        (state / 'wsx/tasks' / plans_id).mkdir(mode=0o700, exist_ok=True)
+        (state / 'wsx/tasks' / plans_id / 'home.json').write_text(json.dumps({'chat': 'plans'}))
+        (manager_dir / 'chat.json').write_text(json.dumps({'repos': [plans_id]}))
         questions = ['Should the fold keep five rows?', 'Can #92 wait for Monday?', 'Shall I ship #93 today?', 'Is the since line right?']
         # ^ The log opens with the two questions that stay open and six spare ones: the four plain
         # owner messages the journey sends to plans answer four (the run showed four gone), and the two the web check sends before it asks (its RUN
@@ -4706,15 +4712,15 @@ merge_seconds = 3
             rows = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]['rows']
             assert not any('reports' in r for r in rows), rows
             assert any(r['kind'] == 'line' and r.get('task') == 5 and r['text'].startswith('#5 ready') for r in rows), rows
-            # The manager's name: ui's set name, plans' default; a peer by its set name.
+            # The manager's name: ui's set name, plans' default; a peer by its chat's name.
             ui_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]
             plans_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['plans'])[1]
             # ^ A find reads from the oldest entry that shows its words (docs/web-client-chat.md
             # "Find"): every match the whole log has, as `all=true` sent before.
             whole = steady(owner, 'GET', '/api/tasks/%d/chat?find=QUASAR' % ids['plans'])[1]
-            peer = lambda chat, key: {r['name'] for r in chat['rows'] if r.get('author') == 'peer:' + key}
+            peer = lambda chat, key: {r['name'] for r in chat['rows'] if r.get('author') == 'peer:chat:' + key}
             assert ui_chat['manager'] == {'name': 'Atlas', 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and peer(ui_chat, 'plans') == {'plans'}, (ui_chat['manager'], peer(ui_chat, 'plans'))
-            assert plans_chat['manager']['name'] == 'plans' and peer(whole, 'ui') == {'Atlas'}, (plans_chat['manager'], peer(whole, 'ui'))
+            assert plans_chat['manager']['name'] == 'plans' and peer(whole, 'ui') == {'ui'}, (plans_chat['manager'], peer(whole, 'ui'))
             # ^ The window is 200 log entries; a ping, a recap request or a repeat shows no row.
             assert plans_chat['skipped'] > 0 and 0 < len(plans_chat['rows']) <= 200, (plans_chat['skipped'], len(plans_chat['rows']))
             assert whole['skipped'] == 0 and whole['rows'][0]['text'] == 'Where did the Quasar notes go?', (whole['skipped'], whole['rows'][:1])
@@ -4902,7 +4908,7 @@ merge_seconds = 3
                 if overview['to_check']:
                     items.append((overview['to_check'], '%d to check' % overview['to_check'], '#/p/%d/checks' % project))
                 if names[project] == wrote:
-                    items.append((1, overview['manager'] + ' wrote to you', '#/p/%d' % project))
+                    items.append((1, overview['manager'] + ' wrote to you', '#/c/' + names[project]))
                 if items:
                     projects.append((project, names[project], items))
             count = sum(item[0] for _, _, items in projects for item in items)
@@ -5017,7 +5023,7 @@ merge_seconds = 3
         alert = new_pushes('manager', 'the push of a warn post')
         assert len(alert) == 1, alert
         assert {k: v for k, v in alert[0].items() if k != 'badge'} == {
-            'kind': 'manager', 'title': 'demo: memory guard', 'body': 'rss 9 GB', 'url': '#/p/%d' % ids['demo'],
+            'kind': 'manager', 'title': 'demo: memory guard', 'body': 'rss 9 GB', 'url': '#/c/demo',
             'tag': 'wsx-owner-alert-%d-%d' % (ids['demo'], warned['id'])}, alert
         again = post('rss 9 GB\n', '--title', 'memory guard', '--level', 'warn', '--key', 'mem')
         assert again.stdout.strip() == 'deduped: mem', again.stdout

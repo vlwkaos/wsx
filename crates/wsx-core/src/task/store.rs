@@ -1152,7 +1152,11 @@ impl ManagerDir {
         let mut args: Vec<String> = ["task", "manager-host", self.project_id.as_str()]
             .map(String::from)
             .into();
-        args.extend(self.named().into_iter().flat_map(|chat| ["--chat".into(), chat.into()]));
+        args.extend(
+            self.named()
+                .into_iter()
+                .flat_map(|chat| ["--chat".into(), chat.into()]),
+        );
         args
     }
 
