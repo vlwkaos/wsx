@@ -224,6 +224,11 @@ def tui_screens(wsx, env, cwd, steps, cols=120, raw=None):
     return screens
 
 
+def home_dir(store):
+    """The repo's home chat folder: `home.json` of the repo's store (`tasks/<repo-id>`) names it (docs/tasks.md "Chats")."""
+    return store.parent / 'chats' / json.loads((store / 'home.json').read_text())['chat']
+
+
 def forget_notes(notes):
     """Make the manager's notes folder old notes again (docs/memory.md "Notes"): drop the copies, the copies of
     hand edits, the hashes of the views and the records the notes made, so a fixture written by hand is
@@ -699,11 +704,6 @@ def manager_up(created):
         """The first manager turn whose message holds `text`."""
         return next((t for t in traces() if t.get('manager') and text in str(t.get('message', ''))), None)
 
-    def home_dir(store=None):
-        """The repo's own chat folder: `home.json` of the repo's store names it (docs/tasks.md "Chats")."""
-        store = store or Path(created['task_dir']).parent
-        return store.parent / 'chats' / json.loads((store / 'home.json').read_text())['chat']
-
     running = js('task', 'new', 'SLOW SLOW SLOW WORK r.txt')['id']
     # ^ A project with the old `page.md` and no overview gets it moved once, when the manager starts.
     old_page = state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md'
@@ -729,7 +729,7 @@ def manager_up(created):
     assert launch['argv'][launch['argv'].index('--disallowedTools') + 1] == 'Workflow,ScheduleWakeup,ReportFindings', launch['argv']
     assert launch['bash_max_output'] == '8000', launch
     plugin = Path(launch['plugin_dir'])
-    assert plugin.parent == home_dir() and plugin.resolve().is_relative_to(state.resolve()), plugin
+    assert plugin.parent == home_dir(Path(created['task_dir']).parent) and plugin.resolve().is_relative_to(state.resolve()), plugin
     assert json.loads((plugin / '.claude-plugin/plugin.json').read_text())['name'] == 'owner'
     assert os.readlink(plugin / 'skills') == str(owner_skills), os.readlink(plugin / 'skills')
     # ^ No prompts inside wsx's boundary (docs/tasks.md "Permissions").
@@ -883,7 +883,7 @@ def manager_up(created):
                  'Continue a `paused` task.', 'Never touch a task on `hand`', '`wsx task checkin`',
                  'read-only git', 'the Skill tool as `owner:<name>`', 'check rather than guess', '`wsx memory add --kind rule`',
                  '/chats/demo/notes/decisions.md', '/chats/demo/notes/context.md', 'update a section in place',
-                 '--from-chat --reply', 'and do not answer it', "'@<project>'"):
+                 '--from-chat --reply', "do not answer 'Chat <name> replies'", "'@<project>'"):
         assert rule in launch['instructions'], rule
     # ^ No instruction names a brief or a goal file: only the owner's `chat new` takes one (docs/tasks.md "Chats").
     assert 'brief' not in launch['instructions'].lower().replace('--brief', ''), launch['instructions']
@@ -966,7 +966,7 @@ def manager_up(created):
     assert direct['code'] == 2 and 'only `wsx task` commands' in direct['stderr'], direct
     assert wait_state(running, 'ready', 'failed')['state'] == 'ready'
     assert [e['mode'] for e in log(running) if e['kind'] == 'message'] == ['prompt', 'add']
-    manager_log = home_dir() / 'log.jsonl'
+    manager_log = home_dir(Path(created['task_dir']).parent) / 'log.jsonl'
 
     def manager_entries(raw=False):
         found = [json.loads(line) for line in manager_log.read_text().splitlines()]
