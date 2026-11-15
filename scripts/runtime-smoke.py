@@ -2395,7 +2395,7 @@ try:
     remove_tui.send(b"d")
     wait_for(lambda: asks in remove_tui.text(), "d did not ask again", seconds=60)
     remove_tui.send(b"y")
-    wait_for(lambda: "Closed qa; its log and notes stay" in remove_tui.text() and "Check the notes" not in remove_tui.text(),
+    wait_for(lambda: "Closed qa; its open tasks are the home chat's" in remove_tui.text() and "Check the notes" not in remove_tui.text(),
              lambda: f"y did not close qa and drop its row:\n{remove_tui.text()}", seconds=60)
     listed = wsx("task", "chat", "list", "-p", "keep-me", "--json")
     assert listed.returncode == 0 and {row["name"]: row["state"] for row in json.loads(listed.stdout)["chats"]}.get("qa") == "closed", listed.stdout + listed.stderr
