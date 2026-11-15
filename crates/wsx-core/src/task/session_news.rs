@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// A session that belongs to a task or to the manager: `task-<n>`, `task-<n>-hand`,
-/// `task-manager` or a role's `task-<role>` (provider `task` or `manager`). The web's
+/// a chat's `task-<name>` (provider `task` or `manager`). The web's
 /// `isTaskSession` (store.js) is the same rule.
 pub fn is_task_session(label: &str, provider: Option<&str>) -> bool {
     let named = label.strip_prefix("task-").is_some_and(|rest| {

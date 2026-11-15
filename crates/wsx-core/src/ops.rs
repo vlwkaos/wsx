@@ -932,7 +932,7 @@ pub fn kill_session(client: &Client, session_id: SessionId) -> Result<()> {
 }
 
 /// Closes every session on the project's worktrees through `kill_session`, the hidden
-/// `task-manager` and task sessions too. A project wsxd does not know has none. Returns how
+/// chat (`task-<name>`) and task sessions too. A project wsxd does not know has none. Returns how
 /// many it closed. ref: docs/web-client.md "Projects"
 pub fn halt_project_sessions(client: &Client, project: &Path) -> Result<usize> {
     let snapshot = runtime_snapshot(client)?;
