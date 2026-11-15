@@ -7080,8 +7080,15 @@ def part_host(created=None):
                             env={**env, 'STAND_LOG': str(old_home / 'log.jsonl')})
     wait(lambda: leftovers('task manager-host ' + mig_id), 'the stand-in host runs')
     # ^ The first `wsx task` that opens the store moves it: the stand-in is stopped first, the home chat starts on the new folder.
-    listed = {c['name']: c for c in js('task', 'chat', 'list', '-p', 'mig')['chats']}
-    assert listed['mig']['home'] and 'side' in listed, listed
+    # A deploy opens the store from several processes at once (its sweep, a host that starts, a command): four
+    # first opens race here; `tasks/chats.lock` makes one move and the others find nothing left to move.
+    opens = [subprocess.Popen([str(wsx), 'task', 'chat', 'list', '-p', 'mig', '--json'], cwd=project, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(4)]
+    for each in opens:
+        out, err = each.communicate(timeout=90)
+        assert each.returncode == 0, (out, err)
+        listed = {c['name']: c for c in json.loads(out)['chats']}
+        assert listed['mig']['home'] and 'side' in listed, (listed, err)
     assert host.wait(timeout=30) is not None, 'the move stopped the old host'
     new_log = chats_dir / 'mig/log.jsonl'
     answered = wait(lambda: next((e for e in (json.loads(l) for l in new_log.read_text().splitlines())

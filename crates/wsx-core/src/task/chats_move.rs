@@ -82,14 +82,25 @@ pub(super) fn run(project_id: &str, project: &Path) -> Result<Vec<Stopped>> {
         taken.push(new.clone());
         names.insert(folder.clone(), new);
     }
-    let stopped: Vec<Stopped> = folders
-        .iter()
-        .filter_map(|folder| stop_host(project_id, folder, &names, &home))
-        .collect();
+    let mut stopped = Vec::new();
+    for folder in &folders {
+        stopped.extend(stop_host(project_id, folder, &names, &home)?);
+    }
     rewrite(project_id, project, &folders, &names, &home)?;
     for folder in &folders {
         let new = &names[folder.name.as_deref().unwrap_or("manager")];
         let target = root.join(new);
+        // ^ `chat.json` and `home.json` come before the rename: a process that finds the old folder
+        // gone (it skips the lock then) finds the chat whole, and a deploy's several first opens
+        // of one store cannot see it half moved.
+        let mut file: Value = store::read_bounded_if_exists(&folder.path.join(CHAT_FILE), 4096)?
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        file["repos"] = serde_json::json!([project_id]);
+        store::write_atomic(&folder.path.join(CHAT_FILE), &serde_json::to_vec(&file)?)?;
+        if folder.name.is_none() {
+            store::set_home_chat(project_id, new)?;
+        }
         std::fs::rename(&folder.path, &target).with_context(|| {
             format!(
                 "cannot move {} to {}",
@@ -97,14 +108,6 @@ pub(super) fn run(project_id: &str, project: &Path) -> Result<Vec<Stopped>> {
                 target.display()
             )
         })?;
-        let mut file: Value = store::read_bounded_if_exists(&target.join(CHAT_FILE), 4096)?
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
-        file["repos"] = serde_json::json!([project_id]);
-        store::write_atomic(&target.join(CHAT_FILE), &serde_json::to_vec(&file)?)?;
-        if folder.name.is_none() {
-            store::set_home_chat(project_id, new)?;
-        }
     }
     // ^ The search digest names the chats of before; it is rebuilt on the next search.
     let _ = std::fs::remove_file(project.join(crate::memory::index::DIGEST_FILE));
@@ -138,7 +141,7 @@ fn stop_host(
     folder: &Old,
     names: &BTreeMap<String, String>,
     home: &str,
-) -> Option<Stopped> {
+) -> Result<Option<Stopped>> {
     let mut args = vec!["task", "manager-host", project_id];
     if let Some(name) = &folder.name {
         args.extend(["--chat", name.as_str()]);
@@ -154,9 +157,11 @@ fn stop_host(
     };
     let pid = super::replace::host_pid(&args);
     if pid.is_none() && !answers() {
-        return None;
+        return Ok(None);
     }
-    let main = main_of(project_id)?;
+    let Some(main) = main_of(project_id) else {
+        return Ok(None);
+    };
     let label = format!("task-{}", folder.name.as_deref().unwrap_or("manager"));
     let _ = super::close_session(&label, &main);
     super::replace::stop_tree(pid);
@@ -168,13 +173,21 @@ fn stop_host(
     while Instant::now() < deadline && (super::replace::host_pid(&args).is_some() || answers()) {
         std::thread::sleep(Duration::from_millis(100));
     }
+    // ^ A host that outlives the wait would write the old path again: the move stops here and
+    // the next open tries again.
+    if super::replace::host_pid(&args).is_some() || answers() {
+        anyhow::bail!(
+            "the host of {} did not stop; nothing was moved",
+            folder.path.display()
+        );
+    }
     let _ = std::fs::remove_file(&socket);
     let _ = std::fs::remove_file(broker);
     let chat = names[folder.name.as_deref().unwrap_or("manager")].clone();
-    Some(Stopped {
+    Ok(Some(Stopped {
         home: chat == home,
         chat,
-    })
+    }))
 }
 
 /// The registered repo's main checkout.

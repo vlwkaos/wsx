@@ -282,7 +282,6 @@ struct Manager {
     pinging: bool,
 }
 
-/// The plugin that lends the manager the owner's skills, `manager/<this>/`.
 /// The manager's lean project context in its notes folder. ref: docs/tasks.md "Memo"
 pub(super) const CONTEXT_FILE: &str = "context.md";
 /// The owner's decisions, one line each, appended by the manager as they are made.
@@ -3610,7 +3609,7 @@ impl Manager {
             Ok(wsx_core::memory::manage::add_episode(
                 &store.without_rules(),
                 "handover",
-                "path:manager/log.jsonl",
+                &format!("path:chats/{}/log.jsonl", self.dir.name()),
                 handover,
                 &self.dir.path.join(wsx_core::task::store::LOG_FILE),
             )?)

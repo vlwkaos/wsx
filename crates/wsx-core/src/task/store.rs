@@ -1176,7 +1176,7 @@ impl ManagerDir {
         sockets_of(&self.path).1
     }
 
-    /// `manager/notes/`, the manager's notes and decisions; created owner-only.
+    /// `notes/` of the chat's folder, the chat's notes and decisions; created owner-only.
     pub fn notes(&self) -> Result<PathBuf> {
         let path = self.path.join("notes");
         create_private_dir(&path)?;

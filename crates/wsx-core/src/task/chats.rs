@@ -673,7 +673,7 @@ pub(super) fn rewrite_dir(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    // ^ A repo without a first chat has no `manager/` to rewrite.
+    // ^ A repo without a first chat has no old `manager/` to rewrite.
     for entry in entries.filter_map(|entry| entry.ok()) {
         let path = entry.path();
         let jsonl = path.extension().is_some_and(|ext| ext == "jsonl");
