@@ -50,9 +50,15 @@ export function conversation(entries, resolutions, approvals = [], checks = [], 
     if (row.kind !== "message") return;
     const same = (other, gap) => other?.kind === "message" && other.author === row.author && gap < GROUP_MS;
     row.first = !same(before, row.at - (before?.at ?? 0));
-    const next = rows.slice(index + 1).find((other) => other.kind === "message");
-    row.last = !(next?.author === row.author && clock(next.at) === clock(row.at));
   });
+  // ^ From the end, so each bubble meets the next one of the chat once.
+  let next = null;
+  for (let at = rows.length - 1; at >= 0; at--) {
+    const row = rows[at];
+    if (row.kind !== "message") continue;
+    row.last = !(next?.author === row.author && Math.floor(next.at / 60_000) === Math.floor(row.at / 60_000));
+    next = row;
+  }
   return folded(rows);
 }
 
