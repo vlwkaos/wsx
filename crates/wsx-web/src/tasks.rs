@@ -983,7 +983,7 @@ pub fn since(scope: &Scope, after: u64) -> Value {
             found.entry(kind).or_default().push(record.id);
         }
     }
-    let replies = ManagerDir::existing(&scope.store)
+    let replies = ManagerDir::home(&scope.store)
         .ok()
         .flatten()
         .and_then(|dir| dir.read_log().ok())

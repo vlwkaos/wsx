@@ -646,7 +646,7 @@ fn check_words(store: &Store, new: &NewRecord, words: &str) -> Result<(), Error>
     let Some((project, _)) = store.project_ids() else {
         return usage("--words needs a project scope");
     };
-    let dir = io(ManagerDir::existing(project))?;
+    let dir = io(ManagerDir::home(project))?;
     let entries = match dir {
         Some(dir) => io(read_chat(&dir, &Window::Around(id)))?,
         None => Vec::new(),

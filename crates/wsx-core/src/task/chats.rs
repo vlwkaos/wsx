@@ -668,7 +668,13 @@ pub(super) fn rewrite_dir(
     needles: &[&[u8]],
     rename: &dyn Fn(&mut Value) -> bool,
 ) -> Result<()> {
-    for entry in std::fs::read_dir(dir)?.filter_map(|entry| entry.ok()) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    // ^ A repo without a first chat has no `manager/` to rewrite.
+    for entry in entries.filter_map(|entry| entry.ok()) {
         let path = entry.path();
         let jsonl = path.extension().is_some_and(|ext| ext == "jsonl");
         if !(jsonl || path.extension().is_some_and(|ext| ext == "json")) || !path.is_file() {

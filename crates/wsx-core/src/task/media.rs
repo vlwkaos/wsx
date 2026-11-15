@@ -10,7 +10,7 @@ use super::chat::linked_files;
 use super::chats;
 use super::checks::{self, CheckState};
 use super::manager::{Author, ManagerEntry, ManagerEvent};
-use super::store::{contains_bytes, ManagerDir, TaskDir, FIRST_READ_BYTES};
+use super::store::{contains_bytes, TaskDir, FIRST_READ_BYTES};
 use anyhow::Result;
 use serde::Serialize;
 use std::path::{Component, Path};
@@ -123,8 +123,7 @@ pub fn list(project_id: &str, filter: &Filter, checkout: &Path) -> Result<Page> 
     let mut items = capture_items(project_id, filter)?;
     // ^ A message has no task: a task filter leaves the logs unread.
     if filter.task.is_none() {
-        let first = ManagerDir::existing(project_id)?;
-        for dir in first.into_iter().chain(chats::all(project_id)) {
+        for dir in chats::all(project_id) {
             let items_of = |entries: &[ManagerEntry]| -> Vec<Item> {
                 entries
                     .iter()

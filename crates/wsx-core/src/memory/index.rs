@@ -714,7 +714,7 @@ fn result_text(value: &serde_json::Value) -> String {
 /// The manager's decisions and memo lines, read from the notes as they are now: the files stay,
 /// and a line the manager merged or fixed is not found in its old form.
 fn notes(project_id: &str, records_apart: bool) -> Vec<Doc> {
-    let Ok(Some(dir)) = ManagerDir::existing(project_id) else {
+    let Ok(Some(dir)) = ManagerDir::home(project_id) else {
         return Vec::new();
     };
     let mut docs = Vec::new();
