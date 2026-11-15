@@ -2,7 +2,7 @@
 
 Asked 2026-11-15 by the owner. Read-only study. Counts come from two scripts and git:
 - **TC**: `python3 -I docs/design/task-time-cost-measure.py --since 2026-11-08 [--landed-since 2026-11-14T16:30] --gh`
-- **SF**: `python3 -I docs/design/scenario-flakes-measure.py --until 2026-11-15T11:00 [--days 0.77] --gh --yield --commits --asserts [--rows yield|commits]`
+- **SF**: `python3 -I docs/design/scenario-flakes-measure.py --until 2026-11-15T11:00 [--days 0.77] --gh --yield --commits --asserts --gate [--rows yield|commits]`
 
 The hand-read samples are in `verification-bottleneck-sample.md`.
 
@@ -11,7 +11,7 @@ The hand-read samples are in `verification-bottleneck-sample.md`.
 1. **The step is necessary, but its gate is not the guarantee.** The web scenario is the only proof through the real browser entry point. In 21 days it found **5 product bugs** in the tasks' own changes before land, plus 3 design-rule breaks. In the same 21 days, **108 failed runs were fixed in the scripts only** (1878 CI min, $17.45 in 91 worker turns), against 21 runs fixed in product code only.
 2. **First wrong state.** The scenario checks a spec that the same change rewrites. The worker instructions tell every worker to edit the asserts for each UI string it changes (`wsx.config.yml:70-73`). So a red run most often means "the script is behind an intended change", not "the owner's behavior broke".
 3. **#429 and #441 moved the wrong numbers.** #429 removed infrastructure failures (34 to 0). #441 now runs the scenarios after every done result *and* the worker still runs them itself. Since then a landed task has **6.3 CI runs instead of 3.7**, and the web fail rate stayed at 61%.
-4. **The gate does not hold today anyway.** 14 of 133 landed tasks landed with their last whole web run red; 4 of the 8 tasks that ran web since #441 did. The web scenario never runs on main.
+4. **The gate does not hold today anyway.** In 21 days, 20 of the 69 tasks that ran the whole web scenario landed with their last run red. Since #441, 4 of 8 did (SF `--gate`). The web scenario never runs on main.
 5. **Smallest design that keeps the guarantee.** Gate on the owner's decided behavior only, run it once per ready revision and once on main after each land, and turn layout and motion literals into captures. Details are in §7.
 
 ## 1. The guarantee
@@ -26,7 +26,7 @@ Every step below is judged by G3: does it make G3 hold at lower cost?
 
 ## 2. Now, after #429 (11-13) and #441 (11-14 16:54)
 
-| Measure | 11-13 audit (100 tasks) | Landed since 11-14 16:30 (15 tasks, TC `--landed-since`) |
+| Measure | 11-13 audit (100 tasks) | Landed since 11-14 16:30 (15 tasks at 11:10 KST, TC `--landed-since`) |
 |---|---|---|
 | created to landed p50 | 89 min | 290 min (7 of 15 were created before 11-14, so this is not comparable) |
 | check-run phase | 49.8% of the sum, p50 63 min | p50 135.5 min (sum 2059 min) |
@@ -35,10 +35,11 @@ Every step below is judged by G3: does it make G3 hold at lower cost?
 | failed by cause | assert 141, 403 27, queue cancel 18, timeout 18 | assert 43, timeout 5, queue cancel 1, 403 **0** |
 | web failures by class (SF) | week before: own 22, shared 18, once 42, generic 21, infra **34** | own 5, shared 15 (main 8, product 3, timing 2, ranout 2), once 5, generic 2, infra **0** |
 | CI job-minutes a task | 109 | 247 (3699 for 15 tasks) |
+| GitHub queue, web p90 | 18.8 min | 3.9 min (29 runs): the queue is not the cost now |
 
 - **#429 worked.** The 403 and queue-cancel failures are gone. Since 11-13 the logs have 7 "known failure" turns and 4 "failed on main too" results.
 - **#441 added runs.** In #461's log the worker ran `task` (07:31). The host then ran `web` after the build result (07:54), both again after the review result (08:39), and both again after the rebase (10:47): 4 scenario rounds for one change. #444 has 13 scenario runs.
-- **#441 also widened the reach.** The web paths in `wsx.config.yml` name `crates/wsx-core`, `crates/wsx-daemon` and `crates/wsx/src/task`. 99 of 132 tasks landed since 11-08 change one of them, so web now runs for 3 of every 4 tasks.
+- **#441 also widened the reach.** The web paths in `wsx.config.yml` name `crates/wsx-core`, `crates/wsx-daemon` and `crates/wsx/src/task`. Since #441, 8 of 14 landed tasks ran the whole web scenario, against 61 of 390 in the 20 days before (SF `--gate`).
 
 ## 3. Yield against cost (21 days, SF `--yield`)
 
@@ -61,11 +62,12 @@ The turn cost above is only the turn that read the failure. The later fix turns 
 
 The checks have 1675 assert sites: words on the screen 658, behavior (a route, state or count) 635, layout (px, rect, size) 239, motion (frames, animation) 75 and style (computed style, CSS literals) 68.
 
-| Kind | Sites | Failures (non-infra) | Failures a site | Real bugs found (§3) |
+| Kind | Sites | Failures (non-infra) | Failures a site | Real bugs found (§3, judged by hand) |
 |---|---|---|---|---|
 | layout, motion, style | 382 (23%) | 93 | 0.24 | #275 (44 px), plus followEnd and To check, which both landed |
 | words, behavior | 1293 (77%) | 96 | 0.07 | #279, #356, #413, #420 |
 
+- The rule puts the asserts of #356 and #413 under layout, because they read sizes. By hand both judge contract facts (pill labels, the list's children), so the table counts them there.
 - A literal assert fails 3.3 times as often as a contract assert. Sampled contracts: "a device without task_act has routine actions" (`web-tasks-check.mjs:1609`) and "history.back() leads to ..., Back to ..." (`:2895`). Sampled literals: "a reply below moved the row in view by N px" (`:2202`) and the token audit `assert literals == []`.
 - Contract asserts catch most of the bugs that were fixed before land. Script-only fixes come from every kind (behavior 44, layout 22, words 17, motion 12, style 4). So the churn is not only literals: about a quarter is the journey's own ordering and fixture logic (§3 sample).
 
@@ -91,7 +93,7 @@ flowchart LR
   I["instruction wsx.config.yml:70:<br/>each worker edits the asserts<br/>for each UI string it changes"] --> S["1675 asserts move with the code<br/>(+8870 / -2731 lines in 21 days)"]
   S --> F["a red run usually means the script lags:<br/>108 script-only vs 5 real bugs"]
   F --> R["each red costs a remote round:<br/>19 min, a turn, a fix commit"]
-  H["#441: host runs after each result,<br/>worker runs too; 75% of tasks"] --> R
+  H["#441: host runs after each result,<br/>worker runs too; 8 of 14 tasks"] --> R
   M["web never runs on main"] --> D["main breaks are paid in every later task"]
 ```
 
@@ -115,10 +117,10 @@ flowchart LR
 - **Moves:** about 380 literal sites out of the gate, into a capture report.
 - **Adds:** one main run per land batch. It is the missing G3 step: it also covers the deploy (G2) and gives the `web` scenario the main block that #429 needs.
 - **Keeps the owner's rules:** a real browser and the real entry point, no mocks. TUI parity is unchanged, since `smoke` and `task` still drive the TUI.
-- **Proof:** TC `--landed-since` a week after the change, with these targets: CI runs a task at 3 or fewer, web fail rate under 30%, and no task landed red (§1 query).
+- **Proof:** TC `--landed-since` a week after the change, with these targets: CI runs a task at 3 or fewer, web fail rate under 30%, and no task landed red (SF `--gate`).
 
 ## Questions for the owner
 
 1. **Gate only on the behavior you decided, with layout and motion as captures for you to look at?** Recommendation: yes. Literal asserts fail 3.3 times as often as contract asserts, and they stopped none of the 2 frame bugs from landing.
-2. **Run `web` on main after each land batch, and treat a red run as one fix task?** Recommendation: yes. It is the only step that makes G3 hold. Today a red run lands by judgment (14 tasks).
+2. **Run `web` on main after each land batch, and treat a red run as one fix task?** Recommendation: yes. It is the only step that makes G3 hold. Today a red run lands by judgment (20 tasks in 21 days).
 3. **Fix the probe's PDF-tool fixture (`test-web-client.py:2017`), run `weblinux` 3 times, and move `web` to Linux runners if all parts pass?** Recommendation: yes. This keeps your 10-27 "GitHub Actions" decision, and it removes the 5-macOS-job queue. Running it on this Mac would change that decision, and I do not recommend it.

@@ -18,7 +18,11 @@ ARGS = sys.argv[1:]
 def arg(name, default):
     return ARGS[ARGS.index(name) + 1] if name in ARGS else default
 STATE = os.path.expanduser(arg('--state', '~/.local/state/wsx/tasks/wsx-8cbe3f08'))
-SINCE = int(D.datetime.strptime(arg('--since', '2026-11-08'), '%Y-%m-%dT%H:%M' if 'T' in arg('--since', '') else '%Y-%m-%d').astimezone().timestamp() * 1000)  # ^ local time
+def local_ms(text):  # ^ local time, a day or a minute
+    return int(D.datetime.strptime(text, '%Y-%m-%dT%H:%M' if 'T' in text else '%Y-%m-%d').astimezone().timestamp() * 1000)
+SINCE = local_ms(arg('--since', '2026-11-08'))
+LANDED = local_ms(arg('--landed-since', '2000-01-01'))
+kept = lambda t: '--landed-since' not in ARGS or (t['landed'] or 0) >= LANDED  # a CI row counts only for a kept task
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '.work', 'task-time-cost', 'gh-jobs.json')
 REPO = 'vlwkaos/wsx'
 
@@ -207,7 +211,7 @@ if '--gh' in ARGS:
         os.makedirs(os.path.dirname(CACHE), exist_ok=True); json.dump(cache, open(CACHE, 'w'))  # after each call: a stopped fetch keeps what it got
 iso = lambda s: D.datetime.strptime(s, '%Y-%m-%dT%H:%M:%SZ').timestamp() * 1000 if s else None
 gh_rows = []  # per CI run named by a window task: kind, queue ms, run ms (longest job), ok
-for t in tasks.values():
+for t in filter(kept, tasks.values()):
     for c in t['ci_runs']:
         jobs = cache.get(str(c['run']))
         if not jobs:
@@ -217,11 +221,9 @@ for t in tasks.values():
         gh_rows.append(dict(kind=c['kind'], queue=q, run=run, ok=c['ok'], wall=c['ms'], created=min(iso(j['created']) for j in jobs)))
 
 # --- report ----------------------------------------------------------------------------------------
-T = list(tasks.values())
-LANDED = int(D.datetime.strptime(arg('--landed-since', '2000-01-01T00:00'), '%Y-%m-%dT%H:%M').astimezone().timestamp() * 1000)  # ^ local time
-L = [t for t in T if t['landed'] and t['landed'] >= LANDED]
+T = list(tasks.values()); L = [t for t in T if t['landed'] and kept(t)]
 small = [t for t in L if t['rec'].get('small')]; full = [t for t in L if not t['rec'].get('small')]
-print(f'tasks {len(T)} created since {arg("--since", "2026-11-08")}; landed {len(L)} (small {len(small)}, full {len(full)}); open {len(T) - len(L)}')
+print(f'tasks {len(T)} created since {arg("--since", "2026-11-08")}; landed {len(L)} (small {len(small)}, full {len(full)}); open {sum(not t["landed"] for t in T)}')
 print('\nT1 created to landed (min)')
 stat('all', [t['landed'] - t['created'] for t in L]); stat('small', [t['landed'] - t['created'] for t in small]); stat('full', [t['landed'] - t['created'] for t in full])
 print('\nT2 phases over landed tasks (min): sum, share, p50/p90 over the tasks that had it')
