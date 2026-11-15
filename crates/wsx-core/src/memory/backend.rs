@@ -225,7 +225,7 @@ pub(super) fn record_hit(store: &Store, r: &Record, score: f64) -> Hit {
 /// A transcript line as a hit: the slug is its `reference`, and the keys of a task-search hit
 /// (`project`, `task`, `by`, `unix_ms`, `quote`, `outcome`, ...) ride along.
 fn transcript_hit(store: &Store, target: &Target, doc: &index::Doc, score: f64) -> Hit {
-    let found = index::hit(&target.name, doc, score, Some(&target.name));
+    let found = index::hit(target, doc, score, Some(&target.name));
     let outcome = doc.task.and_then(|task| index::outcome(target, task));
     let mut extra = match serde_json::to_value(&index::Hit { outcome, ..found }) {
         Ok(Value::Object(map)) => map,
