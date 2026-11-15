@@ -3727,7 +3727,7 @@ for (const wide of [false, true]) {
   if (await count(".log .status-line, .log .fold")) await fail(`a chat shows the project's events: ${await text(".log .status-line, .log .fold")}`);
   // ^ The speakers: the manager's message is under its name with the word manager, the chat's reply under the chat's.
   const speakers = await evaluate(`[...document.querySelectorAll('.log .bubble')].map((node) => node.querySelector('.bubble-author')?.textContent ?? '').filter(Boolean)`);
-  if (!speakers.includes(`${shownName} manager`) || !speakers.includes("billing") || speakers.includes(shownName)) await fail(`the chat's speakers are ${speakers}`);
+  if (!speakers.includes(`${shownName} manager`) || !speakers.includes("billing") || speakers.includes(shownName)) await fail(`the chat's speakers are ${speakers}, shown name ${shownName}: ${JSON.stringify(await bubbles())}`);
   if (!wide) {
     const answered = await count(".log .bubble[data-side=in]");
     await typeInto(".composer-field", "STATUS");
