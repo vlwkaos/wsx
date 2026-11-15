@@ -3696,7 +3696,7 @@ problems.splice(quietFrom);
   const state = JSON.parse(fs.readFileSync(wsxCli)).env.XDG_STATE_HOME;
   const found = fs.readdirSync(state, { recursive: true }).find((file) => file.endsWith(path.join("chats", "billing", "log.jsonl")));
   if (!found) await fail(`no log of the billing chat under ${state}`);
-  fs.appendFileSync(path.join(state, found), `${JSON.stringify({ unix_ms: Date.now(), kind: "message", id: 8990, from: "chat:manager", text: "manager asks billing for the numbers" })}\n`);
+  fs.appendFileSync(path.join(state, found), `${JSON.stringify({ unix_ms: Date.now(), kind: "message", id: 8990, from: `chat:${await homeOf(project)}`, text: "manager asks billing for the numbers" })}\n`);
 }
 const resolved = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((data) => data.resolutions.length)`);
 if (!resolved) await fail("the fixture project has no resolutions, so the chat check proves nothing");
@@ -3725,9 +3725,9 @@ for (const wide of [false, true]) {
   if (!/^haiku\b/.test((await text(".bar-model"))[0] ?? "")) await fail(`the chat's bar shows the model ${JSON.stringify(await text(".bar-model"))}, not haiku`);
   // ^ The chat holds its own log: none of the project's resolutions ("#5 was closed") is in it.
   if (await count(".log .status-line, .log .fold")) await fail(`a chat shows the project's events: ${await text(".log .status-line, .log .fold")}`);
-  // ^ The speakers: the manager's message is under its name with the word manager, the chat's reply under the chat's.
+  // ^ The speakers: the home chat's message is under its chat name, the chat's reply under the chat's own.
   const speakers = await evaluate(`[...document.querySelectorAll('.log .bubble')].map((node) => node.querySelector('.bubble-author')?.textContent ?? '').filter(Boolean)`);
-  if (!speakers.includes(`${shownName} manager`) || !speakers.includes("billing") || speakers.includes(shownName)) await fail(`the chat's speakers are ${speakers}, shown name ${shownName}: ${JSON.stringify(await bubbles())}`);
+  if (!speakers.includes(await homeOf(project)) || !speakers.includes("billing") || speakers.includes(shownName)) await fail(`the chat's speakers are ${speakers}`);
   if (!wide) {
     const answered = await count(".log .bubble[data-side=in]");
     await typeInto(".composer-field", "STATUS");
