@@ -2566,7 +2566,8 @@ def part_core(created=None):
     except ProcessLookupError:
         pass
     cli('session', 'delete', 'task-demo', '-p', 'demo')
-    assert js('task', 'manager')['state'] == 'started'
+    # ^ The repo service may start the home chat's host first with an event: `started` or `running`.
+    assert js('task', 'manager')['state'] in ('started', 'running')
     reply_to(hung['id'])
     turns_of = lambda text: [t for t in traces() if t.get('manager') and text in str(t.get('message', ''))]
     assert len(turns_of('HANG once')) == 2 and len(turns_of('STATUS before the kill')) == 1, (
@@ -4697,7 +4698,7 @@ def part_worker(created=None):
     quietMinutes: 0.5
 """, 'deploy after land')
     # ^ A deploy is due while the default branch is ahead of the last deploy: the part starts level
-    # with it, so a manager host that starts in the window starts no waiter of its own.
+    # with it, so a repo service that starts in the window starts no waiter of its own.
     level = len(deploy_records())
     js('task', 'deploy')
     wait(lambda: len(deploy_records()) > level and deploy_lock_free(), 'the deploy by hand that levels the part', 30)
@@ -4738,7 +4739,7 @@ def part_worker(created=None):
     follow_up = state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'follow-up.log'
     wait(lambda: 'already deployed' in follow_up.read_text() and deploy_lock_free(), 'the waiter that found the land deployed', 60)
     assert len(deploy_records()[records_before:]) == 2, deploy_records()[records_before:]
-    # ^ A waiter killed in its window (a reboot does the same) leaves the deploy due: a manager host
+    # ^ A waiter killed in its window (a reboot does the same) leaves the deploy due: a repo service
     # that starts starts the waiter again, and the deploy runs once.
     lost = js('task', 'new', 'WORK d4.txt')['id']
     assert wait_state(lost, 'ready', 'failed')['state'] == 'ready'
@@ -4750,8 +4751,9 @@ def part_worker(created=None):
     wait(lambda: not waiters(), 'the waiter killed')
     records_before = len(deploy_records())
     stop_manager_now()
+    stop_repo_service()
     assert js('task', 'manager')['state'] == 'started'
-    wait(waiters, 'the waiter the starting manager host started')
+    wait(waiters, 'the waiter the starting service started')
     wait(lambda: len(deploy_records()) > records_before and deploy_lock_free(), 'the deploy after the restart', 90)
     time.sleep(2)
     assert [r['commit'] for r in deploy_records()[records_before:]] == [lost_tip], deploy_records()[records_before:]
@@ -7037,8 +7039,12 @@ def part_host(created=None):
     mig_store = state / 'wsx/tasks' / mig_id
     mig_n = js('task', 'new', '-p', 'mig', 'WORK m.txt')['id']
     wait(lambda: js('task', 'show', mig_n, '-p', 'mig')['state'] == 'ready', 'the task of the mig repo', 60)
-    for label in ('task-mig', 'task-repo-' + mig_id):
-        cli('session', 'delete', label, '-p', 'mig', ok=False)
+    def drop_sessions():
+        # ^ A host that already left has no session: the delete's exit code is no matter.
+        for label in ('task-mig', 'task-repo-' + mig_id):
+            subprocess.run([str(wsx), 'session', 'delete', label, '-p', 'mig'], cwd=project, env=env, capture_output=True, timeout=60)
+
+    drop_sessions()
     wait(lambda: not leftovers('task manager-host ' + mig_id) and not leftovers('task chat-host mig')
          and not leftovers('task repo-host ' + mig_id), 'the mig hosts leave', 30)
     # ^ Put the store back as before chats: the home chat's folder is `manager/`, a second chat is `chats/side/`.
@@ -7126,8 +7132,7 @@ def part_host(created=None):
     js('task', 'chat', 'home', 'mig', '-p', 'mig')
     js('task', 'chat', 'close', 'mside', '-p', 'mig')
     js('task', 'close', mig_n, '--discard', '-p', 'mig')
-    cli('session', 'delete', 'task-mig', '-p', 'mig', ok=False)
-    cli('session', 'delete', 'task-repo-' + mig_id, '-p', 'mig', ok=False)
+    drop_sessions()
     mig_hosts = lambda: ([l for l in leftovers('task chat-host ') if l.endswith(('chat-host mig', 'chat-host side', 'chat-host mside'))]
                          + leftovers('task manager-host ' + mig_id) + leftovers('task repo-host ' + mig_id))
     wait(lambda: not mig_hosts(), 'the mig hosts leave', 30)

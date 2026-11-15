@@ -68,6 +68,8 @@ fn prune_sweep() -> Duration {
 }
 
 enum Event {
+    /// The news of this session did not reach the home chat: it is posted again.
+    Unposted(u64),
     Request(ManagerRequest, Sender<ManagerResponse>),
     Tick,
     /// A sweep of stale worktrees and sessions ended: its notes, or why it failed.
@@ -249,6 +251,12 @@ impl Repo {
                     self.say(&format!("cannot start the idle task: {error}"))
                 }
                 Event::Delivered { to, lines, ok } => self.delivered(to, lines, ok),
+                Event::Unposted(session) => {
+                    if let Some(seen) = self.state.sessions_seen.as_mut() {
+                        seen.remove(&session);
+                        self.save();
+                    }
+                }
             }
             // ^ A replaced binary: exec it once nothing is on its way, so a new service follows.
             if self.in_flight == 0
@@ -938,25 +946,29 @@ impl Repo {
         };
         let found = session_news::attention(&snapshot, &self.main);
         let (fresh, keep) = session_news::unposted(found, self.state.sessions_seen.as_ref());
-        let mut keep = keep;
+        // ^ A post starts the home chat's host and asks the service about itself (`ensure_manager`):
+        // off the loop, which answers that. A post that did not reach the home chat (a turn runs, its
+        // host does not start) is no news seen: `Unposted` takes it back, and the next look posts it.
         for news in fresh {
-            // ^ A post that did not reach the home chat (a turn runs, its host does not start)
-            // is no news seen: the next look posts it.
-            let posted = std::env::current_exe().ok().is_some_and(|exe| {
-                owner::post(
-                    &self.project,
-                    &self.main,
-                    &exe,
-                    super::launch_manager(&self.main),
-                    news.event.clone(),
-                    news.text.clone(),
-                    None,
-                )
-                .is_ok_and(|response| response.ok)
+            let (project, main, events) =
+                (self.project.clone(), self.main.clone(), self.events.clone());
+            std::thread::spawn(move || {
+                let posted = std::env::current_exe().ok().is_some_and(|exe| {
+                    owner::post(
+                        &project,
+                        &main,
+                        &exe,
+                        super::launch_manager(&main),
+                        news.event,
+                        news.text,
+                        None,
+                    )
+                    .is_ok_and(|response| response.ok)
+                });
+                if !posted {
+                    let _ = events.send(Event::Unposted(news.session));
+                }
             });
-            if !posted {
-                keep.remove(&news.session);
-            }
         }
         if self.state.sessions_seen.as_ref() != Some(&keep) {
             self.state.sessions_seen = Some(keep);
