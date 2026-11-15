@@ -41,23 +41,25 @@ export function conversation(entries, resolutions, approvals = [], checks = [], 
   });
   for (const item of checks) rows.push({ kind: "check", at: item.added_unix_ms, key: `check-${item.id}`, item });
   rows.sort((left, right) => left.at - right.at);
-  // ^ Adjacent bubbles of one author group (author once, time last); quiet replies in a row
-  // name the manager once.
+  // ^ Adjacent bubbles of one author group (author once); quiet replies in a row name the manager
+  // once. A time shows once per run of one author's bubbles in the same minute, under its last,
+  // whatever lines lie between them.
   rows.forEach((row, index) => {
     const before = rows[index - 1];
-    const after = rows[index + 1];
     if (row.kind === "quiet") row.first = !(before?.kind === "quiet" && row.at - before.at < GROUP_MS);
     if (row.kind !== "message") return;
     const same = (other, gap) => other?.kind === "message" && other.author === row.author && gap < GROUP_MS;
     row.first = !same(before, row.at - (before?.at ?? 0));
-    row.last = !same(after, (after?.at ?? 0) - row.at);
+    const next = rows.slice(index + 1).find((other) => other.kind === "message");
+    row.last = !(next?.author === row.author && clock(next.at) === clock(row.at));
   });
   return folded(rows);
 }
 
 // ^ Event lines and quiet replies in a row, three or more, fold into one row: each task of the
-// run once with its newest words, and how many rows a tap shows. The run's last event line and
-// the replies after it stay below the fold (docs/web-client-tasks.md "Project screen").
+// rows it hides once with its newest words, and how many rows a tap shows. The run's last event
+// line and the replies after it stay below the fold, so the fold never names them
+// (docs/web-client-tasks.md "Project screen").
 function folded(rows) {
   const out = [];
   for (let start = 0; start < rows.length;) {
@@ -76,7 +78,7 @@ function folded(rows) {
       continue;
     }
     const chips = new Map();
-    for (const row of run) {
+    for (const row of run.slice(0, tail)) {
       const rest = row.kind === "line" ? leading(row) : null;
       if (rest != null) chips.set(String(row.task), rest);
     }
@@ -89,7 +91,7 @@ function folded(rows) {
 
 // A folded run: one tap shows its rows under it, rendered by `render`, another folds them.
 // `all`: open while a find runs, so its rows are searched (find.js).
-export function Fold({ row, render, all = false, want = null }) {
+export function Fold({ project, row, render, all = false, want = null }) {
   const [opened, setOpen] = useState(false);
   // ^ A line that was asked for (a routine's message) opens the fold, and it stays open.
   const holds = want != null && row.rows.some((each) => each.id === want);
@@ -98,7 +100,7 @@ export function Fold({ row, render, all = false, want = null }) {
   return html`
     <div class="fold" data-key=${row.key} data-at=${row.at}>
       <button class="fold-toggle" type="button" aria-expanded=${open} onClick=${() => setOpen(!open)}>
-        ${row.chips.map(([task, rest]) => html`<span class="fold-chip" key=${task}><span class="fold-task">#${task}</span>${rest}</span>`)}
+        ${row.chips.map(([task, rest]) => html`<span class="fold-chip" key=${task}><${TaskChip} project=${project} id=${Number(task)} plain />${rest}</span>`)}
         <span class="fold-count">${open ? "Hide " : ""}${row.rows.length} updates</span>
       </button>
       ${open && row.rows.map(render)}

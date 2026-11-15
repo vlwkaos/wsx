@@ -823,8 +823,10 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
   min-height: var(--size-control); margin-block: calc(-1 * var(--space-2)); padding: var(--space-2) var(--space-1);
   border: 0; border-radius: var(--radius-control); background: none; color: var(--color-muted); font: inherit; font-size: var(--font-size-sm); text-align: left; cursor: pointer;
 }
-.fold-task { font-variant-numeric: tabular-nums; font-weight: var(--font-weight-medium); }
-.fold-count { color: var(--color-text); font-weight: var(--font-weight-medium); }
+/* ^ One quiet set with the lines and the times: the same size and tone; the count only a little heavier. */
+.fold-count { font-weight: var(--font-weight-medium); }
+/* Lines of that set that follow each other sit close, as bubbles of one author do; a bubble keeps the log's gap. */
+:is(.status-line, .reply-line, .fold) + :is(.status-line, .reply-line, .fold) { margin-top: calc(var(--space-1) - var(--space-3)); }
 @media (hover: hover) { .fold-toggle:hover { background: var(--color-raised); } }
 .page-link { color: var(--color-accent); }
 /* The open list over the composer: Running, Needs you or To check, one at a time, opened by

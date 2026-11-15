@@ -713,6 +713,16 @@ pub fn chat_rows(
             _ => None,
         })
         .collect();
+    // ^ A posted event shows once, as the reply that says it to the owner (`post`); the log keeps
+    // the event for the manager (docs/tasks.md "Manager").
+    let posted: HashSet<u64> = entries
+        .iter()
+        .filter_map(|entry| match &entry.event {
+            ManagerEvent::Reply { to, post: true, .. } => Some(to.iter().copied()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
     let mut carried: Vec<Vec<String>> = vec![Vec::new(); entries.len()];
     for line in approvals {
         let ApprovalLine::Request {
@@ -740,6 +750,11 @@ pub fn chat_rows(
             continue;
         }
         match &entry.event {
+            ManagerEvent::Message {
+                from: Author::Events,
+                id,
+                ..
+            } if posted.contains(id) => {}
             ManagerEvent::Message {
                 from: Author::Events,
                 text,

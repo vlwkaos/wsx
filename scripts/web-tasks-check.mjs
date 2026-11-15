@@ -3046,6 +3046,11 @@ await go(`#/p/${plans}`);
 await until("!!document.querySelector('.pill')", "plans has no reservoir");
 await until("document.querySelectorAll('.log .bubble').length >= 2", "plans' chat shows no managers' bubbles", 30);
 const plansAuthors = await bubbles();
+// ^ A bubble's time shows once per run of one sender's bubbles in the same minute, whatever lines lie between them.
+const timeRuns = await evaluate(`(() => { const all = [...document.querySelectorAll('.log .bubble:not(.check-bubble)')]; const minute = (node) => Math.floor(Number(node.dataset.at) / 60000);
+  return all.slice(0, -1).filter((node, at) => node.querySelector('.bubble-time') && node.dataset.at && all[at + 1].dataset.at && all[at + 1].dataset.speaker === node.dataset.speaker
+    && all[at + 1].dataset.peer === node.dataset.peer && minute(all[at + 1]) === minute(node)).map((node) => node.dataset.key); })()`);
+if (timeRuns.length) await fail(`a time shows under a bubble that the next one of its sender in the same minute follows: ${timeRuns}`);
 // ^ plans' manager has no name of its own: its bubbles keep no author line (the top row names plans); ui's "Atlas" is a peer.
 if (!plansAuthors.some(({ author, tag }) => author === "" && tag === "To Atlas") || !plansAuthors.some(({ author }) => author === "Atlas") || plansAuthors.some(({ author }) => author === "plans")) await fail(`plans' managers read ${JSON.stringify(plansAuthors)}`);
 // ^ An empty `sent` and a `-` reply in plans' older log are no bubbles: no bubble says nothing.
@@ -3058,12 +3063,14 @@ const foldRow = "[...document.querySelectorAll('.log > .fold')].find((node) => /
 await until(`!!${foldRow}`, "plans' run of events did not fold", 30);
 const foldSeen = async () => evaluate(`(() => { const fold = ${foldRow}; const toggle = fold.querySelector('.fold-toggle');
   const after = (node) => node.nextElementSibling?.textContent.trim();
-  return { chips: [...toggle.querySelectorAll('.fold-chip')].map((node) => node.textContent),
+  const words = (node) => { const copy = node.cloneNode(true); copy.querySelectorAll('.visually-hidden').forEach((hidden) => hidden.remove()); return copy.textContent; };
+  return { chips: [...toggle.querySelectorAll('.fold-chip')].map(words), plain: [...toggle.querySelectorAll('.fold-chip')].every((node) => node.firstElementChild?.classList.contains('task-chip')),
     count: toggle.querySelector('.fold-count').textContent, open: toggle.getAttribute('aria-expanded'), inside: [...fold.querySelectorAll('.status-line, .reply-text')].map((node) => node.textContent),
     next: [after(fold), after(fold.nextElementSibling)], hidden: [...document.querySelectorAll('.log > .reply-line, .log > .status-line')].some((node) => /Landing #89|^#89 ready/.test(node.textContent)),
     short: [...document.querySelectorAll('.log > .status-line')].some((node) => node.textContent === '#92 ready') && [...document.querySelectorAll('.log > .reply-line')].some((node) => /Landing #92/.test(node.textContent)) }; })()`);
 let folding = await foldSeen();
-if (JSON.stringify(folding.chips) !== JSON.stringify(["#89 done", "#91 done", "#88 done"]) || folding.count !== "10 updates" || folding.open !== "false"
+// ^ The fold names only the rows it hides, with the chip the chat uses everywhere: #88's last line stays under it, so its chip says #88 ready.
+if (JSON.stringify(folding.chips) !== JSON.stringify(["#89 done", "#91 done", "#88 ready"]) || !folding.plain || folding.count !== "10 updates" || folding.open !== "false"
   || folding.inside.length || folding.hidden || folding.next[0] !== "#88 done" || !/#88 is on main/.test(folding.next[1] ?? "") || !folding.short) await fail(`plans' folded run reads ${JSON.stringify(folding)}`);
 // ^ The usage limit's pause and resume are muted wsx lines with the manager's name, between the owner's
 // message and the reply it held, never a bubble or under the name as a reply.

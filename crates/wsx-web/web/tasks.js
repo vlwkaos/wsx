@@ -906,7 +906,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   const draw = (row, isNew) => row.kind === "message" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} fresh=${isNew} onNeed=${room ? null : showNeed} plain=${plain} />`
     : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} row=${row} fresh=${isNew} />`
     : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} fresh=${isNew} plain=${plain} />`
-    : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} all=${finding} want=${wanted} />`
+    : row.kind === "fold" ? html`<${Fold} key=${row.key} project=${id} row=${row} render=${show} all=${finding} want=${wanted} />`
     : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${isNew} onReply=${replyTo} plain=${plain} />`
     : html`<${Note} key=${row.key} row=${row} />`;
   // ^ What the rows read besides their own fields: a new day (a row's time says its day once it is

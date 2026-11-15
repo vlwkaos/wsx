@@ -3347,6 +3347,10 @@ def part_worker(created=None):
     assert any(e['kind'] == 'reply' and asked[0]['id'] in e['to'] and e['text'].startswith('Asked you: Approve push')
                and e['text'].endswith('(%s).' % denied)
                and e.get('approval') == denied for e in chat()), asked
+    # ^ The chats read the log's rows (`wsx task chat` prints the rows the web and the TUI show): the ask shows once,
+    # as the reply in the owner's words; the event line stays in the log for the manager.
+    shown = cli('task', 'chat').stdout
+    assert shown.count('Approve push') == shown.count('Asked you: Approve push') == 1 and 'asked the owner' not in shown, shown
     js('task', 'deny', denied)
     wait(lambda: events_with('approval %s (push) denied' % denied), 'the push deny event')
     assert origin_tip() == before
