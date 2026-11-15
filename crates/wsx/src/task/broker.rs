@@ -15,10 +15,12 @@ use std::time::Duration;
 use wsx_core::git::output_with_timeout_limit;
 use wsx_core::task::manager::Party;
 use wsx_core::task::owner::ACTOR_ENV;
+use wsx_core::task::store;
 use wsx_core::task::policy::{Capability, Policy, Role, Trust, RULES_ENV, TRUST_ENV};
 
 pub const BROKER_ENV: &str = "WSX_TASK_BROKER";
-/// The manager's own project, for `say --from-chat`; set only by the manager host.
+/// The manager's own project; set only by the manager host. Memory commands read it for the
+/// agent's own scope (cli/memory.rs).
 pub const FROM_ENV: &str = "WSX_TASK_FROM";
 /// Stdin, and stdout and stderr each, of one command.
 const MAX_STREAM_BYTES: usize = 1024 * 1024;
@@ -198,7 +200,7 @@ pub fn serve_manager(
             return run_memory(&exe, request, &fallback_cwd, &project_id, policy);
         }
         let target = match allowed(&request.argv, policy)
-            .and_then(|()| reach(&request.argv, &own, &actor))
+            .and_then(|()| reach(&request.argv, &own, (&project_id, &actor)))
         {
             Ok(target) => target,
             Err(error) => return refused(format!("{error:#}")),
@@ -214,10 +216,7 @@ pub fn serve_manager(
             if !owes(to) {
                 return refused(format!(
                     "no message from {} waits for an answer, and a reply is not answered",
-                    match to {
-                        Party::Chat(chat) => chat.clone(),
-                        Party::Project(project) => format!("the manager of {project}"),
-                    }
+                    to.name()
                 ));
             }
         }
@@ -301,7 +300,7 @@ const MANAGER_REACH: [&str; 9] = [
 /// reaches its first chat; a chat only reads `ledger`. A `say --from-chat` without `-p` reaches
 /// a chat of its own (`manager` without `--to`); `None` for anything else of its own.
 /// ref: docs/tasks.md "Managers talk"
-fn reach(argv: &[String], own: &str, actor: &str) -> Result<Option<Party>> {
+fn reach(argv: &[String], own: &str, (project_id, actor): (&str, &str)) -> Result<Option<Party>> {
     let project = argv
         .iter()
         .enumerate()
@@ -324,18 +323,21 @@ fn reach(argv: &[String], own: &str, actor: &str) -> Result<Option<Party>> {
             argv.iter()
                 .find_map(|arg| arg.strip_prefix("--to=").map(str::to_string))
         });
+    // ^ `manager` is the repo's home chat, as another chat names it.
+    let home = store::home_chat(project_id).unwrap_or_default();
+    let is_home = actor == format!("chat:{home}");
     match project.filter(|project| project != own) {
         None if sub == "say" && from_chat => Ok(Some(Party::Chat(
-            to.unwrap_or_else(|| "manager".into()),
+            to.filter(|to| to != "manager").unwrap_or(home),
         ))),
         None => Ok(None),
         // ^ Reading another ledger is not a message; only a sent message is logged.
         Some(_) if sub == "ledger" => Ok(None),
-        Some(other) if actor == "manager" && sub == "say" && from_chat => {
-            Ok(Some(Party::Project(other)))
+        Some(other) if is_home && sub == "say" && from_chat => {
+            Ok(Some(Party::Chat(home_of(&other)?)))
         }
-        Some(_) if actor == "manager" && MANAGER_REACH.contains(&sub) && !discard => Ok(None),
-        Some(other) if actor == "manager" => bail!(
+        Some(_) if is_home && MANAGER_REACH.contains(&sub) && !discard => Ok(None),
+        Some(other) if is_home => bail!(
             "a manager acts in another project only with {}, never --discard or an approved action; for {other} it may also read `wsx task ledger -p {other}` and `wsx task say -p {other} --from-chat`",
             MANAGER_REACH.join(", ")
         ),
@@ -343,6 +345,17 @@ fn reach(argv: &[String], own: &str, actor: &str) -> Result<Option<Party>> {
             "only a project's manager acts in another project; a chat stays in its own (for {other} it may read `wsx task ledger -p {other}`)"
         ),
     }
+}
+
+/// The name of the home chat of the registered project `name`.
+fn home_of(name: &str) -> Result<String> {
+    let id = crate::cli::load_config()?
+        .projects
+        .iter()
+        .find(|project| project.name == name)
+        .map(|project| store::project_id(&project.name, &project.path))
+        .with_context(|| format!("no registered project {name}"))?;
+    Ok(store::home_chat(&id).unwrap_or_else(|| wsx_core::task::chats::home_name(&id)))
 }
 
 /// A host's side: one thread per command, so a long one does not hold the others or the

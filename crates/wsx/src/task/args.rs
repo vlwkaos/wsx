@@ -464,7 +464,8 @@ pub enum ProjectCmd {
 
 #[derive(Subcommand)]
 pub enum ChatCmd {
-    /// Open a chat: a manager with a name and a goal, in the same project (the owner's)
+    /// Open a chat: a manager with a name and a goal, in the same project (the owner's, or a
+    /// chat's on the owner's message of its turn)
     New {
         name: String,
         /// The chat's goal, a file or - for standard input
@@ -473,11 +474,19 @@ pub enum ChatCmd {
         /// The `[[agents]]` entry it runs on; default: the manager's (tasks.manager)
         #[arg(long, value_name = "ENTRY")]
         agent: Option<String>,
+        #[command(flatten)]
+        said: OwnerSaid,
     },
     /// The chats: open and closed
     List,
-    /// Close a chat; its log and notes stay
-    Close { name: String },
+    /// Close a chat; its log and notes stay, its open tasks go to the home chat
+    Close {
+        name: String,
+        #[command(flatten)]
+        said: OwnerSaid,
+    },
+    /// Make an open chat the repo's home chat, which hears what no chat owns (the owner's)
+    Home { name: String },
 }
 
 impl TaskCmd {

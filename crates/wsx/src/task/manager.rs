@@ -163,9 +163,6 @@ fn refusal(party: &Party) -> String {
         Party::Chat(chat) => {
             format!("chat {chat} did not take the events of its tasks, so they are yours:")
         }
-        Party::Project(project) => format!(
-            "the manager of {project} did not take the events of its tasks here, so they are yours:"
-        ),
     }
 }
 
@@ -307,7 +304,7 @@ fn chat_preamble(chat: &str, project: &str, goal: &str) -> String {
 /// The manager's boundary profile as text. ref: scripts/test-manager-boundary.py
 pub fn print_profile(project: &str, main: &Path, untrusted: bool) -> Result<()> {
     let project_id = store::project_id(project, main);
-    let dir = ManagerDir::open(&project_id)?;
+    let dir = ManagerDir::open_home(&project_id)?;
     let overview = store::ensure_overview(&project_id, project)?;
     let (trust, adapter) = match untrusted {
         true => (policy::Trust::Untrusted, "pi"),
@@ -328,8 +325,8 @@ pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
     let (project, main) = super::project_by_id(project_id)?;
     let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
     let dir = match chat {
-        None => ManagerDir::open(project_id)?,
-        Some(chat) => chats::open_chat(project_id, chat)?,
+        None => ManagerDir::open_home(project_id)?,
+        Some(chat) => chats::open_chat(chat)?,
     };
     let listener = hosting::bind(&dir.socket_path())?;
     let brokered = hosting::bind(&dir.broker_path())?;
@@ -344,12 +341,13 @@ pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
         ),
     };
     let (events, receiver) = channel();
+    let home = dir.is_home();
     let mut manager = Manager {
         dir,
         project,
         main,
         adapter,
-        duties: chat.is_none().then(|| Duties {
+        duties: home.then(|| Duties {
             deploy_auto: settings.deploy_auto,
             recap_quiet: (settings.manager_recap_secs > 0)
                 .then(|| Duration::from_secs(settings.manager_recap_secs)),
@@ -504,9 +502,7 @@ fn author_heading(author: &Author) -> String {
         // (docs/tasks.md "Chats", "Managers talk").
         Author::Peer { from, reply } => {
             let who = match from {
-                Party::Chat(name) if name == "manager" => "Manager".to_string(),
                 Party::Chat(name) => format!("Chat {name}"),
-                Party::Project(project) => format!("Manager {project}"),
             };
             match reply {
                 true => format!("{who} replies"),
@@ -527,6 +523,12 @@ impl Manager {
                     self.on_agent(line)
                 }
                 Event::Agent(..) => {}
+                // ^ The repo's home chat was repointed (`chat home`): a host leaves, and the next
+                // message starts it with the duties of its new place.
+                Event::Tick if self.duties.is_some() != self.dir.is_home() => {
+                    self.say("the repo's home chat changed: this host leaves");
+                    self.leaving = true;
+                }
                 // ^ A chat's host has no project duties: it hears what is said to it.
                 Event::Tick
                     if self
@@ -902,7 +904,7 @@ impl Manager {
         {
             self.run_waiting(id);
         }
-        let open = chats::open_names(&self.dir.project_id);
+        let open = chats::open_names();
         let decisions: Vec<usize> = (0..lines.len())
             .filter(|at| matches!(lines[*at], ApprovalLine::Decision { .. }))
             .collect();
@@ -952,8 +954,10 @@ impl Manager {
             };
             // ^ The chat whose agent asked hears the decision (`chats::owner`).
             let asker = match request {
-                Some(ApprovalLine::Request { chat, .. }) => chats::owner(chat.as_deref(), &open),
-                _ => None,
+                Some(ApprovalLine::Request { chat, .. }) => {
+                    chats::owner(chat.as_deref(), &open, self.dir.name())
+                }
+                _ => self.dir.name(),
             };
             let line = (
                 format!(
@@ -966,13 +970,13 @@ impl Manager {
                     wakes: true,
                 },
             );
-            match asker {
-                Some(chat) => self
+            match asker == self.dir.name() {
+                false => self
                     .chat_events
-                    .entry(Party::Chat(chat.to_string()))
+                    .entry(Party::Chat(asker.to_string()))
                     .or_default()
                     .push(line),
-                None => self.pending_events.push(line),
+                true => self.pending_events.push(line),
             }
             self.last_event = Some(Instant::now());
         }
@@ -1316,7 +1320,7 @@ impl Manager {
         let Ok(tasks) = project_tasks(&self.dir.project_id) else {
             return;
         };
-        let open_chats = chats::open_names(&self.dir.project_id);
+        let open_chats = chats::open_names();
         // ^ A child's land waits for its parent at rest: the parent's event names them.
         // ref: docs/tasks.md "Parent tasks"
         let ready_children: Vec<(u32, u32)> = tasks
@@ -1511,8 +1515,8 @@ impl Manager {
             .map(|drift| self.say_drift(&drift));
         // ^ The manager that ran the task from another project keeps the fact too, in its own
         // scope. ref: docs/memory.md "Capture"
-        let done = done.and_then(|()| match record.created_by.origin() {
-            Some(origin) => self.record_memo_at(origin, task, memo, landed),
+        let done = done.and_then(|()| match self.origin_repo(record) {
+            Some(origin) => self.record_memo_at(&origin, task, memo, landed),
             None => Ok(()),
         });
         if let Err(error) = done {
@@ -1520,8 +1524,14 @@ impl Manager {
         }
     }
 
-    /// The memo of this project's task, as a record in the scope of `origin`, the project whose
-    /// manager created it.
+    /// The repo of the chat that created the task, when it is not this one: `chat.json` names it.
+    fn origin_repo(&self, record: &TaskRecord) -> Option<String> {
+        let chat = ManagerDir::existing(record.created_by.chat()?).ok()??;
+        (chat.project_id != self.dir.project_id).then_some(chat.project_id)
+    }
+
+    /// The memo of this project's task, as a record in the scope of `origin`, the repo of the
+    /// chat that created it. Until the memory scopes of M4 (docs/design/orchestration-model.md).
     fn record_memo_at(
         &self,
         origin: &str,
@@ -1529,7 +1539,7 @@ impl Manager {
         memo: &str,
         landed: Option<(&str, &[String])>,
     ) -> anyhow::Result<()> {
-        let (name, main) = super::project_entry(Some(origin))?;
+        let (name, main) = super::project_by_id(origin)?;
         let store =
             wsx_core::memory::Store::project(&store::project_id(&name, &main), &name, &main)?;
         notes::record_memo(&store, Some(&self.project), task, memo, landed)?;
@@ -1542,36 +1552,18 @@ impl Manager {
         }
     }
 
-    /// Queue a task's event line. Only a task's creator hears of it: an open chat, the manager
-    /// of the project that created it, else this manager. The other project's manager hears
-    /// the task as `<this project> #<n>`, with no chip, which would link into its own tasks.
-    /// ref: docs/tasks.md "Chats", "Managers talk"
-    fn task_event(
-        &mut self,
-        record: &TaskRecord,
-        open_chats: &[String],
-        line: String,
-        mut short: Short,
-    ) {
-        let chat = chats::owner(record.created_by.chat(), open_chats);
-        let to = match (chat, record.created_by.origin()) {
-            (Some(chat), _) => Some(Party::Chat(chat.to_string())),
-            (None, Some(origin)) => Some(Party::Project(origin.to_string())),
-            (None, None) => None,
-        };
-        match to {
-            Some(to) => {
-                let line = match &to {
-                    Party::Project(_) => {
-                        short.text = format!("{} {}", self.project, short.text);
-                        short.task = None;
-                        format!("{} {line}", self.project)
-                    }
-                    Party::Chat(_) => line,
-                };
-                self.chat_events.entry(to).or_default().push((line, short));
-            }
-            None => self.pending_events.push((line, short)),
+    /// Queue a task's event line. Only the task's owner hears of it: the open chat that created
+    /// it (`chats::owner`), else this repo's home chat, which is this manager.
+    /// ref: docs/tasks.md "Chats"
+    fn task_event(&mut self, record: &TaskRecord, open_chats: &[String], line: String, short: Short) {
+        let owner = chats::owner(record.created_by.chat(), open_chats, self.dir.name());
+        match owner == self.dir.name() {
+            true => self.pending_events.push((line, short)),
+            false => self
+                .chat_events
+                .entry(Party::Chat(owner.to_string()))
+                .or_default()
+                .push((line, short)),
         }
         self.last_event = Some(Instant::now());
     }
@@ -1590,7 +1582,7 @@ impl Manager {
         let Ok(tasks) = project_tasks(&self.dir.project_id) else {
             return;
         };
-        let open_chats = chats::open_names(&self.dir.project_id);
+        let open_chats = chats::open_names();
         let now = now_unix_ms();
         let mut open = Vec::new();
         let mut suspects = BTreeMap::new();
@@ -1709,53 +1701,53 @@ impl Manager {
         }
     }
 
-    /// Send the events of a chat's tasks to the chat, and those of another project's manager's
-    /// tasks to that manager, through `say`, which starts its host; the events of one whose
-    /// host does not take them go to this manager.
+    /// Send the events of a chat's tasks to the chat through `say`, which starts its host, in
+    /// its own repo when it is another one's (the lines then name this project and carry no
+    /// chip, which would link into that repo's tasks); the events of one whose host does not
+    /// take them go to this manager.
     fn send_chat_events(&mut self) {
         let Ok(exe) = std::env::current_exe() else {
             return;
         };
-        for (to, lines) in std::mem::take(&mut self.chat_events) {
-            let (project, main, exe, events) = (
+        for (to, mut lines) in std::mem::take(&mut self.chat_events) {
+            let (project, own_id, exe, events) = (
                 self.project.clone(),
-                self.main.clone(),
+                self.dir.project_id.clone(),
                 exe.clone(),
                 self.events.clone(),
             );
             std::thread::spawn(move || {
-                let text = lines
-                    .iter()
-                    .map(|(line, _)| line.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let short = lines.iter().map(|(_, short)| short.clone()).collect();
-                let sent = match &to {
-                    Party::Chat(chat) => owner::say(
-                        &project,
-                        &main,
-                        &exe,
-                        Some(chat),
-                        super::launch_manager(&main),
-                        text,
-                        Some(Author::Events),
-                        short,
-                    ),
-                    Party::Project(origin) => {
-                        super::project_entry(Some(origin)).and_then(|(name, origin_main)| {
-                            owner::say(
-                                &name,
-                                &origin_main,
-                                &exe,
-                                None,
-                                super::launch_manager(&origin_main),
-                                text,
-                                Some(Author::Events),
-                                short,
-                            )
-                        })
-                    }
-                };
+                let Party::Chat(chat) = &to;
+                let sent = ManagerDir::existing(chat)
+                    .ok()
+                    .flatten()
+                    .context("the chat is gone")
+                    .and_then(|dir| {
+                        let (name, main) = super::project_by_id(&dir.project_id)?;
+                        if dir.project_id != own_id {
+                            for (line, short) in &mut lines {
+                                short.text = format!("{project} {}", short.text);
+                                short.task = None;
+                                *line = format!("{project} {line}");
+                            }
+                        }
+                        let text = lines
+                            .iter()
+                            .map(|(line, _)| line.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let short = lines.iter().map(|(_, short)| short.clone()).collect();
+                        owner::say(
+                            &name,
+                            &main,
+                            &exe,
+                            Some(chat),
+                            super::launch_manager(&main),
+                            text,
+                            Some(Author::Events),
+                            short,
+                        )
+                    });
                 if !sent.is_ok_and(|response| response.ok) {
                     let _ = events.send(Event::Undelivered { to, lines });
                 }
@@ -1810,10 +1802,7 @@ impl Manager {
 
     /// Who the agent's commands act as (`WSX_TASK_ACTOR`): the manager, or the chat.
     fn actor(&self) -> Actor {
-        match &self.dir.chat {
-            Some(chat) => Actor::Chat(chat.clone()),
-            None => Actor::Manager,
-        }
+        Actor::Chat(self.dir.name().to_string())
     }
 
     /// Log a message and queue it; owner messages go before events.
@@ -2052,9 +2041,17 @@ impl Manager {
         let Ok(exe) = std::env::current_exe() else {
             return self.say("cannot find the wsx binary for the idle task");
         };
-        let (project, events, began) = (self.project.clone(), self.events.clone(), now_unix_ms());
+        let (project, home, events, began) = (
+            self.project.clone(),
+            self.dir.name().to_string(),
+            self.events.clone(),
+            now_unix_ms(),
+        );
         std::thread::spawn(move || {
-            let _ = events.send(Event::IdleStarted(began, new_task(&exe, &project, &prompt)));
+            let _ = events.send(Event::IdleStarted(
+                began,
+                new_task(&exe, &project, &home, &prompt),
+            ));
         });
     }
 
@@ -3174,7 +3171,7 @@ impl Manager {
             skills.is_some(),
             &workflow,
         );
-        if let Some(chat) = &self.dir.chat {
+        if let Some(chat) = self.dir.named() {
             text = chat_preamble(chat, &self.project, &chats::goal(&self.dir)) + &text;
         }
         // ^ Other adapters list lent skills themselves (pi.rs `--skill`).
@@ -3396,7 +3393,7 @@ impl Manager {
             .skip(self.asks_seen)
             .filter(|line| match line {
                 ApprovalLine::Request { said, chat, .. } => {
-                    said.is_none() && chat.as_deref() == self.dir.chat.as_deref()
+                    said.is_none() && chat.as_deref() == Some(self.dir.name())
                 }
                 ApprovalLine::Decision { .. } => false,
             })
@@ -3557,9 +3554,18 @@ impl Manager {
     /// The owner's decisions and the project context, within 10 KiB, with what is left out
     /// named: every fresh conversation starts knowing them. ref: docs/tasks.md "Notes budget"
     fn notes_preamble(&self) -> String {
-        self.dir
+        let own = self
+            .dir
             .notes()
-            .map_or_else(|_| String::new(), |notes| notes::preamble(&notes))
+            .map_or_else(|_| String::new(), |notes| notes::preamble(&notes));
+        // ^ A new chat has no notes yet: it starts from the repo's, the home chat's.
+        match (own.is_empty(), self.dir.is_home()) {
+            (true, false) => ManagerDir::home(&self.dir.project_id)
+                .ok()
+                .flatten()
+                .map_or(own, |home| notes::preamble(&home.path.join("notes"))),
+            _ => own,
+        }
     }
 
     /// The last exchanges of the log, so a fresh conversation knows what was just said.
@@ -3591,7 +3597,7 @@ impl Manager {
     /// The handover as an episode of the project's memory, in the turn that carries it: no turn
     /// of its own. A chat's notes stay files. ref: docs/memory.md "Capture"
     fn remember_handover(&self, handover: &str) {
-        if self.dir.chat.is_some() {
+        if !self.dir.is_home() {
             return;
         }
         let done = self.memory_store().and_then(|store| {
@@ -3890,8 +3896,8 @@ fn output_ends(output: &str) -> String {
     }
 }
 
-/// `wsx task new -p <project> --title <IDLE_TITLE> -` as the manager; the new task's number.
-fn new_task(exe: &Path, project: &str, prompt: &str) -> Result<u32, String> {
+/// `wsx task new -p <project> --title <IDLE_TITLE> -` as the home chat; the new task's number.
+fn new_task(exe: &Path, project: &str, home: &str, prompt: &str) -> Result<u32, String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
     let mut child = Command::new(exe)
@@ -3906,7 +3912,7 @@ fn new_task(exe: &Path, project: &str, prompt: &str) -> Result<u32, String> {
             "--json",
             "-",
         ])
-        .env(ACTOR_ENV, String::from(Actor::Manager))
+        .env(ACTOR_ENV, String::from(Actor::Chat(home.into())))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

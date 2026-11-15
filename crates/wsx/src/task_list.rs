@@ -249,23 +249,6 @@ impl TaskList {
         )));
     }
 
-    /// `P` in the chat: the manager chat of the registered project `name`, in place of this
-    /// view. False when no registered project has that name.
-    pub fn switch_to(&mut self, name: &str) -> bool {
-        let Some((name, main)) = self
-            .projects
-            .iter()
-            .find(|(other, _)| other == name)
-            .cloned()
-        else {
-            return false;
-        };
-        let mut list = Self::new(name, main, std::mem::take(&mut self.projects));
-        list.open_chat(None);
-        *self = list;
-        true
-    }
-
     /// `n`: the New chat form, whose `default` agent is the project's manager's.
     pub fn open_new_chat(&mut self) {
         let default = wsx_core::config::project::load_task_config(&self.main)
@@ -273,7 +256,7 @@ impl TaskList {
             .and_then(|config| {
                 wsx_core::task::view::agent_label(&wsx_core::task::view::default_agent(&config))
             });
-        self.new_chat = Some(crate::task_new_chat::NewChat::new(&self.store, default));
+        self.new_chat = Some(crate::task_new_chat::NewChat::new(default));
     }
 
     /// A key of the New chat form: it opens the chat made and closes on Esc.
@@ -325,9 +308,14 @@ impl TaskList {
             return false;
         };
         if matches!(action, Action::ConfirmYes | Action::Select) {
-            self.notice = Some(match wsx_core::task::chats::close(&self.store, &name) {
-                Ok(()) => (format!("Closed {name}; its log and notes stay"), false),
-                Err(error) => (format!("{error:#}"), true),
+            // ^ The CLI's own path: it hands the chat back to the home chat (`owner::close_chat`).
+            let argv = ["task", "chat", "close", &name].map(String::from).to_vec();
+            let closed = std::env::current_exe()
+                .map_err(|error| error.to_string())
+                .and_then(|wsx| owner::run_as_owner(&wsx, &self.project, argv));
+            self.notice = Some(match closed {
+                Ok(_) => (format!("Closed {name}; its open tasks are the home chat's"), false),
+                Err(said) => (said, true),
             });
             self.stamp = None;
             self.check();

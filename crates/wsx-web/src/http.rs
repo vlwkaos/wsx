@@ -1164,7 +1164,7 @@ async fn tasks_chat_close(
     tasks_allowed(&app, true)?;
     act_budget(&app, &device)?;
     with_scope(&app, project, |scope| {
-        crate::tasks::close_chat(scope, &name)
+        crate::tasks::close_chat(&app, scope, &name)
     })
     .map(Json)
 }
@@ -1289,7 +1289,6 @@ async fn tasks_chat(
             .ok_or_else(Fault::not_found)?;
         crate::tasks::chat(
             scope,
-            &scopes,
             query.chat.as_deref(),
             (query.after, query.find.as_deref(), query.around),
             &app.media,
