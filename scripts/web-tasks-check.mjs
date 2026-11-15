@@ -621,36 +621,11 @@ const plansView = await evaluate(`fetch('api/tasks/${plansArg}').then((r) => r.j
 if (plansRow?.status !== "#1 Waiting for your answer" || plansView.needs !== 2 || plansRow.count !== String(plansView.needs + plansView.asks)) await fail(`the plans row reads ${JSON.stringify([plansRow, plansView])}`);
 // Projects with agent sessions and no task: the row says only what the project has, never what
 // its agent sessions do (a session left in an error would pin its words on the row for good).
-// `busy` (working), `quiet` (done) and `gone` (exited) have no task: "No tasks yet", no time, no count.
+// `busy` (working), `quiet` (done) and `gone` (exited, and one in an error) have no task: "No tasks yet", no time, no count.
 for (const name of ["busy", "quiet", "gone"]) {
   const row = homeRows.find((item) => item.name === name);
   if (row?.status !== "No tasks yet" || row.count || row.state) await fail(`the ${name} row reads ${JSON.stringify(row)}, not "No tasks yet" with no time`);
 }
-// ^ The fixture has no session in an error: add one to the page's store, read Home, then the
-// Sessions list, which keeps every state, and put the store back in the same step.
-const sessionStates = await evaluate(`(async () => {
-  const { state, update } = await import(new URL("store.js", [...document.scripts].find((script) => script.type === 'module').src));
-  const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
-  const kept = state.sessions;
-  const gone = kept.find((session) => session.project.name === 'gone');
-  update({ sessions: [...kept, { ...gone, id: gone.id + 9000, label: 'broken', exited: false, agent: { ...gone.agent, attached: true, state: 'error' } }] });
-  await frames();
-  const home = [...document.querySelectorAll('.home-row')].map((row) => [row.querySelector('.row-label').firstChild.textContent, row.querySelector('.row-context').textContent, row.querySelector('.time')?.textContent ?? '']);
-  location.hash = '#/sessions';
-  for (let turn = 0; turn < 40 && !document.querySelector('h1.title')?.textContent.includes('Sessions'); turn++) await frames();
-  await frames();
-  const list = [...document.querySelectorAll('.rows .row')].map((row) => (row.querySelector('.row-project')?.textContent ?? '') + ' ' + (row.querySelector('.row-state span')?.textContent ?? ''));
-  update({ sessions: kept });
-  location.hash = '#/';
-  await frames();
-  return { home, list };
-})()`);
-const goneHome = sessionStates.home.find(([name]) => name === "gone");
-if (goneHome?.[1] !== "No tasks yet" || goneHome[2]) await fail(`an agent session in an error shows on its project's Home row: ${JSON.stringify(goneHome)}`);
-for (const want of [/^busy working/, /^quiet done/, /^gone exited/, /^gone error/]) {
-  if (!sessionStates.list.some((line) => want.test(line))) await fail(`the Sessions list lacks ${want}: ${JSON.stringify(sessionStates.list)}`);
-}
-await until("document.querySelectorAll('.home-row').length >= 3", "home did not come back after the session states");
 await tabsInView();
 await oneWorkingColor("home", 0);
 // ^ The server runs this page's build: no new-version pill.
@@ -667,6 +642,9 @@ await homeTimers();
 // the plain worktree's session.
 await click(".tabbar a[href='#/sessions']");
 await until("location.hash === '#/sessions' && document.querySelector('h1.title')?.textContent === 'Sessions'", "the Sessions tab did not open the inbox");
+// ^ The list keeps every state the fixture's agent sessions report: working, done, exited and an error.
+const sessionLine = "[...document.querySelectorAll('.rows .row')].map((row) => (row.querySelector('.row-project')?.textContent ?? '') + ' ' + (row.querySelector('.row-state span')?.textContent ?? ''))";
+for (const want of [/^busy working/, /^quiet done/, /^gone exited/, /^gone error/]) await until(`${sessionLine}.some((line) => ${want}.test(line))`, `the Sessions list lacks ${want}`);
 const listedSessions = await text(".rows .row-context");
 if (listedSessions.some((line) => /\btask-(\d+|manager)\b|\b(task|manager)$/.test(line))) await fail(`the session list shows task sessions: ${JSON.stringify(listedSessions)}`);
 if (!listedSessions.includes("old chat · claude")) await fail(`the session list misses the plain worktree's session: ${JSON.stringify(listedSessions)}`);
