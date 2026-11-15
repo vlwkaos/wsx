@@ -2045,10 +2045,7 @@ async function followEnd(where) {
   // (b, c) Scrolled up: rows below, a late diagram below, the "Since you left" line above, rows
   // inserted above (as older messages would be) and removed again keep the bubble in view where it is.
   const drift = [];
-  // ^ The iOS path (anchoring off) runs five times: one frame that moves is not a flake to wait out.
-  // Only the first pass of each kind has the manager reply: more replies would push the chat's
-  // older rows (the other manager's messages, read below) out of the newest 60.
-  for (const [pass, anchoring] of ["auto", ...Array(5).fill("none")].entries()) {
+  for (const anchoring of ["auto", "none"]) {
     // ^ iOS Safari has no CSS scroll anchoring: with it off, Chrome scrolls as Safari does.
     await evaluate(`document.querySelector('.log').style.overflowAnchor = '${anchoring}'`);
     await evaluate(scrolledUp);
@@ -2060,24 +2057,19 @@ async function followEnd(where) {
     // that moves says which step and what moved (the log's scroll, its box, or the page).
     const stage = (name) => evaluate(`window.wsxStep = ${JSON.stringify(name)}`);
     await watch(`['probe', ${probe}, window.wsxStep, (() => { const log = document.querySelector('.log'); return [log.scrollTop, log.scrollHeight, log.clientHeight, log.getBoundingClientRect().top, document.scrollingElement.scrollTop, log.querySelector('[data-late]')?.offsetHeight ?? 0].map(Math.round); })()]`);
-    if (pass < 2) {
-      await stage("reply below");
-      await diagramReply();
-      await moved("reply below");
-    }
-    // ^ The line did not show again in the repeated passes (no new reply): the first of each kind covers it.
-    if (pass < 2) {
-      await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 }))`);
-      await stage("since line");
-      await evaluate("document.dispatchEvent(new Event('visibilitychange'))");
-      await until("!!document.querySelector('.since')", `${where}: no since-you-left line`);
-      await pause(300);
-      await moved("since line");
-      await stage("since dismissed");
-      await evaluate("document.querySelector('.since button[title=Dismiss]').click()");
-      await pause(300);
-      await moved("since dismissed");
-    }
+    await stage("reply below");
+    await diagramReply();
+    await moved("reply below");
+    await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 }))`);
+    await stage("since line");
+    await evaluate("document.dispatchEvent(new Event('visibilitychange'))");
+    await until("!!document.querySelector('.since')", `${where}: no since-you-left line`);
+    await pause(300);
+    await moved("since line");
+    await stage("since dismissed");
+    await evaluate("document.querySelector('.since button[title=Dismiss]').click()");
+    await pause(300);
+    await moved("since dismissed");
     await stage("rows above");
     await evaluate(`(() => { const log = document.querySelector('.log');
       for (let n = 0; n < 5; n++) {
@@ -2102,7 +2094,9 @@ async function followEnd(where) {
     await pause(200);
     await moved("image above");
     await stage("image removed");
-    await evaluate("document.querySelector('.log [data-late]').remove()");
+    // ^ In the task of a scroll the log made itself (a net-zero nudge: its event is still to come
+    // at the next frame): the event must not take the moved row as the reader's place.
+    await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop += 1; log.scrollTop -= 1; log.querySelector('[data-late]').remove(); })()");
     await pause(200);
     await moved("image removed");
     const read = await watched();
