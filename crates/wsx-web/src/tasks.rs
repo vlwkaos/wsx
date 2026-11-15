@@ -832,8 +832,11 @@ fn news_value((unix_ms, text): (u64, String)) -> Value {
 /// (docs/web-client-tasks.md "Home").
 fn chat_contacts(scope: &Scope, land_auto: bool) -> Vec<Value> {
     let counts = needs::chat_counts(&scope.store, land_auto);
+    // ^ The home chat is the project's own row (`home_chat`); the others are the contacts.
+    let home = store::home_chat(&scope.store);
     task::chats::open_chats(&scope.store)
         .iter()
+        .filter(|dir| home.as_deref() != Some(dir.name()))
         .map(|dir| {
             let own = counts.get(dir.name()).copied().unwrap_or_default();
             let tail = dir.read_tail(MANAGER_TAIL_BYTES).unwrap_or_default();

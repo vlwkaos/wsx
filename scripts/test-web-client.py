@@ -4337,7 +4337,7 @@ merge_seconds = 3
         # the first chat, an unknown name and a closed one are refused; the Home row goes.
         close_url = lambda name: '/api/tasks/%d/chats/%s/close' % (demo, name)
         assert steady(viewer, 'POST', close_url('made'), {})[0] == 403
-        for name, words in (('manager', 'first chat'), ('nobody', 'no open chat nobody')):
+        for name, words in (('demo', 'home chat'), ('nobody', 'no open chat nobody')):
             status, body = steady(owner, 'POST', close_url(name), {})
             assert status == 409 and words in json.dumps(body), (name, status, body)
         status, body = steady(owner, 'POST', close_url('made'), {})
@@ -4383,10 +4383,10 @@ merge_seconds = 3
             return full_reads() == seen
         wait(observer_idle, 'no whole-log read for 2.5 s', timeout=40)
         chat_route = '/api/tasks/%d/chat' % demo
-        manager_reads = full_reads('/manager')
+        manager_reads = full_reads('/chats/demo')
         whole_chat = steady(owner, 'GET', chat_route)[1]
         # ^ Every chat reads from the log's end (`chat::read_chat`, docs/tasks.md "Log window").
-        assert full_reads('/manager') == manager_reads, 'a chat call without after reads the whole log'
+        assert full_reads('/chats/demo') == manager_reads, 'a chat call without after reads the whole log'
         last_id = max(row['id'] for row in whole_chat['rows'] if row.get('id') is not None)
         warm = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         # ^ Every project's overview is built again after OVERVIEW_TTL (60 s) even with its stamp unchanged: the observer builds
@@ -4407,9 +4407,9 @@ merge_seconds = 3
         assert posted.returncode == 0, (posted.stdout, posted.stderr)
         watcher.expect('manager', lambda data: data == {'project': demo}, timeout=20)
         wait(observer_idle, 'no whole-log read for 2.5 s after the line', timeout=40)
-        manager_reads = full_reads('/manager')
+        manager_reads = full_reads('/chats/demo')
         tail_chat = steady(owner, 'GET', chat_route + '?after=%d' % last_id)[1]
-        assert full_reads('/manager') == manager_reads, 'a chat with a recent after reads the log tail only'
+        assert full_reads('/chats/demo') == manager_reads, 'a chat with a recent after reads the log tail only'
         whole_chat = steady(owner, 'GET', chat_route)[1]
         seen = [row.get('id') for row in whole_chat['rows']].index(last_id)
         assert tail_chat['rows'] == whole_chat['rows'][seen + 1:] and 'cache check line' in json.dumps(tail_chat['rows']), tail_chat
