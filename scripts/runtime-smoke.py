@@ -2626,11 +2626,12 @@ try:
     remove_from_tui("halt-me", b"H")
     wait_for(lambda: "halt-me" not in config_names(), "H did not unregister halt-me")
     wait_for(lambda: project_sessions("halt-me") == [], "H did not halt the sessions of halt-me")
-    assert sorted(project_sessions("keep-me")) == ["shell", "task-keep-me"], f"H halted another project's sessions: {project_sessions('keep-me')}"
+    # ^ Closing qa handed back to the home chat and started its host beside the staged session (`task-keep-me-2`).
+    assert {"shell", "task-keep-me"} <= set(project_sessions("keep-me")), f"H halted another project's sessions: {project_sessions('keep-me')}"
     remove_from_tui("keep-me", b"y")
     wait_for(lambda: "keep-me" not in config_names(), "y did not unregister keep-me")
     time.sleep(2)
-    assert sorted(project_sessions("keep-me")) == ["shell", "task-keep-me"], f"y halted the sessions of keep-me: {project_sessions('keep-me')}"
+    assert {"shell", "task-keep-me"} <= set(project_sessions("keep-me")), f"y halted the sessions of keep-me: {project_sessions('keep-me')}"
     assert (removal["halt-me"] / ".git").is_dir() and (removal["keep-me"] / ".git").is_dir()
 finally:
     remove_tui.close()
