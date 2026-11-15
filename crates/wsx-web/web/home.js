@@ -2,7 +2,7 @@
 // (docs/web-client-tasks.md "Home"). A row opens the project's manager chat.
 import { ago, html, Icon, Loading, READ_EVENT, unreadNews, useEffect, useFlip, useNow, useRef, useState } from "./lib.js";
 import { api } from "./api.js";
-import { can, isAgent, listedSessions, stateOf, useStore } from "./store.js";
+import { can, useStore } from "./store.js";
 import { loadTasks } from "./task-api.js";
 import { agentWords, needTone, needWords } from "./task-words.js";
 import { shownTrays, TrayIcons, trayCounts, trayWords } from "./trays.js";
@@ -14,16 +14,15 @@ import { slid } from "./ui.js";
 // message this device has not read, newest message first; then the rest by their last
 // owner-facing activity, newest first (docs/web-client-tasks.md "Home").
 // `viewing` is the project whose chat this device shows: read at once.
-function homeOrder(projects, tasks, sessions, viewing) {
+function homeOrder(projects, tasks, viewing) {
   const rows = projects.map((project) => {
     const overview = tasks[project.id];
     const needs = overview?.needs ?? [];
     const first = needs[0] ?? null;
     const rank = first?.rank ?? null;
-    const agents = sessions.filter((session) => session.project.id === project.id);
-    const last = Math.max(overview?.last_unix_ms ?? 0, ...agents.map((session) => session.state_since_unix_ms ?? 0)) || null;
+    const last = overview?.last_unix_ms || null;
     const news = project.id === viewing ? null : newsOf(project.id, overview);
-    return { project, overview, needs, rank, first, agents, last, news };
+    return { project, overview, needs, rank, first, last, news };
   });
   return rows.sort((left, right) => {
     if ((left.rank === null) !== (right.rank === null)) return left.rank === null ? 1 : -1;
@@ -34,36 +33,14 @@ function homeOrder(projects, tasks, sessions, viewing) {
   });
 }
 
-// The project's agent sessions in words, most urgent group first: "claude in main exited",
-// "claude in main working", "claude in main done 5m ago". Null without one.
-const SESSION_GROUPS = ["blocked", "error", "exited", "working", "done", "idle", "unknown"];
-// Session states that need the owner, and working: their words take the state's tone.
-const SESSION_ATTENTION = ["blocked", "error", "exited"];
-const SESSION_TONED = [...SESSION_ATTENTION, "working"];
-function sessionWords(agents, now) {
-  for (const key of SESSION_GROUPS) {
-    const group = agents.filter((session) => stateOf(session).key === key)
-      .sort((left, right) => (right.state_since_unix_ms ?? 0) - (left.state_since_unix_ms ?? 0));
-    if (!group.length) continue;
-    const { word, tone } = stateOf(group[0]);
-    const done = key === "done" && group[0].state_since_unix_ms ? ago(now - group[0].state_since_unix_ms) : null;
-    const since = done ? ` ${done === "now" ? "just now" : done}` : "";
-    const who = group.length === 1 ? `${group[0].agent.provider} in ${group[0].branch}` : `${group.length}`;
-    return { text: `${who} ${word}${since}`, tone: SESSION_TONED.includes(key) ? tone : null, key };
-  }
-  return null;
-}
-
-// The row's one status line: the most urgent need, else a session that needs attention or
-// works, else the manager's last reply, else the other sessions, else whether there is any task.
-function statusLine({ overview, first, agents }, now) {
+// The row's one status line: the most urgent need, else what only the owner can check, else the
+// manager's last reply, else whether there is any task. Agent sessions are not the project's
+// news: their states show in the Sessions list.
+function statusLine({ overview, first }) {
   if (first) return { text: needWords(first), tone: needTone(first) };
-  const sessions = sessionWords(agents, now);
-  if (sessions && (SESSION_ATTENTION.includes(sessions.key) || sessions.key === "working")) return sessions;
   // ^ What only the owner can check waits for them, before a release (docs/tasks.md "To check").
   if (overview?.to_check) return { text: `${overview.to_check} to check` };
   if (overview?.last_reply) return { text: overview.last_reply };
-  if (sessions) return sessions;
   // ^ Until its tasks are read, a project's row claims nothing about them.
   if (!overview) return { text: "Loading…", loading: true };
   return { text: overview.tasks.length ? "Nothing needs you" : "No tasks yet" };
@@ -295,11 +272,9 @@ export function Home({ rail }) {
     changed();
     return () => removeEventListener(READ_EVENT, changed);
   }, []);
-  const sessions = listedSessions(store.sessions).filter(isAgent);
-  // ^ Only a working task or session shows an age that moves by the second; any other row's age
-  // (`ago`, in minutes) is renewed each minute.
-  const live = Object.values(store.tasks).some((overview) => overview?.working > 0)
-    || sessions.some((session) => stateOf(session).key === "working");
+  // ^ Only a working task shows an age that moves by the second; any other row's age (`ago`, in
+  // minutes) is renewed each minute.
+  const live = Object.values(store.tasks).some((overview) => overview?.working > 0);
   const now = useNow(true, live ? 1000 : 60_000);
   const [, kind, open, place, chatName] = location.hash.split("/");
   const inChat = place === "c" ? decodeURIComponent(chatName ?? "") : null;
@@ -318,8 +293,8 @@ export function Home({ rail }) {
   else {
     body = html`
       <ul class="rows home-rows" aria-label="Projects" ref=${list}>
-        ${homeOrder(store.projects, store.tasks, sessions, rail && kind === "p" && document.visibilityState === "visible" ? Number(open) : null).map((row) => {
-          const status = statusLine(row, now);
+        ${homeOrder(store.projects, store.tasks, rail && kind === "p" && document.visibilityState === "visible" ? Number(open) : null).map((row) => {
+          const status = statusLine(row);
           const news = row.news;
           return [html`
             <li class=${manage ? "row row-slide" : "row"} onScroll=${manage ? slid : null} key=${row.project.id} data-key=${row.project.id} data-news=${news ? "" : null}>
