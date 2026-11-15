@@ -4,7 +4,7 @@
 // task_view), the rest beside it.
 import { api, openEvents, pageId, QUIET_MS } from "./api.js";
 import { html, Icon, render, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
-import { can, events, noteBuild, parseRoute, replaceRoute, restorePlace, shownTabs, shows, stackUnder, state, tabs, trackHistory, update, useRoute, useStore } from "./store.js";
+import { can, chatHash, events, leaveFor, noteBuild, parseRoute, replaceRoute, restorePlace, shownTabs, shows, stackUnder, state, tabs, trackHistory, update, useRoute, useStore } from "./store.js";
 import { Home } from "./home.js";
 import { applyBar, applyScheme, applyTabs, Notices, toast } from "./ui.js";
 import { Pair, takePairCode } from "./pair.js";
@@ -117,7 +117,8 @@ function Screen({ route }) {
   if (route.screen === "project" || route.screen === "task") {
     return can("task_view") ? html`<${Manager} key=${route.id} project=${route.id} sheet=${route.sheet ?? null} task=${route.task ?? null} item=${route.item ?? null} />` : route.sheet === "panels" ? html`<${PanelsScreen} key=${route.id} project=${route.id} />` : html`<${Project} key=${route.id} id=${route.id} />`;
   }
-  if (route.screen === "chat" && can("task_view")) return html`<${Manager} key=${`${route.id}/${route.chat}`} project=${route.id} chat=${route.chat} />`;
+  // ^ A project's home chat is its manager: the same Manager as its sheets, so a sheet keeps the conversation.
+  if (route.screen === "chat" && can("task_view") && route.id != null) return html`<${Manager} key=${route.room ? `${route.id}/${route.room}` : route.id} project=${route.id} chat=${route.room} />`;
   if (route.screen === "sessions") return html`<${ProjectSessions} key=${route.id} id=${route.id} />`;
   if (route.screen === "settings") return html`<${Settings} sub=${route.sub} />`;
   if (route.screen === "projects") return html`<${Projects} />`;
@@ -131,6 +132,12 @@ function App() {
   const route = useRoute();
   const wide = useWide();
   const lastList = useRef("home");
+  // ^ An old bookmark, #/p/<id>/c/<chat> or the project's #/p/<id>, is replaced by its chat's own route.
+  useEffect(() => {
+    const home = route.screen === "project" && can("task_view") ? state.tasks[route.id]?.home_chat : null;
+    const to = route.old ? chatHash(route.chat) : home ? chatHash(home) : null;
+    if (to) leaveFor(to);
+  });
   // ^ A link to #/machine keeps the bar on a device without the tab (no right to read panels), so the way out stays.
   const top = tabs().some(([name]) => name === route.screen) || route.screen === "machine" || (route.screen === "inbox" && !can("task_view"));
   useEffect(() => {

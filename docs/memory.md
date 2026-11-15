@@ -79,7 +79,7 @@ backend = ["python3", "/path/to/ir-memory.py"]   # a program and its arguments; 
 
 ## Notes
 
-The manager's notes are views of the project scope's records ([tasks.md](tasks.md) "Notes budget"). The records are the truth; `manager/notes/` holds four files that wsx writes from them after each write, so the manager prompt reads the same text as before.
+The manager's notes are views of the project scope's records ([tasks.md](tasks.md) "Notes budget"). The records are the truth; `chats/<name>/notes/` holds four files that wsx writes from them after each write, so the manager prompt reads the same text as before.
 
 | File | Holds |
 |---|---|

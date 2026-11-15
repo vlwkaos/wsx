@@ -5,9 +5,9 @@ import { clock, html, Icon, useLayoutEffect, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
 import { Quote } from "./reply.js";
-import { TaskChip, withChips } from "./task-words.js";
+import { TaskChip } from "./task-words.js";
 import { checkQuote, CheckRow } from "./checks.js";
-import { can, sessionLink, shows, state } from "./store.js";
+import { can, sessionLink, shows } from "./store.js";
 
 // Bubbles of one author closer together than this read as one group.
 const GROUP_MS = 5 * 60_000;
@@ -145,27 +145,23 @@ const NeedTags = ({ items, onShow }) => items.map((item) => html`
     <span>Needs you: ${item.label}</span>
   </button>`);
 
-// ^ The project of a row's peer key as wsx-core's `Party::from_key` reads it: `chat:<name>` is a chat
-// of this project, no project's; any other key is another project's manager.
-const peerProject = (peer) => peer == null || peer.startsWith("chat:") ? null : peer;
+// ^ The chat of a row's peer key as wsx-core's `Party::from_key` reads it: `chat:<name>`.
+const peerChat = (peer) => peer?.startsWith("chat:") ? peer.slice(5) : null;
 
-// A message's author above its box. Another project's manager is a link to that project's manager
-// chat, the route a Home row opens (docs/web-client-tasks.md "Project screen").
-const Author = ({ name, target, peer }) => target
-  ? html`<a class="bubble-author" href=${`#/p/${target.id}`} aria-label=${`Open ${peer} manager chat`}>${name}</a>`
+// A message's author above its box. Another chat is a link to that chat, the route a Home row opens
+// (docs/web-client-tasks.md "Project screen").
+const Author = ({ name, target }) => target
+  ? html`<a class="bubble-author" href=${`#/c/${encodeURIComponent(target)}`} aria-label=${`Open chat ${target}`}>${name}</a>`
   : html`<p class="bubble-author" aria-hidden="true">${name}</p>`;
 
-// One message. `home` turns its text runs into task chips; a message of another project's
-// manager (not another chat) reads its bare `#n` as that project's task.
+// One message. `home` turns its text runs into task chips.
 // `plain`: the project chat's own manager has no name of its own, the project's, which the top row
 // shows: its bubbles keep no author line.
 export function Bubble({ project, row, words: home, fresh, onNeed, plain }) {
   const out = row.author === "owner";
   const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
-  const other = peerProject(peer);
-  const words = other != null ? withChips(project, other) : home;
-  // ^ A link only to a project the site lists; else its name stays plain text.
-  const target = other && state.projects.find((listed) => listed.name === other);
+  const words = home;
+  const target = peerChat(peer);
   const id = `bubble-${row.key}`;
   // ^ A post with a level (`wsx task post --level warn|bad`) says it in its tag (docs/web-client-tasks.md "Task notifications").
   const tag = row.level ? (row.level === "bad" ? "Bad" : "Warn") : row.tag;
@@ -185,7 +181,7 @@ export function Bubble({ project, row, words: home, fresh, onNeed, plain }) {
       data-quote=${row.quote ?? null} data-id=${row.quote != null ? row.id ?? null : null}
       data-pending=${row.pending ? "" : null} data-asks=${row.asks ? "" : null} data-routine=${row.post ? "" : null} data-level=${row.level ?? null}
       aria-label=${`${row.name}, ${clock(row.at)}${row.asks ? ", Asks you" : row.level ? `, ${tag}` : row.post ? ", Routine" : ""}`}>
-      ${!out && (row.first || target) && !(plain && row.author === "manager") && html`<${Author} name=${row.name} target=${target} peer=${peer} />`}
+      ${!out && row.first && !(plain && row.author === "manager") && html`<${Author} name=${row.name} target=${target} />`}
       <div class="bubble-box">${mark && html`<p class="bubble-tag" role="img" aria-label=${mark[1]} title=${mark[1]}><${Icon} name=${mark[0]} /></p>`}${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>
       ${row.last && html`<p class="bubble-time" aria-hidden="true">${row.pending ? "Sending…" : clock(row.at)}</p>`}
     </article>`;
