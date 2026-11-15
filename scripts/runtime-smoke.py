@@ -2184,7 +2184,7 @@ try:
     # A task that waits for another (`wsx task after`): the Tasks view's row adds the reason after
     # the label, the detail's Waits on row names the task and why, and the detail of the task waited
     # for says where it goes and lists who waits under Blocks (docs/tasks.md "TUI").
-    keep_store = keep_log.parent.parent
+    keep_store = keep_log.parent.parent / json.loads((keep_log.parent / "chat.json").read_text())["repos"][0]
     now_ms = int(time.time() * 1000)
     for number, state, after in ((1, "working", None), (2, "ready", {"task": 1, "text": "WORK x.txt", "since_unix_ms": now_ms, "because": "check"})):
         record = {"id": number, "project": "keep-me", "project_id": keep_store.name, "project_path": str(removal["keep-me"]),
