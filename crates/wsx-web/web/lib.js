@@ -293,9 +293,17 @@ export function useFollowEnd(name, ready) {
     if (!element) return;
     height.current = element.clientHeight;
     if (!placed.current && loaded.current) return open();
-    if (restore.current?.row.isConnected) {
-      element.scrollTop = restore.current.row.offsetTop - restore.current.offset;
-      return mark();
+    if (restore.current) {
+      // ^ The reader's scroll ends the hold, also when its event has not come yet (a row changed
+      // size in the same task): the log's own moves are all marked, so a move since the mark is theirs.
+      if (Math.abs(element.scrollTop - top.current) > 1) {
+        restore.current = null;
+        return mark();
+      }
+      if (restore.current.row.isConnected) {
+        element.scrollTop = restore.current.row.offsetTop - restore.current.offset;
+        return mark();
+      }
     }
     if (atEnd.current) element.scrollTop = element.scrollHeight;
     else if (anchor.current?.row.isConnected) {
