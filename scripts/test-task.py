@@ -7032,7 +7032,7 @@ def part_host(created=None):
     mig_store = state / 'wsx/tasks' / mig_id
     mig_n = js('task', 'new', '-p', 'mig', 'WORK m.txt')['id']
     wait(lambda: js('task', 'show', mig_n, '-p', 'mig')['state'] == 'ready', 'the task of the mig repo', 60)
-    cli('session', 'delete', 'task-mig', '-p', 'mig')
+    cli('session', 'delete', 'task-mig', '-p', 'mig', ok=False)
     wait(lambda: not leftovers('task manager-host ' + mig_id), 'the mig manager host leaves', 30)
     # ^ Put the store back as before chats: the home chat's folder is `manager/`, a second chat is `chats/side/`.
     old_home, old_side = mig_store / 'manager', mig_store / 'chats/side'
