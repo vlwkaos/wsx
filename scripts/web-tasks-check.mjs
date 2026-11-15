@@ -2979,7 +2979,7 @@ if (!(JSON.parse(await where()).scroll[0] > 0)) await fail("Home does not scroll
 await sameBack("a project's chat", opens(`a.home-row[href="${chat}"]`, "!!document.querySelector('.composer-field')", "the chat"), topBack);
 await go(chat);
 await until("!!document.querySelector('.composer-field')", "the chat did not open");
-const sheetOpen = (part) => `!!document.querySelector('dialog.task-sheet[open]') && location.hash.startsWith(${JSON.stringify(chat + part)})`;
+const sheetOpen = (part) => `!!document.querySelector('dialog.task-sheet[open]') && location.hash.startsWith(${JSON.stringify(repoBase + part)})`;
 await sameBack("the overview", opens(`.manager > .bar a[href="${repoBase}/page"]`, sheetOpen("/page"), "the overview"), sheetBack);
 await sameBack("the task sheet", opens(`.log a.task-chip[href^="${repoBase}/t/"]`, sheetOpen("/t/"), "the task sheet"), sheetBack);
 await sameBack("the usage sheet", fromMenu(`a[href="${repoBase}/usage"]`, sheetOpen("/usage"), "the usage sheet"), sheetBack);
