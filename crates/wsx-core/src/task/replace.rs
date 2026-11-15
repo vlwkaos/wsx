@@ -182,11 +182,8 @@ pub(super) fn close_hung_manager(
     let Some(hung) = manager_hung(dir, main, answer) else {
         return Ok(false);
     };
-    let mut args = vec!["task", "manager-host", dir.project_id.as_str()];
-    if let Some(chat) = &dir.chat {
-        args.extend(["--chat", chat.as_str()]);
-    }
-    let pid = host_pid(&args);
+    let args = dir.host_args();
+    let pid = host_pid(&args.iter().map(String::as_str).collect::<Vec<_>>());
     super::close_session(&format!("task-{}", dir.name()), main)?;
     stop_tree(pid);
     dir.append(ManagerEvent::Stopped {
@@ -215,11 +212,7 @@ pub fn sweep() -> Vec<String> {
                 }
             }
         }
-        let managers = ManagerDir::existing(&project_id).ok().flatten();
-        for dir in managers
-            .into_iter()
-            .chain(super::chats::open_chats(&project_id))
-        {
+        for dir in super::chats::open_chats(&project_id) {
             let answer = super::call_socket::<_, ManagerResponse>(
                 &dir.socket_path(),
                 &super::manager::ManagerRequest::Status,
@@ -237,7 +230,7 @@ pub fn sweep() -> Vec<String> {
                     )
                     .map(drop)
                 };
-                let chat = dir.chat.as_deref();
+                let chat = dir.named();
                 if let Err(error) =
                     super::owner::ensure_manager(&project.name, &project.path, &exe, chat, launch)
                 {
@@ -250,7 +243,7 @@ pub fn sweep() -> Vec<String> {
 }
 
 /// The pid of the running host whose arguments after the program are `args`.
-fn host_pid(args: &[&str]) -> Option<libc::pid_t> {
+pub(super) fn host_pid(args: &[&str]) -> Option<libc::pid_t> {
     crate::process::find(|argv, _| {
         argv.len() == args.len() + 1
             && argv[1..]
@@ -264,7 +257,7 @@ fn host_pid(args: &[&str]) -> Option<libc::pid_t> {
 
 /// Stop every process that carries the agent mark of the host `pid` (`TREE_ENV`): its agents
 /// and their tool processes, which a closed host session leaves running.
-fn stop_tree(pid: Option<libc::pid_t>) {
+pub(super) fn stop_tree(pid: Option<libc::pid_t>) {
     let Some(pid) = pid else {
         return;
     };

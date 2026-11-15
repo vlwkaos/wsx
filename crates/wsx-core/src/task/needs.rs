@@ -140,18 +140,18 @@ pub struct ChatCounts {
 
 /// The counts of every open chat of the project, by name.
 pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCounts> {
-    let open = chats::open_names(project_id);
-    let mut counts: HashMap<String, ChatCounts> = open
+    let open = chats::open_names();
+    let home = store::home_chat(project_id).unwrap_or_default();
+    let mut counts: HashMap<String, ChatCounts> = chats::open_chats(project_id)
         .iter()
-        .map(|name| (name.clone(), ChatCounts::default()))
+        .map(|dir| (dir.chat.clone(), ChatCounts::default()))
         .collect();
-    if open.is_empty() {
+    if counts.is_empty() {
         return counts;
     }
     for (dir, record) in view::project_tasks(project_id).unwrap_or_default() {
         let Ok(record) = record else { continue };
-        let Some(own) =
-            chats::owner(record.created_by.chat(), &open).and_then(|n| counts.get_mut(n))
+        let Some(own) = counts.get_mut(chats::owner(record.created_by.chat(), &open, &home))
         else {
             continue;
         };
@@ -163,14 +163,14 @@ pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCou
     }
     let approvals = store::read_approvals(project_id).unwrap_or_default();
     let items = checks::open_items(project_id).unwrap_or_default();
-    for name in &open {
-        let own = chats::approvals_of(approvals.clone(), Some(name), &open);
-        let Some(entry) = counts.get_mut(name) else {
+    for name in counts.keys().cloned().collect::<Vec<_>>() {
+        let own = chats::approvals_of(approvals.clone(), &name, &open, &home);
+        let Some(entry) = counts.get_mut(&name) else {
             continue;
         };
         entry.needs += pending_approvals(&own).len();
         entry.running += waiting_approvals(&own).len();
-        entry.check = chats::checks_of(project_id, items.clone(), Some(name), &open).len();
+        entry.check = chats::checks_of(project_id, items.clone(), &name, &open, &home).len();
     }
     counts
 }

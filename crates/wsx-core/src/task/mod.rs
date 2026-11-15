@@ -8,6 +8,7 @@
 pub mod build;
 pub mod chat;
 pub mod chats;
+mod chats_move;
 pub mod checks;
 pub mod copy;
 pub mod failure;
@@ -199,17 +200,14 @@ pub struct Waiting {
     pub until_ms: Option<u64>,
 }
 
-/// Who acted: the owner, the manager's agent (`WSX_TASK_ACTOR=manager`) or another chat's
-/// (`chat:<name>`). `ManagerOf` is only stored, on a task another project's manager created
-/// here (`manager@<project>`): its events go to that manager. ref: docs/tasks.md "Chats",
-/// "Managers talk"
+/// Who acted: the owner or a chat's agent (`WSX_TASK_ACTOR=chat:<name>`). A task made by a chat
+/// records it as `created_by`; its events go to that chat (`chats::owner`). ref: docs/tasks.md
+/// "Chats"
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 pub enum Actor {
     #[default]
     Owner,
-    Manager,
-    ManagerOf(String),
     Chat(String),
 }
 
@@ -217,8 +215,6 @@ impl From<Actor> for String {
     fn from(actor: Actor) -> Self {
         match actor {
             Actor::Owner => "owner".into(),
-            Actor::Manager => "manager".into(),
-            Actor::ManagerOf(project) => format!("manager@{project}"),
             Actor::Chat(name) => format!("chat:{name}"),
         }
     }
@@ -228,14 +224,10 @@ impl TryFrom<String> for Actor {
     type Error = String;
 
     fn try_from(text: String) -> Result<Self, String> {
-        match text.as_str() {
-            "owner" => Ok(Self::Owner),
-            "manager" => Ok(Self::Manager),
-            _ => match (text.strip_prefix("chat:"), text.strip_prefix("manager@")) {
-                (Some(name), _) if !name.is_empty() => Ok(Self::Chat(name.into())),
-                (_, Some(project)) if !project.is_empty() => Ok(Self::ManagerOf(project.into())),
-                _ => Err(format!("unknown actor {text}")),
-            },
+        match (text.as_str(), text.strip_prefix("chat:")) {
+            ("owner", _) => Ok(Self::Owner),
+            (_, Some(name)) if !name.is_empty() => Ok(Self::Chat(name.into())),
+            _ => Err(format!("unknown actor {text}")),
         }
     }
 }
@@ -249,19 +241,11 @@ impl Actor {
             .unwrap_or_default()
     }
 
-    /// The chat's name, or none for the owner and the manager.
+    /// The chat's name, or none for the owner.
     pub fn chat(&self) -> Option<&str> {
         match self {
             Self::Chat(name) => Some(name),
-            _ => None,
-        }
-    }
-
-    /// The project whose manager created a task here, if another project's did.
-    pub fn origin(&self) -> Option<&str> {
-        match self {
-            Self::ManagerOf(project) => Some(project),
-            _ => None,
+            Self::Owner => None,
         }
     }
 }

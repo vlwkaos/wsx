@@ -434,8 +434,6 @@ pub struct Names<'a> {
     pub own: &'a str,
     /// The project's manager, as another chat names it (`manager_name_in`).
     pub manager: &'a str,
-    /// Another project's manager by its shown name.
-    pub peer: &'a dyn Fn(&str) -> String,
 }
 
 /// How a chat names the project's first chat: its shown name, and in another chat (`chat`) the
@@ -563,7 +561,7 @@ pub struct Reading {
 }
 
 /// The one read of a chat for the web, the TUI and `wsx task chat`: the names the viewer sees
-/// (the manager's shown name, the chat's own, another project's by `peer`), the approvals of
+/// (the manager's shown name and the chat's own), the approvals of
 /// the chat that owns them, and the page at `window`. No folder yet is an empty chat. `edit` is
 /// `page`'s.
 pub fn read_for(
@@ -571,22 +569,31 @@ pub fn read_for(
     (project, store_id): (&str, &str),
     settings: &crate::model::workspace::TaskConfig,
     window: &Window,
-    peer: &dyn Fn(&str) -> String,
     edit: impl FnMut(&mut ManagerEntry),
 ) -> Result<Reading> {
     let shown = settings.manager_shown_name(project);
-    let chat = dir.and_then(|dir| dir.chat.as_deref());
+    let chat = dir.and_then(ManagerDir::named);
     let manager = manager_name_in(chat, shown);
     let names = Names {
         own: chat.unwrap_or(shown),
         manager: &manager,
-        peer,
     };
-    let open = super::chats::open_names(store_id);
-    let approvals =
-        super::chats::approvals_of(super::store::read_approvals(store_id)?, chat, &open);
-    let items =
-        super::chats::checks_of(store_id, super::checks::open_items(store_id)?, chat, &open);
+    let open = super::chats::open_names();
+    let home = super::store::home_chat(store_id).unwrap_or_default();
+    let viewer = dir.map_or(home.as_str(), |dir| dir.chat.as_str());
+    let approvals = super::chats::approvals_of(
+        super::store::read_approvals(store_id)?,
+        viewer,
+        &open,
+        &home,
+    );
+    let items = super::chats::checks_of(
+        store_id,
+        super::checks::open_items(store_id)?,
+        viewer,
+        &open,
+        &home,
+    );
     let page = match dir {
         Some(dir) => page(
             dir,
@@ -836,13 +843,9 @@ fn row_key(entry: &ManagerEntry, kind: &str) -> String {
     }
 }
 
-/// A peer's name: a chat of this project, or another project's manager.
-fn peer_name(party: &Party, names: &Names) -> String {
-    match party {
-        Party::Chat(chat) if chat == "manager" => names.manager.to_string(),
-        Party::Chat(chat) => chat.clone(),
-        Party::Project(project) => (names.peer)(project),
-    }
+/// A peer's name: a chat's.
+fn peer_name(party: &Party) -> String {
+    party.name().to_string()
 }
 
 /// The row of a message from the owner, a manager or a chat. Events have `event_rows`; a recap
@@ -868,7 +871,7 @@ fn message_row(entry: &ManagerEntry, from: &Author, text: &str, names: &Names) -
             key,
             entry,
             Speaker::Peer(peer.clone()),
-            peer_name(peer, names),
+            peer_name(peer),
             text,
         )
     })
@@ -973,7 +976,7 @@ fn note_row(entry: &ManagerEntry, names: &Names) -> Option<ChatRow> {
             tag: Some(format!(
                 "{} {}",
                 if *reply { "Reply to" } else { "To" },
-                peer_name(&Party::from_key(to), names)
+                peer_name(&Party::from_key(to))
             )),
             ..ChatRow::said(
                 row_key(entry, "sent"),

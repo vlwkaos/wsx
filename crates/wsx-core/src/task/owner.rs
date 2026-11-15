@@ -34,8 +34,8 @@ pub fn ensure_manager(
 ) -> Result<(bool, ManagerDir)> {
     let project_id = store::project_id(name, main);
     let dir = match chat {
-        None => ManagerDir::open(&project_id)?,
-        Some(chat) => super::chats::open_chat(&project_id, chat)?,
+        None => ManagerDir::open_home(&project_id)?,
+        Some(chat) => super::chats::open_chat(chat)?,
     };
     let status = || {
         call_socket::<_, ManagerResponse>(&dir.socket_path(), &ManagerRequest::Status, HOST_TIMEOUT)
@@ -46,15 +46,8 @@ pub fn ensure_manager(
             return Ok((false, dir));
         }
     }
-    let mut argv = vec![
-        wsx.to_string_lossy().into_owned(),
-        "task".into(),
-        "manager-host".into(),
-        project_id,
-    ];
-    if let Some(chat) = chat {
-        argv.extend(["--chat".into(), chat.into()]);
-    }
+    let mut argv = vec![wsx.to_string_lossy().into_owned()];
+    argv.extend(dir.host_args());
     let label = format!("task-{}", dir.name());
     launch(label.clone(), argv)
         .context("the manager did not start; no session was left running")?;
@@ -102,7 +95,7 @@ pub fn post(
     level: Option<super::manager::Level>,
 ) -> Result<ManagerResponse> {
     call_socket(
-        &ManagerDir::open(project_id)?.socket_path(),
+        &ManagerDir::open_home(project_id)?.socket_path(),
         &ManagerRequest::Post { event, text, level },
         HOST_TIMEOUT,
     )
@@ -112,7 +105,7 @@ pub fn post(
 /// check-in. It never starts a host: an error when none answers.
 pub fn checkin(project_id: &str, at_ms: u64, why: String) -> Result<ManagerResponse> {
     call_socket(
-        &ManagerDir::open(project_id)?.socket_path(),
+        &ManagerDir::open_home(project_id)?.socket_path(),
         &ManagerRequest::Checkin { at_ms, why },
         HOST_TIMEOUT,
     )
@@ -540,7 +533,7 @@ pub fn approve_after(project_id: &str, mut request: ApprovalLine, said: u64) -> 
 
 /// Refuse unless `said` is an owner message of the manager's running turn.
 pub fn check_owner_said(project_id: &str, chat: Option<&str>, said: u64) -> Result<()> {
-    let manager = ManagerDir::existing_as(project_id, chat)?
+    let manager = ManagerDir::existing_in(project_id, chat)?
         .context("the chat has no log, so no owner message")?;
     super::manager::owner_said_in_turn(&manager.read_log()?, said)
         .map_err(|why| anyhow::anyhow!("--owner-said {said}: {why}; nothing was run"))
