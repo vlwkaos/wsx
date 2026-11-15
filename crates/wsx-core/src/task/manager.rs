@@ -1,4 +1,4 @@
-//! The project manager's conversation and state: `tasks/<project-id>/manager/`.
+//! The project manager's conversation and state: `tasks/chats/<name>/`, the chat's own folder (the home chat's too).
 //! ref: docs/tasks.md "Manager"
 //!
 //! The manager host is the only writer of these files; `wsx task chat` reads the log.
@@ -118,7 +118,7 @@ impl TryFrom<String> for Author {
     }
 }
 
-/// One line of `manager/log.jsonl`.
+/// One line of a chat's `log.jsonl`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ManagerEvent {
@@ -523,7 +523,7 @@ impl Seen {
     }
 }
 
-/// `manager/state.json`: what the manager host must remember across a restart.
+/// A chat's `state.json`: what the manager host must remember across a restart.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ManagerState {

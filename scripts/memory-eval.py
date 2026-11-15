@@ -37,12 +37,16 @@ import time
 import uuid
 from pathlib import Path
 
+_spec = importlib.util.spec_from_file_location('usage_report', Path(__file__).resolve().parent / 'usage-report.py')
+usage = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(usage)  # ^ the repo's home chat lookup: home.json, then tasks/chats/<name>/ (docs/tasks.md "Chats")
 ROOT = Path(__file__).resolve().parent.parent
 DOC = ROOT / 'docs' / 'design' / 'memory-eval.md'
 WORK = Path(os.environ.get('MEMORY_EVAL_WORK') or ROOT / '.work' / 'memory-eval')  # ^ the dry run sets its own
 PID = 'wsx-8cbe3f08'
 REAL = Path(os.environ.get('MEMORY_EVAL_STORE') or Path.home() / '.local/state/wsx/tasks' / PID)
-SKILLS = REAL / 'manager' / 'skills-plugin'
+HOME_CHAT = Path(usage.home_folder(str(REAL)))
+SKILLS = HOME_CHAT / 'skills-plugin'
 FIRST_TASK = 133  # ^ the first task of the store that has a plan step with usage
 CAP_USD = 40.0
 RUN_SECS = 1200
@@ -271,11 +275,16 @@ def build_state(t, tasks, home, wc):
         (d / 'task.json').write_text(json.dumps(rec))
         if o.end_ms and o.end_ms < t.t0 and (o.dir / 'result.json').exists():
             shutil.copy(o.dir / 'result.json', d / 'result.json')
-    notes = root / 'manager' / 'notes'
+    # ^ The run's home chat in the store layout: `home.json` in the repo's folder, the chat in `tasks/chats/wsx/`.
+    chat = root.parent / 'chats' / 'wsx'
+    notes = chat / 'notes'
     notes.mkdir(parents=True)
-    manager = REAL / 'manager'
+    root.mkdir(parents=True, exist_ok=True)
+    (root / 'home.json').write_text(json.dumps({'chat': 'wsx'}))
+    (chat / 'chat.json').write_text(json.dumps({'repos': [pid]}))
+    manager = HOME_CHAT
     lines = [x for x in (manager / 'log.jsonl').read_text().splitlines() if json.loads(x)['unix_ms'] < t.t0]
-    (root / 'manager' / 'log.jsonl').write_text('\n'.join(lines) + '\n')
+    (chat / 'log.jsonl').write_text('\n'.join(lines) + '\n')
     for name in ('decisions.md', 'decisions-archive.md'):
         if (manager / 'notes' / name).exists():
             (notes / name).write_text(cut_notes((manager / 'notes' / name).read_text(), t.n, t.t0))
@@ -384,7 +393,7 @@ def leak_check(t, tasks, home, pid):
             m = re.match(r'memo-(\d+)-', json.loads(line).get('slug', ''))
             assert not m or tasks[int(m.group(1))].landed_ms < t.t0, f'record {m.group(0)} lands after the start of #{t.n}'
     for name in ('decisions.md', 'decisions-archive.md'):
-        f = root / 'manager' / 'notes' / name
+        f = Path(usage.home_folder(str(root))) / 'notes' / name
         for line in f.read_text().splitlines() if f.exists() else []:
             when = day_ms(line[2:].split(' ')[0]) if line.startswith('- ') else None
             assert when is None or when < t.t0, f'{name} has a line dated after the start of #{t.n}'
@@ -974,7 +983,7 @@ def cmd_live(args):
 # ---- manager: does a small rotation limit hold quality, and what does it save? --------------------
 # Method and verdict rule: docs/design/memory-eval.md "Manager rotation".
 
-MANAGER_LOG = REAL / 'manager' / 'log.jsonl'
+MANAGER_LOG = HOME_CHAT / 'log.jsonl'
 # ^ Opus 5.5, API-equivalent dollars per token (docs/design/manager-efficiency.md): the logged cost of a reply is
 # exactly in*4 + out*20 + cache_read*0.2 + cache_write*8 per million.
 PRICE = {'in': 4e-6, 'out': 20e-6, 'read': 0.2e-6, 'write': 8e-6}
@@ -1064,7 +1073,7 @@ def cmd_mproject(args):
     turns = manager_turns()
     idx = week(turns)
     g, s_now = conv_stats(turns, idx)
-    notes = sum(len(p.read_text()) for p in [REAL / 'manager' / 'notes' / 'decisions.md', REAL / 'manager' / 'notes' / 'context.md'] if p.exists())
+    notes = sum(len(p.read_text()) for p in [HOME_CHAT / 'notes' / 'decisions.md', HOME_CHAT / 'notes' / 'context.md'] if p.exists())
     s_lean = s_now - notes / NOTE_CHARS_PER_TOKEN + 1000  # ^ (est.) no notes in the start, a start set of about 1k tokens instead
     logged = sum(turn_cost(turns[i]['usage']) for i in idx)
     real = sum(turns[i]['usage']['cost_micro_usd'] for i in idx) / 1e6
@@ -1189,7 +1198,7 @@ def manager_run(pick, arm, rep, turns, tasks, args):
         sh(['git', '-C', str(ROOT), 'worktree', 'add', '--detach', str(wc), base], check=True)
         wc = wc.resolve()
         _, pid = build_state(at, tasks, home, wc)
-        notes_dir = home / 'wsx' / 'tasks' / pid / 'manager' / 'notes'
+        notes_dir = Path(usage.home_folder(str(home / 'wsx' / 'tasks' / pid))) / 'notes'
         notes = ''
         if with_notes:
             notes = '\n\n'.join(f'{name}:\n{(notes_dir / name).read_text()}' for name in ('decisions.md', 'context.md') if (notes_dir / name).exists())
@@ -1228,7 +1237,7 @@ def manager_run(pick, arm, rep, turns, tasks, args):
 
 def notes_of_log(tasks, at):
     # ^ Today's notes files, for the size of a start without them (est.).
-    return ''.join(p.read_text() for p in [REAL / 'manager' / 'notes' / 'decisions.md', REAL / 'manager' / 'notes' / 'context.md'] if p.exists())
+    return ''.join(p.read_text() for p in [HOME_CHAT / 'notes' / 'decisions.md', HOME_CHAT / 'notes' / 'context.md'] if p.exists())
 
 
 def cmd_mrun(args):

@@ -5,7 +5,7 @@ sessions of the last 79 wsx tasks and 98 manager sessions, with `scripts/context
 source of every number here; rerun it to refresh them). Design and measurement only; the builds follow as tasks.
 
 ```sh
-python3 -B scripts/context-measure.py --manager-log ~/.local/state/wsx/tasks/<project>/manager/log.jsonl --task 438
+python3 -B scripts/context-measure.py --manager-log ~/.local/state/wsx/tasks/chats/<name>/log.jsonl --task 438
 ```
 
 Assuming: every model priced at memory-eval.py's Opus 5.5 table (Fable's rate is not on this machine); the weight

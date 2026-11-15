@@ -3749,7 +3749,12 @@ for (const wide of [false, true]) {
     await typeInto(".composer-field", "STATUS");
     await click(".composer-send");
     await until(`document.querySelectorAll('.log .bubble[data-side=in]').length > ${answered}`, "the chat did not answer the page", 60);
-    await entered();
+    // ^ The new bubble slides up from opacity 0 (app.css `.bubble[data-fresh]`), and the lint counts an element's
+    // opacity into its text colour: the author and the time of a bubble caught at its first frame are 1.00:1
+    // (run 43724397337). Wait for the bubble itself to be opaque and still.
+    await until(`(() => { const bubble = [...document.querySelectorAll('.log .bubble[data-side=in]')].pop();
+      return !!bubble && getComputedStyle(bubble).opacity === '1' && bubble.getAnimations({ subtree: true }).length === 0; })()`,
+      "the chat's new answer kept moving");
   }
   await shot(`chat-room${wide ? "-wide" : ""}`, ".composer-send");
   await evaluate("document.querySelector('.bar a.icon-button').click()");

@@ -35,6 +35,7 @@ Bash runs with bypassPermissions here, so no auto-mode classifier call adds to t
 cost; the real manager runs in auto mode.
 """
 import argparse
+import importlib.util
 import json
 import os
 import random
@@ -49,6 +50,9 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+_spec = importlib.util.spec_from_file_location('usage_report', Path(__file__).resolve().parent / 'usage-report.py')
+usage = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(usage)  # ^ the repo's home chat lookup: home.json, then tasks/chats/<name>/ (docs/tasks.md "Chats")
 ROOT = Path(__file__).resolve().parent.parent
 BEFORE_COMMIT = '9543a8de'
 MAIN_MODEL, EVENT_MODEL = 'opus', 'sonnet'
@@ -557,7 +561,6 @@ def judge(rows):
     return answers, cost
 
 
-MANAGER_DIR = Path.home() / '.local/state/wsx/tasks/wsx-8cbe3f08/manager'
 TRANSCRIPTS = Path.home() / '.claude/projects/-Users-vlwkaos-ws-wsx'
 IDLE_MS = 3_600_000
 NOTES_HEAD = "The earlier conversation's handoff notes:\n"
@@ -637,7 +640,7 @@ def idle_returns(count):
     """The newest `count` owner returns after an idle gap that the host rotated for: the owner's
     message, the exchanges before the gap, the conversation that went idle (its transcript up to
     the gap) and the fresh conversation's first message (today's handover)."""
-    entries = [json.loads(line) for line in (MANAGER_DIR / 'log.jsonl').read_text().splitlines() if line.strip()]
+    entries = [json.loads(line) for line in (home_chat('wsx-8cbe3f08') / 'log.jsonl').read_text().splitlines() if line.strip()]
     found, last = [], None
     for k, entry in enumerate(entries):
         if entry['kind'] == 'reply' and entry.get('usage') and not entry.get('post'):
@@ -724,7 +727,7 @@ def run_idle(options, out):
     (`resume`). Every arm has read-only tools: no command runs."""
     spent = 0.0
     source = (ROOT / 'crates/wsx/src/task/instructions.rs').read_text()
-    launch = instructions(source, 'wsx', str(MANAGER_DIR / 'notes'), str(MANAGER_DIR / 'overview.md'))
+    launch = instructions(source, 'wsx', str(home_chat('wsx-8cbe3f08') / 'notes'), str(STATE / 'wsx-8cbe3f08' / 'overview.md'))
     env = {k: v for k, v in os.environ.items() if not k.startswith('WSX_')}
     path = Path(out.name)
     done = {json.loads(line).get('id') for line in path.read_text().splitlines() if line.strip()}
@@ -779,6 +782,11 @@ def run_idle(options, out):
 # a cache read costs what Opus 5.5's does; a cache write is twice the input price, as PRICE's is.
 SONNET_PRICE = {'input': 2.0, 'cache_read': 0.2, 'cache_write': 4.0, 'output': 10.0}
 STATE = Path.home() / '.local/state/wsx/tasks'
+
+
+def home_chat(project):
+    """The home chat's folder of the store `project`: its log, notes and skills plugin."""
+    return Path(usage.home_folder(str(STATE / project)))
 CLAUDE_PROJECTS = Path.home() / '.claude/projects'
 CACHE_MS = 3_600_000
 DAY_MS = 86_400_000
@@ -858,8 +866,8 @@ def manager_turns(days):
     a day old, is `ready`."""
     since = time.time() * 1000 - days * DAY_MS
     projects = {}
-    for log in sorted(STATE.glob('*/manager/log.jsonl')):
-        entries = jsonl(log)
+    for repo in sorted(p.name for p in STATE.iterdir() if p.name != 'chats' and (home_chat(p.name) / 'log.jsonl').exists()):
+        entries = jsonl(home_chat(repo) / 'log.jsonl')
         messages = {e['id']: e for e in entries if e['kind'] == 'message' and 'id' in e}
         newest, session, turns, fresh = {}, 0, [], 'start'
         for e in entries:
@@ -875,14 +883,14 @@ def manager_turns(days):
                 continue
             ids = e.get('to') or []
             events = [messages[i] for i in ids if messages.get(i, {}).get('from') == 'events']
-            turns.append({'project': log.parent.parent.name, 'id': e['id'], 'ms': e['unix_ms'], 'session': session,
+            turns.append({'project': repo, 'id': e['id'], 'ms': e['unix_ms'], 'session': session,
                           'usage': e['usage'], 'ids': ids, 'events_only': bool(ids) and len(events) == len(ids),
                           'kind': event_kind('\n'.join(m['text'] for m in events)), 'reply': e.get('text', ''),
                           'fresh': fresh,
                           'review_due': any(word == 'ready' and e['unix_ms'] - ms < DAY_MS
                                             for word, ms in newest.values())})
             fresh = None
-        projects[log.parent.parent.name] = turns
+        projects[repo] = turns
     return projects
 
 
@@ -1056,9 +1064,9 @@ def replay_start(first, base, source=None):
     """What a replay of `first` (a turn with its transcript) starts from: the manager's instructions
     for its project (from `source`, else the working copy), an environment with the `wsx` recorder
     on PATH, and a fork of the transcript cut before the turn's prompt."""
-    notes = STATE / first['project'] / 'manager'
+    notes = home_chat(first['project'])
     launch = instructions(source or (ROOT / 'crates/wsx/src/task/instructions.rs').read_text(),
-                          first['project'].rsplit('-', 1)[0], str(notes / 'notes'), str(notes / 'overview.md'))
+                          first['project'].rsplit('-', 1)[0], str(notes / 'notes'), str(STATE / first['project'] / 'overview.md'))
     (base / 'bin').mkdir()
     (base / 'bin/wsx').write_text(EVENT_WSX)
     (base / 'bin/wsx').chmod(0o755)
@@ -1078,7 +1086,7 @@ def run_events(options, out):
     rows = jsonl(path)
     done = {r['id'] for r in rows if 'id' in r}
     spent, turns_done = 0.0, len(rows)
-    logs = {name: jsonl(STATE / name / 'manager/log.jsonl') for name in projects}
+    logs = {name: jsonl(home_chat(name) / 'log.jsonl') for name in projects}
     rng = random.Random(462)
     for burst in event_bursts(projects, rng):
         if turns_done >= options.samples:
@@ -1193,7 +1201,7 @@ def run_probe(options):
         found = [o for o in map(original_turn, burst[:2]) if o]
         if len(found) < 2 or found[0]['path'] != found[1]['path']:
             continue
-        logged = jsonl(STATE / burst[0]['project'] / 'manager/log.jsonl')
+        logged = jsonl(home_chat(burst[0]['project']) / 'log.jsonl')
         owner = [e['text'] for e in logged if e['kind'] == 'message' and e.get('from') == 'owner' and e['unix_ms'] < burst[0]['ms']]
         base = Path(tempfile.mkdtemp(prefix='bench-probe-', dir=os.environ.get('TMPDIR')))
         launch, arm_env, session, folder = replay_start({**burst[0], **found[0]}, base)
@@ -1553,7 +1561,7 @@ def run_rotation_replay(options, out):
     rows = [r for r in jsonl(path) if 'id' in r]
     done = {(r['project'], r['id']) for r in rows}
     spent = sum(r['usd'] for r in rows)
-    logs = {name: jsonl(STATE / name / 'manager/log.jsonl') for name in projects}
+    logs = {name: jsonl(home_chat(name) / 'log.jsonl') for name in projects}
     for case in busy_crossings(projects):
         if len(rows) >= options.replay or spent > options.budget:
             break

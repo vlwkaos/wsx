@@ -1,4 +1,4 @@
-//! The manager's notes (`manager/notes/`): what a fresh conversation opens with, what it is
+//! The manager's notes (`notes/` in the chat's folder): what a fresh conversation opens with, what it is
 //! told is missing, the lines of the notes that match an owner's message, and how a finished
 //! task's memo joins `context.md`. For the manager the files are views of the records
 //! (`wsx_core::memory::manage`). ref: docs/tasks.md "Notes budget"

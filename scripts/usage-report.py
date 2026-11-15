@@ -56,6 +56,11 @@ def chat_folders(state_dir):
     return sorted(found, key=lambda item: item[0] != "manager")
 
 
+def home_folder(state_dir):
+    """The repo's home chat folder (the manager), or a path that is not a folder."""
+    return next((folder for who, folder in chat_folders(state_dir) if who == "manager"), os.path.join(state_dir, "none"))
+
+
 def read_log(folder):
     """Events of log.1.jsonl, log.2.jsonl ... (every roll, oldest first) then log.jsonl; bad lines
     are skipped."""
