@@ -790,7 +790,12 @@ stdin = sys.stdin.read() if '-' in sys.argv[2:] else None
 with open(os.environ['BENCH_CALLS'], 'a') as out:
     out.write(json.dumps({'argv': sys.argv[1:], 'stdin': stdin}) + '\n')
 verb = sys.argv[2] if sys.argv[1:2] == ['task'] and len(sys.argv) > 2 else ''
-if verb in os.environ['BENCH_READS'].split() or '--help' in sys.argv:
+# ^ `rotation`: a read the conversation made before the turn answers with its output then.
+served = json.load(open(os.environ['BENCH_SERVED'])) if os.environ.get('BENCH_SERVED') else {}
+number = next((a.lstrip('#') for a in sys.argv[3:] if a.lstrip('#').isdigit()), '')
+if ('%s %s' % (verb, number)).strip() in served and '--help' not in sys.argv:
+    print(served[('%s %s' % (verb, number)).strip()])
+elif verb in os.environ['BENCH_READS'].split() or '--help' in sys.argv:
     print('wsx bench replay: reads cannot run here; the turn lists the reads made then')
 else:
     print(json.dumps({'ok': True, 'message': 'wsx bench replay: recorded, not run'}, indent=1))
@@ -963,15 +968,16 @@ def acts(command):
 
 def original_turn(turn):
     """The turn in the manager's transcript: (its lines before the turn, the prompt, the reads it
-    made, what it acted, its reply). The prompt names the first events message."""
-    probe = 'Events (message %d)' % turn['ids'][0]
+    made, what it acted, its reply). The prompt names its first message under its heading."""
+    probe = '(message %d):' % turn['ids'][0]
     paths = [p for p in holding(probe, CLAUDE_PROJECTS) if 'subagents' not in p.parts]
     # ^ A later conversation's handover can quote the prompt: the transcript with the reply first.
     head = max(re.findall(r'[^"\\\n]{1,60}', turn['reply']) or [''], key=len)
     paths.sort(key=lambda p: head not in p.read_text())
     for path in paths:
         lines = transcript(path)
-        start = next((k for k, line in enumerate(lines) if probe in prompt_text(line)), None)
+        # ^ A later handover quotes a message on one line: the prompt has it under its heading.
+        start = next((k for k, line in enumerate(lines) if probe + '\n' in prompt_text(line)), None)
         if start is None:
             continue
         end = next((k for k in range(start + 1, len(lines)) if prompt_text(lines[k])), len(lines))
@@ -1038,13 +1044,13 @@ def jsonl(path):
     return [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
 
 
-def replay_start(first, base):
+def replay_start(first, base, source=None):
     """What a replay of `first` (a turn with its transcript) starts from: the manager's instructions
-    for its project, an environment with the `wsx` recorder on PATH, and a fork of the transcript
-    cut before the turn's prompt."""
+    for its project (from `source`, else the working copy), an environment with the `wsx` recorder
+    on PATH, and a fork of the transcript cut before the turn's prompt."""
     notes = STATE / first['project'] / 'manager'
-    launch = instructions((ROOT / 'crates/wsx/src/task/instructions.rs').read_text(), first['project'].rsplit('-', 1)[0],
-                          str(notes / 'notes'), str(notes / 'overview.md'))
+    launch = instructions(source or (ROOT / 'crates/wsx/src/task/instructions.rs').read_text(),
+                          first['project'].rsplit('-', 1)[0], str(notes / 'notes'), str(notes / 'overview.md'))
     (base / 'bin').mkdir()
     (base / 'bin/wsx').write_text(EVENT_WSX)
     (base / 'bin/wsx').chmod(0o755)
@@ -1286,6 +1292,320 @@ def run_rotation(options):
             print(json.dumps(rotation_cost(projects, options.days, rotate, idle_min, ping)), flush=True)
 
 
+# ^ The quality side of the rotation question (docs/design/manager-event-model.md "Rotation
+# replay"): at each busy crossing of ROTATE_TO, arm A is the real turn of the kept conversation
+# and arm B the same turn in a fresh conversation that opens as a rotation's does.
+ROTATE_TO = 160_000
+BUSY_MS = 600_000
+HANDOVER_HEAD = ('Handover (this is a new conversation; the last exchanges before it, read the '
+                 'ledger for the state):\n')
+ROUTINES_HEAD = ("\nRoutine results (each routine's newest with its failures since its last success, "
+                 "and its runs since your last reply):\n")
+# ^ wsx-core's `clip` keeps chars - 1 and an ellipsis since bf35ba80 (2026-11-05): from
+# 2026-11-07 on, every real fresh start's exchanges must match the port byte for byte. The routine
+# block cannot: the routine store drops one-shot `checkin` runs and keeps MAX_RUNS per routine.
+VALID_FROM_MS = 1793977200000
+ROUTINES = Path.home() / '.local/state/wsx/routines/projects'
+ROTATION_JUDGE = """You judge turns of a software project manager agent. The manager runs coding tasks
+for its owner: it reviews a ready task's result and diff, then lands it (`land`), sends it back
+(`add`, `steer`), closes it, starts a task (`new`), asks the owner, answers the owner, or does
+nothing. `earlier` is the chat before the turn, `prompt` what the turn got, `reads` what it could read
+then, `later` what the log shows afterwards (hindsight, not always caused by the turn). Each of
+`answers` is one run of the same turn by agents that knew different amounts of the earlier work:
+the `wsx task` commands that act (`acts`) and the reply. For each answer give `decision` (a few
+words); `same_as`, the labels of the other answers that decided the same in substance (the same tasks
+landed, sent back, closed, started or asked about, and the same verdict on the owner's question;
+wording and extra reads do not matter); `wrong`: "none", "minor" (a needless or missing small step,
+or a reply that misleads a little) or "major" (lands, closes or approves what should not; leaves a
+failure, a worker's question or an owner need unhandled; sends work the wrong way; or claims what is
+false), with `why` in at most 25 words; and `lost_facts`: each fact that another answer used for its
+decision or reply and this answer lacks, gets wrong or asks the owner for (a promise, an owner
+instruction, a review finding, a task's state), a few words each; leave out facts no decision needs.
+Do not prefer an answer for its length or style. Answer only through the schema."""
+ROTATION_SCHEMA = {'type': 'object', 'required': ['answers'], 'properties': {'answers': {'type': 'array', 'items': {
+    'type': 'object', 'required': ['label', 'decision', 'same_as', 'wrong', 'why', 'lost_facts'],
+    'properties': {'label': {'type': 'string'}, 'decision': {'type': 'string'},
+                   'same_as': {'type': 'array', 'items': {'type': 'string'}},
+                   'wrong': {'enum': ['none', 'minor', 'major']}, 'why': {'type': 'string'},
+                   'lost_facts': {'type': 'array', 'items': {'type': 'string'}}}}}}}
+
+
+def clip(text, chars):
+    """wsx-core task::view::clip: the first line, at most `chars` characters with the ellipsis."""
+    line = (text.splitlines() or [''])[0]
+    return line if len(line) <= chars else line[:chars - 1].rstrip() + '…'
+
+
+def recent_exchanges(log, limit=4):
+    """manager.rs `recent_exchanges`: the last `limit` owner messages and replies, one line each."""
+    lines = []
+    for e in reversed(log):
+        said = clip(' '.join(e.get('text', '').split()), 600)
+        if e['kind'] == 'message' and e.get('from') == 'owner':
+            lines.append('Owner (message %d): %s' % (e['id'], said))
+        elif e['kind'] == 'reply':
+            who = 'Stand-in %s' % e['provisional'] if e.get('provisional') else 'Posted' if e.get('post') else 'You'
+            lines.append('%s (reply %d): %s' % (who, e['id'], said))
+        if len(lines) == limit:
+            break
+    return lines[::-1]
+
+
+def result_line(run):
+    """wsx-core RunRecord::result_line."""
+    if run['status'] == 'succeeded':
+        return 'routine %s succeeded after %d s' % (run['routine'], run['finished_epoch'] - run['started_epoch'])
+    words = {'findings': 'found something', 'spawn_failed': 'could not start', 'cancelled': 'was cancelled',
+             'interrupted': 'was interrupted'}.get(run['status'], 'failed')
+    code = run.get('exit_code')
+    return 'routine %s %s (%s)' % (run['routine'], words, 'no exit code' if code is None else 'exit %d' % code)
+
+
+def handover_routines(runs, replied):
+    """manager.rs `handover_routines`."""
+    runs = sorted(runs, key=lambda r: r['finished_epoch'])
+    names = []
+    for run in reversed(runs):
+        if run['routine'] not in names:
+            names.append(run['routine'])
+    lines = []
+    for name in reversed(names):
+        mine = [r for r in runs if r['routine'] == name]
+        ok = [k for k, r in enumerate(mine) if r['status'] in ('succeeded', 'findings')]
+        failed = len(mine) - (ok[-1] + 1 if ok else 0)
+        plural = '' if failed == 1 else 's'
+        if failed == 0:
+            lines.append(result_line(mine[-1]))
+        elif ok:
+            stamp = datetime.fromtimestamp(mine[ok[-1]]['finished_epoch']).strftime('%Y-%m-%d %H:%M')
+            lines.append('%s; %d failure%s since its last success at %s' % (result_line(mine[-1]), failed, plural, stamp))
+        else:
+            lines.append('%s; %d failure%s, never succeeded' % (result_line(mine[-1]), failed, plural))
+        after = [r for r in mine if r['finished_epoch'] > replied]
+        if len(after) > 1:
+            lines.append('routine %s ran %d times since your last reply, %d of them without success'
+                         % (name, len(after), sum(r['status'] not in ('succeeded', 'findings') for r in after)))
+    return lines
+
+
+def routine_runs(cwd):
+    """The finished runs of the project whose main checkout is `cwd`, from the routine store."""
+    for path in ROUTINES.glob('*.json'):
+        stored = json.loads(path.read_text())
+        if stored.get('project_path') == cwd:
+            return [r for runs in stored.get('runs', {}).values() for r in runs if r.get('finished_epoch')]
+    return []
+
+
+def handover(entries, runs, ms):
+    """manager.rs `handover` as it ran at `ms`, from the log and the routine runs up to then:
+    (the exchanges part, the rest)."""
+    log = [e for e in entries if e['unix_ms'] <= ms]
+    replied = next((e['unix_ms'] // 1000 for e in reversed(log) if e['kind'] == 'reply' and e.get('usage')), 0)
+    routines = handover_routines([r for r in runs if r['finished_epoch'] <= ms // 1000], replied)
+    return (HANDOVER_HEAD + '\n'.join(recent_exchanges(log)) + '\n',
+            (ROUTINES_HEAD + '\n'.join(routines) + '\n' if routines else '') + '\n')
+
+
+def fresh_starts(folder, entries, runs):
+    """The real fresh starts of the project's manager in `folder`, as (ms, first message, matched):
+    from VALID_FROM_MS on, `matched` says whether `handover` rebuilds its exchanges byte for byte.
+    A chat's conversation in the same folder quotes another log: its first exchange is not here."""
+    said = {e['id']: e for e in entries if e['kind'] in ('message', 'reply') and 'id' in e}
+    found = []
+    for path in folder.glob('*.jsonl'):
+        first = next((line for line in transcript(path) if prompt_text(line)), None)
+        text = prompt_text(first) if first else ''
+        ms = stamp_ms(first) if first else 0
+        if HANDOVER_HEAD not in text:
+            continue
+        head = re.match(r'.* \((?:message|reply) (\d+)\): (.*)', text.split(HANDOVER_HEAD, 1)[1].split('\n', 1)[0])
+        own = head and said.get(int(head.group(1)))
+        if not own or not clip(' '.join(own.get('text', '').split()), 600).startswith(head.group(2)[:40]):
+            continue
+        found.append((ms, text, handover(entries, runs, ms)[0] + '\n' in text if ms >= VALID_FROM_MS else None))
+    return sorted(found)
+
+
+def busy_crossings(projects):
+    """Per conversation, its first turn whose last reply was past ROTATE_TO and under BUSY_MS ago:
+    where a manager at ROTATE_TO rotates in the middle of work. Ordered so projects and kinds
+    (an owner message or events) take turns."""
+    found = []
+    for turns in projects.values():
+        seen = set()
+        for before, t in zip(turns, turns[1:]):
+            if (not t['fresh'] and before['session'] == t['session'] and t['session'] not in seen
+                    and before['usage'].get('context_tokens', 0) >= ROTATE_TO and t['ms'] - before['ms'] < BUSY_MS):
+                seen.add(t['session'])
+                found.append({**t, 'context': before['usage']['context_tokens']})
+    random.Random(464).shuffle(found)
+    used, ordered = {}, []
+    while found:
+        kind = not ordered[-1]['events_only'] if ordered else False
+        pick = min(found, key=lambda t: (used.get(t['project'], 0), t['events_only'] != kind))
+        found.remove(pick)
+        used[pick['project']] = used.get(pick['project'], 0) + 1
+        ordered.append(pick)
+    return ordered
+
+
+def served_reads(before, ms):
+    """The newest output of each `wsx task ledger` and `wsx task show <n>` the conversation read
+    before the turn, keyed as the recorder looks them up, with its age."""
+    uses, served = {}, {}
+    for line in before:
+        content = line.get('message', {}).get('content')
+        for block in content if isinstance(content, list) else []:
+            if block.get('type') == 'tool_use' and block.get('name') == 'Bash':
+                uses[block['id']] = block['input'].get('command', '')
+            elif block.get('type') == 'tool_result' and block.get('tool_use_id') in uses:
+                read = re.search(r'wsx task (ledger|show)\b([^|;&\n]*)', uses[block['tool_use_id']])
+                if not read:
+                    continue
+                number = re.search(r'(?<![\w-])#?(\d+)\b', read.group(2)) if read.group(1) == 'show' else None
+                result = block.get('content')
+                result = result if isinstance(result, str) else ''.join(
+                    b.get('text', '') for b in result or [] if isinstance(b, dict))
+                served[('%s %s' % (read.group(1), number.group(1) if number else '')).strip()] = (
+                    '(read %d min before this turn)\n%s' % ((ms - (stamp_ms(line) or ms)) // 60000, result[:12000]))
+    return served
+
+
+def fresh_first(case, original, entries):
+    """B's first message as `send_turn` builds it for a rotation: the notes preamble, the handover,
+    the turn's text. The preamble is the newest matched real fresh start's before the turn, with the
+    rules the owner gave after it from the memory records; what it still lacks is counted."""
+    cwd = next((line['cwd'] for line in original['before'] if line.get('cwd')), '')
+    runs = routine_runs(cwd)
+    starts = fresh_starts(original['path'].parent, entries, runs)
+    checked = {'starts': sum(s[2] is not None for s in starts), 'matched': sum(bool(s[2]) for s in starts)}
+    earlier = [s for s in starts if s[0] < case['ms']]
+    if not earlier:
+        return None, checked
+    start_ms, text, _ = earlier[-1]
+    preamble = text[:text.index(HANDOVER_HEAD)]
+    records = STATE / case['project'] / 'memory/records.jsonl'
+    rules = [r for r in (jsonl(records) if records.exists() else [])
+             if r.get('op') == 'add' and r.get('kind') == 'rule' and start_ms < r.get('updated', 0) <= case['ms']]
+    title = "The owner's decisions (decisions.md, newest first):\n"
+    if rules and title in preamble:
+        lines = ''.join('- %s %s\n' % (datetime.fromtimestamp(r.get('decided', r['updated']) / 1000).strftime('%Y-%m-%d'),
+                                        r.get('words') or r['text']) for r in reversed(rules))
+        preamble = preamble.replace(title, title + lines, 1)
+    cut = stamp_ms(next(line for line in transcript(original['path']) if original['prompt'] == prompt_text(line)))
+    first = preamble + ''.join(handover(entries, runs, cut)) + original['prompt']
+    return first, {**checked, 'preamble_age_min': (case['ms'] - start_ms) // 60000,
+                   'rules_added': len(rules), 'first_bytes': len(first.encode())}
+
+
+def rotation_judge(case, original, entries, arms):
+    """One blind Opus call over the arms; returns the verdict per arm and its cost."""
+    labels = dict(zip(arms, random.Random(case['id']).sample('XYZ', len(arms))))
+    talk = [e for e in entries if e['unix_ms'] < case['ms'] and (e['kind'] == 'message' and e.get('from') == 'owner'
+                                                                 or e['kind'] == 'reply' and e.get('text'))][-8:]
+    verdict, cost = ask_sonnet(ROTATION_JUDGE, ROTATION_SCHEMA, {
+        'project': case['project'].rsplit('-', 1)[0],
+        'earlier': ['%s %d: %s' % ('Owner' if e['kind'] == 'message' else 'Manager', e['id'], e['text'][:1500]) for e in talk],
+        'prompt': original['prompt'][:6000], 'reads': original['reads'][:8000],
+        'later': later({**case, 'prompt': original['prompt']}, entries),
+        'answers': sorted(({'label': labels[a], 'acts': arms[a]['acts'], 'reply': arms[a]['reply'][:3000]} for a in arms),
+                          key=lambda r: r['label'])}, model=MAIN_MODEL)
+    by_label = {r['label']: r for r in verdict['answers']}
+    name_of = {label: arm for arm, label in labels.items()}
+    return {arm: {**{k: by_label.get(labels[arm], {}).get(k) for k in ('decision', 'wrong', 'why', 'lost_facts')},
+                  'same_as': sorted(name_of.get(l, l) for l in by_label.get(labels[arm], {}).get('same_as', []))}
+            for arm in arms}, cost
+
+
+def fails(judged, against):
+    """The case's rule (docs/design/manager-event-model.md "Rotation replay"): `fresh` decided
+    otherwise than `against` and wrongly, or lost a fact."""
+    fresh = judged['fresh']
+    return bool(fresh['lost_facts']) or (against not in fresh['same_as'] and fresh['wrong'] != 'none')
+
+
+def replay_turn(launch, env, base, text, resume=None):
+    calls = base / 'calls.jsonl'
+    calls.write_text('')
+    agent = Agent(launch, {**env, 'BENCH_CALLS': str(calls)}, base, MAIN_MODEL, real=True, resume=resume, bash=True)
+    try:
+        row = agent.turn(text)
+    finally:
+        agent.stop()
+    row['acts'] = sorted(acts(' ; '.join(' '.join(['wsx'] + json.loads(line)['argv'])
+                                         for line in calls.read_text().splitlines() if line.strip())))
+    return row
+
+
+def run_rotation_replay(options, out):
+    """`rotation --replay N`: N busy crossings judged, fresh against the real turn; a failing case
+    runs the kept conversation again in the same replay (`kept`) and counts only if it fails there too."""
+    projects = manager_turns(options.days)
+    path = Path(out.name)
+    rows = [r for r in jsonl(path) if 'id' in r]
+    done = {(r['project'], r['id']) for r in rows}
+    spent = sum(r['usd'] for r in rows)
+    logs = {name: jsonl(STATE / name / 'manager/log.jsonl') for name in projects}
+    for case in busy_crossings(projects):
+        if len(rows) >= options.replay or spent > options.budget:
+            break
+        if (case['project'], case['id']) in done:
+            continue
+        original = original_turn(case)
+        if not original:
+            print('turn %s %d: no transcript, left out' % (case['project'], case['id']), flush=True)
+            continue
+        entries = logs[case['project']]
+        first, built = fresh_first(case, original, entries)
+        print(json.dumps({'case': case['id'], 'project': case['project'], 'context': case['context'], **built}), flush=True)
+        if not first or built['matched'] < built['starts']:
+            print('turn %d: no fresh start the port rebuilds, left out' % case['id'], flush=True)
+            continue
+        commit = subprocess.run(['git', 'rev-list', '-1', '--before=@%d' % (case['ms'] // 1000), 'HEAD'], cwd=ROOT,
+                                capture_output=True, text=True).stdout.strip()
+        base = Path(tempfile.mkdtemp(prefix='bench-rotation-', dir=os.environ.get('TMPDIR')))
+        launch, env, session, folder = replay_start({**case, **original}, base, source_at(commit))
+        (base / 'served.json').write_text(json.dumps(served_reads(original['before'], case['ms'])))
+        env['BENCH_SERVED'] = str(base / 'served.json')
+        note = REPLAY_NOTE % original['reads']
+        arms = {'original': {'acts': original['acts'], 'reply': original['reply']}}
+        usd = 0.0
+        try:
+            arms['fresh'] = replay_turn(launch, env, base, first + note)
+            usd += priced(arms['fresh'])
+            judged, cost = rotation_judge(case, original, entries, arms)
+            usd += cost
+            counted = fails(judged, 'original')
+            if counted and spent + usd < options.budget:
+                arms['kept'] = replay_turn(launch, env, base, original['prompt'] + note, resume=session)
+                usd += priced(arms['kept'])
+                judged, cost = rotation_judge(case, original, entries, arms)
+                usd += cost
+                counted = fails(judged, 'kept')
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+            shutil.rmtree(base, ignore_errors=True)
+        spent += usd
+        row = {'id': case['id'], 'project': case['project'], 'context': case['context'], 'events_only': case['events_only'],
+               'commit': commit[:12], **built, 'usd': round(usd, 4), 'counted': counted,
+               'wrong_land': counted and any(a.split()[0] in ('land', 'close', 'approve') and a not in arms['original']['acts']
+                                             for a in arms['fresh']['acts']),
+               **{arm: {**judged[arm], 'acts': arms[arm]['acts'], 'reply': arms[arm]['reply'],
+                        **({'usd': priced(arms[arm])} if arm != 'original' else {})} for arm in arms}}
+        out.write(json.dumps(row) + '\n')
+        out.flush()
+        rows.append(row)
+        print(json.dumps({k: (v if not isinstance(v, dict) else {x: v[x] for x in ('acts', 'wrong', 'why', 'lost_facts')})
+                          for k, v in row.items()}, ensure_ascii=False), flush=True)
+        print('spent so far: %.3f USD, %d cases' % (spent, len(rows)), flush=True)
+    counted = [r for r in rows if r['counted']]
+    print(json.dumps({'summary': {'cases': len(rows), 'counted': len(counted), 'allowed': len(rows) // 12,
+                                  'wrong_land': sum(r['wrong_land'] for r in rows), 'spent_usd': round(spent, 2),
+                                  'switch': len(rows) >= 12 and len(counted) <= len(rows) // 12
+                                  and not any(r['wrong_land'] for r in rows)}}), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', required=True, choices=['before', 'after', 'after-nof'])
@@ -1294,6 +1614,7 @@ def main():
     parser.add_argument('--samples', type=int, default=45, help='events: how many turns to replay (0: the cost model only)')
     parser.add_argument('--days', type=int, default=14, help='events: the log window')
     parser.add_argument('--probe', action='store_true', help='events: one turn across a model change, nothing else')
+    parser.add_argument('--replay', type=int, default=0, help='rotation: how many busy rotations to replay (paid)')
     parser.add_argument('--budget', type=float, default=BUDGET_USD)
     parser.add_argument('--before', default=BEFORE_COMMIT, help='the commit whose instructions `before` reads')
     parser.add_argument('--model', help='the model of every turn, to bound the cost')
@@ -1310,7 +1631,7 @@ def main():
         if options.cases == 'idle':
             return run_idle(options, out)
         if options.cases == 'rotation':
-            return run_rotation(options)
+            return run_rotation_replay(options, out) if options.replay else run_rotation(options)
         if options.cases == 'events':
             return run_probe(options) if options.probe else run_events(options, out)
         for number in range(1, options.runs + 1):
