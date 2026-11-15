@@ -2059,7 +2059,7 @@ async function followEnd(where) {
     // The reading ('probe' keeps every frame comparable) names the step it was taken in and carries the log's own numbers, so a frame
     // that moves says which step and what moved (the log's scroll, its box, or the page).
     const stage = (name) => evaluate(`window.wsxStep = ${JSON.stringify(name)}`);
-    await watch(`['probe', ${probe}, window.wsxStep, (() => { const log = document.querySelector('.log'); return [log.scrollTop, log.scrollHeight, log.clientHeight, log.getBoundingClientRect().top, document.scrollingElement.scrollTop].map(Math.round); })()]`);
+    await watch(`['probe', ${probe}, window.wsxStep, (() => { const log = document.querySelector('.log'); return [log.scrollTop, log.scrollHeight, log.clientHeight, log.getBoundingClientRect().top, document.scrollingElement.scrollTop, log.querySelector('[data-late]')?.offsetHeight ?? 0].map(Math.round); })()]`);
     if (pass < 2) {
       await stage("reply below");
       await diagramReply();
@@ -2104,7 +2104,7 @@ async function followEnd(where) {
     await moved("image removed");
     const read = await watched();
     const frames = jumps(read);
-    if (frames.length) moves.push(`scrolled up (${anchoring}), the bubble in view moved in frames ${JSON.stringify(frames)} of ${read.length}, the readings ['probe', top, step, [scrollTop, scrollHeight, clientHeight, log top, page scroll]] around the first: ${JSON.stringify(read.slice(Math.max(0, frames[0][0] - 2), frames[0][0] + 4))}`);
+    if (frames.length) moves.push(`scrolled up (${anchoring}), the bubble in view moved in frames ${JSON.stringify(frames)} of ${read.length}, the readings ['probe', top, step, [scrollTop, scrollHeight, clientHeight, log top, page scroll, late image height]] around the first: ${JSON.stringify(read.slice(Math.max(0, frames[0][0] - 2), frames[0][0] + 4))}`);
     if (await evaluate(atEnd) || !(await count(".jump"))) drift.push(`${anchoring}: the reader was moved to the end`);
   }
   await evaluate("document.querySelector('.log').style.overflowAnchor = ''");
