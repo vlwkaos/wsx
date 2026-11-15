@@ -466,8 +466,8 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
             "task t{id} did not start; its working copy and branch were removed"
         )));
     }
-    // ^ The events of a task a chat of another repo created are forwarded by this repo's home
-    // chat, so its host must run. ref: docs/tasks.md "Chats"
+    // ^ The events of a task a chat of another repo created are routed by this repo's service
+    // to that chat, so the service must run. ref: docs/tasks.md "Chats"
     let from_elsewhere = record
         .created_by
         .chat()
@@ -478,9 +478,9 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         })
         .is_some_and(|chat| chat.project_id != record.project_id);
     if from_elsewhere {
-        if let Err(error) = super::chat::ensure_manager(Some(&project.name)) {
+        if let Err(error) = super::chat::ensure_repo(Some(&project.name)) {
             eprintln!(
-                "wsx: the manager of {} did not start: {error:#}",
+                "wsx: the service of {} did not start: {error:#}",
                 project.name
             );
         }

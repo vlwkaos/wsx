@@ -28,6 +28,13 @@ pub(crate) fn ensure_manager(project: Option<&str>) -> Result<(bool, ManagerDir)
     owner::ensure_manager(&name, &main, &exe, None, launch_manager(&main))
 }
 
+/// Start the repo's service unless it runs.
+pub(crate) fn ensure_repo(project: Option<&str>) -> Result<bool> {
+    let (name, main) = project_entry(project)?;
+    let exe = std::env::current_exe().context("cannot find the wsx binary")?;
+    owner::ensure_repo(&name, &main, &exe, launch_manager(&main))
+}
+
 /// `wsx task say`: to the manager, or to the open chat `to`, from the owner or a chat.
 /// `from_chat`: this host's agent sends it (`reply`: as a reply); the sender is the acting chat
 /// (the first as `manager`), and for another project (`-p`) its first chat is the one reached.

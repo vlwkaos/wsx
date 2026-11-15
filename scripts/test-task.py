@@ -973,6 +973,13 @@ def manager_up(created):
         found = [json.loads(line) for line in manager_log.read_text().splitlines()]
         return found if raw else [unquoted(e) for e in found]
 
+    def stop_repo_service():
+        """Delete the repo's service session, as a reboot does: its next start sweeps captures and
+        hung hosts again, reads `repo.json` and fires a check-in that came due (docs/tasks.md "Chats")."""
+        service = Path(created['task_dir']).parent.name
+        cli('session', 'delete', 'task-repo-' + service, '-p', 'demo')
+        wait(lambda: not leftovers('task repo-host ' + service), 'the repo service is down', 30)
+
     def manager_idle():
         entries = manager_entries()
         delivered = {n for e in entries if e['kind'] == 'delivered' for n in e['ids']}
@@ -2421,6 +2428,7 @@ def part_core(created=None):
     cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or
          subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
+    stop_repo_service()
     unseen = js('task', 'new', 'WORK late.txt')['id']
     wait_state(unseen, 'ready', 'failed')
     assert js('task', 'manager')['state'] == 'started'
@@ -2449,6 +2457,7 @@ def part_core(created=None):
     cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or
          subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
+    stop_repo_service()
     reply_to(js('task', 'say', 'STATUS budget')['id'])
     wait(lambda: not any(captures_of[video].iterdir()), 'the skipped video capture removed over the budget', 30)
     assert [p.name for p in captures_of[recent].iterdir()] == ['r1-1.png'] and [p.name for p in captures_of[shot].iterdir()] == ['r1-1.png']
@@ -2549,9 +2558,8 @@ def part_core(created=None):
     hung = js('task', 'say', 'HANG once')
     wait(lambda: any(e['kind'] == 'delivered' and hung['id'] in e['ids'] for e in manager_entries()), 'HANG delivered')
     assert not [e for e in manager_entries() if e['kind'] == 'reply' and hung['id'] in e['to']]
-    host_id = show(unseen)['record']['project_id']
-    manager_host = next(int(line.split()[0]) for line in leftovers('task manager-host %s' % host_id)
-                        if line.endswith('task manager-host %s' % host_id))
+    chat_host_args = 'task chat-host %s' % manager_log.parent.name
+    manager_host = next(int(line.split()[0]) for line in leftovers(chat_host_args) if line.endswith(chat_host_args))
     os.kill(manager_host, 9)
     try:  # ^ The host's death may already have stopped the agent tree.
         os.kill([t for t in traces() if t.get('launch') and t.get('manager')][-1]['pid'], 9)
@@ -2789,10 +2797,12 @@ def part_core(created=None):
     for early in ('0m', '8d'):
         text = reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in %s --why "too soon"' % early)['id'])['text']
         assert '-> 1 ' in text and 'between 1 minute and 7 days' in text, text
-    # ^ A check-in is a timer in the manager host's state, not a routine (docs/tasks.md "Check-in"):
-    # a second one replaces the first, nothing is listed in Routines, it fires as an event with its
-    # why, and a host restart keeps one that comes due while the host is down.
-    pending = lambda: json.loads(state_file.read_text()).get('checkin')
+    # ^ A check-in is a timer in the repo service's state (`repo.json`, kept for the chat that set it),
+    # not a routine (docs/tasks.md "Check-in"): a second one replaces the first, nothing is listed in
+    # Routines, it fires as an event with its why to that chat, and a service restart keeps one that
+    # comes due while the service is down.
+    repo_state = Path(created['task_dir']).parent / 'repo.json'
+    pending = lambda: (json.loads(repo_state.read_text()).get('checkins') or {}).get('demo') if repo_state.exists() else None
     text = reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in 2h --why "first look"')['id'])['text']
     assert '-> 0 check-in at ' in text, text
     saved = wait(pending, 'the first check-in is saved')
@@ -2806,9 +2816,10 @@ def part_core(created=None):
     assert listed() == ['nightly', 'nightly'], listed()
     wait(lambda: events_with('check-in: look at the nightly failures'), 'the check-in event', 150)
     assert not events_with('first look') and pending() is None, (events_with('first look'), pending())
-    # ^ Due while the host is down: it fires late, once, when the host starts.
+    # ^ Due while the service is down: it fires late, once, when the service starts.
     reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in 1m --why "came due while down"')['id'])
     stop_manager()
+    stop_repo_service()
     assert pending()['why'] == 'came due while down'
     wait(lambda: pending()['at_ms'] < time.time() * 1000, 'the check-in is past due', 90)
     assert not events_with('came due while down')
@@ -7026,8 +7037,10 @@ def part_host(created=None):
     mig_store = state / 'wsx/tasks' / mig_id
     mig_n = js('task', 'new', '-p', 'mig', 'WORK m.txt')['id']
     wait(lambda: js('task', 'show', mig_n, '-p', 'mig')['state'] == 'ready', 'the task of the mig repo', 60)
-    cli('session', 'delete', 'task-mig', '-p', 'mig', ok=False)
-    wait(lambda: not leftovers('task manager-host ' + mig_id), 'the mig manager host leaves', 30)
+    for label in ('task-mig', 'task-repo-' + mig_id):
+        cli('session', 'delete', label, '-p', 'mig', ok=False)
+    wait(lambda: not leftovers('task manager-host ' + mig_id) and not leftovers('task chat-host mig')
+         and not leftovers('task repo-host ' + mig_id), 'the mig hosts leave', 30)
     # ^ Put the store back as before chats: the home chat's folder is `manager/`, a second chat is `chats/side/`.
     old_home, old_side = mig_store / 'manager', mig_store / 'chats/side'
     if not (chats_dir / 'mig/log.jsonl').exists():
@@ -7113,8 +7126,11 @@ def part_host(created=None):
     js('task', 'chat', 'home', 'mig', '-p', 'mig')
     js('task', 'chat', 'close', 'mside', '-p', 'mig')
     js('task', 'close', mig_n, '--discard', '-p', 'mig')
-    cli('session', 'delete', 'task-mig', '-p', 'mig')
-    wait(lambda: not leftovers('task manager-host ' + mig_id), 'the mig hosts leave', 30)
+    cli('session', 'delete', 'task-mig', '-p', 'mig', ok=False)
+    cli('session', 'delete', 'task-repo-' + mig_id, '-p', 'mig', ok=False)
+    mig_hosts = lambda: ([l for l in leftovers('task chat-host ') if l.endswith(('chat-host mig', 'chat-host side', 'chat-host mside'))]
+                         + leftovers('task manager-host ' + mig_id) + leftovers('task repo-host ' + mig_id))
+    wait(lambda: not mig_hosts(), 'the mig hosts leave', 30)
     registry_file.write_text(registry_plain)
     shutil.rmtree(mig_store)
     for chat_name in ('mig', 'side', 'mside'):
@@ -8142,6 +8158,7 @@ def part_host(created=None):
     manager_socket = js('task', 'manager')['socket']
     cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
+    stop_repo_service()
     seen = len(traces())
     assert js('task', 'manager')['state'] == 'started'
     wait(lambda: replaced(log(unswept)), 'the starting manager replaces the hung host', 60)
@@ -8158,7 +8175,7 @@ def part_host(created=None):
     m_release = work / 'mhang-release'
     on(older / 'wsx', 'task', 'say', 'MHANG %s STATUS hung under an older wsx' % m_release)
     wait(lambda: hanging(m_release), 'the manager turn hangs', 40)
-    old_manager = host_of('task manager-host %s' % project_id)
+    old_manager = host_of('task chat-host %s' % manager_log.parent.name)
     assert len(old_manager) == 1 and agent_tree(old_manager[0]), old_manager
     stopped_before = len(replaced(manager_entries()))
     install()
