@@ -1,5 +1,5 @@
 // Reply to one message in the session chat and the manager chat (docs/web-client-chat.md
-// "Replies"): a swipe right on a message, or a tap on it (a right click) and Reply, puts a
+// "Replies"): a tap on a message (a right click) and Reply puts a
 // one-line quote above the composer; the sent text starts with `> <that line>`, and a tap on
 // the quote in the chat scrolls to the quoted message while it is still in the log; a quote with
 // the message's id (`quoted_id`, sent as `> message <id>`) opens the chat there when it is not.
@@ -8,10 +8,9 @@
 import { html, Icon, motion, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
 import { toast } from "./ui.js";
 
-// A swipe this far right replies; a touch that lasts less than this and moves less than the slop
-// is a tap, which opens the menu. A longer touch is the system's text selection, which the page
-// leaves alone (no `user-select: none`, no menu).
-const SWIPE_PX = 64;
+// A touch that lasts less than this and moves less than the slop is a tap, which opens the menu.
+// A longer touch is the system's text selection, which the page leaves alone (no
+// `user-select: none`, no menu).
 const TAP_MS = 450;
 const SLOP_PX = 10;
 // ^ Pressing these keeps their own meaning: a link, a control, or a block that scrolls sideways.
@@ -82,7 +81,7 @@ export const QuoteChip = ({ quote, onRemove }) => quote ? html`
     <button class="icon-button" type="button" title="Remove" aria-label="Remove the quote" onClick=${onRemove}><${Icon} name="fail" /></button>
   </div>` : null;
 
-// The log's gestures and its menu. `onReply(quote, id)` takes a row's quote and its id (a
+// The log's tap and right click and its menu. `onReply(quote, id)` takes a row's quote and its id (a
 // string, or undefined). Returns the handlers
 // for the log element and the menu to render beside it.
 export function useReply(onReply) {
@@ -92,54 +91,32 @@ export function useReply(onReply) {
     const found = event.target.closest?.("[data-quote]");
     return found?.parentElement === event.currentTarget && found.dataset.quote && !event.target.closest(OWN) ? found : null;
   };
-  const end = () => {
-    const now = gesture.current;
-    if (!now) return;
-    if (now.swiping) {
-      now.row.style.translate = "";
-      delete now.row.dataset.swiping;
-    }
-    gesture.current = null;
-  };
   const handlers = {
     onPointerDown: (event) => {
-      end();
+      gesture.current = null;
       const found = event.button === 0 && row(event);
-      // ^ A mouse selects with its drag and opens the menu with a right click: only a finger gestures.
+      // ^ A mouse selects with its drag and opens the menu with a right click: only a finger taps.
       if (!found || event.pointerType === "mouse") return;
       // A tap that closes the menu or clears a selection does nothing else.
-      gesture.current = { row: found, id: event.pointerId, x: event.clientX, y: event.clientY, at: event.timeStamp, swiping: false, idle: !menu && getSelection().isCollapsed };
+      gesture.current = { row: found, id: event.pointerId, x: event.clientX, y: event.clientY, at: event.timeStamp, idle: !menu && getSelection().isCollapsed };
     },
+    // ^ A touch that moves is the log's scroll or a drag: never a tap, and it quotes nothing.
     onPointerMove: (event) => {
       const now = gesture.current;
-      if (now?.id !== event.pointerId) return;
-      const dx = event.clientX - now.x;
-      const dy = event.clientY - now.y;
-      if (!now.swiping) {
-        if (Math.hypot(dx, dy) < SLOP_PX) return;
-        // ^ Mostly sideways and to the right is a swipe; anything else is the log's scroll.
-        if (dx < SLOP_PX || dx < Math.abs(dy) * 2) { gesture.current = null; return; }
-        now.swiping = true;
-        now.row.dataset.swiping = "";
-      }
-      now.dx = dx;
-      now.row.style.translate = `${Math.max(0, Math.min(dx, SWIPE_PX * 1.25))}px 0`;
+      if (now?.id === event.pointerId && Math.hypot(event.clientX - now.x, event.clientY - now.y) >= SLOP_PX) gesture.current = null;
     },
     onPointerUp: (event) => {
       const now = gesture.current;
       if (now?.id !== event.pointerId) return;
-      const replied = now.swiping && now.dx >= SWIPE_PX;
-      const tapped = !now.swiping && now.idle && event.timeStamp - now.at < TAP_MS && getSelection().isCollapsed;
-      end();
-      if (replied) onReply(now.row.dataset.quote, now.row.dataset.id);
-      else if (tapped) setMenu({ row: now.row, x: event.clientX, y: event.clientY });
+      gesture.current = null;
+      if (now.idle && event.timeStamp - now.at < TAP_MS && getSelection().isCollapsed) setMenu({ row: now.row, x: event.clientX, y: event.clientY });
     },
-    onPointerCancel: end,
+    onPointerCancel: () => { gesture.current = null; },
     onContextMenu: (event) => {
       const found = event.pointerType !== "touch" && row(event);
       if (!found) return;
       event.preventDefault();
-      end();
+      gesture.current = null;
       setMenu({ row: found, x: event.clientX, y: event.clientY });
     },
   };
