@@ -88,6 +88,7 @@ LAND_CONFIG = '''tasks:
   checks:
     - "test ! -e broken.txt"
 '''
+MANAGER_LINE = '  manager: { name: "  Atlas ", model: fake-manager, eventModel: fake-events, rotateTokens: 100000 }\n'
 # ^ Section 17's config, which the sections after it start from.
 DEPLOY_CONFIG = LAND_CONFIG + '''  deploy:
     command: 'printf "%s %s\\n" "$WSX_DEPLOY_COMMIT" "$(pwd)" >> ../deploy.log; printf "%s" "$SSH_AUTH_SOCK" > ../deploy-agent.log'
@@ -674,8 +675,7 @@ def manager_up(created):
     # 20. The manager: started by the first say, answers from the ledger, acts through wsx task.
     mark('20')
     configure((project / 'wsx.config.yml').read_text()
-              + '  manager: { name: "  Atlas ", model: fake-manager, eventModel: fake-events, '
-                'rotateTokens: 100000 }\n'
+              + MANAGER_LINE
               + '  skills: owner\n  workflow:\n    build: "Run the fixture rule."\n'
                 '    review: "Check the fixture rule."\n', 'manager config')
     # ^ The owner's skills folder: the manager gets it as the `owner` plugin. It is the one of
@@ -2337,7 +2337,14 @@ def part_core(created=None):
     quick_deploy = deploy_records()[-1]
     assert quick_deploy['kind'] == 'deploy' and quick_deploy['exit'] == 0, quick_deploy
     wait(lambda: events_with('deploy of %s succeeded after' % quick_deploy['commit'][:12]), 'the deploy event')
-    configure(release_config, 'release as before')
+    # ^ A host reads the manager's models when it starts. The configs since section 17 have no
+    # manager block, so a host that left after its linger and came back runs the default model:
+    # put the block back and start the host again for the events turn below.
+    configure(release_config + MANAGER_LINE, 'release as before')
+    sock = js('task', 'manager')['socket']
+    stop_repo_service()
+    cli('session', 'delete', 'task-demo', '-p', 'demo')
+    wait(lambda: not Path(sock).exists() or subprocess.run(['nc', '-zU', sock]).returncode != 0, 'manager down')
     # ^ Routines (docs/tasks.md "Routines"): the manager's `wsx task routine` writes one only
     # with the owner's words; a run that ends is an event and the ledger's row, and the TUI
     # shows it while the scheduler has no project registry.
@@ -2426,10 +2433,10 @@ def part_core(created=None):
     # Stop the manager host, finish a task while it is down, start it again.
     manager_socket = js('task', 'manager')['socket']
     assert len(manager_socket) < 104, manager_socket
+    stop_repo_service()
     cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or
          subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
-    stop_repo_service()
     unseen = js('task', 'new', 'WORK late.txt')['id']
     wait_state(unseen, 'ready', 'failed')
     assert js('task', 'manager')['state'] == 'started'
@@ -2455,10 +2462,10 @@ def part_core(created=None):
     plain_config = (project / 'wsx.config.yml').read_text()
     configure(plain_config.replace('  minFreeGb: 0\n', '  minFreeGb: 0\n  captureBudgetMb: 1\n'), 'capture budget')
     manager_socket = js('task', 'manager')['socket']
+    stop_repo_service()
     cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or
          subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
-    stop_repo_service()
     reply_to(js('task', 'say', 'STATUS budget')['id'])
     wait(lambda: not any(captures_of[video].iterdir()), 'the skipped video capture removed over the budget', 30)
     assert [p.name for p in captures_of[recent].iterdir()] == ['r1-1.png'] and [p.name for p in captures_of[shot].iterdir()] == ['r1-1.png']
@@ -2526,6 +2533,7 @@ def part_core(created=None):
     # rotate, and a warm small one takes changed instructions as a message.
     def stop_manager():
         sock = js('task', 'manager')['socket']
+        stop_repo_service()
         cli('session', 'delete', 'task-demo', '-p', 'demo')
         wait(lambda: not Path(sock).exists() or subprocess.run(['nc', '-zU', sock]).returncode != 0, 'manager down')
 
@@ -7853,10 +7861,11 @@ def part_host(created=None):
     # the wait after one Pi launch and answers once the record goes.
     def pin_manager():
         sock = js('task', 'manager')['socket']
+        # ^ The service goes first: it starts the home chat's host again for any event while the
+        # session is gone, and that host saves its own state over the pinned one.
+        stop_repo_service()
         cli('session', 'delete', 'task-demo', '-p', 'demo')
         wait(lambda: not Path(sock).exists() or subprocess.run(['nc', '-zU', sock]).returncode != 0, 'manager down')
-        # ^ The service would start the home chat's host with an event before the pinned state is written.
-        stop_repo_service()
         data = manager_state()
         data['agent'] = {'name': 'fake-pi', 'adapter': 'pi', 'model': 'fake/pi-model'}
         data['limit'] = {'until_ms': int(time.time() * 1000) - 3600_000, 'attempt': 0, 'ids': [], 'events': True, 'switched': True}
