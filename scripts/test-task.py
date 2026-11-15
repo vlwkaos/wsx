@@ -88,7 +88,6 @@ LAND_CONFIG = '''tasks:
   checks:
     - "test ! -e broken.txt"
 '''
-MANAGER_LINE = '  manager: { name: "  Atlas ", model: fake-manager, eventModel: fake-events, rotateTokens: 100000 }\n'
 # ^ Section 17's config, which the sections after it start from.
 DEPLOY_CONFIG = LAND_CONFIG + '''  deploy:
     command: 'printf "%s %s\\n" "$WSX_DEPLOY_COMMIT" "$(pwd)" >> ../deploy.log; printf "%s" "$SSH_AUTH_SOCK" > ../deploy-agent.log'
@@ -675,7 +674,8 @@ def manager_up(created):
     # 20. The manager: started by the first say, answers from the ledger, acts through wsx task.
     mark('20')
     configure((project / 'wsx.config.yml').read_text()
-              + MANAGER_LINE
+              + '  manager: { name: "  Atlas ", model: fake-manager, eventModel: fake-events, '
+                'rotateTokens: 100000 }\n'
               + '  skills: owner\n  workflow:\n    build: "Run the fixture rule."\n'
                 '    review: "Check the fixture rule."\n', 'manager config')
     # ^ The owner's skills folder: the manager gets it as the `owner` plugin. It is the one of
@@ -980,6 +980,11 @@ def manager_up(created):
         # ^ A service that is not running has no session: the delete's exit code is no matter.
         subprocess.run([str(wsx), 'session', 'delete', 'task-repo-' + service, '-p', 'demo'], cwd=project, env=env, capture_output=True, timeout=60)
         wait(lambda: not leftovers('task repo-host ' + service), 'the repo service is down', 30)
+
+    def host_gone():
+        # ^ The socket goes before the process does: a host still ending may save its state after an edit.
+        marker = 'task chat-host ' + manager_log.parent.name
+        wait(lambda: not leftovers(marker), 'the home chat host is gone: %s' % leftovers(marker), 30)
 
     def manager_idle():
         entries = manager_entries()
@@ -2339,8 +2344,8 @@ def part_core(created=None):
     wait(lambda: events_with('deploy of %s succeeded after' % quick_deploy['commit'][:12]), 'the deploy event')
     # ^ A host reads the manager's models when it starts. The configs since section 17 have no
     # manager block, so a host that left after its linger and came back runs the default model:
-    # put the block back and start the host again for the events turn below.
-    configure(release_config + MANAGER_LINE, 'release as before')
+    # start the host again for the events turn below.
+    configure(release_config, 'release as before')
     sock = js('task', 'manager')['socket']
     stop_repo_service()
     cli('session', 'delete', 'task-demo', '-p', 'demo')
@@ -2536,6 +2541,7 @@ def part_core(created=None):
         stop_repo_service()
         cli('session', 'delete', 'task-demo', '-p', 'demo')
         wait(lambda: not Path(sock).exists() or subprocess.run(['nc', '-zU', sock]).returncode != 0, 'manager down')
+        host_gone()
 
     def edit_state(**fields):
         stop_manager()
@@ -7866,10 +7872,14 @@ def part_host(created=None):
         stop_repo_service()
         cli('session', 'delete', 'task-demo', '-p', 'demo')
         wait(lambda: not Path(sock).exists() or subprocess.run(['nc', '-zU', sock]).returncode != 0, 'manager down')
+        host_gone()
         data = manager_state()
         data['agent'] = {'name': 'fake-pi', 'adapter': 'pi', 'model': 'fake/pi-model'}
         data['limit'] = {'until_ms': int(time.time() * 1000) - 3600_000, 'attempt': 0, 'ids': [], 'events': True, 'switched': True}
         (manager_log.parent / 'state.json').write_text(json.dumps(data))
+        # ^ Nothing started the host or the service again before the write: the pinned state is the one it reads.
+        started = leftovers('task chat-host ' + manager_log.parent.name) + leftovers('task repo-host ')
+        assert not started, started
         return len(traces()), int(time.time() * 1000)
     lc_pi_manager = lambda since: [t for t in traces()[since:] if t.get('adapter') == 'pi' and t.get('launch') and not t.get('worker')]
     lc_rotated_since = lambda at, words: any(e['kind'] == 'rotated' and e.get('reason', '').startswith(words) and e['unix_ms'] >= at for e in manager_entries())
