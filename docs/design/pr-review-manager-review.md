@@ -62,7 +62,7 @@ I rebuilt the decisions preamble at each rotation from `records.jsonl`, with `no
 |---|---|---|---|---|
 | 11-12 02:10 | 31 | 31 | 2 | 2 |
 | 11-13 05:00 | 43 | 43 | 14 | 14 |
-| 11-14 21:23 (start of turns 427 to 479) | 46 | 46 | 17 | 17 |
+| 11-14 21:23 (start of turns 417 to 479, incl. 427, 474, 476) | 46 | 46 | 17 | 17 |
 | 11-15 08:31 (start of 481 to 485) | 55 | 26 | 26 | 16 (the 29 R15 rules are hidden) |
 
 - Every rule was in the preamble, but as the owner's words: "- 2026-11-12 yes", "- 2026-11-12 감점", "- 2026-11-12 문서랑 싱크 안맞는거 그 자체로 감점이있고". The record's `text` holds the real rule (for example the 확인불가 mark), but the view never shows it. `manage.rs:127` uses `words` whenever `words` is set.
@@ -90,7 +90,7 @@ I rebuilt the decisions preamble at each rotation from `records.jsonl`, with `no
 
 ## 5. Questions for the owner
 
-1. Should a question that needs a code survey, a score or a text deliverable go to a read-only task even while you are talking, so the manager answers from its results? **Recommend yes.** It covers 11 of the 17 corrections, and it moves the $15/day of in-turn reading into reviewed tasks.
+1. Should a question that needs a code survey, a score or a text deliverable go to a read-only task even while you are talking, so the manager answers from its results? **Recommend yes.** It covers 11 of the 17 corrections, and it moves the in-turn code reading (109 reads in the 24 h that cost $15.34) into reviewed tasks.
 2. Should every rule record need a one-line `--title`, with the decisions view printing it instead of your words? **Recommend yes.** The full rule text does not fit the 7 KiB start budget, and your words alone ("yes", "감점") carry no rule.
 3. Should pr-review's 29 R15 decisions (2026-11-05 and 11-06, a finished review) move to the archive, together with lines 6 and 8? **Recommend yes.** Lines 6 and 8 cause 3 and part of cause 1. The other 27 are already hidden after 11-15 08:31 and only take budget.
 
