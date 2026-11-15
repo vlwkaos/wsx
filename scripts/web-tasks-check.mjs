@@ -4428,8 +4428,12 @@ await closeSheet("the page", plansChat);
 // checkout and a remote address stay alt text; a link to an HTML file opens its sandboxed view.
 {
   const state = JSON.parse(fs.readFileSync(wsxCli)).env.XDG_STATE_HOME;
-  const logFile = fs.readdirSync(state, { recursive: true }).find((file) => /(^|\/)plans-[0-9a-f]{8}\/manager\/log\.jsonl$/.test(file));
-  if (!logFile) await fail(`no manager log of plans under ${state}`);
+  // ^ The home chat's log is in the chat's folder, the repo's tasks and checks in the repo's own.
+  const plansHome = await homeOf(plansArg);
+  const files = fs.readdirSync(state, { recursive: true });
+  const logFile = files.find((file) => file.endsWith(`chats/${plansHome}/log.jsonl`));
+  const homeFile = files.find((file) => /(^|\/)plans-[0-9a-f]{8}\/home\.json$/.test(file));
+  if (!logFile || !homeFile) await fail(`no home chat log or repo folder of plans under ${state}: ${JSON.stringify([plansHome, logFile, homeFile])}`);
   const base = ".studio-data/runs/one";
   const folder = path.join(plansCheckout, base);
   fs.mkdirSync(path.join(folder, "thumbs"), { recursive: true });
@@ -4531,7 +4535,7 @@ await closeSheet("the page", plansChat);
   // video with a poster, a failed item whose file the budget removed), the files the messages above link (a video
   // with no jpg beside it shows its first frame; a file gone from the checkout says so) and the owner's uploads (one
   // the store has, one it no longer has), newest first, with kind and task filters; a tile opens the viewer.
-  const tasksDir = path.dirname(path.dirname(path.join(state, logFile)));
+  const tasksDir = path.dirname(path.join(state, homeFile));
   const checksFile = path.join(tasksDir, "checks.jsonl");
   const checksBefore = fs.existsSync(checksFile) ? fs.readFileSync(checksFile) : null;
   const kept = path.join(tasksDir, "1", "captures");
