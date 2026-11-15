@@ -3042,7 +3042,7 @@ if (safari.sent.join() !== "true,true" || !safari.viewport.includes("maximum-sca
 }
 
 // --- A task that waits for the owner's answer: in plans' chat its manager reads "plans" and
-// ui's "Atlas". #1's reservoir row with Answer, whose chip opens its sheet: the story asks for
+// ui's chat "ui". #1's reservoir row with Answer, whose chip opens its sheet: the story asks for
 // the answer, the field says so, and the answer is a bubble; then the list cleared one row
 // after another: Land #2, Land #1, and then no reservoir with the focus on the composer.
 const plans = Number(plansArg);
@@ -3056,8 +3056,8 @@ const timeRuns = await evaluate(`(() => { const all = [...document.querySelector
   return all.slice(0, -1).filter((node, at) => node.querySelector('.bubble-time') && node.dataset.at && all[at + 1].dataset.at && all[at + 1].dataset.speaker === node.dataset.speaker
     && all[at + 1].dataset.peer === node.dataset.peer && minute(all[at + 1]) === minute(node)).map((node) => node.dataset.key); })()`);
 if (timeRuns.length) await fail(`a time shows under a bubble that the next one of its sender in the same minute follows: ${timeRuns}`);
-// ^ plans' manager has no name of its own: its bubbles keep no author line (the top row names plans); ui's "Atlas" is a peer.
-if (!plansAuthors.some(({ author, tag }) => author === "" && tag === "To Atlas") || !plansAuthors.some(({ author }) => author === "Atlas") || plansAuthors.some(({ author }) => author === "plans")) await fail(`plans' managers read ${JSON.stringify(plansAuthors)}`);
+// ^ plans' manager has no name of its own: its bubbles keep no author line (the top row names plans); ui's chat is a peer, named by its chat name `ui` (not the manager's shown name "Atlas").
+if (!plansAuthors.some(({ author, tag }) => author === "" && tag === "To ui") || !plansAuthors.some(({ author }) => author === "ui") || plansAuthors.some(({ author }) => author === "plans")) await fail(`plans' managers read ${JSON.stringify(plansAuthors)}`);
 // ^ An empty `sent` and a `-` reply in plans' older log are no bubbles: no bubble says nothing.
 const emptyBubbles = plansAuthors.filter(({ tag, text }) => ["", "-"].includes(text.slice(tag.length).trim()));
 if (emptyBubbles.length) await fail(`plans' chat shows bubbles that say nothing: ${JSON.stringify(emptyBubbles)}`);
