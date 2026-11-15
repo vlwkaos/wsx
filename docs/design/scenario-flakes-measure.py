@@ -4,6 +4,7 @@
 ref: docs/design/scenario-flakes.md (the numbers and the cause)
 
     python3 -I docs/design/scenario-flakes-measure.py [--until 2026-11-15T10:00] [--days 21] [--gh] [--load] [--rows] [--state ~/.local/state/wsx/tasks/wsx-8cbe3f08]
+        [--yield] [--commits] [--asserts]   (docs/design/verification-bottleneck.md)
 
 Reads the `check_run` and `checks` entries of every task log whose command runs `ci-scenario.py web`.
 A run's CI id is the last `actions/runs/<id>` its output names. `--gh` fetches that run once
@@ -140,7 +141,7 @@ for path in sorted(glob.glob(os.path.join(STATE, '*', 'log.jsonl'))):
             ids = re.findall(r'actions/runs/(\d+)', out.split("== main's latest CI run")[0])
             text, fn = message(out)
             runs.append(dict(task=task, ms=e['unix_ms'], exit=r.get('exit'), part=(part and (part.group(1) or part.group(2))) or 'all',
-                             run=ids[-1] if ids else None, text=text, fn=fn, out=out))
+                             run=ids[-1] if ids else None, text=text, fn=fn, out=out, dur=r.get('ms') or 0, log=path))
 failed = [r for r in runs if r['exit'] not in (0, None)]
 
 # 2. Each CI run's scenario commit names the task's HEAD; its diff from the fork point with main.
@@ -245,3 +246,148 @@ if '--rows' in ARGS:
             print('%s #%-4s %-5s %-6s head %-8s pass= %-5s fail= %-5s %-28s %s' % (
                 time.strftime('%m-%d %H:%M', time.localtime(r['ms'] / 1000)), r['task'], r['part'], r['class'], (r['head'] or '')[:8],
                 r['same_pass'], r['same_fail'], (r['at'] or '')[:28], (r['text'] or tail(r['out']))[:110]))
+
+# 5. Yield (--yield): what the task's next attempt changed after each failure, read from the git trees.
+#    A failure's fix is the set of files whose patch (against each attempt's own fork point, so a rebase
+#    compares equal) differs between the failing HEAD and the task's next web run on another tree.
+#    product: only crates/ changed (the scenario found a product bug, an upper bound: other work may ride along)
+#    script:  only scripts/ changed (the check lagged an intended change, or a timing read was fixed)
+#    both, neither (a rebase or docs only), none (no later web run on another tree: landed, closed or rerun only)
+#    The worker turn that read the failure is the task's first `check_run` turn after it.
+ASSERT_LINE = re.compile(r'fail\(|^\s*assert |until\(')
+KINDS = [('motion', r'animation|transition|motion|frame|getAnimations|moved without|one motion|slide|followEnd|jump'),
+         ('layout', r'\bpx\b|\d+ ?px|getBoundingClientRect|\brect\b|offset(Top|Height|Width|Left)|client(Height|Width)|scroll(Top|Height)'
+                    r'|\bwidth\b|\bheight\b|\btop\b|\bbottom\b|\bleft\b|\bright\b|overlap|\bgap\b|align|\bwraps?\b|\bfits?\b|clip|contentShare'),
+         ('style', r'getComputedStyle|color|font|rgb|var\(--|className|classList|cursor|opacity|literals|design lint'),
+         ('words', r"textContent|innerText|=== '|== '|!== '|\.includes\(|\.startsWith\(|\btext\b")]
+def kind_of(text):
+    """motion, layout, style or words: the first whose words the assert (and the 2 lines before it) uses; else behavior."""
+    return next((k for k, rx in KINDS if re.search(rx, text or '')), 'behavior')
+def window(at):
+    if not at or ':' not in at:
+        return ''
+    f, n = at.rsplit(':', 1)
+    return '\n'.join(SOURCES.get(f, [])[max(0, int(n) - 3):int(n)]) if n.isdigit() else ''
+patch_cache = {}
+def patches(head):
+    """file -> the added and removed lines of the task's change at head (against its fork point with main)."""
+    if head not in patch_cache:
+        base = git('merge-base', head, 'main')
+        files = {}
+        for block in re.split(r'^diff --git ', (base and git('diff', '-U0', base, head)) or '', flags=re.M)[1:]:
+            lines = block.splitlines()
+            files[lines[0].split(' b/')[-1]] = '\n'.join(l for l in lines[1:] if l[:1] in '+-' and not l.startswith(('+++', '---')))
+        patch_cache[head] = files
+    return patch_cache[head]
+results_of = {}
+def results(task, path):
+    if task not in results_of:
+        rows = []
+        for line in open(path, errors='replace'):
+            if '"kind":"result"' in line:
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    pass
+        results_of[task] = rows
+    return results_of[task]
+if '--yield' in ARGS or '--asserts' in ARGS:
+    used = set()
+    for r in sorted(failed, key=lambda r: r['ms']):
+        turn = next((e for e in results(r['task'], r['log']) if e['unix_ms'] > r['ms'] and e.get('trigger') == 'check_run' and id(e) not in used), None)
+        if turn:
+            used.add(id(turn))
+        r['turn_usd'] = turn['usage']['cost_micro_usd'] / 1e6 if turn else 0
+        r['said'] = (turn or {}).get('summary', '')[:150].replace('\n', ' ')
+        nxt = next((o for o in sorted(runs, key=lambda o: o['ms']) if o['task'] == r['task'] and o['ms'] > r['ms'] and o['head'] and o['tree'] != r['tree']), None)
+        if not r['head'] or not nxt or git('cat-file', '-e', r['head']) is None or git('cat-file', '-e', nxt['head']) is None:  # ^ '' on success
+            r['fix'], r['then'] = 'none', None
+            continue
+        a, b = patches(r['head']), patches(nxt['head'])
+        changed = [f for f in set(a) | set(b) if a.get(f) != b.get(f)]
+        s, p = any(f.startswith('scripts/') for f in changed), any(f.startswith('crates/') for f in changed)
+        r['fix'] = 'both' if s and p else 'script' if s else 'product' if p else 'neither'
+        r['then'] = 'pass' if nxt['exit'] == 0 else 'same' if nxt['text'] == r['text'] else 'other'
+        r['kind'] = kind_of((r['text'] or '') + '\n' + window(r['at']))
+    print('\nyield: the fix of each failed web run (the next attempt on another tree), CI wall min and the worker turn that read it')
+    print('%-8s %-8s %5s %7s %8s   then pass/same/other' % ('class', 'fix', 'runs', 'CI min', 'turn USD'))
+    for cls in ('own', 'once', 'shared', 'generic', 'infra'):
+        for fix in ('product', 'script', 'both', 'neither', 'none'):
+            rows = [r for r in failed if r['class'] == cls and r['fix'] == fix]
+            if rows:
+                then = C.Counter(r['then'] for r in rows)
+                print('%-8s %-8s %5d %7.0f %8.2f   %d/%d/%d' % (cls, fix, len(rows), sum(r['dur'] for r in rows) / 60000, sum(r['turn_usd'] for r in rows),
+                                                          then['pass'], then['same'], then['other']))
+    total = lambda rows: '%d runs, %.0f CI min, $%.2f in %d turns' % (len(rows), sum(r['dur'] for r in rows) / 60000, sum(r['turn_usd'] for r in rows), sum(1 for r in rows if r['turn_usd']))
+    print('all failed:', total(failed))
+    print('fixed in product only:', total([r for r in failed if r['fix'] == 'product']))
+    print('fixed in the scripts only:', total([r for r in failed if r['fix'] == 'script']))
+    print('\nkind of the failing assert x fix   product  script  both  neither  none')
+    for k in [k for k, _ in KINDS] + ['behavior']:
+        c = C.Counter(r['fix'] for r in failed if r['class'] != 'infra' and r.get('kind', kind_of((r['text'] or '') + '\n' + window(r['at']))) == k)
+        print('%-34s %7d %7d %5d %8d %5d' % (k, c['product'], c['script'], c['both'], c['neither'], c['none']))
+    if '--rows' in ARGS and arg('--rows', '') in 'yield':
+        for r in sorted(failed, key=lambda r: r['ms']):
+            if r['fix'] in ('product', 'both'):
+                print('%s #%-4s %-6s %-7s %-6s %-8s %-60s | %s' % (time.strftime('%m-%d %H:%M', time.localtime(r['ms'] / 1000)), r['task'], r['class'], r['fix'],
+                                                                 r['then'], r.get('kind'), (r['text'] or '')[:60], r['said']))
+
+# 6. Commits (--commits): main's commits in the window that touch the web scripts, and the ones that touch
+#    only them (plus docs and CHANGELOG), each with the task that landed it (its log's last revision base
+#    to its landed commit, matched by author date and subject, which a land's rebase keeps).
+#    timing:   the subject says wait, until, load or another timing word
+#    coverage: it adds at least 2 more assert lines (fail(, assert, until() than it removes
+#    adapt:    its task changed crates/ too, or the subject says since, now, not, instead, renamed or moved
+#    other:    none of these
+TIMING = re.compile(r'\b(wait|waits|waited|until|load|lease|settle|stall|timing|flak\w*|race|retry|deadline|timeout|pause|in one step|at once|stays?|later|polls?|longer)\b', re.I)
+ADAPT = re.compile(r'\b(since|now|not|instead|renam\w*|moved|no longer|follows?|expects?)\b', re.I)
+if '--commits' in ARGS:
+    span = ['--since', time.strftime('%Y-%m-%dT%H:%M', time.localtime(SINCE / 1000)), '--until', time.strftime('%Y-%m-%dT%H:%M', time.localtime(UNTIL / 1000)), 'main']
+    WEB = ['scripts/web-*.mjs', 'scripts/test-web-client.py']
+    only = re.compile(r'scripts/web-[^/]*\.mjs$|scripts/test-web-client\.py$|docs/|CHANGELOG\.md$')
+    task_of, product_of = {}, {}
+    for path in glob.glob(os.path.join(STATE, '[0-9]*', 'log.jsonl')):
+        task, base, landed = os.path.basename(os.path.dirname(path)), None, None
+        for line in open(path, errors='replace'):
+            if '"kind":"revision"' in line or '"kind":"landed"' in line:
+                e = json.loads(line)
+                base, landed = (e.get('base'), landed) if e['kind'] == 'revision' else (base, e.get('commit'))
+        if base and landed and git('cat-file', '-e', landed) is not None:
+            for row in (git('log', '--format=%ad%x00%s', base + '..' + landed) or '').splitlines():
+                task_of[row] = task
+            product_of[task] = any(f.startswith('crates/') for f in (git('diff', '--name-only', base, landed) or '').split())
+    all_n = len((git('log', '--format=%H', *span) or '').split())
+    web = (git('log', '--format=%H', *span, '--', *WEB) or '').split()
+    rows = []
+    for h in web:
+        files = (git('show', '--format=', '--name-only', h) or '').split()
+        if not all(only.match(f) for f in files):
+            continue
+        subject = git('log', '-1', '--format=%s', h); key = git('log', '-1', '--format=%ad%x00%s', h)
+        diff = (git('show', '-U0', '--format=', h, '--', 'scripts') or '').splitlines()
+        added = sum(1 for l in diff if l.startswith('+') and not l.startswith('+++') and ASSERT_LINE.search(l[1:]))
+        removed = sum(1 for l in diff if l.startswith('-') and not l.startswith('---') and ASSERT_LINE.search(l[1:]))
+        task = task_of.get(key)
+        cls = ('timing' if TIMING.search(subject) else 'coverage' if added - removed >= 2
+               else 'adapt' if (task and product_of.get(task)) or ADAPT.search(subject) else 'other')
+        rows.append((cls, task, h, subject, added, removed, sum(1 for l in diff if l[:1] in '+-')))
+    print('\ncommits on main in the window %d; touching the web scripts %d; only them (plus docs, CHANGELOG) %d; of those with a task %d'
+          % (all_n, len(web), len(rows), sum(1 for r in rows if r[1])))
+    for cls, n in C.Counter(r[0] for r in rows).most_common():
+        g = [r for r in rows if r[0] == cls]
+        print('  %-9s %4d commits, %5d lines changed, in %d tasks' % (cls, n, sum(r[6] for r in g), len({r[1] for r in g if r[1]})))
+    script_tasks = sorted({r[1] for r in rows if r[1] and not product_of.get(r[1])}, key=int)
+    print('  tasks that landed script-only web commits and no crates/ change: %d' % len(script_tasks))
+    if '--rows' in ARGS and arg('--rows', '') in 'commits':
+        for r in rows:
+            print('  %-8s #%-4s %s +%d/-%d asserts  %s' % (r[0], r[1] or '?', r[2][:8], r[4], r[5], r[3][:110]))
+
+# 7. Asserts (--asserts): every fail( of scripts/web-*.mjs and assert of test-web-client.py, by the kind of value it judges.
+if '--asserts' in ARGS:
+    print('\nasserts by kind (the line and the 2 before it)')
+    count = C.Counter()
+    for f, lines in SOURCES.items():
+        for n, line in enumerate(lines):
+            if re.search(r'\bfail\(' if f.endswith('.mjs') else r'^\s*assert ', line) and 'function fail' not in line:
+                count[kind_of('\n'.join(lines[max(0, n - 2):n + 1]))] += 1
+    print('  ' + ', '.join('%s %d' % kv for kv in count.most_common()) + '; all %d' % sum(count.values()))
