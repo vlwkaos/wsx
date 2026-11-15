@@ -29,6 +29,8 @@ the tool calls: no `wsx task new`/`add`/`steer` in the first turn, exactly one n
 turns, cache switches counted, then replays real event-only turns on Opus and Sonnet from a fork of the
 manager's transcript (`--samples`, `--budget`; `--probe`: one turn across a model change) for a blind
 Opus judge. `rotation` models the manager's weekly spend over rotation sizes and idle rules; no model call.
+`rotation --replay N` (paid) judges N real turns where a manager at ROTATE_TO would rotate in the middle of
+work: the real turn against the same turn in a fresh conversation that opens as a rotation's does.
 Bash runs with bypassPermissions here, so no auto-mode classifier call adds to the measured
 cost; the real manager runs in auto mode.
 """
