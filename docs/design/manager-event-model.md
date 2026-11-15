@@ -95,3 +95,43 @@ where today's handover tied a written one (manager-continuity.md). Busy rotation
 measured, so this needs a paid replay before any change. Use the `idle` arm's fresh-against-resume
 fork (`fork_copy`) at the turns where 160K would rotate, with a blind judge, at about $0.40 to
 $1.20 a turn.
+
+## Rotation replay (paid, #464)
+
+Owner, 2026-11-15: switch to `rotateTokens: 160000` and idle rotation at any size only if a paid
+replay of mid-work rotations shows no quality loss.
+
+### Decision rule (written before the paid runs)
+
+A case is the first turn of a real conversation whose last reply was past 160K tokens and less than
+10 minutes earlier: there a manager at 160K rotates in the middle of work (14 days, every project;
+28 such turns). Arm A is the real turn of the kept conversation. Arm B is the same turn in a fresh
+conversation that opens as a rotation's does. A blind Opus judge sees both answers (acts and reply),
+the earlier chat, the reads and the hindsight.
+
+1. B fails a case when it lost a fact that A used (a promise, an owner instruction, a review
+   finding, a task's state), or when it decided otherwise than A and the judge marks it wrong.
+2. A failed case runs A again in the same replay (a fork of the kept conversation, the same
+   recorder). It counts only if B also fails against that run, so a cause in the replay itself is
+   not charged to the rotation.
+3. Switch if at least 12 cases are judged, the counted cases are at most 1 in 12, and no counted
+   case lands, closes or approves what A did not.
+4. The cap is $25 (`--budget 22` stops before a case could pass $25).
+
+### Method
+
+`python3 -B scripts/bench-manager.py --mode after --cases rotation --replay 14 --budget 22 --out .work/bench-rotation`
+
+- B's first message is `send_turn`'s for a rotation: the notes preamble, the handover and the
+  turn's text. The handover's exchanges are a port of `recent_exchanges`, checked against every real
+  fresh start since 2026-11-07: 120 of 120 match byte for byte (wsx 55, iam-studio 36, pr-review 18,
+  pizzahouse 11). Its routine block is rebuilt from the routine store, which drops one-shot `checkin`
+  runs and old runs, so a line can be missing there.
+- The preamble is the newest real fresh start's before the case (median about 2.5 h older), plus the
+  rules the owner gave after it, from the memory records. Memos written to `context.md` in between
+  are missing: this biases against B.
+- Both arms run on Opus at effort high, with the instructions of the commit that was live then.
+  `wsx` is a recorder: acting calls are kept; `wsx task ledger` and `wsx task show <n>` answer with
+  the newest output that the kept conversation read before the turn, with its age; other reads
+  cannot run. The turn carries the reads the real turn made. The ledger summary at the turn's end is
+  the real turn's ("changed since your last turn"); a real rotation lists all open tasks.
