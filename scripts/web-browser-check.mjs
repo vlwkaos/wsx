@@ -326,8 +326,7 @@ async function inbox() {
   }
   // The elapsed time of a working session counts on the page.
   const before = await text("section[aria-label=Running] .time");
-  await pause(1200);
-  if ((await text("section[aria-label=Running] .time")).join() === before.join()) await fail("the elapsed time does not count");
+  await until(`[...document.querySelectorAll("section[aria-label=Running] .time")].map((node) => node.textContent.trim().replace(/\\s+/g, " ")).join() !== ${JSON.stringify(before.join())}`, "the elapsed time does not count");
   if (phone()) {
     // ^ m2 may run commands: the Machine tab is there (docs/panels.md "Machine panels").
     if ((await text(".tabbar a")).join() !== "Inbox,Projects,Machine,Settings" || (await text(".tabbar a[aria-current=page]")).join() !== "Inbox") await fail("the tab bar is wrong");
