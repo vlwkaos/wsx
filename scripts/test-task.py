@@ -7878,7 +7878,7 @@ def part_host(created=None):
         data['limit'] = {'until_ms': int(time.time() * 1000) - 3600_000, 'attempt': 0, 'ids': [], 'events': True, 'switched': True}
         (manager_log.parent / 'state.json').write_text(json.dumps(data))
         # ^ Nothing started the host or the service again before the write: the pinned state is the one it reads.
-        started = leftovers('task chat-host ' + manager_log.parent.name) + leftovers('task repo-host ')
+        started = leftovers('task chat-host ' + manager_log.parent.name) + leftovers('task repo-host ' + Path(created['task_dir']).parent.name)
         assert not started, started
         return len(traces()), int(time.time() * 1000)
     lc_pi_manager = lambda since: [t for t in traces()[since:] if t.get('adapter') == 'pi' and t.get('launch') and not t.get('worker')]
