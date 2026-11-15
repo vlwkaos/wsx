@@ -226,16 +226,17 @@ def tui_screens(wsx, env, cwd, steps, cols=120, raw=None):
 
 def home_dir(store):
     """The repo's home chat folder: `home.json` of the repo's store (`tasks/<repo-id>`) names it (docs/tasks.md "Chats")."""
-    return store.parent / 'chats' / json.loads((store / 'home.json').read_text())['chat']
+    home = store / 'home.json'
+    return store.parent / 'chats' / json.loads(home.read_text())['chat'] if home.exists() else None
 
 
-def forget_notes(notes):
+def forget_notes(store, notes):
     """Make the manager's notes folder old notes again (docs/memory.md "Notes"): drop the copies, the copies of
     hand edits, the hashes of the views and the records the notes made, so a fixture written by hand is
     imported at the next write. Records of other kinds stay."""
-    for found in list(notes.glob('*.pre-memory')) + list(notes.glob('*.drift')):
+    for found in list(notes.glob('*.pre-memory')) + list(notes.glob('*.drift')) if notes else []:
         found.unlink()
-    memory = notes.parent.parent / 'memory'
+    memory = store / 'memory'
     (memory / 'views.json').unlink(missing_ok=True)
     log = memory / 'records.jsonl'
     if log.exists():
@@ -891,17 +892,17 @@ def manager_up(created):
     assert re.findall(r'owner:[^<\s]', launch['instructions']) == [], launch['instructions']
     assert not any(name in launch['instructions'] for name in ('seek', 'recall', '/memo', 'scribe'))
     assert launch['cwd'] == str(project)
-    # ^ The name the owner reads, trimmed; the session keeps its label `task-manager`.
+    # ^ The name the owner reads, trimmed; the session is labelled `task-<chat name>`.
     assert js('task', 'manager')['name'] == 'Atlas'
     # ^ The TUI's manager row reads the name; without one the project's (docs/tasks.md "Config").
-    named = tui_text(wsx, env, project, r'task-manager\s*\n*\s*\(Atlas\)')
-    assert re.search(r'task-manager\s*\n*\s*\(Atlas\)', named) and '(manager)' not in named, named[-3000:]
+    named = tui_text(wsx, env, project, r'task-demo\s*\n*\s*\(Atlas\)')
+    assert re.search(r'task-demo\s*\n*\s*\(Atlas\)', named) and '(manager)' not in named, named[-3000:]
     config_text = (project / 'wsx.config.yml').read_text()
     (project / 'wsx.config.yml').write_text(config_text.replace('name: "  Atlas ", ', ''))
-    plain = tui_text(wsx, env, project, r'task-manager\s*\n*\s*\(demo\)')
+    plain = tui_text(wsx, env, project, r'task-demo\s*\n*\s*\(demo\)')
     plain_name = js('task', 'manager')['name']
     (project / 'wsx.config.yml').write_text(config_text)
-    assert re.search(r'task-manager\s*\n*\s*\(demo\)', plain) and '(Atlas)' not in plain, plain[-3000:]
+    assert re.search(r'task-demo\s*\n*\s*\(demo\)', plain) and '(Atlas)' not in plain, plain[-3000:]
     assert plain_name == 'demo', plain_name
     assert js('task', 'manager')['state'] == 'running'
     # A new task and an add to the running one, each by a wsx task command the manager runs.
@@ -1636,7 +1637,8 @@ def part_core(created=None):
     assert 'cannot be used with' in cli('task', 'new', '--size', 'small', '--skip', 'plan', 'NOOP', ok=False).stderr
     (project / 'wsx.config.yml').write_text(area_text)
     shutil.rmtree(project / 'briefs')
-    forget_notes(home_dir(Path(sharing['task_dir']).parent) / 'notes')
+    sharing_store = Path(sharing['task_dir']).parent
+    forget_notes(sharing_store, (home_dir(sharing_store) or sharing_store) / 'notes')
     # 13r. Context rotation inside a turn: a model call past tasks.agent.rotateTokens gets the
     # handoff request as a steer at its tool boundary; the worker writes its notes there, and the
     # same step goes on in a fresh conversation that opens with the task's prompt and those notes.
@@ -2416,7 +2418,7 @@ def part_core(created=None):
     # Stop the manager host, finish a task while it is down, start it again.
     manager_socket = js('task', 'manager')['socket']
     assert len(manager_socket) < 104, manager_socket
-    cli('session', 'delete', 'task-manager', '-p', 'demo')
+    cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or
          subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
     unseen = js('task', 'new', 'WORK late.txt')['id']
@@ -2444,7 +2446,7 @@ def part_core(created=None):
     plain_config = (project / 'wsx.config.yml').read_text()
     configure(plain_config.replace('  minFreeGb: 0\n', '  minFreeGb: 0\n  captureBudgetMb: 1\n'), 'capture budget')
     manager_socket = js('task', 'manager')['socket']
-    cli('session', 'delete', 'task-manager', '-p', 'demo')
+    cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or
          subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
     reply_to(js('task', 'say', 'STATUS budget')['id'])
@@ -2458,7 +2460,7 @@ def part_core(created=None):
     launches = [t for t in traces() if t.get('launch') and t.get('manager')]
     assert launches[-1]['resume'], launches[-1]
     manager_socket = js('task', 'manager')['socket']
-    cli('session', 'delete', 'task-manager', '-p', 'demo')
+    cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or
          subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
     default_manager_model()
@@ -2472,7 +2474,7 @@ def part_core(created=None):
 
     def put(name, text=None):
         # ^ decisions.md and context.md are views of the records: a fixture is written as old notes (forget_notes).
-        forget_notes(notes)
+        forget_notes(Path(created['task_dir']).parent, notes)
         if text is None:
             (notes / name).unlink(missing_ok=True)
         else:
@@ -2514,7 +2516,7 @@ def part_core(created=None):
     # rotate, and a warm small one takes changed instructions as a message.
     def stop_manager():
         sock = js('task', 'manager')['socket']
-        cli('session', 'delete', 'task-manager', '-p', 'demo')
+        cli('session', 'delete', 'task-demo', '-p', 'demo')
         wait(lambda: not Path(sock).exists() or subprocess.run(['nc', '-zU', sock]).returncode != 0, 'manager down')
 
     def edit_state(**fields):
@@ -2555,7 +2557,7 @@ def part_core(created=None):
         os.kill([t for t in traces() if t.get('launch') and t.get('manager')][-1]['pid'], 9)
     except ProcessLookupError:
         pass
-    cli('session', 'delete', 'task-manager', '-p', 'demo')
+    cli('session', 'delete', 'task-demo', '-p', 'demo')
     assert js('task', 'manager')['state'] == 'started'
     reply_to(hung['id'])
     turns_of = lambda text: [t for t in traces() if t.get('manager') and text in str(t.get('message', ''))]
@@ -4169,7 +4171,7 @@ def part_worker(created=None):
     # A named chat (the area group) on an agent that passed answer and note may not create a task.
     def stop_manager_now():
         sock = js('task', 'manager')['socket']
-        cli('session', 'delete', 'task-manager', '-p', 'demo')
+        cli('session', 'delete', 'task-demo', '-p', 'demo')
         wait(lambda: not Path(sock).exists() or subprocess.run(['nc', '-zU', sock]).returncode != 0, 'manager down')
 
     def manager_as(name, *lines):
@@ -7030,7 +7032,7 @@ def part_host(created=None):
     mig_store = state / 'wsx/tasks' / mig_id
     mig_n = js('task', 'new', '-p', 'mig', 'WORK m.txt')['id']
     wait(lambda: js('task', 'show', mig_n, '-p', 'mig')['state'] == 'ready', 'the task of the mig repo', 60)
-    cli('session', 'delete', 'task-manager', '-p', 'mig')
+    cli('session', 'delete', 'task-mig', '-p', 'mig')
     wait(lambda: not leftovers('task manager-host ' + mig_id), 'the mig manager host leaves', 30)
     # ^ Put the store back as before chats: the home chat's folder is `manager/`, a second chat is `chats/side/`.
     old_home, old_side = mig_store / 'manager', mig_store / 'chats/side'
@@ -7106,7 +7108,7 @@ def part_host(created=None):
     js('task', 'chat', 'home', 'mig', '-p', 'mig')
     js('task', 'chat', 'close', 'mside', '-p', 'mig')
     js('task', 'close', mig_n, '--discard', '-p', 'mig')
-    cli('session', 'delete', 'task-manager', '-p', 'mig')
+    cli('session', 'delete', 'task-mig', '-p', 'mig')
     wait(lambda: not leftovers('task manager-host ' + mig_id), 'the mig hosts leave', 30)
     registry_file.write_text(registry_plain)
     shutil.rmtree(mig_store)
@@ -7822,7 +7824,7 @@ def part_host(created=None):
     # the wait after one Pi launch and answers once the record goes.
     def pin_manager():
         sock = js('task', 'manager')['socket']
-        cli('session', 'delete', 'task-manager', '-p', 'demo')
+        cli('session', 'delete', 'task-demo', '-p', 'demo')
         wait(lambda: not Path(sock).exists() or subprocess.run(['nc', '-zU', sock]).returncode != 0, 'manager down')
         data = manager_state()
         data['agent'] = {'name': 'fake-pi', 'adapter': 'pi', 'model': 'fake/pi-model'}
@@ -8133,7 +8135,7 @@ def part_host(created=None):
     # no sweep of its own. Its own env keeps the real bound, so the turn is 3 h quiet.
     unswept, unswept_pid = legacy_host('unswept', aged_ms=3 * 3600 * 1000)
     manager_socket = js('task', 'manager')['socket']
-    cli('session', 'delete', 'task-manager', '-p', 'demo')
+    cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
     seen = len(traces())
     assert js('task', 'manager')['state'] == 'started'
@@ -8146,7 +8148,7 @@ def part_host(created=None):
     # A say: the manager's turn hangs (MHANG) in a host on the older file; the next say replaces it
     # and the new host answers the queued message.
     socket_path = js('task', 'manager')['socket']
-    cli('session', 'delete', 'task-manager', '-p', 'demo')
+    cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(socket_path).exists() or subprocess.run(['nc', '-zU', socket_path]).returncode != 0, 'manager down')
     m_release = work / 'mhang-release'
     on(older / 'wsx', 'task', 'say', 'MHANG %s STATUS hung under an older wsx' % m_release)

@@ -22,7 +22,7 @@ const MANAGER_START_WAIT: Duration = Duration::from_secs(10);
 const MAX_OUTCOME_CHARS: usize = 1000;
 
 /// Start the project's manager host, or the open chat's (`chat`), unless one answers. True
-/// when it was started. `launch` creates the hidden session (its label, `task-manager` or
+/// when it was started. `launch` creates the hidden session (its label, `task-<name>` or
 /// `task-<chat>`) in the main checkout with the given argv; the CLI may start wsxd for it,
 /// the web client never does.
 pub fn ensure_manager(

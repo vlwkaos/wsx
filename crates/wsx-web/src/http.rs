@@ -758,7 +758,7 @@ async fn session_remove(
             .agent
             .as_ref()
             .map(|agent| agent.provider.as_str());
-        // ^ `task-<n>`, `task-manager` and the owner's `task-<n>-hand` (docs/tasks.md "By hand").
+        // ^ `task-<n>`, a chat's `task-<name>` and the owner's `task-<n>-hand` (docs/tasks.md "By hand").
         if wsx_core::task::session_news::is_task_session(target.label, provider) {
             return Err(Fault::new(
                 409,
