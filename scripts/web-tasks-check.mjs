@@ -2290,6 +2290,8 @@ async function readAndReply(where) {
   const swipeMenu = async (at) => {
     await touch(at, 90);
     await until("!!document.querySelector('.reply-menu')", `${where}: a swipe right opened no menu`);
+    // ^ The bubble springs back by a transition: a capture while it runs sees it past the right edge.
+    await until(`${fiveColumns}.getAnimations().length === 0 && !${fiveColumns}.style.translate`, `${where}: the swiped bubble did not settle`);
   };
   const openMenu = phone() ? swipeMenu : rightClickMenu;
   const replyFromMenu = async (at) => {
@@ -2300,8 +2302,7 @@ async function readAndReply(where) {
     await fail(`${where}: the reply menu closed before Reply was tapped`);
   };
   await openMenu(point);
-  // ^ Not on a phone: the swiped bubble is still springing back, past the right edge, for one transition.
-  if (!phone()) await shot("reply-menu");
+  await shot("reply-menu");
   if (!(await evaluate(menuReply))) await replyFromMenu(point);
   await until(`${quote} === 'Five columns:'`, `${where}: the reply shows no quote over the composer`);
   if (await evaluate(`${fiveColumns}.style.translate`)) await fail(`${where}: the swiped bubble did not come back`);
