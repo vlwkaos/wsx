@@ -783,8 +783,13 @@ await until("!document.querySelector('.since')", "Dismiss did not close the line
   await until("!document.querySelector('.since')", "Dismiss did not close the long line");
 }
 // ^ The chat opens where it was left: at its end again for what follows.
-await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
-await pause(300);
+// ^ A chat reopened at its saved place keeps that place until the first scroll event: a row change
+// in the task of this move would put the log back at the top, and the chat would be left there.
+for (let attempt = 0; attempt < 10; attempt++) {
+  await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
+  await pause(300);
+  if (await evaluate(atEnd)) break;
+}
 await go("#/");
 await until("!!document.querySelector('.home-row') && !document.querySelector('.composer-field')", "home did not replace the chat");
 await go(chat);
