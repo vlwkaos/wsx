@@ -4752,7 +4752,8 @@ def part_worker(created=None):
     records_before = len(deploy_records())
     stop_manager_now()
     stop_repo_service()
-    assert js('task', 'manager')['state'] == 'started'
+    # ^ The service that starts may send the home chat an event first: `started` or `running`.
+    assert js('task', 'manager')['state'] in ('started', 'running')
     wait(waiters, 'the waiter the starting service started')
     wait(lambda: len(deploy_records()) > records_before and deploy_lock_free(), 'the deploy after the restart', 90)
     time.sleep(2)
@@ -7807,7 +7808,8 @@ def part_host(created=None):
     s4_say = js('task', 'say', 'PIHANG %s STATUS on a hung fallback' % (work / 's4-release'))
     lc_tail = lambda: '%r %r' % (manager_state(), [(e['kind'], e.get('reason'), e.get('text', '')[:80]) for e in manager_entries()[-10:]])
     wait(lambda: lc_rotated('back on claude: pi was refused: no output for'), lambda: 'the manager back home from the hung fallback ' + lc_tail(), 80)
-    assert 'agent' not in manager_state() and manager_state()['limit']['account'] is True, manager_state()
+    # ^ The row is logged before the state is saved: the state is read once it holds.
+    wait(lambda: 'agent' not in manager_state() and (manager_state().get('limit') or {}).get('account') is True, lambda: lc_tail(), 10)
     limit_file.unlink()
     assert reply_to(s4_say['id'], 40)['text'].startswith('open: '), chat()[-3:]
     (agents / 'pi-fake.json').unlink()
