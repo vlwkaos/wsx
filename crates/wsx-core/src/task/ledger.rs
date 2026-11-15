@@ -115,9 +115,11 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
     // ^ Open chats with their pill counts (`needs::chat_counts`) while any is above 0: the TUI's
     // chat rows mark them as the web's Home rows do; a closed chat is history (docs/tasks.md "Chats").
     let counts = super::needs::chat_counts(&project_id, settings.land_auto);
+    // ^ The home chat is the manager (`m` in the TUI, the project's row in the web), not a contact.
+    let home = super::store::home_chat(&project_id);
     let chats: Vec<Value> = super::chats::rows(&project_id)
         .into_iter()
-        .filter(|row| row["state"] != "closed")
+        .filter(|row| row["state"] != "closed" && row["name"].as_str() != home.as_deref())
         .map(|mut row| {
             let own = row["name"].as_str().and_then(|name| counts.get(name));
             if let Some(own) = own.filter(|own| **own != super::needs::ChatCounts::default()) {
@@ -159,7 +161,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
                 row
             })
             .collect::<Vec<_>>(),
-        // ^ Open chats; a closed one is history (docs/tasks.md "Chats").
+        // ^ Open chats besides the home chat; a closed one is history (docs/tasks.md "Chats").
         "chats": chats,
     });
     // ^ Set after `fit_size` counted the rest, and kept: a few short lines.
