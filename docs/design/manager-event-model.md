@@ -138,9 +138,9 @@ the earlier chat, the reads and the hindsight.
 
 ### Result: no switch
 
-The rule fails: **4 of 12 judged cases count against the fresh start** (at most 1 may).
+The rule fails: **4 of 14 judged cases count against the fresh start** (at most 1 may).
 `rotateTokens` stays 400000 on Claude and the idle rule stays over 60K. No case landed, closed or
-approved what A did not. Spend: $10.15 for 12 cases (B $0.16 to $0.43 a case; a case with the
+approved what A did not. Spend: **$11.13** for 14 cases (B $0.16 to $0.43 a case; a case with the
 kept-conversation control $1.82 to $2.26). Rows: `.work/bench-rotation/bench-rotation-after.jsonl`
 (git-ignored; the table below is the record).
 
@@ -158,9 +158,12 @@ kept-conversation control $1.82 to $2.26). Rows: `.work/bench-rotation/bench-rot
 | 3126 | wsx, events | 162K | same, none wrong | no |
 | 315 | pr-review, owner | 163K | left out four shared decisions still open with the owner | **yes** |
 | 2811 | wsx, events | 165K | same land, none wrong | no |
+| 4093 | wsx, owner | 168K | B answered the owner's request with new work; A's empty turn left it unanswered (major) | no |
+| 3222 | wsx, events | 203K | same land, none wrong | no |
 
-Events turns and notes requests lost nothing (0 of 7). The losses are all in conversations where
-the owner and the manager were working through something (3 of 5 owner turns, plus 788).
+Events turns and notes requests lost nothing (0 of 8; 788 is the exception, an events turn whose
+hold was decided in the conversation). Owner turns lost the most: 3 of 6. In 3 cases B was right
+where the real turn was wrong (359, 255, 4093).
 
 ### What B lost and where it would have to live
 
