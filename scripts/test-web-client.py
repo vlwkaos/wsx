@@ -5132,7 +5132,8 @@ merge_seconds = 3
         ok('routines: empty stdout gives no event and no turn and stays in the ledger; output gives a turn')
         js('task', 'manager', '-p', 'ui')
         # ^ The name of a host's socket: socket_for in crates/wsx-core/src/task/store.rs.
-        logical = next((state / 'wsx/tasks').glob('ui-*/manager')) / 'manager.sock'
+        home_chat = json.loads(next((state / 'wsx/tasks').glob('ui-*/home.json')).read_text())['chat']
+        logical = state / 'wsx/tasks/chats' / home_chat / 'manager.sock'
         ui_socket = (tmp if len(str(tmp)) <= 64 else Path('/tmp')) / ('wsx-%d' % os.geteuid()) / ('m-%s.sock' % hashlib.sha256(str(logical).encode()).hexdigest()[:16])
         hidden_socket = ui_socket.with_name('aside.sock')
         add_routine('ui', 'digest', str(wsx), 'task', 'digest', '-p', 'ui')
