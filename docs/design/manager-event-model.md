@@ -135,3 +135,47 @@ the earlier chat, the reads and the hindsight.
   the newest output that the kept conversation read before the turn, with its age; other reads
   cannot run. The turn carries the reads the real turn made. The ledger summary at the turn's end is
   the real turn's ("changed since your last turn"); a real rotation lists all open tasks.
+
+### Result: no switch
+
+The rule fails: **4 of 12 judged cases count against the fresh start** (at most 1 may).
+`rotateTokens` stays 400000 on Claude and the idle rule stays over 60K. No case landed, closed or
+approved what A did not. Spend: $10.15 for 12 cases (B $0.16 to $0.43 a case; a case with the
+kept-conversation control $1.82 to $2.26). Rows: `.work/bench-rotation/bench-rotation-after.jsonl`
+(git-ignored; the table below is the record).
+
+| Case | Project, kind | Context | B against A | Counted |
+|---|---|---|---|---|
+| 3882 | wsx, notes compaction | 201K | same, none wrong | no |
+| 861 | studio-app, notes compaction | 163K | same, none wrong | no |
+| 132 | pr-review, events | 162K | same, none wrong | no |
+| 4422 | wsx, owner | 174K | left #422, #423, #426 stalled; the kept replay restarted them | **yes** |
+| 788 | studio-app, events | 163K | landed #91 but did not hold #90 (`after`), so #90 re-voiced with the rejected engine | **yes** (major) |
+| 359 | pr-review, owner | 164K | same; B was right where A misread a diagram | no |
+| 255 | pr-review, owner | 160K | same act; the judge found A wrong (minor), B right | no |
+| 3562 | wsx, events | 162K | same land, B overstated the diff (minor) | no |
+| 435 | pr-review, owner | 163K | same act; B's table named the wrong criterion (③ against ④) | **yes** |
+| 3126 | wsx, events | 162K | same, none wrong | no |
+| 315 | pr-review, owner | 163K | left out four shared decisions still open with the owner | **yes** |
+| 2811 | wsx, events | 165K | same land, none wrong | no |
+
+Events turns and notes requests lost nothing (0 of 7). The losses are all in conversations where
+the owner and the manager were working through something (3 of 5 owner turns, plus 788).
+
+### What B lost and where it would have to live
+
+| Lost fact (case) | Kind | Where it lives today | Where it would have to live |
+|---|---|---|---|
+| #422, #423, #426 stalled and can restart now (4422) | task state the manager meant to act on | the ledger shows the states; the intent to restart only in the conversation | handover: the manager's pending acts |
+| #90 must wait on #91 (788) | a hold decided in the conversation, not yet set | nowhere until `wsx task after` runs | handover: pending acts; or set the hold before the reply |
+| low-close must not voice #90; next step is other Korean engines (788) | a review finding and a plan | the conversation and task results | `context.md` memo of the task, and the handover |
+| ③ differs (7 against 4), ④ is the same in both drafts (435) | review findings of an ongoing comparison | the conversation | the task's own notes or the handover |
+| ② scoring a/b, absolute or relative, Pingo, which item deducts (315) | owner decisions still open | the conversation (the last 4 exchanges at 600 characters do not reach them) | handover: open owner questions |
+
+All four counted cases lost **open threads**: pending acts, findings of a review in progress, and
+owner decisions still open. The ledger and `decisions.md` do not hold these, and four exchanges of
+600 characters cut them off. To pass, a rotation in the middle of work needs a handover of open
+threads written by the conversation before it ends (the #456 written handover, which tied on idle
+returns but was not measured on busy rotations). The wsx manager already keeps `pending.md` and
+`promises.md` by hand for the same reason. The cost model's saving ($14-16 a week) does not pay for
+that turn on every rotation without a new measurement.
