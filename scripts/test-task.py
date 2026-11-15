@@ -2834,7 +2834,7 @@ def part_core(created=None):
     assert not events_with('routine closed'), 'a routine that prints nothing costs no turn'
     # ^ The retrospect is one such routine: it posts counts of the chat above (the three
     # `routine run nightly` asks) and prints nothing.
-    state_dir = manager_log.parent.parent
+    state_dir = Path(created['task_dir']).parent
     js('task', 'routine', 'add', 'retrospect', '-p', 'demo', '--cron', '0 6 * * *',
        *('--arg=%s' % word for word in (sys.executable, '-B', ROOT / 'scripts' / 'retrospect.py', state_dir,
                                         '-p', 'demo', '--no-model', '--wsx', wsx)))
@@ -8206,7 +8206,7 @@ def part_host(created=None):
     alert_goal = work / 'alert-goal.md'
     alert_goal.write_text('Watch the alerts.\n')
     cli('task', 'chat', 'new', 'alerts', '--goal', str(alert_goal), '-p', 'demo', '--json')
-    alerts_log = manager_log.parent.parent / 'chats' / 'alerts' / 'log.jsonl'
+    alerts_log = manager_log.parent.parent / 'alerts' / 'log.jsonl'
     alerts_entries = lambda: [json.loads(line) for line in alerts_log.read_text().splitlines()] if alerts_log.exists() else []
     manager_alerts = len(lc_alerts(0))
     blocked_say = js('task', 'say', '--to', 'alerts', 'CFAUTH %s STATUS blocked' % (work / 'cf-release'))
