@@ -536,8 +536,8 @@ const trackTimers = () => evaluate(`(() => {
 })()`);
 const timers = (delay) => evaluate(`[...window.__timers.values()].filter((delay) => delay === ${delay}).length`);
 
-// Home ticks each second only while a row shows a live age (a working task or session): with
-// only ready tasks it has no such timer. ^ Home mounts again so its timer is the tracked one.
+// Home ticks each second only while a row shows a live age (a working task): with only ready
+// tasks it has no such timer. ^ Home mounts again so its timer is the tracked one.
 async function homeTimers() {
   await trackTimers();
   const pageModule = (name) => `import(new URL(${JSON.stringify(name)}, [...document.scripts].find((script) => script.type === 'module').src))`;
@@ -617,13 +617,38 @@ const plansRow = homeRows.find((row) => row.name === "plans");
 // ^ #1 waits for an answer; #2 is ready to land. The needs tray counts them with the project's open questions, as the pill does.
 const plansView = await evaluate(`fetch('api/tasks/${plansArg}').then((r) => r.json()).then((view) => ({ needs: view.needs.length, asks: view.asks.length }))`);
 if (plansRow?.status !== "#1 Waiting for your answer" || plansView.needs !== 2 || plansRow.count !== String(plansView.needs + plansView.asks)) await fail(`the plans row reads ${JSON.stringify([plansRow, plansView])}`);
-// Projects with agent sessions and no task: the sessions in words, and the time of the newest.
-// ^ `quiet` went done while the fixture was built, which can take over a minute.
-const sessionRows = { busy: /^2 working$/, quiet: /^claude in main done (just now|\d+m ago)$/, gone: /^claude in main exited$/ };
-for (const [name, status] of Object.entries(sessionRows)) {
+// Projects with agent sessions and no task: the row says only what the project has, never what
+// its agent sessions do (a session left in an error would pin its words on the row for good).
+// `busy` (working), `quiet` (done) and `gone` (exited) have no task: "No tasks yet", no time, no count.
+for (const name of ["busy", "quiet", "gone"]) {
   const row = homeRows.find((item) => item.name === name);
-  if (!status.test(row?.status ?? "") || row.count || !/ago|now/.test(row.state)) await fail(`the ${name} row reads ${JSON.stringify(row)}, not "${status}" with a time`);
+  if (row?.status !== "No tasks yet" || row.count || row.state) await fail(`the ${name} row reads ${JSON.stringify(row)}, not "No tasks yet" with no time`);
 }
+// ^ The fixture has no session in an error: add one to the page's store, read Home, then the
+// Sessions list, which keeps every state, and put the store back in the same step.
+const sessionStates = await evaluate(`(async () => {
+  const { state, update } = await import(new URL("store.js", [...document.scripts].find((script) => script.type === 'module').src));
+  const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+  const kept = state.sessions;
+  const gone = kept.find((session) => session.project.name === 'gone');
+  update({ sessions: [...kept, { ...gone, id: gone.id + 9000, label: 'broken', exited: false, agent: { ...gone.agent, attached: true, state: 'error' } }] });
+  await frames();
+  const home = [...document.querySelectorAll('.home-row')].map((row) => [row.querySelector('.row-label').firstChild.textContent, row.querySelector('.row-context').textContent, row.querySelector('.time')?.textContent ?? '']);
+  location.hash = '#/sessions';
+  for (let turn = 0; turn < 40 && !document.querySelector('h1.title')?.textContent.includes('Sessions'); turn++) await frames();
+  await frames();
+  const list = [...document.querySelectorAll('.rows .row')].map((row) => (row.querySelector('.row-project')?.textContent ?? '') + ' ' + (row.querySelector('.row-state span')?.textContent ?? ''));
+  update({ sessions: kept });
+  location.hash = '#/';
+  await frames();
+  return { home, list };
+})()`);
+const goneHome = sessionStates.home.find(([name]) => name === "gone");
+if (goneHome?.[1] !== "No tasks yet" || goneHome[2]) await fail(`an agent session in an error shows on its project's Home row: ${JSON.stringify(goneHome)}`);
+for (const want of [/^busy working/, /^quiet done/, /^gone exited/, /^gone error/]) {
+  if (!sessionStates.list.some((line) => want.test(line))) await fail(`the Sessions list lacks ${want}: ${JSON.stringify(sessionStates.list)}`);
+}
+await until("document.querySelectorAll('.home-row').length >= 3", "home did not come back after the session states");
 await tabsInView();
 await oneWorkingColor("home", 1);
 // ^ The server runs this page's build: no new-version pill.

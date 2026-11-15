@@ -142,7 +142,7 @@ Motion shows that something arrived, changed or left; nothing moves for its own 
 | State | Motion |
 |---|---|
 | Loading | One placeholder (`Loading` in `lib.js`, two shimmering bars; the words "Loading…" are for a screen reader) replaces the static line on every screen that waits for data. The content that arrives fades in. |
-| Home row | Typing dots (the manager's turn runs: `busy` of `GET api/tasks/<project>`) before the status line; a pulse dot while the project has a working task or session; the status line fades in when its text changes. The `.count` badge pops in and again when the number changes; "N working" fades in. The list reorders with FLIP (`useFlip`): rows glide, new rows fade in, a row that goes fades out where it was. |
+| Home row | Typing dots (the manager's turn runs: `busy` of `GET api/tasks/<project>`) before the status line; a pulse dot while the project has a working task; the status line fades in when its text changes. The `.count` badge pops in and again when the number changes; "N working" fades in. The list reorders with FLIP (`useFlip`): rows glide, new rows fade in, a row that goes fades out where it was. |
 | Chat | The working bar slides in; a sent message eases from the muted pending color; Jump to latest fades in and out; "Uploading…" pulses. |
 | Notices | A notice slides and fades in and out. A toast shows a thin bar that drains over its 4 s; the offline notice pulses slowly. |
 | State words | A working session's word in the top row has a pulse dot; a tone change fades in color. |

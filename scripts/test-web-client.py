@@ -3595,7 +3595,7 @@ def task_journey(args):
     try:
         # ^ Its own TMPDIR: the task host sockets' folder goes away with the run.
         # `calm` has no task and no session: home lists it last. With --browser, `busy`, `quiet` and
-        # `gone` have agent sessions and no task: home words their rows from the sessions.
+        # `gone` have agent sessions and no task: their Home rows say "No tasks yet"; the Sessions list has the sessions.
         # `plans` has a task that waits for the owner's answer and one ready to land.
         home, state, project, other, calm, plans, bin_dir, tmp = (work / name for name in ('h', 's', 'demo', 'ui', 'calm', 'plans', 'bin', 't'))
         for folder in (home, state, project, other, calm, plans, bin_dir, tmp):
