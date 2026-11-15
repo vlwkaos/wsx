@@ -2046,7 +2046,9 @@ async function followEnd(where) {
   // inserted above (as older messages would be) and removed again keep the bubble in view where it is.
   const drift = [];
   // ^ The iOS path (anchoring off) runs five times: one frame that moves is not a flake to wait out.
-  for (const anchoring of ["auto", ...Array(5).fill("none")]) {
+  // Only the first pass of each kind has the manager reply: more replies would push the chat's
+  // older rows (the other manager's messages, read below) out of the newest 60.
+  for (const [pass, anchoring] of ["auto", ...Array(5).fill("none")].entries()) {
     // ^ iOS Safari has no CSS scroll anchoring: with it off, Chrome scrolls as Safari does.
     await evaluate(`document.querySelector('.log').style.overflowAnchor = '${anchoring}'`);
     await evaluate(scrolledUp);
@@ -2058,9 +2060,11 @@ async function followEnd(where) {
     // that moves says which step and what moved (the log's scroll, its box, or the page).
     const stage = (name) => evaluate(`window.wsxStep = ${JSON.stringify(name)}`);
     await watch(`['probe', ${probe}, window.wsxStep, (() => { const log = document.querySelector('.log'); return [log.scrollTop, log.scrollHeight, log.clientHeight, log.getBoundingClientRect().top, document.scrollingElement.scrollTop].map(Math.round); })()]`);
-    await stage("reply below");
-    await diagramReply();
-    await moved("reply below");
+    if (pass < 2) {
+      await stage("reply below");
+      await diagramReply();
+      await moved("reply below");
+    }
     await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 }))`);
     await stage("since line");
     await evaluate("document.dispatchEvent(new Event('visibilitychange'))");
