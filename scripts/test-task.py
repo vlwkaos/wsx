@@ -7032,7 +7032,7 @@ def part_host(created=None):
     mig_store = state / 'wsx/tasks' / mig_id
     mig_n = js('task', 'new', '-p', 'mig', 'WORK m.txt')['id']
     wait(lambda: js('task', 'show', mig_n, '-p', 'mig')['state'] == 'ready', 'the task of the mig repo', 60)
-    cli('session', 'delete', 'task-mig', '-p', 'mig', ok=False)
+    cli('session', 'delete', 'task-mig', '-p', 'mig')
     wait(lambda: not leftovers('task manager-host ' + mig_id), 'the mig manager host leaves', 30)
     # ^ Put the store back as before chats: the home chat's folder is `manager/`, a second chat is `chats/side/`.
     old_home, old_side = mig_store / 'manager', mig_store / 'chats/side'
@@ -7112,7 +7112,7 @@ def part_host(created=None):
     js('task', 'chat', 'home', 'mig', '-p', 'mig')
     js('task', 'chat', 'close', 'mside', '-p', 'mig')
     js('task', 'close', mig_n, '--discard', '-p', 'mig')
-    cli('session', 'delete', 'task-mig', '-p', 'mig', ok=False)
+    cli('session', 'delete', 'task-mig', '-p', 'mig')
     wait(lambda: not leftovers('task manager-host ' + mig_id), 'the mig hosts leave', 30)
     registry_file.write_text(registry_plain)
     shutil.rmtree(mig_store)
