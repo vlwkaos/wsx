@@ -153,6 +153,21 @@ const rows = () => evaluate(`[...document.querySelectorAll('.reservoir-list .nee
   ${NUMBER}, row.querySelector('.row-label').textContent, row.querySelector('.row-context')?.textContent ?? '',
   [...row.querySelectorAll('.need-action')].map((node) => node.title).join('+')])`);
 const rowOf = (label) => `[...document.querySelectorAll('.reservoir-list .need')].find((row) => (${NUMBER} + ' ' + row.querySelector('.row-label').textContent).trim().startsWith(${JSON.stringify(label)}))`;
+// ^ A Running row's words, read again for 10 s; the failure says what the row, the page's store and the
+// server's overview hold for the task, to tell a page that missed an event from a server that sent none.
+async function rowReads(task, good, why) {
+  const row = `(${rowOf(`#${task}`)}?.querySelector('.row-context').textContent ?? '')`;
+  for (let waited = 0; !good(await evaluate(row)); waited += 200) {
+    if (waited > 10_000) {
+      const page = await evaluate(`(async () => { const { state } = await import(new URL('store.js', document.querySelector('script[type=module]').src));
+        const entry = (overview) => ['working', 'tasks', 'needs'].map((list) => (overview?.[list] ?? []).filter((item) => (item.task ?? item.id) === ${task}).map((item) => [list, item.status?.label, item.flow?.phrase]));
+        const served = await fetch('api/tasks/${plansArg}').then((reply) => reply.json());
+        return { hash: location.hash, row: ${row}, rows: [...document.querySelectorAll('.reservoir-list .need')].map((node) => node.textContent.trim().slice(0, 80)), store: entry(state.tasks[${plansArg}]), served: entry(served) }; })()`);
+      await fail(`${why}: ${JSON.stringify(page)}; wsx task show says ${JSON.stringify(show(task).status)}`);
+    }
+    await pause(200);
+  }
+}
 // One motion: the sheet's top and left on each animation frame, from before `open` to 700 ms
 // after the sheet is first seen open. On each axis it moves one way only, never back, and its
 // last frame is where it rests. On a phone it rises from below; on a wide screen it comes in
@@ -3614,19 +3629,14 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   await until("!document.querySelector('dialog.task-sheet')", "the scenario wait's sheet did not close");
   await openReservoir("running");
   // ^ The server publishes the overview on its next watch step, up to 2 s after the wait began.
-  await until(`${rowOf(`#${behind}`)}?.querySelector('.row-context').textContent.startsWith(${JSON.stringify(shownStatus.label)}) ?? false`,
-    `the scenario wait's Running row does not read "${shownStatus.label}"`, 10);
+  await rowReads(behind, (text) => text.startsWith(shownStatus.label), `the scenario wait's Running row does not read "${shownStatus.label}"`);
   // A wait for another task (`wsx task after`): the Running row says what it waits after
   // (`flow.phrase`), the sheet's Waits on row and sentence give the reason, and the sheet of the
   // task waited for lists who waits as chips under Blocks (docs/tasks.md "After another task").
   wsx("task", "after", behind, scenario, "WORK after.txt", "--because", "check");
   const reason = `then waits for #${scenario}: its checks fail`;
   if (show(behind).status.wait !== reason || show(scenario).status.waited_by?.[0]?.task !== behind) await fail(`wsx task show says ${JSON.stringify([show(behind).status, show(scenario).status])}`);
-  const afterRow = `(${rowOf(`#${behind}`)}?.querySelector('.row-context').textContent ?? '')`;
-  for (let waited = 0; !(await evaluate(`${afterRow}.includes(${JSON.stringify(`after #${scenario}`)})`)); waited += 200) {
-    if (waited > 10_000) await fail(`the waiting task's Running row does not say after #${scenario}: ${JSON.stringify([await evaluate(afterRow), await evaluate("[...document.querySelectorAll('.reservoir-list .need')].map((row) => row.textContent.trim().slice(0, 80))"), show(behind).status])}`);
-    await pause(200);
-  }
+  await rowReads(behind, (text) => text.includes(`after #${scenario}`), `the waiting task's Running row does not say after #${scenario}`);
   await shot("running-after-reason", ".composer-send");
   await open(scenario);
   await until(`document.querySelector('.story-next')?.textContent.endsWith('Waited for by #${behind}.')`, `#${scenario}'s sheet does not say who waits for it`, 10);
