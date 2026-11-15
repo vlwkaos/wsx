@@ -330,10 +330,12 @@ def summary(state, baseline):
 
 
 class Agent:
-    def __init__(self, launch, env, cwd, model, real=False, resume=None):
-        # ^ `real` runs on the owner's real conversations (`idle`): read-only tools, so it acts on
-        # nothing; `resume` forks one of them.
-        tools = (['--permission-mode', 'default', '--tools', 'Read,Glob,Grep']
+    def __init__(self, launch, env, cwd, model, real=False, resume=None, bash=False):
+        # ^ `real` runs on the owner's real conversations (`idle`, `events`): read-only tools, so it
+        # acts on nothing; `resume` forks one of them. `bash` (`events`) adds Bash, whose `wsx` is
+        # the replay's recorder, at the manager's effort.
+        tools = ((['--permission-mode', 'bypassPermissions', '--tools', 'Bash,Read,Glob,Grep', '--effort', 'high']
+                  if bash else ['--permission-mode', 'default', '--tools', 'Read,Glob,Grep'])
                  + (['--resume', resume, '--fork-session'] if resume else [])
                  if real else ['--permission-mode', 'bypassPermissions', '--allowedTools', 'Read', 'Glob', 'Grep',
                                'WebFetch', 'WebSearch', 'Skill', 'Agent'])
@@ -358,7 +360,7 @@ class Agent:
         timer.start()
         started = time.monotonic()
         self.write({'type': 'user', 'message': {'role': 'user', 'content': text}})
-        tools, context, models, said = {}, None, set(), []
+        tools, context, first, models, said = {}, None, None, set(), []
         try:
             for line in self.proc.stdout:
                 value = json.loads(line)
@@ -367,6 +369,7 @@ class Agent:
                     models.add(message.get('model'))
                     if message.get('usage'):
                         context = context_of(message['usage'])
+                        first = first or context
                     for block in message.get('content', []):
                         if block.get('type') == 'text' and block.get('text', '').strip():
                             said.append(block['text'].strip())
@@ -382,7 +385,7 @@ class Agent:
                             'cache_read': usage.get('cache_read_input_tokens', 0),
                             'cache_write': usage.get('cache_creation_input_tokens', 0),
                             'summed_context': context_of(usage),
-                            'last_context': context, 'cost_usd': round(cost, 5), 'tools': tools,
+                            'first_context': first, 'last_context': context, 'cost_usd': round(cost, 5), 'tools': tools,
                             'reply': '\n\n'.join(said) or value.get('result', '')}
         finally:
             timer.cancel()
@@ -518,8 +521,8 @@ STALE_SCHEMA = {'type': 'object', 'required': ['claims_limit', 'tasks'],
                 'properties': {'claims_limit': {'type': 'boolean'}, 'tasks': {'type': 'array', 'items': {'type': 'integer'}}}}
 
 
-def ask_sonnet(system, schema, data):
-    run = subprocess.run(['claude', '-p', '--model', 'sonnet', '--effort', 'high', '--output-format', 'json',
+def ask_sonnet(system, schema, data, model='sonnet'):
+    run = subprocess.run(['claude', '-p', '--model', model, '--effort', 'high', '--output-format', 'json',
                           '--no-session-persistence', '--tools', '', '--system-prompt', system,
                           '--json-schema', json.dumps(schema)],
                          input=json.dumps(data), capture_output=True, text=True, cwd=os.environ.get('TMPDIR', '/'),
@@ -559,8 +562,8 @@ PRICE = {'input': 4.0, 'cache_read': 0.2, 'cache_write': 8.0, 'output': 20.0}
 ASK_TOKENS = 500
 
 
-def priced(row):
-    return round(sum(row[k] * rate for k, rate in PRICE.items()) / 1e6, 4)
+def priced(row, rates=PRICE):
+    return round(sum(row[k] * rate for k, rate in rates.items()) / 1e6, 4)
 
 
 def warm_ask(row):
@@ -600,24 +603,28 @@ def transcript(path):
     return lines
 
 
-def holding(text):
-    """The manager transcripts that hold `text` (a run with no quote or backslash, as JSON keeps it)."""
+def holding(text, root=TRANSCRIPTS):
+    """The manager transcripts under `root` that hold `text` (a run with no quote or backslash, as
+    JSON keeps it)."""
     probe = max(re.findall(r'[^"\\\n]{1,60}', text) or [''], key=len)
     if len(probe) < 8:
         return []
-    found = subprocess.run(['rg', '-l', '-F', probe, str(TRANSCRIPTS)], capture_output=True, text=True).stdout
+    found = subprocess.run(['rg', '-l', '-F', probe, str(root)], capture_output=True, text=True).stdout
     return [Path(f) for f in found.split() if not Path(f).name.startswith('agent-')]
 
 
+def prompt_text(line):
+    """A user line's own text (a prompt, not a tool result), else ''."""
+    if line.get('type') != 'user':
+        return ''
+    content = line['message'].get('content')
+    if isinstance(content, list):
+        content = ''.join(b.get('text', '') for b in content if b.get('type') == 'text')
+    return content or ''
+
+
 def first_text(lines):
-    for line in lines:
-        if line.get('type') == 'user':
-            content = line['message'].get('content')
-            if isinstance(content, list):
-                content = ''.join(b.get('text', '') for b in content if b.get('type') == 'text')
-            if content:
-                return content
-    return ''
+    return next((text for text in map(prompt_text, lines) if text), '')
 
 
 def idle_returns(count):
@@ -762,11 +769,446 @@ def run_idle(options, out):
             sys.exit('over the budget of %.0f USD' % options.budget)
 
 
+# ^ USD per million tokens of claude-sonnet-5-5 (the claude-api reference, prices of 2026-10-06):
+# a cache read costs what Opus 5.5's does; a cache write is twice the input price, as PRICE's is.
+SONNET_PRICE = {'input': 2.0, 'cache_read': 0.2, 'cache_write': 4.0, 'output': 10.0}
+STATE = Path.home() / '.local/state/wsx/tasks'
+CLAUDE_PROJECTS = Path.home() / '.claude/projects'
+CACHE_MS = 3_600_000
+DAY_MS = 86_400_000
+# ^ `wsx task` verbs that only read (crates/wsx/src/task/args.rs); every other verb acts.
+READ_VERBS = 'list show why review ledger deployed digest search chat help manager'
+KINDS = ('failure', 'question', 'ready', 'landed', 'deploy', 'other')
+EVENT_WSX = r'''#!/usr/bin/env python3
+import json, os, sys
+# ^ wsx bench replay: every call is recorded; a read cannot show the state of the replayed turn.
+stdin = sys.stdin.read() if '-' in sys.argv[2:] else None
+with open(os.environ['BENCH_CALLS'], 'a') as out:
+    out.write(json.dumps({'argv': sys.argv[1:], 'stdin': stdin}) + '\n')
+verb = sys.argv[2] if sys.argv[1:2] == ['task'] and len(sys.argv) > 2 else ''
+if verb in os.environ['BENCH_READS'].split() or '--help' in sys.argv:
+    print('wsx bench replay: reads cannot run here; the turn lists the reads made then')
+else:
+    print(json.dumps({'ok': True, 'message': 'wsx bench replay: recorded, not run'}, indent=1))
+'''
+REPLAY_NOTE = ("\n\n(wsx bench replay, not from the host: this turn runs again on a copy of the conversation. "
+               "`wsx task` commands that act are recorded, not run, and answer ok. `wsx task` reads cannot "
+               "run, and git and files show today's checkout, not the state of then. The reads this turn "
+               "made then, with their output:\n%s\nDecide and answer as you would have then.)")
+EVENT_JUDGE = """You judge turns of a software project manager agent. The manager runs coding tasks
+for its owner: it reviews a ready task's result and diff, then lands it (`land`), sends it back
+with a change (`add`, `steer`), closes it, starts a task (`new`), asks the owner, or does nothing
+when the events need nothing. `events` is what woke the turn, `reads` what the turn could read
+then, `later` what the log shows afterwards (the owner's next messages and the tasks' later events:
+hindsight, not always caused by the turn). Each of `answers` is one run of the same turn: the
+`wsx task` commands that act (`acts`) and the reply to the owner. For each answer give `decision`
+(a few words); `same_as`, the labels of the other answers that decided the same in substance (the
+same tasks landed, sent back, closed, started or asked about; wording and extra reads do not
+matter); `wrong`: "none", "minor" (a needless or missing small step, or a reply that misleads a
+little) or "major" (lands, closes or approves what should not; leaves a failure, a worker's
+question or an owner need unhandled; sends work the wrong way; or claims what is false), with
+`why` in at most 25 words; and `gaps`, the problems in a task's result this answer named, in a
+few words each. Do not prefer an answer for its length or style. Answer only through the schema."""
+EVENT_SCHEMA = {'type': 'object', 'required': ['answers'], 'properties': {'answers': {'type': 'array', 'items': {
+    'type': 'object', 'required': ['label', 'decision', 'same_as', 'wrong', 'why', 'gaps'],
+    'properties': {'label': {'type': 'string'}, 'decision': {'type': 'string'},
+                   'same_as': {'type': 'array', 'items': {'type': 'string'}},
+                   'wrong': {'enum': ['none', 'minor', 'major']}, 'why': {'type': 'string'},
+                   'gaps': {'type': 'array', 'items': {'type': 'string'}}}}}}}
+CONTEXT_ASK = ("wsx bench: run nothing and answer in one line: quote the first eight words of the "
+               "owner's last message in this conversation.")
+
+
+def rates(models):
+    return SONNET_PRICE if any('sonnet' in m for m in models) else PRICE
+
+
+def event_kind(text):
+    """The kind of an events message: the most urgent of its event lines (docs/tasks.md "Manager")."""
+    found = {'other'}
+    for line in text.splitlines():
+        if re.match(r'#\d+ failed|deploy of \S+ failed|checks? fail', line):
+            found.add('failure')
+        elif re.match(r'#\d+ (waiting|paused)', line) and re.search(r'waits on (plan|owner|manager)|\?$', line):
+            found.add('question')
+        elif re.match(r'#\d+ ready', line):
+            found.add('ready')
+        elif re.match(r'#\d+ (landed|closed)', line):
+            found.add('landed')
+        elif line.startswith('deploy of '):
+            found.add('deploy')
+    return min(found, key=KINDS.index)
+
+
+def manager_turns(days):
+    """Each project's manager turns with usage in the last `days`, in log order. `review_due`
+    approximates turn_model's rule (crates/wsx/src/task/manager.rs): some task's newest event, under
+    a day old, is `ready`."""
+    since = time.time() * 1000 - days * DAY_MS
+    projects = {}
+    for log in sorted(STATE.glob('*/manager/log.jsonl')):
+        entries = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+        messages = {e['id']: e for e in entries if e['kind'] == 'message' and 'id' in e}
+        newest, session, turns = {}, 0, []
+        for e in entries:
+            if e['kind'] == 'rotated':
+                session += 1
+            if e['kind'] == 'message' and e.get('from') == 'events':
+                for line in e['text'].splitlines():
+                    head = re.match(r'#(\d+) (\w+)', line)
+                    if head:
+                        newest[int(head.group(1))] = (head.group(2), e['unix_ms'])
+            if e['kind'] != 'reply' or not e.get('usage') or e['unix_ms'] < since:
+                continue
+            ids = e.get('to') or []
+            events = [messages[i] for i in ids if messages.get(i, {}).get('from') == 'events']
+            turns.append({'project': log.parent.parent.name, 'id': e['id'], 'ms': e['unix_ms'], 'session': session,
+                          'usage': e['usage'], 'ids': ids, 'events_only': bool(ids) and len(events) == len(ids),
+                          'kind': event_kind('\n'.join(m['text'] for m in events)), 'reply': e.get('text', ''),
+                          'review_due': any(word == 'ready' and e['unix_ms'] - ms < DAY_MS
+                                            for word, ms in newest.values())})
+        projects[log.parent.parent.name] = turns
+    return projects
+
+
+def token_cost(usage, rates_):
+    return (usage['input_tokens'] * rates_['input'] + usage['cache_read_tokens'] * rates_['cache_read']
+            + usage['cache_creation_tokens'] * rates_['cache_write'] + usage['output_tokens'] * rates_['output']) / 1e6
+
+
+def event_cost(projects, days, ratio=1.0):
+    """What `eventModel: sonnet` would have cost on the logged turns, per 7 days. A routed turn costs
+    its own tokens at Sonnet's rates, times `ratio` (Sonnet's tokens over Opus's on the replays).
+    Claude caches per model: the first Sonnet call after Opus turns writes what Sonnet's cache lacks
+    (all of it after a rotation or an hour), and the next Opus turn writes what Sonnet's turns added.
+    That holds only where the logged turn read a warm cache; a cold one paid its write already."""
+    out = dict(turns=0, events_only=0, routed=0, switches=0, opus_usd=0.0, sonnet_usd=0.0, sonnet_write_usd=0.0,
+               opus_write_usd=0.0)
+    gap_s = SONNET_PRICE['cache_write'] - SONNET_PRICE['cache_read']
+    gap_o = PRICE['cache_write'] - PRICE['cache_read']
+    for turns in projects.values():
+        cached, before = {}, None
+        for t in turns:
+            out['turns'] += 1
+            out['events_only'] += t['events_only']
+            warm = bool(before) and before['session'] == t['session'] and t['ms'] - before['ms'] < CACHE_MS
+            prefix = before['usage'].get('context_tokens', 0) if warm else 0
+            model = 'sonnet' if t['events_only'] and not t['review_due'] else 'opus'
+            last = cached.get(model)
+            # ^ Before its first turn in the window, Opus holds what the log shows it read.
+            held = (prefix if last is None and model == 'opus' else
+                    last[1] if last and last[0] == t['session'] and t['ms'] - last[2] < CACHE_MS else 0)
+            missing = max(0, prefix - held)
+            if model == 'sonnet':
+                out['routed'] += 1
+                out['switches'] += held == 0 and warm
+                out['opus_usd'] += token_cost(t['usage'], PRICE)
+                out['sonnet_usd'] += token_cost(t['usage'], SONNET_PRICE) * ratio
+                out['sonnet_write_usd'] += missing * gap_s / 1e6
+            else:
+                out['opus_write_usd'] += missing * gap_o / 1e6
+            cached[model] = (t['session'], t['usage'].get('context_tokens', 0), t['ms'])
+            before = t
+    week = 7 / days
+    out = {k: round(v * week, 2) if k.endswith('usd') else v for k, v in out.items()}
+    out['saving_usd'] = round(out['opus_usd'] - out['sonnet_usd'] - out['sonnet_write_usd'] - out['opus_write_usd'], 2)
+    out['saving_pct'] = round(100 * out['saving_usd'] / out['opus_usd'], 1) if out['opus_usd'] else 0.0
+    return out
+
+
+def event_bursts(projects, rng):
+    """Up to 3 event-only turns in a row (one conversation, each within an hour of the last), in an
+    order that takes the first turn's kinds in turn and, within a kind, the least used project."""
+    bursts = {kind: [] for kind in KINDS}
+    for turns in projects.values():
+        k = 0
+        while k < len(turns):
+            run = [turns[k]]
+            while turns[k]['events_only'] and len(run) < 3 and k + len(run) < len(turns):
+                follow = turns[k + len(run)]
+                if not follow['events_only'] or follow['session'] != run[-1]['session'] or follow['ms'] - run[-1]['ms'] > CACHE_MS:
+                    break
+                run.append(follow)
+            if turns[k]['events_only']:
+                bursts[run[0]['kind']].append(run)
+            k += len(run)
+    for runs in bursts.values():
+        rng.shuffle(runs)
+    used = {}
+    while any(bursts.values()):
+        for kind in KINDS:
+            if bursts[kind]:
+                run = min(bursts[kind], key=lambda r: used.get(r[0]['project'], 0))
+                bursts[kind].remove(run)
+                used[run[0]['project']] = used.get(run[0]['project'], 0) + 1
+                yield run
+
+
+def acts(command):
+    """The acting `wsx task` calls of one shell command, as 'verb #n'."""
+    found = []
+    for verb, rest in re.findall(r'wsx task ([a-z][\w-]*)([^|;&\n]*)', command):
+        if verb not in READ_VERBS.split() and '--help' not in rest:
+            number = re.search(r'(?<![\w-])#?(\d+)\b', rest)
+            found.append(verb + (' #' + number.group(1) if number else ''))
+    return found
+
+
+def original_turn(turn):
+    """The turn in the manager's transcript: (its lines before the turn, the prompt, the reads it
+    made, what it acted, its reply). The prompt names the first events message."""
+    probe = 'Events (message %d)' % turn['ids'][0]
+    paths = [p for p in holding(probe, CLAUDE_PROJECTS) if 'subagents' not in p.parts]
+    # ^ A later conversation's handover can quote the prompt: the transcript with the reply first.
+    head = max(re.findall(r'[^"\\\n]{1,60}', turn['reply']) or [''], key=len)
+    paths.sort(key=lambda p: head not in p.read_text())
+    for path in paths:
+        lines = transcript(path)
+        start = next((k for k, line in enumerate(lines) if probe in prompt_text(line)), None)
+        if start is None:
+            continue
+        end = next((k for k in range(start + 1, len(lines)) if prompt_text(lines[k])), len(lines))
+        uses, results, said = {}, {}, []
+        for line in lines[start + 1:end]:
+            content = line.get('message', {}).get('content')
+            for block in content if isinstance(content, list) else []:
+                if block.get('type') == 'tool_use':
+                    uses[block['id']] = block
+                elif block.get('type') == 'tool_result':
+                    result = block.get('content')
+                    results[block['tool_use_id']] = (result if isinstance(result, str) else
+                                                     ''.join(b.get('text', '') for b in result or [] if isinstance(b, dict)))
+                elif block.get('type') == 'text' and line.get('type') == 'assistant':
+                    said.append(block['text'].strip())
+        reads, done = [], []
+        for key, block in uses.items():
+            command = block['input'].get('command') if block['name'] == 'Bash' else None
+            done += acts(command or '')
+            if not acts(command or ''):
+                shown = command or '%s %s' % (block['name'], json.dumps(block['input'])[:300])
+                reads.append('$ %s\n%s' % (shown, results.get(key, '')[:2000]))
+        return {'path': path, 'before': lines[:start], 'prompt': prompt_text(lines[start]),
+                'reads': '\n\n'.join(reads)[:12000] or '(none)', 'acts': sorted(done), 'reply': '\n\n'.join(said)}
+    return None
+
+
+def later(turn, projects_log):
+    """Hindsight for the judge: the owner's next messages and the turn's tasks' later events, 12 h."""
+    entries, tasks = projects_log, set(re.findall(r'#(\d+)', turn['prompt']))
+    after = [e for e in entries if turn['ms'] < e['unix_ms'] < turn['ms'] + 12 * CACHE_MS and e['kind'] == 'message']
+    owner = ['Owner: ' + e['text'][:300] for e in after if e.get('from') == 'owner'][:3]
+    events = [line[:200] for e in after if e.get('from') == 'events' for line in e['text'].splitlines()
+              if re.match(r'#(\d+) ', line) and re.match(r'#(\d+) ', line).group(1) in tasks][:8]
+    return owner + events
+
+
+def replay_arm(model, launch, env, base, session, burst, results):
+    """One arm of a burst: the forked conversation on `model`, its turns in order."""
+    calls = base / ('calls-%s.jsonl' % model)
+    agent = Agent(launch, {**env, 'BENCH_CALLS': str(calls)}, base, model, real=True, resume=session, bash=True)
+    try:
+        for turn in burst:
+            calls.write_text('')
+            row = agent.turn(turn['prompt'] + REPLAY_NOTE % turn['reads'])
+            row['acts'] = sorted(acts(' ; '.join(' '.join(['wsx'] + json.loads(line)['argv'])
+                                                for line in calls.read_text().splitlines() if line.strip())))
+            results.setdefault(model, []).append(row)
+    except Exception as error:
+        results.setdefault('errors', []).append('%s: %s' % (model, error))
+    finally:
+        agent.stop()
+
+
+def warm(row, position):
+    """A replay row priced as the live turn would be: the fork's first call writes the whole
+    conversation once, which the live manager reads from its warm cache."""
+    moved = min(row['cache_write'], row['first_context'] or 0) if position == 0 else 0
+    return priced({**row, 'cache_write': row['cache_write'] - moved, 'cache_read': row['cache_read'] + moved},
+                  rates(row['models']))
+
+
+def run_events(options, out):
+    """`events`: the cost model on the logged turns, then real event-only bursts replayed on Opus and
+    Sonnet from a fork of the manager's own transcript, judged blind by Opus (docs/design/manager-event-model.md)."""
+    projects = manager_turns(options.days)
+    print(json.dumps({'cost_model': event_cost(projects, options.days)}), flush=True)
+    path = Path(out.name)
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    done = {r['id'] for r in rows if 'id' in r}
+    spent, turns_done = 0.0, len(rows)
+    logs = {name: [json.loads(line) for line in (STATE / name / 'manager/log.jsonl').read_text().splitlines() if line.strip()]
+            for name in projects}
+    source = (ROOT / 'crates/wsx/src/task/instructions.rs').read_text()
+    env = {k: v for k, v in os.environ.items() if not k.startswith('WSX_')}
+    rng = random.Random(462)
+    for burst in event_bursts(projects, rng):
+        if turns_done >= options.samples:
+            break
+        if burst[0]['id'] in done:
+            continue
+        found = []
+        for turn in burst:
+            original = original_turn(turn)
+            if not original or found and original['path'] != found[0]['path']:
+                break
+            found.append({**turn, **original})
+        if not found:
+            print('turn %s %d: no transcript, left out' % (burst[0]['project'], burst[0]['id']), flush=True)
+            continue
+        name = found[0]['project'].rsplit('-', 1)[0]
+        notes = STATE / found[0]['project'] / 'manager'
+        launch = instructions(source, name, str(notes / 'notes'), str(notes / 'overview.md'))
+        base = Path(tempfile.mkdtemp(prefix='bench-events-', dir=os.environ.get('TMPDIR')))
+        (base / 'bin').mkdir()
+        (base / 'bin/wsx').write_text(EVENT_WSX)
+        (base / 'bin/wsx').chmod(0o755)
+        arm_env = {**env, 'PATH': '%s:%s' % (base / 'bin', env['PATH']), 'BENCH_READS': READ_VERBS}
+        cut = stamp_ms(next(line for line in transcript(found[0]['path']) if found[0]['prompt'] == prompt_text(line)))
+        session, folder = fork_copy(found[0]['before'], cut, base)
+        results = {}
+        try:
+            arms = [threading.Thread(target=replay_arm, args=(model, launch, arm_env, base, session, found, results))
+                    for model in (MAIN_MODEL, EVENT_MODEL)]
+            for arm in arms:
+                arm.start()
+            for arm in arms:
+                arm.join()
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+            shutil.rmtree(base, ignore_errors=True)
+        spent += sum(priced(r, rates(r['models'])) for model in (MAIN_MODEL, EVENT_MODEL) for r in results.get(model, []))
+        for position, turn in enumerate(found):
+            arms = {'original': {'acts': turn['acts'], 'reply': turn['reply']}}
+            for model in (MAIN_MODEL, EVENT_MODEL):
+                if position < len(results.get(model, [])):
+                    arms[model] = results[model][position]
+            if len(arms) < 3:
+                print('turn %d: %s' % (turn['id'], results.get('errors')), flush=True)
+                break
+            labels = dict(zip(arms, random.Random(turn['id']).sample('XYZ', 3)))
+            verdict, cost = ask_sonnet(EVENT_JUDGE, EVENT_SCHEMA, {
+                'project': name, 'events': turn['prompt'][:6000], 'reads': turn['reads'][:8000],
+                'later': later(turn, logs[turn['project']]),
+                'answers': sorted(({'label': labels[a], 'acts': arms[a]['acts'], 'reply': arms[a]['reply'][:3000]}
+                                   for a in arms), key=lambda r: r['label'])}, model=MAIN_MODEL)
+            spent += cost
+            by_label = {r['label']: r for r in verdict['answers']}
+            name_of = {label: arm for arm, label in labels.items()}
+            row = {'id': turn['id'], 'project': turn['project'], 'kind': turn['kind'], 'position': position,
+                   'review_due': turn['review_due'], 'logged_usd': round(token_cost(turn['usage'], PRICE), 4),
+                   'judge_usd': round(cost, 4)}
+            for arm in arms:
+                judged = by_label.get(labels[arm], {})
+                row[arm] = {'acts': arms[arm]['acts'], 'wrong': judged.get('wrong'), 'why': judged.get('why'),
+                            'decision': judged.get('decision'), 'gaps': judged.get('gaps'),
+                            'same_as': sorted(name_of.get(l, l) for l in judged.get('same_as', []))}
+                if arm != 'original':
+                    row[arm].update({k: arms[arm][k] for k in ('input', 'cache_read', 'cache_write', 'output',
+                                                               'first_context', 'last_context', 'models', 'wall_s')},
+                                    usd=priced(arms[arm], rates(arms[arm]['models'])), warm_usd=warm(arms[arm], position),
+                                    reply=arms[arm]['reply'])
+            out.write(json.dumps(row) + '\n')
+            out.flush()
+            turns_done += 1
+            print(json.dumps({k: (v if not isinstance(v, dict) else {x: v[x] for x in ('acts', 'wrong', 'why')})
+                              for k, v in row.items()}), flush=True)
+        print('spent so far: %.3f USD, %d turns' % (spent, turns_done), flush=True)
+        if spent > options.budget:
+            print('over the budget of %.0f USD' % options.budget, flush=True)
+            break
+    summary = event_summary([json.loads(line) for line in path.read_text().splitlines() if line.strip()])
+    print(json.dumps({'summary': summary}, indent=1), flush=True)
+    print(json.dumps({'cost_model': event_cost(projects, options.days, summary.get('token_ratio', 1.0))}), flush=True)
+
+
+def event_summary(rows):
+    """The bench table: wrong decisions per arm, the pairs where only one model was wrong, agreement,
+    and cost per turn."""
+    rows = [r for r in rows if 'id' in r]
+    arms = (MAIN_MODEL, EVENT_MODEL)
+    out = {'turns': len(rows), 'projects': len({r['project'] for r in rows}),
+           'kinds': {k: sum(r['kind'] == k for r in rows) for k in KINDS}}
+    for arm in ('original',) + arms:
+        out[arm] = {'wrong_minor': sum(r[arm]['wrong'] == 'minor' for r in rows),
+                    'wrong_major': sum(r[arm]['wrong'] == 'major' for r in rows)}
+    bad = lambda r, arm: r[arm]['wrong'] in ('minor', 'major')
+    out['only_sonnet_wrong'] = sum(bad(r, EVENT_MODEL) and not bad(r, MAIN_MODEL) for r in rows)
+    out['only_opus_wrong'] = sum(bad(r, MAIN_MODEL) and not bad(r, EVENT_MODEL) for r in rows)
+    out['only_sonnet_major'] = sum(r[EVENT_MODEL]['wrong'] == 'major' and r[MAIN_MODEL]['wrong'] != 'major' for r in rows)
+    for a, b in (('original', MAIN_MODEL), ('original', EVENT_MODEL), (MAIN_MODEL, EVENT_MODEL)):
+        out['same_acts %s=%s' % (a, b)] = sum(r[a]['acts'] == r[b]['acts'] for r in rows)
+        out['judged_same %s=%s' % (a, b)] = sum(b in r[a]['same_as'] for r in rows)
+    for arm in arms:
+        n = len(rows) or 1
+        out[arm].update({k: round(sum(r[arm][k] for r in rows) / n, 4 if 'usd' in k else 0)
+                         for k in ('usd', 'warm_usd', 'input', 'cache_read', 'cache_write', 'output', 'wall_s')})
+    out['logged_usd'] = round(sum(r['logged_usd'] for r in rows) / (len(rows) or 1), 4)
+    # ^ Sonnet's tokens over Opus's, both at Sonnet's rates, warm: the cost model's ratio.
+    at = lambda arm: sum(warm({**r[arm], 'models': [EVENT_MODEL]}, r['position']) for r in rows)
+    out['token_ratio'] = round(at(EVENT_MODEL) / at(MAIN_MODEL), 3) if rows and at(MAIN_MODEL) else 1.0
+    out['spent_usd'] = round(sum(r[a]['usd'] for r in rows for a in arms) + sum(r['judge_usd'] for r in rows), 2)
+    return out
+
+
+def run_probe(options):
+    """One real event turn across a model change in one process: Opus, set_model sonnet, the next
+    event turn, then the owner's last message asked on Sonnet and again on Opus. It shows whether
+    the conversation keeps its context and what each switch writes to the cache."""
+    projects = manager_turns(options.days)
+    env = {k: v for k, v in os.environ.items() if not k.startswith('WSX_')}
+    for burst in event_bursts(projects, random.Random(463)):
+        if len(burst) < 2 or burst[0]['project'] != 'wsx-8cbe3f08':
+            continue
+        found = [o for o in map(original_turn, burst[:2]) if o]
+        if len(found) < 2 or found[0]['path'] != found[1]['path']:
+            continue
+        logged = [json.loads(line) for line in (STATE / burst[0]['project'] / 'manager/log.jsonl').read_text().splitlines()
+                  if line.strip()]
+        owner = [e['text'] for e in logged if e['kind'] == 'message' and e.get('from') == 'owner' and e['unix_ms'] < burst[0]['ms']]
+        base = Path(tempfile.mkdtemp(prefix='bench-probe-', dir=os.environ.get('TMPDIR')))
+        (base / 'bin').mkdir()
+        (base / 'bin/wsx').write_text(EVENT_WSX)
+        (base / 'bin/wsx').chmod(0o755)
+        arm_env = {**env, 'PATH': '%s:%s' % (base / 'bin', env['PATH']), 'BENCH_READS': READ_VERBS,
+                   'BENCH_CALLS': str(base / 'calls.jsonl')}
+        source = (ROOT / 'crates/wsx/src/task/instructions.rs').read_text()
+        notes = STATE / burst[0]['project'] / 'manager'
+        launch = instructions(source, 'wsx', str(notes / 'notes'), str(notes / 'overview.md'))
+        cut = stamp_ms(next(line for line in transcript(found[0]['path']) if found[0]['prompt'] == prompt_text(line)))
+        session, folder = fork_copy(found[0]['before'], cut, base)
+        agent = Agent(launch, arm_env, base, MAIN_MODEL, real=True, resume=session, bash=True)
+        steps = []
+        try:
+            for model, text in ((MAIN_MODEL, found[0]['prompt'] + REPLAY_NOTE % found[0]['reads']),
+                                (EVENT_MODEL, found[1]['prompt'] + REPLAY_NOTE % found[1]['reads']),
+                                (EVENT_MODEL, CONTEXT_ASK), (MAIN_MODEL, CONTEXT_ASK)):
+                if agent.model != model:
+                    agent.set_model(model)
+                row = agent.turn(text)
+                steps.append({'asked': model, **{k: row[k] for k in ('models', 'input', 'cache_read', 'cache_write',
+                                                                     'output', 'first_context', 'last_context')},
+                              'usd': priced(row, rates(row['models'])), 'reply': row['reply'][:300]})
+                print(json.dumps(steps[-1]), flush=True)
+        finally:
+            agent.stop()
+            shutil.rmtree(folder, ignore_errors=True)
+            shutil.rmtree(base, ignore_errors=True)
+        words = set(re.findall(r'\w+', (owner[-1] if owner else '').lower())[:8])
+        print(json.dumps({'probe': burst[0]['id'], 'owner_last': (owner[-1] if owner else '')[:120],
+                          'recalled': [len(words & set(re.findall(r'\w+', s['reply'].lower()))) for s in steps[2:]],
+                          'spent_usd': round(sum(s['usd'] for s in steps), 3)}), flush=True)
+        return
+    sys.exit('no wsx burst of two turns with a transcript')
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', required=True, choices=['before', 'after', 'after-nof'])
-    parser.add_argument('--cases', default='synthetic', choices=['synthetic', 'logged', 'discussion', 'stale', 'idle'])
+    parser.add_argument('--cases', default='synthetic', choices=['synthetic', 'logged', 'discussion', 'stale', 'idle', 'events'])
     parser.add_argument('--returns', type=int, default=6, help='idle: how many idle returns')
+    parser.add_argument('--samples', type=int, default=45, help='events: how many turns to replay (0: the cost model only)')
+    parser.add_argument('--days', type=int, default=14, help='events: the log window')
+    parser.add_argument('--probe', action='store_true', help='events: one turn across a model change, nothing else')
     parser.add_argument('--budget', type=float, default=BUDGET_USD)
     parser.add_argument('--before', default=BEFORE_COMMIT, help='the commit whose instructions `before` reads')
     parser.add_argument('--model', help='the model of every turn, to bound the cost')
@@ -782,6 +1224,8 @@ def main():
     with path.open('a') as out:
         if options.cases == 'idle':
             return run_idle(options, out)
+        if options.cases == 'events':
+            return run_probe(options) if options.probe else run_events(options, out)
         for number in range(1, options.runs + 1):
             rows = run_once(options.mode, number, out, options.cases, options.before)
             spent += sum(row['cost_usd'] for row in rows)
