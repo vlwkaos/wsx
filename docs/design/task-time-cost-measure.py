@@ -3,12 +3,12 @@
 
 ref: docs/design/task-time-cost-audit.md (the numbers), docs/design/check-scheduling-audit.md (the earlier query)
 
-    python3 -I docs/design/task-time-cost-measure.py [--since 2026-11-08] [--gh] [--state ~/.local/state/wsx/tasks/wsx-8cbe3f08]
+    python3 -I docs/design/task-time-cost-measure.py [--since 2026-11-08 | 2026-11-14T16:30] [--landed-since 2026-11-14T16:30] [--top 12] [--gh] [--state ~/.local/state/wsx/tasks/wsx-8cbe3f08]
 
-Reads every task created at or after --since (local midnight): <n>/log.jsonl, <n>/task.json, the manager's
+Reads every task created at or after --since (local midnight, or the local time given): <n>/log.jsonl, <n>/task.json, the manager's
 log.jsonl and deploys.jsonl. `--gh` fetches the jobs of each CI run a `ci:` check output names, one
 `gh api` call a run, into .work/task-time-cost/gh-jobs.json beside the checkout; later runs read the cache.
-Each task's wall time from `created` to `landed` is cut into phases by the log's boundary events; a
+--landed-since keeps the landed tasks that landed at or after that local time. Each task's wall time from `created` to `landed` is cut into phases by the log's boundary events; a
 `limit_wait` inside any phase moves its wait to `limit`. Manager turns are shared evenly over the tasks the
 delivered events name (`#<n>`).
 """
@@ -18,7 +18,7 @@ ARGS = sys.argv[1:]
 def arg(name, default):
     return ARGS[ARGS.index(name) + 1] if name in ARGS else default
 STATE = os.path.expanduser(arg('--state', '~/.local/state/wsx/tasks/wsx-8cbe3f08'))
-SINCE = int(D.datetime.strptime(arg('--since', '2026-11-08'), '%Y-%m-%d').astimezone().timestamp() * 1000)
+SINCE = int(D.datetime.strptime(arg('--since', '2026-11-08'), '%Y-%m-%dT%H:%M' if 'T' in arg('--since', '') else '%Y-%m-%d').astimezone().timestamp() * 1000)  # ^ local time
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '.work', 'task-time-cost', 'gh-jobs.json')
 REPO = 'vlwkaos/wsx'
 
@@ -217,7 +217,9 @@ for t in tasks.values():
         gh_rows.append(dict(kind=c['kind'], queue=q, run=run, ok=c['ok'], wall=c['ms'], created=min(iso(j['created']) for j in jobs)))
 
 # --- report ----------------------------------------------------------------------------------------
-T = list(tasks.values()); L = [t for t in T if t['landed']]
+T = list(tasks.values())
+LANDED = int(D.datetime.strptime(arg('--landed-since', '2000-01-01T00:00'), '%Y-%m-%dT%H:%M').astimezone().timestamp() * 1000)  # ^ local time
+L = [t for t in T if t['landed'] and t['landed'] >= LANDED]
 small = [t for t in L if t['rec'].get('small')]; full = [t for t in L if not t['rec'].get('small')]
 print(f'tasks {len(T)} created since {arg("--since", "2026-11-08")}; landed {len(L)} (small {len(small)}, full {len(full)}); open {len(T) - len(L)}')
 print('\nT1 created to landed (min)')
