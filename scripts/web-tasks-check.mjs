@@ -455,11 +455,11 @@ async function motion() {
     update({ projects });
     const holder = document.body.appendChild(document.createElement('div'));
     render(html\`<\${Loading} />\`, holder);
-    return { typing, notice, moved, glides, ghosts, loading: holder.querySelector('.loading')?.getAttribute('role'), reduced: ${reduced} };
+    return { typing, notice, moved, glides, ghosts, loading: holder.querySelector('.loading')?.getAttribute('role'), rows: holder.querySelectorAll('.skeleton-row').length, reduced: ${reduced} };
   })()`);
   // ^ The fake state goes into the live store: a real update in the same frame (another
   // manager's turn, a project list read) can undo it, so one of 3 tries must show it all.
-  const good = (seen) => seen.typing === 3 && seen.notice && seen.moved && seen.glides >= 1 && seen.ghosts === 1 && seen.loading === "status";
+  const good = (seen) => seen.typing === 3 && seen.notice && seen.moved && seen.glides >= 1 && seen.ghosts === 1 && seen.loading === "status" && seen.rows === 3;
   let seen = await run(false);
   // ^ A try that failed left gone the newest: the next one starts from the kept state.
   const restore = () => evaluate(`(async () => (await ${pageModule("store.js")}).update(globalThis.motionKept))()`);
@@ -3084,6 +3084,8 @@ await evaluate(`${foldRow}.scrollIntoView({ block: 'center' })`);
 await shot("fold-closed");
 await evaluate(`${foldRow}.querySelector('.fold-toggle').click()`);
 await until(`${foldRow}.querySelector('.fold-toggle').getAttribute('aria-expanded') === 'true'`, "a tap did not open the folded run");
+// ^ The number on the toggle is the number of rows the fold opens (wait on both: the rows mount after the toggle flips).
+await until(`(() => { const fold = ${foldRow}; const rows = fold.querySelectorAll('.status-line, .reply-text').length; return rows > 0 && Number(fold.querySelector('.fold-count').textContent.match(/\\d+/)?.[0]) === rows; })()`, "the number on the fold's toggle is not the number of rows it opened", 30);
 folding = await foldSeen();
 if (folding.inside.length !== 10 || folding.inside[0] !== "#89 ready" || folding.inside[5] !== "I'm landing #91. More" || folding.count !== "Hide 10 updates") await fail(`plans' open run reads ${JSON.stringify(folding)}`);
 await evaluate(`${foldRow}.scrollIntoView({ block: 'start' })`);

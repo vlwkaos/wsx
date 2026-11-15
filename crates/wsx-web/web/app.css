@@ -490,7 +490,10 @@ div.steps .steps-summary { cursor: default; }
   /* Purposeful motion (docs/web-client.md "Motion"): something arrives, changes or leaves.
      Reduced motion keeps the static page; script-driven motion (lib.js `motion`) is off too. */
   .scroll > :is(.rows, .group, .check-list, .task-body, .file-markdown, .file-page, .file-source), .project-overview > .task-body { animation: arrive calc(var(--motion-duration) * 2) var(--motion-easing); }
-    .skeleton { background-image: linear-gradient(90deg, transparent, var(--color-raised), transparent); background-size: 200% 100%; animation: shimmer calc(var(--motion-duration) * 10) linear infinite; }
+  .boot-mark { animation: pulse calc(var(--motion-duration) * 12) ease-in-out infinite; }
+  .skeleton { background-image: linear-gradient(90deg, transparent, var(--color-raised), transparent); background-size: 200% 100%; animation: shimmer calc(var(--motion-duration) * 10) linear infinite; }
+  .skeleton-row:nth-child(3) .skeleton { animation-delay: calc(var(--motion-duration) * -3); }
+  .skeleton-row:nth-child(4) .skeleton { animation-delay: calc(var(--motion-duration) * -6); }
   .row-context[data-loading] { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
   .row-context { animation: arrive var(--motion-duration) var(--motion-easing); }
   .row-typing .typing-dot:nth-child(2) { animation-delay: calc(var(--motion-duration) * 2); }
@@ -922,10 +925,20 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .app[data-wide] .task-sheet[data-fit] { margin: 0; height: 100%; max-height: none; transform: none; }
 /* Home: one row per project, what needs the owner first. */
 /* Hook: .loading — the one placeholder for a screen that waits for data. */
-.loading { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
+.loading { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-4); }
+.skeleton-row { display: flex; align-items: center; gap: var(--space-3); }
+.skeleton-lines { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-2); }
 .skeleton { display: block; height: var(--space-3); border-radius: var(--radius-key); background-color: var(--color-surface); }
-.skeleton:first-of-type { width: 60%; }
-.skeleton:last-of-type { width: 40%; }
+.skeleton-dot { flex: none; width: calc(var(--space-4) * 2); height: calc(var(--space-4) * 2); border-radius: 50%; }
+.skeleton-lines > :first-child { width: 70%; }
+.skeleton-lines > :last-child { width: 45%; }
+.skeleton-row:nth-child(3) .skeleton-lines > :first-child { width: 55%; }
+.skeleton-row:nth-child(3) .skeleton-lines > :last-child { width: 60%; }
+/* Hook: .boot — index.html's first paint, until the app replaces it: the mark, the name, three dots. Centered like .pair. */
+.boot { display: flex; flex-direction: column; align-items: center; gap: var(--space-3); }
+.boot-mark { width: calc(var(--size-control) * 1.5); height: calc(var(--size-control) * 1.5); border-radius: var(--radius-sheet); }
+.boot-name { margin: 0; font-size: var(--font-size-title); font-weight: var(--font-weight-medium); }
+.boot .row-typing { margin: 0; }
 .notice-timer { display: none; }
 .home-rows { position: relative; }
 .home-rows > [data-ghost] { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; }
