@@ -203,6 +203,8 @@ flowchart LR
   M1 --> S12[12 store cleanup]
 ```
 
+**M1 built (task #471):** chats at `tasks/chats/<id>/`, `home.json`, `created_by: chat:<id>`, one move of the old folders (the live host of a moved folder is stopped and started on the new path), the web route `#/c/<chat>`, and the chat lifecycle on the owner's word (`chat new|close --owner-said`, `chat home`). Not in M1, for later steps: a chat's decisions that concern a repo written to the repo's memory scope (M4, with `record_memo_at`'s copy into the origin scope, which M4 deletes), and a stall sweep that suggests closing an idle chat (M2, the repo service).
+
 Each M step proves itself with `task` (a new `test-task.py` section: two fixture repos, a chat that attaches both, a task in each, events to the right chat, an unowned routine result to the home chat, a refused unattached repo, and a migrated fixture store with no file left behind). M3 also needs `boundary`, M4 needs `memory`, and Home in step 7 needs `web`.
 
 **Not to build:** teams, members or roles as entities; a group chat; shared context between chats (talk by `say --to <chat>` and search only); per-chat permission lists; a fallback chain owned by a chat; a memory start block; keep-alive pings or a written handover (#456 measured it and did not adopt it); a host queue for overlaps (refactor §4).

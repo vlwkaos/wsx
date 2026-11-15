@@ -2,7 +2,7 @@
 // (docs/web-client-tasks.md "Home"). A row opens the project's manager chat.
 import { ago, html, Icon, Loading, READ_EVENT, unreadNews, useEffect, useFlip, useNow, useRef, useState } from "./lib.js";
 import { api } from "./api.js";
-import { can, useStore } from "./store.js";
+import { can, chatHash, parseRoute, useStore } from "./store.js";
 import { loadTasks } from "./task-api.js";
 import { agentWords, needTone, needWords } from "./task-words.js";
 import { shownTrays, TrayIcons, trayCounts, trayWords } from "./trays.js";
@@ -162,7 +162,7 @@ function ChatRow({ project, chat, current, now }) {
   const counts = trayCounts(chat);
   return html`
     <li class="row row-chat" data-key=${`${project.id}/c/${chat.name}`}>
-      <a class="row-link chat-row" href=${`#/p/${project.id}/c/${encodeURIComponent(chat.name)}`} aria-current=${current ? "page" : null}
+      <a class="row-link chat-row" href=${chatHash(chat.name)} aria-current=${current ? "page" : null}
         aria-label=${[`Chat ${chat.name} of ${project.name}`, news && "unread", ...shownTrays(counts).map((tray) => trayWords(tray, counts))].filter(Boolean).join(", ")}>
         <${RowText} name=${chat.name} counts=${counts} last=${chat.last_unix_ms} now=${now}
           line=${{ text: news ?? (chat.last_reply || chat.goal || "No messages yet") }} news=${Boolean(news)} />
@@ -222,7 +222,7 @@ function NewChat({ projects, tasks, project, manage, onAdd, onClose }) {
       return;
     }
     dialog.current.close();
-    location.hash = `#/p/${chosen}/c/${encodeURIComponent(name)}`;
+    location.hash = chatHash(name);
   };
   const standard = agentWords(tasks[chosen]?.default_agent);
   return html`
@@ -276,8 +276,11 @@ export function Home({ rail }) {
   // minutes) is renewed each minute.
   const live = Object.values(store.tasks).some((overview) => overview?.working > 0);
   const now = useNow(true, live ? 1000 : 60_000);
-  const [, kind, open, place, chatName] = location.hash.split("/");
-  const inChat = place === "c" ? decodeURIComponent(chatName ?? "") : null;
+  // ^ The project the open screen belongs to, and its chat when that is not the home chat.
+  const route = parseRoute(location.hash);
+  const at = route.screen === "chat" ? route : location.hash.startsWith("#/p/") ? route : null;
+  const open = at?.id ?? null;
+  const inChat = at?.room ?? null;
   const list = useRef();
   useFlip(list);
   const [sheet, setSheet] = useState(null);
@@ -293,19 +296,19 @@ export function Home({ rail }) {
   else {
     body = html`
       <ul class="rows home-rows" aria-label="Projects" ref=${list}>
-        ${homeOrder(store.projects, store.tasks, rail && kind === "p" && document.visibilityState === "visible" ? Number(open) : null).map((row) => {
+        ${homeOrder(store.projects, store.tasks, rail && open != null && document.visibilityState === "visible" ? open : null).map((row) => {
           const status = statusLine(row);
           const news = row.news;
           return [html`
             <li class=${manage ? "row row-slide" : "row"} onScroll=${manage ? slid : null} key=${row.project.id} data-key=${row.project.id} data-news=${news ? "" : null}>
-              <a class="row-link home-row" href=${`#/p/${row.project.id}`} aria-current=${rail && Number(open) === row.project.id && inChat === null ? "page" : null}>
+              <a class="row-link home-row" href=${row.overview?.home_chat ? chatHash(row.overview.home_chat) : `#/p/${row.project.id}`} aria-current=${rail && open === row.project.id && inChat === null ? "page" : null}>
                 <${RowText} name=${row.project.name} asks=${Boolean(row.overview?.asks?.length)} counts=${trayCounts(row.overview)}
                   last=${row.last} now=${now} line=${news ? { text: news } : status} news=${Boolean(news)} typing=${row.overview?.busy ? row.overview.manager : null} />
               </a>
               ${manage && html`<button class="row-remove" type="button" onClick=${() => setRemoving(row.project)}
                 aria-label=${`Remove project ${row.project.name}`} title="Remove"><${Icon} name="fail" /></button>`}
             </li>`, ...(row.overview?.chats ?? []).map((chat) => html`<${ChatRow} key=${`${row.project.id}/c/${chat.name}`} project=${row.project} chat=${chat} now=${now}
-              current=${rail && Number(open) === row.project.id && inChat === chat.name} />`)];
+              current=${rail && open === row.project.id && inChat === chat.name} />`)];
         })}
       </ul>`;
   }
@@ -316,7 +319,7 @@ export function Home({ rail }) {
           ${!rail && html`<h1 class="title">Home</h1>`}
           ${plus && html`<button class="icon-button new-chat" type="button" onClick=${() => setSheet(plus)} aria-label=${plus === "chat" ? "New chat" : "Add project"} title=${plus === "chat" ? "New chat" : "Add project"}><${Icon} name="plus" /></button>`}
         </div>`}
-      ${sheet === "chat" && html`<${NewChat} projects=${store.projects} tasks=${store.tasks} project=${kind === "p" && store.projects.some((each) => each.id === Number(open)) ? Number(open) : store.projects[0].id}
+      ${sheet === "chat" && html`<${NewChat} projects=${store.projects} tasks=${store.tasks} project=${store.projects.some((each) => each.id === open) ? open : store.projects[0].id}
         manage=${manage} onAdd=${() => setSheet("project")} onClose=${() => setSheet(null)} />`}
       ${sheet === "project" && html`<${AddProject} onClose=${() => setSheet(null)} />`}
       ${removing && html`<${RemoveProject} project=${removing} onClose=${() => setRemoving(null)} />`}

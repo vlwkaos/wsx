@@ -81,8 +81,10 @@ pub(super) fn instructions(
          graph, live plans, open questions; update a section in place.\n\n\
          Other projects. `-p <project>` reaches another project's tasks, not its deploys, \
          releases or pushes. Consult its manager ('@<project>') with `wsx task say -p <project> \
-         --from-chat`. Answer 'Manager <project>' or 'Chat <name>' once with `--from-chat --reply`; \
-         use 'Manager <project> replies' and do not answer it.",
+         --from-chat`. Answer 'Chat <name>' once with `--from-chat --reply`; do not answer \
+         'Chat <name> replies'. When the owner's message of this turn asks to open or close a chat, \
+         run `wsx task chat new <name> --goal <file> --owner-said <id>` or `chat close <name> \
+         --owner-said <id>`.",
         review = match workflow.review.is_empty() {
             true => String::new(),
             false => format!("{} ", workflow.review),

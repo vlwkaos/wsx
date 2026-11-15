@@ -309,7 +309,9 @@ fn build_overview(
         "resolutions": resolutions(&check_items, &tasks, &approvals, now),
         "last_reply": last_reply.map(|(_, text)| text),
         "news": news,
-        // ^ The open chats under the project's home row (docs/web-client-tasks.md "Home").
+        // ^ The project's home chat, whose route is the project's manager, and the open chats under
+        // its row (docs/web-client-tasks.md "Home").
+        "home_chat": store::home_chat(&scope.store).unwrap_or_else(|| task::chats::home_name(&scope.store)),
         "chats": chat_contacts(scope, land_auto),
         // ^ The agent the New chat sheet's Default runs on.
         "default_agent": settings.map(view::default_agent),
