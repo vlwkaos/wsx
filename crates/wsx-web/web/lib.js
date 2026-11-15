@@ -405,11 +405,15 @@ export function motion() {
   return duration > 0 ? { duration, easing: style.getPropertyValue("--motion-easing").trim() || "ease" } : null;
 }
 
-// One placeholder for a screen that waits for its data. Its words are for a screen reader.
+// One placeholder for a screen that waits for its data: three rows of a dot and two lines, the
+// shape of a list row. Its words are for a screen reader.
 export const Loading = () => html`
   <div class="loading" role="status">
     <span class="visually-hidden">Loading…</span>
-    <span class="skeleton" aria-hidden="true"></span><span class="skeleton" aria-hidden="true"></span>
+    ${[0, 1, 2].map((row) => html`<div class="skeleton-row" key=${row} aria-hidden="true">
+      <span class="skeleton skeleton-dot"></span>
+      <span class="skeleton-lines"><span class="skeleton"></span><span class="skeleton"></span></span>
+    </div>`)}
   </div>`;
 
 // Holds `value` for one motion duration after it turns empty, so the view can fade out.
