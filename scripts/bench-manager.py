@@ -25,6 +25,10 @@ wrote at the warm moment, and a cold resume of a copy of the real transcript cut
 tools, a sonnet judge per return (`--returns`, `--budget`; a return already in the out file is skipped).
 `discussion` is two owner turns (review points one by one, then 'agreed on A and C, do them') and checks
 the tool calls: no `wsx task new`/`add`/`steer` in the first turn, exactly one new or add in the second.
+`events` (docs/design/manager-event-model.md) prints what `eventModel: sonnet` would cost on the logged
+turns, cache switches counted, then replays real event-only turns on Opus and Sonnet from a fork of the
+manager's transcript (`--samples`, `--budget`; `--probe`: one turn across a model change) for a blind
+Opus judge. `rotation` models the manager's weekly spend over rotation sizes and idle rules; no model call.
 Bash runs with bypassPermissions here, so no auto-mode classifier call adds to the measured
 cost; the real manager runs in auto mode.
 """
