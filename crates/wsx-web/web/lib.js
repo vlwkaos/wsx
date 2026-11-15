@@ -315,6 +315,10 @@ export function useFollowEnd(name, ready) {
       if (Math.abs(element.scrollTop - top.current) <= 1) return;
       restore.current = null;
     }
+    // ^ An event that moved nothing since the last mark is the log's own move, delivered late
+    // (settle sets the scroll, the event comes with the next frame). A row that changed size
+    // before it came is still to be corrected: marking now would take the moved row as the place.
+    if (Math.abs(element.scrollTop - top.current) < 1) settle();
     // ^ A box that changed height scrolls without the reader. The event can come before the
     // resize observer. A scroll farther than the change is the reader's, in the same frame.
     const resized = element.clientHeight - height.current;
