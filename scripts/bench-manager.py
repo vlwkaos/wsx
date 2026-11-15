@@ -849,10 +849,11 @@ def manager_turns(days):
     for log in sorted(STATE.glob('*/manager/log.jsonl')):
         entries = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
         messages = {e['id']: e for e in entries if e['kind'] == 'message' and 'id' in e}
-        newest, session, turns = {}, 0, []
+        newest, session, turns, fresh = {}, 0, [], 'start'
         for e in entries:
             if e['kind'] == 'rotated':
                 session += 1
+                fresh = e.get('reason') or 'other'
             if e['kind'] == 'message' and e.get('from') == 'events':
                 for line in e['text'].splitlines():
                     head = re.match(r'#(\d+) (\w+)', line)
@@ -865,8 +866,10 @@ def manager_turns(days):
             turns.append({'project': log.parent.parent.name, 'id': e['id'], 'ms': e['unix_ms'], 'session': session,
                           'usage': e['usage'], 'ids': ids, 'events_only': bool(ids) and len(events) == len(ids),
                           'kind': event_kind('\n'.join(m['text'] for m in events)), 'reply': e.get('text', ''),
+                          'fresh': fresh,
                           'review_due': any(word == 'ready' and e['unix_ms'] - ms < DAY_MS
                                             for word, ms in newest.values())})
+            fresh = None
         projects[log.parent.parent.name] = turns
     return projects
 
@@ -1201,10 +1204,87 @@ def run_probe(options):
     sys.exit('no wsx burst of two turns with a transcript')
 
 
+
+IDLE_MIN = 60_000
+
+
+def rotation_cost(projects, days, rotate, idle_min=IDLE_MIN, ping=False):
+    """The manager's spend per 7 days, had it rotated at `rotate` tokens and, after an hour idle
+    (Claude's cache lifetime), at over `idle_min` tokens (None: never; a cold resume writes it all).
+    `ping` keeps an idle conversation warm with a ping each 55 min instead. Each logged turn splits
+    into reading its conversation (calls x context, or one write when cold) and its own work, the
+    rest; a fresh start costs the logged fresh turns' median over a kept turn's own work and leaves
+    their median context. Rotations for other reasons (new instructions, a move between agents) stay
+    where they were. Pings are left out (1.09 USD over 14 days)."""
+    r, w = PRICE['cache_read'], PRICE['cache_write']
+    rows = []
+    for turns in projects.values():
+        before = None
+        for t in turns:
+            u = t['usage']
+            gap = t['ms'] - before['ms'] if before else None
+            start = 0 if t['fresh'] or not before else before['usage'].get('context_tokens', 0)
+            calls = max(1, u.get('calls', 1))
+            cold = gap is None or gap >= CACHE_MS
+            prefix = (start * w + (calls - 1) * start * r if cold else calls * start * r) / 1e6
+            rows.append((t, gap, calls, u['cost_micro_usd'] / 1e6 - prefix, u.get('context_tokens', 0) - start))
+            before = t
+    kept = sorted(own for t, _, _, own, _ in rows if not t['fresh'])
+    fresh_cost = sorted(u_cost for u_cost in (t['usage']['cost_micro_usd'] / 1e6 for t, *_ in rows if t['fresh']))
+    fresh_ctx = sorted(t['usage'].get('context_tokens', 0) for t, *_ in rows if t['fresh'])
+    growth = sorted(g for t, _, _, _, g in rows if not t['fresh'])
+    base = fresh_cost[len(fresh_cost) // 2] - kept[len(kept) // 2]
+    out = dict(rotate_k=rotate // 1000, idle_min_k=None if idle_min is None else idle_min // 1000, ping=ping,
+               usd=0.0, rotations=0, size_rotations=0, idle_rotations=0, busy_rotations=0, cold_resumes=0)
+    context, project = 0, None
+    for t, gap, calls, own, grow in rows:
+        if t['project'] != project:
+            context, project = 0, t['project']
+        forced = t['fresh'] and not t['fresh'].startswith('idle over')
+        idle = gap is not None and gap >= CACHE_MS
+        why = ('start' if not context else 'other' if forced else 'size' if context >= rotate else
+               'idle' if idle and not ping and idle_min is not None and context > idle_min else None)
+        work = own - base if t['fresh'] else own
+        if why:
+            out['rotations'] += why != 'start'
+            out['size_rotations'] += why == 'size'
+            out['idle_rotations'] += why == 'idle'
+            out['busy_rotations'] += why == 'size' and gap is not None and gap < 600_000
+            cost = t['usage']['cost_micro_usd'] / 1e6 if t['fresh'] else base + max(0.0, work)
+            context = t['usage'].get('context_tokens', 0) if t['fresh'] else fresh_ctx[len(fresh_ctx) // 2]
+        else:
+            if idle and ping:
+                cost = (gap // 3_300_000) * context * r / 1e6 + calls * context * r / 1e6
+            elif idle:
+                out['cold_resumes'] += 1
+                cost = (context * w + (calls - 1) * context * r) / 1e6
+            else:
+                cost = calls * context * r / 1e6
+            cost += max(0.0, work)
+            context += grow if not t['fresh'] else growth[len(growth) // 2]
+        out['usd'] += cost
+    week = 7 / days
+    for k in ('usd', 'rotations', 'size_rotations', 'idle_rotations', 'busy_rotations', 'cold_resumes'):
+        out[k] = round(out[k] * week, 1 if k != 'usd' else 2)
+    out['fresh_base_usd'] = round(base, 3)
+    return out
+
+
+def run_rotation(options):
+    """`rotation`: the manager's modeled spend per week across rotation sizes and idle rules, from the
+    logged turns (no model call); the first row is today's settings, against the logged spend."""
+    projects = manager_turns(options.days)
+    logged = sum(t['usage']['cost_micro_usd'] for turns in projects.values() for t in turns) / 1e6 * 7 / options.days
+    print(json.dumps({'logged_usd_per_week': round(logged, 2), 'turns': sum(map(len, projects.values()))}))
+    for idle_min, ping in ((IDLE_MIN, False), (0, False), (None, False), (IDLE_MIN, True)):
+        for rotate in (400_000, 250_000, 160_000, 120_000, 80_000):
+            print(json.dumps(rotation_cost(projects, options.days, rotate, idle_min, ping)), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', required=True, choices=['before', 'after', 'after-nof'])
-    parser.add_argument('--cases', default='synthetic', choices=['synthetic', 'logged', 'discussion', 'stale', 'idle', 'events'])
+    parser.add_argument('--cases', default='synthetic', choices=['synthetic', 'logged', 'discussion', 'stale', 'idle', 'events', 'rotation'])
     parser.add_argument('--returns', type=int, default=6, help='idle: how many idle returns')
     parser.add_argument('--samples', type=int, default=45, help='events: how many turns to replay (0: the cost model only)')
     parser.add_argument('--days', type=int, default=14, help='events: the log window')
@@ -1224,6 +1304,8 @@ def main():
     with path.open('a') as out:
         if options.cases == 'idle':
             return run_idle(options, out)
+        if options.cases == 'rotation':
+            return run_rotation(options)
         if options.cases == 'events':
             return run_probe(options) if options.probe else run_events(options, out)
         for number in range(1, options.runs + 1):
