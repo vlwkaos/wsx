@@ -2064,7 +2064,7 @@ finally:
     tui.close()
 
 # `d` on a project asks; `y` only unregisters it (its sessions keep running), `H` also halts all
-# its sessions, the hidden `task-manager` one included (docs/web-client.md "Projects").
+# its sessions, the hidden `task-<home chat>` one included (docs/web-client.md "Projects").
 removal = {name: WORK / name for name in ("halt-me", "keep-me")}
 for name, folder in removal.items():
     folder.mkdir()
@@ -2118,10 +2118,10 @@ try:
              "the TUI did not give wsxd the added projects")
     for name in removal:
         tree = next(item["id"] for item in call("snapshot")["data"]["worktrees"] if item["path"] == str(removal[name].resolve()))
-        for label in ("shell", "task-manager"):
+        for label in ("shell", f"task-{name}"):
             created = call("session_create", {"worktree_id": tree, "label": label, "command": ["/bin/sh"], "rows": 24, "cols": 80})
             assert created["type"] == "created", created
-        assert sorted(project_sessions(name)) == ["shell", "task-manager"], project_sessions(name)
+        assert sorted(project_sessions(name)) == ["shell", f"task-{name}"], project_sessions(name)
     wait_for(lambda: "halt-me" in remove_tui.text(), "the TUI did not list halt-me", seconds=60)
     # The TUI's Tasks view (`t`) sums the usage of every project (docs/tasks.md "TUI"): two
     # projects with a manager reply each, 0.03 and 0.012 USD today, show as $0.04 in one line.
@@ -2626,11 +2626,11 @@ try:
     remove_from_tui("halt-me", b"H")
     wait_for(lambda: "halt-me" not in config_names(), "H did not unregister halt-me")
     wait_for(lambda: project_sessions("halt-me") == [], "H did not halt the sessions of halt-me")
-    assert sorted(project_sessions("keep-me")) == ["shell", "task-manager"], "H halted another project's sessions"
+    assert sorted(project_sessions("keep-me")) == ["shell", "task-keep-me"], f"H halted another project's sessions: {project_sessions('keep-me')}"
     remove_from_tui("keep-me", b"y")
     wait_for(lambda: "keep-me" not in config_names(), "y did not unregister keep-me")
     time.sleep(2)
-    assert sorted(project_sessions("keep-me")) == ["shell", "task-manager"], "y halted the sessions of keep-me"
+    assert sorted(project_sessions("keep-me")) == ["shell", "task-keep-me"], f"y halted the sessions of keep-me: {project_sessions('keep-me')}"
     assert (removal["halt-me"] / ".git").is_dir() and (removal["keep-me"] / ".git").is_dir()
 finally:
     remove_tui.close()
