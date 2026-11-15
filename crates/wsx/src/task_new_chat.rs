@@ -32,7 +32,7 @@ pub struct NewChat {
 }
 
 impl NewChat {
-    pub fn new(project_id: &str, default_agent: Option<String>) -> Self {
+    pub fn new(default_agent: Option<String>) -> Self {
         Self {
             name: InputState::new("name: "),
             goal: InputState::new("goal: "),
@@ -40,7 +40,7 @@ impl NewChat {
             agent: None,
             focus: 0,
             error: None,
-            taken: chats::open_names(project_id),
+            taken: chats::open_names(),
             default_agent,
             asked: false,
         }
@@ -147,7 +147,7 @@ impl NewChat {
             .agent
             .and_then(|at| self.agents.get(at))
             .map(|(name, _)| name.as_str());
-        match chats::create(project_id, &name, (!goal.is_empty()).then_some(goal), agent) {
+        match chats::create(project_id, &name, (!goal.is_empty()).then_some(goal), agent, None) {
             Ok(_) => Outcome::Done(name),
             Err(error) => {
                 self.error = Some(format!("{error:#}"));

@@ -3,7 +3,7 @@
 use crate::cli::{load_full_workspace, resolve_project};
 use crate::task::agent;
 use crate::task::args::NewArgs;
-use crate::task::{ask_host, ask_host_ok, creator, print_json, wait_for_host};
+use crate::task::{actor, ask_host, ask_host_ok, print_json, wait_for_host};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use wsx_core::config::project::load_task_config;
@@ -403,7 +403,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         files,
         title,
         fixes,
-        created_by: creator(&project.name),
+        created_by: actor(),
         hold: hold.clone(),
         after: wait.clone(),
         parent: into,
@@ -466,9 +466,14 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
             "task t{id} did not start; its working copy and branch were removed"
         )));
     }
-    // ^ The events of a task another project's manager created are forwarded by this project's
-    // manager host, so it must run. ref: docs/tasks.md "Managers talk"
-    if record.created_by.origin().is_some() {
+    // ^ The events of a task a chat of another repo created are forwarded by this repo's home
+    // chat, so its host must run. ref: docs/tasks.md "Chats"
+    let from_elsewhere = record
+        .created_by
+        .chat()
+        .and_then(|chat| wsx_core::task::store::ManagerDir::existing(chat).ok().flatten())
+        .is_some_and(|chat| chat.project_id != record.project_id);
+    if from_elsewhere {
         if let Err(error) = super::chat::ensure_manager(Some(&project.name)) {
             eprintln!(
                 "wsx: the manager of {} did not start: {error:#}",

@@ -106,7 +106,7 @@ fn manager_status(dir: &ManagerDir) -> Option<ManagerResponse> {
 }
 
 fn manager_busy(scope: &Scope) -> bool {
-    ManagerDir::existing(&scope.store)
+    ManagerDir::home(&scope.store)
         .ok()
         .flatten()
         .and_then(|dir| manager_status(&dir))
@@ -161,10 +161,11 @@ fn build_overview(
     let land_auto = settings.is_some_and(|settings| settings.land_auto);
     // ^ Task status words weigh every pending approval; the lists below are the first chat's own
     // (`chats::owner`): another chat shows its own in its room.
-    let open_chats = task::chats::open_names(&scope.store);
+    let open_chats = task::chats::open_names();
+    let home = store::home_chat(&scope.store).unwrap_or_default();
     let all_approvals = store::read_approvals(&scope.store).unwrap_or_default();
     let all_pending = pending_approvals(&all_approvals);
-    let approvals = task::chats::approvals_of(all_approvals.clone(), None, &open_chats);
+    let approvals = task::chats::approvals_of(all_approvals.clone(), &home, &open_chats, &home);
     let pending = pending_approvals(&approvals);
     for (dir, record) in &tasks {
         let Ok(record) = record else { continue };
@@ -221,7 +222,7 @@ fn build_overview(
     listed.sort_by_key(|(order, recent, _)| (*order, *recent));
     listed.truncate(TASKS_LISTED);
     // ^ The latest manager entry and reply, for the home row (docs/web-client-tasks.md "Home").
-    let manager_dir = ManagerDir::existing(&scope.store).ok().flatten();
+    let manager_dir = ManagerDir::home(&scope.store).ok().flatten();
     let tail = manager_dir
         .as_ref()
         .and_then(|dir| dir.read_tail(MANAGER_TAIL_BYTES).ok())
@@ -236,8 +237,9 @@ fn build_overview(
     let check_items = task::chats::checks_of(
         &scope.store,
         checks::read(&scope.store).unwrap_or_default(),
-        None,
+        &home,
         &open_chats,
+        &home,
     );
     // ^ The open items as the Project screen's To check list shows them: a row each, which
     // opens the sheet at the item (docs/web-client-tasks.md "Project screen").
@@ -699,13 +701,11 @@ fn talk(log: &[task::LogEntry]) -> Value {
 
 /// The manager conversation, or the chat `chat`'s, after message `after`, and whether it
 /// runs or thinks.
-/// `scopes`: the granted projects, whose managers' names a peer bubble may show.
 /// `find`: from the oldest entry that shows these words, for a find over the whole history
 /// (docs/web-client-chat.md "Find"). `around`: the part around message `around`, at any age
 /// the log keeps (a tap on a quote). `asks` lists the open questions' ids.
 pub fn chat(
     scope: &Scope,
-    scopes: &[Scope],
     chat: Option<&str>,
     (after, find, around): (Option<u64>, Option<&str>, Option<u64>),
     media: &crate::media::Media,
@@ -716,9 +716,9 @@ pub fn chat(
     let mut manager =
         json!({ "name": chat.unwrap_or_else(|| settings.manager_shown_name(&scope.name)) });
     let dir = match chat {
-        None => ManagerDir::existing(&scope.store).map_err(internal)?,
+        None => ManagerDir::home(&scope.store).map_err(internal)?,
         Some(chat) => Some(
-            task::chats::open_chat(&scope.store, chat)
+            task::chats::open_chat(chat)
                 .map_err(|error| Fault::new(404, "not_found", format!("{error:#}")))?,
         ),
     };
@@ -729,13 +729,6 @@ pub fn chat(
     };
     // ^ The agent in use now, a fallback's while one runs; a chat's own, else the manager's.
     manager["agent"] = view::manager_agent(&dir, &settings);
-    // ^ Another project's manager by its set name, read only from granted projects.
-    let peer = |project: &str| {
-        scopes
-            .iter()
-            .find(|other| other.name == project)
-            .map_or_else(|| project.to_string(), manager_name)
-    };
     let window = task::chat::Window::new(find, after, around);
     // ^ An owner message's files show as attachments, not as their paths.
     let mut attachments: HashMap<u64, Value> = HashMap::new();
@@ -746,7 +739,6 @@ pub fn chat(
         (&scope.name, &scope.store),
         &settings,
         &window,
-        &peer,
         |entry| {
             if let ManagerEvent::Message {
                 id,
@@ -878,15 +870,16 @@ pub fn new_chat(
 ) -> Outcome<Value> {
     let goal = goal.map(str::trim).filter(|goal| !goal.is_empty());
     let agent = agent.filter(|agent| !agent.is_empty());
-    task::chats::create(&scope.store, name, goal, agent)
+    task::chats::create(&scope.store, name, goal, agent, None)
         .map_err(|error| Fault::new(400, "invalid_chat", format!("{error:#}")))?;
     Ok(json!({ "ok": true, "chat": name }))
 }
 
 /// The owner closes an open chat from its header menu; its log and notes stay (docs/tasks.md
 /// "Chats"). The first chat, an unknown or a closed name is refused.
-pub fn close_chat(scope: &Scope, name: &str) -> Outcome<Value> {
-    task::chats::close(&scope.store, name)
+pub fn close_chat(app: &App, scope: &Scope, name: &str) -> Outcome<Value> {
+    let wsx = std::env::current_exe().map_err(|error| internal(error.into()))?;
+    owner::close_chat((&scope.name, &scope.path), &wsx, name, launcher(app, scope))
         .map_err(|error| Fault::new(409, "invalid_chat", format!("{error:#}")))?;
     Ok(json!({ "ok": true, "chat": name, "state": "closed" }))
 }
@@ -927,7 +920,7 @@ pub fn page(scope: &Scope) -> Outcome<Value> {
 /// run with the id of its events message, or with `error` when the scheduler does not answer.
 /// ref: docs/web-client-tasks.md "Routines"
 pub fn routines(scope: &Scope) -> Value {
-    let dir = ManagerDir::existing(&scope.store).ok().flatten();
+    let dir = ManagerDir::home(&scope.store).ok().flatten();
     match ledger::routine_rows(&scope.path, MAX_ROUTINES, true, dir.as_ref()) {
         (rows @ Value::Array(_), counts) => json!({ "routines": rows, "counts": counts }),
         (failed, _) => json!({ "routines": [], "error": failed["error"] }),
@@ -1082,12 +1075,14 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
 /// The open "To check" items, oldest first, each with its task's title and what the task
 /// did (the first sentence of its worker's summary, when it is not the title).
 pub fn checks(scope: &Scope, chat: Option<&str>) -> Outcome<Value> {
-    // ^ The items of the tasks that chat owns (`chats::owner`); the first chat's without one.
+    // ^ The items of the tasks that chat owns (`chats::owner`); the home chat's without one.
+    let home = store::home_chat(&scope.store).unwrap_or_default();
     let items = task::chats::checks_of(
         &scope.store,
         checks::read(&scope.store).map_err(internal)?,
-        chat,
-        &task::chats::open_names(&scope.store),
+        chat.unwrap_or(&home),
+        &task::chats::open_names(),
+        &home,
     );
     // ^ The chat shows each item once, as a bubble at the time it was added, decided or not:
     // every open item and the newest decided ones.
@@ -1213,13 +1208,13 @@ fn run_wsx(scope: &Scope, argv: Vec<String>) -> Outcome<Value> {
         .map_err(|said| Fault::new(409, "refused", view::clip(&said, SUMMARY_CHARS)))
 }
 
-/// Give the manager, or the open chat `chat`, an owner message, starting it when it does not
-/// run.
-pub fn say(app: &App, scope: &Scope, chat: Option<&str>, text: &str) -> Outcome<Value> {
-    let text = message(text, "the message")?;
-    let wsx = std::env::current_exe().map_err(|error| internal(error.into()))?;
-    // ^ The session is created with this server's client, which never starts wsxd.
-    let launch = |label: String, argv: Vec<String>| -> anyhow::Result<()> {
+/// Start a session in the main checkout for a manager or chat host.
+/// ^ The session is created with this server's client, which never starts wsxd.
+fn launcher<'a>(
+    app: &'a App,
+    scope: &'a Scope,
+) -> impl FnOnce(String, Vec<String>) -> anyhow::Result<()> + 'a {
+    move |label: String, argv: Vec<String>| -> anyhow::Result<()> {
         let snapshot = chat::snapshot(&app.client).map_err(|fault| anyhow::anyhow!(fault.2))?;
         let worktree = snapshot
             .worktrees
@@ -1242,7 +1237,15 @@ pub fn say(app: &App, scope: &Scope, chat: Option<&str>, text: &str) -> Outcome<
             wsx_core::runtime::Response::Created { .. } => Ok(()),
             _ => anyhow::bail!("unexpected create response"),
         }
-    };
+    }
+}
+
+/// Give the manager, or the open chat `chat`, an owner message, starting it when it does not
+/// run.
+pub fn say(app: &App, scope: &Scope, chat: Option<&str>, text: &str) -> Outcome<Value> {
+    let text = message(text, "the message")?;
+    let wsx = std::env::current_exe().map_err(|error| internal(error.into()))?;
+    let launch = launcher(app, scope);
     let response = owner::say(
         &scope.name,
         &scope.path,
@@ -1448,10 +1451,7 @@ fn notice(scope: &Scope, watch: &mut Watch) {
 /// "Notifications"). Another chat's names it and opens it. A `post` came from wsx, not
 /// the agent, so the push shows its text.
 fn wrote(scope: &Scope, watch: &mut Watch) {
-    let chats = std::iter::once(ManagerDir::existing(&scope.store).ok().flatten())
-        .flatten()
-        .chain(task::chats::open_chats(&scope.store));
-    for dir in chats {
+    for dir in task::chats::open_chats(&scope.store) {
         let log = dir.read_tail(MANAGER_TAIL_BYTES).unwrap_or_default();
         let own = |id: &u64| {
             log.iter().any(|entry| match &entry.event {
@@ -1470,10 +1470,8 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
         let key = (scope.project, dir.name().to_string());
         // ^ A chat seen for the first time, as at a server start, notifies nothing.
         let last = watch.replies.get(&key).copied();
-        let (name, url) = match &dir.chat {
-            Some(chat) => (chat.clone(), format!("#/p/{}/c/{chat}", scope.project)),
-            None => (manager_name(scope), format!("#/p/{}", scope.project)),
-        };
+        let url = format!("#/c/{}", dir.chat);
+        let name = dir.named().map_or_else(|| manager_name(scope), str::to_string);
         let mut news = false;
         for entry in &log {
             let ManagerEvent::Reply {
@@ -1691,9 +1689,9 @@ fn publish_changes(app: &Arc<App>, scope: &Scope, changed: Vec<&PathBuf>) {
             crate::events::publish_json(app, "page", json!({ "project": scope.project }));
         } else if let Some(chat) = store::chat_of(path) {
             // ^ Another chat's page reads its folder, the manager's its contacts.
-            let event = match chat {
-                Some(chat) => json!({ "project": scope.project, "chat": chat }),
-                None => json!({ "project": scope.project }),
+            let event = match store::home_chat(&scope.store).as_deref() == Some(chat) {
+                false => json!({ "project": scope.project, "chat": chat }),
+                true => json!({ "project": scope.project }),
             };
             crate::events::publish_json(app, "manager", event);
         } else if let Some(id) = parent

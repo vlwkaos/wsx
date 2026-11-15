@@ -769,7 +769,7 @@ pub fn chat_rows(
                 ..
             } => event_rows(&mut rows, entry, text, short),
             ManagerEvent::Message { from, text, .. } => {
-                let row = message_row(entry, from, text, names);
+                let row = message_row(entry, from, text);
                 match row {
                     Some(row) if row.id.is_some_and(|id| waiting.contains(&id)) => {
                         queued.push(ChatRow {
@@ -850,7 +850,7 @@ fn peer_name(party: &Party) -> String {
 
 /// The row of a message from the owner, a manager or a chat. Events have `event_rows`; a recap
 /// request shows nothing.
-fn message_row(entry: &ManagerEntry, from: &Author, text: &str, names: &Names) -> Option<ChatRow> {
+fn message_row(entry: &ManagerEntry, from: &Author, text: &str) -> Option<ChatRow> {
     let key = row_key(entry, "message");
     let (peer, reply) = match from {
         Author::Owner => {

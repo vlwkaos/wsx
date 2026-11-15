@@ -86,6 +86,36 @@ pub fn say(
     )
 }
 
+/// Close the open chat `name` of the repo (`wsx task chat close`, the web's and the TUI's Close
+/// chat) and hand it back: its goal, open tasks and last decisions go to the repo's home chat
+/// as one message of wsx, which the home chat reads with its next turn. The open tasks are the
+/// home chat's from then on (`chats::owner`). ref: docs/tasks.md "Chats"
+pub fn close_chat(
+    project: (&str, &Path),
+    wsx: &Path,
+    name: &str,
+    launch: impl FnOnce(String, Vec<String>) -> Result<()>,
+) -> Result<()> {
+    let (home, text) = super::chats::close(name)?;
+    let short = super::manager::Short {
+        text: format!("Chat {name} closed; its open tasks are yours"),
+        task: None,
+        wakes: false,
+    };
+    say(
+        project.0,
+        project.1,
+        wsx,
+        Some(&home),
+        launch,
+        text,
+        Some(super::manager::Author::Events),
+        vec![short],
+    )
+    .map(drop)
+    .context("the chat is closed, but its hand-back did not reach the home chat")
+}
+
 /// Ask the running manager host to write to the owner with no turn. It never starts a host: an
 /// error when none answers, `ok: false` with `busy` while a turn runs.
 pub fn post(
