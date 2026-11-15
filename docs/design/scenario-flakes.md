@@ -1,6 +1,6 @@
 # Web scenario failures: one cause?
 
-Asked 2026-11-15 by the owner. Measured by `docs/design/scenario-flakes-measure.py`, which is read-only. Each number below is a line of its output. `--gh` caches the CI runs and `--load` caches the passing runs' load lines, both in `.work/scenario-flakes/`.
+Asked 2026-11-15 by the owner. Measured by `python3 -I docs/design/scenario-flakes-measure.py --until 2026-11-15T10:00`, which is read-only. Each number below is a line of its output. `--gh` caches the CI runs and `--load` caches the passing runs' load lines, both in `.work/scenario-flakes/`.
 
 **Answer.** No single cause explains most failures, and most of the recent "timing flakes" are not flakes.
 
@@ -12,13 +12,13 @@ Asked 2026-11-15 by the owner. Measured by `docs/design/scenario-flakes-measure.
 
 ## The failures (21 days, since 2026-10-25)
 
-There were 313 `web` check runs and 223 of them failed. In the last 24 h there were 50 runs and 32 failed. The owner's figure of 66 failed runs in 24 h counts every scenario; this doc counts only `web`. 298 runs name their task's HEAD through the CI run's scenario commit.
+There were 312 `web` check runs and 223 of them failed. In the last 24 h there were 49 runs and 32 failed. The owner's figure of 66 failed runs in 24 h counts every scenario; this doc counts only `web`. 298 runs name their task's HEAD through the CI run's scenario commit.
 
 | class | rule (script §3) | fails | 24 h | tasks |
 |---|---|---|---|---|
 | own | the task's diff adds or changes a line with the failing assert's words | 38 | 5 | 17 |
-| once | one task, which did not change the assert | 51 | 6 | 26 |
-| generic | no assert named (design lint, uncaught exception, console errors) | 24 | 3 | 18 |
+| once | one task, which did not change the assert | 49 | 6 | 25 |
+| generic | no assert named (design lint, uncaught exception, console errors) | 26 | 3 | 19 |
 | infra | no assert failed: gh 403 or rate limit, a queue cancel, a job cancelled, a DNS failure | 38 | 1 | 18 |
 | **shared** | the same assert failed in 2 or more tasks that did not change it | **72** | **17** | 35 |
 
@@ -69,7 +69,7 @@ flowchart LR
 **Runner load: measured, not the cause.** test-web-client.py prints `wsxd watch` at exit: the 1-minute load at the 5 worst wsxd stalls, on a runner with 3 cores. The median of each run's samples:
 
 - timing failures: 12.6 (n 26)
-- other assert failures: 12.6 (n 160)
+- other assert failures: 12.7 (n 159)
 - passing runs (the last `wsxd watch` line of each job's log): 11.8 (n 50 of 89; `--load` was stopped there, and a rerun fetches the rest)
 
 The scenario loads its own runner, and the load is the same whether a run fails or passes.
