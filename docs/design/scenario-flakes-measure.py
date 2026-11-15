@@ -4,7 +4,7 @@
 ref: docs/design/scenario-flakes.md (the numbers and the cause)
 
     python3 -I docs/design/scenario-flakes-measure.py [--until 2026-11-15T10:00] [--days 21] [--gh] [--load] [--rows] [--state ~/.local/state/wsx/tasks/wsx-8cbe3f08]
-        [--yield] [--commits] [--asserts]   (docs/design/verification-bottleneck.md)
+        [--yield] [--commits] [--asserts] [--gate [--cut 2026-11-14T16:54]]   (docs/design/verification-bottleneck.md)
 
 Reads the `check_run` and `checks` entries of every task log whose command runs `ci-scenario.py web`.
 A run's CI id is the last `actions/runs/<id>` its output names. `--gh` fetches that run once
@@ -291,15 +291,16 @@ def results(task, path):
                     pass
         results_of[task] = rows
     return results_of[task]
-if '--yield' in ARGS or '--asserts' in ARGS:
-    used = set()
+if '--yield' in ARGS:
+    used, by_time = set(), sorted(runs, key=lambda o: o['ms'])
     for r in sorted(failed, key=lambda r: r['ms']):
+        r['kind'] = kind_of((r['text'] or '') + '\n' + window(r['at']))
         turn = next((e for e in results(r['task'], r['log']) if e['unix_ms'] > r['ms'] and e.get('trigger') == 'check_run' and id(e) not in used), None)
         if turn:
             used.add(id(turn))
         r['turn_usd'] = turn['usage']['cost_micro_usd'] / 1e6 if turn else 0
         r['said'] = (turn or {}).get('summary', '')[:150].replace('\n', ' ')
-        nxt = next((o for o in sorted(runs, key=lambda o: o['ms']) if o['task'] == r['task'] and o['ms'] > r['ms'] and o['head'] and o['tree'] != r['tree']), None)
+        nxt = next((o for o in by_time if o['task'] == r['task'] and o['ms'] > r['ms'] and o['head'] and o['tree'] != r['tree']), None)
         if not r['head'] or not nxt or git('cat-file', '-e', r['head']) is None or git('cat-file', '-e', nxt['head']) is None:  # ^ '' on success
             r['fix'], r['then'] = 'none', None
             continue
@@ -308,7 +309,6 @@ if '--yield' in ARGS or '--asserts' in ARGS:
         s, p = any(f.startswith('scripts/') for f in changed), any(f.startswith('crates/') for f in changed)
         r['fix'] = 'both' if s and p else 'script' if s else 'product' if p else 'neither'
         r['then'] = 'pass' if nxt['exit'] == 0 else 'same' if nxt['text'] == r['text'] else 'other'
-        r['kind'] = kind_of((r['text'] or '') + '\n' + window(r['at']))
     print('\nyield: the fix of each failed web run (the next attempt on another tree), CI wall min and the worker turn that read it')
     print('%-8s %-8s %5s %7s %8s   then pass/same/other' % ('class', 'fix', 'runs', 'CI min', 'turn USD'))
     for cls in ('own', 'once', 'shared', 'generic', 'infra'):
@@ -324,7 +324,7 @@ if '--yield' in ARGS or '--asserts' in ARGS:
     print('fixed in the scripts only:', total([r for r in failed if r['fix'] == 'script']))
     print('\nkind of the failing assert x fix   product  script  both  neither  none')
     for k in [k for k, _ in KINDS] + ['behavior']:
-        c = C.Counter(r['fix'] for r in failed if r['class'] != 'infra' and r.get('kind', kind_of((r['text'] or '') + '\n' + window(r['at']))) == k)
+        c = C.Counter(r['fix'] for r in failed if r['class'] != 'infra' and r['kind'] == k)
         print('%-34s %7d %7d %5d %8d %5d' % (k, c['product'], c['script'], c['both'], c['neither'], c['none']))
     if '--rows' in ARGS and arg('--rows', '') in 'yield':
         for r in sorted(failed, key=lambda r: r['ms']):
@@ -391,3 +391,24 @@ if '--asserts' in ARGS:
             if re.search(r'\bfail\(' if f.endswith('.mjs') else r'^\s*assert ', line) and 'function fail' not in line:
                 count[kind_of('\n'.join(lines[max(0, n - 2):n + 1]))] += 1
     print('  ' + ', '.join('%s %d' % kv for kv in count.most_common()) + '; all %d' % sum(count.values()))
+
+# 8. Gate (--gate): each task that landed in the window, by its last whole web run before the land
+#    (pass, fail or none), before and after --cut (default #441's land, 2026-11-14T16:54).
+if '--gate' in ARGS:
+    CUT = time.mktime(time.strptime(arg('--cut', '2026-11-14T16:54'), '%Y-%m-%dT%H:%M')) * 1000
+    gate, red = C.Counter(), []
+    for path in glob.glob(os.path.join(STATE, '[0-9]*', 'log.jsonl')):
+        task = os.path.basename(os.path.dirname(path))
+        landed = next((json.loads(l)['unix_ms'] for l in open(path, errors='replace') if '"kind":"landed"' in l), None)
+        if not landed or not SINCE <= landed < UNTIL:
+            continue
+        whole = [r for r in runs if r['task'] == task and r['part'] == 'all' and r['ms'] <= landed]
+        last = max(whole, key=lambda r: r['ms'])['exit'] if whole else None
+        verdict = 'none' if last is None else 'pass' if last == 0 else 'fail'
+        gate[('after' if landed >= CUT else 'before', verdict)] += 1
+        if verdict == 'fail':
+            red.append('#%s %s' % (task, time.strftime('%m-%d %H:%M', time.localtime(landed / 1000))))
+    print('\nlanded tasks by their last whole web run before the land (before / after %s):' % arg('--cut', '2026-11-14T16:54'))
+    for when in ('before', 'after'):
+        print('  %-6s pass %3d  fail %3d  none %3d' % (when, gate[(when, 'pass')], gate[(when, 'fail')], gate[(when, 'none')]))
+    print('  landed with a failed last web run:', ', '.join(sorted(red, key=lambda s: s.split(' ', 1)[1])))
