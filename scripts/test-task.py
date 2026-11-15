@@ -2980,7 +2980,7 @@ def part_core(created=None):
         (r'Media +all +all tasks +1/\d+', b'\r'),
         (r'(?s)files/\.studio-data/gone\.jpg +\d+/\d+.*removed: the file is gone', b'\x1b'),
         (r'Media +all +all tasks', b'j\r'),
-        (r'(?s)files/\.studio-data/trend\.jpg +\d+/\d+.*image, linked by manager.*file:.*trend\.jpg', b'\x1b'),
+        (r'(?s)files/\.studio-data/trend\.jpg +\d+/\d+.*image, linked by demo.*file:.*trend\.jpg', b'\x1b'),
         (r'Media +all +all tasks', b'v'), (r'Media +images', b'v'), (r'Media +videos', b'v'),
         (r'Media +all +all tasks', b't'), (r'Media +all +#\d+', b'\x1b'),
         (r'\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
@@ -7032,15 +7032,19 @@ def part_host(created=None):
     mig_store = state / 'wsx/tasks' / mig_id
     mig_n = js('task', 'new', '-p', 'mig', 'WORK m.txt')['id']
     wait(lambda: js('task', 'show', mig_n, '-p', 'mig')['state'] == 'ready', 'the task of the mig repo', 60)
-    cli('session', 'delete', 'task-mig', '-p', 'mig')
+    cli('session', 'delete', 'task-mig', '-p', 'mig', ok=False)
     wait(lambda: not leftovers('task manager-host ' + mig_id), 'the mig manager host leaves', 30)
     # ^ Put the store back as before chats: the home chat's folder is `manager/`, a second chat is `chats/side/`.
     old_home, old_side = mig_store / 'manager', mig_store / 'chats/side'
+    if not (chats_dir / 'mig/log.jsonl').exists():
+        # ^ No host ran for this repo (a task alone does not start one): the first chat's folder is staged by hand.
+        (chats_dir / 'mig').mkdir(exist_ok=True)
+        (chats_dir / 'mig/log.jsonl').write_text(json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': 1, 'from': 'owner', 'text': 'first'}) + '\n')
     (chats_dir / 'mig').rename(old_home)
-    (old_home / 'chat.json').unlink()
+    (old_home / 'chat.json').unlink(missing_ok=True)
     for stale_socket in old_home.glob('*.sock'):
         stale_socket.unlink()
-    (mig_store / 'home.json').unlink()
+    (mig_store / 'home.json').unlink(missing_ok=True)
     (old_side / 'notes').mkdir(parents=True)
     (old_side / 'goal.md').write_text('Side work.\n')
     side_line = json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': 1, 'from': 'owner', 'text': 'side hello'}) + '\n'
@@ -7108,7 +7112,7 @@ def part_host(created=None):
     js('task', 'chat', 'home', 'mig', '-p', 'mig')
     js('task', 'chat', 'close', 'mside', '-p', 'mig')
     js('task', 'close', mig_n, '--discard', '-p', 'mig')
-    cli('session', 'delete', 'task-mig', '-p', 'mig')
+    cli('session', 'delete', 'task-mig', '-p', 'mig', ok=False)
     wait(lambda: not leftovers('task manager-host ' + mig_id), 'the mig hosts leave', 30)
     registry_file.write_text(registry_plain)
     shutil.rmtree(mig_store)
