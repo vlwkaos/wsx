@@ -27,6 +27,11 @@ _spec = importlib.util.spec_from_file_location("usage_report", os.path.join(HERE
 usage = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(usage)
 
+
+def home_folder(state_dir):
+    """The repo's home chat folder (the manager), or a path that is not a folder."""
+    return next((folder for who, folder in usage.chat_folders(state_dir) if who == "manager"), os.path.join(state_dir, "none"))
+
 TITLE = "retrospect"
 DAY_MS = 24 * 3600 * 1000
 HISTORY_MS = 7 * DAY_MS          # repeats count over a week; one of them must be new
@@ -206,7 +211,7 @@ def spend(state_dir, after):
                    if e.get("usage") and e["unix_ms"] > after)
         if cost:
             per_task[int(name)] = cost
-    replies = [e for e in usage.read_log(os.path.join(state_dir, "manager")) if e.get("kind") == "reply"]
+    replies = [e for e in usage.read_log(home_folder(state_dir)) if e.get("kind") == "reply"]
     usage.per_turn_cost(replies)
     manager = sum(e["usage"].get("cost_micro_usd", 0) for e in replies if e.get("usage") and e["unix_ms"] > after)
     top = sorted(per_task.items(), key=lambda kv: -kv[1])[:SHOWN]
@@ -270,9 +275,9 @@ def main():
     ap.add_argument("--no-model", action="store_true", help="count only; no model judges the replies")
     ap.add_argument("--wsx", default="wsx", help="the wsx binary that posts")
     a = ap.parse_args()
-    if not os.path.isdir(os.path.join(a.state_dir, "manager")):
-        sys.exit(f"retrospect: no manager folder in {a.state_dir}")
-    events = usage.read_log(os.path.join(a.state_dir, "manager"))
+    if not os.path.isdir(home_folder(a.state_dir)):
+        sys.exit(f"retrospect: no home chat folder for {a.state_dir}")
+    events = usage.read_log(home_folder(a.state_dir))
     now = int(time.time() * 1000)
     # ^ It starts at the last retrospect, else 24 h back, as the digest does.
     after = max((e["unix_ms"] for e in events if e.get("kind") == "message"

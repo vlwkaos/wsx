@@ -3,7 +3,7 @@
 
 Reads only the task state folder (docs/tasks.md "Task logs", "Manager"):
   <dir>/<n>/task.json, <dir>/<n>/log*.jsonl   worker results, checks, revisions
-  <dir>/manager/log*.jsonl                     manager messages and replies
+  <dir>/home.json, <dir>/../chats/<name>/log*.jsonl   the repo's chats (the home chat is the manager): messages and replies
 Usage fields are documented in docs/tasks.md ("Usage"). Design: docs/design/usage-audit.md.
 
   /usr/bin/python3 scripts/usage-report.py ~/.local/state/wsx/tasks/<project-id>... [--since DAY | --days N] [--until DAY] [--task N]
@@ -33,6 +33,27 @@ def own_quote(e):
     if "quote" in e:
         return e["quote"] not in e.get("to", [])
     return (e.get("text") or "").startswith("> ")
+
+
+def chat_folders(state_dir):
+    """`(who, folder)` of the chats that run in the repo: its home chat as "manager" first, then the others as
+    "chat <name>" (docs/tasks.md "Chats": `<tasks>/chats/<name>/chat.json` lists the repos)."""
+    repo, root = os.path.basename(os.path.normpath(state_dir)), os.path.join(os.path.dirname(os.path.normpath(state_dir)), "chats")
+    try:
+        with open(os.path.join(state_dir, "home.json"), encoding="utf-8") as f:
+            home = json.load(f).get("chat")
+    except (OSError, ValueError):
+        home = None
+    found = []
+    for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        try:
+            with open(os.path.join(root, name, "chat.json"), encoding="utf-8") as f:
+                repos = json.load(f).get("repos", [])
+        except (OSError, ValueError):
+            continue
+        if repo in repos:
+            found.append(("manager" if name == home else f"chat {name}", os.path.join(root, name)))
+    return sorted(found, key=lambda item: item[0] != "manager")
 
 
 def read_log(folder):
@@ -311,10 +332,7 @@ def main():
                    for t in turns])
     mevents, mturns, quotes = [], [], []
     for state_dir in a.state_dir:
-        chats = os.path.join(state_dir, "chats")
-        managers = [("manager", os.path.join(state_dir, "manager"))]
-        if os.path.isdir(chats):
-            managers += [(f"chat {c}", os.path.join(chats, c)) for c in sorted(os.listdir(chats))]
+        managers = chat_folders(state_dir)
         for who, folder in managers:
             said = [e for e in read_log(folder) if e.get("kind") == "reply" and since <= e.get("unix_ms", 0) < until
                     and not e.get("post") and (e.get("text") or "").strip() not in ("", "-")]
@@ -322,7 +340,7 @@ def main():
             if said:
                 quotes.append([os.path.basename(os.path.normpath(state_dir)), who, len(said), quoting,
                                f"{100 * quoting / len(said):.1f}%"])
-        events = read_log(os.path.join(state_dir, "manager"))
+        events = read_log(managers[0][1]) if managers and managers[0][0] == "manager" else []
         per_turn_cost(e for e in events if e.get("kind") == "reply")
         events = [e for e in events if since <= e.get("unix_ms", 0) < until]
         mevents += events
