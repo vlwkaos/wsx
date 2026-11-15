@@ -851,7 +851,7 @@ def manager_turns(days):
     since = time.time() * 1000 - days * DAY_MS
     projects = {}
     for log in sorted(STATE.glob('*/manager/log.jsonl')):
-        entries = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+        entries = jsonl(log)
         messages = {e['id']: e for e in entries if e['kind'] == 'message' and 'id' in e}
         newest, session, turns, fresh = {}, 0, [], 'start'
         for e in entries:
@@ -1034,19 +1034,37 @@ def warm(row, position):
                   rates(row['models']))
 
 
+def jsonl(path):
+    return [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+
+
+def replay_start(first, base):
+    """What a replay of `first` (a turn with its transcript) starts from: the manager's instructions
+    for its project, an environment with the `wsx` recorder on PATH, and a fork of the transcript
+    cut before the turn's prompt."""
+    notes = STATE / first['project'] / 'manager'
+    launch = instructions((ROOT / 'crates/wsx/src/task/instructions.rs').read_text(), first['project'].rsplit('-', 1)[0],
+                          str(notes / 'notes'), str(notes / 'overview.md'))
+    (base / 'bin').mkdir()
+    (base / 'bin/wsx').write_text(EVENT_WSX)
+    (base / 'bin/wsx').chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if not k.startswith('WSX_')}
+    env.update(PATH='%s:%s' % (base / 'bin', env['PATH']), BENCH_READS=READ_VERBS)
+    cut = stamp_ms(next(line for line in transcript(first['path']) if first['prompt'] == prompt_text(line)))
+    session, folder = fork_copy(first['before'], cut, base)
+    return launch, env, session, folder
+
+
 def run_events(options, out):
     """`events`: the cost model on the logged turns, then real event-only bursts replayed on Opus and
     Sonnet from a fork of the manager's own transcript, judged blind by Opus (docs/design/manager-event-model.md)."""
     projects = manager_turns(options.days)
     print(json.dumps({'cost_model': event_cost(projects, options.days)}), flush=True)
     path = Path(out.name)
-    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    rows = jsonl(path)
     done = {r['id'] for r in rows if 'id' in r}
     spent, turns_done = 0.0, len(rows)
-    logs = {name: [json.loads(line) for line in (STATE / name / 'manager/log.jsonl').read_text().splitlines() if line.strip()]
-            for name in projects}
-    source = (ROOT / 'crates/wsx/src/task/instructions.rs').read_text()
-    env = {k: v for k, v in os.environ.items() if not k.startswith('WSX_')}
+    logs = {name: jsonl(STATE / name / 'manager/log.jsonl') for name in projects}
     rng = random.Random(462)
     for burst in event_bursts(projects, rng):
         if turns_done >= options.samples:
@@ -1063,15 +1081,8 @@ def run_events(options, out):
             print('turn %s %d: no transcript, left out' % (burst[0]['project'], burst[0]['id']), flush=True)
             continue
         name = found[0]['project'].rsplit('-', 1)[0]
-        notes = STATE / found[0]['project'] / 'manager'
-        launch = instructions(source, name, str(notes / 'notes'), str(notes / 'overview.md'))
         base = Path(tempfile.mkdtemp(prefix='bench-events-', dir=os.environ.get('TMPDIR')))
-        (base / 'bin').mkdir()
-        (base / 'bin/wsx').write_text(EVENT_WSX)
-        (base / 'bin/wsx').chmod(0o755)
-        arm_env = {**env, 'PATH': '%s:%s' % (base / 'bin', env['PATH']), 'BENCH_READS': READ_VERBS}
-        cut = stamp_ms(next(line for line in transcript(found[0]['path']) if found[0]['prompt'] == prompt_text(line)))
-        session, folder = fork_copy(found[0]['before'], cut, base)
+        launch, arm_env, session, folder = replay_start(found[0], base)
         results = {}
         try:
             arms = [threading.Thread(target=replay_arm, args=(model, launch, arm_env, base, session, found, results))
@@ -1123,7 +1134,7 @@ def run_events(options, out):
         if spent > options.budget:
             print('over the budget of %.0f USD' % options.budget, flush=True)
             break
-    summary = event_summary([json.loads(line) for line in path.read_text().splitlines() if line.strip()])
+    summary = event_summary(jsonl(path))
     print(json.dumps({'summary': summary}, indent=1), flush=True)
     print(json.dumps({'cost_model': event_cost(projects, options.days, summary.get('token_ratio', 1.0))}), flush=True)
 
@@ -1162,27 +1173,17 @@ def run_probe(options):
     event turn, then the owner's last message asked on Sonnet and again on Opus. It shows whether
     the conversation keeps its context and what each switch writes to the cache."""
     projects = manager_turns(options.days)
-    env = {k: v for k, v in os.environ.items() if not k.startswith('WSX_')}
     for burst in event_bursts(projects, random.Random(463)):
         if len(burst) < 2 or burst[0]['project'] != 'wsx-8cbe3f08':
             continue
         found = [o for o in map(original_turn, burst[:2]) if o]
         if len(found) < 2 or found[0]['path'] != found[1]['path']:
             continue
-        logged = [json.loads(line) for line in (STATE / burst[0]['project'] / 'manager/log.jsonl').read_text().splitlines()
-                  if line.strip()]
+        logged = jsonl(STATE / burst[0]['project'] / 'manager/log.jsonl')
         owner = [e['text'] for e in logged if e['kind'] == 'message' and e.get('from') == 'owner' and e['unix_ms'] < burst[0]['ms']]
         base = Path(tempfile.mkdtemp(prefix='bench-probe-', dir=os.environ.get('TMPDIR')))
-        (base / 'bin').mkdir()
-        (base / 'bin/wsx').write_text(EVENT_WSX)
-        (base / 'bin/wsx').chmod(0o755)
-        arm_env = {**env, 'PATH': '%s:%s' % (base / 'bin', env['PATH']), 'BENCH_READS': READ_VERBS,
-                   'BENCH_CALLS': str(base / 'calls.jsonl')}
-        source = (ROOT / 'crates/wsx/src/task/instructions.rs').read_text()
-        notes = STATE / burst[0]['project'] / 'manager'
-        launch = instructions(source, 'wsx', str(notes / 'notes'), str(notes / 'overview.md'))
-        cut = stamp_ms(next(line for line in transcript(found[0]['path']) if found[0]['prompt'] == prompt_text(line)))
-        session, folder = fork_copy(found[0]['before'], cut, base)
+        launch, arm_env, session, folder = replay_start({**burst[0], **found[0]}, base)
+        arm_env['BENCH_CALLS'] = str(base / 'calls.jsonl')
         agent = Agent(launch, arm_env, base, MAIN_MODEL, real=True, resume=session, bash=True)
         steps = []
         try:
