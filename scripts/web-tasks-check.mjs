@@ -429,7 +429,8 @@ async function motion() {
     const { render, html, Loading } = await ${pageModule("lib.js")};
     globalThis.motionKept = { tasks: state.tasks, projects: state.projects };
     const ui = state.projects.find((project) => project.name === 'ui').id;
-    const calm = state.projects.find((project) => project.name === 'calm');
+    const mover = state.projects.find((project) => project.name === 'gone');
+    // ^ gone has no task and no activity: last of the quiet rows, so a newer message moves it up (calm leads them).
     const rows = () => [...document.querySelectorAll('.home-rows > .row:not(.row-chat)')];
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     // The manager of ui runs a turn: typing dots on its row. ^ Only ui's row: another fixture
@@ -440,15 +441,15 @@ async function motion() {
     toast('Saved the page');
     await frames();
     const notice = !!document.querySelector('.notice .notice-timer');
-    // calm becomes the newest: it moves up; then it goes: its row fades out where it was.
+    // gone becomes the newest: it moves up; then it goes: its row fades out where it was.
     const before = rows().map((row) => row.dataset.key);
-    update({ tasks: { ...state.tasks, [calm.id]: { ...state.tasks[calm.id], last_unix_ms: Date.now() + 1e7 } } });
+    update({ tasks: { ...state.tasks, [mover.id]: { ...state.tasks[mover.id], last_unix_ms: Date.now() + 1e7 } } });
     await frames();
     const moved = rows().map((row) => row.dataset.key).join() !== before.join();
     const glides = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row:not(.row-chat)')
       && String(animation.effect.getKeyframes()[0].transform ?? '').startsWith('translateY')).length;
     const projects = state.projects;
-    update({ projects: projects.filter((project) => project !== calm) });
+    update({ projects: projects.filter((project) => project !== mover) });
     await frames();
     const ghosts = document.querySelectorAll('.home-rows > [data-ghost]').length;
     update({ projects });
@@ -460,7 +461,7 @@ async function motion() {
   // manager's turn, a project list read) can undo it, so one of 3 tries must show it all.
   const good = (seen) => seen.typing === 3 && seen.notice && seen.moved && seen.glides >= 1 && seen.ghosts === 1 && seen.loading === "status";
   let seen = await run(false);
-  // ^ A try that failed left calm the newest: the next one starts from the kept state.
+  // ^ A try that failed left gone the newest: the next one starts from the kept state.
   const restore = () => evaluate(`(async () => (await ${pageModule("store.js")}).update(globalThis.motionKept))()`);
   for (let attempt = 1; attempt < 3 && !good(seen); attempt++) { await restore(); await pause(1000); seen = await run(false); }
   if (!good(seen)) await fail(`motion at ${w}px: ${JSON.stringify(seen)}`);
@@ -488,9 +489,10 @@ async function motion() {
   await setMotion("reduce");
   const still = await evaluate(`(async () => {
     const { state, update } = await ${pageModule("store.js")};
-    const calm = state.projects.find((project) => project.name === 'calm');
+    const mover = state.projects.find((project) => project.name === 'gone');
+    // ^ gone has no task and no activity: last of the quiet rows, so a newer message moves it up (calm leads them).
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
-    update({ tasks: { ...state.tasks, [calm.id]: { ...state.tasks[calm.id], last_unix_ms: 1 } } });
+    update({ tasks: { ...state.tasks, [mover.id]: { ...state.tasks[mover.id], last_unix_ms: 1 } } });
     await frames();
     const rows = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row:not(.row-chat)')).length;
     update(globalThis.motionKept);
