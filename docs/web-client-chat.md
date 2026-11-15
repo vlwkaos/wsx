@@ -60,7 +60,7 @@ A chat's log renders a window of its rows (`useRecent` in `web/chat.js`), not it
 
 Each device keeps, per chat (`wsx-read` in local storage, the newest 200 chats), the time of the newest reply that was on a visible screen and where the reader left the chat: the first named row in view and its distance from the top, or the end.
 
-- With replies newer than that time, the chat opens with a "New" line over the first of them, the line at the top of the screen. Without, it opens where the reader left it, or at the end. A chat opened for the first time on a device opens at the end with nothing unread.
+- With replies newer than that time, the chat opens with a "New" line over the first of them, the line at the top of the screen. Without, it opens where the reader left it, or at the end. Where the reader left it, the log holds that row (rows above may still grow) until the reader scrolls; a scroll in the same task as a row change ends the hold at once, so the log settles from where the reader moved it. A chat opened for the first time on a device opens at the end with nothing unread.
 - A reply is read once its end was on screen while the page was visible, so a long reply opened under the line counts as new until the reader reaches its end. Replies are the agent's messages in a session, and the manager's, other managers' and workers' bubbles in the manager chat; the owner's own messages and status lines never count.
 - The place is kept when the chat closes and when the page goes to the background, so a phone that drops the page keeps it too. Rows are the log's children: `data-key` names a row, `data-in` and `data-at` mark a reply and its time (`useFollowEnd` in `lib.js`).
 

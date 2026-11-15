@@ -794,6 +794,36 @@ await go("#/");
 await until("!!document.querySelector('.home-row') && !document.querySelector('.composer-field')", "home did not replace the chat");
 await go(chat);
 await until("!!document.querySelector('.log .bubble') && !!document.querySelector('.pill')", "the chat did not come back");
+// ^ The reader's own scroll wins over the saved place: a chat left in the middle and reopened holds that
+// place until the first scroll, and a scroll in the task of a row change (the observer settles before
+// the event) must not be taken back to it. Read at once and again after two frames: the scroll event
+// comes with the next frame.
+{
+  await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = (log.scrollHeight - log.clientHeight) / 2; log.dispatchEvent(new Event('scroll')); })()");
+  await until("!!document.querySelector('.jump')", "no jump button after the chat scrolled to its middle");
+  await go("#/");
+  await until("!!document.querySelector('.home-row') && !document.querySelector('.composer-field')", "home did not replace the chat");
+  await go(chat);
+  await until("!!document.querySelector('.log .bubble') && !!document.querySelector('.pill')", "the chat did not come back at its saved place");
+  const moved = await evaluate(`(async () => {
+    const log = document.querySelector('.log'), saved = log.scrollTop;
+    log.scrollTop = saved >= 150 ? saved - 120 : saved + 120;
+    const reader = log.scrollTop;
+    const row = document.createElement('div');
+    log.append(row);
+    await Promise.resolve();
+    const now = log.scrollTop;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const later = log.scrollTop;
+    row.remove();
+    return { saved, reader, now, later };
+  })()`);
+  if (Math.abs(moved.reader - moved.saved) < 100 || Math.abs(moved.now - moved.reader) > 1 || Math.abs(moved.later - moved.reader) > 1) {
+    await fail(`the reader's scroll was taken back to the saved place by a row change in its task: ${JSON.stringify(moved)}`);
+  }
+  await evaluate("document.querySelector('.jump')?.click()");
+  await until(atEnd, "Jump to latest did not return to the end after the reader's scroll check");
+}
 
 // --- Mentions in the composer (docs/web-client-tasks.md "Project screen"): `/` lists the owner's
 // skills and inserts a request to use one (the manager takes no slash command), `@` lists the
