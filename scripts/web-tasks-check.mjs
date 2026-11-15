@@ -2300,7 +2300,8 @@ async function readAndReply(where) {
     await fail(`${where}: the reply menu closed before Reply was tapped`);
   };
   await openMenu(point);
-  await shot("reply-menu");
+  // ^ Not on a phone: the swiped bubble is still springing back, past the right edge, for one transition.
+  if (!phone()) await shot("reply-menu");
   if (!(await evaluate(menuReply))) await replyFromMenu(point);
   await until(`${quote} === 'Five columns:'`, `${where}: the reply shows no quote over the composer`);
   if (await evaluate(`${fiveColumns}.style.translate`)) await fail(`${where}: the swiped bubble did not come back`);
