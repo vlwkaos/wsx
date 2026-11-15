@@ -795,8 +795,9 @@ verb = sys.argv[2] if sys.argv[1:2] == ['task'] and len(sys.argv) > 2 else ''
 # ^ `rotation`: a read the conversation made before the turn answers with its output then.
 served = json.load(open(os.environ['BENCH_SERVED'])) if os.environ.get('BENCH_SERVED') else {}
 number = next((a.lstrip('#') for a in sys.argv[3:] if a.lstrip('#').isdigit()), '')
-if ('%s %s' % (verb, number)).strip() in served and '--help' not in sys.argv:
-    print(served[('%s %s' % (verb, number)).strip()])
+key = ('%s %s' % (verb, number)).strip()
+if key in served and '--help' not in sys.argv:
+    print(served[key])
 elif verb in os.environ['BENCH_READS'].split() or '--help' in sys.argv:
     print('wsx bench replay: reads cannot run here; the turn lists the reads made then')
 else:
@@ -1017,6 +1018,12 @@ def later(turn, projects_log):
     return owner + events
 
 
+def recorded_acts(calls):
+    """The acting `wsx task` commands the recorder wrote to `calls`, sorted."""
+    return sorted(acts(' ; '.join(' '.join(['wsx'] + json.loads(line)['argv'])
+                                  for line in calls.read_text().splitlines() if line.strip())))
+
+
 def replay_arm(model, launch, env, base, session, burst, results):
     """One arm of a burst: the forked conversation on `model`, its turns in order."""
     calls = base / ('calls-%s.jsonl' % model)
@@ -1025,8 +1032,7 @@ def replay_arm(model, launch, env, base, session, burst, results):
         for turn in burst:
             calls.write_text('')
             row = agent.turn(turn['prompt'] + REPLAY_NOTE % turn['reads'])
-            row['acts'] = sorted(acts(' ; '.join(' '.join(['wsx'] + json.loads(line)['argv'])
-                                                for line in calls.read_text().splitlines() if line.strip())))
+            row['acts'] = recorded_acts(calls)
             results.setdefault(model, []).append(row)
     except Exception as error:
         results.setdefault('errors', []).append('%s: %s' % (model, error))
@@ -1535,8 +1541,7 @@ def replay_turn(launch, env, base, text, resume=None):
         row = agent.turn(text)
     finally:
         agent.stop()
-    row['acts'] = sorted(acts(' ; '.join(' '.join(['wsx'] + json.loads(line)['argv'])
-                                         for line in calls.read_text().splitlines() if line.strip())))
+    row['acts'] = recorded_acts(calls)
     return row
 
 
