@@ -162,11 +162,13 @@ export function Bubble({ project, row, words: home, fresh, onNeed, plain }) {
   const out = row.author === "owner";
   const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
   const chat = peerChat(peer);
-  // ^ The project of the chat, when it is another project the site lists; else the name stays plain text.
+  // ^ A chat of another project: its bare `#n` is that project's task and its name a link, only for a project the site
+  // lists; else the words are plain text.
   const place = chat ? chatPlace(chat) : {};
-  const other = place.id != null && place.id !== project ? state.projects.find((listed) => listed.id === place.id) : null;
-  const words = other ? withChips(project, other.name) : home;
-  const target = other ? chat : null;
+  const elsewhere = place.id != null && place.id !== project;
+  const listed = elsewhere ? state.projects.find((other) => other.id === place.id) : null;
+  const words = elsewhere ? withChips(project, listed?.name ?? `#${place.id}`) : home;
+  const target = listed ? chat : null;
   const id = `bubble-${row.key}`;
   // ^ A post with a level (`wsx task post --level warn|bad`) says it in its tag (docs/web-client-tasks.md "Task notifications").
   const tag = row.level ? (row.level === "bad" ? "Bad" : "Warn") : row.tag;
