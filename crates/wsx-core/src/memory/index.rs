@@ -191,7 +191,7 @@ pub fn search(
         .take(limit)
         .map(|(score, at)| {
             let (target, doc) = &docs[at];
-            let mut found = hit(&targets[*target].name, doc, score, current);
+            let mut found = hit(&targets[*target], doc, score, current);
             found.outcome = doc.task.and_then(|task| outcome(&targets[*target], task));
             found
         })
@@ -310,8 +310,12 @@ pub(super) fn outcome(target: &Target, task: u32) -> Option<String> {
     Some(history::outcome(&dir, &dir.read_record().ok()?))
 }
 
-pub(super) fn hit(project: &str, doc: &Doc, score: f64, current: Option<&str>) -> Hit {
-    let chat = Some(doc.chat.clone()).filter(|chat| !chat.is_empty());
+pub(super) fn hit(target: &Target, doc: &Doc, score: f64, current: Option<&str>) -> Hit {
+    let project = target.name.as_str();
+    // ^ The repo's home chat is the manager's: its hits carry no chat name and can be quoted by id.
+    let home = crate::task::store::home_chat(&target.project_id);
+    let chat =
+        Some(doc.chat.clone()).filter(|chat| !chat.is_empty() && home.as_deref() != Some(chat));
     let reference = match (doc.kind, doc.id, doc.task) {
         (Kind::Message | Kind::Reply, Some(id), _) => match &chat {
             Some(chat) => format!("{project}:{chat}:{id}"),
