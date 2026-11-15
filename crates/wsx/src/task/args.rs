@@ -332,6 +332,13 @@ pub enum TaskCmd {
         #[arg(long)]
         untrusted: bool,
     },
+    /// One chat's host (docs/tasks.md "Chats"): it only talks, and leaves when idle.
+    #[command(hide = true)]
+    ChatHost { chat: String },
+    /// The repo's service (docs/tasks.md "Chats"): events, stalls, deploys, routines, recap.
+    #[command(hide = true)]
+    RepoHost { project_id: String },
+    /// The host of the release before; it runs as `chat-host` and starts `repo-host`.
     #[command(hide = true)]
     ManagerHost {
         project_id: String,
@@ -554,6 +561,8 @@ impl TaskCmd {
             | Self::LandBatch { .. }
             | Self::Host { .. }
             | Self::BoundaryProfile { .. }
+            | Self::ChatHost { .. }
+            | Self::RepoHost { .. }
             | Self::ManagerHost { .. } => &[Approve],
         }
     }

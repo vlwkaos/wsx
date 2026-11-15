@@ -6689,7 +6689,7 @@ def part_host(created=None):
     mark('32s2')
     # its checks gets a no-op turn tasks.agent.keepWarmSeconds after its last answer, at most 3 in
     # a row; it logs `ping`, is no result and starts no step. None while the account's usage limit
-    # holds. The manager pings while a task checks, and a ping is never a reply.
+    # holds. Only the worker pings; the manager does not (task #472).
     configure(LAND_CONFIG.replace('test ! -e broken.txt', 'sleep 11') + '  agent: { keepWarmSeconds: 2 }\n',
               'keep warm')
     pings = lambda n: [e for e in log(n) if e['kind'] == 'ping']
@@ -6736,15 +6736,9 @@ def part_host(created=None):
     # ^ The manager turns by trigger: a ready event woke turns, a stop by request (21b) none.
     triggers = report.split('Manager turns by trigger', 1)[1].split('\n## ', 1)[0]
     assert re.search(r'\| ready +\| [1-9]', triggers) and '| stopped ' not in triggers, triggers
+    # ^ The manager has no ping: its conversation is rotated or left to the idle rotation.
     entries = manager_entries()
-    mpings = [e for e in entries if e['kind'] == 'ping']
-    assert mpings and all(e['usage']['output_tokens'] > 0 for e in mpings), entries[-12:]
-    assert [t for t in keep_alive() if t.get('manager')], keep_alive()
-    # ^ At most 3 pings between two real turns; a ping never logs a reply or a delivery.
-    run = 0
-    for e in entries:
-        run = run + 1 if e['kind'] == 'ping' else 0 if e['kind'] == 'delivered' else run
-        assert run <= 3, entries[-20:]
+    assert not [e for e in entries if e['kind'] == 'ping'], entries[-12:]
     assert all(e['to'] for e in entries if e['kind'] == 'reply'), entries[-12:]
     # ^ The TUI (docs/tasks.md "TUI"): `u` flips the day rows from cost to tokens with each day's
     # cache hit rate, from the ledger's `usage.days[].usage`; the task's Usage line counts its pings.
@@ -6771,7 +6765,7 @@ def part_host(created=None):
         (r'■ cache read', to_held),
         (r'Usage ', b'')])
     costs, tokens, detail = pinged[1:]
-    # ^ A manager ping can land between the reads: the TUI shows the ledger as it was before or
+    # ^ A turn can land between the reads: the TUI shows the ledger as it was before or
     # after the TUI ran, so the row must equal one of the two.
     before, after = today(ledger), today(js('task', 'ledger'))
     cost_day = next(line for line in costs.splitlines() if re.search(label, line))

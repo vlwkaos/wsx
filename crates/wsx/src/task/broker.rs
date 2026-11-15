@@ -30,7 +30,7 @@ const MAX_RESPONSE_BYTES: u64 = 3 * MAX_STREAM_BYTES as u64;
 /// its command runs detached, past this limit (docs/tasks.md "Deploy and release").
 const RUN_LIMIT: Duration = Duration::from_secs(15 * 60);
 /// `task` subcommands that start hosts; never run for the agent.
-const HIDDEN: [&str; 2] = ["host", "manager-host"];
+const HIDDEN: [&str; 4] = ["host", "manager-host", "chat-host", "repo-host"];
 
 #[derive(Serialize, Deserialize)]
 pub struct Request {

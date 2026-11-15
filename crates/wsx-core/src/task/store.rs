@@ -1054,6 +1054,8 @@ pub(super) fn sockets_of(folder: &Path) -> (PathBuf, PathBuf) {
     )
 }
 const HOME_FILE: &str = "home.json";
+const REPO_STATE: &str = "repo.json";
+const REPO_SOCKET: &str = "repo.sock";
 
 /// `tasks/chats/`, which holds one folder per chat of the machine, open or closed.
 pub fn chats_root() -> PathBuf {
@@ -1071,6 +1073,29 @@ pub fn home_chat(project_id: &str) -> Option<String> {
         .get("chat")?
         .as_str()
         .map(str::to_string)
+}
+
+/// The socket of the repo's service, `repo-host`.
+pub fn repo_socket(project_id: &str) -> Result<PathBuf> {
+    Ok(socket_for('r', &project_dir(project_id)?.join(REPO_SOCKET)))
+}
+
+/// What the repo service saved, or none before its first start. ref: docs/tasks.md "Chats"
+pub fn read_repo_state(project_id: &str) -> Result<Option<super::manager::RepoState>> {
+    let path = project_dir(project_id)?.join(REPO_STATE);
+    match read_bounded_if_exists(&path, MAX_MANAGER_STATE_BYTES)? {
+        Some(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .with_context(|| format!("cannot parse {}", path.display())),
+        None => Ok(None),
+    }
+}
+
+pub fn write_repo_state(project_id: &str, state: &super::manager::RepoState) -> Result<()> {
+    write_atomic(
+        &ensure_project_dir(project_id)?.join(REPO_STATE),
+        &serde_json::to_vec_pretty(state)?,
+    )
 }
 
 pub fn set_home_chat(project_id: &str, chat: &str) -> Result<()> {
@@ -1161,8 +1186,16 @@ impl ManagerDir {
         home_chat(&self.project_id).as_deref() == Some(self.chat.as_str())
     }
 
-    /// The arguments after the program of this chat's host: the home chat's has no `--chat`.
+    /// The arguments after the program of this chat's host.
     pub fn host_args(&self) -> Vec<String> {
+        ["task", "chat-host", self.chat.as_str()]
+            .map(String::from)
+            .into()
+    }
+
+    /// The arguments of the host the release before ran for this chat: `manager-host <repo>
+    /// [--chat <name>]`. It hands over to `chat-host` and `repo-host` for one release.
+    pub fn old_host_args(&self) -> Vec<String> {
         let mut args: Vec<String> = ["task", "manager-host", self.project_id.as_str()]
             .map(String::from)
             .into();

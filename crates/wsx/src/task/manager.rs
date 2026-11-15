@@ -1,20 +1,18 @@
-//! `wsx task manager-host`: one manager agent per project in a hidden session in the
-//! main checkout. It edits no project file but a commit of the owner's own changes on the
-//! owner's yes; it answers from the ledger, acts through
-//! `wsx task` commands and keeps notes in its own folder. With `--chat <name>` the same host
-//! runs another chat: its goal, its own folder and only its tasks' events, and it leaves once
-//! idle. ref: docs/tasks.md "Manager", "Chats"
+//! `wsx task chat-host <chat>`: one chat's host in a hidden session in the chat's repo's main
+//! checkout. It edits no project file but a commit of the owner's own changes on the owner's
+//! yes; it answers from the ledger, acts through `wsx task` commands and keeps notes in the
+//! chat's folder. It only talks: the repo's service (`repo.rs`) hands it the events of its
+//! tasks, and it leaves `CHAT_LINGER` after its queue is empty, started again by the next
+//! message. The hidden `manager-host <repo> [--chat <name>]` of the release before runs as this
+//! host and starts the service. ref: docs/tasks.md "Manager", "Chats"
 
 use super::agent::{
-    self, new_session_id, Agent, AgentLine, Ask, Cause, Launch, Next, TurnResult, KEEP_WARM_PINGS,
-    KEEP_WARM_TEXT, PROMPT_CACHE_MS,
+    self, new_session_id, Agent, AgentLine, Ask, Cause, Launch, Next, TurnResult, PROMPT_CACHE_MS,
 };
 use super::boundary::Boundary;
 use super::claude::{account_env, config_root, skills_plugin, SKILLS_PLUGIN_NAME};
 use super::{broker, claude, floor, hosting, limit, notes};
-use crate::cli::existing_daemon_snapshot;
 use anyhow::{Context, Result};
-use serde_json::json;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -22,54 +20,31 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::manager_rotate_limit;
-use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
+use wsx_core::routine::RunRecord;
 use wsx_core::runtime;
-use wsx_core::stale;
 use wsx_core::task::chat;
 use wsx_core::task::checks::{CheckState, ItemReply};
 use wsx_core::task::manager::{
-    answering, asks_owner, decided_request, instructions_digest, open_requests, pending_approvals,
-    quiet_reply, quoted_id, resolve_quote, says_nothing, split_quote, stall_wakes, state_wakes,
-    Answers, ApprovalLine, QUOTE_REF,
+    answering, asks_owner, instructions_digest, pending_approvals, quiet_reply, quoted_id,
+    resolve_quote, says_nothing, split_quote, Answers, ApprovalLine, QUOTE_REF,
 };
 use wsx_core::task::manager::{
-    Author, Checkin, Level, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest,
+    Author, Level, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest,
     ManagerResponse, ManagerState, Party, Seen, Short,
 };
 use wsx_core::task::policy;
 use wsx_core::task::replace::Binary;
-use wsx_core::task::session_news;
 use wsx_core::task::stall;
 use wsx_core::task::status;
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
-use wsx_core::task::view::{self, clip, project_tasks, read_result};
-use wsx_core::task::{
-    call_host, checks, ledger, now_unix_ms, HostRequest, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
-};
-use wsx_core::task::{chats, owner, usage, Actor};
+use wsx_core::task::view::{self, clip, project_tasks};
+use wsx_core::task::{chats, owner, Actor};
+use wsx_core::task::{checks, ledger, now_unix_ms, TaskRecord, TaskState, MAX_MESSAGE_BYTES};
 
 use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
-/// Events within this long of each other, or during a turn, become one message.
 const START_RETRY: Duration = Duration::from_secs(30);
-const EVENT_QUIET: Duration = Duration::from_secs(3);
-/// How often the host keeps the "To check" captures within their budget.
-const CAPTURE_SWEEP: Duration = Duration::from_secs(60 * 60);
-/// How often the host looks at wsxd for sessions that need the owner.
-const SESSION_LOOK: Duration = Duration::from_secs(2);
-/// How often the project's stale worktrees are swept, or the seconds in
-/// `WSX_TEST_PRUNE_SWEEP_SECS`: for the task scenario only, which would wait an hour.
-fn prune_sweep() -> Duration {
-    std::env::var("WSX_TEST_PRUNE_SWEEP_SECS")
-        .ok()
-        .and_then(|secs| secs.parse().ok())
-        .map_or(Duration::from_secs(60 * 60), Duration::from_secs)
-}
-/// What wsx asks after a quiet period. The reply is the recap the owner reads.
-const RECAP_REQUEST: &str = "The project has been quiet. Write the owner a short recap, at most 8 lines: \
-what landed and is live, what runs, and what waits for the owner and why. Read the ledger for it. Start no \
-task and change nothing. Name a task by its number and what it does.";
 /// The follow-up when a turn thought far more than it said. A turn about events may hold
 /// nothing for the owner: it answers `-`. ref: docs/tasks.md "Reply text"
 const THOUGHT_ASKED: &str = "Your answer to the owner was only in your thinking. Write it now as \
@@ -85,7 +60,6 @@ and old decisions go out; decisions are already in decisions.md.",
         store::MAX_OVERVIEW_CHARS % 1000
     )
 }
-const EVENT_TITLE_CHARS: usize = 80;
 /// The turn after a usage limit: the messages of the turn it ended got no answer yet.
 const LIMIT_CONTINUE: &str = "The usage limit has reset. Answer the messages before this one \
 that got no reply yet, then any below.";
@@ -105,10 +79,6 @@ const STAND_IN_RETRY_MS: u64 = 5 * 60_000;
 const STAND_IN_LOOK: Duration = Duration::from_secs(10);
 /// Agent errors in a row after which the conversation itself may be the cause.
 const ERROR_ROTATE_ATTEMPTS: u32 = 3;
-/// An idle task runs at most this often.
-const IDLE_EVERY_MS: u64 = 24 * 3_600_000;
-/// The title of the task `tasks.workflow.idle` starts.
-const IDLE_TITLE: &str = "Consolidate project knowledge";
 /// A chat's host leaves after this long with no message and no turn; `say` starts it again.
 const CHAT_LINGER: Duration = Duration::from_secs(20);
 /// A message in a handover: one line, clipped, so a quote never reads as a new message.
@@ -126,9 +96,6 @@ const QUOTE_READ_BYTES: u64 = 256 * 1024;
 /// How much of the log's end a notes search reads for the earlier conversation's exchanges.
 const EARLIER_TAIL_BYTES: u64 = 1024 * 1024;
 const HANDOVER_CHARS: usize = 600;
-const EVENT_SUMMARY_CHARS: usize = 160;
-/// A failed deploy's event carries this many last lines of its output.
-const DEPLOY_EVENT_LINES: usize = 10;
 /// The ledger summary at the end of a turn's message: at most this many task lines.
 const SUMMARY_ROWS: usize = 12;
 const SUMMARY_TITLE_CHARS: usize = 60;
@@ -137,11 +104,6 @@ pub(super) enum Event {
     Request(ManagerRequest, Sender<ManagerResponse>),
     Agent(u64, Option<AgentLine>),
     Tick,
-    /// A sweep of stale worktrees and sessions ended: its notes, or why it failed.
-    Pruned(Result<Vec<stale::Note>, String>),
-    /// `wsx task new` with `tasks.workflow.idle` ended: when it began, and the task number or
-    /// the error.
-    IdleStarted(u64, Result<u32, String>),
     /// The agent's `say --from-chat` reached a chat of this project or another project's
     /// first chat (`to` is the `Party` key).
     Sent {
@@ -149,67 +111,12 @@ pub(super) enum Event {
         text: String,
         reply: bool,
     },
-    /// The events of a task that the host of the chat, or the manager of the project, that
-    /// created it did not take: this manager hears them.
-    Undelivered {
-        to: Party,
-        lines: Vec<(String, Short)>,
-    },
-}
-
-/// The head of the events this manager hears when `party` did not take them.
-fn refusal(party: &Party) -> String {
-    match party {
-        Party::Chat(chat) => {
-            format!("chat {chat} did not take the events of its tasks, so they are yours:")
-        }
-    }
 }
 
 /// Answers this manager owes other projects' managers: one per message from one of them
 /// that a turn delivered. A `say --from-chat --reply` spends one, so a reply is never
 /// answered and a message is answered once. ref: docs/tasks.md "Managers talk"
 type Owed = std::sync::Arc<std::sync::Mutex<BTreeMap<String, u32>>>;
-
-/// What only the project's first chat does besides talking: it watches the store for events,
-/// stalls, approvals, deploys, routines and agent sessions, asks for recaps, sweeps captures and
-/// stale worktrees, and checks the overview and the notes' views. Another chat's host has none.
-/// ref: docs/tasks.md "Chats"
-#[derive(Default)]
-struct Duties {
-    /// `tasks.deploy.auto`: a deploy that worked starts no turn. ref: `state_wakes`
-    deploy_auto: bool,
-    /// Task states as last seen, including ones not yet reported.
-    observed: BTreeMap<u32, Seen>,
-    /// Approval decisions seen, including ones not yet reported.
-    observed_decisions: u64,
-    /// The `unix_ms` of the newest deploy record seen.
-    observed_deploys_ms: u64,
-    /// The `finished_epoch` of the newest routine run seen.
-    observed_routines: i64,
-    /// The stall reported for each open task, by marker, including ones not yet logged.
-    observed_stalls: BTreeMap<u32, String>,
-    /// The stall each task shows now, and since when: it is reported after `stall::grace()`.
-    stall_suspects: BTreeMap<u32, (String, Instant)>,
-    stalls_swept: Option<Instant>,
-    sessions_looked: Option<Instant>,
-    /// When the last sweep of stale worktrees began, and whether one runs.
-    /// ref: docs/tasks.md "Stale worktrees"
-    pruned: Option<Instant>,
-    pruning: bool,
-    /// The worktrees the last sweep left for the owner, with the text posted: posted again
-    /// only when the text changes.
-    flagged: BTreeMap<PathBuf, String>,
-    /// `tasks.manager.recapMinutes` as a duration; `None` is off.
-    recap_quiet: Option<Duration>,
-    /// When the host last removed old captures; `None` sweeps on the first tick.
-    captures_swept: Option<Instant>,
-    /// The host asked for a shorter overview since the last owner message or in-cap result.
-    overview_asked: bool,
-    /// A hand edit of `decisions.md` or `context.md` was said once; no second notice until the
-    /// owner writes again or the views are whole.
-    drift_said: bool,
-}
 
 /// `url.<base>.pushInsteadOf` with an empty prefix rewrites every push URL to `<base><url>`:
 /// `git push` then answers "'remote-wsx-task-push' is not a git command".
@@ -225,8 +132,6 @@ struct Manager {
     stand_in: Option<(agent::Choice, Instant)>,
     /// A hold runs for hours: looking for a stand-in reads config and log, so not every tick.
     stand_in_look: Option<Instant>,
-    /// The project duties; only the project's first chat has them (`Duties`).
-    duties: Option<Duties>,
     model: String,
     /// `tasks.manager.eventModel`: the model of a turn with only events and no review due.
     event_model: Option<String>,
@@ -248,10 +153,6 @@ struct Manager {
     turn_events: bool,
     pane: Option<u64>,
     started: Instant,
-    /// Event lines not yet logged as a message, each with the chat's short form of it, and
-    /// when the last one came.
-    pending_events: Vec<(String, Short)>,
-    last_event: Option<Instant>,
     /// When a message was logged, a turn ran or the host last looked for a recap.
     last_activity: Instant,
     /// The running turn's record (`stall::Turn`, `turn.json`): past its deadline with no line
@@ -265,21 +166,17 @@ struct Manager {
     policy: broker::SharedPolicy,
     /// When the agent last failed to start a turn; the next try waits `START_RETRY`.
     start_failed: Option<Instant>,
-    /// Event lines of tasks a chat or another project's manager created, by who hears them, not
-    /// yet sent.
-    chat_events: BTreeMap<Party, Vec<(String, Short)>>,
-    /// The waiting approvals that run now, by id (`run_waiting`).
-    running_waits: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     /// The approval lines there were after the last reply: a request after them is new.
     asks_seen: usize,
     /// A chat host that is closed or idle: it leaves.
     leaving: bool,
     /// Like `overview_asked`, for the request to write an answer that sat in thinking.
     thought_asked: bool,
-    /// Ping turns since the last real turn, and whether the running turn is one.
-    /// ref: docs/tasks.md "Manager"
-    pings: u32,
-    pinging: bool,
+    /// The home chat asked for a shorter overview since the last owner message or in-cap result.
+    overview_asked: bool,
+    /// A hand edit of `decisions.md` or `context.md` was said once; no second notice until the
+    /// owner writes again or the views are whole.
+    drift_said: bool,
 }
 
 /// The manager's lean project context in its notes folder. ref: docs/tasks.md "Memo"
@@ -320,13 +217,27 @@ pub fn print_profile(project: &str, main: &Path, untrusted: bool) -> Result<()> 
     Ok(())
 }
 
-pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
+/// The hidden `manager-host <repo> [--chat <name>]` of the release before: the chat's host runs
+/// as `chat-host`, in this session, and the repo's service starts in its own. A session that
+/// wsxd restores from its stored argv, or a host that follows a replaced wsx, lands here.
+pub fn run_old(project_id: &str, chat: Option<&str>) -> Result<()> {
     let (project, main) = super::project_by_id(project_id)?;
-    let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
     let dir = match chat {
         None => ManagerDir::open_home(project_id)?,
         Some(chat) => chats::open_chat(chat)?,
     };
+    let exe = std::env::current_exe().context("cannot find the wsx binary")?;
+    if let Err(error) = owner::ensure_repo(&project, &main, &exe, super::launch_manager(&main)) {
+        eprintln!("cannot start the repo's service: {error:#}");
+    }
+    run(dir.name())
+}
+
+pub fn run(chat: &str) -> Result<()> {
+    let dir = chats::open_chat(chat)?;
+    let project_id = dir.project_id.clone();
+    let (project, main) = super::project_by_id(&project_id)?;
+    let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
     let listener = hosting::bind(&dir.socket_path())?;
     let brokered = hosting::bind(&dir.broker_path())?;
     let state = dir.read_state()?;
@@ -340,18 +251,11 @@ pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
         ),
     };
     let (events, receiver) = channel();
-    let home = dir.is_home();
     let mut manager = Manager {
         dir,
         project,
         main,
         adapter,
-        duties: home.then(|| Duties {
-            deploy_auto: settings.deploy_auto,
-            recap_quiet: (settings.manager_recap_secs > 0)
-                .then(|| Duration::from_secs(settings.manager_recap_secs)),
-            ..Duties::default()
-        }),
         stand_in: None,
         stand_in_look: None,
         model,
@@ -368,8 +272,6 @@ pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
         turn_events: false,
         pane: hosting::own_pane(),
         started: Instant::now(),
-        pending_events: Vec::new(),
-        last_event: None,
         last_activity: Instant::now(),
         turn_record: None,
         binary: Binary::capture(),
@@ -377,13 +279,11 @@ pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
         owed: Owed::default(),
         policy: broker::SharedPolicy::default(),
         start_failed: None,
-        chat_events: BTreeMap::new(),
-        running_waits: Default::default(),
-        asks_seen: store::read_approvals(project_id).map_or(0, |lines| lines.len()),
+        asks_seen: store::read_approvals(&project_id).map_or(0, |lines| lines.len()),
         leaving: false,
         thought_asked: false,
-        pings: 0,
-        pinging: false,
+        overview_asked: false,
+        drift_said: false,
     };
     manager.restore()?;
     let requests = events.clone();
@@ -428,27 +328,6 @@ pub fn run(project_id: &str, chat: Option<&str>) -> Result<()> {
             std::thread::sleep(Duration::from_secs(1));
         }
     });
-    // ^ A manager starts on a new wsx after any install (it follows the file before its next
-    // turn), also one whose deploy ran on the older wsx, which has no sweep of its own.
-    // ref: docs/tasks.md "Host" (A host hung in a turn)
-    if chat.is_none() {
-        std::thread::spawn(|| {
-            for error in wsx_core::task::replace::sweep() {
-                eprintln!("cannot replace a hung host: {error}");
-            }
-        });
-    }
-    // ^ A deploy waiting for a quiet branch dies with a reboot or a killed process: a manager
-    // that starts starts it again when the last deploy is not the default branch tip.
-    if chat.is_none() {
-        if let Err(error) = super::cmd::deploy::spawn_quiet_deploy(
-            &manager.project,
-            &manager.dir.project_id,
-            &manager.main,
-        ) {
-            manager.say(&format!("cannot start the deploy that is due: {error:#}"));
-        }
-    }
     manager.say(&format!(
         "{} of {} in {}",
         manager.dir.name(),
@@ -522,13 +401,6 @@ impl Manager {
                     self.on_agent(line)
                 }
                 Event::Agent(..) => {}
-                // ^ The repo's home chat was repointed (`chat home`): a host leaves, and the next
-                // message starts it with the duties of its new place.
-                Event::Tick if self.duties.is_some() != self.dir.is_home() => {
-                    self.say("the repo's home chat changed: this host leaves");
-                    self.leaving = true;
-                }
-                // ^ A chat's host has no project duties: it hears what is said to it.
                 Event::Tick
                     if self
                         .stand_in
@@ -537,43 +409,15 @@ impl Manager {
                 {
                     self.stand_in_done(None)
                 }
-                Event::Tick if self.duties.is_none() => {
+                Event::Tick => {
                     self.end_hung_turn();
                     self.leave_when_done()
                 }
-                Event::Tick => {
-                    self.end_hung_turn();
-                    self.fire_checkin();
-                    self.watch_tasks();
-                    self.watch_stalls();
-                    self.watch_sessions();
-                    self.ask_recap();
-                    self.sweep_captures();
-                    self.prune_stale();
-                    self.ping();
-                }
-                Event::Pruned(result) => self.pruned_done(result),
-                Event::IdleStarted(began, Ok(id)) => {
-                    self.say(&format!("started idle task #{id}"));
-                    self.state.idle_task = Some(id);
-                    self.state.idle_ms = Some(began);
-                    self.save();
-                }
-                // ^ The next idle period tries again.
-                Event::IdleStarted(_, Err(error)) => {
-                    self.say(&format!("cannot start the idle task: {error}"))
-                }
                 Event::Sent { to, text, reply } => self.log(ManagerEvent::Sent { to, text, reply }),
-                Event::Undelivered { to, lines } => {
-                    self.pending_events.push(plain_event(refusal(&to)));
-                    self.pending_events.extend(lines);
-                    self.last_event = Some(Instant::now());
-                }
             }
             if self.turn.is_none() {
-                self.flush_events();
                 self.next_turn();
-            } else if !self.pinging {
+            } else {
                 self.last_activity = Instant::now();
             }
             if self.reexec {
@@ -637,33 +481,14 @@ impl Manager {
                     message: refusal.unwrap_or("posted to the chat").into(),
                 }
             }
-            ManagerRequest::Checkin { at_ms, why } => {
-                self.state.checkin = Some(Checkin { at_ms, why });
-                self.save();
-                ManagerResponse {
-                    ok: true,
-                    id: None,
-                    busy,
-                    binary: None,
-                    message: "check-in set".into(),
-                }
-            }
-        }
-    }
-
-    /// Make an event of the pending check-in once its time has come, also late after a restart.
-    /// Between turns only: an event inside a running turn would read as its end.
-    /// ref: docs/tasks.md "Check-in"
-    fn fire_checkin(&mut self) {
-        if self.turn.is_some() {
-            return;
-        }
-        let now = now_unix_ms();
-        if let Some(checkin) = self.state.checkin.take_if(|checkin| checkin.at_ms <= now) {
-            self.pending_events
-                .push(plain_event(format!("check-in: {}", checkin.why)));
-            self.last_event = Some(Instant::now());
-            self.save();
+            // ^ A check-in belongs to the chat that set it and the repo's service fires it.
+            ManagerRequest::Checkin { .. } => ManagerResponse {
+                ok: false,
+                id: None,
+                busy,
+                binary: None,
+                message: "a check-in goes to the repo's service".into(),
+            },
         }
     }
 
@@ -764,18 +589,6 @@ impl Manager {
                 _ => Vec::new(),
             })
             .collect();
-        // ^ A state from before `recap_ms`: the last recap request, else now.
-        if self.state.recap_ms.is_none() {
-            self.state.recap_ms = Some(
-                log.iter()
-                    .rev()
-                    .find(|entry| {
-                        matches!(&entry.event, ManagerEvent::Message { from, .. } if *from == Author::Recap)
-                    })
-                    .map_or_else(now_unix_ms, |entry| entry.unix_ms),
-            );
-            self.save();
-        }
         for entry in log {
             if let ManagerEvent::Message {
                 id,
@@ -790,903 +603,11 @@ impl Manager {
                 }
             }
         }
-        if self.duties.is_some() {
-            self.restore_seen();
-        }
         Ok(())
-    }
-
-    /// The duties start from what the saved state has seen; a first start takes what already
-    /// happened as the baseline, not news.
-    fn restore_seen(&mut self) {
-        match self.state.seen.clone() {
-            Some(seen) => {
-                self.duty().observed = seen;
-                self.duty().observed_decisions = self.state.decisions_seen;
-                self.duty().observed_stalls = self.state.stalls.clone();
-                self.duty().observed_deploys_ms = self
-                    .state
-                    .deploys_seen_ms
-                    .unwrap_or_else(|| self.newest_deploy_ms());
-                self.duty().observed_routines = self
-                    .state
-                    .routines_seen
-                    .unwrap_or_else(|| self.newest_routine_run());
-            }
-            None => {
-                // ^ First start: what already happened is the baseline, not news.
-                self.duty().observed = self.current_tasks().into_iter().collect();
-                self.duty().observed_decisions = self.approval_lines().len() as u64;
-                self.duty().observed_deploys_ms = self.newest_deploy_ms();
-                self.duty().observed_routines = self.newest_routine_run();
-                self.state.seen = Some(self.duty().observed.clone());
-                self.state.decisions_seen = self.duty().observed_decisions;
-                self.state.deploys_seen_ms = Some(self.duty().observed_deploys_ms);
-                self.state.routines_seen = Some(self.duty().observed_routines);
-                self.save();
-            }
-        }
-    }
-
-    fn current_tasks(&self) -> Vec<(u32, Seen)> {
-        project_tasks(&self.dir.project_id)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(_, record)| record.ok())
-            .map(|record| (record.id, Seen::of(&record)))
-            .collect()
     }
 
     fn approval_lines(&self) -> Vec<ApprovalLine> {
         store::read_approvals(&self.dir.project_id).unwrap_or_default()
-    }
-
-    /// Drop open requests whose task left or moved on, or whose `after` task closed without
-    /// landing; run those whose `after` task landed (the owner approved them in the chat); then
-    /// turn new decisions into event lines, except those the owner's chat message approved: the
-    /// manager ran them itself. ref: docs/tasks.md "Approvals"
-    fn watch_approvals(&mut self) {
-        let project_id = self.dir.project_id.clone();
-        let mut lines = self.approval_lines();
-        let read =
-            |task: u32| store::TaskDir::open(&project_id, task).and_then(|dir| dir.read_record());
-        let (mut stale, mut due) = (Vec::new(), Vec::new());
-        for request in open_requests(&lines) {
-            let ApprovalLine::Request {
-                id,
-                action,
-                task,
-                after,
-                ..
-            } = request
-            else {
-                continue;
-            };
-            let why = task
-                .and_then(|task| read(task).ok())
-                .and_then(|record| owner::stale_reason(request, &record));
-            let why = match (why, after) {
-                (Some(why), _) => Some(why),
-                (None, Some(after)) => match read(*after) {
-                    Ok(record) if record.state == TaskState::Landed => {
-                        due.push(id.clone());
-                        None
-                    }
-                    Ok(record) if record.state.is_open() => None,
-                    Ok(record) => Some(format!(
-                        "#{after} is {}, so {} waits for nothing",
-                        record.state.as_str(),
-                        owner::action_name(*action)
-                    )),
-                    Err(_) => Some(format!(
-                        "#{after} is gone, so {} waits for nothing",
-                        owner::action_name(*action)
-                    )),
-                },
-                (None, None) => None,
-            };
-            if let Some(why) = why {
-                stale.push((id.clone(), why));
-            }
-        }
-        if !stale.is_empty() {
-            for (id, why) in stale {
-                if let Err(error) = owner::drop_request(&project_id, &id, &why) {
-                    self.say(&format!("cannot drop approval {id}: {error:#}"));
-                }
-            }
-            lines = self.approval_lines();
-        }
-        for id in due
-            .into_iter()
-            .filter(|id| open_requests(&lines).iter().any(|line| line.id() == id))
-        {
-            self.run_waiting(id);
-        }
-        let open = chats::open_names();
-        let decisions: Vec<usize> = (0..lines.len())
-            .filter(|at| matches!(lines[*at], ApprovalLine::Decision { .. }))
-            .collect();
-        for at in decisions
-            .iter()
-            .skip(self.duty().observed_decisions as usize)
-        {
-            let ApprovalLine::Decision {
-                id,
-                approved,
-                note,
-                outcome,
-                owner_said,
-                ..
-            } = &lines[*at]
-            else {
-                continue;
-            };
-            let request = decided_request(&lines, *at);
-            // ^ The run of a request that waited for a land is news: the manager did not run it.
-            if owner_said.is_some()
-                && !matches!(request, Some(ApprovalLine::Request { after: Some(_), .. }))
-            {
-                continue;
-            }
-            let asked = match request {
-                Some(ApprovalLine::Request {
-                    action, task, path, ..
-                }) => format!(
-                    "{}{}",
-                    format!("{action:?}").to_ascii_lowercase(),
-                    match (task, path) {
-                        (Some(task), _) => format!(" #{task}"),
-                        (None, Some(path)) => format!(" {path}"),
-                        (None, None) => String::new(),
-                    }
-                ),
-                _ => String::new(),
-            };
-            let (verdict, short) = match (approved, outcome.strip_prefix(owner::DROPPED)) {
-                (true, _) => (format!("approved; {outcome}"), format!("Approved {asked}")),
-                (false, Some(why)) => (outcome.clone(), format!("Dropped {asked}: {why}")),
-                (false, None) => (
-                    format!("denied; {}", note.as_deref().unwrap_or("no note")),
-                    format!("Denied {asked}"),
-                ),
-            };
-            // ^ The chat whose agent asked hears the decision (`chats::owner`).
-            let asker = match request {
-                Some(ApprovalLine::Request { chat, .. }) => {
-                    chats::owner(chat.as_deref(), &open, self.dir.name())
-                }
-                _ => self.dir.name(),
-            };
-            let line = (
-                format!(
-                    "approval {id} ({asked}) {}",
-                    clip(&verdict, EVENT_SUMMARY_CHARS * 2)
-                ),
-                Short {
-                    text: clip(&short, EVENT_SUMMARY_CHARS * 2),
-                    task: None,
-                    wakes: true,
-                },
-            );
-            match asker == self.dir.name() {
-                false => self
-                    .chat_events
-                    .entry(Party::Chat(asker.to_string()))
-                    .or_default()
-                    .push(line),
-                true => self.pending_events.push(line),
-            }
-            self.last_event = Some(Instant::now());
-        }
-        self.duty().observed_decisions = decisions.len() as u64;
-    }
-
-    /// Run the waiting request `id` off the loop (a land or a release takes a while), once at a
-    /// time. One that cannot even start is dropped with why, so it does not retry every tick.
-    fn run_waiting(&mut self, id: String) {
-        if !self
-            .running_waits
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id.clone())
-        {
-            return;
-        }
-        let (name, main, project_id) = (
-            self.project.clone(),
-            self.main.clone(),
-            self.dir.project_id.clone(),
-        );
-        let running = self.running_waits.clone();
-        std::thread::spawn(move || {
-            let run = std::env::current_exe()
-                .context("cannot find the wsx binary")
-                .and_then(|exe| owner::approve_waiting(&name, &main, &id, &exe));
-            if let Err(error) = run {
-                let waiting = store::read_approvals(&project_id).unwrap_or_default();
-                if wsx_core::task::manager::waiting_approvals(&waiting)
-                    .iter()
-                    .any(|line| line.id() == id)
-                {
-                    let _ = owner::drop_request(
-                        &project_id,
-                        &id,
-                        &format!("it did not run: {error:#}"),
-                    );
-                }
-            }
-            running
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&id);
-        });
-    }
-
-    fn newest_deploy_ms(&self) -> u64 {
-        store::read_deploys(&self.dir.project_id)
-            .ok()
-            .and_then(|records| records.iter().map(|record| record.unix_ms).max())
-            .unwrap_or(0)
-    }
-
-    /// Turn each new failed deploy or release into an event line with the end of its output, and
-    /// each new successful one into one line.
-    /// ref: docs/tasks.md "Manager"
-    fn watch_deploys(&mut self) {
-        let Ok(records) = store::read_deploys(&self.dir.project_id) else {
-            return;
-        };
-        for record in &records {
-            if record.unix_ms <= self.duty().observed_deploys_ms {
-                continue;
-            }
-            self.duty().observed_deploys_ms = record.unix_ms;
-            // ^ Deploys and releases run detached for minutes: a success is news too, or a
-            // manager that waits for one never hears that it may go on.
-            let outcome = match record.exit == Some(0) {
-                true => "succeeded",
-                false => "failed",
-            };
-            self.fire(
-                &format!("{}.{outcome}", ledger::kind_name(record.kind)),
-                format!("{}-{}", ledger::kind_name(record.kind), record.unix_ms),
-                json!({ "commit": record.commit, "exit": record.exit }),
-            );
-            if record.exit == Some(0) {
-                // ^ A trial puts an unlanded revision live: no landed task is live by it.
-                let live = match record.trial {
-                    Some(_) => String::new(),
-                    None => self.made_live(&records, record),
-                };
-                let line = format!(
-                    "{} of {:.12} succeeded after {} s{live}",
-                    ledger::kind_name(record.kind),
-                    record.commit,
-                    record.duration_ms / 1000
-                );
-                let (line, short) = plain_event(line);
-                // ^ An automatic deploy that worked is no news; a release that worked is.
-                let short = match self.duty().deploy_auto
-                    && record.kind == wsx_core::task::DeployKind::Deploy
-                {
-                    true => short.quiet(),
-                    false => short,
-                };
-                self.pending_events.push((line, short));
-                self.last_event = Some(Instant::now());
-                continue;
-            }
-            let failed = format!(
-                "{} of {:.12} failed ({})",
-                ledger::kind_name(record.kind),
-                record.commit,
-                wsx_core::routine::exit_words(record.exit),
-            );
-            let line = format!(
-                "{failed}{}",
-                output_ends(record.output.as_deref().unwrap_or_default())
-            );
-            self.pending_events.push((line, Short::plain(&failed)));
-            self.last_event = Some(Instant::now());
-        }
-    }
-
-    /// ": #195, #197 live": the landed tasks a deploy or release of `deploy.commit` put live,
-    /// those whose landed commit it holds and the previous success of its kind did not. The
-    /// event says what is live, so no one has to read `deploys` for it.
-    /// ref: docs/tasks.md "Deploy and release"
-    fn made_live(
-        &self,
-        records: &[wsx_core::task::DeployRecord],
-        deploy: &wsx_core::task::DeployRecord,
-    ) -> String {
-        let previous = records
-            .iter()
-            .rev()
-            .find(|record| {
-                record.kind == deploy.kind
-                    && record.exit == Some(0)
-                    && record.unix_ms < deploy.unix_ms
-            })
-            .map(|record| record.commit.as_str());
-        let Ok(commits) = wsx_core::task::copy::commits_in(&self.main, previous, &deploy.commit)
-        else {
-            return String::new();
-        };
-        let mut live: Vec<u32> = project_tasks(&self.dir.project_id)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|(dir, record)| record.as_ref().ok().map(|record| (dir, record)))
-            .filter(|(dir, record)| {
-                wsx_core::memory::manage::landed_commit(dir, record)
-                    .is_some_and(|commit| commits.contains(&commit))
-            })
-            .map(|(_, record)| record.id)
-            .collect();
-        live.sort_unstable();
-        match live.is_empty() {
-            true => String::new(),
-            false => format!(": {} live", view::task_list(live)),
-        }
-    }
-
-    /// The project's routine runs that ended, as wsxd's scheduler recorded them.
-    fn finished_routine_runs(&self) -> Vec<RunRecord> {
-        self.stored_routines()
-            .runs
-            .into_values()
-            .flatten()
-            .filter(|run| run.finished_epoch.is_some())
-            .collect()
-    }
-
-    fn newest_routine_run(&self) -> i64 {
-        self.finished_routine_runs()
-            .iter()
-            .filter_map(|run| run.finished_epoch)
-            .max()
-            .unwrap_or(0)
-    }
-
-    /// Make an event of each routine run that ended: for a routine that posts, one the manager
-    /// answers to the owner in a turn of its own ([`routine_event`]); for one that does not, the
-    /// end of its output for the manager's work. A success that printed nothing to stdout is no
-    /// event and costs no turn. ref: docs/tasks.md "Routines"
-    fn watch_routines(&mut self) {
-        // ^ An event inside a running turn would read as its end: the runs wait for the turn.
-        if self.turn.is_some() {
-            return;
-        }
-        // ^ A run that ends in this second may be recorded after this read: wait the second out.
-        let settled = (now_unix_ms() / 1000) as i64 - 1;
-        let mut runs: Vec<RunRecord> = self
-            .finished_routine_runs()
-            .into_iter()
-            .filter(|run| {
-                run.finished_epoch
-                    .is_some_and(|end| end > self.duty().observed_routines && end < settled)
-            })
-            .collect();
-        runs.sort_by_key(|run| run.finished_epoch);
-        let quiet: std::collections::HashSet<String> = match runs.is_empty() {
-            true => Default::default(),
-            false => self
-                .stored_routines()
-                .routines
-                .into_iter()
-                .filter(|routine| !routine.post)
-                .map(|routine| routine.name)
-                .collect(),
-        };
-        for run in runs {
-            self.duty().observed_routines = run.finished_epoch.unwrap_or_default();
-            if run.status == RunStatus::Succeeded && stdout_empty(&run) {
-                continue;
-            }
-            let line = match quiet.contains(&run.routine) {
-                true => routine_line(&run),
-                false => routine_event(&run, &self.main),
-            };
-            self.pending_events.push(plain_event(line));
-            self.last_event = Some(Instant::now());
-        }
-    }
-
-    /// Post a project agent session that entered `exited`, `error` or `blocked`, once per
-    /// entry, with no turn. The first look is the baseline, not news. A turn that runs holds
-    /// the post: nothing is marked seen, so the next free look posts it.
-    /// ref: docs/tasks.md "Session news"
-    fn watch_sessions(&mut self) {
-        if self.turn.is_some()
-            || self
-                .duty()
-                .sessions_looked
-                .is_some_and(|at| at.elapsed() < SESSION_LOOK)
-        {
-            return;
-        }
-        self.duty().sessions_looked = Some(Instant::now());
-        // ^ No wsxd, no change: a sleeping daemon must not read as every session gone.
-        let Ok(snapshot) = existing_daemon_snapshot() else {
-            return;
-        };
-        let found = session_news::attention(&snapshot, &self.main);
-        let (fresh, keep) = session_news::unposted(found, self.state.sessions_seen.as_ref());
-        for news in fresh {
-            self.post(news.event, news.text, None, None);
-        }
-        if self.state.sessions_seen.as_ref() != Some(&keep) {
-            self.state.sessions_seen = Some(keep);
-            self.save();
-        }
-    }
-
-    /// Keep the project's captures within `tasks.captureBudgetMb`, at the start and hourly:
-    /// over it the oldest decided items' files go. ref: docs/tasks.md "To check"
-    fn sweep_captures(&mut self) {
-        if self
-            .duty()
-            .captures_swept
-            .is_some_and(|at| at.elapsed() < CAPTURE_SWEEP)
-        {
-            return;
-        }
-        self.duty().captures_swept = Some(Instant::now());
-        // ^ A config that does not parse names no budget, so nothing is removed.
-        let Ok(settings) = load_task_config(&self.main) else {
-            return;
-        };
-        let budget_mb = settings.capture_budget_mb;
-        match checks::prune_captures(&self.dir.project_id, budget_mb.saturating_mul(1 << 20)) {
-            Ok(0) => {}
-            Ok(removed) => self.say(&format!(
-                "removed {removed} capture file(s) over the {budget_mb} MB capture budget"
-            )),
-            Err(error) => self.say(&format!("cannot prune captures: {error:#}")),
-        }
-    }
-
-    /// Once an hour, off the loop: close the project's idle sessions and remove its stale
-    /// worktrees that are clean, merged or pushed (`wsx_core::stale`), and stop the processes
-    /// that outlived a closed task's working copy, also when the prune rules are off.
-    /// ref: docs/tasks.md "Stale worktrees"
-    fn prune_stale(&mut self) {
-        if self.duty().pruning
-            || self
-                .duty()
-                .pruned
-                .is_some_and(|at| at.elapsed() < prune_sweep())
-        {
-            return;
-        }
-        self.duty().pruned = Some(Instant::now());
-        let Ok(settings) = load_task_config(&self.main) else {
-            return;
-        };
-        let rules = stale::rules(&settings);
-        let copies = stale::open_copies(&self.dir.project_id);
-        self.duty().pruning = true;
-        let (main, project_id, events) = (
-            self.main.clone(),
-            self.dir.project_id.clone(),
-            self.events.clone(),
-        );
-        std::thread::spawn(move || {
-            let client = wsx_core::runtime::Client::new(wsx_core::runtime::default_socket_path());
-            let leaked = stale::stop_leaked(&project_id, &main);
-            let swept = if rules.off() {
-                Ok(Vec::new())
-            } else {
-                stale::sweep(&client, &main, &copies, &rules).map_err(|e| format!("{e:#}"))
-            };
-            let result = swept.map(|mut notes| {
-                notes.extend(leaked);
-                notes
-            });
-            let _ = events.send(Event::Pruned(result));
-        });
-    }
-
-    /// What a sweep did goes to the chat as events that start no turn, listed with the next one.
-    fn pruned_done(&mut self, result: Result<Vec<stale::Note>, String>) {
-        self.duty().pruning = false;
-        let notes = match result {
-            Ok(notes) => notes,
-            Err(error) => return self.say(&format!("cannot sweep stale worktrees: {error}")),
-        };
-        let left: BTreeMap<PathBuf, String> = notes
-            .iter()
-            .filter(|note| note.flag)
-            .map(|note| (note.path.clone(), note.text.clone()))
-            .collect();
-        for note in notes {
-            if note.flag && self.duty().flagged.get(&note.path) == Some(&note.text) {
-                continue;
-            }
-            let (line, short) = plain_event(format!("pruned: {}", note.text));
-            self.pending_events.push((line, short.quiet()));
-            self.last_event = Some(Instant::now());
-        }
-        self.duty().flagged = left;
-    }
-
-    /// Turn task state changes into event lines.
-    fn watch_tasks(&mut self) {
-        self.watch_approvals();
-        self.watch_deploys();
-        self.watch_routines();
-        let Ok(tasks) = project_tasks(&self.dir.project_id) else {
-            return;
-        };
-        let open_chats = chats::open_names();
-        // ^ A child's land waits for its parent at rest: the parent's event names them.
-        // ref: docs/tasks.md "Parent tasks"
-        let ready_children: Vec<(u32, u32)> = tasks
-            .iter()
-            .filter_map(|(_, record)| record.as_ref().ok())
-            .filter(|record| record.state == TaskState::Ready)
-            .filter_map(|record| record.parent.map(|parent| (parent, record.id)))
-            .collect();
-        for (dir, record) in tasks {
-            let Ok(record) = record else { continue };
-            let now = Seen::of(&record);
-            if self.duty().observed.get(&record.id) == Some(&now) {
-                continue;
-            }
-            self.duty().observed.insert(record.id, now);
-            if !view::is_event(&record) {
-                continue;
-            }
-            let title = view::title(&dir, &record).unwrap_or_default();
-            let summary = {
-                // ^ The checks the host ran come before the worker's own words.
-                let result = read_result(&dir).unwrap_or_default();
-                let checks = view::check_outcomes(&result);
-                let passed = checks
-                    .iter()
-                    .filter(|(_, outcome)| *outcome == "passed")
-                    .count();
-                let words = result["result"]["summary"].as_str().unwrap_or_default();
-                // ^ The worker's own words, which nothing checked: the checks and the
-                // recorded runs before them are the host's facts.
-                let worker = format!(
-                    "worker says (unchecked): {}",
-                    clip(words, EVENT_SUMMARY_CHARS)
-                );
-                // ^ A check-run that passed after the worker's result is in the evidence, not in
-                // its words, which may still say the run is pending.
-                let recorded: String = result["result"]["evidence"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|entry| entry["check"].as_str())
-                    .filter(|check| check.ends_with(super::RECORDED_BY_HOST))
-                    .filter_map(|check| check.strip_prefix("wsx task "))
-                    .map(|check| format!("{check}; "))
-                    .collect();
-                let mut summary = match checks.len() {
-                    0 => format!("{recorded}{worker}"),
-                    total => format!("checks {passed} of {total} passed; {recorded}{worker}"),
-                };
-                // ^ `waits on <on>` is the record's key; the sentence is the words every view
-                // shows (docs/tasks.md "Status").
-                // ^ An idle worker whose task waits for another has no wait of its own: the
-                // `waits for #m to land` below says it.
-                if let Some(waiting) = record
-                    .waiting
-                    .as_ref()
-                    .filter(|_| !wsx_core::task::status::owner_waits_after(&dir, &record))
-                {
-                    let status = wsx_core::task::status::status(
-                        &dir,
-                        &record,
-                        &Default::default(),
-                        wsx_core::task::now_unix_ms(),
-                    );
-                    summary = format!(
-                        "waits on {}: {}; {summary}",
-                        waiting.on.as_str(),
-                        status.sentence
-                    );
-                }
-                let children: Vec<u32> = ready_children
-                    .iter()
-                    .filter(|(parent, _)| *parent == record.id)
-                    .map(|(_, child)| *child)
-                    .collect();
-                if record.at_rest() && !children.is_empty() {
-                    summary.push_str(&format!(
-                        "; children ready to land: {}",
-                        view::task_list(children)
-                    ));
-                }
-                if let Some(hold) = record.hold.as_ref().filter(|_| record.state.is_open()) {
-                    summary.push_str(&format!(
-                        "; held for the owner: {}",
-                        clip(hold, EVENT_SUMMARY_CHARS)
-                    ));
-                }
-                // ^ A ready task that waits for another is not for the manager to land yet.
-                if let Some(after) = record.after.as_ref().filter(|_| record.state.is_open()) {
-                    summary.push_str(&format!("; waits for #{} to land", after.task));
-                }
-                // ^ The worker was sent back once and still did not run the simplify skill.
-                // ref: docs/tasks.md "Workflow"
-                if record.state == TaskState::Ready && record.simplify_missing() {
-                    summary.push_str(&format!("; {}", wsx_core::task::SIMPLIFY_MISSING));
-                }
-                // ^ The worker's memo reaches the manager when its task leaves, never later:
-                // the ledger lists only the last few. ref: docs/tasks.md "Memo"
-                if !record.state.is_open() {
-                    let memo = result["result"]["memo"].as_str().unwrap_or_default();
-                    let memo = memo.split_whitespace().collect::<Vec<_>>().join(" ");
-                    if !memo.is_empty() {
-                        let memo = clip(&memo, ledger::MEMO_CHARS);
-                        self.fold_memo(&record, &dir, &memo);
-                        summary.push_str(&format!("; memo: {memo}"));
-                    }
-                }
-                // ^ A landing adds its Human Verify items to the project's To check list.
-                if record.state == TaskState::Landed {
-                    let open = checks::open_items(&self.dir.project_id).map_or(0, |items| {
-                        items.iter().filter(|item| item.task == record.id).count()
-                    });
-                    if open > 0 {
-                        summary.push_str(&format!("; {open} to check"));
-                    }
-                }
-                summary
-            };
-            let line = format!(
-                "#{} {} r{}: {}; {}",
-                record.id,
-                wsx_core::task::status::state_word(&record),
-                record.revision,
-                clip(&title, EVENT_TITLE_CHARS),
-                summary,
-            );
-            // ^ The chat says `done` for a landing (docs/web-client-tasks.md "Project screen").
-            let words = match record.state {
-                TaskState::Landed => "done",
-                _ => wsx_core::task::status::state_word(&record),
-            };
-            let mut short = Short::task(record.id, words);
-            short.wakes = state_wakes(&dir, &record);
-            self.task_event(&record, &open_chats, line, short);
-            let state = record.state.as_str();
-            self.fire(
-                &format!("task.{state}"),
-                format!("{}-r{}-{state}", record.id, record.revision),
-                json!({ "task": record.id, "title": title, "revision": record.revision, "state": state }),
-            );
-        }
-    }
-
-    /// Start the project's routines whose trigger is this event kind (docs/tasks.md
-    /// "Routines"). Only a project with such a routine asks the scheduler, so the others send
-    /// no request; a scheduler that does not answer drops the event, as a busy routine does.
-    fn fire(&self, kind: &str, event_id: String, payload: serde_json::Value) {
-        let wanted = self.stored_routines().routines.iter().any(|routine| {
-            routine.enabled
-                && matches!(&routine.trigger, Trigger::Event { kind: wanted } if wanted == kind)
-        });
-        if wanted {
-            let action = wsx_core::routine::Action::Fire {
-                kind: kind.into(),
-                payload,
-                event_id,
-            };
-            let client = wsx_core::runtime::Client::local();
-            let _ = wsx_core::routine::request(&client, &self.main, action);
-        }
-    }
-
-    /// The project's routines and runs as stored, without asking the scheduler; none when
-    /// unreadable.
-    fn stored_routines(&self) -> routines::ProjectRoutines {
-        routines::canonical_project(&self.main)
-            .and_then(|project| routines::load(&routines::root(), &project))
-            .unwrap_or_default()
-    }
-
-    /// The project's memory store, which holds the manager's notes as records.
-    fn memory_store(&self) -> anyhow::Result<wsx_core::memory::Store> {
-        Ok(wsx_core::memory::Store::project(
-            &self.dir.project_id,
-            &self.project,
-            &self.main,
-        )?)
-    }
-
-    /// Add a finished task's memo to the manager's notes: a record (a landed task's fact holds
-    /// its landed commit and the paths of its diff), then `notes/context.md` from the records.
-    /// ref: docs/tasks.md "Memo", docs/memory.md "Capture"
-    fn fold_memo(&self, record: &TaskRecord, dir: &wsx_core::task::store::TaskDir, memo: &str) {
-        let task = record.id;
-        let landed = wsx_core::memory::manage::landed_commit(dir, record);
-        let landed = landed
-            .as_deref()
-            .map(|commit| (commit, record.paths.as_slice()));
-        let done = self
-            .memory_store()
-            .and_then(|store| notes::record_memo(&store, None, task, memo, landed))
-            .map(|drift| self.say_drift(&drift));
-        // ^ The manager that ran the task from another project keeps the fact too, in its own
-        // scope. ref: docs/memory.md "Capture"
-        let done = done.and_then(|()| match self.origin_repo(record) {
-            Some(origin) => self.record_memo_at(&origin, task, memo, landed),
-            None => Ok(()),
-        });
-        if let Err(error) = done {
-            self.say(&format!("cannot add the memo: {error:#}"));
-        }
-    }
-
-    /// The repo of the chat that created the task, when it is not this one: `chat.json` names it.
-    fn origin_repo(&self, record: &TaskRecord) -> Option<String> {
-        let chat = ManagerDir::existing(record.created_by.chat()?).ok()??;
-        (chat.project_id != self.dir.project_id).then_some(chat.project_id)
-    }
-
-    /// The memo of this project's task, as a record in the scope of `origin`, the repo of the
-    /// chat that created it. Until the memory scopes of M4 (docs/design/orchestration-model.md).
-    fn record_memo_at(
-        &self,
-        origin: &str,
-        task: u32,
-        memo: &str,
-        landed: Option<(&str, &[String])>,
-    ) -> anyhow::Result<()> {
-        let (name, main) = super::project_by_id(origin)?;
-        let store =
-            wsx_core::memory::Store::project(&store::project_id(&name, &main), &name, &main)?;
-        notes::record_memo(&store, Some(&self.project), task, memo, landed)?;
-        Ok(())
-    }
-
-    fn say_drift(&self, drift: &[wsx_core::memory::manage::Drift]) {
-        for d in drift {
-            self.say(&d.notice(true));
-        }
-    }
-
-    /// Queue a task's event line. Only the task's owner hears of it: the open chat that created
-    /// it (`chats::owner`), else this repo's home chat, which is this manager.
-    /// ref: docs/tasks.md "Chats"
-    fn task_event(
-        &mut self,
-        record: &TaskRecord,
-        open_chats: &[String],
-        line: String,
-        short: Short,
-    ) {
-        let owner = chats::owner(record.created_by.chat(), open_chats, self.dir.name());
-        match owner == self.dir.name() {
-            true => self.pending_events.push((line, short)),
-            false => self
-                .chat_events
-                .entry(Party::Chat(owner.to_string()))
-                .or_default()
-                .push((line, short)),
-        }
-        self.last_event = Some(Instant::now());
-    }
-
-    /// Turn each new stall of an open task into one event line, after it lasted
-    /// `stall::GRACE`. ref: docs/tasks.md "Manager" (Stalls)
-    fn watch_stalls(&mut self) {
-        if self
-            .duty()
-            .stalls_swept
-            .is_some_and(|at| at.elapsed() < stall::SWEEP)
-        {
-            return;
-        }
-        self.duty().stalls_swept = Some(Instant::now());
-        let Ok(tasks) = project_tasks(&self.dir.project_id) else {
-            return;
-        };
-        let open_chats = chats::open_names();
-        let now = now_unix_ms();
-        let mut open = Vec::new();
-        let mut suspects = BTreeMap::new();
-        let states: BTreeMap<u32, TaskState> = tasks
-            .iter()
-            .filter_map(|(_, record)| record.as_ref().ok())
-            .map(|record| (record.id, record.state))
-            .collect();
-        for (dir, record) in tasks {
-            let Ok(record) = record else { continue };
-            if !record.state.is_open() {
-                continue;
-            }
-            open.push(record.id);
-            if let Some(after) = &record.after {
-                let state = states.get(&after.task).copied();
-                if self.end_after(&dir, &record, state, &open_chats) {
-                    continue;
-                }
-            }
-            let Some(found) = stall::find(&dir, &record, now) else {
-                continue;
-            };
-            let since = match self.duty().stall_suspects.get(&record.id) {
-                Some((marker, since)) if *marker == found.marker => *since,
-                _ => Instant::now(),
-            };
-            suspects.insert(record.id, (found.marker.clone(), since));
-            if since.elapsed() < stall::grace()
-                || self.duty().observed_stalls.get(&record.id) == Some(&found.marker)
-            {
-                continue;
-            }
-            let title = view::title(&dir, &record).unwrap_or_default();
-            let line = format!(
-                "#{} stalled r{}: {}; {}",
-                record.id,
-                record.revision,
-                clip(&title, EVENT_TITLE_CHARS),
-                found.words
-            );
-            let mut short = Short::task(record.id, "stalled");
-            short.wakes = stall_wakes(&found);
-            self.duty().observed_stalls.insert(record.id, found.marker);
-            self.task_event(&record, &open_chats, line, short);
-        }
-        self.duty().stall_suspects = suspects;
-        // ^ Saved with the next event's `seen`.
-        self.duty()
-            .observed_stalls
-            .retain(|id, _| open.contains(id));
-    }
-
-    /// End the wait of `wsx task after` when its task `state` is landed (the task gets the
-    /// text as an add), or closed or unknown (the manager hears of it once). A host that
-    /// does not answer keeps the wait; the next sweep asks again.
-    /// ref: docs/tasks.md "After another task"
-    fn end_after(
-        &mut self,
-        dir: &store::TaskDir,
-        record: &TaskRecord,
-        state: Option<TaskState>,
-        open_chats: &[String],
-    ) -> bool {
-        let Some(after) = &record.after else {
-            return false;
-        };
-        let text = match state {
-            Some(TaskState::Landed) => Some(after.text.clone()),
-            Some(state) if state.is_open() => return false,
-            _ => None,
-        };
-        let request = HostRequest::AfterEnd {
-            task: after.task,
-            text: text.clone(),
-        };
-        match call_host(&dir.socket_path(), &request, owner::HOST_TIMEOUT) {
-            Ok(response) if response.ok => {}
-            _ => return false,
-        }
-        if text.is_none() {
-            let line = format!(
-                "#{} wait over: #{} {}; {}",
-                record.id,
-                after.task,
-                match state {
-                    Some(_) => "was closed without landing",
-                    None => "is not a task",
-                },
-                // ^ A task made with `new --after` has no text: its first turn starts instead.
-                match after.text.is_empty() {
-                    true => format!("#{} started without it", record.id),
-                    false => format!("nothing was added to #{}", record.id),
-                }
-            );
-            let short = Short::task(record.id, "wait over");
-            self.task_event(record, open_chats, line, short);
-        }
-        true
     }
 
     /// A chat's host leaves when its chat is closed, or after `CHAT_LINGER` with no message
@@ -1704,105 +625,6 @@ impl Manager {
             });
             self.leaving = true;
         }
-    }
-
-    /// Send the events of a chat's tasks to the chat through `say`, which starts its host, in
-    /// its own repo when it is another one's (the lines then name this project and carry no
-    /// chip, which would link into that repo's tasks); the events of one whose host does not
-    /// take them go to this manager.
-    fn send_chat_events(&mut self) {
-        let Ok(exe) = std::env::current_exe() else {
-            return;
-        };
-        for (to, mut lines) in std::mem::take(&mut self.chat_events) {
-            let (project, own_id, exe, events) = (
-                self.project.clone(),
-                self.dir.project_id.clone(),
-                exe.clone(),
-                self.events.clone(),
-            );
-            std::thread::spawn(move || {
-                let Party::Chat(chat) = &to;
-                let sent = ManagerDir::existing(chat)
-                    .ok()
-                    .flatten()
-                    .context("the chat is gone")
-                    .and_then(|dir| {
-                        let (name, main) = super::project_by_id(&dir.project_id)?;
-                        if dir.project_id != own_id {
-                            for (line, short) in &mut lines {
-                                short.text = format!("{project} {}", short.text);
-                                short.task = None;
-                                *line = format!("{project} {line}");
-                            }
-                        }
-                        let text = lines
-                            .iter()
-                            .map(|(line, _)| line.as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        let short = lines.iter().map(|(_, short)| short.clone()).collect();
-                        owner::say(
-                            &name,
-                            &main,
-                            &exe,
-                            Some(chat),
-                            super::launch_manager(&main),
-                            text,
-                            Some(Author::Events),
-                            short,
-                        )
-                    });
-                if !sent.is_ok_and(|response| response.ok) {
-                    let _ = events.send(Event::Undelivered { to, lines });
-                }
-            });
-        }
-    }
-
-    /// Log the waiting event lines as one message once they have been quiet for a while.
-    fn flush_events(&mut self) {
-        let quiet = self
-            .last_event
-            .is_some_and(|last| last.elapsed() >= EVENT_QUIET);
-        if (self.pending_events.is_empty() && self.chat_events.is_empty()) || !quiet {
-            return;
-        }
-        self.send_chat_events();
-        if self.pending_events.is_empty() {
-            self.save_seen();
-            return;
-        }
-        let text = self
-            .pending_events
-            .iter()
-            .map(|(line, _)| line.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let short = self
-            .pending_events
-            .iter()
-            .map(|(_, short)| short.clone())
-            .collect();
-        match self.accept(Author::Events, text, short) {
-            Ok(_) => {
-                self.pending_events.clear();
-                self.save_seen();
-            }
-            Err(error) => self.say(&format!("cannot log the events: {error:#}")),
-        }
-    }
-
-    fn save_seen(&mut self) {
-        if self.duties.is_none() {
-            return;
-        }
-        self.state.seen = Some(self.duty().observed.clone());
-        self.state.decisions_seen = self.duty().observed_decisions;
-        self.state.deploys_seen_ms = Some(self.duty().observed_deploys_ms);
-        self.state.routines_seen = Some(self.duty().observed_routines);
-        self.state.stalls = self.duty().observed_stalls.clone();
-        self.save();
     }
 
     /// Who the agent's commands act as (`WSX_TASK_ACTOR`): the manager, or the chat.
@@ -1855,10 +677,8 @@ impl Manager {
             check,
         })?;
         self.last_activity = Instant::now();
-        if let Some(duties) = self.duties.as_mut() {
-            duties.overview_asked &= from != Author::Owner;
-            duties.drift_said &= from != Author::Owner;
-        }
+        self.overview_asked &= from != Author::Owner;
+        self.drift_said &= from != Author::Owner;
         self.thought_asked &= from != Author::Owner;
         // ^ The owner may have just signed in again: a sign-in hold tries at once.
         if from == Author::Owner {
@@ -1912,152 +732,6 @@ impl Manager {
         });
         self.last_activity = Instant::now();
         id
-    }
-
-    /// After `recapMinutes` with no message and no turn: start the idle task when it is due,
-    /// and ask the manager for a recap when something changed since the last one, with the
-    /// token cost since. A quiet project gets one recap. ref: docs/tasks.md "Recap"
-    fn ask_recap(&mut self) {
-        let due = self.duty().recap_quiet.is_some_and(|quiet| {
-            self.turn.is_none()
-                && !self.work_waiting()
-                && self.pending_events.is_empty()
-                && self.last_activity.elapsed() >= quiet
-        });
-        if !due {
-            return;
-        }
-        // ^ Once per quiet period: the next look waits a whole period.
-        self.last_activity = Instant::now();
-        self.start_idle();
-        let now = now_unix_ms();
-        self.fire(
-            "project.idle",
-            format!("idle-{now}"),
-            json!({ "unix_ms": now }),
-        );
-        let since = self.state.recap_ms.unwrap_or(0);
-        let log: Vec<_> = self
-            .dir
-            .read_log()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|entry| entry.unix_ms > since)
-            .collect();
-        if !self.changed_since(&log, since) {
-            return;
-        }
-        let text = format!("{RECAP_REQUEST} {}", self.cost_since(&log, since));
-        self.state.recap_ms = Some(now_unix_ms());
-        self.save();
-        if let Err(error) = self.accept(Author::Recap, text, Vec::new()) {
-            self.say(&format!("cannot ask for a recap: {error:#}"));
-        }
-    }
-
-    /// A land, a close, a new wait or an approval decision the manager heard of in `log` (the
-    /// entries after `since`), a new approval request or a To check item after `since`.
-    fn changed_since(&self, log: &[ManagerEntry], since: u64) -> bool {
-        let heard = log.iter().any(|entry| match &entry.event {
-            ManagerEvent::Message {
-                from: Author::Events,
-                text,
-                ..
-            } => text.lines().any(|line| {
-                line.starts_with("approval ")
-                    || matches!(
-                        line.split(' ').nth(1),
-                        Some("landed" | "closed" | "waiting" | "stalled")
-                    )
-            }),
-            _ => false,
-        });
-        let asked = self
-            .approval_lines()
-            .iter()
-            .any(|line| matches!(line, ApprovalLine::Request { unix_ms, .. } if *unix_ms > since));
-        let to_check = checks::read(&self.dir.project_id)
-            .unwrap_or_default()
-            .iter()
-            .any(|item| item.unix_ms > since);
-        heard || asked || to_check
-    }
-
-    /// The spend since `since` from the logs' `cost_micro_usd`: the manager's replies and the
-    /// workers' results, the costliest tasks named. ref: docs/tasks.md "Recap"
-    fn cost_since(&self, log: &[ManagerEntry], since: u64) -> String {
-        let manager = usage::Usage::since(&usage::manager_log_turns(log), 0);
-        let mut tasks: Vec<(u64, u32, u64)> = project_tasks(&self.dir.project_id)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(dir, record)| {
-                let spent = usage::Usage::since(&usage::task_turns(&dir), since + 1);
-                let id = record.ok()?.id;
-                (spent.turns > 0).then_some((spent.cost_micro_usd, id, spent.turns))
-            })
-            .collect();
-        tasks.sort_by(|left, right| right.cmp(left));
-        let usd = |micro: u64| format!("{:.2} USD", micro as f64 / 1e6);
-        let workers: u64 = tasks.iter().map(|(cost, ..)| cost).sum();
-        let turns: u64 = tasks.iter().map(|(.., turns)| turns).sum();
-        let top: Vec<String> = tasks
-            .iter()
-            .take(3)
-            .map(|(cost, id, _)| format!("#{id} {}", usd(*cost)))
-            .collect();
-        format!(
-            "Token cost since the last recap: {} in all; you {} in {} turn(s), workers {} in {turns} turn(s){}.",
-            usd(manager.cost_micro_usd + workers),
-            usd(manager.cost_micro_usd),
-            manager.turns,
-            usd(workers),
-            match top.is_empty() {
-                true => String::new(),
-                false => format!(" ({})", top.join(", ")),
-            }
-        )
-    }
-
-    /// When session notes in the main checkout's `knowledge/sessions/<project>/` are newer
-    /// than the last idle task's start and that task is not open, start one task with
-    /// `tasks.workflow.idle` as the manager would, so it waits for the manager's review.
-    /// Otherwise nothing, not even a line. ref: docs/tasks.md "Workflow"
-    fn start_idle(&mut self) {
-        let prompt = load_task_config(&self.main)
-            .map(|settings| settings.workflow.idle)
-            .unwrap_or_default();
-        let open = self.state.idle_task.is_some_and(|id| {
-            store::TaskDir::open(&self.dir.project_id, id)
-                .and_then(|dir| dir.read_record())
-                .is_ok_and(|record| record.state.is_open())
-        });
-        let notes = newest_ms(&self.main.join("knowledge/sessions").join(&self.project));
-        let recent = self
-            .state
-            .idle_ms
-            .is_some_and(|ms| now_unix_ms().saturating_sub(ms) < IDLE_EVERY_MS);
-        if recent
-            || prompt.is_empty()
-            || open
-            || notes.is_none_or(|ms| ms <= self.state.idle_ms.unwrap_or(0))
-        {
-            return;
-        }
-        let Ok(exe) = std::env::current_exe() else {
-            return self.say("cannot find the wsx binary for the idle task");
-        };
-        let (project, home, events, began) = (
-            self.project.clone(),
-            self.dir.name().to_string(),
-            self.events.clone(),
-            now_unix_ms(),
-        );
-        std::thread::spawn(move || {
-            let _ = events.send(Event::IdleStarted(
-                began,
-                new_task(&exe, &project, &home, &prompt),
-            ));
-        });
     }
 
     /// Owner messages go first, then other managers', then events.
@@ -2359,7 +1033,7 @@ impl Manager {
         }
         let hold = held.as_ref().filter(|hold| now < hold.until_ms);
         if hold.is_some_and(|hold| !hold.account) {
-            self.stand_in_if_duties();
+            self.stand_in();
             return true;
         }
         let (ids, events) = held.map_or((Vec::new(), true), |hold| (hold.ids, hold.events));
@@ -2384,7 +1058,7 @@ impl Manager {
             Next::Wait(until_ms) => {
                 let announce = self.state.limit.is_none();
                 self.hold_on_account(until_ms, 0, ids, events, false, announce, now);
-                self.stand_in_if_duties();
+                self.stand_in();
                 true
             }
         }
@@ -2520,13 +1194,6 @@ impl Manager {
             account: false,
         });
         self.save();
-    }
-
-    /// The stand-in answers the owner during a hold, when this host has the project's duties.
-    fn stand_in_if_duties(&mut self) {
-        if self.duties.is_some() {
-            self.stand_in();
-        }
     }
 
     /// Continue the held turn `ids` in a new conversation on `next`, which opens with the
@@ -2935,83 +1602,7 @@ impl Manager {
         })
     }
 
-    /// One no-op turn that keeps Claude's prompt cache warm while a task works or checks: its
-    /// event wakes the manager later. Only the own Claude agent, idle for `keepWarmSeconds`
-    /// and under the cache's hour, at most `KEEP_WARM_PINGS` since the last real turn, never
-    /// in a usage limit. ref: docs/tasks.md "Manager"
-    fn ping(&mut self) {
-        let now = now_unix_ms();
-        let idle = now.saturating_sub(self.state.last_reply_ms);
-        if self.turn.is_some()
-            || self.agent.is_none()
-            || self.stand_in.is_some()
-            || self.state.agent.is_some()
-            || self.adapter != "claude"
-            || self.state.limit.is_some()
-            || self.pings >= KEEP_WARM_PINGS
-            || self.state.agent_session.is_none()
-            || self.state.last_reply_ms == 0
-            || idle >= PROMPT_CACHE_MS
-            || self.state.context_tokens > self.rotate_limit()
-        {
-            return;
-        }
-        let seconds = load_task_config(&self.main)
-            .unwrap_or_default()
-            .keep_warm_seconds;
-        if seconds == 0 || idle < seconds * 1000 {
-            return;
-        }
-        let working = project_tasks(&self.dir.project_id)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(_, record)| record.ok())
-            .any(|record| matches!(record.state, TaskState::Working | TaskState::Checking));
-        if !working || store::limited_until(&self.current_account(), now).is_some() {
-            return;
-        }
-        // ^ Counted before the send: a failed send never loops.
-        self.pings += 1;
-        let sent = self
-            .agent
-            .as_mut()
-            .map_or(Ok(()), |agent| agent.send(KEEP_WARM_TEXT));
-        match sent {
-            Ok(()) => {
-                self.turn = Some(Vec::new());
-                self.pinging = true;
-                self.start_turn_record();
-                self.say(&format!(
-                    "ping {} of {KEEP_WARM_PINGS}: keeps the prompt cache warm",
-                    self.pings
-                ));
-            }
-            Err(error) => self.say(&format!("cannot ping the agent: {error:#}")),
-        }
-    }
-
-    /// A ping's answer: logged as `ping`, never as a reply, so the chat does not show it.
-    fn on_ping(&mut self, result: TurnResult) {
-        self.turn = None;
-        let now = now_unix_ms();
-        // ^ A limit is no answer; the next real turn meets it and waits as usual.
-        if result.limit.is_none() {
-            // ^ The cache is warm again: the idle rotation counts from here.
-            self.state.last_reply_ms = now;
-        }
-        if result.usage.context_tokens > 0 {
-            self.state.context_tokens = result.usage.context_tokens;
-        }
-        self.state.session_cost_micro_usd = result.usage.session_cost_micro_usd;
-        self.spend(&self.adapter, &self.model, result.usage.cost_micro_usd, now);
-        self.save();
-        self.log(ManagerEvent::Ping {
-            usage: Some(result.usage),
-        });
-    }
-
     fn send_turn(&mut self, text: &str, events_only: bool) -> Result<()> {
-        self.pings = 0;
         let mut text = text.to_string();
         let model = self.turn_model(events_only);
         // ^ Claude's prompt cache lives 1 hour: a large conversation resumed later writes its
@@ -3214,7 +1805,6 @@ impl Manager {
                     self.save();
                 }
             }
-            Some(AgentLine::Progress { .. }) if self.pinging => {}
             // ^ A sign-in failure again, during a hold for one: the chat already says so.
             Some(AgentLine::Progress { text, .. })
                 if agent::auth_failed(&text)
@@ -3232,11 +1822,7 @@ impl Manager {
             Some(AgentLine::Result(result)) => self.on_result(*result),
             None => {
                 self.agent = None;
-                // ^ A lost ping is no stopped turn: the next turn resumes the conversation.
-                if std::mem::take(&mut self.pinging) {
-                    self.turn = None;
-                    self.end_turn_record("the agent process ended");
-                } else if self.turn.take().is_some() {
+                if self.turn.take().is_some() {
                     let reason = "the manager agent ended during a turn";
                     self.end_turn_record(reason);
                     self.log(ManagerEvent::Stopped {
@@ -3256,9 +1842,6 @@ impl Manager {
             return;
         }
         self.end_turn_record(&result.ended());
-        if std::mem::take(&mut self.pinging) {
-            return self.on_ping(result);
-        }
         let to = self.turn.take().unwrap_or_default();
         let (adapter, model) = match &self.state.agent {
             Some(agent) => (agent.adapter.clone(), agent.model.clone()),
@@ -3477,7 +2060,7 @@ impl Manager {
     /// gets one follow-up turn, and no second one until the owner writes again.
     /// ref: docs/tasks.md "Project overview"
     fn check_overview(&mut self) {
-        if self.duties.is_none() {
+        if !self.dir.is_home() {
             return;
         }
         let Ok(Some((text, _))) = store::read_overview(&self.dir.project_id) else {
@@ -3486,9 +2069,9 @@ impl Manager {
         let (lines, chars) = store::overview_size(&text);
         let over = lines > store::MAX_OVERVIEW_LINES || chars > store::MAX_OVERVIEW_CHARS;
         if !over {
-            self.duty().overview_asked = false;
-        } else if !self.duty().overview_asked {
-            self.duty().overview_asked = true;
+            self.overview_asked = false;
+        } else if !self.overview_asked {
+            self.overview_asked = true;
             if let Err(error) =
                 self.accept(Author::Recap, overview_too_long(lines, chars), Vec::new())
             {
@@ -3501,18 +2084,14 @@ impl Manager {
     /// the next write of a record keeps the edited file as `<file>.drift` and renders again.
     /// ref: docs/tasks.md "Notes budget"
     fn check_views(&mut self) {
-        if self.duties.is_none() {
-            return;
-        }
-        let drift = self
-            .memory_store()
+        let drift = super::repo::memory_store(&self.dir.project_id, &self.project, &self.main)
             .ok()
             .and_then(|store| wsx_core::memory::manage::drift(&store).ok())
             .unwrap_or_default();
         if drift.is_empty() {
-            self.duty().drift_said = false;
-        } else if !self.duty().drift_said {
-            self.duty().drift_said = true;
+            self.drift_said = false;
+        } else if !self.drift_said {
+            self.drift_said = true;
             for d in &drift {
                 self.say(&d.notice(false));
             }
@@ -3583,7 +2162,7 @@ impl Manager {
             .rev()
             .find(|entry| matches!(entry.event, ManagerEvent::Reply { usage: Some(_), .. }))
             .map_or(0, |entry| (entry.unix_ms / 1000) as i64);
-        let routines = handover_routines(self.finished_routine_runs(), replied);
+        let routines = handover_routines(super::repo::finished_routine_runs(&self.main), replied);
         let routines = match routines.is_empty() {
             true => String::new(),
             false => format!(
@@ -3605,15 +2184,16 @@ impl Manager {
         if !self.dir.is_home() {
             return;
         }
-        let done = self.memory_store().and_then(|store| {
-            Ok(wsx_core::memory::manage::add_episode(
-                &store.without_rules(),
-                "handover",
-                &format!("path:chats/{}/log.jsonl", self.dir.name()),
-                handover,
-                &self.dir.path.join(wsx_core::task::store::LOG_FILE),
-            )?)
-        });
+        let done = super::repo::memory_store(&self.dir.project_id, &self.project, &self.main)
+            .and_then(|store| {
+                Ok(wsx_core::memory::manage::add_episode(
+                    &store.without_rules(),
+                    "handover",
+                    &format!("path:chats/{}/log.jsonl", self.dir.name()),
+                    handover,
+                    &self.dir.path.join(wsx_core::task::store::LOG_FILE),
+                )?)
+            });
         if let Err(error) = done {
             self.say(&format!("cannot remember the handover: {error:#}"));
         }
@@ -3629,13 +2209,6 @@ impl Manager {
         if let Err(error) = self.dir.append(event) {
             self.say(&format!("cannot append to the manager log: {error:#}"));
         }
-    }
-
-    /// The project duties; called only by what the first chat's host runs.
-    fn duty(&mut self) -> &mut Duties {
-        self.duties
-            .as_mut()
-            .expect("a duty runs in the first chat's host")
     }
 
     fn say(&self, text: &str) {
@@ -3658,129 +2231,11 @@ impl Manager {
     }
 }
 
-/// The newest modification time of the files in `folder`, or none.
-fn newest_ms(folder: &Path) -> Option<u64> {
-    std::fs::read_dir(folder)
-        .ok()?
-        .filter_map(|entry| entry.ok()?.metadata().ok())
-        .filter(std::fs::Metadata::is_file)
-        .filter_map(|meta| {
-            meta.modified()
-                .ok()?
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()
-        })
-        .map(|since| since.as_millis() as u64)
-        .max()
-}
-
-/// Whether a run wrote nothing to stdout; an unreadable file counts as output, so that the
-/// manager still hears of the run.
-fn stdout_empty(run: &RunRecord) -> bool {
-    std::fs::metadata(&run.stdout_path).is_ok_and(|file| file.len() == 0)
-}
-
-/// A routine run that ended as an event line with the end of its output: what a routine that
-/// prints wants the manager to read. ref: docs/tasks.md "Routines"
-fn routine_line(run: &RunRecord) -> String {
-    format!("{}{}", run.result_line(), output_ends(&run.final_output))
-}
-
-/// The most of a run's output the owner event holds: its end.
-const EVENT_OUTPUT_CHARS: usize = 1500;
-/// The most files an owner event links.
-const EVENT_LINKS: usize = 3;
-/// The second clause of an owner event line (`routine_event`), which `routine_for_owner` reads.
-const FOR_OWNER: &str = "for the owner";
-
-/// A routine run's event for the owner, on one line, since the chat shows an event line only to
-/// its first `; `: `routine nightly succeeded after 4 s; for the owner; output ends: <the last
-/// 1,500 characters, newlines as ⏎>; files: [board.html](files/<path>) …`, a link to each file of
-/// the main checkout the output names, which the web opens in its files page
-/// (docs/web-client.md "Files"). ref: docs/tasks.md "Routines"
-fn routine_event(run: &RunRecord, main: &Path) -> String {
-    let mut line = format!("{}; {FOR_OWNER}", run.result_line());
-    let output = run.final_output.trim();
-    if !output.is_empty() {
-        let skip = output.chars().count().saturating_sub(EVENT_OUTPUT_CHARS);
-        let cut = if skip > 0 { "…" } else { "" };
-        let end: String = output.chars().skip(skip).collect();
-        line.push_str(&format!(
-            "; output ends: {cut}{}",
-            end.lines().collect::<Vec<_>>().join(" ⏎ ")
-        ));
-    }
-    let links: Vec<String> = named_files(output, main)
-        .iter()
-        .map(|path| {
-            let name = path.rsplit('/').next().unwrap_or(path);
-            format!("[{name}](files/{})", link_path(path))
-        })
-        .collect();
-    if !links.is_empty() {
-        line.push_str(&format!("; files: {}", links.join(" ")));
-    }
-    line
-}
-
 /// Whether an events line is a routine run's event for the owner (`routine_event`): the manager
 /// answers its turn with a message, not a quiet line. An output line never matches, since
 /// `routine_event` holds the output in one line.
 fn routine_for_owner(line: &str) -> bool {
-    line.starts_with("routine ") && line.split("; ").nth(1) == Some(FOR_OWNER)
-}
-
-/// The files of the main checkout that `output` names, as paths relative to it: a word with a
-/// `/` or a `.`, relative to the checkout or absolute inside it, never under `.git`.
-fn named_files(output: &str, main: &Path) -> Vec<String> {
-    let root = main.canonicalize().unwrap_or_else(|_| main.to_path_buf());
-    let mut found: Vec<String> = Vec::new();
-    let words = output.split(|c: char| c.is_whitespace() || "\"'`()[]<>,;=".contains(c));
-    for word in words {
-        let word = word.trim_end_matches(['.', ':']);
-        if word.len() > 512 || !word.contains(['/', '.']) {
-            continue;
-        }
-        let path = Path::new(word);
-        let relative = match path.is_absolute() {
-            true => match path
-                .strip_prefix(&root)
-                .or_else(|_| path.strip_prefix(main))
-            {
-                Ok(relative) => relative.to_path_buf(),
-                Err(_) => continue,
-            },
-            false => path.to_path_buf(),
-        };
-        let normal = relative
-            .components()
-            .all(|part| matches!(part, std::path::Component::Normal(name) if name != ".git"));
-        let Some(text) = relative.to_str().filter(|_| normal) else {
-            continue;
-        };
-        if found.iter().any(|known| known == text)
-            || !std::fs::symlink_metadata(root.join(&relative)).is_ok_and(|meta| meta.is_file())
-        {
-            continue;
-        }
-        found.push(text.to_string());
-        if found.len() == EVENT_LINKS {
-            break;
-        }
-    }
-    found
-}
-
-/// A relative path as a link's address: each byte outside `A-Z a-z 0-9 - . _ ~ /` as `%XX`.
-fn link_path(path: &str) -> String {
-    path.bytes()
-        .map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
-                (byte as char).to_string()
-            }
-            _ => format!("%{byte:02X}"),
-        })
-        .collect()
+    line.starts_with("routine ") && line.split("; ").nth(1) == Some(super::repo::FOR_OWNER)
 }
 
 /// What a fresh conversation needs of the routines, at most two lines per routine, the
@@ -3873,7 +2328,7 @@ fn clock(secs: i64) -> String {
 }
 
 /// An event line the chat shows as its first clause (`Short::plain`).
-fn plain_event(line: String) -> (String, Short) {
+pub(super) fn plain_event(line: String) -> (String, Short) {
     let short = Short::plain(&line);
     (line, short)
 }
@@ -3887,58 +2342,6 @@ fn event_head(line: &str) -> Option<(u32, (String, u32))> {
     let word = parts.next()?;
     let revision = parts.next()?.strip_prefix('r')?.parse().ok()?;
     (parts.next().is_none() && word != "stalled").then(|| (id, (word.to_string(), revision)))
-}
-
-/// "; its output ends:" and the last lines of `output`, indented, or nothing without output.
-fn output_ends(output: &str) -> String {
-    let lines: Vec<String> = ledger::tail_lines(output, DEPLOY_EVENT_LINES)
-        .lines()
-        .map(|line| format!("    {}", clip(line, EVENT_SUMMARY_CHARS)))
-        .collect();
-    match lines.is_empty() {
-        true => String::new(),
-        false => format!("; its output ends:\n{}", lines.join("\n")),
-    }
-}
-
-/// `wsx task new -p <project> --title <IDLE_TITLE> -` as the home chat; the new task's number.
-fn new_task(exe: &Path, project: &str, home: &str, prompt: &str) -> Result<u32, String> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-    let mut child = Command::new(exe)
-        .args([
-            "task",
-            "new",
-            "-p",
-            project,
-            "--title",
-            IDLE_TITLE,
-            "--no-steps",
-            "--json",
-            "-",
-        ])
-        .env(ACTOR_ENV, String::from(Actor::Chat(home.into())))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("cannot run wsx task new: {error}"))?;
-    // ^ Dropped after the write, so the child reads the end of its input.
-    let written = child
-        .stdin
-        .take()
-        .map(|mut stdin| stdin.write_all(prompt.as_bytes()));
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("cannot run wsx task new: {error}"))?;
-    if !output.status.success() || !matches!(written, Some(Ok(()))) {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    serde_json::from_slice::<serde_json::Value>(&output.stdout)
-        .ok()
-        .and_then(|value| value["id"].as_u64())
-        .and_then(|id| u32::try_from(id).ok())
-        .ok_or_else(|| "wsx task new printed no task number".into())
 }
 
 /// The end of a notes file, at most `MAX_NOTES_READ` bytes: the newest lines are last.

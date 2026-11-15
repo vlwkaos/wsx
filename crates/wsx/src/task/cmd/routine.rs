@@ -1,13 +1,15 @@
 //! `digest`, `checkin` and `post`: what a routine does for the chat (docs/tasks.md "Routines").
 
 use crate::cli::RoutineCmd;
-use crate::task::{acting_as_manager, actor, project_entry};
+use crate::task::{acting_as_manager, actor, launch_manager, project_entry};
 use anyhow::{bail, Context, Result};
+use std::path::Path;
 use std::time::{Duration, Instant};
 use wsx_core::task::manager::{Author, Level, ManagerEntry, ManagerEvent};
 use wsx_core::task::owner::{self};
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::digest_lines;
+use wsx_core::task::Actor;
 use wsx_core::task::{
     now_unix_ms,
     store::{self},
@@ -66,8 +68,22 @@ pub(crate) fn checkin(
         bail!("a check-in is between 1 minute and 7 days ahead");
     }
     let (name, main) = project_entry(project)?;
-    let response = owner::checkin(&store::project_id(&name, &main), at_secs as u64 * 1000, why)
-        .with_context(|| format!("the manager host of {name} is not running"))?;
+    // ^ The chat that sets it gets it; the home chat's own is stored with no chat.
+    let chat = match actor() {
+        Actor::Chat(chat) => Some(chat).filter(|chat| !chat.is_empty()),
+        _ => None,
+    };
+    let exe = std::env::current_exe().context("cannot find the wsx binary")?;
+    let response = owner::checkin(
+        &name,
+        &main,
+        &exe,
+        launch_manager(&main),
+        chat,
+        at_secs as u64 * 1000,
+        why.to_string(),
+    )
+    .with_context(|| format!("the repo service of {name} is not running"))?;
     if !response.ok {
         bail!("the check-in was not set: {}", response.message);
     }
@@ -110,7 +126,7 @@ pub(crate) fn digest(project: Option<&str>, since: Option<u64>) -> Result<()> {
         },
         |seconds| seconds.saturating_mul(1000),
     );
-    post_when_free(&project_id, &name, DIGEST_EVENT, None, || {
+    post_when_free(&main, &name, DIGEST_EVENT, None, || {
         digest_lines(&project_id, after_ms)
     })
 }
@@ -162,7 +178,7 @@ pub(crate) fn post(
     let text = String::from_utf8_lossy(&bytes);
     let lines: Vec<String> = text.trim().lines().map(str::to_string).collect();
     let project_id = store::project_id(&name, &main);
-    let send = || post_when_free(&project_id, &name, title, level, || lines.clone());
+    let send = || post_when_free(&main, &name, title, level, || lines.clone());
     match key {
         Some(key) if !lines.is_empty() => {
             let now = now_unix_ms() / 1000;
@@ -179,7 +195,7 @@ pub(crate) fn post(
 /// empty. A turn that runs refuses it, so this tries again for up to 30 minutes, at once
 /// failing when the manager itself runs it inside that turn. ref: docs/tasks.md "Routines"
 pub(crate) fn post_when_free(
-    project_id: &str,
+    main: &Path,
     name: &str,
     event: &str,
     level: Option<Level>,
@@ -196,8 +212,17 @@ pub(crate) fn post_when_free(
         if lines.is_empty() {
             return Ok(());
         }
-        let response = owner::post(project_id, event.into(), lines.join("\n"), level)
-            .with_context(|| format!("the manager host of {name} is not running"))?;
+        let exe = std::env::current_exe().context("cannot find the wsx binary")?;
+        let response = owner::post(
+            name,
+            main,
+            &exe,
+            launch_manager(main),
+            event.into(),
+            lines.join("\n"),
+            level,
+        )
+        .with_context(|| format!("the manager host of {name} is not running"))?;
         if response.ok {
             return Ok(());
         }

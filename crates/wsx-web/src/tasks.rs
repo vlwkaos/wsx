@@ -1218,7 +1218,7 @@ fn run_wsx(scope: &Scope, argv: Vec<String>) -> Outcome<Value> {
 fn launcher<'a>(
     app: &'a App,
     scope: &'a Scope,
-) -> impl FnOnce(String, Vec<String>) -> anyhow::Result<()> + 'a {
+) -> impl Fn(String, Vec<String>) -> anyhow::Result<()> + 'a {
     move |label: String, argv: Vec<String>| -> anyhow::Result<()> {
         let snapshot = chat::snapshot(&app.client).map_err(|fault| anyhow::anyhow!(fault.2))?;
         let worktree = snapshot

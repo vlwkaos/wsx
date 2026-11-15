@@ -21,16 +21,17 @@ const MANAGER_START_WAIT: Duration = Duration::from_secs(10);
 /// Most characters of an action's answer kept in its decision.
 const MAX_OUTCOME_CHARS: usize = 1000;
 
-/// Start the project's manager host, or the open chat's (`chat`), unless one answers. True
-/// when it was started. `launch` creates the hidden session (its label, `task-<name>` or
-/// `task-<chat>`) in the main checkout with the given argv; the CLI may start wsxd for it,
-/// the web client never does.
+/// Start the open chat's host (the repo's home chat when `chat` is none), and the repo's
+/// service when that is not running either, unless they answer. True when the chat's host was
+/// started. `launch` creates the hidden session (its label, `task-<chat>` or
+/// `task-repo-<repo-id>`) in the main checkout with the given argv; the CLI may start wsxd for
+/// it, the web client never does.
 pub fn ensure_manager(
     name: &str,
     main: &Path,
     wsx: &Path,
     chat: Option<&str>,
-    launch: impl FnOnce(String, Vec<String>) -> Result<()>,
+    launch: impl Fn(String, Vec<String>) -> Result<()>,
 ) -> Result<(bool, ManagerDir)> {
     let project_id = store::project_id(name, main);
     let dir = match chat {
@@ -40,6 +41,10 @@ pub fn ensure_manager(
     let status = || {
         call_socket::<_, ManagerResponse>(&dir.socket_path(), &ManagerRequest::Status, HOST_TIMEOUT)
     };
+    // ^ The service of a chat's own repo; another repo's runs on its own.
+    if dir.project_id == project_id {
+        ensure_repo(name, main, wsx, &launch)?;
+    }
     // ^ A host hung in a turn under an older wsx is closed and started again here.
     if let Ok(answer) = status() {
         if !super::replace::close_hung_manager(&dir, main, &answer)? {
@@ -64,6 +69,67 @@ pub fn ensure_manager(
     )
 }
 
+/// The session label of a repo's service.
+pub fn repo_label(project_id: &str) -> String {
+    format!("task-repo-{project_id}")
+}
+
+/// Start the repo's service, `wsx task repo-host <repo-id>`, unless it answers. One that is
+/// running but answers nothing is closed and started again when `replace_hung` is set (the
+/// sweep after a deploy); `ensure_manager` leaves it to that sweep. True when it started one.
+pub fn ensure_repo(
+    name: &str,
+    main: &Path,
+    wsx: &Path,
+    launch: impl Fn(String, Vec<String>) -> Result<()>,
+) -> Result<bool> {
+    ensure_repo_with(name, main, wsx, launch, false)
+}
+
+pub fn ensure_repo_with(
+    name: &str,
+    main: &Path,
+    wsx: &Path,
+    launch: impl Fn(String, Vec<String>) -> Result<()>,
+    replace_hung: bool,
+) -> Result<bool> {
+    let project_id = store::project_id(name, main);
+    let socket = store::repo_socket(&project_id)?;
+    let status = || {
+        call_socket::<_, ManagerResponse>(&socket, &ManagerRequest::Status, HOST_TIMEOUT).is_ok()
+    };
+    if status() {
+        return Ok(false);
+    }
+    let args = ["task", "repo-host", project_id.as_str()];
+    let label = repo_label(&project_id);
+    if let Some(pid) = super::replace::host_pid(&args) {
+        // ^ The service's own sweep never closes the service it runs in.
+        if !replace_hung || pid as u32 == std::process::id() {
+            return Ok(false);
+        }
+        let _ = super::close_session(&label, main);
+        super::replace::stop_tree(Some(pid));
+        // SAFETY: a signal to a process of this user; the host ends on it.
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+    }
+    let mut argv = vec![wsx.to_string_lossy().into_owned()];
+    argv.extend(args.map(String::from));
+    launch(label.clone(), argv)
+        .context("the repo service did not start; no session was left running")?;
+    let deadline = Instant::now() + MANAGER_START_WAIT;
+    while Instant::now() < deadline {
+        if status() {
+            return Ok(true);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    bail!(
+        "the session started but the repo service does not answer; look at session {label} in {}",
+        main.display()
+    )
+}
+
 /// Give the manager, or the open chat `chat`, a message, starting it first when needed.
 /// `from` is another manager or chat; none is the owner. `short`: an events message's lines
 /// as the chat shows them.
@@ -73,7 +139,7 @@ pub fn say(
     main: &Path,
     wsx: &Path,
     chat: Option<&str>,
-    launch: impl FnOnce(String, Vec<String>) -> Result<()>,
+    launch: impl Fn(String, Vec<String>) -> Result<()>,
     text: String,
     from: Option<super::manager::Author>,
     short: Vec<super::manager::Short>,
@@ -94,7 +160,7 @@ pub fn close_chat(
     project: (&str, &Path),
     wsx: &Path,
     name: &str,
-    launch: impl FnOnce(String, Vec<String>) -> Result<()>,
+    launch: impl Fn(String, Vec<String>) -> Result<()>,
 ) -> Result<()> {
     let (home, text) = super::chats::close(name)?;
     let short = super::manager::Short {
@@ -116,27 +182,41 @@ pub fn close_chat(
     .context("the chat is closed, but its hand-back did not reach the home chat")
 }
 
-/// Ask the running manager host to write to the owner with no turn. It never starts a host: an
-/// error when none answers, `ok: false` with `busy` while a turn runs.
+/// Ask the repo's home chat to write to the owner with no turn, starting its host first. An
+/// error when its host does not start, `ok: false` with `busy` while a turn runs.
+#[allow(clippy::too_many_arguments)]
 pub fn post(
-    project_id: &str,
+    name: &str,
+    main: &Path,
+    wsx: &Path,
+    launch: impl Fn(String, Vec<String>) -> Result<()>,
     event: String,
     text: String,
     level: Option<super::manager::Level>,
 ) -> Result<ManagerResponse> {
+    let (_, dir) = ensure_manager(name, main, wsx, None, launch)?;
     call_socket(
-        &ManagerDir::open_home(project_id)?.socket_path(),
+        &dir.socket_path(),
         &ManagerRequest::Post { event, text, level },
         HOST_TIMEOUT,
     )
 }
 
-/// Ask the running manager host to send `why` as an event at `at_ms`, in place of the last
-/// check-in. It never starts a host: an error when none answers.
-pub fn checkin(project_id: &str, at_ms: u64, why: String) -> Result<ManagerResponse> {
+/// Ask the repo's service to send `why` as an event to `chat` (the home chat when none) at
+/// `at_ms`, in place of that chat's last check-in. It starts the service when needed.
+pub fn checkin(
+    name: &str,
+    main: &Path,
+    wsx: &Path,
+    launch: impl Fn(String, Vec<String>) -> Result<()>,
+    chat: Option<String>,
+    at_ms: u64,
+    why: String,
+) -> Result<ManagerResponse> {
+    ensure_repo(name, main, wsx, launch)?;
     call_socket(
-        &ManagerDir::open_home(project_id)?.socket_path(),
-        &ManagerRequest::Checkin { at_ms, why },
+        &store::repo_socket(&store::project_id(name, main))?,
+        &ManagerRequest::Checkin { at_ms, why, chat },
         HOST_TIMEOUT,
     )
 }

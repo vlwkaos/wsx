@@ -19,6 +19,7 @@ pub mod manager;
 mod notes;
 mod pi;
 mod preview;
+mod repo;
 mod slot;
 #[cfg(test)]
 mod stream_tests;
@@ -172,7 +173,9 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
         TaskCmd::PreviewHost { project_id, task } => {
             preview::host(&project_id, store::parse_task_number(&task)?)
         }
-        TaskCmd::ManagerHost { project_id, chat } => manager::run(&project_id, chat.as_deref()),
+        TaskCmd::ManagerHost { project_id, chat } => manager::run_old(&project_id, chat.as_deref()),
+        TaskCmd::ChatHost { chat } => manager::run(&chat),
+        TaskCmd::RepoHost { project_id } => repo::run(&project_id),
         TaskCmd::BoundaryProfile { untrusted } => boundary_profile(project, untrusted),
         TaskCmd::Host { project_id, task } => {
             host::run(&project_id, store::parse_task_number(&task)?)
@@ -308,7 +311,7 @@ fn ask_host_ok(dir: &TaskDir, request: &HostRequest) -> Result<HostResponse> {
 
 /// Create the manager's or a chat's hidden session (its label), starting wsxd when it does
 /// not run.
-pub(crate) fn launch_manager(main: &Path) -> impl FnOnce(String, Vec<String>) -> Result<()> + '_ {
+pub(crate) fn launch_manager(main: &Path) -> impl Fn(String, Vec<String>) -> Result<()> + '_ {
     move |label, argv| {
         ops::create_session_launch(
             &runtime::Client::local(),

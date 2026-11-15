@@ -182,8 +182,10 @@ pub(super) fn close_hung_manager(
     let Some(hung) = manager_hung(dir, main, answer) else {
         return Ok(false);
     };
-    let args = dir.host_args();
-    let pid = host_pid(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    // ^ A host of the release before runs as `manager-host`; either hands over or is replaced.
+    let (args, old) = (dir.host_args(), dir.old_host_args());
+    let find = |args: &[String]| host_pid(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    let pid = find(&args).or_else(|| find(&old));
     super::close_session(&format!("task-{}", dir.name()), main)?;
     stop_tree(pid);
     dir.append(ManagerEvent::Stopped {
@@ -210,6 +212,26 @@ pub fn sweep() -> Vec<String> {
                 if let Err(error) = replace_hung_task(&dir) {
                     errors.push(format!("task t{}: {error:#}", dir.id));
                 }
+            }
+        }
+        // ^ The repo's service: one that runs but answers nothing is closed and started again.
+        // Only a repo with a store has one (`project_dir` exists once a task or a chat made it).
+        if store::project_dir(&project_id).is_ok_and(|dir| dir.is_dir()) {
+            let launch = |label, argv| {
+                crate::ops::create_session_launch(
+                    &crate::runtime::Client::local(),
+                    &config,
+                    &project.path,
+                    label,
+                    argv,
+                    None,
+                )
+                .map(drop)
+            };
+            if let Err(error) =
+                super::owner::ensure_repo_with(&project.name, &project.path, &exe, launch, true)
+            {
+                errors.push(format!("repo service of {}: {error:#}", project.name));
             }
         }
         for dir in super::chats::open_chats(&project_id) {

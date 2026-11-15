@@ -38,8 +38,14 @@ pub fn checked_name(name: &str) -> Result<&str> {
     if name == "manager" {
         bail!("`manager` is the project's first chat, not a name to create");
     }
+    if name.starts_with(REPO_PREFIX) {
+        bail!("a chat's name does not start with {REPO_PREFIX}, which names a repo's service: {name:?}");
+    }
     Ok(name)
 }
+
+/// A repo service's session is `task-repo-<repo-id>`: no chat's `task-<name>` may equal it.
+const REPO_PREFIX: &str = "repo-";
 
 /// Why `name` cannot be the name of a new chat, in a phrase, or none: the New chat forms of the
 /// web and the TUI say it before they ask, with `open` the project's open chats. An empty name
@@ -144,6 +150,8 @@ pub(super) fn slug_name(name: &str) -> String {
     let slug = slug.trim_end_matches('-');
     if slug == "manager" {
         "manager-repo".into()
+    } else if let Some(rest) = slug.strip_prefix(REPO_PREFIX) {
+        format!("rp-{rest}")
     } else {
         slug.to_string()
     }

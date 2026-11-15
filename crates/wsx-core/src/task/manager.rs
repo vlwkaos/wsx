@@ -534,24 +534,6 @@ pub struct ManagerState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<ManagerAgent>,
     pub next_id: u64,
-    /// Task states already turned into events. Absent until the host's first start.
-    pub seen: Option<BTreeMap<u32, Seen>>,
-    /// Approval decisions already turned into events.
-    pub decisions_seen: u64,
-    /// The `unix_ms` of the newest deploy record already turned into events.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deploys_seen_ms: Option<u64>,
-    /// The `finished_epoch` of the newest routine run already turned into events.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub routines_seen: Option<i64>,
-    /// The attention state (`kind:since`) of each project agent session already posted, by
-    /// session id. Absent until the host's first start. ref: docs/tasks.md "Session news"
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sessions_seen: Option<BTreeMap<u64, String>>,
-    /// The stall of each open task already turned into an event, by its marker: the same
-    /// stall is reported once. ref: docs/tasks.md "Manager" (Stalls)
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub stalls: BTreeMap<u32, String>,
     /// The digest of the instructions the conversation in `agent_session` began with.
     /// Claude keeps a conversation's first system prompt also on resume, so other
     /// instructions start a new conversation; settings, tools and model apply at every start.
@@ -568,16 +550,6 @@ pub struct ManagerState {
     pub turn_seen: Option<BTreeMap<u32, Seen>>,
     /// The conversation's last `session_cost_micro_usd`, which a resumed process counts on from.
     pub session_cost_micro_usd: u64,
-    /// The last task the host started with `tasks.workflow.idle`, and when it started it:
-    /// the next one waits for session notes newer than that. ref: docs/tasks.md "Workflow"
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub idle_task: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub idle_ms: Option<u64>,
-    /// When the last recap was asked for: the next one needs a change after it, and names
-    /// the token cost since. ref: docs/tasks.md "Recap"
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recap_ms: Option<u64>,
     /// The agent's usage limit: the messages of the turn it ended, answered once it resumes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<LimitHold>,
@@ -591,10 +563,44 @@ pub struct ManagerState {
     /// A provisional reply the manager's agent has not been told of yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub provisional: bool,
-    /// The one pending check-in: the host sends `why` as an event at `at_ms`, also late after
-    /// a restart. ref: docs/tasks.md "Check-in"
-    #[serde(skip_serializing_if = "Option::is_none")]
+}
+
+/// What the repo service has seen and still owes (`tasks/<repo-id>/repo.json`). The fields up to
+/// `checkin` were `ManagerState`'s while the first chat's host ran the duties: a first start
+/// reads them from that chat's `state.json` once. ref: docs/tasks.md "Chats"
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RepoState {
+    /// Task states already turned into events. Absent until the service's first start.
+    pub seen: Option<BTreeMap<u32, Seen>>,
+    /// Approval decisions already turned into events.
+    pub decisions_seen: u64,
+    /// The `unix_ms` of the newest deploy record already turned into events.
+    pub deploys_seen_ms: Option<u64>,
+    /// The `finished_epoch` of the newest routine run already turned into events.
+    pub routines_seen: Option<i64>,
+    /// The attention state (`kind:since`) of each project agent session already posted, by
+    /// session id. Absent until the first start. ref: docs/tasks.md "Session news"
+    pub sessions_seen: Option<BTreeMap<u64, String>>,
+    /// The stall of each open task already turned into an event, by its marker: the same
+    /// stall is reported once. ref: docs/tasks.md "Manager" (Stalls)
+    pub stalls: BTreeMap<u32, String>,
+    /// The last task started with `tasks.workflow.idle`, and when it started: the next one
+    /// waits for session notes newer than that. ref: docs/tasks.md "Workflow"
+    pub idle_task: Option<u32>,
+    pub idle_ms: Option<u64>,
+    /// When the last recap was asked for: the next one needs a change after it, and names the
+    /// token cost since. ref: docs/tasks.md "Recap"
+    pub recap_ms: Option<u64>,
+    /// The check-in the first chat's host held before the repo service: read once, then moved
+    /// to `checkins` under that chat's name and never written again.
+    #[serde(skip_serializing)]
     pub checkin: Option<Checkin>,
+    /// The one pending check-in of each chat, by chat name: the service sends `why` to that
+    /// chat at `at_ms`, also late after a restart. ref: docs/tasks.md "Check-in"
+    pub checkins: BTreeMap<String, Checkin>,
+    /// When each idle chat was last suggested for closing, by name: once a week at most.
+    pub suggested_close: BTreeMap<String, u64>,
 }
 
 /// A time at which the manager hears `why` as an event.
@@ -833,6 +839,9 @@ pub enum ManagerRequest {
     Checkin {
         at_ms: u64,
         why: String,
+        /// The chat that set it, which hears it; none is the repo's home chat.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chat: Option<String>,
     },
 }
 
