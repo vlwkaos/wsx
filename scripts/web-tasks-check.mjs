@@ -2045,7 +2045,8 @@ async function followEnd(where) {
   // (b, c) Scrolled up: rows below, a late diagram below, the "Since you left" line above, rows
   // inserted above (as older messages would be) and removed again keep the bubble in view where it is.
   const drift = [];
-  for (const anchoring of ["auto", "none"]) {
+  // ^ The iOS path (anchoring off) runs five times: one frame that moves is not a flake to wait out.
+  for (const anchoring of ["auto", ...Array(5).fill("none")]) {
     // ^ iOS Safari has no CSS scroll anchoring: with it off, Chrome scrolls as Safari does.
     await evaluate(`document.querySelector('.log').style.overflowAnchor = '${anchoring}'`);
     await evaluate(scrolledUp);
@@ -2053,17 +2054,24 @@ async function followEnd(where) {
     const start = await evaluate(markProbe);
     const moved = async (step) => drift.push(`${anchoring} ${step} ${Math.round((await evaluate(probe)) - start)}`);
     // ^ Every frame between the steps, not only after each: a move that is taken back still shows.
-    await watch(probe);
+    // The reading ('probe' keeps every frame comparable) names the step it was taken in and carries the log's own numbers, so a frame
+    // that moves says which step and what moved (the log's scroll, its box, or the page).
+    const stage = (name) => evaluate(`window.wsxStep = ${JSON.stringify(name)}`);
+    await watch(`['probe', ${probe}, window.wsxStep, (() => { const log = document.querySelector('.log'); return [log.scrollTop, log.scrollHeight, log.clientHeight, log.getBoundingClientRect().top, document.scrollingElement.scrollTop].map(Math.round); })()]`);
+    await stage("reply below");
     await diagramReply();
     await moved("reply below");
     await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 }))`);
+    await stage("since line");
     await evaluate("document.dispatchEvent(new Event('visibilitychange'))");
     await until("!!document.querySelector('.since')", `${where}: no since-you-left line`);
     await pause(300);
     await moved("since line");
+    await stage("since dismissed");
     await evaluate("document.querySelector('.since button[title=Dismiss]').click()");
     await pause(300);
     await moved("since dismissed");
+    await stage("rows above");
     await evaluate(`(() => { const log = document.querySelector('.log');
       for (let n = 0; n < 5; n++) {
         const row = Object.assign(document.createElement('p'), { className: 'note', textContent: 'an older message' });
@@ -2072,11 +2080,13 @@ async function followEnd(where) {
       } })()`);
     await pause(200);
     await moved("rows above");
+    await stage("rows above removed");
     await evaluate("document.querySelectorAll('.log > [data-older]').forEach((node) => node.remove())");
     await pause(200);
     await moved("rows above removed");
     // An image that loads in a bubble above the screen (a diagram's image again). ^ Not a row that
     // starts in view: it is the anchor, and what is below it on the screen moves as it grows.
+    await stage("image above");
     const above = await evaluate(`(() => { const log = document.querySelector('.log');
       const above = [...log.querySelectorAll(':scope > .bubble')].filter((node) => node.offsetTop + node.offsetHeight <= log.scrollTop).at(-1);
       if (!above) return false;
@@ -2084,10 +2094,13 @@ async function followEnd(where) {
     if (!above) await fail(`${where}: scrolled up, no bubble is wholly above the screen`);
     await pause(200);
     await moved("image above");
+    await stage("image removed");
     await evaluate("document.querySelector('.log [data-late]').remove()");
     await pause(200);
-    const frames = jumps(await watched());
-    if (frames.length) moves.push(`scrolled up (${anchoring}), the bubble in view moved in frames ${JSON.stringify(frames)}`);
+    await moved("image removed");
+    const read = await watched();
+    const frames = jumps(read);
+    if (frames.length) moves.push(`scrolled up (${anchoring}), the bubble in view moved in frames ${JSON.stringify(frames)} of ${read.length}, the readings ['probe', top, step, [scrollTop, scrollHeight, clientHeight, log top, page scroll]] around the first: ${JSON.stringify(read.slice(Math.max(0, frames[0][0] - 2), frames[0][0] + 4))}`);
     if (await evaluate(atEnd) || !(await count(".jump"))) drift.push(`${anchoring}: the reader was moved to the end`);
   }
   await evaluate("document.querySelector('.log').style.overflowAnchor = ''");
