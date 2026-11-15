@@ -3,7 +3,7 @@
 
 ref: docs/design/scenario-flakes.md (the numbers and the cause)
 
-    python3 -I docs/design/scenario-flakes-measure.py [--days 21] [--gh] [--load] [--rows] [--state ~/.local/state/wsx/tasks/wsx-8cbe3f08]
+    python3 -I docs/design/scenario-flakes-measure.py [--until 2026-11-15T10:00] [--days 21] [--gh] [--load] [--rows] [--state ~/.local/state/wsx/tasks/wsx-8cbe3f08]
 
 Reads the `check_run` and `checks` entries of every task log whose command runs `ci-scenario.py web`.
 A run's CI id is the last `actions/runs/<id>` its output names. `--gh` fetches that run once
@@ -21,15 +21,15 @@ def arg(name, default):
     at = ARGS.index(name) + 1 if name in ARGS else len(ARGS)
     return ARGS[at] if at < len(ARGS) and not ARGS[at].startswith('--') else default
 STATE = os.path.expanduser(arg('--state', '~/.local/state/wsx/tasks/wsx-8cbe3f08'))
-SINCE = (time.time() - float(arg('--days', '21')) * 86400) * 1000
+UNTIL = time.mktime(time.strptime(arg('--until', time.strftime('%Y-%m-%dT%H:%M')), '%Y-%m-%dT%H:%M')) * 1000  # ^ local time
+SINCE = UNTIL - float(arg('--days', '21')) * 86400000
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 CACHE = os.path.join(ROOT, '.work', 'scenario-flakes')
 REPO = 'vlwkaos/wsx'
 COMMAND = re.compile(r'ci-scenario\.py web(\s|$)')
-INFRA = re.compile(r'HTTP 403|rate limit|Terms of Service|no job started|no CI run started|returned non-zero exit status|'
-                   r'failed on CI for the network or the runner|could not resolve|Connection reset', re.I)
 
-# The groups, read from the check code (docs/design/scenario-flakes.md "Groups"): pattern -> (group, kind).
+
+# The groups, read from the check code (docs/design/scenario-flakes.md "Shared groups and the first wrong state"): pattern -> (group, kind).
 #   timing:  the check judges a value read at a moment (after a fixed pause, a fixed frame window, or a wait
 #            on another part of the state), not a wait on the value it judges
 #   ranout:  the check waits on the value it judges and its bound passed (the state never came)
@@ -130,7 +130,7 @@ runs = []
 for path in sorted(glob.glob(os.path.join(STATE, '*', 'log.jsonl'))):
     task = os.path.basename(os.path.dirname(path))
     for e in events(path):
-        if e.get('kind') not in ('check_run', 'checks') or e.get('unix_ms', 0) < SINCE:
+        if e.get('kind') not in ('check_run', 'checks') or not SINCE <= e.get('unix_ms', 0) < UNTIL:
             continue
         for r in e.get('results', []):
             if not COMMAND.search(r.get('command', '')):
@@ -149,7 +149,7 @@ if '--gh' in ARGS:
     for r in runs:
         if r['run'] and r['run'] not in meta:
             got = gh('api', 'repos/%s/actions/runs/%s' % (REPO, r['run']), '--jq',
-                     '{message: .head_commit.message, sha: .head_sha, started: .run_started_at, conclusion: .conclusion}')
+                     '{message: .head_commit.message}')
             if got:
                 meta[r['run']] = json.loads(got)
                 save_cache('runs.json', meta)
@@ -185,7 +185,7 @@ for r in failed:
 def ratio(values):
     return '%d/%d' % (sum(1 for v in values if v), sum(1 for v in values if v is not None))
 
-day = [r for r in runs if r['ms'] > time.time() * 1000 - 86400000]
+day = [r for r in runs if r['ms'] > UNTIL - 86400000]
 print('web check runs since %s: %d, failed %d; CI run named %d, task HEAD known %d. Last 24 h: %d runs, %d failed'
       % (time.strftime('%Y-%m-%d', time.localtime(SINCE / 1000)), len(runs), len(failed), sum(1 for r in runs if r['run']),
          sum(1 for r in runs if r['head']), len(day), sum(1 for r in day if r['exit'] not in (0, None))))
@@ -209,7 +209,7 @@ for group, rows in sorted(shared.items(), key=lambda kv: -len(kv[1])):
     print('%-34s %-7s %5d %5d %6s %6s  %-11s  %-11s  %s' % (group[:34], kinds.get(group, '?'), len(rows), len({r['task'] for r in rows}),
                                                          ratio([r['same_pass'] for r in rows]), ratio([r['same_fail'] for r in rows]),
                                                          stamp(min(r['ms'] for r in rows)), stamp(max(r['ms'] for r in rows)), rows[0]['at']))
-OPEN = time.time() * 1000 - 3 * 86400000
+OPEN = UNTIL - 3 * 86400000
 print('\nshared by kind   fails  tasks  last 3 days')
 for kind in ('timing', 'main', 'product', 'ranout', 'input', '?'):
     rows = [r for r in failed if r['class'] == 'shared' and kinds.get(r['group'], '?') == kind]
