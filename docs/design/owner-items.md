@@ -24,7 +24,7 @@ Live case: c120 (#433, landed) asks the owner to confirm "a short tap opens it; 
 | Questions (asks) | `chat::open_asks` (`chat.rs:327`) | a manager reply that ends in "?" | an owner message, `wsx task dismiss`, 7 days of age (`ASKS_WITHIN_MS`, :23) | the owner. `dismiss` is owner-only (`cmd/chat.rs:276`) |
 | Approvals | `owner.rs`, `ApprovalLine` | a manager request in `approvals.jsonl` | approve, deny, or a drop by wsx: task closed, revision moved, `after` task gone, replaced (`owner::stale_reason` :247, `manager.rs:849-898`) | the owner. wsx drops stale requests |
 | Alerts, session news | `Level`, `session_news.rs` | `wsx task post --level`, a session that exits | never: they are chat lines | nobody |
-| Failed routine | Routines tray tone | a failed run | the next run | nobody |
+| Failed routine | Routines tray tone (`routines.js:53-57`) | a failed run | not an item: a tone | nobody |
 
 ## 2. Measured
 
@@ -37,7 +37,7 @@ Live case: c120 (#433, landed) asks the owner to confirm "a short tap opens it; 
 
 What the To check numbers say:
 
-- **All 25 skips were the owner's taps** (no `owner_said`, so not an `x` reply). This is the work the owner wants to stop.
+- **All 25 skips were the owner's Skip button or CLI** (no `owner_said`, so not an `x` reply; the manager cannot skip). This is the work the owner wants to stop.
 - **No passed item was older than 7.2 days.** An age limit of 14 days would have retired 0 items that the owner later passed.
 - **Two rules never fire.** "Task discarded" and "newer revision of the same task" hit 0 items: items come only from a landed revision.
 - **"Same files" does not separate moot items from good ones.** A later landing on the item's task files came before 105 of 124 passed items and 20 of 25 skipped items. As a flag it would fire on 363 of 673 landings and name 1379 items, 3.8 per landing.
@@ -50,7 +50,7 @@ Limits: the questions count uses the `open_asks` rule by quote id or newest. It 
 | Cause | Example | Detected by rule? |
 |---|---|---|
 | An owner decision supersedes it | c120 and messages 4806-4808 | No. The decision is chat words, and memory `--supersedes` links rules, not items. Manager judgment |
-| A later landed change replaces its behavior | #463 lands on `reply.js` | Not usefully: the same-files signal fires for 85% of the items the owner passed. Manager judgment, in the landing turn it already has |
+| A later landed change replaces its behavior | a later task on `reply.js` lands | Not usefully: the same-files signal fires for 85% of the items the owner passed. Manager judgment, in the landing turn it already has |
 | Its task is closed or discarded | | Not possible: items exist only for landed tasks. Approvals already have this rule |
 | Age | projy c1-c9, 17-20 d | Yes. `checks.rs`, in the shape of `ASKS_WITHIN_MS` |
 
