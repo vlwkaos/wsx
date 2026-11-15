@@ -1331,7 +1331,10 @@ await until(`!!${asking}`, "the chat did not come back after Home", 100);
 await typeInto(".composer-field", "STATUS after the question");
 await click(".composer-send");
 await until(`${askTags}.length === 0`, "the owner's message did not clear Asks you", 30);
-await until(answeredOpen, async () => `no reply after the question: ${await evaluate("JSON.stringify({ typing: !!document.querySelector('.log .typing'), last: [...document.querySelectorAll('.log .bubble')].slice(-4).map((node) => node.dataset.side + ': ' + node.textContent.slice(0, 80)) })")}`, 900);
+// ^ The approvals' events of the steps before may reach the chat after the owner's message; its reply is the last bubble then, so the answer is any bubble after the message.
+const answeredAfterQuestion = `(() => { const all = [...document.querySelectorAll('.log .bubble')], asked = all.findLastIndex((node) => node.dataset.side === 'out' && node.textContent.includes('STATUS after the question'));
+  return asked >= 0 && all.slice(asked + 1).some((node) => node.dataset.side === 'in' && node.textContent.includes('open:')) && !document.querySelector('.log .typing'); })()`;
+await until(answeredAfterQuestion, async () => `no reply after the question: ${await evaluate("JSON.stringify({ typing: !!document.querySelector('.log .typing'), last: [...document.querySelectorAll('.log .bubble')].slice(-4).map((node) => node.dataset.side + ': ' + node.textContent.slice(0, 80)) })")}`, 900);
 // ^ The manager answers after the events of the steps before; the label says what the page held when it did not.
 if ((await overviewAsks())?.length !== 0) await fail("the overview still says the manager asks");
 if ((await askRow())?.asks) await fail("the asking reply's row still asks after the owner wrote");
