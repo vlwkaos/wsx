@@ -41,17 +41,26 @@ fn messages(fixture: &Fixture) -> Vec<(bool, String)> {
         .collect()
 }
 
+/// What a worker's agent received (a manager's event lines name the titles too).
 fn received(fixture: &Fixture, needle: &str) -> Vec<String> {
     messages(fixture)
         .into_iter()
+        .filter(|(manager, text)| !manager && text.contains(needle))
         .map(|(_, text)| text)
-        .filter(|text| text.contains(needle))
         .collect()
+}
+
+/// The repo's service and the manager run: the service ends a wait on a closed task and tells
+/// the manager what its sweep finds. `say` starts both.
+fn with_a_manager(fixture: &Fixture) {
+    let said = fixture.wsx(&["task", "say", "hello"]);
+    assert!(said.status.success(), "{said:?}");
 }
 
 /// #1 works until `hold` exists; #2 was created `--after 1` and has had an add. Nothing of #2
 /// has reached an agent: the add said it is queued behind the prompt.
 fn waiting_task_with_an_add(fixture: &Fixture) {
+    with_a_manager(fixture);
     let hold = fixture.root.join("hold");
     fixture.json(&["task", "new", &format!("WAIT {}", hold.display()), "--json"]);
     fixture.json(&[
@@ -162,6 +171,7 @@ fn worker_with_a_run_out(fixture: &Fixture) {
 #[test]
 fn a_check_run_that_ends_after_a_stop_wakes_the_manager() {
     let fixture = gated_ci();
+    with_a_manager(&fixture);
     worker_with_a_run_out(&fixture);
     let stopped = fixture.wsx(&["task", "stop", "1"]);
     assert!(stopped.status.success(), "{stopped:?}");
