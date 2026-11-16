@@ -918,20 +918,20 @@ def manager_up(created):
     # ^ The name the owner reads, trimmed; the session is labelled `task-<chat name>`.
     assert js('task', 'manager')['name'] == 'Atlas'
     # ^ The TUI's manager row reads the name; without one the project's (docs/tasks.md "Config").
-    # ^ The chat's host leaves CHAT_LINGER after its last message: each TUI read starts with a fresh answer.
-    reply_to(js('task', 'say', 'STATUS')['id'])
+    # ^ The chat's host leaves CHAT_LINGER after its last message, and a TUI start can take longer: a 25 s
+    # turn (LONG) keeps it and its manager row up for the two reads and the state check.
+    long_turn = js('task', 'say', 'STATUS LONG')
     named = tui_text(wsx, env, project, r'task-demo\s*\n*\s*\(Atlas\)')
     assert re.search(r'task-demo\s*\n*\s*\(Atlas\)', named) and '(manager)' not in named, named[-3000:]
     config_text = (project / 'wsx.config.yml').read_text()
     (project / 'wsx.config.yml').write_text(config_text.replace('name: "  Atlas ", ', ''))
-    reply_to(js('task', 'say', 'STATUS')['id'])
     plain = tui_text(wsx, env, project, r'task-demo\s*\n*\s*\(demo\)')
     plain_name = js('task', 'manager')['name']
     (project / 'wsx.config.yml').write_text(config_text)
     assert re.search(r'task-demo\s*\n*\s*\(demo\)', plain) and '(Atlas)' not in plain, plain[-3000:]
     assert plain_name == 'demo', plain_name
-    reply_to(js('task', 'say', 'STATUS')['id'])
     assert js('task', 'manager')['state'] == 'running'
+    reply_to(long_turn['id'], 60)
     # A new task and an add to the running one, each by a wsx task command the manager runs.
     started = js('task', 'say', 'RUN wsx task new "WORK s1.txt" -p demo --json')
     assert 'ran: wsx task new' in reply_to(started['id'])['text']
@@ -8361,11 +8361,13 @@ def part_host(created=None):
     # no sweep of its own. Its own env keeps the real bound, so the turn is 3 h quiet.
     unswept, unswept_pid = legacy_host('unswept', aged_ms=3 * 3600 * 1000)
     manager_socket = js('task', 'manager')['socket']
+    # ^ The repo service stops first: with the shorter event quiet it would send the last close's event line to
+    # the home chat before the manager is down again, and the chat's host would start by that.
+    stop_repo_service()
     cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
-    stop_repo_service()
     seen = len(traces())
-    assert js('task', 'manager')['state'] == 'started'
+    assert js('task', 'manager')['state'] == 'started', js('task', 'manager')
     wait(lambda: replaced(log(unswept)), 'the starting manager replaces the hung host', 60)
     assert process_gone(unswept_pid) and len(replaced(log(unswept))) == 1, log(unswept)[-4:]
     assert re.search(r'turn, started 3 h.* ago, had no agent output for 3 h', replaced(log(unswept))[0]['reason']), replaced(log(unswept))
