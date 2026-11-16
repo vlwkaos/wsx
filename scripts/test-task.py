@@ -4198,6 +4198,8 @@ def part_worker(created=None):
     # A named chat (the area group) on an agent that passed answer and note may not create a task.
     def stop_manager_now():
         sock = js('task', 'manager')['socket']
+        # ^ The service goes first: it would start the home host again, on the config before the one the caller writes.
+        stop_repo_service()
         cli('session', 'delete', 'task-demo', '-p', 'demo')
         wait(lambda: not Path(sock).exists() or subprocess.run(['nc', '-zU', sock]).returncode != 0, 'manager down')
 
