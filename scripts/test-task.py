@@ -7896,7 +7896,8 @@ def part_host(created=None):
     limit_for(600)
     pinned_refused = js('task', 'say', 'PIREFUSE %s STATUS pinned, the fallback refuses' % no_key)
     wait(lambda: lc_rotated_since(s8_at, 'back on claude: pi was refused: No API key found'), 'the pinned manager back home for the wait', 40)
-    assert 'agent' not in manager_state() and manager_state()['limit']['account'] is True, manager_state()
+    # ^ The rotated entry is in the log before the state saver writes state.json: wait for the write.
+    wait(lambda: 'agent' not in manager_state() and manager_state().get('limit', {}).get('account') is True, lambda: manager_state())
     assert len(lc_pi_manager(s8_before)) == 1, lc_pi_manager(s8_before)
     assert not any(e['kind'] == 'reply' and pinned_refused['id'] in e['to'] for e in chat()), chat()[-3:]
     limit_file.unlink()
