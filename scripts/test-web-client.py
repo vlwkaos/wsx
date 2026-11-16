@@ -602,7 +602,8 @@ def stop(process, grace=5):
         # The leader ended; members of its group, such as Chrome, may not have.
         try:
             os.killpg(process.pid, 0)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
+            # ^ EPERM as above: the members ended and wait only to be reaped.
             break
 
 
