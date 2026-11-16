@@ -1032,10 +1032,10 @@ await setMotion("no-preference");
 await restored();
 await runningIs(`${openNow} tasks`, "the Tasks pill did not go back to its count");
 
-// Open, a list's first row shows whole at the reservoir's top, and the pill is pressed.
+// Open, a list's first item (its band heading, else its first row) is at the reservoir's top and its first row shows whole, and the pill is pressed.
 async function firstRowInside(where) {
-  const seen = await evaluate(`(() => { const body = document.querySelector('.reservoir-scroll'), box = body.getBoundingClientRect(), row = body.querySelector('.need').getBoundingClientRect();
-    return { down: Math.round(row.top - box.top), inside: row.top >= box.top && row.bottom <= box.bottom && row.left >= box.left && row.right <= box.right + 0.5 && body.scrollTop === 0,
+  const seen = await evaluate(`(() => { const body = document.querySelector('.reservoir-scroll'), box = body.getBoundingClientRect(), row = body.querySelector('.need').getBoundingClientRect(), first = body.querySelector('.reservoir-band, .need').getBoundingClientRect();
+    return { down: Math.round(first.top - box.top), inside: row.top >= box.top && row.bottom <= box.bottom && row.left >= box.left && row.right <= box.right + 0.5 && body.scrollTop === 0,
       box: [box.top, box.bottom, box.left, box.right].map(Math.round), row: [row.top, row.bottom, row.left, row.right].map(Math.round) }; })()`);
   if (!seen.inside || seen.down > 4) await fail(`${where}: the open list's first row is off: ${JSON.stringify(seen)}`);
 }
