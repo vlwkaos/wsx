@@ -183,8 +183,8 @@ button.row-open { padding: var(--space-2) 0; border: 0; background: none; text-a
 .trays { flex: none; display: inline-flex; align-items: center; gap: var(--space-2); }
 .tray { display: inline-flex; align-items: center; gap: calc(var(--space-1) / 2); font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); color: var(--color-muted); font-variant-numeric: tabular-nums; }
 .tray .icon { width: var(--space-4); height: var(--space-4); }
-.tray[data-kind="running"] .icon { color: var(--color-working); }
-.tray[data-kind="needs"] .icon, .tray[data-kind="check"] .icon { color: var(--color-attention); }
+.tray[data-kind="tasks"] .icon { color: var(--color-working); }
+.tray[data-kind="you"] .icon { color: var(--color-attention); }
 .tray[data-tone="danger"] { color: var(--color-danger); }
 .tray[data-tone="attention"] { color: var(--color-attention); }
 .field-note { min-height: calc(var(--font-size-sm) * 1.5); }
@@ -846,16 +846,57 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 .reservoir-body { min-height: 0; min-width: 0; display: flex; flex-direction: column; padding-bottom: var(--space-2); }
 /* The list's header stays while the rows scroll under it: its name and the button that closes it,
    one line of the key size (the 44 px button's hit area overflows it). */
+.reservoir-list { list-style: none; margin: 0; padding: 0; }
 .reservoir-head { flex: 0 0 auto; min-height: var(--size-key); padding-inline: var(--column-inset, var(--space-4)); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .reservoir-title { font-size: var(--font-size-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-faint); }
 .reservoir-close { margin-block: calc((var(--size-key) - var(--size-control)) / 2); margin-right: calc(-1 * var(--space-3)); }
 .reservoir-scroll { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
-/* Every row of the open list is the small size. */
-.reservoir .row-link { font-size: var(--font-size-sm); padding-inline: var(--column-inset, var(--space-4)); }
-.reservoir-list { list-style: none; margin: 0; padding: 0; }
+/* Every row of the open list is the small size (docs/web-client-tasks.md "Project screen"): the
+   number (or an icon) in a column of its own, the title and the one line under it, the actions in
+   a line of their own at the right. The full width is text; nothing sits in an indent or a dot. */
+.reservoir { --num-col: calc(var(--space-4) * 3); }
+.reservoir .row-link, .reservoir .row-link:has(> .row-open) {
+  display: grid; grid-template-columns: var(--num-col) minmax(0, 1fr); align-items: start; gap: 0 var(--space-1);
+  font-size: var(--font-size-sm); padding: var(--space-1) var(--column-inset, var(--space-4));
+}
+.reservoir .row-link > .row-main, .reservoir .row-link > .row-open { grid-column: 2; align-self: stretch; padding-block: var(--space-1); min-height: var(--size-key); box-sizing: border-box; }
+/* ^ The reason and the relations of a task (`flow.phrase`) are the point of the row: two lines, not a cut. */
+.reservoir .row-context, .chain-row .row-context { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; overflow-wrap: anywhere; }
+.chain-row .row-label { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.reservoir .row-label { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.reservoir .row-actions { grid-column: 2; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-1) var(--space-2); }
+.row-num { grid-column: 1; min-width: 0; padding-top: var(--space-1); color: var(--color-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.row-num .icon { display: block; width: var(--space-4); height: var(--space-4); }
+.row-num[data-tone="attention"] { color: var(--color-attention); }
+.row-num[data-tone="danger"] { color: var(--color-danger); }
+.row-glyph { display: inline-block; margin-right: var(--space-1); vertical-align: middle; }
+.row-glyph .icon { display: block; width: var(--space-3); height: var(--space-3); }
+.row-glyph[data-tone="working"] { color: var(--color-working); }
 .reservoir .need + .need { border-top: var(--border-width) solid var(--color-hairline); }
-/* The task's chip leads a row, as in the chat; the three lists share this row. */
-.reservoir .row-link > .task-chip { flex: 0 0 auto; }
+/* Actions: an icon and its word, the Pass and the answer the owner gives from the row. */
+.reservoir .need-action.button:not(.icon-button), .app .reservoir .need-action.button:not(.icon-button):has(> .icon) { width: auto; padding: 0 var(--space-3); gap: var(--space-1); background: var(--color-raised); }
+.need-action .icon { width: var(--space-4); height: var(--space-4); }
+.need-action[data-tone="accent"] { color: var(--color-accent); }
+.need-action[data-tone="danger"] { color: var(--color-danger); }
+/* The bands of the Tasks list: who has the ball (the server's `place.band`). */
+.reservoir-band { list-style: none; display: flex; align-items: center; min-height: var(--size-key); padding-inline: var(--column-inset, var(--space-4)); font-size: var(--font-size-label); font-weight: var(--font-weight-strong); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-muted); }
+.reservoir-band[data-band="you"] { color: var(--color-attention); }
+.reservoir-band[data-band="moving"] { color: var(--color-working); }
+/* A chain is one card; a task that waits for another sits under it behind a rail. */
+.reservoir .need[data-group] { margin-inline: var(--space-2); background: var(--color-raised); }
+.reservoir .need[data-group] .row-link { padding-inline: calc(var(--column-inset, var(--space-4)) - var(--space-2)); }
+.reservoir .need[data-group="first"] { border-top: 0; border-radius: var(--radius-control) var(--radius-control) 0 0; }
+.reservoir .need[data-group="last"] { margin-bottom: var(--space-2); border-radius: 0 0 var(--radius-control) var(--radius-control); }
+.reservoir .need[data-nest] .row-main, .reservoir .need[data-nest] .row-open { border-left: calc(var(--border-width) * 2) solid var(--color-hairline); padding-left: var(--space-2); }
+.reservoir .need[data-nest="2"] .row-main, .reservoir .need[data-nest="2"] .row-open { margin-left: var(--space-3); }
+/* The task page's chain: the same rows as a connected list. */
+.task-chain { margin-top: var(--space-2); }
+.task-chain-title { margin: 0; font-size: var(--font-size-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-faint); font-weight: var(--font-weight-strong); }
+.task-chain ol { list-style: none; margin: 0; padding: 0; }
+.chain-row { --num-col: calc(var(--space-4) * 3); display: grid; grid-template-columns: var(--num-col) minmax(0, 1fr); gap: 0 var(--space-1); min-height: var(--size-control); padding: var(--space-2) 0; font-size: var(--font-size-sm); color: inherit; text-decoration: none; }
+.chain-row[aria-current="page"] { background: var(--color-raised); border-radius: var(--radius-control); padding-inline: var(--space-2); margin-inline: calc(-1 * var(--space-2)); }
+.chain-row[aria-current="page"] .row-label { font-weight: var(--font-weight-strong); }
+.task-chain li[data-nest] .row-main { border-left: calc(var(--border-width) * 2) solid var(--color-hairline); padding-left: var(--space-2); }
 /* The pills, between the attach button and the Send button: an icon and its count, the label
    too from 900 px (the wide layout). A pressed pill is the open list. */
 .pills { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: var(--space-1); margin-right: var(--space-3); }
@@ -869,19 +910,16 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 /* ^ The drawn pill is smaller than the row; its hit area is the control size. */
 .pill::after { content: ""; position: absolute; inset: calc((var(--pill-height) - var(--size-control)) / 2) calc(var(--space-1) * -1); }
 .pill[aria-pressed="true"] { border-color: var(--color-accent); color: var(--color-text); font-weight: var(--font-weight-strong); }
-.pill[data-kind="running"] .icon { color: var(--color-working); }
-.pill[data-kind="needs"] .icon, .pill[data-kind="check"] .icon { color: var(--color-attention); }
+.pill[data-kind="tasks"] .icon { color: var(--color-working); }
+.pill[data-kind="you"] .icon { color: var(--color-attention); }
 /* Routines: the last run of an enabled routine failed (danger) or found something (attention). */
 .pill[data-tone="danger"] { border-color: var(--color-danger); color: var(--color-danger); }
 .pill[data-tone="attention"] { border-color: var(--color-attention); color: var(--color-attention); }
 /* A device that cannot act has no composer: the pills have a bar of their own. */
 .pill-bar { flex: 0 0 auto; padding: var(--space-2) var(--column-inset); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
-/* ^ The label follows the count from 900 px, in the bar of a device that cannot act and in a composer with three pills; with four
-   (Routines too) the composer's row, capped at 72ch, would leave the field under a quarter of it. */
+/* ^ The label follows the count from 900 px, in the bar of a device that cannot act and in a composer with three pills. */
 .pill-label { display: none; }
-.app[data-wide] .pill-bar .pill-label, .app[data-wide] .pills:not(.pill-bar):not(:has(.pill:nth-child(4))) .pill-label { display: inline; }
-/* ^ Four pills: closer padding keeps them between attach and Send on the one row of a 320 px phone. */
-.pills:has(.pill:nth-child(4)) .pill { padding: 0 calc(var(--space-1) * 1.5); gap: calc(var(--space-1) / 2); }
+.app[data-wide] .pill-bar .pill-label, .app[data-wide] .pills:not(.pill-bar) .pill-label { display: inline; }
 @media (hover: hover) { .pill:hover { border-color: var(--color-faint); } .pill[aria-pressed="true"]:hover { border-color: var(--color-accent); } }
 /* With the keyboard up the reservoir steps aside while the `#` or `/` list is open. */
 body[data-keyboard] .chat:has(.slash) .reservoir { display: none; }

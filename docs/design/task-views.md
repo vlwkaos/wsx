@@ -1,6 +1,6 @@
 # Task views: lists and task page
 
-Design only (task 433). No code changed. Two options: **A** starts from the data wsx has, **B** from how a person perceives and thinks. The comparison and the 3 questions for the owner are at the end.
+Design (task 433); **option B is built** (task 482, accepted 2026-11-15): bands For you, Moving, Waiting; a number column; chains in the order of `wsx-core` `task::chains` (`flow.place`); the same rows in the pill panels, the Tasks list, the task page's Chain and the TUI (docs/tasks.md "TUI", docs/web-client-tasks.md "Project screen"). Two options: **A** starts from the data wsx has, **B** from how a person perceives and thinks. The comparison and the 3 questions for the owner are at the end.
 
 ## Option A: from the data
 

@@ -65,8 +65,8 @@ impl Overview {
     }
 }
 
-/// One row: an open task in attention order, an open chat, then a recent landed or
-/// closed task. A chat row has no number; its title is the chat's name.
+/// One row: an open task in the ledger's chain order (under its band), an open chat, then a
+/// recent landed or closed task. A chat row has no number; its title is the chat's name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRow {
     pub id: u64,
@@ -79,11 +79,16 @@ pub struct TaskRow {
     pub section: Section,
     /// The project's home chat: its row is never closed (`chats::close`).
     pub home: bool,
+    /// Where an open task stands in its chain (`flow.place`): the chain's head, and how far in.
+    pub root: u64,
+    pub depth: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
-    Open,
+    You,
+    Moving,
+    Waiting,
     Chats,
     Recent,
 }
@@ -91,7 +96,9 @@ pub enum Section {
 impl Section {
     pub fn heading(self) -> &'static str {
         match self {
-            Self::Open => "Open",
+            Self::You => "For you",
+            Self::Moving => "Moving",
+            Self::Waiting => "Waiting",
             Self::Chats => "Chats",
             Self::Recent => "Recent",
         }
@@ -631,20 +638,13 @@ pub fn state_word(task: &Value) -> String {
     .to_string()
 }
 
-/// Open tasks first, waiting on the owner, failed, ready, checking, then working; then the
-/// listed chats and the dismissed count; then the recent landed and closed tasks, newest first as
-/// the ledger has them.
+/// The open tasks as the ledger has them (wsx-core `task::chains`: bands, then chains, a task
+/// before the tasks that wait for it), each under its band's heading; then the listed chats and
+/// the dismissed count; then the recent landed and closed tasks, newest first. Nothing here sorts
+/// or counts again.
 pub fn rows(ledger: &Value) -> Vec<TaskRow> {
-    let rank = |state: &str| match state {
-        "waiting" => 0,
-        "failed" => 1,
-        "ready" => 2,
-        "checking" => 3,
-        _ => 4,
-    };
     let list = |key: &str| ledger[key].as_array().cloned().unwrap_or_default();
-    let mut open = list("open");
-    open.sort_by_key(|task| rank(&state_word(task)));
+    let open = list("open");
     let row = |task: &Value, section| TaskRow {
         id: task["id"].as_u64().unwrap_or_default(),
         title: task["title"].as_str().unwrap_or_default().to_string(),
@@ -659,6 +659,8 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         counts: Default::default(),
         section,
         home: false,
+        root: task["flow"]["place"]["root"].as_u64().unwrap_or_default(),
+        depth: task["flow"]["place"]["depth"].as_u64().unwrap_or_default() as u8,
     };
     let chat = |chat: &Value| TaskRow {
         id: 0,
@@ -677,6 +679,8 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         counts: serde_json::from_value(chat["counts"].clone()).unwrap_or_default(),
         section: Section::Chats,
         home: chat["home"].as_bool().unwrap_or(false),
+        root: 0,
+        depth: 0,
     };
     // ^ The chats as Home lists them: those with something for the owner first, then the newest
     // message; the dismissed ones (`listed`, `chats_home::listed`) are one `+N dismissed` row.
@@ -698,12 +702,31 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         counts: Default::default(),
         section: Section::Chats,
         home: false,
+        root: 0,
+        depth: 0,
     });
     open.iter()
-        .map(|task| row(task, Section::Open))
+        .map(|task| {
+            row(
+                task,
+                match task["flow"]["place"]["band"].as_str() {
+                    Some("you") => Section::You,
+                    Some("waiting") => Section::Waiting,
+                    _ => Section::Moving,
+                },
+            )
+        })
         .chain(listed.into_iter().map(chat).chain(dismissed))
         .chain(list("recent").iter().map(|task| row(task, Section::Recent)))
         .collect()
+}
+
+/// The open tasks of `id`'s chain, in the list's order (the rows with its head's number).
+pub fn chain_of(rows: &[TaskRow], id: u64) -> Vec<&TaskRow> {
+    let Some(root) = rows.iter().find(|row| row.id == id && row.root != 0) else {
+        return Vec::new();
+    };
+    rows.iter().filter(|row| row.root == root.root).collect()
 }
 
 /// The events message that told of `view`'s last run's end, for the routine detail's Enter

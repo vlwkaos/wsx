@@ -6,6 +6,7 @@
 //! and after it has exited.
 
 pub mod build;
+pub mod chains;
 pub mod chat;
 pub mod chats;
 pub mod chats_home;

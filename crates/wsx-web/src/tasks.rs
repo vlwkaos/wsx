@@ -18,7 +18,9 @@ use std::{
 use wsx_core::config::project::load_task_config;
 use wsx_core::runtime::Snapshot;
 use wsx_core::task::{
-    self, call_socket, call_task_host, checks, copy, ledger,
+    self, call_socket, call_task_host,
+    chains::Chains,
+    checks, copy, ledger,
     manager::{
         activity, decided_request, pending_approvals, waiting_approvals, ApprovalLine, Author,
         ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse,
@@ -155,10 +157,12 @@ fn build_overview(
     let records: Vec<&TaskRecord> = tasks.iter().filter_map(|(_, r)| r.as_ref().ok()).collect();
     let now = task::now_unix_ms();
     let mut needs: Vec<(u8, u64, Value)> = Vec::new();
-    let mut listed: Vec<(u8, u64, Value)> = Vec::new();
+    let mut listed: Vec<(usize, u64, Value)> = Vec::new();
     let mut working = 0;
+    let mut open_tasks = 0;
     let mut titles: HashMap<u32, String> = HashMap::new();
     let land_auto = settings.is_some_and(|settings| settings.land_auto);
+    let chains = Chains::of(&tasks, land_auto);
     // ^ Task status words weigh every pending approval; the lists below are the first chat's own
     // (`chats::owner`): another chat shows its own in its room.
     let open_chats = task::chats::open_names();
@@ -178,9 +182,15 @@ fn build_overview(
             ..Default::default()
         };
         let status = status::status(dir, record, &facts, now);
-        let flow = view::flow(record, &records, &status);
+        let flow = view::flow(record, &records, &status, &chains);
         titles.insert(record.id, title.clone());
-        let order = view::attention(record.state);
+        // ^ Chain order, then the closed tasks newest first (`chains::Chains`).
+        let order = chains
+            .order()
+            .iter()
+            .position(|id| *id == record.id)
+            .unwrap_or(usize::MAX);
+        open_tasks += usize::from(record.state.is_open());
         listed.push((
             order,
             u64::MAX - record.updated_unix_ms,
@@ -277,6 +287,7 @@ fn build_overview(
     // ^ The Running, Needs you and To check trays, as a chat row counts its own (`ChatCounts`).
     let counts = ChatCounts {
         running: working + waiting_approvals(&approvals).len(),
+        open: open_tasks + waiting_approvals(&approvals).len(),
         needs: needs.len() + asks.len(),
         check: open_checks.len(),
     };
@@ -551,7 +562,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
         waiters: &waiters,
     };
     let status = status::status(&dir, &record, &facts, now);
-    summary["flow"] = view::flow(&record, &records, &status);
+    summary["flow"] = view::flow(&record, &records, &status, &Chains::of(&tasks, land_auto));
     summary["status"] = json!(status);
     summary["hold"] = json!(record.hold);
     let trial = ledger::trial_status(

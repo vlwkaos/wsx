@@ -4204,16 +4204,35 @@ merge_seconds = 3
         # ^ The kinds the lists map to a style (docs/web-client-tasks.md "List row inputs"): each need's
         # rank, most urgent first, and the trays' counts.
         assert [item['rank'] for item in overview['needs']] == [0, 3, 3] and overview['asks'] == [], overview['needs']
-        assert overview['counts'] == {'running': 0, 'needs': 3, 'check': 0}, overview['counts']
+        assert overview['counts'] == {'running': 0, 'open': 3, 'needs': 3, 'check': 0}, overview['counts']
         # ^ wsx-core's status words (docs/tasks.md "Status"): the label in a row, the sentence in the sheet.
         assert overview['needs'][0]['status']['label'] == 'Waiting for your answer', overview['needs'][0]
         assert next(item for item in overview['needs'] if item.get('task') == 2)['status']['label'] == 'Ready, waiting for you to land it' and overview['working'] == 0 and overview['to_check'] == 0, overview
         # Three states for the owner; the store's own states stay in the record.
         assert {row['id']: row['stage'] for row in overview['tasks']} == {1: 'needs_you', 2: 'needs_you', 3: 'needs_you'}
-        # Chips and the `#` picker: attention order, then the newest first.
-        # ^ Tasks 2 and 3 finish concurrently: the rule is task 1 first, then the newest update first.
-        ready = sorted((row for row in overview['tasks'] if row['id'] != 1), key=lambda row: -row['updated_unix_ms'])
-        assert [row['id'] for row in overview['tasks']] == [1] + [row['id'] for row in ready], overview['tasks']
+        # The overview lists the open tasks in the ledger's order (wsx-core `task::chains`: one rule for
+        # the CLI, the TUI and this list), each with the `place` that order came from.
+        ledger_open = js('task', 'ledger', '-p', 'demo')['open']
+        assert [row['id'] for row in overview['tasks']][:len(ledger_open)] == [row['id'] for row in ledger_open], overview['tasks']
+        assert {row['id']: row['flow']['place'] for row in overview['tasks'] if row['id'] in (1, 2, 3)} == {row['id']: row['flow']['place'] for row in ledger_open}, overview['tasks']
+        assert all(row['flow']['place']['band'] == 'you' and row['flow']['place']['depth'] == 0 for row in ledger_open), ledger_open
+        # ^ Two chains on the overview: #2 then A then B, #3 then C. The overview carries each task's `place`
+        # (the order is wsx-core's, drawn as is) and the Tasks tray counts them all.
+        chain_a = js('task', 'new', '-p', 'demo', '--after', 2, '--because', 'needs', 'WORK qc-a.txt')['id']
+        chain_b = js('task', 'new', '-p', 'demo', '--after', chain_a, '--because', 'needs', 'WORK qc-b.txt')['id']
+        chain_c = js('task', 'new', '-p', 'demo', '--after', 3, '--because', 'needs', 'WORK qc-c.txt')['id']
+        wait(lambda: all(row['state'] == 'waiting' for row in js('task', 'ledger', '-p', 'demo')['open'] if row['id'] in (chain_a, chain_b, chain_c)),
+             'the followers wait')
+        chained = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
+        shown = [row['id'] for row in chained['tasks'] if row['state'] != 'landed']
+        assert shown == [row['id'] for row in js('task', 'ledger', '-p', 'demo')['open']], (shown, chained['tasks'])
+        places = {row['id']: row['flow']['place'] for row in chained['tasks']}
+        assert [places[n]['holds'] for n in (2, chain_a, chain_b, 3, chain_c)] == [2, 1, 0, 1, 0], places
+        assert [places[n]['root'] for n in (chain_a, chain_b)] == [2, 2] and places[chain_b]['under'] == chain_a and places[chain_b]['depth'] == 2, places
+        assert shown[:5] == [2, chain_a, chain_b, 3, chain_c], shown
+        assert chained['counts']['open'] == 6, chained['counts']
+        for n in (chain_b, chain_a, chain_c):
+            js('task', 'close', '-p', 'demo', n, '--discard')
         # ^ A task without --title is named by the first sentence of its worker's summary.
         assert next(row for row in overview['tasks'] if row['id'] == 2)['title'] == 'did: WORK a.txt HV'
         # ^ No Adopted list reads the task branches any more.
@@ -4414,7 +4433,7 @@ merge_seconds = 3
         assert [(c['name'], c['listed']) for c in home_row] == [('demo', True)], home_row
         contacts = overview_chats(1)
         assert [(c['name'], c['goal']) for c in contacts] == [('notes', 'Keep the notes.')], contacts
-        assert contacts[0]['last_reply'].startswith('open: ') and contacts[0]['news']['text'].startswith('open: ') and contacts[0]['news']['unix_ms'] > 0 and contacts[0]['counts'] == {'running': 0, 'needs': 0, 'check': 0} and contacts[0]['last_unix_ms'] > 0, contacts
+        assert contacts[0]['last_reply'].startswith('open: ') and contacts[0]['news']['text'].startswith('open: ') and contacts[0]['news']['unix_ms'] > 0 and contacts[0]['counts'] == {'running': 0, 'open': 0, 'needs': 0, 'check': 0} and contacts[0]['last_unix_ms'] > 0, contacts
         assert steady(owner, 'GET', '/api/tasks/%d/chat?chat=nobody' % demo)[0] == 404
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'hi', 'chat': 'nobody'})
         assert status >= 400 and 'no open chat nobody' in json.dumps(body), (status, body)

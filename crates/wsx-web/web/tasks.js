@@ -19,7 +19,7 @@ import { RoutineActions, routineAct, routineRow, useRoutines } from "./routines.
 import { present, shownTrays, TRAYS, trayCounts, trayWords } from "./trays.js";
 import { PanelsButton, PanelsPage } from "./panels.js";
 import { loadTasks, act } from "./task-api.js";
-import { agentWords, calm, KIND_TONE, LEAVE_MS, running, taskLink, taskStage, TaskChip, withChips } from "./task-words.js";
+import { agentWords, BANDS, calm, KIND_TONE, LEAVE_MS, rowLine, taskLink, taskStage, withChips } from "./task-words.js";
 
 // A count that ticks: it is a new element when it changes, which plays its entry.
 const Tick = ({ value }) => html`<span class="tick" key=${value}>${value}</span>`;
@@ -58,15 +58,18 @@ const actionOf = (key) => {
   return pending.get(key);
 };
 
-// One row of any of the four lists, the same in each: the task's chip (its number and state
-// dot) or, for a row without a task, a tone dot; the label and the context under it (one line,
-// or several); the row's actions. The text opens `href`, or `onOpen` when it is a button.
-function ListRow({ rowKey, leaving, project, task = null, tone, label, context, href, onOpen, openLabel, actions, error }) {
-  const body = html`<span class="row-label">${label}</span>${[context].flat().map((line, at) => line && html`<span class="row-context" key=${at}>${line}</span>`)}`;
+// One row of the For you, Tasks and Routines lists, the same in each (docs/web-client-tasks.md
+// "Project screen"): the task's number in a column of its own or, for a row without a task, an
+// icon in that column; the label (two lines at most) and the one line under it, with its glyph;
+// the row's actions in a line of their own. The text opens `href`, or `onOpen` when it is a
+// button. `nest` and `group` come from the server's `flow.place` (a task in a chain).
+function ListRow({ rowKey, leaving, project, task = null, icon, tone, glyph, label, context, href, onOpen, openLabel, actions, error, nest = 0, group = null }) {
+  const line = [context].flat().map((text, at) => text && html`<span class="row-context" key=${at}>${glyph && html`<span class="row-glyph" data-tone=${tone}><${Icon} name=${glyph} /></span>`}${text}</span>`);
+  const body = html`<span class="row-label">${label}</span>${line}`;
   return html`
-    <li class="need" data-key=${rowKey} data-leaving=${leaving ? "" : null} inert=${Boolean(leaving)}>
+    <li class="need" data-key=${rowKey} data-leaving=${leaving ? "" : null} data-nest=${nest || null} data-group=${group} inert=${Boolean(leaving)}>
       <div class="row-link">
-        ${task != null ? html`<${TaskChip} project=${project} id=${task} plain />` : html`<span class="mark" data-tone=${tone} aria-hidden="true"></span>`}
+        ${task != null ? html`<span class="row-num">#${task}</span>` : html`<span class="row-num" data-tone=${tone}><${Icon} name=${icon} /></span>`}
         ${href ? html`<a class="row-main row-open" href=${href}>${body}</a>`
           : onOpen ? html`<button class="row-main row-open" type="button" aria-label=${openLabel} onClick=${onOpen}>${body}</button>`
           : html`<span class="row-main">${body}</span>`}
@@ -76,11 +79,11 @@ function ListRow({ rowKey, leaving, project, task = null, tone, label, context, 
     </li>`;
 }
 
-// ^ Icons, so the title and what the item waits for keep the row's width; the name is the
-// button's title and, with what it acts on, its accessible name.
+// ^ An icon and its word, in the row's own line: the title and what the item waits for keep the
+// row's width. The label is the button's title and, with what it acts on, its accessible name.
 const rowButton = (busy, label, icon, tone, onClick, extra = {}) => html`
-  <button class="button icon-button need-action" type="button" title=${label} data-tone=${tone} disabled=${busy}
-    onClick=${onClick} ...${extra}><${Icon} name=${icon} /></button>`;
+  <button class="button need-action" type="button" title=${label} data-tone=${tone} disabled=${busy}
+    onClick=${onClick} ...${extra}><${Icon} name=${icon} />${label.split(":")[0]}</button>`;
 
 // The state of the action a row runs, kept across renders: `run` starts it, `onActing` says an
 // action started and `onFailed` that it failed (the reservoir moves the focus on when the row
@@ -147,7 +150,7 @@ function NeedRow({ project, item, index, onActing, onFailed, onMention, onReply,
     : item.kind === "land" && trial?.stage === "live" ? "on the live site: try it" : [item.status.label, item.flow?.phrase].filter(Boolean).join(" · ");
   const asks = item.kind === "ask";
   return html`
-    <${ListRow} rowKey=${itemKey(item)} leaving=${leaving} project=${project} task=${item.kind === "approval" ? null : item.task} tone=${KIND_TONE[item.kind]}
+    <${ListRow} rowKey=${itemKey(item)} leaving=${leaving} project=${project} task=${item.kind === "approval" || asks ? null : item.task} icon=${asks ? "reply" : "unchecked"} tone=${KIND_TONE[item.kind]}
       label=${asks || item.kind === "approval" ? item.label : item.title} context=${context}
       href=${item.task != null ? taskLink(project, item.task) : null}
       onOpen=${asks ? () => onShow(item.id) : null} openLabel=${`Show the question: ${item.label}`}
@@ -157,14 +160,18 @@ function NeedRow({ project, item, index, onActing, onFailed, onMention, onReply,
 // An action the owner approved in the chat that runs when its task lands: no choice left, so no
 // button (docs/tasks.md "Approvals").
 const WaitingRow = ({ project, item }) => html`
-  <${ListRow} rowKey=${`wait-${item.approval}`} project=${project} label=${item.label}
+  <${ListRow} rowKey=${`wait-${item.approval}`} project=${project} icon="pause" label=${item.label}
     context=${`Runs when #${item.after} lands`} href=${taskLink(project, item.after)} />`;
 
-// A working task in the reservoir: its chip, its title, and its status, where it goes and agent.
-const RunningRow = ({ project, task, leaving }) => html`
-  <${ListRow} rowKey=${`run-${task.id}`} leaving=${leaving} project=${project} task=${task.id} label=${task.title}
-    context=${[task.status.label, task.flow?.phrase, agentWords(task.agent)].filter(Boolean).join(" · ")}
-    href=${taskLink(project, task.id)} />`;
+// An open task in the Tasks list: its number, title and `rowLine`; a task in a chain nests under
+// the task it waits for (`flow.place`, the server's order). `group` is where it stands in its
+// chain's card: first, mid or last.
+const TaskRow = ({ project, task, leaving, group }) => {
+  const { glyph, text } = rowLine(task);
+  return html`
+    <${ListRow} rowKey=${`run-${task.id}`} leaving=${leaving} project=${project} task=${task.id} glyph=${glyph} tone=${glyph === "play" ? "working" : null}
+      label=${task.title} context=${text} href=${taskLink(project, task.id)} nest=${task.flow.place.depth} group=${group} />`;
+};
 
 // An open To check item: its check, what passes it, and Reply, Fail and Pass as the sheet has them
 // (checks.js `CheckRow`): Pass and Fail close the item and the row leaves; Reply quotes it in the
@@ -198,7 +205,7 @@ function Pills({ counts, open, onToggle, bar = false }) {
   const shown = shownTrays(counts);
   if (!shown.length) return null;
   return html`
-    <div class=${bar ? "pills pill-bar" : "pills"} role="group" aria-label="Running, needs you, to check, routines">
+    <div class=${bar ? "pills pill-bar" : "pills"} role="group" aria-label="For you, tasks, routines">
       ${shown.map((tray) => html`
         <button class="pill" type="button" key=${tray.key} data-kind=${tray.key} data-tone=${tray.tone?.(counts) ?? null} aria-pressed=${open === tray.key}
           aria-controls=${open === tray.key ? "reservoir-list" : null} aria-label=${trayWords(tray, counts)}
@@ -217,14 +224,14 @@ function RoutineRow({ project, row, now, onList, onShow }) {
   const { tone, message, context } = routineRow(row, now);
   const actions = can("task_act") && html`<${RoutineActions} row=${row} busy=${status.busy} onAct=${(verb) => doAct(async () => onList(await routineAct(project, row.name, verb)))} />`;
   return html`
-    <${ListRow} rowKey=${`routine-${row.name}`} project=${project} tone=${tone} label=${row.name} context=${context}
+    <${ListRow} rowKey=${`routine-${row.name}`} project=${project} icon="routines" tone=${tone} label=${row.name} context=${context}
       onOpen=${message != null ? () => onShow(message) : null} openLabel=${`Show the message of ${row.name}'s last run`}
       actions=${actions} error=${status.error} />`;
 }
 
-// The open list, pinned over the composer: Running (the tasks that work), Needs you (every item
-// that waits for the owner in the server's order, each with its one action), To check or Routines. Done
-// tasks are in none of them. A cleared row leaves and the focus moves to the next row's action,
+// The open list, pinned over the composer: For you (every item that waits for the owner in the
+// server's order, then the To check items, each with its actions), Tasks (every open task in
+// its chain, under the band of the chain's head) or Routines. Done tasks are in none of them. A cleared row leaves and the focus moves to the next row's action,
 // or to the composer after the last one. Only a question's label moves the chat, to its reply.
 function Reservoir({ project, open, items, tasks, waiting, checks, routines, onRoutines, look, onLooked, onMention, onReply, onShow, onClose }) {
   const node = useRef();
@@ -235,10 +242,10 @@ function Reservoir({ project, open, items, tasks, waiting, checks, routines, onR
   };
   // ^ The row whose action runs: a `tasks` event may remove it long before the answer comes.
   const cleared = useRef(null);
-  const working = tasks.filter(running);
-  const keys = open === "check" ? checks.map((item) => item.id) : items.map(itemKey);
+  const openTasks = tasks.filter((task) => task.flow?.place);
+  const keys = [...items.map(itemKey), ...checks.map((item) => item.id)];
   const needRows = useLeaving(items, itemKey);
-  const runRows = useLeaving(working, (task) => `run-${task.id}`);
+  const runRows = useLeaving(openTasks, (task) => `run-${task.id}`);
   const checkRows = useLeaving(checks, (item) => item.id);
   const now = useNow(open === "routines");
   useLayoutEffect(() => {
@@ -269,14 +276,14 @@ function Reservoir({ project, open, items, tasks, waiting, checks, routines, onR
   }, [open]);
   // ^ A tag under a reply asked for this row: it scrolls into view and shows marked, as a found message does.
   useLayoutEffect(() => {
-    if (!look || open !== "needs") return;
+    if (!look || open !== "you") return;
     const row = node.current?.querySelector(`.need[data-key="${CSS.escape(look)}"]`);
     if (row) { row.scrollIntoView({ block: "nearest" }); markFound(row); }
     onLooked();
   }, [look, open]);
   // ^ Open, each item's task is read ahead, so its sheet shows at once.
   useEffect(() => {
-    if (open === "needs") for (const item of items) if (item.task != null) readTaskAhead(project, item.task);
+    if (open === "you") for (const item of items) if (item.task != null) readTaskAhead(project, item.task);
   }, [open, keys.join()]);
   if (!open) return null;
   const onActing = (key, index) => { cleared.current = { key, index }; };
@@ -291,17 +298,20 @@ function Reservoir({ project, open, items, tasks, waiting, checks, routines, onR
             <button class="icon-button reservoir-close" type="button" aria-label=${`Close ${label}`} title=${`Close ${label}`} onClick=${close}><${Icon} name="down" /></button>
           </div>
           <div class="reservoir-scroll">
-            ${open === "running" ? html`
-              <ul class="reservoir-list" aria-label="Running">
-                ${runRows.map(({ item, key, leaving }) => html`<${RunningRow} key=${key} project=${project} task=${item} leaving=${leaving} />`)}
+            ${open === "tasks" ? html`
+              <ul class="reservoir-list" aria-label="Tasks">
+                ${runRows.map(({ item, key, leaving }, at) => {
+                  const [place, before, after] = [item.flow.place, runRows[at - 1]?.item.flow.place, runRows[at + 1]?.item.flow.place];
+                  const group = before?.root === place.root ? (after?.root === place.root ? "mid" : "last") : after?.root === place.root ? "first" : null;
+                  return html`
+                    ${before?.band !== place.band && html`<li class="reservoir-band" data-band=${place.band} key=${`band-${place.band}`}>${BANDS[place.band]}</li>`}
+                    <${TaskRow} key=${key} project=${project} task=${item} leaving=${leaving} group=${group} />`;
+                })}
                 ${waiting.map((item) => html`<${WaitingRow} key=${item.approval} project=${project} item=${item} />`)}
               </ul>` : null}
-            ${open === "needs" ? html`
-              <ul class="reservoir-list" aria-label="Needs you">
+            ${open === "you" ? html`
+              <ul class="reservoir-list" aria-label="For you">
                 ${needRows.map(({ item, key, leaving }) => html`<${NeedRow} key=${key} project=${project} item=${item} index=${items.indexOf(item)} onActing=${onActing} onFailed=${onFailed} onMention=${onMention} onReply=${onReply} onShow=${onShow} leaving=${leaving} />`)}
-              </ul>` : null}
-            ${open === "check" ? html`
-              <ul class="reservoir-list" aria-label="To check">
                 ${checkRows.map(({ item, key, leaving }) => html`<${CheckingRow} key=${key} project=${project} item=${item} index=${checks.indexOf(item)} onActing=${onActing} onFailed=${onFailed} onReply=${onReply} leaving=${leaving} />`)}
               </ul>` : null}
             ${open === "routines" ? html`
@@ -855,7 +865,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   const counts = trayCounts(room ? null : overview, routineList?.counts);
   const [tray, toggleTray, setTray] = useTray(counts);
   const [look, setLook] = useState(null);
-  const showNeed = (approval) => { setTray("needs"); setLook(approval); };
+  const showNeed = (approval) => { setTray("you"); setLook(approval); };
 
   if (!project) {
     return html`

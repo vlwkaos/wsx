@@ -4,7 +4,8 @@
 import { api } from "./api.js";
 import { ago, html, Icon, lastSentence, plural, short, useEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
-import { agentWords, live, statusTone, TaskChip } from "./task-words.js";
+import { useStore } from "./store.js";
+import { agentWords, chainOf, live, rowLine, statusTone, taskLink, TaskChip } from "./task-words.js";
 
 // `refs/heads/main` reads as `main`, `refs/remotes/origin/main` as `origin/main`.
 const branchName = (ref) => (ref ?? "").replace(/^refs\/(heads|remotes)\//, "");
@@ -166,9 +167,32 @@ function goalOf(detail) {
   return !a || a.startsWith(b) || b.startsWith(a) ? "" : goal;
 }
 
+// The open tasks of this task's group, in the list's order: the tasks it waits for above it,
+// itself, the tasks that wait for it below; each a link with its number, title and the line
+// under it as the list has it (wsx-core `chains`, read from the project's list: nothing here
+// sorts or counts). Nothing when the task stands alone.
+function Chain({ project, detail }) {
+  const tasks = useStore().tasks[project]?.tasks ?? [];
+  const rows = chainOf(tasks, detail);
+  if (rows.length < 2) return null;
+  return html`
+    <section class="task-chain" aria-label="Chain">
+      <h3 class="task-chain-title">Chain</h3>
+      <ol>
+        ${rows.map((task) => html`
+          <li key=${task.id} data-nest=${task.flow.place.depth || null}>
+            <a class="chain-row" href=${taskLink(project, task.id)} aria-current=${task.id === detail.id ? "page" : null}>
+              <span class="row-num">#${task.id}</span>
+              <span class="row-main"><span class="row-label">${task.title}</span>
+                <span class="row-context"><span class="row-glyph"><${Icon} name=${rowLine(task).glyph} /></span>${rowLine(task).text}</span></span>
+            </a>
+          </li>`)}
+      </ol>
+    </section>`;
+}
+
 // Where the task stands among the others and where it goes (wsx-core `view::flow`, one fact a
-// line): what it waits on, what it lands into while open, its parent's children and the open
-// tasks that wait for it. Each task is its chip, so a tap opens it.
+// line): what it waits on and what it lands into while open; the chain shows who waits for it.
 function Flow({ project, detail }) {
   const { flow } = detail;
   if (!flow) return null;
@@ -179,17 +203,16 @@ function Flow({ project, detail }) {
   ].filter(Boolean);
   // ^ `into` is set while the task is open.
   const open = flow.into != null;
-  const blocks = flow.blocks ?? [];
-  if (!waits.length && !open && !flow.parent && !flow.children.length && !blocks.length) return null;
+  const facts = waits.length > 0 || open || flow.parent != null;
   const list = (rows) => rows.map((row, index) => html`${index > 0 && ", "}${row}`);
   return html`
-    <dl class="facts task-flow" aria-label="Where it goes">
-      ${waits.length > 0 && html`<dt>Waits on</dt><dd>${list(waits)}</dd>`}
-      ${open && html`<dt>Lands into</dt><dd>${flow.parent != null ? chip(flow.parent) : flow.into}</dd>`}
-      ${!open && flow.parent != null && html`<dt>Parent</dt><dd>${chip(flow.parent)}</dd>`}
-      ${flow.children.length > 0 && html`<dt>Children</dt><dd>${list(flow.children.map((child) => html`<span key=${child.id}>${chip(child.id)} ${child.state}</span>`))}</dd>`}
-      ${blocks.length > 0 && html`<dt>Blocks</dt><dd>${list(blocks.map((id) => html`<span key=${id}>${chip(id)}</span>`))}</dd>`}
-    </dl>`;
+    ${facts && html`
+      <dl class="facts task-flow" aria-label="Where it goes">
+        ${waits.length > 0 && html`<dt>Waits on</dt><dd>${list(waits)}</dd>`}
+        ${open && html`<dt>Lands into</dt><dd>${flow.parent != null ? chip(flow.parent) : flow.into}</dd>`}
+        ${!open && flow.parent != null && html`<dt>Parent</dt><dd>${chip(flow.parent)}</dd>`}
+      </dl>`}
+    <${Chain} project=${project} detail=${detail} />`;
 }
 
 // The top of the task sheet: how an open task is doing and what it does now, what it is about,

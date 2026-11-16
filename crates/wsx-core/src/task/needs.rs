@@ -132,8 +132,12 @@ impl Needs {
 /// by the one ownership rule (`chats::owner`): the tasks the chat made, its own approvals and the
 /// To check items of its tasks. ref: docs/web-client-tasks.md "Home"
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ChatCounts {
     pub running: usize,
+    /// The Tasks tray: every open task, also one that waits, and the approved actions that run
+    /// when a task lands.
+    pub open: usize,
     pub needs: usize,
     pub check: usize,
 }
@@ -157,8 +161,9 @@ pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCou
         match stage(&dir, &record, land_auto) {
             Stage::Working => own.running += 1,
             Stage::NeedsYou => own.needs += 1,
-            Stage::Done | Stage::Closed => {}
+            Stage::Done | Stage::Closed => continue,
         }
+        own.open += 1;
     }
     let approvals = store::read_approvals(project_id).unwrap_or_default();
     let items = checks::open_items(project_id).unwrap_or_default();
@@ -169,6 +174,7 @@ pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCou
         };
         entry.needs += pending_approvals(&own).len();
         entry.running += waiting_approvals(&own).len();
+        entry.open += waiting_approvals(&own).len();
         entry.check = chats::checks_of(project_id, items.clone(), &name, &open, &home).len();
     }
     counts

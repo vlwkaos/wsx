@@ -1916,7 +1916,7 @@ def part_core(created=None):
         return b''
     shots = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
-        (r'(?s)Open.*#%d .*Recent' % d3, b'\r'),
+        (r'(?s)(For you|Moving|Waiting).*#%d .*Recent' % d3, b'\r'),
         (r'Next +Waiting for your answer', b'\x1b'),
         (r'\(enter\)detail', b'j\r'),
         (r'Checks', b'\x1b'),
@@ -1924,8 +1924,12 @@ def part_core(created=None):
         (r'#%d +ready' % d1, b'\x1b'),
         (r'WORKSPACE', b'')])
     listed, asked, _, checked = shots[1:5]
-    order = [listed.index(row(listed, n)) for n in (asking, failing, x1, d1, memo_task)]
+    # ^ The rows are the ledger's open list in its order (wsx-core `task::chains`), each under its band.
+    ledger_order = [r['id'] for r in js('task', 'ledger')['open'] if r['id'] in (asking, failing, x1, d1)]
+    assert sorted(ledger_order) == sorted((asking, failing, x1, d1)), ledger_order
+    order = [listed.index(row(listed, n)) for n in ledger_order + [memo_task]]
     assert order == sorted(order) and order[-1] > listed.index('Recent'), listed
+    assert re.search(r'(?m)^For you$', listed) and re.search(r'(?m)^Moving$', listed), listed
     # ^ The row's label and the detail's sentence are wsx-core's status words, as `show` has them.
     assert re.search(r'NEEDS WebSearch NOOP +#%d +waiting +Waiting for your answer' % asking, row(listed, asking)), listed
     assert re.search(r'#%d +failed' % failing, row(listed, failing)), listed
@@ -1944,7 +1948,7 @@ def part_core(created=None):
     narrow = tui_screens(wsx, env, project, [(r'WORKSPACE', b't'), (r'Recent', b'')], cols=40)[1]
     for title, word in (('NEEDS WebSearch', 'waiting'), ('WORK broken.txt', 'failed'), ('WORK memo.txt', 'closed')):
         assert re.search(r'^ %s.* %s$' % (re.escape(title), word), narrow, re.M), narrow
-    assert not re.search(r'#\d', narrow.split('Open', 1)[1]), narrow
+    assert not re.search(r'#\d', re.split(r'For you|Moving|Waiting', narrow, 1)[1]), narrow
     for n in (asking, failing):
         js('task', 'close', n, '--discard')
     for n in (d1, d2, d3):
@@ -2335,10 +2339,11 @@ def part_core(created=None):
     ledger = json.loads(raw)
     assert len(raw.encode()) <= 16 * 1024 and ledger['open_omitted'] == 0
     assert ledger['to_check'] == 0 and ledger['auto_land'] is False and 'verification' not in ledger['open'][0]
-    assert [(row['id'], row['state']) for row in ledger['open']] == [(blocked_task, 'waiting'), (ready_task, 'ready')]
-    assert ledger['open'][0]['waiting']['on'] == 'owner', ledger['open'][0]
-    assert ledger['open'][1]['summary'] == 'did: WORK l.txt could not run the browser test' and ledger['open'][1]['human_verify'] == 0
-    checked = ledger['open'][1]['checks']
+    # ^ Both wait for the owner (band `you`), none holds another: the older first.
+    assert [(row['id'], row['state'], row['flow']['place']['band']) for row in ledger['open']] == [(ready_task, 'ready', 'you'), (blocked_task, 'waiting', 'you')]
+    assert ledger['open'][1]['waiting']['on'] == 'owner', ledger['open'][1]
+    assert ledger['open'][0]['summary'] == 'did: WORK l.txt could not run the browser test' and ledger['open'][0]['human_verify'] == 0
+    checked = ledger['open'][0]['checks']
     assert [{k: c[k] for k in ('command', 'outcome')} for c in checked] == [{'command': 'test ! -e broken.txt', 'outcome': 'passed'}], checked
     assert all(isinstance(c['ms'], int) and isinstance(c['queued_ms'], int) for c in checked), checked
     assert ledger['history'] == 'wsx task search --task <n> | <words>'  # the ledger keeps no history
@@ -6662,9 +6667,37 @@ def part_host(created=None):
     assert rows[parent]['children'] == 2 and rows[first]['parent'] == parent, rows
     # ^ Where each goes (`flow`, docs/tasks.md "Where a task goes"): the parent counts its children
     # by state, each child lands into the parent.
-    assert rows[parent]['flow']['phrase'].endswith('children: 2 ready'), rows[parent]['flow']
+    assert rows[parent]['flow']['phrase'].endswith('0/2 landed, 2 ready'), rows[parent]['flow']
     assert rows[parent]['flow']['children'] == [{'id': first, 'state': 'ready'}, {'id': second, 'state': 'ready'}], rows[parent]['flow']
-    assert rows[first]['flow']['phrase'] == 'into #%d' % parent and rows[first]['flow']['into'] == '#%d' % parent, rows[first]['flow']
+    assert rows[first]['flow']['phrase'] == 'step 1/2 of #%d' % parent and rows[first]['flow']['into'] == '#%d' % parent, rows[first]['flow']
+    assert rows[second]['flow']['phrase'] == 'step 2/2 of #%d' % parent, rows[second]['flow']
+    # ^ The list's order is the ledger's one rule (wsx-core `task::chains`): two chains and the
+    # parent's group, each head first, each chain together, the chain that holds more work first.
+    # Same rule on the web overview (scripts/test-web-client.py).
+    heads = [js('task', 'new', 'WORK qc-%s.txt' % name)['id'] for name in 'xy']
+    for n in heads:
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', show(n)
+    chain_x1, chain_y1 = (js('task', 'new', '--after', head, '--because', 'needs', 'WORK qc-%s1.txt' % name)['id'] for head, name in zip(heads, 'xy'))
+    chain_x2 = js('task', 'new', '--after', chain_x1, '--because', 'needs', 'WORK qc-x2.txt')['id']
+    for n in (chain_x1, chain_x2, chain_y1):
+        wait_state(n, 'waiting')
+    listed = js('task', 'ledger')['open']
+    order, places = [r['id'] for r in listed], {r['id']: r['flow'] for r in listed}
+    chain_x, chain_y = [heads[0], chain_x1, chain_x2], [heads[1], chain_y1]
+    for chain in (chain_x, chain_y, [parent, first, second]):
+        at = order.index(chain[0])
+        assert order[at:at + len(chain)] == chain, (chain, order)
+    assert order.index(heads[0]) < order.index(heads[1]), order
+    shape = lambda n: {k: places[n]['place'].get(k) for k in ('root', 'under', 'depth', 'holds')}
+    assert shape(heads[0]) == {'root': heads[0], 'under': None, 'depth': 0, 'holds': 2}, places[heads[0]]
+    assert shape(chain_x1) == {'root': heads[0], 'under': heads[0], 'depth': 1, 'holds': 1}, places[chain_x1]
+    assert shape(chain_x2) == {'root': heads[0], 'under': chain_x1, 'depth': 2, 'holds': 0}, places[chain_x2]
+    assert shape(chain_y1) == {'root': heads[1], 'under': heads[1], 'depth': 1, 'holds': 0}, places[chain_y1]
+    assert shape(first) == {'root': parent, 'under': parent, 'depth': 1, 'holds': 0} and places[first]['place']['sibling'] == {'at': 1, 'of': 2}, places[first]
+    assert places[heads[0]]['phrase'] == 'frees #%d +1 later' % chain_x1 and places[heads[1]]['phrase'] == 'frees #%d' % chain_y1, (places[heads[0]], places[heads[1]])
+    assert len({places[n]['place']['band'] for n in chain_x}) == 1 and places[heads[0]]['place']['band'] == 'you', places[heads[0]]
+    for n in (chain_x2, chain_x1, chain_y1, *heads):
+        js('task', 'close', n, '--discard')
     assert [o['id'] for o in rows[first]['overlaps']] == [second] and rows[parent]['overlaps'] == [], rows
     # The first child is on the parent's tip: its land fast-forwards the parent's branch, not
     # main, and the parent checks the new commit while its gate is closed.
@@ -7082,9 +7115,8 @@ def part_host(created=None):
     day = today(ledger)[0]
     stamp = time.localtime(day['day_ms'] / 1000)
     label = r'^ %s +%d ' % (time.strftime('%a', stamp), stamp.tm_mday)
-    rank = {'waiting': 0, 'failed': 1, 'ready': 2, 'checking': 3}
-    ordered = sorted(ledger['open'], key=lambda task: rank.get(task['state'], 4))
-    to_held = b'j' * [task['id'] for task in ordered].index(held) + b'\r'
+    # ^ The TUI lists the ledger's open tasks in the ledger's order (wsx-core `task::chains`).
+    to_held = b'j' * [task['id'] for task in ledger['open']].index(held) + b'\r'
     pinged = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
         (r'(?s)■ build.*\(u\)sage', b'u'),

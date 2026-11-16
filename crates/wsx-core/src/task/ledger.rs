@@ -1,10 +1,11 @@
 //! The ledger: the bounded project state the manager reads before it acts, and the web
 //! client's project brief. ref: docs/tasks.md "Ledger"
 
+use super::chains::Chains;
 use super::manager::ApprovalLine;
 use super::store::TaskDir;
 use super::view::{
-    attention, check_outcomes, clip, overlaps, project_tasks, read_result, task_agent, task_summary,
+    check_outcomes, clip, overlaps, project_tasks, read_result, task_agent, task_summary,
 };
 use super::{checks, copy, status, store, usage, DeployKind, DeployRecord, TaskRecord, TaskState};
 use crate::config::project::load_task_config;
@@ -75,6 +76,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
     let pending = super::manager::pending_approvals(&approvals);
     let waiting = super::manager::waiting_approvals(&approvals);
     let now = super::now_unix_ms();
+    let chains = Chains::of(&tasks, settings.land_auto);
     let mut git = Git::default();
     let mut open = Vec::new();
     let mut recent = Vec::new();
@@ -97,17 +99,33 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         // ^ Read once; the memo, the counts and the status all come from it.
         let result = read_result(dir);
         if record.state.is_open() {
-            let mut row = open_row(dir, record, &title, &result, &records, &pending, now);
+            let mut row = open_row(
+                dir,
+                record,
+                &title,
+                &result,
+                &Around {
+                    records: &records,
+                    pending: &pending,
+                    chains: &chains,
+                },
+                now,
+            );
             // ^ The main checkout's changed files this land would overwrite: pressing
             // Land refuses until they are committed or stashed (docs/tasks.md "Ledger").
             if record.state == TaskState::Ready {
                 row["land_blocked_by"] = json!(land_blockers_noted(record, &mut git));
             }
-            open.push((attention(record.state), record.id, row));
+            open.push((
+                chains.order().iter().position(|id| *id == record.id),
+                record.id,
+                row,
+            ));
         } else {
             recent.push((record.updated_unix_ms, closed_row(record, &title, &result)));
         }
     }
+    // ^ Chain order, the one rule of every list (`chains::Chains`).
     open.sort_by_key(|(order, id, _)| (*order, *id));
     recent.sort_by_key(|(updated, _)| std::cmp::Reverse(*updated));
     recent.truncate(RECENT_TASKS);
@@ -204,16 +222,29 @@ fn closed_row(record: &TaskRecord, title: &str, result: &Option<Value>) -> Value
     row
 }
 
+/// What an open row reads of the other tasks: the project's records, the pending approvals and
+/// the chains (`chains::Chains`).
+#[derive(Clone, Copy)]
+struct Around<'a> {
+    records: &'a [&'a TaskRecord],
+    pending: &'a [&'a ApprovalLine],
+    chains: &'a Chains,
+}
+
 /// The row of an open task, with `result` as it read `result.json`.
 fn open_row(
     dir: &TaskDir,
     record: &TaskRecord,
     title: &str,
     result: &Option<Value>,
-    records: &[&TaskRecord],
-    pending: &[&ApprovalLine],
+    around: &Around,
     now: u64,
 ) -> Value {
+    let Around {
+        records,
+        pending,
+        chains,
+    } = *around;
     let waiters = status::waiters(records.iter().copied(), record.id);
     let facts = status::Facts {
         approvals: pending,
@@ -248,7 +279,7 @@ fn open_row(
         "hold": record.hold,
         "after": record.after,
         // ^ Held, after, parent, children and where it goes, in the words of every view.
-        "flow": super::view::flow(record, records, &status),
+        "flow": super::view::flow(record, records, &status, chains),
         "usage": usage::task(dir),
     });
     // ^ A parent task and its open children (docs/tasks.md "Parent tasks").

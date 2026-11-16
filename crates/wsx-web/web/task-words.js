@@ -31,24 +31,34 @@ const STAGES = {
 export const taskStage = (task) => STAGES[task?.stage] ?? [task?.stage ?? "", "muted"];
 export const taskLink = (project, task) => `#/p/${project}/t/${task}`;
 
-// A task the agents work on: under Running.
+// A task the agents work on.
 export const running = (task) => task?.stage === "working";
 // ^ A task whose worker's turn runs: nothing else holds it (the server's `status.waits_on`,
 // wsx-core `status::waits_on`, holder `host`). Its dot pulses; a ready task, a plan, a paused
 // worker, a hand-off, a limit or its checks keep a calm dot.
 export const live = (task) => task?.status?.waits_on?.kind === "host";
 
+// A task's row in a list or a chain: the glyph (play while its worker or its checks run, else
+// pause) and the line under its title, `status.label` and `flow.phrase` (wsx-core). The order
+// and the groups are the server's `flow.place` (wsx-core `chains`): nothing here sorts or counts.
+export const rowLine = (task) => ({
+  glyph: ["host", "check"].includes(task.status?.waits_on?.kind) ? "play" : "pause",
+  text: [task.status?.label, task.flow?.phrase, agentWords(task.agent)].filter(Boolean).join(" · "),
+});
+export const BANDS = { you: "For you", moving: "Moving", waiting: "Waiting" };
+// The open tasks in `task`'s group, in the list's order: upstream, itself, downstream.
+export const chainOf = (tasks, task) => {
+  const root = task?.flow?.place?.root;
+  return root == null ? [] : tasks.filter((other) => other.flow?.place?.root === root);
+};
+
 // `#12` in any text: the number and a state dot, the state in its accessible name and the
 // title on hover. The title shows in the sheet and the reservoir, not in the text. Another
 // project's task (`name`) shows its project too: "shopfront #34".
-export function TaskChip({ project, id, name = "", plain = false }) {
+export function TaskChip({ project, id, name = "" }) {
   const store = useStore();
   const task = store.tasks[project]?.tasks.find((candidate) => candidate.id === id);
   const label = `${name}${name && " "}#${id}`;
-  // ^ `plain`: a span, for a row whose whole text is the link (anchors cannot nest).
-  if (plain) {
-    return html`<span class="task-chip">${task && html`<${StateMark} task=${task} />`}${label}${task && html`<span class="visually-hidden">, ${taskStage(task)[0]}</span>`}</span>`;
-  }
   if (!task) return html`<a class="task-chip" href=${taskLink(project, id)}>${label}</a>`;
   return html`
     <a class="task-chip" href=${taskLink(project, id)} title=${task.title} aria-label=${`${label}, ${taskStage(task)[0]}`}>

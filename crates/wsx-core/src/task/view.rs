@@ -1,6 +1,7 @@
 //! Read-side views of a project's tasks, shared by `wsx task` and the web client.
 //! ref: docs/tasks.md "Ledger", docs/web-client-tasks.md
 
+use super::chains::Chains;
 use super::store::{self, TaskDir, RESULT_FILE};
 use super::{DeployKind, TaskRecord, TaskState, WaitOn};
 use crate::model::workspace::TaskConfig;
@@ -13,17 +14,6 @@ const OVERLAP_PATHS_SHOWN: usize = 20;
 const TITLE_CHARS: usize = 120;
 /// A hold's reason in a row's few words.
 const FLOW_REASON_CHARS: usize = 40;
-
-/// Attention order (knowledge "Manager Mode Attention UX"): what needs the owner first.
-pub fn attention(state: TaskState) -> u8 {
-    match state {
-        TaskState::Waiting => 0,
-        TaskState::Failed => 1,
-        TaskState::Ready => 2,
-        TaskState::Checking | TaskState::Working => 3,
-        TaskState::Landed | TaskState::Closed => 4,
-    }
-}
 
 /// `#4 Fix the login: <what>`, the title cut at 60 characters and the line at 160.
 pub fn task_line(task: u32, title: &str, what: &str) -> String {
@@ -487,11 +477,18 @@ pub fn children(project_id: &str, parent: u32) -> Result<Vec<(TaskDir, TaskRecor
 /// `held` (the reason), `after` (`{task, because}`), `parent`, `into` (while open, the branch it
 /// lands into: the default branch or `#<parent>`), `step` (`{name, at, of}` while it works on a
 /// workflow step), `children` (`[{id, state}]`), `blocks` (the open tasks that wait for it,
-/// `status.waited_by`) and `phrase`, the row's few words that the status label (`status`) does
-/// not say already: "build 2/3 · into #451", "after #453", "held: deploy freeze",
-/// "children: 1 ready, 2 working". Empty for a finished task.
+/// `status.waited_by`), `place` (`chains::Place`: root, under, depth, holds, band, sibling; the
+/// order of every list) and `phrase`, the row's few words that the status label (`status`) does
+/// not say already: "build 2/3 · frees #482", "after #453", "held: deploy freeze",
+/// "2/4 landed, 1 working". Empty for a finished task.
 /// `records` are the project's tasks. ref: docs/tasks.md "Where a task goes"
-pub fn flow(record: &TaskRecord, records: &[&TaskRecord], status: &super::status::Status) -> Value {
+pub fn flow(
+    record: &TaskRecord,
+    records: &[&TaskRecord],
+    status: &super::status::Status,
+    chains: &Chains,
+) -> Value {
+    let place = chains.place(record.id);
     let open = record.state.is_open();
     let children: Vec<&TaskRecord> = records
         .iter()
@@ -534,6 +531,24 @@ pub fn flow(record: &TaskRecord, records: &[&TaskRecord], status: &super::status
             record.steps.len()
         ));
     }
+    // ^ What lands when this does: the tasks that wait for it, and how many more behind them.
+    if open && !status.waited_by.is_empty() {
+        let direct = status.waited_by.len() as u32;
+        let mut frees = match direct {
+            1..=2 => format!(
+                "frees {}",
+                task_list_plain(status.waited_by.iter().map(|w| w.task))
+            ),
+            _ => format!("frees {direct} tasks"),
+        };
+        if let Some(later) = place
+            .map(|place| place.holds)
+            .filter(|holds| *holds > direct)
+        {
+            frees.push_str(&format!(" +{} later", later - direct));
+        }
+        phrase.push(frees);
+    }
     let mut counts: Vec<(&str, usize)> = Vec::new();
     for child in children
         .iter()
@@ -545,17 +560,35 @@ pub fn flow(record: &TaskRecord, records: &[&TaskRecord], status: &super::status
             None => counts.push((word, 1)),
         }
     }
-    if !counts.is_empty() {
-        let counted: Vec<String> = counts
+    if open && !children.is_empty() {
+        let total = children
             .iter()
-            .map(|(state, count)| format!("{count} {state}"))
-            .collect();
-        phrase.push(format!("children: {}", counted.join(", ")));
+            .filter(|child| child.state != TaskState::Closed)
+            .count();
+        let landed = children
+            .iter()
+            .filter(|child| child.state == TaskState::Landed)
+            .count();
+        let mut words = vec![format!("{landed}/{total} landed")];
+        words.extend(
+            counts
+                .iter()
+                .map(|(state, count)| format!("{count} {state}")),
+        );
+        phrase.push(words.join(", "));
     }
-    if let Some(into) = into.as_ref().filter(|_| {
-        record.parent.is_some() || matches!(record.state, TaskState::Working | TaskState::Checking)
-    }) {
-        phrase.push(format!("into {into}"));
+    // ^ A child says which of its parent's parts it is; the parent's number is the branch it lands into.
+    match (place.and_then(|place| place.sibling), into.as_ref()) {
+        (Some(sibling), Some(into)) => {
+            phrase.push(format!("step {}/{} of {into}", sibling.at, sibling.of))
+        }
+        (None, Some(into))
+            if record.parent.is_some()
+                || matches!(record.state, TaskState::Working | TaskState::Checking) =>
+        {
+            phrase.push(format!("into {into}"))
+        }
+        _ => {}
     }
     json!({
         "held": hold,
@@ -567,6 +600,7 @@ pub fn flow(record: &TaskRecord, records: &[&TaskRecord], status: &super::status
         "step": step.map(|step| json!({ "name": step.name, "at": record.step + 1, "of": record.steps.len() })),
         "children": children.iter().map(|child| json!({ "id": child.id, "state": child.state })).collect::<Vec<_>>(),
         "blocks": status.waited_by.iter().map(|waiter| waiter.task).collect::<Vec<_>>(),
+        "place": place,
         // ^ Who it waits on (`status::waits_on`): clients group and word by it, never derive it.
         "waits_on": status.waits_on,
         "phrase": phrase.join(" · "),
@@ -587,6 +621,14 @@ pub fn refuse_open_children(project_id: &str, parent: u32, act: &str) -> Result<
         );
     }
     Ok(())
+}
+
+/// `#a #b`: task numbers in a row's few words.
+fn task_list_plain(ids: impl IntoIterator<Item = u32>) -> String {
+    ids.into_iter()
+        .map(|id| format!("#{id}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// `#a, #b` for an error that names tasks.

@@ -166,7 +166,7 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
     lines.push(Line::raw(""));
     let chrome = lines.len();
     if let Some(task) = list.detail_task() {
-        let body = Paragraph::new(detail(task))
+        let body = Paragraph::new(detail(task, &list.rows))
             .wrap(Wrap { trim: false })
             .scroll((list.scroll, 0));
         frame.render_widget(Paragraph::new(lines), inner);
@@ -344,7 +344,7 @@ fn state_color(state: &str) -> Color {
     }
 }
 
-/// The rows under `Open` and `Recent` headings, and the line of the selected row.
+/// The rows under the band headings (For you, Moving, Waiting) and `Recent`, and the line of the selected row.
 /// Title first, then the number, the state word and the status label; narrow widths keep
 /// the title and the state.
 fn task_lines(
@@ -384,6 +384,18 @@ fn task_lines(
                 Style::default().fg(theme::TEXT_SUBTLE).bold(),
             ));
         }
+        // ^ A task that waits for another sits under it: `├` or `└` by its depth in the chain.
+        let last = rows
+            .get(index + 1)
+            .is_none_or(|next| next.root != row.root || next.section != row.section);
+        let tree = match (row.section, row.depth) {
+            (Section::You | Section::Moving | Section::Waiting, 1..) => format!(
+                "{}{} ",
+                "  ".repeat(usize::from(row.depth) - 1),
+                if last { "└" } else { "├" }
+            ),
+            _ => String::new(),
+        };
         // ^ A chat's pill counts follow its name, inside the title's width.
         let marks = super::workspace_tree::tray_marks(
             row.counts.running,
@@ -392,7 +404,10 @@ fn task_lines(
         );
         let marks_width: usize = marks.iter().map(|mark| mark.content.chars().count()).sum();
         let mut spans = vec![Span::styled(
-            fit(&row.title, title_width.saturating_sub(1 + marks_width)),
+            fit(
+                &format!("{tree}{}", row.title),
+                title_width.saturating_sub(1 + marks_width),
+            ),
             Style::default().fg(theme::TEXT),
         )];
         spans.extend(marks);
@@ -621,7 +636,7 @@ fn limit_line(limits: &Value, width: usize) -> Option<Line<'static>> {
 /// wait for it, the agent, the checks in one line, To check, the summary and the status
 /// sentence), then under "Details" the rest: usage, each check and a closed task's memo.
 /// ref: docs/tasks.md "TUI"
-fn detail(task: &Value) -> Vec<Line<'static>> {
+fn detail(task: &Value, rows: &[TaskRow]) -> Vec<Line<'static>> {
     let label = |text: &str| {
         Span::styled(
             format!("{text:<10}"),
@@ -684,24 +699,6 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
     } else if let Some(parent) = flow["parent"].as_u64() {
         lines.push(row("Parent", format!("#{parent}")));
     }
-    if let Some(children) = flow["children"].as_array().filter(|rows| !rows.is_empty()) {
-        let words: Vec<String> = children
-            .iter()
-            .map(|child| {
-                format!(
-                    "#{} {}",
-                    child["id"].as_u64().unwrap_or_default(),
-                    child["state"].as_str().unwrap_or_default()
-                )
-            })
-            .collect();
-        lines.push(row("Children", words.join(", ")));
-    }
-    // ^ The open tasks that wait for this one (`wsx task after`), by number.
-    if let Some(blocks) = flow["blocks"].as_array().filter(|rows| !rows.is_empty()) {
-        let numbers: Vec<String> = blocks.iter().map(|id| format!("#{id}")).collect();
-        lines.push(row("Blocks", numbers.join(", ")));
-    }
     if let Some(agent) = wsx_core::task::view::agent_label(&task["agent"]) {
         lines.push(row("Agent", agent));
     }
@@ -739,6 +736,32 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
     }
     if let Some(status) = task["status"]["sentence"].as_str() {
         lines.push(row("Next", status.to_string()));
+    }
+    // ^ The chain this task is in, in the list's order: what it waits for above it, what waits
+    // for it below (wsx-core `task::chains`), the open one marked. After the glance rows, so a
+    // short screen keeps Checks, To check and Result.
+    let id = task["id"].as_u64().unwrap_or_default();
+    let chain = crate::task_list::chain_of(rows, id);
+    if chain.len() > 1 {
+        lines.push(Line::from(label("Chain")));
+        for step in chain {
+            let (mark, color) = if step.id == id {
+                ("> ", theme::TEXT)
+            } else {
+                ("  ", theme::TEXT_MUTED)
+            };
+            lines.push(Line::from(vec![
+                Span::raw(format!("{}{mark}", "  ".repeat(usize::from(step.depth)))),
+                Span::styled(
+                    format!("#{} {}", step.id, step.title),
+                    Style::default().fg(color),
+                ),
+                Span::styled(
+                    format!("  {}", step.status),
+                    Style::default().fg(theme::TEXT_MUTED),
+                ),
+            ]));
+        }
     }
     // ^ One scroll deeper: what the rows above sum up.
     let mut more: Vec<Line<'static>> = Vec::new();
