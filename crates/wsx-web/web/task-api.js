@@ -42,7 +42,8 @@ function announce(name, action, answer) {
 const seenDecisions = new Map();
 export function noteDecisions(overview) {
   const known = seenDecisions.get(overview.project);
-  seenDecisions.set(overview.project, new Set((overview.decisions ?? []).map((decision) => decision.approval)));
+  // ^ A decision seen stays seen: an older read that comes late, or one that lacks it for a moment, does not make it new again.
+  seenDecisions.set(overview.project, new Set([...(known ?? []), ...(overview.decisions ?? []).map((decision) => decision.approval)]));
   if (!known) return;
   for (const decision of overview.decisions ?? []) {
     if (known.has(decision.approval) || !decision.approved || decision.owner_said != null
