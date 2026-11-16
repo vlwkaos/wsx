@@ -1560,8 +1560,9 @@ await closeSheet("the usage sheet", chat);
   const message = byName.weekly.last.message;
   await go(chat);
   await until("!!document.querySelector('.pill[data-kind=routines]')", "the project with routines has no Routines pill", 100);
+  // ^ The tone of a row without a task is on its number column's icon (`.row-num`), where a dot was.
   const rowsOf = () => evaluate(`[...document.querySelectorAll('.reservoir .need')].map((row) => ({ name: row.querySelector('.row-label').textContent,
-    context: [...row.querySelectorAll('.row-context')].map((node) => node.textContent), main: row.querySelector('.row-main').tagName, mark: row.querySelector('.mark')?.dataset.tone ?? null,
+    context: [...row.querySelectorAll('.row-context')].map((node) => node.textContent), main: row.querySelector('.row-main').tagName, mark: row.querySelector('.row-num')?.dataset.tone ?? null,
     actions: [...row.querySelectorAll('.need-action')].map((node) => node.title), icons: [...row.querySelectorAll('.need-action path')].map((node) => node.getAttribute('d')) }))`);
   const pill = () => evaluate(`(() => { const node = document.querySelector('.pill[data-kind=routines]'); return node && { label: node.getAttribute('aria-label'), count: node.querySelector('.pill-count').textContent.trim(), tone: node.dataset.tone ?? null, icon: !!node.querySelector('svg.icon') }; })()`);
   // ^ The list is read as the answer to a fetch of the page: a run's state is set in the answer (the scheduler has no failed run to stage).
