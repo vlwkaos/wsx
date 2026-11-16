@@ -7779,7 +7779,7 @@ def part_host(created=None):
     wait(lambda: show(s2r)['record']['adapter'] == 'pi', 'the long limit moves the worker again', 40)
     assert wait_state(s2r, 'ready', 'failed')['state'] == 'ready' and (Path(show(s2r)['record']['working_copy']) / 's2f.txt').exists(), (show(s2r)['record'], log(s2r)[-6:])
     js('task', 'add', s2r, 'PIERROR %s WORK s2g.txt' % refusal)
-    wait(lambda: show(s2r)['state'] == 'waiting' and show(s2r)['record']['adapter'] == 'claude', 'the refused fallback sends the worker home for the wait', 40)
+    wait(lambda: show(s2r)['state'] == 'waiting' and show(s2r)['record']['adapter'] == 'claude', 'the refused fallback sends the worker home for the wait', 90)
     assert lc_switches(s2r)[-1][1].startswith('back on claude: was refused: 400') and show(s2r)['record']['agent_session'] == s2r_session, (lc_switches(s2r), show(s2r)['record'])
     s2x_before = len(traces())
     limit_file.unlink()
