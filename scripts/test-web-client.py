@@ -4418,6 +4418,15 @@ merge_seconds = 3
         assert [(c['name'], c['goal']) for c in contacts] == [('notes', 'Keep the notes.')], contacts
         assert contacts[0]['last_reply'].startswith('open: ') and contacts[0]['news']['text'].startswith('open: ') and contacts[0]['news']['unix_ms'] > 0 and contacts[0]['counts'] == {'running': 0, 'open': 0, 'needs': 0, 'check': 0} and contacts[0]['last_unix_ms'] > 0, contacts
         assert steady(owner, 'GET', '/api/tasks/%d/chat?chat=nobody' % demo)[0] == 404
+        # ^ A task an open chat made belongs to that chat: its overview lists it, the project's (home) does not; one of no open chat stays at home.
+        made = subprocess.run([str(wsx), 'task', 'new', 'NOOP by-notes', '--json', '-p', 'demo'], cwd=project, env=dict(env, WSX_TASK_ACTOR='chat:notes'),
+                              capture_output=True, text=True, timeout=60)
+        assert made.returncode == 0, made.stderr
+        by_notes = json.loads(made.stdout)['id']
+        task_ids = lambda query: [row['id'] for row in steady(owner, 'GET', '/api/tasks/%d%s' % (demo, query))[1]['tasks']]
+        wait(lambda: by_notes in task_ids('?chat=notes') or None, 'the chat overview lists its own task')
+        assert by_notes not in task_ids(''), (by_notes, task_ids(''))
+        assert steady(owner, 'GET', '/api/tasks/%d?chat=nobody' % demo)[0] == 404
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'hi', 'chat': 'nobody'})
         assert status >= 400 and 'no open chat nobody' in json.dumps(body), (status, body)
         ok('chats: a chat by ?chat=, a say to it starts it, the overview lists it as a Home row, an unknown chat refused')
