@@ -74,7 +74,7 @@ One function, `task::status::status` in `crates/wsx-core/src/task/status.rs`, pu
 | `limit` | Waiting for the usage limit | Claude 5-hour limit, resets 07:45 (no elapsed time: it would read as the time left). It goes on by itself when the account answers again, one task at a time. |
 | `check_slot`, checks lane | Waiting for the check slot | #233 runs its checks now, 2 more tasks ahead. Its checks start when the slot is free. |
 | `check_slot`, scenario lane | Waiting for the scenario test slot | #233 runs its scenario tests now, 2 more tasks ahead. Its scenario tests start when the slot is free. |
-| `check_run` (state `working`) | Waiting for its check-run | the result waits for check-run web on CI. A failure goes back to the worker; a pass on its committed tree goes on by itself. |
+| `check_run` (state `working`) | Waiting for its check-run | the result waits for check-run web on CI. A failure goes back to the worker; a pass on its committed tree goes on by itself. A `paused` result waits here too, held by the host: it sends the manager no `paused` event, and an add queues behind the answer, which starts one turn with it. A `paused` result with no check-run in flight waits on the manager (the `paused` row). |
 | `checking` | Running checks | 3 checks of r2 run now. When they pass it is ready; a failed check goes back to the worker. |
 | `working`, resolving a landing conflict | Resolving a conflict | the worker rebases it onto main. It lands when its checks pass. |
 | `working` | Working on build (2 of 3), or Working | the worker runs its turn. Its checks run after its result (or: it is ready after its result; its plan goes to the manager). |

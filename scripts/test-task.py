@@ -6070,6 +6070,36 @@ def part_host(created=None):
         js('task', 'close', n, '--discard')
     for n in (pausing, questioning):
         wait_state(n, 'closed')
+    # 32ap. A worker whose turn ends `paused` while its `ci:` check-run is out (docs/tasks.md
+    # "Status"): the host holds the result, so the task waits on `check_run`, not on the manager;
+    # no `paused` event reaches the manager; an add queues behind the answer, and the answer starts
+    # one turn that carries it.
+    mark('32ap')
+    ap_gate, ap_started = base / 'ap-gate', base / 'ap-started.log'
+    (base / 'ap-ci.sh').write_text('[ "$1" = --local ] && exit 69\necho started >> %s\n%s\necho ci-passed\n'
+                                   % (ap_started, gate_cmd(ap_gate)))
+    configure(LAND_CONFIG + '  scenarios:\n    pausecheck: "ci: sh %s"\n' % (base / 'ap-ci.sh'), 'a ci scenario for 32ap')
+    held = manager_new('WORK ap.txt CHECKRUN_LATER pausecheck PAUSE')
+    wait(lambda: (show(held)['record'].get('waiting') or {}).get('on') == 'check_run', 'the paused result waits for its check-run', 60)
+    held_now = show(held)
+    assert held_now['record']['state'] == 'working' and held_now['status']['label'] == 'Waiting for its check-run', held_now['status']
+    assert [e['status'] for e in log(held) if e['kind'] == 'result'] == ['paused'], log(held)
+    said = js('task', 'add', held, 'NOOP go on ap')['message']
+    assert 'queued until the check-run answers' in said, said
+    stays(lambda: len(kinds(held, 'message')) >= 2, lambda: not any('go on ap' in str(t.get('message', '')) for t in traces()),
+          'the add starts no turn while the check-run is out', 20)
+    assert (show(held)['record'].get('waiting') or {}).get('on') == 'check_run', show(held)['record']
+    ap_gate.touch()
+    wait(lambda: any('go on ap' in str(t.get('message', '')) for t in traces()), 'the answer starts the turn with the add', 60)
+    turns = [t['message'] for t in traces() if 'go on ap' in str(t.get('message', ''))]
+    assert len(turns) == 1 and 'Your check-run ended' in turns[0], turns
+    assert wait_state(held, 'ready', 'failed')['state'] == 'ready', log(held)
+    assert len(turns := [t for t in traces() if 'go on ap' in str(t.get('message', ''))]) == 1, turns
+    assert not events_with('#%d paused' % held), events_with('#%d paused' % held)
+    assert ap_started.read_text() == 'started\n', ap_started.read_text()
+    js('task', 'close', held, '--discard')
+    wait_state(held, 'closed')
+    configure(LAND_CONFIG, 'ci scenario for 32ap over')
     # 32wk. One wake rule (docs/tasks.md "Manager"; root-cause-refactor step 6): a ready task
     # parked behind another and a ready result that asks the owner start no manager turn; they
     # go along with the next one, here the review of a third ready task. The asking task waits
