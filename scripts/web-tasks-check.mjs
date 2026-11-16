@@ -1115,7 +1115,7 @@ for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
   if ((await evaluate("fetch('api/tasks/' + location.hash.split('/')[2] + '/t/3').then((r) => r.json()).then((task) => task.actions)")).includes("land")) await fail("the API offers Land beside a pending land approval");
   await closeSheet("#3's sheet", chat);
 }
-// ^ In the wide layout (900 px) three pills carry their words after the count; with four the composer shows icon and count only, so the field keeps a quarter of the row at least (170 of 680 px at 1280 px).
+// ^ In the wide layout (900 px) the three pills carry their words after the count, so the field keeps a quarter of the row at least (170 of 680 px at 1280 px).
 await resize([1280, 800, 1]);
 await until("document.querySelectorAll('.pill').length === 3", "the pills are not in the wide chat");
 const wide = await evaluate(`(() => ({ labels: [...document.querySelectorAll('.pill')].map((node) => getComputedStyle(node.querySelector('.pill-label')).display === 'none' ? '' : node.querySelector('.pill-label').textContent.trim()).join('|'),
@@ -1529,7 +1529,7 @@ await shot("usage");
 await resize(usageSize);
 await closeSheet("the usage sheet", chat);
 
-// --- Routines: the fourth pill and its list over the composer (docs/web-client-tasks.md "Routines"). The fixture has
+// --- Routines: the third pill and its list over the composer (docs/web-client-tasks.md "Routines"). The fixture has
 // `nightly` (on, succeeded, printed nothing, so no message), `weekly` (off, found something: it exits 1, a findings code,
 // and its end is a message in the chat) and `idle` (on, never run). The pill counts the enabled ones, tints for a failed
 // (danger) or found-something (attention) last run, and its rows have the shared list row with Turn on or off and Run now.
@@ -1677,15 +1677,15 @@ await closeSheet("the usage sheet", chat);
     await click(".pill[aria-pressed=true]");
     await withCapabilities(capabilitiesNow);
     await until("!!document.querySelector('.composer-row .pill[data-kind=routines]')", "the Routines pill did not go back into the composer row");
-    // The phone composer keeps its height with four pills, down to 320 px, and the pills stay on one row between attach and Send.
+    // The phone composer keeps its height with three pills, down to 320 px, and the pills stay on one row between attach and Send.
     for (const width of [375, 320]) {
       await resize([width, 740, 2]);
       await until("!!document.querySelector('.composer-row .pill[data-kind=routines]')", `the pills are missing at ${width} px`);
       const fit = await evaluate(`(() => { const row = document.querySelector('.composer-row').getBoundingClientRect(), send = document.querySelector('.composer-send').getBoundingClientRect(), attach = document.querySelector('.composer-row > .icon-button')?.getBoundingClientRect();
         const pills = [...document.querySelectorAll('.pill')].map((node) => node.getBoundingClientRect()); const shut = (box) => box.left >= (attach?.right ?? row.left) - 1 && box.right <= send.left + 1;
         return { count: pills.length, one: pills.every((box) => Math.abs(box.top - pills[0].top) < 2), between: pills.every(shut), composer: document.querySelector('.composer').getBoundingClientRect().height }; })()`);
-      if (fit.count !== 4 || !fit.one || !fit.between || fit.composer > 110) await fail(`the four pills at ${width} px are ${JSON.stringify(fit)}`);
-      await shot(`pills-four-${width}`, ".composer-send");
+      if (fit.count !== 3 || !fit.one || !fit.between || fit.composer > 110) await fail(`the three pills at ${width} px are ${JSON.stringify(fit)}`);
+      await shot(`pills-three-${width}`, ".composer-send");
     }
     await resize([390, 844, 2]);
   } finally {
