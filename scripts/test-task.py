@@ -1914,11 +1914,16 @@ def part_core(created=None):
     def open_gate():
         gate.write_text('open')
         return b''
+    # ^ The list opens on its first row, in the ledger's chain order: `j` or `k` moves to the row of the task to open.
+    at = [r['id'] for r in js('task', 'ledger')['open']]
+
+    def walk(start, end):
+        return (b'j' if end > start else b'k') * abs(at.index(end) - at.index(start))
     shots = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
-        (r'(?s)(For you|Moving|Waiting).*#%d .*Recent' % d3, b'\r'),
+        (r'(?s)(For you|Moving|Waiting).*#%d .*Recent' % d3, b'j' * at.index(asking) + b'\r'),
         (r'Next +Waiting for your answer', b'\x1b'),
-        (r'\(enter\)detail', b'j\r'),
+        (r'\(enter\)detail', walk(asking, failing) + b'\r'),
         (r'Checks', b'\x1b'),
         (r'\(enter\)detail', open_gate),
         (r'#%d +ready' % d1, b'\x1b'),
