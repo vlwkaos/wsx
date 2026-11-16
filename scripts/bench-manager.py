@@ -28,7 +28,9 @@ the tool calls: no `wsx task new`/`add`/`steer` in the first turn, exactly one n
 `events` (docs/design/manager-event-model.md) prints what `eventModel: sonnet` would cost on the logged
 turns, cache switches counted, then replays real event-only turns on Opus and Sonnet from a fork of the
 manager's transcript (`--samples`, `--budget`; `--probe`: one turn across a model change) for a blind
-Opus judge. `rotation` models the manager's weekly spend over rotation sizes and idle rules; no model call.
+Opus judge. `switches` (docs/design/manager-context-split.md): one real call with the skill listing and one without, the
+first call's tokens each; `switches --replay N` (paid) replays N real owner and event turns in fresh
+conversations with and without the CLAUDE.md and auto memory switch, judged blind. `rotation` models the manager's weekly spend over rotation sizes and idle rules; no model call.
 `rotation --replay N` (paid) judges N real turns where a manager at ROTATE_TO would rotate in the middle of
 work: the real turn against the same turn in a fresh conversation that opens as a rotation's does.
 Bash runs with bypassPermissions here, so no auto-mode classifier call adds to the measured
@@ -116,12 +118,19 @@ def source_at(commit):
     raise SystemExit('no instructions() at %s' % commit)
 
 
-def instructions(source, project, notes, page):
+def skills_sentence(source, folder, names):
+    """The `Skills::Folder` sentence of instructions() in task/instructions.rs for a manager that
+    reads SKILL.md by path (docs/design/manager-context-split.md option 1)."""
+    literal = re.search(r'Skills::Folder\(folder, names\) => format!\(\s*"((?:[^"\\]|\\.)*)"', source, re.S).group(1)
+    return unescape(literal).replace('{}', str(folder), 1).replace('{}', ', '.join(names), 1)
+
+
+def instructions(source, project, notes, page, skills=''):
     """The manager's instructions as instructions() in task/instructions.rs formats them."""
     body = source.split('fn instructions(', 1)[1]
     literal = re.search(r'format!\(\s*"(You are the manager(?:[^"\\]|\\.)*)"', body, re.S).group(1)
     # ^ The default workflow (no review) and the shared presentation rule.
-    values = {'project': project, 'notes': notes, 'overview': page, 'skills': '', 'review': '',
+    values = {'project': project, 'notes': notes, 'overview': page, 'skills': skills, 'review': '',
               'presentation': (ROOT / 'crates/wsx-core/integrations/common/presentation.md').read_text().rstrip(),
               'context': notes + '/context.md', 'decisions': notes + '/decisions.md'}
     text = re.sub(r'(?<!\{)\{(\w+)\}(?!\})', lambda m: values[m.group(1)], unescape(literal))
@@ -340,7 +349,7 @@ def summary(state, baseline):
 
 
 class Agent:
-    def __init__(self, launch, env, cwd, model, real=False, resume=None, bash=False):
+    def __init__(self, launch, env, cwd, model, real=False, resume=None, bash=False, extra=()):
         # ^ `real` runs on the owner's real conversations (`idle`, `events`): read-only tools, so it
         # acts on nothing; `resume` forks one of them. `bash` (`events`) adds Bash, whose `wsx` is
         # the replay's recorder, at the manager's effort.
@@ -351,9 +360,9 @@ class Agent:
                                'WebFetch', 'WebSearch', 'Skill', 'Agent'])
         self.proc = subprocess.Popen(['claude', '-p', '--input-format', 'stream-json', '--output-format',
                                       'stream-json', '--verbose', '--setting-sources', 'project,local',
-                                      '--model', model, '--append-system-prompt', launch, *tools],
+                                      '--model', model, '--append-system-prompt', launch, *tools, *extra],
                                      cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-        self.model, self.cost_base, self.requests = model, 0.0, 0
+        self.model, self.cost_base, self.requests, self.init = model, 0.0, 0, {}
 
     def write(self, value):
         self.proc.stdin.write(json.dumps(value) + '\n')
@@ -370,16 +379,19 @@ class Agent:
         timer.start()
         started = time.monotonic()
         self.write({'type': 'user', 'message': {'role': 'user', 'content': text}})
-        tools, context, first, models, said = {}, None, None, set(), []
+        tools, context, first, first_write, models, said = {}, None, None, 0, set(), []
         try:
             for line in self.proc.stdout:
                 value = json.loads(line)
+                if value.get('type') == 'system' and value.get('subtype') == 'init':
+                    self.init = value
                 if value.get('type') == 'assistant' and not value.get('parent_tool_use_id'):
                     message = value['message']
                     models.add(message.get('model'))
                     if message.get('usage'):
                         context = context_of(message['usage'])
-                        first = first or context
+                        if not first:
+                            first, first_write = context, message['usage'].get('cache_creation_input_tokens', 0)
                     for block in message.get('content', []):
                         if block.get('type') == 'text' and block.get('text', '').strip():
                             said.append(block['text'].strip())
@@ -395,7 +407,7 @@ class Agent:
                             'cache_read': usage.get('cache_read_input_tokens', 0),
                             'cache_write': usage.get('cache_creation_input_tokens', 0),
                             'summed_context': context_of(usage),
-                            'first_context': first, 'last_context': context, 'cost_usd': round(cost, 5), 'tools': tools,
+                            'first_context': first, 'first_write': first_write, 'last_context': context, 'cost_usd': round(cost, 5), 'tools': tools,
                             'reply': '\n\n'.join(said) or value.get('result', '')}
         finally:
             timer.cancel()
@@ -1455,7 +1467,12 @@ def busy_crossings(projects):
                     and before['usage'].get('context_tokens', 0) >= ROTATE_TO and t['ms'] - before['ms'] < BUSY_MS):
                 seen.add(t['session'])
                 found.append({**t, 'context': before['usage']['context_tokens']})
-    random.Random(464).shuffle(found)
+    return interleaved(found, 464)
+
+
+def interleaved(found, seed):
+    """`found` shuffled, then ordered so projects and kinds (an owner message or events) take turns."""
+    random.Random(seed).shuffle(found)
     used, ordered = {}, []
     while found:
         kind = not ordered[-1]['events_only'] if ordered else False
@@ -1621,10 +1638,167 @@ def run_rotation_replay(options, out):
                                   and not any(r['wrong_land'] for r in rows)}}), flush=True)
 
 
+SWITCH_SETTINGS = {
+    # ^ The same keys as the manager's `--settings` in claude.rs `claude_args`.
+    'memory': {'claudeMdExcludes': ['**/CLAUDE.md', '**/CLAUDE.local.md', '**/AGENTS.md'], 'autoMemoryEnabled': False}}
+# ^ The tools no wsx agent calls, as claude.rs NEVER_TOOLS: without it the flag grows the Workflow tool by 17 KB.
+NEVER = ['--disallowedTools', 'Workflow,ScheduleWakeup,ReportFindings']
+PROOF_PROMPT = ("Which owner skill is named `simplify`? Use whatever way your instructions give to open it "
+                "and tell me its description line, in one sentence.")
+
+
+def owner_skills():
+    """The owner's skills folder and the names in it: where the manager's plugin links."""
+    folder = Path(os.environ.get('CLAUDE_CONFIG_DIR') or Path.home() / '.claude') / 'skills'
+    return folder, sorted(p.name for p in folder.iterdir() if (p / 'SKILL.md').is_file())
+
+
+def switch_arm(arm, base, source, project='bench'):
+    """(launch text, extra argv) of a manager arm: `today` has the skill listing and the Skill tool
+    (a plugin of the owner's skills), `skills` the flag and the names line, `memory` the flag, the
+    names line and the settings that leave out CLAUDE.md files and the auto memory."""
+    folder, names = owner_skills()
+    notes = base / 'notes'
+    notes.mkdir(exist_ok=True)
+    page = base / 'overview.md'
+    page.write_text('# bench\n\n## Goal\n\nA small greeting CLI.\n')
+    if arm == 'today':
+        plugin = base / 'skills-plugin'
+        (plugin / '.claude-plugin').mkdir(parents=True)
+        (plugin / '.claude-plugin/plugin.json').write_text(json.dumps({'name': 'owner', 'description': 'bench'}))
+        (plugin / 'skills').symlink_to(folder)
+        text = instructions(source, project, str(notes), str(page),
+                            "The owner's skills are yours with the Skill tool as `owner:<name>`; `new --skills` lends a worker the ones its task needs. ")
+        return text, NEVER + ['--plugin-dir', str(plugin)]
+    text = instructions(source, project, str(notes), str(page), skills_sentence(source, folder, names))
+    return text, NEVER + ['--disable-slash-commands'] + (['--settings', json.dumps(SWITCH_SETTINGS['memory'])] if arm == 'memory' else [])
+
+
+def run_switch_proof(options):
+    """`switches`: one real manager call per arm (today, option 1, option 2): the first call's tokens, the
+    skills the session offers, and how each arm opens a skill. Run with TMPDIR under the home folder: a
+    manager's CLAUDE.md files load because its folder lies under it (`~/.claude/CLAUDE.md` is an ancestor's)."""
+    source = (ROOT / 'crates/wsx/src/task/instructions.rs').read_text()
+    rows = []
+    for arm in ('today', 'skills', 'memory'):
+        base = Path(tempfile.mkdtemp(prefix='bench-switch-', dir=os.environ.get('TMPDIR')))
+        try:
+            text, extra = switch_arm(arm, base, source)
+            agent = Agent(text, dict(os.environ), base, MAIN_MODEL, extra=extra)
+            try:
+                row = agent.turn(PROOF_PROMPT)
+            finally:
+                agent.stop()
+            init = agent.init
+            row.update(arm=arm, skills_in_init=len(init.get('skills', [])), skill_tool='Skill' in init.get('tools', []),
+                       sample_names=[n for n in init.get('skills', []) if 'simplify' in n][:3])
+            rows.append(row)
+            print(json.dumps({k: row[k] for k in ('arm', 'first_context', 'first_write', 'cache_read', 'cache_write', 'skills_in_init',
+                                                  'skill_tool', 'sample_names', 'tools', 'cost_usd', 'reply')}), flush=True)
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+    today, skills, memory = rows
+    print(json.dumps({'first_context': {r['arm']: r['first_context'] for r in rows},
+                      'skills_saved': today['first_context'] - skills['first_context'],
+                      'memory_saved': skills['first_context'] - memory['first_context']}), flush=True)
+
+
+def switch_cases(projects):
+    """The turns of a running conversation, owner messages and events alternating."""
+    found = []
+    for turns in projects.values():
+        for before, t in zip(turns, turns[1:]):
+            if not t['fresh'] and before['session'] == t['session']:
+                found.append({**t, 'context': before['usage'].get('context_tokens', 0)})
+    return interleaved(found, 487)
+
+
+def bad(judged):
+    return bool(judged['lost_facts']) or judged['wrong'] != 'none'
+
+
+def run_switch_replay(options, out):
+    """`switches --replay N` (paid): N real owner and event turns, each as the first message of a fresh
+    conversation with today's switches (`skills`) and with the memory switch, judged blind by Opus
+    with the real turn as the third answer. The memory switch ships when it is bad in no more cases than `skills`."""
+    projects = manager_turns(options.days)
+    path = Path(out.name)
+    rows = [r for r in jsonl(path) if 'id' in r]
+    done = {(r['project'], r['id']) for r in rows}
+    spent = sum(r['usd'] for r in rows)
+    logs = {name: jsonl(home_chat(name) / 'log.jsonl') for name in projects}
+    source = (ROOT / 'crates/wsx/src/task/instructions.rs').read_text()
+    for case in switch_cases(projects):
+        if len(rows) >= options.replay or spent > options.budget:
+            break
+        if (case['project'], case['id']) in done:
+            continue
+        original = original_turn(case)
+        if not original:
+            continue
+        entries = logs[case['project']]
+        first, built = fresh_first(case, original, entries)
+        if not first or built['matched'] < built['starts']:
+            print('turn %d: no fresh start the port rebuilds, left out' % case['id'], flush=True)
+            continue
+        base = Path(tempfile.mkdtemp(prefix='bench-switch-', dir=os.environ.get('TMPDIR')))
+        launch, env, session, folder = replay_start({**case, **original}, base, source)
+        (base / 'served.json').write_text(json.dumps(served_reads(original['before'], case['ms'])))
+        env['BENCH_SERVED'] = str(base / 'served.json')
+        # ^ The manager runs in the project's checkout, which holds its CLAUDE.md files: the arms need them.
+        project = Path(next((line['cwd'] for line in original['before'] if line.get('cwd')), ''))
+        for name in ('CLAUDE.md', 'AGENTS.md'):
+            if (project / name).is_file():
+                shutil.copy(project / name, base / name)
+        note = REPLAY_NOTE % original['reads']
+        arms = {'original': {'acts': original['acts'], 'reply': original['reply']}}
+        usd = 0.0
+        try:
+            for arm in ('skills', 'memory'):
+                (base / ('arm-' + arm)).mkdir()
+                text, extra = switch_arm(arm, base / ('arm-' + arm), source, case['project'].rsplit('-', 1)[0])
+                calls = base / 'calls.jsonl'
+                calls.write_text('')
+                agent = Agent(text, {**env, 'BENCH_CALLS': str(calls)}, base, MAIN_MODEL, real=True, bash=True, extra=extra)
+                try:
+                    row = agent.turn(first + note)
+                finally:
+                    agent.stop()
+                row['acts'] = recorded_acts(calls)
+                arms[arm] = row
+                usd += priced(row)
+            judged, cost = rotation_judge(case, original, entries, arms)
+            usd += cost
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+            shutil.rmtree(base, ignore_errors=True)
+        spent += usd
+        row = {'id': case['id'], 'project': case['project'], 'events_only': case['events_only'], **built, 'usd': round(usd, 4),
+               **{arm: {**judged[arm], 'acts': arms[arm]['acts'], 'reply': arms[arm]['reply'],
+                        **({'first_context': arms[arm]['first_context'], 'usd': priced(arms[arm])} if arm != 'original' else {})}
+                  for arm in arms}}
+        out.write(json.dumps(row) + '\n')
+        out.flush()
+        rows.append(row)
+        print(json.dumps({k: (v if not isinstance(v, dict) else {x: v.get(x) for x in ('acts', 'wrong', 'why', 'lost_facts', 'first_context')})
+                          for k, v in row.items()}, ensure_ascii=False), flush=True)
+        print('spent so far: %.3f USD, %d cases' % (spent, len(rows)), flush=True)
+    worse = [r for r in rows if bad(r['memory']) and not bad(r['skills'])]
+    better = [r for r in rows if bad(r['skills']) and not bad(r['memory'])]
+    land = lambda r: any(a.split()[0] in ('land', 'close', 'approve') and a not in r['original']['acts'] for a in r['memory']['acts'])
+    print(json.dumps({'summary': {
+        'cases': len(rows), 'bad_skills': sum(bad(r['skills']) for r in rows), 'bad_memory': sum(bad(r['memory']) for r in rows),
+        'memory_worse': len(worse), 'memory_better': len(better), 'wrong_land': sum(map(land, rows)),
+        'first_context_skills': sorted(r['skills']['first_context'] for r in rows)[len(rows) // 2] if rows else None,
+        'first_context_memory': sorted(r['memory']['first_context'] for r in rows)[len(rows) // 2] if rows else None,
+        'spent_usd': round(spent, 2),
+        'ship': len(rows) >= 10 and len(worse) <= len(better) and not any(map(land, rows))}}), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', required=True, choices=['before', 'after', 'after-nof'])
-    parser.add_argument('--cases', default='synthetic', choices=['synthetic', 'logged', 'discussion', 'stale', 'idle', 'events', 'rotation'])
+    parser.add_argument('--cases', default='synthetic', choices=['synthetic', 'logged', 'discussion', 'stale', 'idle', 'events', 'rotation', 'switches'])
     parser.add_argument('--returns', type=int, default=6, help='idle: how many idle returns')
     parser.add_argument('--samples', type=int, default=45, help='events: how many turns to replay (0: the cost model only)')
     parser.add_argument('--days', type=int, default=14, help='events: the log window')
@@ -1645,6 +1819,8 @@ def main():
     with path.open('a') as out:
         if options.cases == 'idle':
             return run_idle(options, out)
+        if options.cases == 'switches':
+            return run_switch_replay(options, out) if options.replay else run_switch_proof(options)
         if options.cases == 'rotation':
             return run_rotation_replay(options, out) if options.replay else run_rotation(options)
         if options.cases == 'events':

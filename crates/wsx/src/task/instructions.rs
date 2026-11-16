@@ -6,6 +6,16 @@ use super::manager::{CONTEXT_FILE, DECISIONS_FILE};
 use std::path::Path;
 use wsx_core::model::workspace::TaskWorkflow;
 
+/// How the manager reaches the owner's skills.
+pub(super) enum Skills<'a> {
+    None,
+    /// The adapter lists them and has a Skill tool (Pi).
+    Tool,
+    /// Claude: no listing and no Skill tool; the manager reads `<folder>/<name>/SKILL.md`.
+    /// ref: docs/design/manager-context-split.md option 1
+    Folder(&'a Path, &'a [String]),
+}
+
 /// One rule once, in the paragraph of the moment it acts (replying, talk or work, starting,
 /// review, the owner's word, waits, tools and memory, other projects). What a command refuses
 /// or `--help` lists is not repeated here: the refusal text and the help teach it. Facts
@@ -16,15 +26,20 @@ pub(super) fn instructions(
     project: &str,
     notes: &Path,
     overview: &Path,
-    skills: bool,
+    skills: Skills,
     workflow: &TaskWorkflow,
 ) -> String {
     // ^ No skill is named: the owner's skills are whatever their folder holds.
     let skills = match skills {
-        true => format!(
+        Skills::Tool => format!(
             "The owner's skills are yours with the Skill tool as `{SKILLS_PLUGIN_NAME}:<name>`; `new --skills` lends a worker the ones its task needs. "
         ),
-        false => String::new(),
+        Skills::Folder(folder, names) => format!(
+            "The owner's skills are not listed: read `{}/<name>/SKILL.md` when one fits; `new --skills` lends a worker the ones its task needs. Skills: {}. ",
+            folder.display(),
+            names.join(", ")
+        ),
+        Skills::None => String::new(),
     };
     // ^ The project name ends the first sentence: scripts/fake-claude-stream.py reads it up to the '.'.
     format!(

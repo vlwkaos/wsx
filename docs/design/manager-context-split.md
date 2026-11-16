@@ -1,6 +1,6 @@
 # Manager context split: what a conversation carries and what could load on demand
 
-Status: audit, 2026-11-16, window 11-09 20:09 to 11-16 20:09 KST, all 14 chats. Owner's question (projk chat): fewer turns, smaller context per turn, less idle work. `(est.)` = estimated. Nothing in this doc is built.
+Status: audit, 2026-11-16, window 11-09 20:09 to 11-16 20:09 KST, all 14 chats. Owner's question (projk chat): fewer turns, smaller context per turn, less idle work. `(est.)` = estimated. Options 1 and 2 are built (task #487, section 6); the rest is not.
 
 **Answer.** Manager spend was $278.7 in 7 days (1,183 turns, 5,225 model calls). A fixed base of about 30K written tokens opens each fresh conversation and costs 36% of conversation cost. wsx's own text is under a quarter of that base. The skill listing (30 KB) and the owner's CLAUDE.md files and memory index are Claude Code attachments that wsx did not write. Recommended: options 1, 2 and 5 below, about $66 a week (est.), 24% of the spend.
 
@@ -96,4 +96,30 @@ The cache rule: a conversation's prefix is tools, then system (our instructions)
 
 Not recommended: option 3 (uncertain saving, loses evidence), 4 and 8 (high risk, past evidence), 6 (measured small), 7 (blocks option 3).
 
-Unproven: that the three switches in options 1 and 2 remove the text. Both exist in the Claude Code 2.1.316 binary (`strings`, `--help`); nothing here ran them.
+## 6. Built and measured (task #487, 2026-11-16)
+
+Method: `python3 -B scripts/bench-manager.py --mode after --cases switches --model opus` (one real call per arm) and `--cases switches --replay 12 --budget 12` (paid, $7.51). Run both with `TMPDIR` under the home folder: a manager's `~/.claude/CLAUDE.md` loads as an ancestor file of its folder, so a temp folder elsewhere shows no CLAUDE.md at all. Claude Code 2.1.316.
+
+| Arm (first call of a fresh conversation) | First input tokens | Skills in init | Skill tool | How the manager opens `simplify` |
+|---|---|---|---|---|
+| today (plugin of 77 skills, listing) | 38,945 | 101 | yes | `Skill` call `owner:simplify` |
+| option 1 (`--disable-slash-commands`, names line) | 28,046 (-10,899) | 0 | no | `Read` of `<folder>/simplify/SKILL.md` |
+| option 1 + 2 (CLAUDE.md excludes, auto memory off) | 14,238 (-13,808 more) | 0 | no | `Read` |
+
+Option 1 differs from the plan above in one point: the flag removes the `Skill` tool and every plugin skill (init skills 0), so the manager reads `SKILL.md` by path; the names line gives the folder and the names. `skillOverrides` (`name-only`, `off`) had no effect on plugin skills. The bench must pass wsx's `--disallowedTools Workflow,...`: without it the flag grows the `Workflow` tool schema by 17 KB.
+
+Option 2 replay: 12 real turns (7 owner, 5 events; wsx, projk, ir, pr-review, pygmal, studio-app, notevault, projy-c1 chats), each as the first message of a fresh conversation with options 1 (`skills`) and 1 + 2 (`memory`), judged blind with the real turn as a third answer.
+
+| | skills arm | memory arm | real turn |
+|---|---|---|---|
+| Wrong decisions, major | 2 | 1 | 2 |
+| Wrong decisions, severity sum (minor 1, major 2) | 8 | 4 | 8 |
+| Facts lost (judge count) | 13 | 8 | 13 |
+| Wrong land, close or approve | 0 | 0 | n/a |
+| Median first input | 30,497 | 14,310 | n/a |
+
+Decisions are no worse, so option 2 ships. Limits: n=12, one judge pass; the bench folder is not the project's, so the project's own auto memory index is in no arm (its median is 0.4K); the arms get the project's `CLAUDE.md` and `AGENTS.md` as copies, and the wsx checkout's two files load in all arms as ancestors of the bench folder.
+
+Weekly saving (est.): 139 fresh conversations x tokens x the section 1 cost per token. Option 1: 10.9K tokens against the 13.4K the table estimated: about $27 a week of the $33. Option 2: the table's 7.3K tokens ($25) is the median over real chats; the bench folder loaded 13.8K, so $25 stays the estimate. A running conversation keeps its first block: the saving starts at each chat's next fresh start. The first host restart after the release rotates every manager once (the instructions digest changes, `manager.rs:1628`), about $0.24 a chat.
+
+Option 5 (not built, `manager.rs` is held by #474): `send_turn` rotates when `instructions_digest` differs, `manager.rs:1628` to `1665`. The names line now lists the owner's skills, so a new skill also changes the digest; option 5 covers that too.

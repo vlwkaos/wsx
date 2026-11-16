@@ -147,6 +147,20 @@ pub(super) fn skills_plugin(
     Ok(Some(plugin))
 }
 
+/// The names of the skills in the plugin's `skills` folder, sorted: the manager's instructions
+/// list them, as the manager reads `<plugin>/skills/<name>/SKILL.md` by hand.
+pub(super) fn skill_names(plugin: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(plugin.join("skills"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().join("SKILL.md").is_file())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    names
+}
+
 impl Launch {
     /// A worker edits its working copy and returns a result.
     /// `broker`: the task host's socket for `wsx task check-run` (broker.rs).
@@ -436,8 +450,18 @@ const BASH_MAX_OUTPUT: &str = "8000";
 fn claude_args(launch: &Launch, session: &str, resume: bool) -> Vec<std::ffi::OsString> {
     // ^ Agent commits carry no AI attribution; `attribution` replaced `includeCoAuthoredBy`,
     // which older builds still read.
-    let settings =
+    let mut settings =
         json!({ "attribution": { "commit": "", "pr": "" }, "includeCoAuthoredBy": false });
+    let manager = launch.boundary.policy().role == Role::Manager;
+    if manager {
+        // ^ The owner's CLAUDE.md files (user, project and the folders above it) and the auto
+        // memory index are 7K to 14K tokens at the start of every fresh conversation; the
+        // instructions carry the rules a manager needs. A 12-turn blind replay judged its
+        // decisions no worse. ref: docs/design/manager-context-split.md option 2
+        settings["claudeMdExcludes"] =
+            json!(["**/CLAUDE.md", "**/CLAUDE.local.md", "**/AGENTS.md"]);
+        settings["autoMemoryEnabled"] = json!(false);
+    }
     let mut args: Vec<std::ffi::OsString> = [
         "-p",
         "--input-format",
@@ -466,8 +490,15 @@ fn claude_args(launch: &Launch, session: &str, resume: bool) -> Vec<std::ffi::Os
     if let Some(schema) = &launch.schema {
         args.extend(["--json-schema".into(), schema.to_string().into()]);
     }
-    for dir in &launch.plugin_dirs {
-        args.extend(["--plugin-dir".into(), dir.clone().into_os_string()]);
+    // ^ A manager reads a skill's SKILL.md by hand: the flag drops the Skill tool and the
+    // 30 KB skill listing from every fresh conversation, and with them a plugin's skills.
+    // ref: docs/design/manager-context-split.md option 1
+    if manager {
+        args.push("--disable-slash-commands".into());
+    } else {
+        for dir in &launch.plugin_dirs {
+            args.extend(["--plugin-dir".into(), dir.clone().into_os_string()]);
+        }
     }
     args.extend(["--disallowedTools".into(), NEVER_TOOLS.into()]);
     args

@@ -10,7 +10,8 @@ use super::agent::{
     self, new_session_id, Agent, AgentLine, Ask, Cause, Launch, Next, TurnResult, PROMPT_CACHE_MS,
 };
 use super::boundary::Boundary;
-use super::claude::{account_env, config_root, skills_plugin, SKILLS_PLUGIN_NAME};
+use super::claude::{account_env, config_root, skill_names, skills_plugin, SKILLS_PLUGIN_NAME};
+use super::instructions::Skills;
 use super::{broker, claude, floor, hosting, limit, notes};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -1760,13 +1761,15 @@ impl Manager {
         let workflow = load_task_config(&self.main)
             .map(|settings| settings.workflow)
             .unwrap_or_default();
-        let mut text = super::instructions::instructions(
-            &self.project,
-            &notes,
-            &overview,
-            skills.is_some(),
-            &workflow,
-        );
+        let names = skills.as_deref().map(skill_names).unwrap_or_default();
+        let folder = skills.as_deref().map(|plugin| plugin.join("skills"));
+        let listed = match (&folder, adapter) {
+            (None, _) => Skills::None,
+            (Some(folder), "claude") => Skills::Folder(folder, &names),
+            (Some(_), _) => Skills::Tool,
+        };
+        let mut text =
+            super::instructions::instructions(&self.project, &notes, &overview, listed, &workflow);
         if let Some(chat) = self.dir.named() {
             text = chat_preamble(chat, &self.project, &chats::goal(&self.dir)) + &text;
         }

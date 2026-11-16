@@ -739,12 +739,17 @@ def manager_up(created):
     assert '--allowedTools' not in launch['argv'], launch['argv']
     assert launch['argv'][launch['argv'].index('--disallowedTools') + 1] == 'Workflow,ScheduleWakeup,ReportFindings', launch['argv']
     assert launch['bash_max_output'] == '8000', launch
-    plugin = Path(launch['plugin_dir'])
+    # ^ A claude manager takes no plugin and no Skill tool: it reads SKILL.md by path
+    # (docs/design/manager-context-split.md option 1); the link in its folder stays the path.
+    assert launch['plugin_dir'] is None and '--disable-slash-commands' in launch['argv'], launch['argv']
+    plugin = home_dir(Path(created['task_dir']).parent) / 'skills-plugin'
     assert plugin.parent == home_dir(Path(created['task_dir']).parent) and plugin.resolve().is_relative_to(state.resolve()), plugin
     assert json.loads((plugin / '.claude-plugin/plugin.json').read_text())['name'] == 'owner'
     assert os.readlink(plugin / 'skills') == str(owner_skills), os.readlink(plugin / 'skills')
     # ^ No prompts inside wsx's boundary (docs/tasks.md "Permissions").
     assert launch['mode'] == 'bypassPermissions' and 'permissions' not in launch['settings'], launch['settings']
+    # ^ A manager leaves out the owner's CLAUDE.md files and the auto memory (context-split option 2); a worker keeps them.
+    assert launch['settings']['autoMemoryEnabled'] is False and '**/CLAUDE.md' in launch['settings']['claudeMdExcludes'], launch['settings']
     assert launch['model'] == 'fake-manager' and Path(page).read_text().startswith('# demo\n\n## Goal')
     # ^ A manager turn that leaves the overview over the cap (60 lines, 4,000 characters) gets one
     # follow-up turn that names the sizes; the second over-cap result gets no third
@@ -892,7 +897,7 @@ def manager_up(created):
                  'name the files and ask the owner; on yes, `wsx task commit <files>`', 'Read `wsx task review <n>`',
                  'Start a stall from `wsx task why <n>`.',
                  'Continue a `paused` task.', 'Never touch a task on `hand`', '`wsx task checkin`',
-                 'read-only git', 'the Skill tool as `owner:<name>`', 'check rather than guess', '`wsx memory add --kind rule`',
+                 'read-only git', 'The owner\'s skills are not listed: read `%s/<name>/SKILL.md`' % (plugin / 'skills'), 'Skills: other, scribe. ', 'check rather than guess', '`wsx memory add --kind rule`',
                  '/chats/demo/notes/decisions.md', '/chats/demo/notes/context.md', 'update a section in place',
                  '--from-chat --reply', "do not answer 'Chat <name> replies'", "'@<project>'"):
         assert rule in launch['instructions'], rule
@@ -900,7 +905,7 @@ def manager_up(created):
     assert 'brief' not in launch['instructions'].lower().replace('--brief', ''), launch['instructions']
     # ^ No skill is named: the owner's skills are whatever their folder holds.
     assert re.findall(r'owner:[^<\s]', launch['instructions']) == [], launch['instructions']
-    assert not any(name in launch['instructions'] for name in ('seek', 'recall', '/memo', 'scribe'))
+    assert not any(name in launch['instructions'] for name in ('seek', 'recall', '/memo'))
     assert launch['cwd'] == str(project)
     # ^ The name the owner reads, trimmed; the session is labelled `task-<chat name>`.
     assert js('task', 'manager')['name'] == 'Atlas'
