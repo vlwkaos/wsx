@@ -655,11 +655,25 @@ impl TaskDir {
     pub fn read_record(&self) -> Result<TaskRecord> {
         let bytes = read_bounded(&self.file(RECORD_FILE), MAX_RECORD_BYTES)?;
         let record: TaskRecord = serde_json::from_slice(&bytes)
+            .or_else(|error| self.legacy_record(&bytes).ok_or(error))
             .with_context(|| format!("cannot parse {}", self.file(RECORD_FILE).display()))?;
         if record.id != self.id || record.project_id != self.project_id {
             bail!("{} names another task", self.file(RECORD_FILE).display());
         }
         Ok(record)
+    }
+
+    /// The record an older wsx wrote after the store move, with its creator named as now.
+    /// ^ A host that lived through the move writes `created_by: "manager"` once more at its
+    /// exec handoff. Remove this one release after 0.43 (added 2026-11-16, task 478).
+    fn legacy_record(&self, bytes: &[u8]) -> Option<TaskRecord> {
+        let mut value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+        let by = value.get("created_by")?.as_str()?;
+        let renamed = super::chats_move::creator(by, || {
+            format!("chat:{}", super::chats_move::home_of(&self.project_id))
+        })?;
+        value["created_by"] = renamed.into();
+        serde_json::from_value(value).ok()
     }
 
     pub fn write_record(&self, record: &TaskRecord) -> Result<()> {

@@ -65,8 +65,7 @@ pub(super) fn run(project_id: &str, project: &Path) -> Result<Vec<Stopped>> {
         path: old_chats.join(&name),
         name: Some(name),
     }));
-    let base = chats::home_name(project_id);
-    let home = store::home_chat(project_id).unwrap_or(base);
+    let home = home_of(project_id);
     // ^ The new names, taken now so no other repo's move takes one in between.
     let mut names: BTreeMap<String, String> = BTreeMap::from([("manager".into(), home.clone())]);
     let mut taken = vec![home.clone()];
@@ -260,6 +259,23 @@ fn rename_text(text: &str, names: &BTreeMap<String, String>) -> Option<String> {
     })
 }
 
+/// A creator of before the move as it is named now: `manager` is the repo's home chat
+/// (`home_by`, read only when needed), `manager@<repo>` the chat named for that repo.
+/// The one rule of the move and of `TaskDir::read_record`, which reads a record an older
+/// host wrote after the move. ref: docs/tasks.md "Chats"
+pub(super) fn creator(by: &str, home_by: impl FnOnce() -> String) -> Option<String> {
+    match by.strip_prefix("manager@") {
+        _ if by == "manager" => Some(home_by()),
+        Some(repo) => Some(format!("chat:{}", chats::slug_name(repo))),
+        None => None,
+    }
+}
+
+/// The name of the repo's home chat: the one `home.json` names, else the one the move gives.
+pub(super) fn home_of(project_id: &str) -> String {
+    store::home_chat(project_id).unwrap_or_else(|| chats::home_name(project_id))
+}
+
 fn rename_value(value: &mut Value, names: &BTreeMap<String, String>, home_by: &str) -> bool {
     match value {
         Value::String(text) => rename_text(text, names)
@@ -271,18 +287,16 @@ fn rename_value(value: &mut Value, names: &BTreeMap<String, String>, home_by: &s
         Value::Object(map) => {
             let mut changed = false;
             for (key, item) in map.iter_mut() {
-                let creator = key == "created_by" && item.is_string();
-                changed |= match (creator, item.as_str()) {
-                    (true, Some("manager")) => {
-                        *item = home_by.into();
+                let renamed = item
+                    .as_str()
+                    .filter(|_| key == "created_by")
+                    .and_then(|by| creator(by, || home_by.into()));
+                changed |= match renamed {
+                    Some(by) => {
+                        *item = by.into();
                         true
                     }
-                    (true, Some(by)) if by.starts_with("manager@") => {
-                        *item =
-                            format!("chat:{}", chats::slug_name(&by["manager@".len()..])).into();
-                        true
-                    }
-                    _ => rename_value(item, names, home_by),
+                    None => rename_value(item, names, home_by),
                 };
             }
             let keys: Vec<(String, String)> = map
