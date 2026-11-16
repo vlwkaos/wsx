@@ -205,6 +205,8 @@ STALL_GRACE = 4
 # ^ How long a failed sign-in on record keeps the account skipped (store.rs `sign_in_retry_ms`).
 SIGN_IN_RETRY = 12
 SWEEP = 10
+# ^ The hung-turn bound of 37c and 39b (the real one is 10 min): above the fakes' plain turns.
+TURN_QUIET = 15
 
 
 def tui_screens(wsx, env, cwd, steps, cols=120, raw=None):
@@ -367,11 +369,13 @@ def run(wsx, wsxd, work, owned, part):
            'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(daemon_socket),
            'WSX_TEST_STALL_GRACE_SECS': str(STALL_GRACE), 'WSX_TEST_ALLOW_FILE_CLONE': '1', 'WSX_TEST_PRUNE_SWEEP_SECS': '3',
            'WSX_TEST_SIGN_IN_RETRY_SECS': str(SIGN_IN_RETRY), 'WSX_TEST_CI_BACKOFF_SECS': '1', **start_floor(work),
+           # ^ The disk wait's poll (30 s) and settle (60 s), waited out in 27m and 32d.
+           'WSX_TEST_DISK_POLL_SECS': '3', 'WSX_TEST_DISK_SETTLE_SECS': '10',
            # ^ The limit probe's period (30 s) would put probe traces into every long limit; the
            # limit scenario of part 11 starts a probe by clearing the stamp.
            'WSX_TEST_LIMIT_PROBE_SECS': '600',
            # ^ While this file holds a number, a turn quiet that many seconds ends (docs/tasks.md
-           # "Agents"): the hung-turn sections write 40, longer than the fakes' LONG (25 s); the
+           # "Agents"): the hung-turn sections write TURN_QUIET, and run no LONG or WAIT turn; the
            # other sections keep the real 10 minutes, since a WAIT gate holds a turn quiet longer.
            'WSX_TEST_TURN_QUIET_FILE': str(work / 'turn-quiet'),
            'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
@@ -5645,7 +5649,7 @@ def part_host(created=None):
     # 32d. The disk queue (docs/tasks.md "Checks, revisions and report"): tasks that wait for
     mark('32d')
     # disk resume one at a time, oldest first, so they do not fill the freed space at once, but
-    # the next one resumes about a minute later, while the first one's checks still run.
+    # the next one resumes after the settle time, while the first one's checks still run.
     release.unlink(missing_ok=True)
     slot_config(240)
     roomy = (project / 'wsx.config.yml').read_text()
@@ -5665,8 +5669,8 @@ def part_host(created=None):
     added = js('task', 'add', str(newer), 'ADDED-WHILE-DISK')
     assert added['ok'] and 'joined the work that waits for disk' in added['message'], added
     assert show(newer)['record'].get('waiting') == queued and not [t for t in traces() if 'ADDED-WHILE-DISK' in t.get('message', '')]
-    # ^ The settle time (60 s) and one disk poll (30 s), never the older one's whole turn.
-    wait(lambda: show(newer)['state'] in ('working', 'checking'), 'the newer disk wait resumed', 150)
+    # ^ The settle time and one disk poll (10 s and 3 s here), never the older one's whole turn.
+    wait(lambda: show(newer)['state'] in ('working', 'checking'), 'the newer disk wait resumed', 60)
     assert show(older)['state'] == 'checking', show(older)
     release.touch()
     for n in (older, newer):
@@ -7824,7 +7828,7 @@ def part_host(created=None):
         js('task', 'close', n, '--discard')
     # S3, the worker: a turn with no output past the bound ends as the turn's failed result.
     turn_quiet = work / 'turn-quiet'
-    turn_quiet.write_text('40')
+    turn_quiet.write_text(str(TURN_QUIET))
     s3 = js('task', 'new', 'WHANG %s WORK s3.txt' % (work / 's3-release'))['id']
     wait(lambda: show(s3)['state'] in ('ready', 'failed'), 'the hung turn ends', 70)
     s3_result = next(e for e in log(s3) if e['kind'] == 'result')
@@ -7832,7 +7836,7 @@ def part_host(created=None):
     assert not any(e['kind'] in ('agent_switch', 'limit_wait') for e in log(s3)) and show(s3)['record']['adapter'] == 'claude', log(s3)
     # ^ The record the host ended the turn by: its bound, its deadline and the reason.
     s3_turn = lc_turn(Path(show(s3)['log']).parent)
-    assert s3_turn['agent'].startswith('claude/') and s3_turn['quiet_ms'] == 40000 and s3_turn['deadline_ms'] == s3_turn['output_ms'] + 40000, s3_turn
+    assert s3_turn['agent'].startswith('claude/') and s3_turn['quiet_ms'] == TURN_QUIET * 1000 and s3_turn['deadline_ms'] == s3_turn['output_ms'] + TURN_QUIET * 1000, s3_turn
     assert s3_turn['ended']['reason'].startswith('no output for') and s3_turn['ended']['unix_ms'] >= s3_turn['deadline_ms'], s3_turn
     js('task', 'close', s3, '--discard')
     # S4, the worker: a hung fallback counts as its refusal with no reset: its account backs off and
@@ -8266,7 +8270,7 @@ def part_host(created=None):
     # agent's error, which holds and retries with the backoff, and reaches the owner at once as one
     # alert with the open-task count ("Manager"). Last, since the hold lasts 5 minutes.
     mark('39b')
-    turn_quiet.write_text('40')
+    turn_quiet.write_text(str(TURN_QUIET))
     open_tasks = len(js('task', 'list')['tasks'])
     s3_say = js('task', 'say', 'MHANG %s STATUS hung' % (work / 's3m-release'))
     s3_stop = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'stopped' and e.get('reason', '').startswith('no output for')), None),
@@ -8275,7 +8279,7 @@ def part_host(created=None):
     assert not any(e['kind'] == 'reply' and s3_say['id'] in e['to'] for e in chat()), chat()[-3:]
     assert any(e['kind'] == 'limit' and e.get('until') for e in manager_entries()[-6:]), manager_entries()[-6:]
     s3m_turn = lc_turn(manager_log.parent)
-    assert s3m_turn['ended']['reason'].startswith('no output for') and s3m_turn['quiet_ms'] == 40000, s3m_turn
+    assert s3m_turn['ended']['reason'].startswith('no output for') and s3m_turn['quiet_ms'] == TURN_QUIET * 1000, s3m_turn
     open_words = {0: 'No task is open.', 1: '1 open task: '}.get(open_tasks, '%d open tasks: ' % open_tasks)
     s3_alerts = lc_alerts(s3_say['id'])
     assert len(s3_alerts) == 1 and s3_alerts[0]['text'].startswith('no output for') and 'It tries again at' in s3_alerts[0]['text'] \

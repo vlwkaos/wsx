@@ -70,7 +70,8 @@ FILES_UNDER = '.work/'
 TEMPFAIL = 75
 # ^ `--local` on a machine the job does not run on (UNAVAILABLE in crates/wsx/src/task/host.rs).
 UNAVAILABLE = 69
-# ^ The lines scripts/sections.py prints for each failed and skipped section.
+# ^ The lines scripts/sections.py prints for each failed and skipped section: the summary of a run here
+# and of a red run on CI lists them all.
 SECTION_LINE = re.compile(r'(?:FAILED|SKIPPED) section .*')
 # ^ The script's whole time: the host's `ci:` limit (CI_TIMEOUT in crates/wsx/src/task/host.rs). A rate
 # limit that resets after it is a temporary failure.
@@ -411,6 +412,12 @@ def main():
                 say('\n'.join(lines[-LOG_LINES:]))
             say('failed: %s' % ', '.join(j['name'] for j in view['jobs']
                                          if j['conclusion'] in ('failure', 'timed_out', 'cancelled')))
+            # ^ Every failed and skipped section of each part with its first line (scripts/sections.py),
+            # so the reader needs no log.
+            for job, lines in jobs.items():
+                sections = list(dict.fromkeys(found.group(0) for found in map(SECTION_LINE.search, lines) if found))
+                if sections:
+                    say('%s, %d sections:\n%s' % (job, len(sections), '\n'.join(sections)))
             if temporary_failure(failed) or (view['conclusion'] == 'cancelled' and not SCENARIO_FAILURE.search(failed)):
                 say('%s failed on CI for the network or the runner, not the tree (%s): %s\n'
                     'a temporary failure: the host runs it again.' % (name, view['conclusion'], run['url']))

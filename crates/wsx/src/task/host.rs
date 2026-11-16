@@ -83,10 +83,8 @@ fn ci_retry_wait(attempt: u32, output: &str) -> Option<Duration> {
     if output.lines().any(|line| line.trim() == "retry: no") {
         return None;
     }
-    let backoff = std::env::var("WSX_TEST_CI_BACKOFF_SECS")
-        .ok()
-        .and_then(|secs| secs.parse().ok())
-        .unwrap_or(CI_BACKOFF_SECS[attempt as usize - 1]);
+    let backoff = test_secs("WSX_TEST_CI_BACKOFF_SECS")
+        .map_or(CI_BACKOFF_SECS[attempt as usize - 1], |wait| wait.as_secs());
     let hint = output
         .lines()
         .rev()
@@ -162,11 +160,23 @@ const LIMIT_CONTINUE: &str = "The usage limit has reset. Continue the task where
 const LIMIT_POLL_MS: u64 = 2_000;
 /// How often a wait on a fallback looks for the task's own agent coming free.
 const HOME_POLL_MS: u64 = 10_000;
-/// How often a task that waits for disk looks again.
-const DISK_POLL: Duration = Duration::from_secs(30);
+/// How often a task that waits for disk looks again (30 s).
+fn disk_poll() -> Duration {
+    test_secs("WSX_TEST_DISK_POLL_SECS").unwrap_or(Duration::from_secs(30))
+}
 /// How long a task resumed from a disk wait holds the disk slot, so the next one sees the
-/// space its turn takes before it resumes.
-const DISK_SETTLE: Duration = Duration::from_secs(60);
+/// space its turn takes before it resumes (60 s).
+fn disk_settle() -> Duration {
+    test_secs("WSX_TEST_DISK_SETTLE_SECS").unwrap_or(Duration::from_secs(60))
+}
+/// The seconds in `var`: for the task scenario only, which would wait out the real timers.
+fn test_secs(var: &str) -> Option<Duration> {
+    std::env::var(var)
+        .ok()?
+        .parse()
+        .ok()
+        .map(Duration::from_secs)
+}
 /// What a check prints when the disk is full: the check then waits instead of failing.
 /// The handoff notes a worker writes before its conversation rotates, in its task folder.
 const ROTATE_NOTES: &str = "rotate-notes.md";
@@ -307,7 +317,7 @@ struct Host {
     after_rebase: Option<AfterRebase>,
     disk_wait: Option<DiskWait>,
     /// The place of a disk wait in the machine's disk queue, and the disk slot it took to
-    /// resume, with when it took it: held for `DISK_SETTLE` or until its turn or checks end.
+    /// resume, with when it took it: held for `disk_settle()` or until its turn or checks end.
     disk_queue: Option<slot::Ticket>,
     disk_slot: Option<(slot::Slot, Instant)>,
     limit_wait: Option<LimitWait>,
@@ -555,7 +565,7 @@ impl Host {
             if self
                 .disk_slot
                 .as_ref()
-                .is_some_and(|(_, taken)| taken.elapsed() >= DISK_SETTLE)
+                .is_some_and(|(_, taken)| taken.elapsed() >= disk_settle())
             {
                 self.disk_slot = None;
             }
@@ -563,11 +573,11 @@ impl Host {
             let disk_due = self
                 .disk_wait
                 .as_ref()
-                .map(|_| DISK_POLL.saturating_sub(disk_checked.elapsed()));
+                .map(|_| disk_poll().saturating_sub(disk_checked.elapsed()));
             let settle_due = self
                 .disk_slot
                 .as_ref()
-                .map(|(_, taken)| DISK_SETTLE.saturating_sub(taken.elapsed()));
+                .map(|(_, taken)| disk_settle().saturating_sub(taken.elapsed()));
             let limit_due = self
                 .limit_wait
                 .as_ref()
@@ -2444,7 +2454,7 @@ impl Host {
     }
 
     /// Resume once there is space. Tasks resume one at a time, oldest wait first, each
-    /// `DISK_SETTLE` after the one before: resumed at once, they would fill the disk again.
+    /// `disk_settle()` after the one before: resumed at once, they would fill the disk again.
     /// ref: docs/tasks.md "Checks, revisions and report"
     fn resume_after_disk(&mut self) {
         if self.low_disk().is_some() {
