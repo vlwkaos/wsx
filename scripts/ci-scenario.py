@@ -6,7 +6,8 @@
 name (`task`, `web`, and `weblinux`, the web scenario on Ubuntu); a scenario with parts (`web`: `chat`, `tasks`; `task`: `core`, `worker`, `host`) runs one job for each part at
 once, and the run passes only when all pass. `--part` (or `WSX_SCENARIO_PART`, which `wsx task
 check-run web --part tasks` sets) runs one part: the branch gets the suffix `--<part>` and the other
-parts' jobs skip. The script waits for the run, prints each job's end, the failed jobs' names and the
+parts start no job (ci.yml excludes them). A part run ends with its own part's jobs and is judged by
+them alone, not by the run's conclusion; the script then cancels the rest of the run. The script waits for the run, prints each job's end, the failed jobs' names and the
 failed steps' log tail, downloads the run's `scenario-files*` artifacts (files.tar, paths in this
 checkout such as `.work/web-captures`) into the same paths, deletes the branch and exits 0 only when the run
 passed, 75 (EX_TEMPFAIL) when the run failed for the network or the runner and no scenario step
@@ -248,8 +249,15 @@ def wait_run(repo, run_id, part=None):
                 started = now
                 say('%s  queued %d min before its jobs started' % (time.strftime('%H:%M:%S'), (started - begun) // 60))
         status = run['status']
-        if status == 'completed':
-            return {'status': status, 'conclusion': run['conclusion'], 'jobs': jobs}
+        if status == 'completed' and not part:
+            return {'status': status, 'conclusion': run['conclusion'], 'jobs': jobs, 'run_done': True}
+        if part and any(job['name'].endswith('(%s)' % part) for job in jobs) \
+                and all(job['status'] == 'completed' for job in jobs):
+            # ^ A part run is judged by its own jobs alone, and ends with them: another part's
+            # job that waits for a runner, or was cancelled, is not this answer's.
+            bad = [job['conclusion'] for job in jobs if job['conclusion'] not in ('success', 'skipped')]
+            return {'status': 'completed', 'conclusion': bad[0] if bad else 'success', 'jobs': jobs,
+                    'run_done': status == 'completed'}
         late = overdue(now - begun, None if started is None else now - started)
         if late:
             # ^ No job started: the runners are full, not the tree. The caller's cleanup cancels the run.
@@ -399,10 +407,14 @@ def main():
         run = find_run(repo, commit)
         say('%s on CI for %s: %s' % (name, head[:12], run['url']))
         view = wait_run(repo, run['databaseId'], part)
-        ended = True
+        # ^ A part run that ends before the other parts' jobs: the cleanup below cancels the rest.
+        ended = view['run_done']
         take_files(repo, run['databaseId'], root, scratch)
         if view['conclusion'] != 'success':
-            failed = gh('run', 'view', str(run['databaseId']), '--repo', repo, '--log-failed', check=False).stdout
+            # ^ The run's failed log waits for the whole run; a part reads its own failed jobs.
+            failed = ''.join(gh('run', 'view', '--job', str(job['id']), '--repo', repo, '--log-failed', check=False).stdout
+                             for job in view['jobs'] if job['conclusion'] in ('failure', 'timed_out', 'cancelled')) \
+                if part else gh('run', 'view', str(run['databaseId']), '--repo', repo, '--log-failed', check=False).stdout
             # ^ One tail for each failed job: a job's name holds its part, and a long log of one
             # part never cuts another's failure. The run reports every failed part at once.
             jobs = {}

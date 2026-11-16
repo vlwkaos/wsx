@@ -99,6 +99,12 @@ jobs:
       fail-fast: false
       matrix:
         part: [core, worker, host]
+        # ^ On a part-only scenario branch (`--<part>`, ci-scenario.py --part) the other parts start
+        # no job: they would wait for a macOS runner the run does not need.
+        exclude:
+          - part: ${{ startsWith(github.ref_name, 'wsx-scenario/') && contains(github.ref_name, '--') && !endsWith(github.ref_name, '--core') && 'core' || '' }}
+          - part: ${{ startsWith(github.ref_name, 'wsx-scenario/') && contains(github.ref_name, '--') && !endsWith(github.ref_name, '--worker') && 'worker' || '' }}
+          - part: ${{ startsWith(github.ref_name, 'wsx-scenario/') && contains(github.ref_name, '--') && !endsWith(github.ref_name, '--host') && 'host' || '' }}
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -119,8 +125,8 @@ jobs:
         shell: bash
         run: |
           paths='crates/wsx/src/task crates/wsx-core/src/task crates/wsx-core/src/memory crates/wsx/src/cli/memory.rs scripts/test-task.py scripts/test-memory.py scripts/fake-memory-backend.py'
-          # ^ A job `if` cannot read `matrix`: another part's job starts, sees the `--<part>` suffix of
-          # a part-only scenario branch and ends green at once. ci-scenario.py ignores such jobs.
+          # ^ A job `if` cannot read `matrix`: the matrix excludes the other parts of a part-only
+          # scenario branch; one that still starts sees the `--<part>` suffix and ends green at once.
           if [[ "$REF_NAME" == wsx-scenario/*--* && "$REF_NAME" != *"--$PART" ]]; then
             run=false
           elif [ "$REF_TYPE" = tag ] || [ -z "$BEFORE" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
@@ -219,12 +225,17 @@ jobs:
       fail-fast: false
       matrix:
         part: [chat, tasks]
+        # ^ On a part-only scenario branch (`--<part>`, ci-scenario.py --part) the other parts start
+        # no job: they would wait for a macOS runner the run does not need.
+        exclude:
+          - part: ${{ startsWith(github.ref_name, 'wsx-scenario/') && contains(github.ref_name, '--') && !endsWith(github.ref_name, '--chat') && 'chat' || '' }}
+          - part: ${{ startsWith(github.ref_name, 'wsx-scenario/') && contains(github.ref_name, '--') && !endsWith(github.ref_name, '--tasks') && 'tasks' || '' }}
     # ^ macOS, where the scenario runs today; Ubuntu is not proven (t243 probe never reached it).
     runs-on: macos-15
     timeout-minutes: 60
     steps:
-      # ^ A job `if` cannot read `matrix`: a part-only branch (`--<part>` suffix) starts every
-      # part's job, and the other parts end green here. ci-scenario.py ignores such jobs.
+      # ^ A job `if` cannot read `matrix`: the matrix excludes the other parts of a part-only
+      # branch (`--<part>` suffix); one that still starts ends green here.
       - name: Look for this part
         id: part
         env:

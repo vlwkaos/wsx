@@ -4,7 +4,7 @@
 `python3 -B scripts/test-ci-scenario.py` runs `wait_run` and `gh` through the real code for four
 answers of GitHub: a rate limit that resets soon (the script waits and passes), one that resets after
 the deadline (TempFail, exit 75), an invalid token (TempFail, one line) and a plain run (the request
-count). It also runs `sweep` (it cancels only the scenario runs older than the script's whole time),
+count). A part run ends with its own job, judged by it alone. It also runs `sweep` (it cancels only the scenario runs older than the script's whole time),
 the cancel of a run through a rate limit, and a run whose jobs never leave the queue (TempFail). The
 fake counts every call in $FAKE_GH_DIR/calls.
 """
@@ -54,6 +54,14 @@ if args[1].startswith('repos/o/r/actions/runs?status='):
                                         run(3, 'main', 500)] if 'queued' in args[1] else []}))
     sys.exit(0)
 n = bump('requests')
+if args[1].endswith('/jobs?per_page=100') and mode.startswith('part'):
+    # ^ Run 43849076772: the asked part ends while another part's job still waits for a runner.
+    own = 'completed' if int(open(os.path.join(d, 'runs')).read()) >= 2 else 'in_progress'
+    print(json.dumps({'jobs': [
+        {'id': 11, 'name': 'web-scenario (chat)', 'status': own,
+         'conclusion': ('failure' if mode == 'part-fail' else 'success') if own == 'completed' else None},
+        {'id': 12, 'name': 'web-scenario (tasks)', 'status': 'queued', 'conclusion': None}]}))
+    sys.exit(0)
 if args[1].endswith('/jobs?per_page=100'):
     last = int(open(os.path.join(d, 'runs')).read()) >= 5
     print(json.dumps({'jobs': [
@@ -66,7 +74,7 @@ if mode in ('limit', 'late') and runs == 3 and not os.path.exists(os.path.join(d
     open(os.path.join(d, 'reset'), 'w').write(str(time.time() + (2 if mode == 'limit' else 3600)))
     open(os.path.join(d, 'runs'), 'w').write(str(runs - 1))
     sys.stderr.write('gh: API rate limit exceeded for user ID 1. (HTTP 403)\n'); sys.exit(1)
-done = runs >= 5
+done = runs >= 5 and not mode.startswith('part')
 print(json.dumps({'status': 'completed' if done else ('queued' if runs == 1 else 'in_progress'),
                   'conclusion': 'success' if done else None}))
 '''
@@ -101,6 +109,8 @@ def scenario(mode, folder):
     begun = time.monotonic()
     if mode == 'idle':
         module.QUEUE_SECONDS = -1
+    if mode.startswith('part'):
+        module.JOBS_SECONDS = 0
     try:
         if mode == 'sweep':
             module.sweep('o/r')
@@ -143,6 +153,12 @@ def main():
 
         out, seconds, calls, module = scenario('cancel-limit', folder)
         check(out is True and seconds >= 2, 'the cancel waits out a rate limit and goes through (%.1f s)' % seconds)
+
+        for mode, conclusion in (('part', 'success'), ('part-fail', 'failure')):
+            out, seconds, calls, module = scenario(mode, folder)
+            check(out['conclusion'] == conclusion and not out['run_done'] and [j['name'] for j in out['jobs']] == ['web-scenario (chat)'],
+                  'a part run is judged by its own job (%s) and ends while another part waits (%s)' % (conclusion, out))
+            check(len([c for c in calls if c.endswith('/runs/1')]) == 2, 'it ends at the poll its own job ended')
 
         out, seconds, calls, module = scenario('idle', folder)
         check(isinstance(out, module.TempFail) and 'no job started' in str(out), 'a run with no job started is a TempFail (%s)' % out)
