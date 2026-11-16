@@ -28,3 +28,14 @@ Place it next to the dead-turn stalls: same effect (a task idle with no wake), d
 1. Path A: when `check_run_done` ends while `stopped`, write one log entry the wake rule reads (the `check_run` entry is already there) and let `state_wakes` count a `check_run` entry newer than the stop as a wake for a `STOPPED_BY_REQUEST` wait. The manager then decides to `add`.
 2. Path B: write `check-run.json` (label, indexes, commit, `ci`) when the run starts, remove it when the answer is sent. `resume_state` that finds it starts the same run again, as it does for `Checking` (`:857`), so the answer reaches the worker as a turn.
 3. Proof for both: a 32t1 variant that kills the host (as `test-task.py` does near line 7384) before the gate opens.
+
+## What #472 (M2) changes
+
+#472 had not landed on main when this was written (main `d0aefcad`), so the rows were re-read on branch `wsx/t472` (`git diff main...wsx/t472`). Re-read them against main once it lands.
+
+| Row above | M2 | Effect |
+|---|---|---|
+| Where a host keeps the run, path A, path B (`host.rs`, `stall.rs`, `status.rs`) | not touched | unchanged |
+| Duties: who reads `state_wakes` (path A, fix 1) | the store watch, stalls, approvals and session news move from the home chat's host to the repo service (`crates/wsx/src/task/repo.rs:1202`, `:1353`); `seen` and `stalls` move to `RepoState` (`repo.json`). `state_wakes` and its `STOPPED_BY_REQUEST` skip stay in `wsx-core/src/task/manager.rs:317-323` | fix 1 is the same one-rule change in core. The service is always on, so the wake starts the home chat's host if it has left |
+| Host start (path B) | the task host's `resume_state` is unchanged. Chat hosts and the repo service start by `say` or an event, and take no check-run | path B is unchanged. A repo service restart does not help: it reads task states, and the lost run leaves none |
+| Chat hosts | only talk, with no check-run | none |
