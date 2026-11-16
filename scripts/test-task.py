@@ -1935,7 +1935,7 @@ def part_core(created=None):
     assert sorted(ledger_order) == sorted((asking, failing, x1, d1)), ledger_order
     order = [listed.index(row(listed, n)) for n in ledger_order + [memo_task]]
     assert order == sorted(order) and order[-1] > listed.index('Recent'), listed
-    assert re.search(r'(?m)^For you$', listed) and re.search(r'(?m)^Moving$', listed), listed
+    assert re.search(r'(?m)^ *For you *$', listed) and re.search(r'(?m)^ *Moving *$', listed), listed
     # ^ The row's label and the detail's sentence are wsx-core's status words, as `show` has them.
     assert re.search(r'NEEDS WebSearch NOOP +#%d +waiting +Waiting for your answer' % asking, row(listed, asking)), listed
     assert re.search(r'#%d +failed' % failing, row(listed, failing)), listed

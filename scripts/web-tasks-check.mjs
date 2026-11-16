@@ -1013,7 +1013,7 @@ await restored();
 await runningIs(`${openNow} tasks`, "the Tasks pill did not go back to its count");
 // ^ Nothing waits and nothing is left to check: only Tasks stays; with nothing, no pill at all.
 await inStore(`const ov = state.tasks[${project}]; update({ tasks: { ...state.tasks, [${project}]: { ...ov, needs: [], asks: [], to_check: 0, check_items: [], counts: { ...ov.counts, needs: 0, check: 0 } } } })`);
-await until("(document.querySelector('.pills')?.textContent ?? '').includes('${openNow}') && !document.querySelector('.pill[data-kind=you]')", "a pill with a count of 0 is still shown");
+await until(`(document.querySelector('.pills')?.textContent ?? '').includes('${openNow}') && !document.querySelector('.pill[data-kind=you]')`, "a pill with a count of 0 is still shown");
 if ((await pillWords()) !== `${openNow} tasks | 2 routines`) await fail(`with nothing to answer or check the pills read ${await pillWords()}`);
 await inStore(`const ov = state.tasks[${project}]; update({ tasks: { ...state.tasks, [${project}]: { ...ov, tasks: [], counts: { ...ov.counts, open: 0 } } } })`);
 await until("document.querySelectorAll('.pill').length === 1 && !!document.querySelector('.pill[data-kind=routines]')", "with the three counts at 0 a pill other than Routines is still shown");
