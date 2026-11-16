@@ -24,6 +24,10 @@ const GRACE: Duration = Duration::from_secs(60);
 pub fn grace() -> Duration {
     test_secs("WSX_TEST_STALL_GRACE_SECS", GRACE)
 }
+/// An owner wait is no stall; the owner hears of it once after this long, then once per
+/// `OWNER_REPEAT`.
+const OWNER_FIRST: Duration = Duration::from_secs(4 * 60 * 60);
+const OWNER_REPEAT: Duration = Duration::from_secs(24 * 60 * 60);
 /// A wait for another task to land that lasts this long is a stall.
 const AFTER_STALL_SECS: u64 = 24 * 60 * 60;
 /// The longest silence of a worker that still runs: a background job's wait or one check
@@ -31,6 +35,7 @@ const AFTER_STALL_SECS: u64 = 24 * 60 * 60;
 const BASH_MAX_SECS: u64 = 10 * 60;
 pub(super) const PROBE: Duration = Duration::from_secs(2);
 const LAST_ENTRY_CHARS: usize = 120;
+const REMINDER_REASON_CHARS: usize = 160;
 
 pub struct Stall {
     /// The same stall keeps its marker; progress or a new wait makes a new one.
@@ -48,6 +53,41 @@ pub fn find(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
     running(dir, record, now_ms)
         .or_else(|| manager_wait(dir, record, now_ms))
         .or_else(|| after_wait(record, now_ms))
+}
+
+/// A reminder due for the owner: one push per `step` of an owner wait.
+pub struct OwnerReminder {
+    /// 0 after `OWNER_FIRST` of the wait, then one more each `OWNER_REPEAT`.
+    pub step: u64,
+    /// When the wait began: with the task and the step, the push's key (a new wait is a new key).
+    pub since_unix_ms: u64,
+    /// The push's one line: the wait's time and its reason line; no path, log or env text of ours.
+    pub words: String,
+}
+
+/// The owner's reminder of an open task that waits on the owner (`status::waits_on`, not a
+/// guess from state names) for `OWNER_FIRST`, and again each `OWNER_REPEAT` while it waits.
+/// A wait that ended (answered, closed, landed) has none. ref: docs/tasks.md "Manager" (Stalls)
+pub fn owner_wait(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<OwnerReminder> {
+    let land_auto = load_task_config(&record.project_path).is_ok_and(|s| s.land_auto);
+    let on =
+        status::waits_on(dir, record, land_auto).filter(|on| on.kind == status::Holder::Owner)?;
+    let waited = Duration::from_millis(now_ms.saturating_sub(on.since_unix_ms));
+    let after_first = waited.checked_sub(OWNER_FIRST)?;
+    // ^ The reason line is the worker's or host's own first line, clipped: never the log.
+    let reason = match &record.waiting {
+        Some(waiting) => waiting.reason.clone(),
+        None => status::status(dir, record, &Default::default(), now_ms).label,
+    };
+    Some(OwnerReminder {
+        step: (after_first.as_millis() / OWNER_REPEAT.as_millis()) as u64,
+        since_unix_ms: on.since_unix_ms,
+        words: format!(
+            "waits on you for {}: {}",
+            span(waited.as_millis() as u64),
+            view::clip(&reason, REMINDER_REASON_CHARS)
+        ),
+    })
 }
 
 /// A wait for another task (`wsx task after`) still open after `AFTER_STALL_SECS`: reported

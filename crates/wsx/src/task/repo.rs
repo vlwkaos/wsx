@@ -12,7 +12,7 @@ use super::{hosting, notes};
 use crate::cli::existing_daemon_snapshot;
 use anyhow::{Context, Result};
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -20,7 +20,7 @@ use wsx_core::config::project::load_task_config;
 use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
 use wsx_core::stale;
 use wsx_core::task::manager::{
-    decided_request, open_requests, stall_wakes, state_wakes, ApprovalLine, Author, Checkin,
+    decided_request, open_requests, stall_wakes, state_wakes, ApprovalLine, Author, Checkin, Level,
     ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse, RepoState, Seen, Short,
 };
 use wsx_core::task::owner::ACTOR_ENV;
@@ -41,6 +41,8 @@ what landed and is live, what runs, and what waits for the owner and why. Read t
 task and change nothing. Name a task by its number and what it does.";
 /// The title of the task `tasks.workflow.idle` starts.
 const IDLE_TITLE: &str = "Consolidate project knowledge";
+/// A reminder's key is kept in `post-keys.json` for this long: a step lasts as long.
+const OWNER_REMINDER_WINDOW_SECS: u64 = 24 * 60 * 60;
 const EVENT_QUIET: Duration = Duration::from_secs(3);
 /// `EVENT_QUIET`, or the seconds in `WSX_TEST_EVENT_QUIET_SECS`: for the task scenario only.
 fn event_quiet() -> Duration {
@@ -71,6 +73,8 @@ fn prune_sweep() -> Duration {
 enum Event {
     /// The news of this session did not reach the home chat: it is posted again.
     Unposted(u64),
+    /// The owner's reminder under this key did not reach the home chat: the next sweep sends it again.
+    Unreminded(String),
     Request(ManagerRequest, Sender<ManagerResponse>),
     Tick,
     /// A sweep of stale worktrees and sessions ended: its notes, or why it failed.
@@ -116,6 +120,8 @@ struct Repo {
     observed_stalls: BTreeMap<u32, String>,
     /// The stall each task shows now, and since when: it is reported after `stall::grace()`.
     stall_suspects: BTreeMap<u32, (String, Instant)>,
+    /// The keys of the owner reminders sent or on their way, so a sweep sends none twice.
+    owner_reminded: BTreeSet<String>,
     stalls_swept: Option<Instant>,
     suggest_looked: Option<Instant>,
     sessions_looked: Option<Instant>,
@@ -165,6 +171,7 @@ pub fn run(project_id: &str) -> Result<()> {
         observed_routines: 0,
         observed_stalls: BTreeMap::new(),
         stall_suspects: BTreeMap::new(),
+        owner_reminded: BTreeSet::new(),
         stalls_swept: None,
         suggest_looked: None,
         sessions_looked: None,
@@ -252,6 +259,9 @@ impl Repo {
                     self.say(&format!("cannot start the idle task: {error}"))
                 }
                 Event::Delivered { to, lines, ok } => self.delivered(to, lines, ok),
+                Event::Unreminded(key) => {
+                    self.owner_reminded.remove(&key);
+                }
                 Event::Unposted(session) => {
                     if let Some(seen) = self.state.sessions_seen.as_mut() {
                         seen.remove(&session);
@@ -1312,6 +1322,7 @@ impl Repo {
         let now = now_unix_ms();
         let mut open = Vec::new();
         let mut suspects = BTreeMap::new();
+        let mut reminders = BTreeSet::new();
         let states: BTreeMap<u32, TaskState> = tasks
             .iter()
             .filter_map(|(_, record)| record.as_ref().ok())
@@ -1323,6 +1334,9 @@ impl Repo {
                 continue;
             }
             open.push(record.id);
+            if let Some(reminder) = stall::owner_wait(&dir, &record, now) {
+                reminders.insert(self.remind_owner(&record, reminder));
+            }
             if let Some(after) = &record.after {
                 let state = states.get(&after.task).copied();
                 if self.end_after(&dir, &record, state, &open_chats) {
@@ -1356,8 +1370,50 @@ impl Repo {
             self.task_event(&record, &open_chats, line, short);
         }
         self.stall_suspects = suspects;
+        self.owner_reminded.retain(|key| reminders.contains(key));
         // ^ Saved with the next event's `seen`.
         self.observed_stalls.retain(|id, _| open.contains(id));
+    }
+
+    /// Push the owner's reminder once per key (task, wait, step): through the home chat as an
+    /// event with no manager turn, off the loop (the post may wait for a turn that runs). The
+    /// key is also in `post-keys.json`, so a restart or a deploy sends none twice.
+    /// Returns the key. ref: docs/tasks.md "Manager" (Stalls)
+    fn remind_owner(&mut self, record: &TaskRecord, reminder: stall::OwnerReminder) -> String {
+        let key = format!(
+            "owner.{}.{}.{}",
+            record.id, reminder.since_unix_ms, reminder.step
+        );
+        if self.owner_reminded.insert(key.clone()) {
+            let (project, project_id, main) = (
+                self.project.clone(),
+                self.project_id.clone(),
+                self.main.clone(),
+            );
+            let line = format!("{project} #{} {}", record.id, reminder.words);
+            let (events, sent) = (self.events.clone(), key.clone());
+            std::thread::spawn(move || {
+                let posted = store::post_once(
+                    &project_id,
+                    &sent,
+                    now_unix_ms() / 1000,
+                    OWNER_REMINDER_WINDOW_SECS,
+                    || {
+                        super::cmd::routine::post_when_free(
+                            &main,
+                            &project,
+                            "waits on you",
+                            Some(Level::Warn),
+                            || vec![line.clone()],
+                        )
+                    },
+                );
+                if posted.is_err() {
+                    let _ = events.send(Event::Unreminded(sent));
+                }
+            });
+        }
+        key
     }
 
     /// End the wait of `wsx task after` when its task `state` is landed (the task gets the

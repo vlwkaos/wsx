@@ -5835,6 +5835,60 @@ def part_host(created=None):
     for n in (a, w, c, e, f, g, parked, unparked):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'after wait over')
+    # 32ow. A task that waits on the owner reminds the owner (docs/tasks.md "Manager", Stalls): one
+    # push once the wait lasted 4 h, then one a day, each once (a service restart sends none twice),
+    # with only the project, the number, the wait's time and its reason line, and no manager turn.
+    # The record's state start is aged by the hours, as the silence stall above ages its record.
+    mark('32ow')
+    hour_ms = 3600 * 1000
+    owed = js('task', 'new', 'WORK ow.txt')['id']
+    assert wait_state(owed, 'ready', 'failed')['state'] == 'ready', log(owed)
+    assert show(owed)['status']['waits_on']['kind'] == 'owner', show(owed)['status']
+    owed_record = Path(show(owed)['log']).parent / 'task.json'
+
+    def age_wait(minutes):
+        # ^ The wait began `minutes` ago (a wait starts at the later of the state's start and the task's). A host
+        # that saves its record writes the start it holds.
+        record = json.loads(owed_record.read_text())
+        for key in ('state_unix_ms', 'created_unix_ms'):
+            record[key] = int(time.time() * 1000) - minutes * 60_000
+        tmp = owed_record.with_suffix('.tmp')
+        tmp.write_text(json.dumps(record))
+        os.replace(tmp, owed_record)
+
+    def reminders():
+        return [e for e in manager_entries() if e['kind'] == 'reply' and e.get('post') and e.get('level') == 'warn'
+                and 'waits on you' in e['text']]
+    manager_settled('the manager has heard of the ready task')
+    ow_traces = len(traces())
+    age_wait(4 * 60 - 1)
+    time.sleep(3 * SWEEP + 2)
+    assert reminders() == [], reminders()
+    age_wait(4 * 60 + 1)
+    first = wait(lambda: reminders(), 'the reminder after 4 h', 30)
+    ow_line = r'demo #%d waits on you for 4 h 1 min: \S[^\n/]*' % owed
+    assert len(first) == 1 and re.fullmatch(ow_line, first[0]['text']), first
+    assert str(owed_record.parent) not in first[0]['text'] and len(first[0]['text']) < 220, first
+    # ^ A post may start the home chat's host, which takes the events that wait: the reminder itself
+    # is no message to the agent.
+    assert not [t for t in traces()[ow_traces:] if 'waits on you' in t.get('message', '')], 'a reminder starts no turn'
+    # ^ The key is on file: a service that starts again sends it no second time.
+    stop_repo_service()
+    assert js('task', 'manager')['state'] in ('started', 'running')
+    time.sleep(3 * SWEEP + 2)
+    assert len(reminders()) == 1, reminders()
+    age_wait(28 * 60 + 1)
+    second = wait(lambda: len(reminders()) == 2 and reminders(), 'the reminder a day later', 30)
+    assert re.fullmatch(r'demo #%d waits on you for 1 d 4 h: \S[^\n/]*' % owed, second[1]['text']), second
+    # ^ The owner answers: the wait ends and so do its reminders. The next wait counts from its own start.
+    assert js('task', 'add', owed, 'WORK ow2.txt')['ok']
+    assert wait_state(owed, 'ready', 'failed')['state'] == 'ready', log(owed)
+    time.sleep(3 * SWEEP + 2)
+    assert len(reminders()) == 2, reminders()
+    age_wait(4 * 60 + 1)
+    third = wait(lambda: len(reminders()) == 3 and reminders(), 'the reminder of the new wait', 30)
+    assert re.fullmatch(ow_line, third[2]['text']), third
+    js('task', 'close', owed, '--discard')
     # 32ag. A landed task stays landed: an add that waited for the worker while the checks of its
     # land ran is not delivered, the manager is told, and the close that follows leaves `landed`.
     # Before, the queued add started a turn on the landed task, and the close made it `closed`.
