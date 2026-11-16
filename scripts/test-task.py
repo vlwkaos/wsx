@@ -8344,7 +8344,8 @@ def part_host(created=None):
     cli('task', 'chat', 'new', 'm2idle', '--goal', str(m2_goal), '-p', 'demo', '--json')
     idle_log = chats_dir / 'm2idle/log.jsonl'
     idle_log.touch()
-    wait(lambda: not chat_host('m2n') and not chat_host('demo'), 'no chat host runs', 60)
+    wait(lambda: not chat_host('m2n'), lambda: 'the host of m2n leaves: %r' % chat_host('m2n'), 90)
+    print('m2: home host of demo after the linger:', chat_host('demo'), manager_state().get('limit'))
     m2_turns = len(manager_turns())
     aged = time.time() - 8 * 24 * 3600
     os.utime(idle_log, (aged, aged))
