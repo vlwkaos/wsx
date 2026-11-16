@@ -4483,8 +4483,9 @@ merge_seconds = 3
         ok('overview and chat: no whole-log read for an unchanged stamp or a chat, with or without a recent after; after a manager line both equal a cold build')
         # ^ A quiet stream pings every 10 s, so a page can tell a silent dead stream from a quiet one.
         # ^ The notes chat's session can end inside the wait (its history and workspace events restart
-        # the 10 s), so the wait leaves room for one such event.
-        watcher.expect('ping', timeout=25)
+        # the 10 s), so the wait leaves room for one such event. The chat hosts the line above
+        # started leave after their 20 s linger: that is one more such event.
+        watcher.expect('ping', timeout=45)
         # Streams a phone left behind cannot lock the device out (docs/web-client.md "Limits"):
         # a page's new stream ends its older one, and past four the device's oldest one ends.
         first = Events(owner, page='relay-page-1')
