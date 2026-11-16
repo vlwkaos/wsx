@@ -7,6 +7,7 @@ use super::index::{self, day_ms};
 use super::record::{Kind, Record, Status};
 use super::store::{usage, Error, NewRecord, Patch, Store, MAX_KEYWORD_BYTES};
 use crate::task::chat::{read_chat, Window};
+use crate::task::chats;
 use crate::task::manager::{Author, ManagerEvent};
 use crate::task::store::{read_bounded_if_exists, write_note, ManagerDir, TaskDir};
 use crate::task::text::day_of;
@@ -647,7 +648,14 @@ fn check_words(store: &Store, new: &NewRecord, words: &str) -> Result<(), Error>
     let Some((project, _)) = store.project_ids() else {
         return usage("--words needs a project scope");
     };
-    let dir = io(ManagerDir::existing_in(project, Actor::from_env().chat()))?;
+    let actor = Actor::from_env();
+    let dir = io(ManagerDir::existing_in(project, actor.chat()))?;
+    if let (Some(chat), Some(dir)) = (actor.chat(), &dir) {
+        // ^ A chat records a rule only in the scope of a repo it is part of.
+        if !chats::repos(dir).iter().any(|repo| repo == project) {
+            return usage(format!("chat {chat} is not part of project {project}"));
+        }
+    }
     let entries = match dir {
         Some(dir) => io(read_chat(&dir, &Window::Around(id)))?,
         None => Vec::new(),

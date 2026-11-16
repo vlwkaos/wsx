@@ -391,6 +391,11 @@ def notes_part(pid, notes):
     exits(2, *rule, '--slug', 'topic-home-words', '--words', 'never paste secrets in chat', text='x y z', scope=pid, env=topic)
     ok(*rule, '--slug', 'topic-tests', '--words', 'run the tests before you push', text='Run the tests before every push.', scope=pid, env=topic)
     check(ok('get', 'topic-tests', scope=pid)['kind'] == 'rule', 'the record is in the project scope')
+    elsewhere = os.path.join(os.path.dirname(chat), 'elsewhere')
+    os.makedirs(elsewhere, mode=0o700)
+    open(os.path.join(elsewhere, 'chat.json'), 'w').write(json.dumps({'repos': ['other-00000000']}))
+    open(os.path.join(elsewhere, 'log.jsonl'), 'w').write(open(os.path.join(chat, 'log.jsonl')).read())
+    check('chat elsewhere is not part of project' in exits(2, *rule, '--slug', 'elsewhere-tests', '--words', 'run the tests before you push', text='x y z', scope=pid, env={'WSX_TASK_ACTOR': 'chat:elsewhere'}), 'a chat of another repo is refused')
     exits(2, *rule, '--slug', 'home-topic-words', '--words', 'run the tests before you push', text='x y z', scope=pid)
     ok(*rule, '--slug', 'home-no-actor', '--words', 'never paste secrets in chat', text='Never paste secrets, even in a topic chat.', scope=pid)
 
