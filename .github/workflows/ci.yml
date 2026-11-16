@@ -329,6 +329,45 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
+  # ^ The only job that saves the Linux Zig packages (`zig-packages-Linux-X64-<hash>`) the
+  # `web-scenario-linux` job restores, on a push to main, as `scenario-cache` does for macOS.
+  # A branch reads the default branch's caches, so a `wsx-scenario/*` run never saves.
+  scenario-cache-linux:
+    name: scenario zig cache linux
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.96.1
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+          use-cache: false
+
+      - name: Cache Zig packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIG_GLOBAL_CACHE_DIR }}/p
+          key: zig-packages-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/libghostty-vt/build.zig.zon') }}
+
+      # ^ build.rs of wsx-terminal runs `zig build`, which fetches the packages.
+      - name: Build libghostty-vt
+        run: cargo build --locked -p wsx-terminal
+
+      # ^ An empty `p/` would be saved under the key for good: fail before the cache saves it.
+      - name: Check the Zig packages
+        run: test -n "$(ls -A "$ZIG_GLOBAL_CACHE_DIR/p")"
+
   # ^ The probe of the web scenario on Linux: a worker's `wsx task check-run weblinux` (a
   # `wsx-scenario/weblinux/` branch). Same steps as web-scenario above, with apt and the runner's
   # Chrome. docs/design/scenario-feedback-research.md "Ranked plan" 3.
@@ -352,6 +391,14 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
+          use-cache: false
+
+      # ^ Restore only: the Zig package cache rule (task #489), saved by `scenario-cache-linux`.
+      - name: Restore Zig packages
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIG_GLOBAL_CACHE_DIR }}/p
+          key: zig-packages-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/libghostty-vt/build.zig.zon') }}
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
