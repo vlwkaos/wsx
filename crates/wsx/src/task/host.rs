@@ -807,7 +807,7 @@ impl Host {
         }
         // ^ The answer is handled unless the run holds it for the worker's result.
         if self.check_run.is_none() {
-            let _ = std::fs::remove_file(self.dir.file(CHECK_RUN_FILE));
+            self.drop_check_run_mark();
         }
     }
 
@@ -975,23 +975,26 @@ impl Host {
         Ok(())
     }
 
+    fn drop_check_run_mark(&self) {
+        let _ = std::fs::remove_file(self.dir.file(CHECK_RUN_FILE));
+    }
+
     /// The run a host owed an answer for when it ended (`check-run.json`) runs again on the
     /// same commit, and its answer comes as a turn, as a queued run's does. A `ci:` scenario
     /// finds its CI run by the head (scripts/ci-scenario.py), so no second one starts. A task
     /// that was stopped keeps the answer for its next add. ref: docs/tasks.md "Check-run"
     fn resume_check_run(&mut self) {
-        let path = self.dir.file(CHECK_RUN_FILE);
         let mark = match self.dir.read_file(CHECK_RUN_FILE, 1 << 20) {
             Ok(Some(bytes)) => serde_json::from_slice::<CheckRunMark>(&bytes).ok(),
             _ => None,
         };
         let Some(mark) = mark else {
-            let _ = std::fs::remove_file(&path);
+            self.drop_check_run_mark();
             return;
         };
         let same = head(&self.record.working_copy).is_some_and(|head| head == mark.commit);
         if !self.record.state.is_open() || self.record.state == TaskState::Checking || !same {
-            let _ = std::fs::remove_file(&path);
+            self.drop_check_run_mark();
             return;
         }
         self.stopped = self
@@ -1014,7 +1017,7 @@ impl Host {
                 run.replies.clear();
             }
             None => {
-                let _ = std::fs::remove_file(&path);
+                self.drop_check_run_mark();
             }
         }
     }
@@ -3191,13 +3194,11 @@ impl Host {
             part: part.clone(),
             commit: commit.clone(),
         };
-        match serde_json::to_vec(&mark) {
-            Ok(bytes) => {
-                if let Err(error) = self.dir.write_file(CHECK_RUN_FILE, &bytes) {
-                    self.say(&format!("check-run: cannot keep the run's mark: {error:#}"));
-                }
-            }
-            Err(error) => self.say(&format!("check-run: cannot keep the run's mark: {error}")),
+        if let Err(error) = serde_json::to_vec(&mark)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| self.dir.write_file(CHECK_RUN_FILE, &bytes))
+        {
+            self.say(&format!("check-run: cannot keep the run's mark: {error:#}"));
         }
         self.check_run = Some(CheckRun {
             indexes,
@@ -3420,7 +3421,7 @@ impl Host {
     /// on an earlier one the next step's prompt carries it. Else (a failure, a result that is
     /// not `done`) the worker gets it as a turn. ref: docs/tasks.md "Check-run"
     fn answer_check_run(&mut self, answer: CheckAnswer) {
-        let _ = std::fs::remove_file(self.dir.file(CHECK_RUN_FILE));
+        self.drop_check_run_mark();
         let done = self
             .last_result
             .as_mut()
