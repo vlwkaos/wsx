@@ -797,6 +797,21 @@ function useRowNodes(rows, { ready, own, context, draw }) {
   };
 }
 
+// The overview a screen shows: the project's own, or a chat's (`api/tasks/<project>?chat=`,
+// what that chat owns); the chat's is read again when the project's changes, which a change of
+// what any chat owns publishes (wsx-web `watch_overview`).
+function useOverview(id, room) {
+  const project = useStore().tasks[id];
+  const [own, setOwn] = useState(null);
+  useEffect(() => {
+    if (!room) return undefined;
+    let live = true;
+    api(`api/tasks/${id}`, { query: { chat: room } }).then((value) => { if (live) setOwn({ room, value }); }, () => {});
+    return () => { live = false; };
+  }, [id, room, project]);
+  return room ? (own?.room === room ? own.value : null) : project;
+}
+
 // The project screen with task_view: the manager chat as messages, what is open in the
 // reservoir, and with a task or the page in the route its sheet over the chat. With `chat`, another
 // chat (#/p/<project>/c/<chat>): the same bubbles without the manager's reservoir, and with its own
@@ -804,20 +819,21 @@ function useRowNodes(rows, { ready, own, context, draw }) {
 export function Manager({ project: id, sheet = null, task = null, item = null, chat: room = null }) {
   const store = useStore();
   const project = store.projects.find((candidate) => candidate.id === id);
-  const overview = store.tasks[id];
+  const overview = useOverview(id, room);
   const { chat, failure, around, aroundRead, finding, setFinding, cut, loading, jump, back, findWords } = useManagerLog(id, room);
   // ^ The To check items, each a bubble at the time it was added; read again when the open
   // count changes (a new item, a pass or a fail).
   const [checkItems, setCheckItems] = useState(null);
-  // ^ Another chat has no overview count: its rows change when an item comes or goes.
-  const toCheck = room ? chat?.rows?.length : overview?.to_check;
+  // ^ Another chat's rows change when an item comes or goes, as its overview's count does.
+  const toCheck = overview?.to_check;
+  const roomRows = room ? chat?.rows?.length : null;
   // ^ A reply to a decided item is its note: read again when one more reply names an item.
   const noted = chat?.rows?.filter((row) => row.quoted_check).map((row) => row.id).join();
   useEffect(() => {
     let live = true;
     api(`api/tasks/${id}/checks`, { query: room && { chat: room } }).then((value) => { if (live) setCheckItems(value.items); }, () => { if (live) setCheckItems((now) => now ?? []); });
     return () => { live = false; };
-  }, [id, room, toCheck, noted]);
+  }, [id, room, toCheck, roomRows, noted]);
   const ready = Boolean(chat) && checkItems !== null;
   const [sent, setSent] = useState(null);
   const place = room ? `project-${id}-c-${room}` : `project-${id}`;
@@ -864,10 +880,10 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   }, [refocus]);
 
   // ^ What waits for the owner is the needs and the open questions (docs/web-client-tasks.md "Project screen").
-  const asking = room ? [] : (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote }));
-  const needing = room ? [] : [...(overview?.needs ?? []), ...asking];
+  const asking = (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote }));
+  const needing = [...(overview?.needs ?? []), ...asking];
   const [routineList, setRoutineList] = useRoutines(id, !room, chat?.rows?.at(-1)?.key);
-  const counts = trayCounts(room ? null : overview, routineList?.counts);
+  const counts = trayCounts(overview, routineList?.counts);
   const [tray, toggleTray, setTray] = useTray(counts);
   const [look, setLook] = useState(null);
   const showNeed = (approval) => { setTray("you"); setLook(approval); };
@@ -978,11 +994,11 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
           <ul class="queue" aria-label=${`Messages waiting for ${room ?? "the manager"}`}>
             ${waiting.map((row) => html`<li key=${row.key} class="queued" data-key=${row.key}><span class="queued-text">${row.text || `${row.attachments?.length ?? 0} files`}</span></li>`)}
           </ul>`}
-        ${!room && html`<${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${overview?.tasks ?? []} waiting=${overview?.waiting ?? []} checks=${overview?.check_items ?? []} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${replyTo} onShow=${goToReply} />`}
+        <${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${overview?.tasks ?? []} waiting=${overview?.waiting ?? []} checks=${overview?.check_items ?? []} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${replyTo} onShow=${goToReply} />
         ${low && header}
-        ${!room && !can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
+        ${!can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
         ${can("task_act") && html`<${ManagerComposer} project=${id} room=${room} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
-          pills=${!room && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} />`}
+          pills=${html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} />`}
           onSent=${(message) => { toEnd(); setSent(message); back(); }} />`}
       </div>
       ${menu}

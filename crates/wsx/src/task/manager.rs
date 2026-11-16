@@ -1510,18 +1510,27 @@ impl Manager {
     /// To check and approval counts and the deploy. The manager reads the full ledger only
     /// when it needs more. ref: docs/tasks.md "Manager"
     fn ledger_summary(&mut self) -> String {
+        // ^ The chat's own tasks, To check items and approvals (`chats::Viewer`), as its page lists them.
+        let viewer = chats::Viewer::new(&self.dir.project_id, Some(&self.dir.chat));
         let tasks: Vec<(store::TaskDir, wsx_core::task::TaskRecord)> =
             project_tasks(&self.dir.project_id)
                 .unwrap_or_default()
                 .into_iter()
                 .filter_map(|(dir, record)| record.ok().map(|record| (dir, record)))
+                .filter(|(_, record)| viewer.owns(record.created_by.chat()))
                 .collect();
         let open = match open_counts(tasks.iter().map(|(_, record)| record)) {
             (0, _) => "none".to_string(),
             (_, states) => states,
         };
-        let to_check = checks::open_items(&self.dir.project_id).map_or(0, |items| items.len());
-        let approvals = pending_approvals(&self.approval_lines()).len();
+        let to_check = chats::checks_of(
+            &self.dir.project_id,
+            checks::open_items(&self.dir.project_id).unwrap_or_default(),
+            &viewer,
+        )
+        .len();
+        let approvals =
+            pending_approvals(&chats::approvals_of(self.approval_lines(), &viewer)).len();
         let baseline = self.state.turn_seen.take();
         let seen: BTreeMap<u32, Seen> = tasks
             .iter()
