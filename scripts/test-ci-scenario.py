@@ -45,13 +45,14 @@ if args[-1].endswith('/cancel'):
         sys.stderr.write('gh: API rate limit exceeded for user ID 1. (HTTP 403)\n'); sys.exit(1)
     sys.exit(0)
 if args[:2] == ['run', 'list']:
-    def listed(i, head, branch, status, conclusion):
-        return {'databaseId': i, 'url': 'u%d' % i, 'displayTitle': 'wsx scenario web for ' + head,
+    def listed(i, head, branch, status, conclusion, main='M1'):
+        return {'databaseId': i, 'url': 'u%d' % i, 'displayTitle': 'wsx scenario web for %s on main %s' % (head, main),
                 'headBranch': branch, 'status': status, 'conclusion': conclusion}
     print(json.dumps([listed(5, 'H1', 'wsx-scenario/web/1-aa', 'completed', 'failure'),
                       listed(6, 'H1', 'wsx-scenario/web/2-bb--chat', 'in_progress', None),
                       listed(7, 'H1', 'wsx-scenario/web/3-cc', 'completed', 'success'),
-                      listed(8, 'H2', 'wsx-scenario/web/4-dd', 'in_progress', None)]))
+                      listed(8, 'H2', 'wsx-scenario/web/4-dd', 'in_progress', None),
+                      listed(9, 'H4', 'wsx-scenario/web/5-ee', 'completed', 'success', 'M0')]))
     sys.exit(0)
 if args[1].startswith('repos/o/r/git/matching-refs'):
     print('[]'); sys.exit(0)
@@ -125,8 +126,9 @@ def scenario(mode, folder):
             module.sweep('o/r')
             out = None
         elif mode == 'reuse':
-            out = [(module.find_existing('o/r', 'web', part, head) or {}).get('databaseId')
-                   for part, head in ((None, 'H1'), ('chat', 'H1'), (None, 'H2'), (None, 'H3'), ('tasks', 'H1'))]
+            out = [(module.find_existing('o/r', 'web', part, head, main) or {}).get('databaseId')
+                   for part, head, main in ((None, 'H1', 'M1'), ('chat', 'H1', 'M1'), (None, 'H2', 'M1'), (None, 'H3', 'M1'),
+                                            ('tasks', 'H1', 'M1'), (None, 'H4', 'M1'), (None, 'H4', 'M0'))]
         elif mode == 'cancel-limit':
             out = module.cancel_run('o/r', 7, time.monotonic() + 30)
         else:
@@ -173,8 +175,9 @@ def main():
             check(len([c for c in calls if c.endswith('/runs/1')]) == 2, 'it ends at the poll its own job ended')
 
         out, seconds, calls, module = scenario('reuse', folder)
-        check(out == [7, 6, 8, None, None],
-              'a restarted host finds the run of its head: running or passed, the part\'s own, never a failed one (%s)' % out)
+        check(out == [7, 6, 8, None, None, None, 9],
+              'a restarted host finds the run of its head and main: running or passed, the part\'s own, never a failed one '
+              'or one of an older main (%s)' % out)
 
         out, seconds, calls, module = scenario('idle', folder)
         check(isinstance(out, module.TempFail) and 'no job started' in str(out), 'a run with no job started is a TempFail (%s)' % out)

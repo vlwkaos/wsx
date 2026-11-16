@@ -186,11 +186,17 @@ def find_run(repo, commit):
     raise RuntimeError('no CI run started for %s in %d s' % (commit, FIND_SECONDS))
 
 
-def find_existing(repo, name, part, head):
+def scenario_title(name, head, main):
+    """The commit title names the whole tested input: HEAD's tree on main's workflows."""
+    return 'wsx scenario %s for %s on main %s' % (name, head, main)
+
+
+def find_existing(repo, name, part, head, main):
     """The run of this head's scenario that a host that ended left: still going, or passed. A host
     that restarts during a `check-run` runs the script again, and it waits for that run: no second
-    one starts (a failed or cancelled run runs again). The commit title names the head."""
-    title = 'wsx scenario %s for %s' % (name, head)
+    one starts (a failed or cancelled run runs again). A run of the same head on an older main
+    tested other workflows, so it never answers this call."""
+    title = scenario_title(name, head, main)
     prefix, suffix = 'wsx-scenario/%s/' % name, '--' + part if part else ''
     found = json.loads(gh('run', 'list', '--repo', repo, '--workflow', 'ci.yml', '--json',
                           'databaseId,url,displayTitle,headBranch,status,conclusion', '--limit', '50').stdout or '[]')
@@ -418,9 +424,9 @@ def main():
     try:
         head = git('rev-parse', 'HEAD')
         commit = git('commit-tree', tree_for_ci(main_commit, scratch), '-p', head,
-                     '-m', 'wsx scenario %s for %s' % (name, head))
+                     '-m', scenario_title(name, head, main_commit))
         sweep(repo)
-        run = find_existing(repo, name, part, head)
+        run = find_existing(repo, name, part, head, main_commit)
         if run:
             branch = run['headBranch']
             say('%s on CI for %s: the run of an earlier call, %s' % (name, head[:12], run['url']))
