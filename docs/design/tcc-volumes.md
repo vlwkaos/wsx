@@ -6,7 +6,7 @@ Audit run 2026-11-16 inside the worker boundary, read only. No code, setting or 
 ## Verdict
 
 Assuming: the cause is macOS TCC (service `kTCCServiceSystemPolicyRemovableVolumes`), not wsx's Seatbelt profile.
-Seatbelt is ruled out by the profile text. TCC is likely but not proven: the check that names the denied client cannot run inside the boundary (see "Proof on the host").
+Seatbelt is ruled out by the profile text. TCC is likely but not proven: the check that names the denied client cannot run inside the boundary.
 
 ## Evidence
 
@@ -63,4 +63,4 @@ One probe in `crates/wsx-daemon/src/server.rs::run_daemon`, after the singleton 
 
 Owner grant: to the responsible app named in the line (for example Ghostty.app), not to `wsxd` or `claude`. A start from a non-app source (launchd job, ssh) needs Full Disk Access for that source, or a restart of wsxd from Ghostty.
 
-Cost: about 40 lines in wsx-daemon, macOS only. Runs once per daemon start, so a volume mounted later is not covered.
+Limit: the probe runs once per daemon start, so a volume mounted later is not covered.
