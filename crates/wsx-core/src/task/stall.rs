@@ -4,24 +4,25 @@
 
 use super::status::{self, span};
 use super::store::{self, TaskDir};
-use super::{call_host, view, HostRequest, LogEvent, TaskRecord, TaskState, WaitOn};
+use super::{call_host, test_secs, view, HostRequest, LogEvent, TaskRecord, TaskState, WaitOn};
 use crate::config::project::load_task_config;
 use crate::model::workspace::DEFAULT_MANAGER_REVIEW_SECS;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
 
-pub const SWEEP: Duration = Duration::from_secs(10);
+const SWEEP: Duration = Duration::from_secs(10);
+/// `SWEEP`, or the seconds in `WSX_TEST_STALL_SWEEP_SECS`: for the task scenario only.
+pub fn sweep() -> Duration {
+    test_secs("WSX_TEST_STALL_SWEEP_SECS", SWEEP)
+}
 /// A stall seen only in the present must last this long: two disk polls of the task host
 /// (30 s each), and longer than a host's exec handoff or a land's rebase holds its socket.
 const GRACE: Duration = Duration::from_secs(60);
 /// `GRACE`, or the seconds in `WSX_TEST_STALL_GRACE_SECS`: for the task scenario only, which
 /// would otherwise wait a minute per stall. ref: docs/tasks.md "Manager" (Stalls)
 pub fn grace() -> Duration {
-    std::env::var("WSX_TEST_STALL_GRACE_SECS")
-        .ok()
-        .and_then(|secs| secs.parse().ok())
-        .map_or(GRACE, Duration::from_secs)
+    test_secs("WSX_TEST_STALL_GRACE_SECS", GRACE)
 }
 /// A wait for another task to land that lasts this long is a stall.
 const AFTER_STALL_SECS: u64 = 24 * 60 * 60;

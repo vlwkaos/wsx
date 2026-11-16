@@ -715,6 +715,16 @@ fn default_check_timeout_secs() -> u64 {
     crate::model::workspace::DEFAULT_CHECK_TIMEOUT_SECS
 }
 
+/// `default`, or the seconds in the variable `var`: a timer's test setting, for the task
+/// scenario only, which would otherwise wait the real time. ref: scripts/test-task.py
+pub fn test_secs(var: &str, default: std::time::Duration) -> std::time::Duration {
+    std::env::var(var)
+        .ok()
+        .and_then(|secs| secs.parse().ok())
+        .and_then(|secs| std::time::Duration::try_from_secs_f64(secs).ok())
+        .unwrap_or(default)
+}
+
 pub fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

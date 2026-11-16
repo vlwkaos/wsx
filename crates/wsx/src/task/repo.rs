@@ -29,8 +29,8 @@ use wsx_core::task::stall;
 use wsx_core::task::store::{self, ManagerDir};
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
 use wsx_core::task::{
-    call_host, chats, checks, ledger, now_unix_ms, owner, session_news, usage, Actor, HostRequest,
-    TaskRecord, TaskState, MAX_MESSAGE_BYTES,
+    call_host, chats, checks, ledger, now_unix_ms, owner, session_news, test_secs, usage, Actor,
+    HostRequest, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
 };
 
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -42,6 +42,10 @@ task and change nothing. Name a task by its number and what it does.";
 /// The title of the task `tasks.workflow.idle` starts.
 const IDLE_TITLE: &str = "Consolidate project knowledge";
 const EVENT_QUIET: Duration = Duration::from_secs(3);
+/// `EVENT_QUIET`, or the seconds in `WSX_TEST_EVENT_QUIET_SECS`: for the task scenario only.
+fn event_quiet() -> Duration {
+    test_secs("WSX_TEST_EVENT_QUIET_SECS", EVENT_QUIET)
+}
 /// A chat that did not take its events is tried again after this long.
 const RETRY: Duration = Duration::from_secs(10);
 /// How often the host keeps the "To check" captures within their budget.
@@ -61,10 +65,7 @@ const CHAT_IDLE_MS: u64 = 7 * 24 * 3_600_000;
 /// How often the project's stale worktrees and idle chats are swept, or the seconds in
 /// `WSX_TEST_PRUNE_SWEEP_SECS`: for the task scenario only, which would wait an hour.
 fn prune_sweep() -> Duration {
-    std::env::var("WSX_TEST_PRUNE_SWEEP_SECS")
-        .ok()
-        .and_then(|secs| secs.parse().ok())
-        .map_or(Duration::from_secs(60 * 60), Duration::from_secs)
+    test_secs("WSX_TEST_PRUNE_SWEEP_SECS", Duration::from_secs(60 * 60))
 }
 
 enum Event {
@@ -328,7 +329,7 @@ impl Repo {
     fn flush_events(&mut self) {
         let quiet = self
             .last_event
-            .is_some_and(|last| last.elapsed() >= EVENT_QUIET);
+            .is_some_and(|last| last.elapsed() >= event_quiet());
         if self.outbox.is_empty() || !quiet || self.retry_at.is_some_and(|at| Instant::now() < at) {
             return;
         }
@@ -1299,7 +1300,7 @@ impl Repo {
     fn watch_stalls(&mut self) {
         if self
             .stalls_swept
-            .is_some_and(|at| at.elapsed() < stall::SWEEP)
+            .is_some_and(|at| at.elapsed() < stall::sweep())
         {
             return;
         }

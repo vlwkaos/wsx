@@ -13,6 +13,7 @@ use wsx_core::task::Actor;
 use wsx_core::task::{
     now_unix_ms,
     store::{self},
+    test_secs,
 };
 
 pub(crate) const DAY_MS: u64 = 24 * 3600 * 1000;
@@ -99,7 +100,10 @@ pub(crate) fn checkin(
 pub(crate) fn duration_secs(text: &str) -> Result<i64> {
     let text = text.trim();
     let unit = match text.chars().last() {
-        Some('m') => 60,
+        // ^ A minute, or the seconds in `WSX_TEST_CHECKIN_MINUTE_SECS`: for the task scenario only.
+        Some('m') => {
+            test_secs("WSX_TEST_CHECKIN_MINUTE_SECS", Duration::from_secs(60)).as_secs() as i64
+        }
         Some('h') => 3600,
         Some('d') => 24 * 3600,
         _ => bail!("--in takes minutes, hours or days: 40m, 2h, 1d"),

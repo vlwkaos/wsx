@@ -199,12 +199,18 @@ def gate_cmd(path):
     return 'while [ ! -e %s ]; do sleep 0.2; done' % path
 
 
-# ^ The manager host's stall grace (60 s) and sweep (10 s): the scenario sets the grace to
-# STALL_GRACE through wsxd's environment, so a stall is reported on the second sweep.
+# ^ The manager host's stall grace (60 s) and sweep (10 s): the scenario sets them to STALL_GRACE and
+# SWEEP through wsxd's environment, so a stall is reported on the first sweep after the grace.
 STALL_GRACE = 4
+SWEEP = 2
+# ^ Product timers the scenario shortens the same way (docs/tasks.md "Scenarios"): the quiet before the
+# repo service sends its event lines (3 s), a check-in's `--in 1m` (60 s) and a chat host's linger (20 s).
+# The check-in outlasts the linger, so m2 sees a check-in due after its chat's host left.
+EVENT_QUIET = 1.5
+CHECKIN_MINUTE = 15
+CHAT_LINGER = 5
 # ^ How long a failed sign-in on record keeps the account skipped (store.rs `sign_in_retry_ms`).
 SIGN_IN_RETRY = 12
-SWEEP = 10
 # ^ The hung-turn bound of 37c and 39b (the real one is 10 min): above the fakes' plain turns.
 TURN_QUIET = 15
 
@@ -367,7 +373,9 @@ def run(wsx, wsxd, work, owned, part):
     daemon_socket = work / 'd.sock'
     env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
            'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(daemon_socket),
-           'WSX_TEST_STALL_GRACE_SECS': str(STALL_GRACE), 'WSX_TEST_ALLOW_FILE_CLONE': '1', 'WSX_TEST_PRUNE_SWEEP_SECS': '3',
+           'WSX_TEST_STALL_GRACE_SECS': str(STALL_GRACE), 'WSX_TEST_STALL_SWEEP_SECS': str(SWEEP), 'WSX_TEST_ALLOW_FILE_CLONE': '1',
+           'WSX_TEST_PRUNE_SWEEP_SECS': '3', 'WSX_TEST_EVENT_QUIET_SECS': str(EVENT_QUIET), 'WSX_TEST_CHECKIN_MINUTE_SECS': str(CHECKIN_MINUTE),
+           'WSX_TEST_CHAT_LINGER_SECS': str(CHAT_LINGER),
            'WSX_TEST_SIGN_IN_RETRY_SECS': str(SIGN_IN_RETRY), 'WSX_TEST_CI_BACKOFF_SECS': '1', **start_floor(work),
            # ^ The disk wait's poll (30 s) and settle (60 s), waited out in 27m and 32d.
            'WSX_TEST_DISK_POLL_SECS': '3', 'WSX_TEST_DISK_SETTLE_SECS': '10',
@@ -1011,9 +1019,9 @@ def manager_up(created):
         return all(e['id'] in delivered for e in waking) and turns[-1:] != ['delivered']
 
     def manager_settled(why):
-        # ^ An event line is logged as a message 3 s after the last one: idle, then idle again after that.
+        # ^ An event line is logged as a message EVENT_QUIET after the last one: idle, then idle again after that.
         wait(manager_idle, why, 60)
-        time.sleep(3.5)
+        time.sleep(EVENT_QUIET + 0.5)
         wait(manager_idle, why, 60)
 
     # Usage (docs/tasks.md "Manager"): rotation looks at the last main model call's context, not
@@ -1167,7 +1175,7 @@ def manager_up(created):
     js('session', 'create', '--name', 'stale-busy', '--worktree', 'stale-busy', '-p', 'demo',
        '--command', '(while true; do echo tick; sleep 1; done) &')
     sessions_in = lambda name: [s for s in daemon_call('snapshot')['data']['sessions'] if s['label'] == name]
-    # ^ The host logs event lines together, 3 s after the last: a message holds one or more lines.
+    # ^ The host logs event lines together, EVENT_QUIET after the last: a message holds one or more lines.
     pruned_events = lambda: [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
                              and any(line.startswith('pruned: ') for line in e['text'].split('\n'))]
     wait(lambda: not (base / 'stale-clean').exists(), 'the idle clean merged worktree is removed', 60)
@@ -8381,7 +8389,7 @@ def part_host(created=None):
     # M2. The repo service and equal chat hosts (docs/tasks.md "Chats", docs/design/orchestration-model.md
     # 3.2): one `repo-host` per repo turns the events of the store into messages and sends each to the
     # chat that owns it, else to the home chat; every chat's host (the home chat's too) only talks and
-    # leaves 20 s after its queue is empty. Two repos here, each with a home chat, and named chats in demo.
+    # leaves CHAT_LINGER after its queue is empty. Two repos here, each with a home chat, and named chats in demo.
     mark('m2')
     m2_config = config_dir / 'config-v2.toml'  # ^ `registry` is a closed file by here (a `with` above)
     m2_registry = m2_config.read_text()
