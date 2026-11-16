@@ -1270,11 +1270,12 @@ async fn tasks_overview(
     State(app): State<Shared>,
     Paired(_): Paired,
     UrlPath(project): UrlPath<u64>,
+    Query(query): Query<ChatQuery>,
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
     let shared = app.clone();
     with_scope(&app, project, move |scope| {
-        Ok(crate::tasks::overview(&shared, scope))
+        crate::tasks::chat_overview(&shared, scope, query.chat.as_deref())
     })
     .map(Json)
 }
@@ -1557,7 +1558,7 @@ async fn task_decide(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChatQuery {
-    /// The items of this chat's tasks instead of the first chat's (docs/tasks.md "Chats").
+    /// The items (or the overview) of this chat's tasks instead of the first chat's (docs/tasks.md "Chats").
     chat: Option<String>,
 }
 

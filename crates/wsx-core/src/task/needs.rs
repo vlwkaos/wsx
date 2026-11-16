@@ -168,14 +168,15 @@ pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCou
     let approvals = store::read_approvals(project_id).unwrap_or_default();
     let items = checks::open_items(project_id).unwrap_or_default();
     for name in counts.keys().cloned().collect::<Vec<_>>() {
-        let own = chats::approvals_of(approvals.clone(), &name, &open, &home);
+        let viewer = chats::Viewer::named(&name, open.clone(), &home);
+        let own = chats::approvals_of(approvals.clone(), &viewer);
         let Some(entry) = counts.get_mut(&name) else {
             continue;
         };
         entry.needs += pending_approvals(&own).len();
         entry.running += waiting_approvals(&own).len();
         entry.open += waiting_approvals(&own).len();
-        entry.check = chats::checks_of(project_id, items.clone(), &name, &open, &home).len();
+        entry.check = chats::checks_of(project_id, items.clone(), &viewer).len();
     }
     counts
 }

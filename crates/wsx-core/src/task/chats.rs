@@ -177,16 +177,53 @@ pub fn owner<'a>(made_by: Option<&'a str>, open: &[String], home: &'a str) -> &'
         .unwrap_or(home)
 }
 
-/// The lines of `approvals.jsonl` that chat `viewer` shows: its own requests and their
-/// decisions.
-pub fn approvals_of(
-    lines: Vec<ApprovalLine>,
-    viewer: &str,
-    open: &[String],
-    home: &str,
-) -> Vec<ApprovalLine> {
+/// The chat that looks at a list and the open chats and home chat it is told apart from:
+/// `owns` is `owner` for that chat, the one rule every list a chat shows reads (tasks,
+/// approvals, To check items, the overview, the ledger).
+#[derive(Debug, Clone)]
+pub struct Viewer {
+    name: String,
+    open: Vec<String>,
+    home: String,
+}
+
+impl Viewer {
+    /// Chat `chat` of the repo, or its home chat for `None`.
+    pub fn new(project_id: &str, chat: Option<&str>) -> Self {
+        let home = store::home_chat(project_id).unwrap_or_default();
+        Self::named(chat.unwrap_or(&home), open_names(), &home)
+    }
+
+    pub fn named(name: &str, open: Vec<String>, home: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            open,
+            home: home.to_string(),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn home(&self) -> &str {
+        &self.home
+    }
+
+    pub fn open(&self) -> &[String] {
+        &self.open
+    }
+
+    /// Whether what `made_by` made belongs to this chat.
+    pub fn owns(&self, made_by: Option<&str>) -> bool {
+        owner(made_by, &self.open, &self.home) == self.name
+    }
+}
+
+/// The lines of `approvals.jsonl` that `viewer` shows: its own requests and their decisions.
+pub fn approvals_of(lines: Vec<ApprovalLine>, viewer: &Viewer) -> Vec<ApprovalLine> {
     let mine = |line: &ApprovalLine| match line {
-        ApprovalLine::Request { chat, .. } => owner(chat.as_deref(), open, home) == viewer,
+        ApprovalLine::Request { chat, .. } => viewer.owns(chat.as_deref()),
         ApprovalLine::Decision { .. } => false,
     };
     let ids: HashSet<String> = lines
@@ -200,21 +237,15 @@ pub fn approvals_of(
         .collect()
 }
 
-/// The To check items of the tasks that chat `viewer` owns.
-pub fn checks_of(
-    project_id: &str,
-    items: Vec<CheckItem>,
-    viewer: &str,
-    open: &[String],
-    home: &str,
-) -> Vec<CheckItem> {
+/// The To check items of the tasks that `viewer` owns.
+pub fn checks_of(project_id: &str, items: Vec<CheckItem>, viewer: &Viewer) -> Vec<CheckItem> {
     items
         .into_iter()
         .filter(|item| {
             let made_by = store::TaskDir::open(project_id, item.task)
                 .and_then(|dir| dir.read_record())
                 .map(|record| record.created_by);
-            owner(made_by.as_ref().ok().and_then(|by| by.chat()), open, home) == viewer
+            viewer.owns(made_by.as_ref().ok().and_then(|by| by.chat()))
         })
         .collect()
 }

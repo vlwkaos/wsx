@@ -94,12 +94,14 @@ fn open_task(scope: &Scope, task: u32) -> Outcome<TaskDir> {
 #[derive(PartialEq)]
 pub struct OverviewKey {
     stamp: store::Stamp,
+    /// The open chats and the home chat: a chat that opens or closes moves tasks between views.
+    chats: (Vec<String>, Option<String>),
     /// `land.auto`, the manager's shown name, `preview` set, `try_live`.
     settings: Option<(bool, String, bool, bool)>,
 }
 
-/// A built overview and when, by project.
-pub type Overviews = HashMap<u64, (OverviewKey, Instant, Value)>;
+/// A built overview and when, by project and the chat that looks ("" is the home chat).
+pub type Overviews = HashMap<(u64, String), (OverviewKey, Instant, Value)>;
 
 /// A chat's agent status; `None` when its manager or chat is not running.
 fn manager_status(dir: &ManagerDir) -> Option<ManagerResponse> {
@@ -107,12 +109,17 @@ fn manager_status(dir: &ManagerDir) -> Option<ManagerResponse> {
         .ok()
 }
 
-fn manager_busy(scope: &Scope) -> bool {
-    ManagerDir::home(&scope.store)
-        .ok()
-        .flatten()
-        .and_then(|dir| manager_status(&dir))
+fn manager_busy(dir: Option<&ManagerDir>) -> bool {
+    dir.and_then(manager_status)
         .is_some_and(|status| status.busy)
+}
+
+/// The chat `chat` looks through: its folder, or the home chat's for `None`.
+fn viewer_dir(scope: &Scope, chat: Option<&str>) -> Option<ManagerDir> {
+    match chat {
+        None => ManagerDir::home(&scope.store).ok().flatten(),
+        Some(chat) => task::chats::open_chat(chat).ok(),
+    }
 }
 
 /// What the strip, the inbox, the chips and the `#` picker need, in one answer. The body is
@@ -120,10 +127,27 @@ fn manager_busy(scope: &Scope) -> bool {
 /// files it reads change only with the stamp (finding 4 of
 /// docs/design/web-server-health-audit.md).
 pub fn overview(app: &App, scope: &Scope) -> Value {
+    overview_of(app, scope, None)
+}
+
+/// `overview_of` for a chat the page asked for: an unknown or closed one is 404.
+pub fn chat_overview(app: &App, scope: &Scope, chat: Option<&str>) -> Outcome<Value> {
+    if let Some(chat) = chat {
+        task::chats::open_chat(chat)
+            .map_err(|error| Fault::new(404, "not_found", format!("{error:#}")))?;
+    }
+    Ok(overview_of(app, scope, chat))
+}
+
+/// The overview as chat `chat` shows it (`None`: the home chat): the tasks, needs, To check
+/// items and counts of what that chat owns (`chats::Viewer`), the rest of the body the same.
+pub fn overview_of(app: &App, scope: &Scope, chat: Option<&str>) -> Value {
     let settings = load_task_config(&scope.path).ok();
     // ^ The stamp comes before the build: a file that changes during it makes the next call build again.
+    let viewer = task::chats::Viewer::new(&scope.store, chat);
     let key = OverviewKey {
         stamp: store::stamp(&scope.store),
+        chats: (viewer.open().to_vec(), store::home_chat(&scope.store)),
         settings: settings.as_ref().map(|settings| {
             (
                 settings.land_auto,
@@ -133,16 +157,17 @@ pub fn overview(app: &App, scope: &Scope) -> Value {
             )
         }),
     };
+    let kept_as = (scope.project, chat.unwrap_or_default().to_string());
     let cached = locked(&app.overviews)
-        .get(&scope.project)
+        .get(&kept_as)
         .filter(|(kept, at, _)| *kept == key && at.elapsed() < OVERVIEW_TTL)
         .map(|(_, _, body)| body.clone());
     let mut body = cached.unwrap_or_else(|| {
-        let body = build_overview(scope, settings.as_ref());
-        locked(&app.overviews).insert(scope.project, (key, Instant::now(), body.clone()));
+        let body = build_overview(scope, settings.as_ref(), &viewer);
+        locked(&app.overviews).insert(kept_as, (key, Instant::now(), body.clone()));
         body
     });
-    body["busy"] = json!(manager_busy(scope));
+    body["busy"] = json!(manager_busy(viewer_dir(scope, chat).as_ref()));
     // ^ The routine pill's counts (docs/web-client-tasks.md "Home"): the scheduler's, not a store
     // file's, so they are read on each call and not kept with the body.
     body["routines"] = json!(ledger::routine_counts(&scope.path));
@@ -152,6 +177,7 @@ pub fn overview(app: &App, scope: &Scope) -> Value {
 fn build_overview(
     scope: &Scope,
     settings: Option<&wsx_core::model::workspace::TaskConfig>,
+    viewer: &task::chats::Viewer,
 ) -> Value {
     let tasks = view::project_tasks(&scope.store).unwrap_or_default();
     let records: Vec<&TaskRecord> = tasks.iter().filter_map(|(_, r)| r.as_ref().ok()).collect();
@@ -163,16 +189,17 @@ fn build_overview(
     let mut titles: HashMap<u32, String> = HashMap::new();
     let land_auto = settings.is_some_and(|settings| settings.land_auto);
     let chains = Chains::of(&tasks, land_auto);
-    // ^ Task status words weigh every pending approval; the lists below are the first chat's own
-    // (`chats::owner`): another chat shows its own in its room.
-    let open_chats = task::chats::open_names();
-    let home = store::home_chat(&scope.store).unwrap_or_default();
+    // ^ Task status words weigh every pending approval; the lists below are the viewing chat's own
+    // (`chats::Viewer`): a task, an approval or a To check item shows in the chat that owns it only.
     let all_approvals = store::read_approvals(&scope.store).unwrap_or_default();
     let all_pending = pending_approvals(&all_approvals);
-    let approvals = task::chats::approvals_of(all_approvals.clone(), &home, &open_chats, &home);
+    let approvals = task::chats::approvals_of(all_approvals.clone(), viewer);
     let pending = pending_approvals(&approvals);
     for (dir, record) in &tasks {
         let Ok(record) = record else { continue };
+        if !viewer.owns(record.created_by.chat()) {
+            continue;
+        }
         let title = view::readable_title(dir, record).unwrap_or_default();
         // ^ The words every view shows (docs/tasks.md "Status"); a row shows the label.
         let waiters = status::waiters(records.iter().copied(), record.id);
@@ -232,7 +259,10 @@ fn build_overview(
     listed.sort_by_key(|(order, recent, _)| (*order, *recent));
     listed.truncate(TASKS_LISTED);
     // ^ The latest manager entry and reply, for the home row (docs/web-client-tasks.md "Home").
-    let manager_dir = ManagerDir::home(&scope.store).ok().flatten();
+    let manager_dir = viewer_dir(
+        scope,
+        Some(viewer.name()).filter(|name| *name != viewer.home()),
+    );
     let tail = manager_dir
         .as_ref()
         .and_then(|dir| dir.read_tail(MANAGER_TAIL_BYTES).ok())
@@ -247,9 +277,7 @@ fn build_overview(
     let check_items = task::chats::checks_of(
         &scope.store,
         checks::read(&scope.store).unwrap_or_default(),
-        &home,
-        &open_chats,
-        &home,
+        viewer,
     );
     // ^ The open items as the Project screen's To check list shows them: a row each, which
     // opens the sheet at the item (docs/web-client-tasks.md "Project screen").
@@ -1112,13 +1140,10 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
 /// did (the first sentence of its worker's summary, when it is not the title).
 pub fn checks(scope: &Scope, chat: Option<&str>) -> Outcome<Value> {
     // ^ The items of the tasks that chat owns (`chats::owner`); the home chat's without one.
-    let home = store::home_chat(&scope.store).unwrap_or_default();
     let items = task::chats::checks_of(
         &scope.store,
         checks::read(&scope.store).map_err(internal)?,
-        chat.unwrap_or(&home),
-        &task::chats::open_names(),
-        &home,
+        &task::chats::Viewer::new(&scope.store, chat),
     );
     // ^ The chat shows each item once, as a bubble at the time it was added, decided or not:
     // every open item and the newest decided ones.
@@ -1709,9 +1734,30 @@ fn flush_needs(app: &Arc<App>, watch: &Watch, new: Vec<(u64, Key)>, badge: usize
 fn watch_overview(app: &Arc<App>, scope: &Scope, watch: &mut Watch) {
     let overview = overview(app, scope);
     let text = overview.to_string();
-    let needs = overview["needs"].as_array().map_or(0, Vec::len);
+    let mut needs = overview["needs"].as_array().map_or(0, Vec::len);
+    let mut open = attention(scope.project, &overview);
+    // ^ What the open chats own needs the owner too: the push and the badge count it (a chat's
+    // To check items fold into the project's one line).
+    for chat in overview["chats"].as_array().into_iter().flatten() {
+        let Some(name) = chat["name"].as_str() else {
+            continue;
+        };
+        let own = overview_of(app, scope, Some(name));
+        needs += own["needs"].as_array().map_or(0, Vec::len);
+        for item in attention(scope.project, &own) {
+            match open
+                .iter_mut()
+                .find(|kept| kept.key == item.key && item.key == Key::Checks)
+            {
+                Some(kept) => {
+                    kept.count += item.count;
+                    kept.line = format!("{} to check", kept.count);
+                }
+                None => open.push(item),
+            }
+        }
+    }
     watch.needs.insert(scope.project, needs);
-    let open = attention(scope.project, &overview);
     let checks = |items: &[Open]| {
         items
             .iter()
@@ -1821,7 +1867,7 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
     }
     let alive: HashSet<u64> = scopes.iter().map(|scope| scope.project).collect();
     watch.overviews.retain(|project, _| alive.contains(project));
-    locked(&app.overviews).retain(|project, _| alive.contains(project));
+    locked(&app.overviews).retain(|(project, _), _| alive.contains(project));
     watch.seen.retain(|project, _| alive.contains(project));
     watch.needs.retain(|project, _| alive.contains(project));
     watch.open.retain(|project, _| alive.contains(project));

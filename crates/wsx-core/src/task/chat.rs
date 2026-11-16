@@ -609,22 +609,9 @@ pub fn read_for(
         own: chat.unwrap_or(shown),
         manager: &manager,
     };
-    let open = super::chats::open_names();
-    let home = super::store::home_chat(store_id).unwrap_or_default();
-    let viewer = dir.map_or(home.as_str(), |dir| dir.chat.as_str());
-    let approvals = super::chats::approvals_of(
-        super::store::read_approvals(store_id)?,
-        viewer,
-        &open,
-        &home,
-    );
-    let items = super::chats::checks_of(
-        store_id,
-        super::checks::open_items(store_id)?,
-        viewer,
-        &open,
-        &home,
-    );
+    let viewer = super::chats::Viewer::new(store_id, dir.map(|dir| dir.chat.as_str()));
+    let approvals = super::chats::approvals_of(super::store::read_approvals(store_id)?, &viewer);
+    let items = super::chats::checks_of(store_id, super::checks::open_items(store_id)?, &viewer);
     let page = match dir {
         Some(dir) => page(
             dir,
