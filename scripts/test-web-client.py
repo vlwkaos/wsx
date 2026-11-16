@@ -5308,6 +5308,32 @@ merge_seconds = 3
         assert json.loads(stored.read_text()) == []
         ok('old topics: blocked and error read as an agent needs me, tasks as manager needs me; stored without topics')
 
+        # Two chains on the overview, after the sessions of the journey and before the Projects section removes `demo` from the page (the ids above are fixed): R1 then A then B, R2 then C. The
+        # overview carries each task's `place` (the order is wsx-core's, drawn as is) and the Tasks tray counts them all.
+        open_before = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['counts']['open']
+        root_1 = js('task', 'new', '-p', 'demo', 'WORK qc-r1.txt')['id']
+        chain_a = js('task', 'new', '-p', 'demo', '--after', root_1, '--because', 'needs', 'WORK qc-a.txt')['id']
+        chain_b = js('task', 'new', '-p', 'demo', '--after', chain_a, '--because', 'needs', 'WORK qc-b.txt')['id']
+        root_2 = js('task', 'new', '-p', 'demo', 'WORK qc-r2.txt')['id']
+        chain_c = js('task', 'new', '-p', 'demo', '--after', root_2, '--because', 'needs', 'WORK qc-c.txt')['id']
+        fixture = [root_1, chain_a, chain_b, root_2, chain_c]
+        wait(lambda: all(row['state'] == 'waiting' for row in js('task', 'ledger', '-p', 'demo')['open'] if row['id'] in (chain_a, chain_b, chain_c)),
+             'the followers wait')
+        chained = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
+        shown = [row['id'] for row in chained['tasks'] if row['state'] != 'landed']
+        ledger_ids = [row['id'] for row in js('task', 'ledger', '-p', 'demo')['open']]
+        assert [row['id'] for row in chained['tasks']][:len(ledger_ids)] == ledger_ids, (ledger_ids, chained['tasks'])
+        places = {row['id']: row['flow']['place'] for row in chained['tasks']}
+        assert [places[n]['holds'] for n in fixture] == [2, 1, 0, 1, 0], places
+        assert [places[n]['root'] for n in (chain_a, chain_b)] == [root_1, root_1] and places[chain_b]['under'] == chain_a and places[chain_b]['depth'] == 2, places
+        # ^ Each chain is one run in the list, its members in chain order.
+        at = shown.index(root_1)
+        assert shown[at:at + 3] == [root_1, chain_a, chain_b] and shown[shown.index(root_2):][:2] == [root_2, chain_c], shown
+        assert chained['counts']['open'] == open_before + 5, (open_before, chained['counts'])
+        for n in (chain_b, chain_a, chain_c, root_1, root_2):
+            js('task', 'close', '-p', 'demo', n, '--discard')
+        ok('overview: two chains in the ledger order, each task with its place, the Tasks count')
+
         # --- Projects: add and remove from the page (docs/web-client.md "Projects").
         admin = sites['admin']
 
@@ -5398,31 +5424,6 @@ merge_seconds = 3
         assert open_id not in [row['project'] for row in steady(admin, 'GET', '/api/tasks')[1]]
         assert steady(admin, 'DELETE', '/api/projects/%d' % open_id, None)[0] == 404
         ok('projects: a project with an open task is removed with a 200 and leaves Home and the workspace event')
-        # Two chains on the overview, at the end (the ids above are fixed): R1 then A then B, R2 then C. The
-        # overview carries each task's `place` (the order is wsx-core's, drawn as is) and the Tasks tray counts them all.
-        open_before = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['counts']['open']
-        root_1 = js('task', 'new', '-p', 'demo', 'WORK qc-r1.txt')['id']
-        chain_a = js('task', 'new', '-p', 'demo', '--after', root_1, '--because', 'needs', 'WORK qc-a.txt')['id']
-        chain_b = js('task', 'new', '-p', 'demo', '--after', chain_a, '--because', 'needs', 'WORK qc-b.txt')['id']
-        root_2 = js('task', 'new', '-p', 'demo', 'WORK qc-r2.txt')['id']
-        chain_c = js('task', 'new', '-p', 'demo', '--after', root_2, '--because', 'needs', 'WORK qc-c.txt')['id']
-        fixture = [root_1, chain_a, chain_b, root_2, chain_c]
-        wait(lambda: all(row['state'] == 'waiting' for row in js('task', 'ledger', '-p', 'demo')['open'] if row['id'] in (chain_a, chain_b, chain_c)),
-             'the followers wait')
-        chained = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
-        shown = [row['id'] for row in chained['tasks'] if row['state'] != 'landed']
-        ledger_ids = [row['id'] for row in js('task', 'ledger', '-p', 'demo')['open']]
-        assert [row['id'] for row in chained['tasks']][:len(ledger_ids)] == ledger_ids, (ledger_ids, chained['tasks'])
-        places = {row['id']: row['flow']['place'] for row in chained['tasks']}
-        assert [places[n]['holds'] for n in fixture] == [2, 1, 0, 1, 0], places
-        assert [places[n]['root'] for n in (chain_a, chain_b)] == [root_1, root_1] and places[chain_b]['under'] == chain_a and places[chain_b]['depth'] == 2, places
-        # ^ Each chain is one run in the list, its members in chain order.
-        at = shown.index(root_1)
-        assert shown[at:at + 3] == [root_1, chain_a, chain_b] and shown[shown.index(root_2):][:2] == [root_2, chain_c], shown
-        assert chained['counts']['open'] == open_before + 5, (open_before, chained['counts'])
-        for n in (chain_b, chain_a, chain_c, root_1, root_2):
-            js('task', 'close', '-p', 'demo', n, '--discard')
-        ok('overview: two chains in the ledger order, each task with its place, the Tasks count')
         success = not sections.failed
     finally:
         for process in reversed(STARTED):
