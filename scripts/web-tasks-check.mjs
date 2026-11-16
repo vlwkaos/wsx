@@ -1208,7 +1208,9 @@ await inStore(`const ov = state.tasks[${project}], base = ov.tasks.find((task) =
 for (const [width, height, scale] of [[390, 844, 2], [390, 560, 2], [900, 700, 1]]) {
   await resize([width, height, scale]);
   await openReservoir("tasks");
-  await until("document.querySelectorAll('.reservoir-list[aria-label=Tasks] .need').length === 7", `the Tasks list does not show seven tasks at ${width} px`);
+  // ^ The list holds every open task (`flow.place`): the project's own and the six runners.
+  const shownTasks = beforeRunners.tasks.filter((task) => task.flow?.place).length + 6;
+  await until(`document.querySelectorAll('.reservoir-list[aria-label=Tasks] .need[data-key^="run-"]').length === ${shownTasks}`, `the Tasks list does not show ${shownTasks} tasks at ${width} px`);
   const cut = await evaluate(`(() => {
     const box = (node) => node.getBoundingClientRect(), scroller = (node) => /auto|scroll/.test(getComputedStyle(node).overflowY);
     const reservoir = document.querySelector('.reservoir'), found = [];
@@ -1233,7 +1235,7 @@ for (const [width, height, scale] of [[390, 844, 2], [390, 560, 2], [900, 700, 1
     return { found, at: Object.fromEntries(['.reservoir', '.reservoir-reveal', '.reservoir-body', '.reservoir-scroll', '.composer'].map((selector) => [selector, rect(selector)])) };
   })()`);
   if (cut.found.length) await fail(`the open list cuts words at ${width}x${height}: ${JSON.stringify(cut)}`);
-  await noEmptyBlock(`seven running tasks at ${width}x${height}`);
+  await noEmptyBlock(`many open tasks at ${width}x${height}`);
   await shot(`reservoir-many-running-${width}x${height}`, ".composer-send");
 }
 await inStore(`update({ tasks: { ...state.tasks, [${project}]: ${JSON.stringify(beforeRunners)} } })`);
