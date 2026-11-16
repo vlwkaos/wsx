@@ -630,8 +630,8 @@ impl Repo {
         project_tasks(&self.project_id)
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|(_, record)| record.ok())
-            .map(|record| (record.id, Seen::of(&record)))
+            .filter_map(|(dir, record)| Some((dir, record.ok()?)))
+            .map(|(dir, record)| (record.id, Seen::of(&dir, &record)))
             .collect()
     }
 
@@ -1164,7 +1164,7 @@ impl Repo {
             .collect();
         for (dir, record) in tasks {
             let Ok(record) = record else { continue };
-            let now = Seen::of(&record);
+            let now = Seen::of(&dir, &record);
             if self.observed.get(&record.id) == Some(&now) {
                 continue;
             }
@@ -1240,6 +1240,12 @@ impl Repo {
                         "; held for the owner: {}",
                         clip(hold, EVENT_SUMMARY_CHARS)
                     ));
+                }
+                // ^ A stopped task's worker never hears of its check-run: the manager does.
+                if wsx_core::task::status::answered_after_stop(&dir, &record) {
+                    summary.push_str(
+                        "; its check-run ended after the stop: the answer joins the worker's next turn, which a `wsx task add` starts",
+                    );
                 }
                 // ^ A ready task that waits for another is not for the manager to land yet.
                 if let Some(after) = record.after.as_ref().filter(|_| record.state.is_open()) {

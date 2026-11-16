@@ -369,6 +369,25 @@ fn stop_reason(dir: &TaskDir) -> Option<String> {
     .flatten()
 }
 
+/// Whether the task is stopped by request and a check-run of its worker ended after the stop:
+/// nothing wakes the worker, so the manager hears of it (`state_wakes`). The answer joins the
+/// worker's next turn. ref: docs/tasks.md "Check-run"
+pub fn answered_after_stop(dir: &TaskDir, record: &TaskRecord) -> bool {
+    record.state == TaskState::Waiting
+        && record.waiting.as_ref().is_some_and(|waiting| {
+            waiting.on == WaitOn::Owner && waiting.reason == STOPPED_BY_REQUEST
+        })
+        && dir
+            .last_event(|event| match event {
+                LogEvent::CheckRun { .. } => Some(true),
+                LogEvent::Stopped { .. } => Some(false),
+                _ => None,
+            })
+            .ok()
+            .flatten()
+            == Some(true)
+}
+
 /// Whether the task waits on the owner only in name: its worker is idle or blocked and the task
 /// waits for another to land (`after`). It asks nobody and wakes nobody; `waiting_on` says
 /// "Waiting for #m to land". A stop, or an interrupted host, is no such wait.

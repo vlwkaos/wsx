@@ -4,7 +4,7 @@
 //! The manager host is the only writer of these files; `wsx task chat` reads the log.
 
 use super::stall::Stall;
-use super::status::{owner_waits_after, STOPPED_BY_REQUEST};
+use super::status::{answered_after_stop, owner_waits_after, STOPPED_BY_REQUEST};
 use super::store::TaskDir;
 use super::{LogEvent, TaskRecord, TaskState, TurnUsage, WaitOn};
 use serde::{Deserialize, Serialize};
@@ -320,7 +320,10 @@ pub fn state_wakes(dir: &TaskDir, record: &TaskRecord) -> bool {
                     .as_ref()
                     .is_some_and(|waiting| match waiting.on {
                         WaitOn::Limit | WaitOn::Disk => true,
-                        WaitOn::Owner => waiting.reason == STOPPED_BY_REQUEST,
+                        WaitOn::Owner => {
+                            waiting.reason == STOPPED_BY_REQUEST
+                                && !answered_after_stop(dir, record)
+                        }
                         _ => false,
                     })
         }
@@ -512,13 +515,17 @@ pub fn activity(log: &[ManagerEntry]) -> Option<&str> {
 pub struct Seen {
     pub state: TaskState,
     pub revision: u32,
+    /// A stopped task whose check-run ended after the stop: a news the state does not show.
+    #[serde(default)]
+    pub answered: bool,
 }
 
 impl Seen {
-    pub fn of(record: &TaskRecord) -> Self {
+    pub fn of(dir: &TaskDir, record: &TaskRecord) -> Self {
         Self {
             state: record.state,
             revision: record.revision,
+            answered: answered_after_stop(dir, record),
         }
     }
 }

@@ -44,6 +44,15 @@ if args[-1].endswith('/cancel'):
         open(os.path.join(d, 'reset'), 'w').write(str(time.time() + 2))
         sys.stderr.write('gh: API rate limit exceeded for user ID 1. (HTTP 403)\n'); sys.exit(1)
     sys.exit(0)
+if args[:2] == ['run', 'list']:
+    def listed(i, head, branch, status, conclusion):
+        return {'databaseId': i, 'url': 'u%d' % i, 'displayTitle': 'wsx scenario web for ' + head,
+                'headBranch': branch, 'status': status, 'conclusion': conclusion}
+    print(json.dumps([listed(5, 'H1', 'wsx-scenario/web/1-aa', 'completed', 'failure'),
+                      listed(6, 'H1', 'wsx-scenario/web/2-bb--chat', 'in_progress', None),
+                      listed(7, 'H1', 'wsx-scenario/web/3-cc', 'completed', 'success'),
+                      listed(8, 'H2', 'wsx-scenario/web/4-dd', 'in_progress', None)]))
+    sys.exit(0)
 if args[1].startswith('repos/o/r/git/matching-refs'):
     print('[]'); sys.exit(0)
 if args[1].startswith('repos/o/r/actions/runs?status='):
@@ -115,6 +124,9 @@ def scenario(mode, folder):
         if mode == 'sweep':
             module.sweep('o/r')
             out = None
+        elif mode == 'reuse':
+            out = [(module.find_existing('o/r', 'web', part, head) or {}).get('databaseId')
+                   for part, head in ((None, 'H1'), ('chat', 'H1'), (None, 'H2'), (None, 'H3'), ('tasks', 'H1'))]
         elif mode == 'cancel-limit':
             out = module.cancel_run('o/r', 7, time.monotonic() + 30)
         else:
@@ -159,6 +171,10 @@ def main():
             check(out['conclusion'] == conclusion and not out['run_done'] and [j['name'] for j in out['jobs']] == ['web-scenario (chat)'],
                   'a part run is judged by its own job (%s) and ends while another part waits (%s)' % (conclusion, out))
             check(len([c for c in calls if c.endswith('/runs/1')]) == 2, 'it ends at the poll its own job ended')
+
+        out, seconds, calls, module = scenario('reuse', folder)
+        check(out == [7, 6, 8, None, None],
+              'a restarted host finds the run of its head: running or passed, the part\'s own, never a failed one (%s)' % out)
 
         out, seconds, calls, module = scenario('idle', folder)
         check(isinstance(out, module.TempFail) and 'no job started' in str(out), 'a run with no job started is a TempFail (%s)' % out)

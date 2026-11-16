@@ -1,7 +1,7 @@
 //! Files of one task under `$XDG_STATE_HOME/wsx/tasks/<project-id>/<n>/`.
 //! ref: docs/tasks.md "Store"
 
-use super::{now_unix_ms, LogEntry, LogEvent, TaskRecord};
+use super::{now_unix_ms, LogEntry, LogEvent, MessageKind, TaskRecord};
 use crate::config::global::is_agent_name;
 use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
@@ -817,6 +817,22 @@ impl TaskDir {
             }
         }
         Ok(None)
+    }
+
+    /// The texts of every `add` in the log, oldest first: what a task that has not started
+    /// carries into its first turn, after the prompt.
+    pub fn adds(&self) -> Result<Vec<String>> {
+        Ok(self
+            .read_log()?
+            .into_iter()
+            .filter_map(|entry| match entry.event {
+                LogEvent::Message {
+                    mode: MessageKind::Add,
+                    text,
+                } => Some(text),
+                _ => None,
+            })
+            .collect())
     }
 
     pub fn write_file(&self, name: &str, bytes: &[u8]) -> Result<()> {

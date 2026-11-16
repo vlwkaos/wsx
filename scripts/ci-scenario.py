@@ -186,6 +186,23 @@ def find_run(repo, commit):
     raise RuntimeError('no CI run started for %s in %d s' % (commit, FIND_SECONDS))
 
 
+def find_existing(repo, name, part, head):
+    """The run of this head's scenario that a host that ended left: still going, or passed. A host
+    that restarts during a `check-run` runs the script again, and it waits for that run: no second
+    one starts (a failed or cancelled run runs again). The commit title names the head."""
+    title = 'wsx scenario %s for %s' % (name, head)
+    prefix, suffix = 'wsx-scenario/%s/' % name, '--' + part if part else ''
+    found = json.loads(gh('run', 'list', '--repo', repo, '--workflow', 'ci.yml', '--json',
+                          'databaseId,url,displayTitle,headBranch,status,conclusion', '--limit', '50').stdout or '[]')
+    for run in found:
+        branch = run['headBranch'] or ''
+        own = branch.endswith(suffix) if part else '--' not in branch.rsplit('/', 1)[-1]
+        if run['displayTitle'] == title and branch.startswith(prefix) and own \
+                and (run['status'] != 'completed' or run['conclusion'] == 'success'):
+            return run
+    return None
+
+
 def print_main_failure(repo, name):
     """After a failed scenario: the failed log of main's latest completed `ci.yml` push run, for the
     host to compare with the run's own failure. Two requests; nothing when main's run passed, has no
@@ -403,11 +420,16 @@ def main():
         commit = git('commit-tree', tree_for_ci(main_commit, scratch), '-p', head,
                      '-m', 'wsx scenario %s for %s' % (name, head))
         sweep(repo)
-        branch = 'wsx-scenario/%s/%d-%s%s' % (name, time.time(), commit[:12], '--' + part if part else '')
-        subprocess.run(['git', '-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential',
-                        'push', '-q', url, '%s:refs/heads/%s' % (commit, branch)], check=True)
-        run = find_run(repo, commit)
-        say('%s on CI for %s: %s' % (name, head[:12], run['url']))
+        run = find_existing(repo, name, part, head)
+        if run:
+            branch = run['headBranch']
+            say('%s on CI for %s: the run of an earlier call, %s' % (name, head[:12], run['url']))
+        else:
+            branch = 'wsx-scenario/%s/%d-%s%s' % (name, time.time(), commit[:12], '--' + part if part else '')
+            subprocess.run(['git', '-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential',
+                            'push', '-q', url, '%s:refs/heads/%s' % (commit, branch)], check=True)
+            run = find_run(repo, commit)
+            say('%s on CI for %s: %s' % (name, head[:12], run['url']))
         view = wait_run(repo, run['databaseId'], part)
         # ^ A part run that ends before the other parts' jobs: the cleanup below cancels the rest.
         ended = view['run_done']

@@ -214,6 +214,19 @@ struct CheckRun {
     commit: String,
 }
 
+/// `check-run.json`: the run a host owes an answer for, written when it starts and removed
+/// when its answer is handled. A host that restarts reads it and runs the same checks again
+/// (`resume_check_run`): a `ci:` scenario then finds its CI run and waits for that one.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CheckRunMark {
+    picked: Vec<(usize, String)>,
+    label: String,
+    part: Option<String>,
+    commit: String,
+}
+
+const CHECK_RUN_FILE: &str = "check-run.json";
+
 /// A check-run's answer to the worker, and the proof the host keeps when the run passed on
 /// an unchanged tree: a pass that comes after the worker's last result needs no turn.
 struct CheckAnswer {
@@ -792,6 +805,10 @@ impl Host {
             }
             _ => {}
         }
+        // ^ The answer is handled unless the run holds it for the worker's result.
+        if self.check_run.is_none() {
+            let _ = std::fs::remove_file(self.dir.file(CHECK_RUN_FILE));
+        }
     }
 
     /// Whether every check that failed in `results` is a failure `found` shows in other tasks
@@ -848,7 +865,10 @@ impl Host {
     /// The first turn of a new task: its prompt, the context and the first step.
     fn first_turn(&mut self) -> Result<()> {
         let prompt = self.dir.prompt()?.context("the task log has no prompt")?;
+        // ^ The adds that came before the first turn (the task waited on `after`) follow the
+        // prompt: each is in the log, so a restart of the host loses none.
         let mut text = vec![prompt];
+        text.extend(self.dir.adds()?);
         text.extend(self.task_context());
         text.extend(self.step_text());
         if self.record.plan {
@@ -951,7 +971,52 @@ impl Host {
                 self.set_state(state);
             }
         }
+        self.resume_check_run();
         Ok(())
+    }
+
+    /// The run a host owed an answer for when it ended (`check-run.json`) runs again on the
+    /// same commit, and its answer comes as a turn, as a queued run's does. A `ci:` scenario
+    /// finds its CI run by the head (scripts/ci-scenario.py), so no second one starts. A task
+    /// that was stopped keeps the answer for its next add. ref: docs/tasks.md "Check-run"
+    fn resume_check_run(&mut self) {
+        let path = self.dir.file(CHECK_RUN_FILE);
+        let mark = match self.dir.read_file(CHECK_RUN_FILE, 1 << 20) {
+            Ok(Some(bytes)) => serde_json::from_slice::<CheckRunMark>(&bytes).ok(),
+            _ => None,
+        };
+        let Some(mark) = mark else {
+            let _ = std::fs::remove_file(&path);
+            return;
+        };
+        let same = head(&self.record.working_copy).is_some_and(|head| head == mark.commit);
+        if !self.record.state.is_open() || self.record.state == TaskState::Checking || !same {
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+        self.stopped = self
+            .record
+            .waiting
+            .as_ref()
+            .is_some_and(|w| w.on == WaitOn::Owner && w.reason == STOPPED_BY_REQUEST);
+        self.say("the host restarted during a check-run: it runs again");
+        let indexes = mark.picked.iter().map(|(index, _)| *index).collect();
+        let (reply, _) = channel();
+        self.start_check_run(
+            mark.picked,
+            (mark.label, indexes, mark.part, mark.commit),
+            reply,
+        );
+        // ^ Nobody waits for the call: its answer is a turn.
+        match &mut self.check_run {
+            Some(run) => {
+                run.queued = true;
+                run.replies.clear();
+            }
+            None => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
     }
 
     fn handle(&mut self, request: HostRequest) -> HostResponse {
@@ -1071,6 +1136,10 @@ impl Host {
     /// checking, failed) gets nothing, as its own land rebases it. ref: docs/tasks.md "Landing"
     fn notice(&mut self, text: String) -> Result<String> {
         check_message(&text)?;
+        // ^ A task that has not started follows the default branch when it does.
+        if self.awaits_start() {
+            return Ok(format!("not sent: t{} has not started", self.record.id));
+        }
         if self.turn.is_none() && self.record.state != TaskState::Waiting {
             return Ok(format!(
                 "not sent: t{} is {}",
@@ -1289,12 +1358,24 @@ impl Host {
     }
 
     fn deliver_or_queue(&mut self, text: String) -> String {
+        // ^ A task that waits on `after` has not read its prompt: the add is in the log and
+        // joins the first turn, which starts when the wait ends.
+        let unstarted = self.awaits_start();
+        if unstarted && self.record.after.is_some() {
+            return "queued: it follows the prompt when the wait ends".into();
+        }
         self.check_retries = 0;
         self.stopped = false;
         self.ci_halt.store(false, Ordering::Relaxed);
         if self.turn.is_some() || self.record.state == TaskState::Checking {
             self.pending.push_back(text);
             "queued until the current turn ends".into()
+        } else if unstarted {
+            // ^ Never started, and no wait: the first turn carries the prompt, then this add.
+            match self.first_turn() {
+                Ok(()) => "started the first turn".into(),
+                Err(error) => format!("cannot start the first turn: {error:#}"),
+            }
         } else {
             self.start_turn(&text, TurnTrigger::Message);
             match self.disk_wait {
@@ -3104,6 +3185,20 @@ impl Host {
             .collect();
         let limit = (Duration::from_secs(self.record.check_timeout_secs) * local.len() as u32)
             .max(if ci { CI_TIMEOUT } else { Duration::ZERO });
+        let mark = CheckRunMark {
+            picked: picked.clone(),
+            label: label.clone(),
+            part: part.clone(),
+            commit: commit.clone(),
+        };
+        match serde_json::to_vec(&mark) {
+            Ok(bytes) => {
+                if let Err(error) = self.dir.write_file(CHECK_RUN_FILE, &bytes) {
+                    self.say(&format!("check-run: cannot keep the run's mark: {error:#}"));
+                }
+            }
+            Err(error) => self.say(&format!("check-run: cannot keep the run's mark: {error}")),
+        }
         self.check_run = Some(CheckRun {
             indexes,
             replies: vec![reply],
@@ -3325,6 +3420,7 @@ impl Host {
     /// on an earlier one the next step's prompt carries it. Else (a failure, a result that is
     /// not `done`) the worker gets it as a turn. ref: docs/tasks.md "Check-run"
     fn answer_check_run(&mut self, answer: CheckAnswer) {
+        let _ = std::fs::remove_file(self.dir.file(CHECK_RUN_FILE));
         let done = self
             .last_result
             .as_mut()

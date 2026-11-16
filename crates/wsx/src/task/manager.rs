@@ -1524,7 +1524,7 @@ impl Manager {
         let baseline = self.state.turn_seen.take();
         let seen: BTreeMap<u32, Seen> = tasks
             .iter()
-            .map(|(_, record)| (record.id, Seen::of(record)))
+            .map(|(dir, record)| (record.id, Seen::of(dir, record)))
             .collect();
         let rows: Vec<String> = tasks
             .iter()
