@@ -78,8 +78,20 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
     let mut git = Git::default();
     let mut open = Vec::new();
     let mut recent = Vec::new();
+    let mut broken = Vec::new();
     for (dir, record) in &tasks {
-        let Ok(record) = record else { continue };
+        let record = match record {
+            Ok(record) => record,
+            // ^ A record that does not parse stays on the ledger: one bad file hides no task.
+            Err(error) => {
+                broken.push(json!({
+                    "id": dir.id,
+                    "path": dir.file(store::RECORD_FILE),
+                    "error": error.root_cause().to_string(),
+                }));
+                continue;
+            }
+        };
         let summary = task_summary(dir, record);
         let title = clip(summary["title"].as_str().unwrap_or_default(), TITLE_CHARS);
         // ^ Read once; the memo, the counts and the status all come from it.
@@ -167,6 +179,9 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
     // ^ Set after `fit_size` counted the rest, and kept: a few short lines.
     if !git.notes.is_empty() {
         ledger["notes"] = json!(git.notes);
+    }
+    if !broken.is_empty() {
+        ledger["broken"] = json!(broken);
     }
     fit_size(&mut ledger)?;
     Ok(ledger)

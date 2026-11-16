@@ -500,20 +500,37 @@ pub fn rows(project_id: &str) -> Vec<Value> {
 /// A project not yet migrated in this process; `migrate` runs once for each.
 static CHECKED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
-/// Run `migrate` on `project` the first time this process opens its store, then start again
-/// the hosts the move stopped.
+/// The first time this process opens a store, move every store of the machine that still has
+/// the old layout, then this one; a store whose project is no longer registered has no other
+/// opener. Then start again the hosts the moves stopped.
 pub(super) fn migrate_once(project_id: &str, project: &Path) {
-    let first = CHECKED
-        .lock()
-        .expect("migration lock")
-        .get_or_insert_default()
-        .insert(project.display().to_string());
-    if !first {
+    if let Some(root) = project.parent().filter(|root| first(root)) {
+        for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+            let old = ["manager", "roles", "chats"]
+                .iter()
+                .any(|folder| entry.path().join(folder).is_dir());
+            let id = entry.file_name().to_string_lossy().into_owned();
+            // ^ `tasks/chats/` holds chats, not a store; a store's folder is a valid project id.
+            if old && id != store::CHATS_DIR && store::validate_project_id(&id).is_ok() {
+                migrate_once(&id, &entry.path());
+            }
+        }
+    }
+    if !first(project) {
         return;
     }
     if let Err(error) = migrate(project_id, project) {
         eprintln!("wsx: cannot move the chats of {project_id}: {error:#}");
     }
+}
+
+/// Whether `path` is new to this process.
+fn first(path: &Path) -> bool {
+    CHECKED
+        .lock()
+        .expect("migration lock")
+        .get_or_insert_default()
+        .insert(path.display().to_string())
 }
 
 /// The two moves of a store from before: roles to chats, then the chats out of the repo's

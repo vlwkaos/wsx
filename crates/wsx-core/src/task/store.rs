@@ -102,7 +102,7 @@ pub fn project_id(name: &str, path: &Path) -> String {
     }
 }
 
-fn validate_project_id(value: &str) -> Result<()> {
+pub(super) fn validate_project_id(value: &str) -> Result<()> {
     let valid = !value.is_empty()
         && value.len() <= MAX_PROJECT_ID_BYTES
         && !value.starts_with('-')

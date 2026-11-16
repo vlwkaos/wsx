@@ -7225,6 +7225,37 @@ def part_host(created=None):
     mig_hosts = lambda: ([l for l in leftovers('task chat-host ') if l.endswith(('chat-host mig', 'chat-host side', 'chat-host mside'))]
                          + leftovers('task manager-host ' + mig_id) + leftovers('task repo-host ' + mig_id))
     wait(lambda: not mig_hosts(), 'the mig hosts leave', 30)
+    # ^ A record that does not parse stays on the ledger and in `task list`, as broken with its path and error;
+    # the other tasks still list (docs/tasks.md "Ledger").
+    bad_record = mig_store / '99/task.json'
+    bad_record.parent.mkdir()
+    bad_record.write_text('{"id": 99,')
+    ledger = js('task', 'ledger', '-p', 'mig')
+    assert [{**row, 'error': bool(row['error'])} for row in ledger['broken']] == [{'id': 99, 'path': str(bad_record), 'error': True}], ledger.get('broken')
+    assert 'line 1' in ledger['broken'][0]['error'], ledger['broken']
+    assert mig_n in [row['id'] for row in ledger['recent']], ledger['recent']
+    listed = {row['id']: row for row in js('task', 'list', '--all', '-p', 'mig')['tasks']}
+    assert listed[99]['state'] == 'broken' and listed[99]['path'] == str(bad_record) and str(bad_record) in listed[99]['error'], listed
+    assert listed[mig_n]['state'] != 'broken', listed
+    broken_line = next(line for line in cli('task', 'list', '--all', '-p', 'mig').stdout.splitlines() if line.startswith('t99 '))
+    assert 'broken' in broken_line and str(bad_record) in broken_line, broken_line
+    shutil.rmtree(bad_record.parent)
+    # ^ Every store with the old layout moves at the first open of any store, also one whose project is no
+    # longer registered and with no host: `task list` is no chat host (docs/tasks.md "Chats", "Old layout").
+    gone_id = 'gone-0a1b2c3d'
+    gone_store = mig_store.parent / gone_id
+    (gone_store / 'manager').mkdir(parents=True)
+    (gone_store / 'manager/log.jsonl').write_text(json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': 1, 'from': 'owner', 'text': 'old words'}) + '\n')
+    (gone_store / '1').mkdir()
+    (gone_store / '1/task.json').write_text(json.dumps({**mig_record, 'id': 1, 'project_id': gone_id, 'created_by': 'manager'}))
+    js('task', 'list', '-p', 'mig')
+    assert not (gone_store / 'manager').exists(), list(gone_store.iterdir())
+    assert 'old words' in (chats_dir / 'gone/log.jsonl').read_text()
+    assert json.loads((gone_store / 'home.json').read_text()) == {'chat': 'gone'}
+    assert json.loads((gone_store / '1/task.json').read_text())['created_by'] == 'chat:gone'
+    assert not leftovers('task chat-host gone'), 'the move starts no host of an unregistered store'
+    shutil.rmtree(gone_store)
+    shutil.rmtree(chats_dir / 'gone')
     registry_file.write_text(registry_plain)
     shutil.rmtree(mig_store)
     for chat_name in ('mig', 'side', 'mside'):

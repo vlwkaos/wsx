@@ -48,9 +48,10 @@ pub(crate) fn list(project: Option<&str>, all: bool, json: bool) -> Result<()> {
                 rows.push((row, wsx_core::task::status::state_word(record)));
             }
             Ok(_) => {}
+            // ^ The ledger lists it too (`broken`); the error names the file and the parse failure.
             Err(error) => rows.push((
-                json!({ "id": dir.id, "error": format!("{error:#}") }),
-                "error",
+                json!({ "id": dir.id, "state": "broken", "path": dir.file(store::RECORD_FILE), "error": format!("{error:#}") }),
+                "broken",
             )),
         }
     }
