@@ -27,6 +27,7 @@ import time
 import tomllib
 import zlib
 
+import sections
 import wsxd_client
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -627,7 +628,12 @@ def sweep():
     """End the processes of earlier runs in this checkout that died before their cleanup,
     and remove their Chrome profiles. A process is ended only when its group is in the
     run's record and its command is the recorded one, or its command names the run's folder."""
-    listing = subprocess.run(['ps', '-axo', 'pid=,pgid=,command='], capture_output=True, text=True, timeout=10).stdout
+    try:
+        listing = subprocess.run(['ps', '-axo', 'pid=,pgid=,command='], capture_output=True, text=True, timeout=10).stdout
+    except PermissionError:
+        # ^ wsx's worker boundary refuses `ps` (docs/tasks.md "Permissions"): no process is ended,
+        # the earlier runs' folders still go.
+        listing = ''
     running = []
     for line in listing.splitlines():
         parts = line.split(None, 2)
@@ -959,10 +965,14 @@ def main():
     signal.signal(signal.SIGINT, signal.default_int_handler)
     signal.signal(signal.SIGALRM, overdue)
     signal.alarm(RUN_SECONDS)
+    # ^ A failed check is reported and the journey goes on with the next one (scripts/sections.py).
+    sections.sectioned(globals(), __file__, ('web_journey', 'task_journey'), end='ok')
     if args.part in ('all', 'chat'):
         web_journey(args)
     if args.part in ('all', 'tasks'):
         task_journey(args)
+    if sections.report():
+        sys.exit(1)
 
 
 # ^ A run takes about 23 min on CI's macOS runner (run 42319479835). A wait that never ends stops here with every thread's stack, well
@@ -973,7 +983,7 @@ RUN_SECONDS = 35 * 60
 def overdue(*_):
     print('the web scenario ran past %d s; where each thread waited:' % RUN_SECONDS, file=sys.stderr, flush=True)
     faulthandler.dump_traceback(all_threads=True)
-    raise TimeoutError('the web scenario ran past %d s' % RUN_SECONDS)
+    raise sections.RunOver('the web scenario ran past %d s' % RUN_SECONDS)
 
 
 def watch_wsxd(path, work):
@@ -3500,7 +3510,7 @@ capabilities = ["terminal_view"]
             assert result.returncode == 0, result.stdout + result.stderr
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
         ok('daemon stop: reported on the stream, API says unavailable, no daemon started')
-        success = True
+        success = not sections.failed
     finally:
         for stream in streams:
             try:
@@ -3526,7 +3536,7 @@ capabilities = ["terminal_view"]
             shutil.rmtree(work)
         else:
             print('diagnostics retained at ' + str(work), file=sys.stderr)
-    print(json.dumps({'result': 'PASS', 'seconds': round(time.monotonic() - started, 2), 'model_calls': 0,
+    print(json.dumps({'result': 'FAIL' if sections.failed else 'PASS', 'seconds': round(time.monotonic() - started, 2), 'model_calls': 0,
                       'slowest': slowest(), 'checks': checks}, indent=1))
 
 
@@ -5330,7 +5340,7 @@ merge_seconds = 3
         assert open_id not in [row['project'] for row in steady(admin, 'GET', '/api/tasks')[1]]
         assert steady(admin, 'DELETE', '/api/projects/%d' % open_id, None)[0] == 404
         ok('projects: a project with an open task is removed with a 200 and leaves Home and the workspace event')
-        success = True
+        success = not sections.failed
     finally:
         for process in reversed(STARTED):
             stop(process)
@@ -5340,7 +5350,7 @@ merge_seconds = 3
             shutil.rmtree(work, ignore_errors=True)
         else:
             print('diagnostics retained at ' + str(work), file=sys.stderr)
-    print(json.dumps({'result': 'PASS', 'part': 'tasks', 'seconds': round(time.monotonic() - started, 2),
+    print(json.dumps({'result': 'FAIL' if sections.failed else 'PASS', 'part': 'tasks', 'seconds': round(time.monotonic() - started, 2),
                       'model_calls': 0, 'slowest': slowest(), 'checks': checks}, indent=1))
 
 

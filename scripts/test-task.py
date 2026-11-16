@@ -26,6 +26,7 @@ import sys
 import threading
 import time
 
+import sections
 import wsxd_client
 from tui_pty import Screen, TuiPty
 
@@ -272,16 +273,21 @@ def main():
     started = time.monotonic()
     PARTS.append(('setup', started))
     owned = {}
+    # ^ A failed section is reported and the part goes on with the next one (scripts/sections.py).
+    sections.sectioned(globals(), __file__, ('part_core', 'part_worker', 'part_host'), start='mark')
     try:
         run(wsx, wsxd, work, owned, args.part)
-        print(json.dumps({'ok': True, 'seconds': round(time.monotonic() - started, 1), 'slowest': slowest(), 'part': args.part, 'parts': dict(spans())}))
+        print(json.dumps({'ok': not sections.failed, 'seconds': round(time.monotonic() - started, 1), 'slowest': slowest(), 'part': args.part, 'parts': dict(spans())}))
     finally:
+        sections.report()
         # ^ Stop the isolated wsxd also after a failure: its hosts and fake agents end with it.
         if 'env' in owned:
             subprocess.run([str(wsx), 'daemon', 'stop', '--force'], env=owned['env'],
                            capture_output=True, timeout=20)
         if not args.keep:
             shutil.rmtree(work, ignore_errors=True)
+    if sections.failed:
+        sys.exit(1)
 
 
 # The local floor's endpoint (docs/local-model.md): /health and /v1/models of a llama-server, up

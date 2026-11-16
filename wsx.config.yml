@@ -44,11 +44,11 @@ tasks:
     # task, web and boundary journeys drive the real task host, manager and wsxd through the CLI,
     # and task and smoke drive the TUI. Proof against main's breaks: docs/design/orchestration-lean.md §13.
     task: [crates/wsx, crates/wsx-core, crates/wsx-daemon, crates/wsx-terminal, scripts/test-task.py,
-      "scripts/fake-*", scripts/ci-scenario.py, scripts/tui_pty.py, scripts/wsxd_client.py]
+      "scripts/fake-*", scripts/ci-scenario.py, scripts/tui_pty.py, scripts/wsxd_client.py, scripts/sections.py]
     web: [crates/wsx-web, crates/wsx-core, crates/wsx-daemon, crates/wsx-terminal, crates/wsx/src/task,
       crates/wsx/src/cli, crates/wsx/src/cli.rs, crates/wsx/src/main.rs, scripts/test-web-client.py,
       "scripts/*-check.mjs", scripts/web-cdp.mjs, "scripts/design-lint*", "scripts/fake-*",
-      scripts/ci-scenario.py, scripts/wsxd_client.py]
+      scripts/ci-scenario.py, scripts/wsxd_client.py, scripts/sections.py]
     smoke: [crates/wsx, crates/wsx-core, crates/wsx-daemon, crates/wsx-terminal,
       scripts/runtime-smoke.py, scripts/tui_pty.py, scripts/wsxd_client.py]
     boundary: [crates/wsx/src/task, crates/wsx/src/cli, crates/wsx/src/cli.rs, crates/wsx/src/main.rs,
