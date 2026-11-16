@@ -309,8 +309,8 @@ fn build_overview(
         "resolutions": resolutions(&check_items, &tasks, &approvals, now),
         "last_reply": last_reply.map(|(_, text)| text),
         "news": news,
-        // ^ The project's home chat, whose route is the project's manager, and the open chats under
-        // its row (docs/web-client-tasks.md "Home").
+        // ^ The project's home chat, whose route is the project's manager, and its open chats, the
+        // home chat among them: the rows of Home (docs/web-client-tasks.md "Home").
         "home_chat": store::home_chat(&scope.store).unwrap_or_else(|| task::chats::home_name(&scope.store)),
         "chats": chat_contacts(scope, land_auto),
         // ^ The agent the New chat sheet's Default runs on.
@@ -826,17 +826,16 @@ fn news_value((unix_ms, text): (u64, String)) -> Value {
     json!({ "unix_ms": unix_ms, "text": text })
 }
 
-/// The open chats as Home rows: name, the first line of the goal and of the last reply,
-/// `news` (as a project's: `{unix_ms, text}` of the newest reply that is news, or `null`),
-/// `last_unix_ms` and the pill counts `running`, `needs` and `check` (`needs::chat_counts`)
-/// (docs/web-client-tasks.md "Home").
+/// The open chats as Home rows, the home chat too (`home`): name, the first line of the goal and
+/// of the last reply, `news` (as a project's: `{unix_ms, text}` of the newest reply that is news,
+/// or `null`), `last_unix_ms` (the newest message, `chats_home::last_message_ms`), `listed`
+/// (whether Home shows the row, `chats_home::listed`) and the pill counts `running`, `needs` and
+/// `check` (`needs::chat_counts`) (docs/web-client-tasks.md "Home").
 fn chat_contacts(scope: &Scope, land_auto: bool) -> Vec<Value> {
     let counts = needs::chat_counts(&scope.store, land_auto);
-    // ^ The home chat is the project's own row (`home_chat`); the others are the contacts.
     let home = store::home_chat(&scope.store);
-    task::chats::open_chats(&scope.store)
+    let mut rows: Vec<Value> = task::chats::open_chats(&scope.store)
         .iter()
-        .filter(|dir| home.as_deref() != Some(dir.name()))
         .map(|dir| {
             let own = counts.get(dir.name()).copied().unwrap_or_default();
             let tail = dir.read_tail(MANAGER_TAIL_BYTES).unwrap_or_default();
@@ -858,11 +857,23 @@ fn chat_contacts(scope: &Scope, land_auto: bool) -> Vec<Value> {
                 "goal": task::chats::goal(dir).lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
                 "last_reply": last,
                 "news": news,
-                "last_unix_ms": task::chats::last_active_ms(dir),
+                "home": home.as_deref() == Some(dir.name()),
+                "listed": task::chats_home::listed(dir),
+                "last_unix_ms": task::chats_home::last_message_ms(dir),
                 "counts": own,
             })
         })
-        .collect()
+        .collect();
+    // ^ A reader never makes the home chat's folder: a project nobody has spoken to still has its
+    // row, empty, so the owner can write to it.
+    if !rows.iter().any(|row| row["home"] == true) {
+        rows.push(json!({
+            "name": home.unwrap_or_else(|| task::chats::home_name(&scope.store)),
+            "goal": "", "last_reply": null, "news": null, "home": true, "listed": true,
+            "last_unix_ms": 0, "counts": needs::ChatCounts::default(),
+        }));
+    }
+    rows
 }
 
 /// A new chat of the project, opened for the owner: its name, an optional goal and an
@@ -887,6 +898,14 @@ pub fn close_chat(app: &App, scope: &Scope, name: &str) -> Outcome<Value> {
     owner::close_chat((&scope.name, &scope.path), &wsx, name, launcher(app, scope))
         .map_err(|error| Fault::new(409, "invalid_chat", format!("{error:#}")))?;
     Ok(json!({ "ok": true, "chat": name, "state": "closed" }))
+}
+
+/// The owner dismisses an open chat's row from Home; the chat, its repo and its tasks go on
+/// (`chats_home`, docs/tasks.md "Chats"). An unknown or a closed name is refused.
+pub fn dismiss_chat(name: &str) -> Outcome<Value> {
+    task::chats_home::dismiss(name, task::now_unix_ms())
+        .map_err(|error| Fault::new(409, "invalid_chat", format!("{error:#}")))?;
+    Ok(json!({ "ok": true, "chat": name, "listed": false }))
 }
 
 /// The `[[agents]]` entries a chat may run on, for the New chat sheet.

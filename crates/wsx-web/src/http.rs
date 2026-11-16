@@ -95,6 +95,10 @@ pub fn router(app: Shared) -> Router {
                 "/api/tasks/{project}/chats/{name}/close",
                 post(tasks_chat_close),
             )
+            .route(
+                "/api/tasks/{project}/chats/{name}/dismiss",
+                post(tasks_chat_dismiss),
+            )
             .route("/api/tasks/{project}", get(tasks_overview))
             .route("/api/tasks/{project}/chat", get(tasks_chat))
             .route("/api/tasks/{project}/since", get(tasks_since))
@@ -1167,6 +1171,16 @@ async fn tasks_chat_close(
         crate::tasks::close_chat(&app, scope, &name)
     })
     .map(Json)
+}
+
+async fn tasks_chat_dismiss(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    UrlPath((project, name)): UrlPath<(u64, String)>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, true)?;
+    act_budget(&app, &device)?;
+    with_scope(&app, project, |_| crate::tasks::dismiss_chat(&name)).map(Json)
 }
 
 async fn tasks_chat_new(

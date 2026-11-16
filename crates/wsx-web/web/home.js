@@ -1,5 +1,5 @@
-// Home with task_view: one row per granted project, what needs the owner first
-// (docs/web-client-tasks.md "Home"). A row opens the project's manager chat.
+// Home with task_view: one row per chat, as a messenger lists them (docs/web-client-tasks.md
+// "Home"). A row opens the chat. The projects are not rows: the Projects page lists them.
 import { ago, html, Icon, Loading, READ_EVENT, unreadNews, useEffect, useFlip, useNow, useRef, useState } from "./lib.js";
 import { api } from "./api.js";
 import { can, chatHash, parseRoute, useStore } from "./store.js";
@@ -7,29 +7,36 @@ import { loadTasks } from "./task-api.js";
 import { agentWords, needTone, needWords } from "./task-words.js";
 import { shownTrays, TrayIcons, trayCounts, trayWords } from "./trays.js";
 import { Dots } from "./bubbles.js";
-import { slid } from "./ui.js";
+import { slid, toast } from "./ui.js";
+import { AddProject } from "./projects.js";
 
-// Projects with needs first, by their most urgent kind and then their oldest need of that
-// kind (the server sends `needs` in that order, each with its kind's `rank`); then those with a
-// message this device has not read, newest message first; then the rest by their last
-// owner-facing activity, newest first (docs/web-client-tasks.md "Home").
-// `viewing` is the project whose chat this device shows: read at once.
+// The listed chats (`listed`: wsx-core `chats_home::listed`, the owner's Dismiss and a new
+// message decide it) with needs first, by their most urgent kind and then their oldest need of
+// that kind (a project's home chat carries the project's `needs`, each with its kind's `rank`;
+// another chat with only a count of needs comes after those); then those with a message this
+// device has not read, newest first; then the rest by their newest message (`last_unix_ms`).
+// `viewing` is the chat this device shows, `{project, room}`: read at once.
 function homeOrder(projects, tasks, viewing) {
-  const rows = projects.map((project) => {
+  const rows = [];
+  for (const project of projects) {
     const overview = tasks[project.id];
-    const needs = overview?.needs ?? [];
-    const first = needs[0] ?? null;
-    const rank = first?.rank ?? null;
-    const last = overview?.last_unix_ms || null;
-    const news = project.id === viewing ? null : newsOf(project.id, overview);
-    return { project, overview, needs, rank, first, last, news };
-  });
+    for (const chat of overview?.chats ?? []) {
+      if (chat.listed === false) continue;
+      const home = chat.name === overview.home_chat;
+      const watched = viewing?.project === project.id && (viewing.room ?? overview.home_chat) === chat.name;
+      const news = watched ? null : unreadNews(home ? `project-${project.id}` : `project-${project.id}-c-${chat.name}`, home ? overview.news : chat.news);
+      const first = home ? overview.needs?.[0] ?? null : null;
+      const rank = first ? first.rank : chat.counts?.needs > 0 ? Infinity : null;
+      rows.push({ project, overview, chat, home, first, rank, news, last: chat.last_unix_ms || 0 });
+    }
+  }
+  const apart = (left, right) => (left > right) - (left < right);
   return rows.sort((left, right) => {
     if ((left.rank === null) !== (right.rank === null)) return left.rank === null ? 1 : -1;
-    if (left.rank !== null) return left.rank - right.rank || left.first.unix_ms - right.first.unix_ms;
+    if (left.rank !== null) return apart(left.rank, right.rank) || (left.first?.unix_ms ?? 0) - (right.first?.unix_ms ?? 0) || right.last - left.last;
     if ((left.news === null) !== (right.news === null)) return left.news === null ? 1 : -1;
-    if (left.news) return right.overview.news.unix_ms - left.overview.news.unix_ms;
-    return (right.last ?? 0) - (left.last ?? 0);
+    if (left.news) return right.news.unix_ms - left.news.unix_ms;
+    return right.last - left.last;
   });
 }
 
@@ -44,94 +51,6 @@ function statusLine({ overview, first }) {
   // ^ Until its tasks are read, a project's row claims nothing about them.
   if (!overview) return { text: "Loading…", loading: true };
   return { text: overview.tasks.length ? "Nothing needs you" : "No tasks yet" };
-}
-
-// ^ The project's newest message its chat counts as new (a reply that is not quiet, a To check
-// item), while this device has not read the chat that far: the same mark as the chat's own
-// "↓ N new" (lib.js `useFollowEnd`). A chat never opened on this device has nothing new.
-function newsOf(project, overview) {
-  return unreadNews(`project-${project}`, overview?.news)?.text.split("\n")[0] ?? null;
-}
-
-// ^ A sheet with one path field registers a git repository of the host, as the TUI's `p` does
-// (docs/web-client.md "Projects"). The server's refusal stays in the sheet; the row comes with
-// the next workspace event.
-function AddProject({ onClose }) {
-  const dialog = useRef();
-  const field = useRef();
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    dialog.current.showModal();
-    field.current.focus();
-  }, []);
-  const submit = async (event) => {
-    event.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
-      await api("api/projects", { method: "POST", json: { path: field.current.value } });
-      dialog.current.close();
-    } catch (failure) {
-      setError(failure.message);
-      setBusy(false);
-      field.current.focus();
-    }
-  };
-  return html`
-    <dialog class="sheet" ref=${dialog} aria-labelledby="add-project-title" onClose=${onClose}>
-      <form onSubmit=${submit}>
-        <h2 class="sheet-title" id="add-project-title">Add project</h2>
-        <label class="field">Path of a git repository
-          <input class="input" type="text" name="path" ref=${field} placeholder="~/code/app" required autocomplete="off"
-            autocapitalize="none" autocorrect="off" spellcheck=${false} enterkeyhint="go" />
-        </label>
-        <p class="error" role="alert">${error}</p>
-        <div class="actions sheet-actions">
-          <button class="button" type="button" onClick=${() => dialog.current.close()}>Cancel</button>
-          <button class="button button-primary" type="submit" disabled=${busy}>Add</button>
-        </div>
-      </form>
-    </dialog>`;
-}
-
-// ^ The confirmation of Remove: it unregisters the project from wsx only (its folder, worktrees,
-// branches and running sessions stay), or, if ticked, also halts all its sessions, the hidden
-// task ones too, as the TUI's `d` asks (docs/web-client.md "Projects"). A failure stays in the sheet.
-function RemoveProject({ project, onClose }) {
-  const dialog = useRef();
-  const [halt, setHalt] = useState(false);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  useEffect(() => dialog.current.showModal(), []);
-  const submit = async (event) => {
-    event.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
-      await api(`api/projects/${project.id}${halt ? "?halt=true" : ""}`, { method: "DELETE" });
-      dialog.current.close();
-    } catch (failure) {
-      setError(failure.message);
-      setBusy(false);
-    }
-  };
-  return html`
-    <dialog class="sheet" ref=${dialog} aria-labelledby="remove-project-title" onClose=${onClose}>
-      <form onSubmit=${submit}>
-        <h2 class="sheet-title" id="remove-project-title">Remove ${project.name}?</h2>
-        <p class="muted">The folder, worktrees, branches and tasks stay.</p>
-        <label class="option">
-          <input type="checkbox" name="halt" checked=${halt} onChange=${(event) => setHalt(event.target.checked)} />
-          Also halt all its sessions (agents, shells and task sessions)
-        </label>
-        <p class="error" role="alert">${error}</p>
-        <div class="actions sheet-actions">
-          <button class="button" type="button" onClick=${() => dialog.current.close()}>Cancel</button>
-          <button class="button button-primary" type="submit" disabled=${busy}>Remove</button>
-        </div>
-      </form>
-    </dialog>`;
 }
 
 // What a Home row says in two lines, for a project and for a chat alike: line 1 the name, the
@@ -155,18 +74,24 @@ function RowText({ name, asks, counts, last, now, line, news, typing }) {
     </span>`;
 }
 
-// An open chat besides the first: its own row under the project's, the same two lines. Line 2
-// is its unread reply, else its last reply, else its goal.
-function ChatRow({ project, chat, current, now }) {
-  const news = unreadNews(`project-${project.id}-c-${chat.name}`, chat.news)?.text.split("\n")[0] ?? null;
-  const counts = trayCounts(chat);
+// A chat's row, the same two lines for the project's home chat (`.home-row`, keyed by its project) and any other (`.chat-row`). The home chat's
+// line 2 is the project's (statusLine); another chat's is its unread reply, else its last reply,
+// else its goal, after its project's name. A slide to the left shows Dismiss.
+function ChatRow({ row, current, now, onDismiss }) {
+  const { project, overview, chat, home, news } = row;
+  const counts = trayCounts(home ? overview : chat);
+  const text = home ? news?.text.split("\n")[0] ?? null : [project.name, news?.text.split("\n")[0] ?? (chat.last_reply || chat.goal || "No messages yet")].join(" · ");
+  const line = home && !news ? statusLine(row) : { text };
+  const slide = can("task_act");
   return html`
-    <li class="row row-chat" data-key=${`${project.id}/c/${chat.name}`}>
-      <a class="row-link chat-row" href=${chatHash(chat.name)} aria-current=${current ? "page" : null}
-        aria-label=${[`Chat ${chat.name} of ${project.name}`, news && "unread", ...shownTrays(counts).map((tray) => trayWords(tray, counts))].filter(Boolean).join(", ")}>
-        <${RowText} name=${chat.name} counts=${counts} last=${chat.last_unix_ms} now=${now}
-          line=${{ text: news ?? (chat.last_reply || chat.goal || "No messages yet") }} news=${Boolean(news)} />
+    <li class=${slide ? "row row-slide" : "row"} onScroll=${slide ? slid : null} data-key=${home ? project.id : `${project.id}/c/${chat.name}`} data-news=${news ? "" : null}>
+      <a class=${home ? "row-link home-row" : "row-link chat-row"} href=${chatHash(chat.name)} aria-current=${current ? "page" : null}
+        aria-label=${home ? null : [`Chat ${chat.name} of ${project.name}`, news && "unread", ...shownTrays(counts).map((tray) => trayWords(tray, counts))].filter(Boolean).join(", ")}>
+        <${RowText} name=${home ? project.name : chat.name} asks=${home && Boolean(overview.asks?.length)} counts=${counts}
+          last=${row.last} now=${now} line=${line} news=${Boolean(news)} typing=${home && overview.busy ? overview.manager : null} />
       </a>
+      ${slide && html`<button class="row-remove" data-quiet type="button" onClick=${() => onDismiss(row)}
+        aria-label=${`Dismiss chat ${chat.name}`} title="Dismiss"><${Icon} name="fail" /></button>`}
     </li>`;
 }
 
@@ -284,33 +209,34 @@ export function Home({ rail }) {
   const list = useRef();
   useFlip(list);
   const [sheet, setSheet] = useState(null);
-  const [removing, setRemoving] = useState(null);
   const manage = store.site.manage_projects;
   // ^ A chat is the owner's to open where the site acts on tasks; the first chat of a project always exists.
   // ^ A site that manages projects but may not act on tasks has nothing to chat in: its + adds a project.
   const plus = can("task_act") && store.projects.length > 0 ? "chat" : manage ? "project" : null;
+  // ^ The row goes at once; the chat, its project and its tasks go on, and a new message brings it back.
+  const dismiss = async ({ project, chat }) => {
+    try {
+      await api(`api/tasks/${project.id}/chats/${encodeURIComponent(chat.name)}/dismiss`, { method: "POST" });
+      await loadTasks(project.id);
+    } catch (failure) {
+      toast(failure.message, { failure: true });
+    }
+  };
   let body;
   if (!store.daemon) body = html`<p class="empty">wsx is not running on the host.</p>`;
   else if (!store.loaded) body = html`<${Loading} />`;
   else if (!store.projects.length) body = html`<p class="empty">wsx manages no project that this site may reach.</p>`;
   else {
-    body = html`
-      <ul class="rows home-rows" aria-label="Projects" ref=${list}>
-        ${homeOrder(store.projects, store.tasks, rail && open != null && document.visibilityState === "visible" ? open : null).map((row) => {
-          const status = statusLine(row);
-          const news = row.news;
-          return [html`
-            <li class=${manage ? "row row-slide" : "row"} onScroll=${manage ? slid : null} key=${row.project.id} data-key=${row.project.id} data-news=${news ? "" : null}>
-              <a class="row-link home-row" href=${row.overview?.home_chat ? chatHash(row.overview.home_chat) : `#/p/${row.project.id}`} aria-current=${rail && open === row.project.id && inChat === null ? "page" : null}>
-                <${RowText} name=${row.project.name} asks=${Boolean(row.overview?.asks?.length)} counts=${trayCounts(row.overview)}
-                  last=${row.last} now=${now} line=${news ? { text: news } : status} news=${Boolean(news)} typing=${row.overview?.busy ? row.overview.manager : null} />
-              </a>
-              ${manage && html`<button class="row-remove" type="button" onClick=${() => setRemoving(row.project)}
-                aria-label=${`Remove project ${row.project.name}`} title="Remove"><${Icon} name="fail" /></button>`}
-            </li>`, ...(row.overview?.chats ?? []).map((chat) => html`<${ChatRow} key=${`${row.project.id}/c/${chat.name}`} project=${row.project} chat=${chat} now=${now}
-              current=${rail && open === row.project.id && inChat === chat.name} />`)];
-        })}
-      </ul>`;
+    const viewing = rail && open != null && document.visibilityState === "visible" ? { project: open, room: inChat } : null;
+    const rows = homeOrder(store.projects, store.tasks, viewing);
+    if (rows.length) {
+      body = html`
+        <ul class="rows home-rows" aria-label="Chats" ref=${list}>
+          ${rows.map((row) => html`<${ChatRow} key=${`${row.project.id}/${row.chat.name}`} row=${row} now=${now} onDismiss=${dismiss}
+            current=${rail && open === row.project.id && (inChat ?? row.overview.home_chat) === row.chat.name} />`)}
+        </ul>`;
+    } else if (store.projects.some((project) => !store.tasks[project.id])) body = html`<${Loading} />`;
+    else body = html`<p class="empty">No chat on Home. A new message or a new chat shows here.</p>`;
   }
   return html`
     <div class="page">
@@ -322,7 +248,6 @@ export function Home({ rail }) {
       ${sheet === "chat" && html`<${NewChat} projects=${store.projects} tasks=${store.tasks} project=${store.projects.some((each) => each.id === open) ? open : store.projects[0].id}
         manage=${manage} onAdd=${() => setSheet("project")} onClose=${() => setSheet(null)} />`}
       ${sheet === "project" && html`<${AddProject} onClose=${() => setSheet(null)} />`}
-      ${removing && html`<${RemoveProject} project=${removing} onClose=${() => setRemoving(null)} />`}
       <div class="scroll">
         ${body}
       </div>

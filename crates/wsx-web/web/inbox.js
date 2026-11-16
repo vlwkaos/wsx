@@ -127,7 +127,12 @@ export function Inbox({ rail }) {
             </div>`)}
         </section>` : null}`;
   }
-  const top = !rail && html`<h1 class="title">${can("task_view") ? "Sessions" : "Inbox"}</h1>`;
+  // ^ With task_view, Home lists chats; the projects are one step from the sessions (docs/web-client.md "Projects").
+  const top = !rail && (can("task_view") ? html`
+    <div class="home-top">
+      <h1 class="title">Sessions</h1>
+      <a class="link-action" href="#/projects">Projects</a>
+    </div>` : html`<h1 class="title">Inbox</h1>`);
   return html`
     <div class="page">
       ${top}

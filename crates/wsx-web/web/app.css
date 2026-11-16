@@ -140,6 +140,9 @@ div.row-link { cursor: default; }
 }
 .row-slide[data-open] .row-remove { background: var(--color-danger); color: var(--color-bg); }
 .row-remove:disabled { opacity: var(--opacity-disabled); }
+/* Hook: [data-quiet] — a slide action that is not a loss (Home's Dismiss): the muted color, not the danger one. */
+.row-remove[data-quiet] { color: var(--color-muted); }
+.row-slide[data-open] .row-remove[data-quiet] { background: var(--color-raised); color: var(--color-text); }
 a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row-link[aria-current="page"] { background: var(--color-raised); }
 /* A row whose text opens it while its actions stay buttons: the text is the link. */
 .row-link:has(> .row-open) { padding-block: 0; }
@@ -172,10 +175,6 @@ button.row-open { padding: var(--space-2) 0; border: 0; background: none; text-a
 .row-head > .time { flex: none; font-size: var(--font-size-sm); }
 .row-context[data-news] { font-weight: var(--font-weight-strong); color: var(--color-text); }
 .row-context:empty { display: none; }
-/* Hook: .row-chat — an open chat under its project's row on Home: the row's text and hairline
-   start one step in. */
-.row-chat { --row-inset: calc(var(--space-4) * 2); }
-.row-chat > .row-link { padding-left: calc(var(--space-4) * 2); }
 .row-state {
   flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end;
   font-size: var(--font-size-sm); color: var(--color-muted);

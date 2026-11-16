@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Real-browser check of adding and removing a project on Home (docs/web-client.md "Projects"),
+// Real-browser check of adding a project from Home's New chat and removing one on the Projects page (docs/web-client.md "Projects"),
 // over the Chrome DevTools Protocol. Called by `test-web-client.py --browser`.
 //   web-projects-check.mjs <admin-url> <admin-code> <viewer-url> <viewer-code> <capture-dir> <git repo> <project with an open task>
 // The admin site reaches every project and types into a terminal; the viewer site has neither.
@@ -12,8 +12,11 @@ const cdp = await launch({ captures, prefix: "projects-", timeoutSeconds: 200 })
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = cdp;
 const linter = designLint({ evaluate, captures, file: "projects" });
 const name = path.basename(repo);
-const rows = "[...document.querySelectorAll('.home-rows > .row:not(.row-chat)')]";
-const rowOf = (project) => `${rows}.find((row) => row.querySelector('.row-label').firstChild.textContent === ${JSON.stringify(project)})`;
+// ^ Home lists a project by its home chat's row; the Projects page (`#/projects`, one step from Sessions) lists the projects and removes them.
+const rows = "[...document.querySelectorAll('.home-rows > .row:has(.home-row)')]";
+const homeRow = (project) => `${rows}.find((row) => row.querySelector('.row-label').firstChild.textContent === ${JSON.stringify(project)})`;
+const listed = "[...document.querySelectorAll('.page .rows > .row')]";
+const rowOf = (project) => `${listed}.find((row) => row.querySelector('.row-label').firstChild.textContent === ${JSON.stringify(project)})`;
 
 const open = (url, code) => pair(cdp, url, code, { ready: ".home-row" });
 // A swipe left: the browser's own scroll, as a finger moves it.
@@ -25,7 +28,7 @@ await viewport(390, 844, 2);
 await open(viewerUrl, viewerCode);
 // ^ Add project is the last choice of the New chat sheet's project list, where the site manages projects.
 const choices = () => evaluate(`[...document.querySelectorAll('dialog.sheet[open] select[name=project] option')].map((option) => option.textContent)`);
-const without = await evaluate(`({ remove: !!document.querySelector('.row-remove'), slide: !!document.querySelector('.row-slide'), separate: !!document.querySelector('[aria-label="Add project"]') })`);
+const without = await evaluate(`({ remove: !!document.querySelector('[aria-label^="Remove project"]'), slide: !!document.querySelector('.row-slide .home-row [aria-label^="Remove"]'), separate: !!document.querySelector('[aria-label="Add project"]') })`);
 if (without.remove || without.slide || without.separate) await fail(`a site without the grant shows project buttons: ${JSON.stringify(without)}`);
 if (await evaluate("!!document.querySelector('[aria-label=\"New chat\"]')")) {
   await evaluate("document.querySelector('[aria-label=\"New chat\"]').click()");
@@ -37,9 +40,10 @@ if (await evaluate("!!document.querySelector('[aria-label=\"New chat\"]')")) {
 
 await open(adminUrl, adminCode);
 const all = await evaluate(`({ add: document.querySelectorAll('[aria-label="New chat"]').length, separate: document.querySelectorAll('[aria-label="Add project"]').length, rows: ${rows}.length,
-  remove: ${rows}.filter((row) => row.classList.contains('row-slide') && row.querySelector('.row-remove')).length,
+  remove: ${rows}.filter((row) => row.classList.contains('row-slide') && row.querySelector('[aria-label^="Dismiss chat"]')).length,
+  removeProject: !!document.querySelector('[aria-label^="Remove project"]'),
   box: document.querySelector('[aria-label="New chat"]').getBoundingClientRect().toJSON() })`);
-if (all.add !== 1 || all.separate || !all.rows || all.remove !== all.rows) await fail(`the managing site shows ${JSON.stringify(all)}`);
+if (all.add !== 1 || all.separate || !all.rows || all.remove !== all.rows || all.removeProject) await fail(`the managing site shows ${JSON.stringify(all)}`);
 if (all.box.width < 44 || all.box.height < 44) await fail(`the + is ${all.box.width}x${all.box.height}, under 44 px`);
 await linter.lint("home");
 await capture("390x844-home");
@@ -59,8 +63,15 @@ await until("/does not exist/.test(document.querySelector('dialog.sheet .error')
 if (!(await evaluate("document.querySelector('dialog.sheet').open"))) await fail("a refusal closed the sheet");
 await capture("390x844-add-refused");
 await submit(repo);
-await until(`!!${rowOf(name)}`, "the added project did not appear on Home", 100);
+await until(`!!${homeRow(name)}`, "the added project did not appear on Home", 100);
 if (await evaluate("!!document.querySelector('dialog.sheet[open]')")) await fail("the sheet stayed open after the add");
+
+// The Projects page: the site that manages projects has + and a slide to Remove there.
+await evaluate("location.hash = '#/projects'");
+await until(`!!${rowOf(name)}`, "the Projects page does not list the added project");
+if (!(await evaluate("!!document.querySelector('.page [aria-label=\"Add project\"]')"))) await fail("the Projects page has no + to add a project");
+await linter.lint("projects");
+await capture("390x844-projects");
 
 // Remove: slide, then the button, then the sheet that asks. Cancel leaves the row; the folder stays.
 const askRemove = async (project) => {
@@ -79,7 +90,11 @@ await until("!document.querySelector('dialog.sheet[open]')", "Cancel left the sh
 if (!(await evaluate(`!!${rowOf(name)}`))) await fail("Cancel removed the project");
 await askRemove(name);
 await evaluate("document.querySelector('dialog.sheet form').requestSubmit()");
-await until(`!${rowOf(name)}`, "the removed project stayed on Home", 100);
+await until(`!${rowOf(name)}`, "the removed project stayed on the Projects page", 100);
+await evaluate("location.hash = '#/'");
+await until(`!!document.querySelector('.home-rows') && !${homeRow(name)}`, "the removed project stayed on Home", 100);
+await evaluate("location.hash = '#/projects'");
+await until(`!!${rowOf(busy)}`, "the Projects page does not list the project with an open task");
 if (!fs.existsSync(path.join(repo, ".git"))) await fail("Remove deleted the project's folder");
 
 // A project with an open task goes the same way, with its sessions halted when the box is ticked.
@@ -88,9 +103,10 @@ await evaluate("document.querySelector('dialog.sheet input[name=halt]').click()"
 if (!(await evaluate("document.querySelector('dialog.sheet input[name=halt]').checked"))) await fail("the halt box does not tick");
 await capture("390x844-remove-halt");
 await evaluate("document.querySelector('dialog.sheet form').requestSubmit()");
-await until(`!${rowOf(busy)}`, "a project with an open task stayed on Home", 100);
+await until(`!${rowOf(busy)}`, "a project with an open task stayed on the Projects page", 100);
 if (await evaluate("!!document.querySelector('.notices')?.textContent.includes('open tasks')")) await fail("Remove still refuses a project with open tasks");
 
+await evaluate("location.hash = '#/'");
 await viewport(1280, 800, 1);
 await pause(300);
 if (!(await evaluate("!!document.querySelector('.rail [aria-label=\"New chat\"]')"))) await fail("the rail shows no + at 1280 px");

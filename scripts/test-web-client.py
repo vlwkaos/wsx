@@ -4382,8 +4382,11 @@ merge_seconds = 3
         # ^ A chat with no agent of its own shows the manager's agent.
         assert role_chat['manager'] == {'name': 'notes', 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and 'chats' not in role_chat and role_chat['running'], role_chat
         # ^ The overview is the observer's: it follows the chat's files within a poll.
+        # ^ The chats besides the home chat, which is a row of Home as the others are (`home`).
         overview_chats = lambda count: wait(lambda: (lambda chats: chats if len(chats) == count and all(c['news'] for c in chats if c['name'] == 'notes') else None)(
-            steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['chats']), 'the overview lists %d chats' % count)
+            [c for c in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['chats'] if not c['home']]), 'the overview lists %d chats' % count)
+        home_row = [c for c in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['chats'] if c['home']]
+        assert [(c['name'], c['listed']) for c in home_row] == [('demo', True)], home_row
         contacts = overview_chats(1)
         assert [(c['name'], c['goal']) for c in contacts] == [('notes', 'Keep the notes.')], contacts
         assert contacts[0]['last_reply'].startswith('open: ') and contacts[0]['news']['text'].startswith('open: ') and contacts[0]['news']['unix_ms'] > 0 and contacts[0]['counts'] == {'running': 0, 'needs': 0, 'check': 0} and contacts[0]['last_unix_ms'] > 0, contacts
@@ -4414,6 +4417,25 @@ merge_seconds = 3
         assert status == 200 and body == {'ok': True, 'chat': 'made', 'state': 'closed'}, (status, body)
         assert [(c['name']) for c in overview_chats(1)] == ['notes']
         assert {c['name']: c['state'] for c in js('task', 'chat', 'list', '-p', 'demo')['chats']}['made'] == 'closed'
+        # ^ Dismiss (docs/tasks.md "Chats"): the row leaves Home (`listed` false), the chat stays
+        # open with its page; a message brings it back, and so does a new chat. A chat of its own
+        # keeps the other chats' rows out of it.
+        dismiss_url = lambda name: '/api/tasks/%d/chats/%s/dismiss' % (demo, name)
+        listed = lambda name: {c['name']: c['listed'] for c in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['chats']}.get(name)
+        status, body = steady(owner, 'POST', '/api/tasks/%d/chats' % demo, {'name': 'tidy'})
+        assert status == 200 and wait(lambda: listed('tidy') or None, 'a new chat is listed'), (status, body)
+        assert steady(viewer, 'POST', dismiss_url('tidy'), {})[0] == 403
+        status, body = steady(owner, 'POST', dismiss_url('nobody'), {})
+        assert status == 409 and 'no open chat nobody' in json.dumps(body), (status, body)
+        status, body = steady(owner, 'POST', dismiss_url('tidy'), {})
+        assert status == 200 and body == {'ok': True, 'chat': 'tidy', 'listed': False}, (status, body)
+        wait(lambda: listed('tidy') is False or None, 'the dismissed row is not listed')
+        assert steady(owner, 'GET', '/api/tasks/%d/chat?chat=tidy' % demo)[0] == 200
+        status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'STATUS', 'chat': 'tidy'})
+        assert status == 200 and body['ok'], body
+        wait(lambda: listed('tidy') or None, 'a message lists the dismissed chat again')
+        assert steady(owner, 'POST', close_url('tidy'), {})[0] == 200
+        ok('chats: Dismiss unlists a row and keeps the chat; a message or a new chat lists it; a viewer is refused')
         assert steady(owner, 'POST', close_url('made'), {})[0] == 409
         ok('chats: the page makes a chat (a bad or an open name refused) and closes it (the first, an unknown or a closed one refused), the agents list answers')
         # A manager turn alone changes the overview: its `busy` (the home row's typing dots) goes
@@ -4833,14 +4855,15 @@ merge_seconds = 3
             assert {r['id'] for r in whole['rows'] if r.get('asks')} == {ask[0] for ask in expected}, [r for r in whole['rows'] if r.get('asks')]
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
             browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
-            # Home's order by its rule: needs first (most urgent kind, then the oldest need of it),
-            # then the last owner-facing activity, newest first (docs/web-client-tasks.md "Home"; no
-            # fixture project has a message this device read to, so none is unread).
+            # Home's order by its rule, as read for each project's home chat: needs first (most urgent
+            # kind, then the oldest need of it), then the chat's newest message, newest first
+            # (docs/web-client-tasks.md "Home"; no fixture project has a message this device read to,
+            # so none is unread).
             urgency = {'waiting': 0, 'failed': 1, 'approval': 2, 'land': 3}
             def home_key(name):
                 view = steady(owner, 'GET', '/api/tasks/%d' % ids[name])[1]
                 if not view['needs']:
-                    return (1, -(view['last_unix_ms'] or 0), 0)
+                    return (1, -next(chat['last_unix_ms'] for chat in view['chats'] if chat['home']), 0)
                 rank = min(urgency[item['kind']] for item in view['needs'])
                 return (0, rank, min(item['unix_ms'] for item in view['needs'] if urgency[item['kind']] == rank))
             home_order = sorted((name for name in ids if name in ('ui', 'demo', 'plans', 'calm')), key=home_key)

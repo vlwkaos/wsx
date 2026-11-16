@@ -77,6 +77,8 @@ pub struct TaskRow {
     /// A chat's pill counts, marked after its name; zero for a task.
     pub counts: wsx_core::task::needs::ChatCounts,
     pub section: Section,
+    /// The project's home chat: its row is never closed (`chats::close`).
+    pub home: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,6 +292,28 @@ impl TaskList {
             .map(|row| row.title.as_str())
     }
 
+    /// The selected row's chat when it can be closed: the home chat cannot (`chats::close`).
+    pub fn closable_chat(&self) -> Option<&str> {
+        self.selected_chat()
+            .filter(|_| self.rows.get(self.selected).is_some_and(|row| !row.home))
+    }
+
+    /// `x` on a chat row: its row leaves the list (`chats_home::dismiss`); the chat, its project
+    /// and its tasks go on, and a new message brings the row back. The web's Dismiss.
+    pub fn dismiss_chat(&mut self) {
+        let Some(name) = self.selected_chat().map(str::to_string) else {
+            return;
+        };
+        self.notice = Some(
+            match wsx_core::task::chats_home::dismiss(&name, wsx_core::task::now_unix_ms()) {
+                Ok(()) => (format!("Dismissed {name}"), false),
+                Err(error) => (format!("{error:#}"), true),
+            },
+        );
+        self.stamp = None;
+        self.check();
+    }
+
     /// A key on the list for a chat row's close: `d` asks, `y` or `Enter` closes it through
     /// `chats::close` (as `wsx task chat close`), `n` or `Esc` drops it. False when the key is not
     /// for it. The first chat is the project's row, not a chat row, so it has no close.
@@ -300,7 +324,7 @@ impl TaskList {
         }
         let Some(name) = self.close_chat.take() else {
             if *action == Action::Delete {
-                if let Some(chat) = self.selected_chat() {
+                if let Some(chat) = self.closable_chat() {
                     self.close_chat = Some(chat.to_string());
                     return true;
                 }
@@ -608,8 +632,8 @@ pub fn state_word(task: &Value) -> String {
 }
 
 /// Open tasks first, waiting on the owner, failed, ready, checking, then working; then the
-/// open chats; then the recent landed and closed tasks, newest first as the
-/// ledger has them.
+/// listed chats and the dismissed count; then the recent landed and closed tasks, newest first as
+/// the ledger has them.
 pub fn rows(ledger: &Value) -> Vec<TaskRow> {
     let rank = |state: &str| match state {
         "waiting" => 0,
@@ -634,6 +658,7 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
             .join(" · "),
         counts: Default::default(),
         section,
+        home: false,
     };
     let chat = |chat: &Value| TaskRow {
         id: 0,
@@ -651,10 +676,32 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         .join(" · "),
         counts: serde_json::from_value(chat["counts"].clone()).unwrap_or_default(),
         section: Section::Chats,
+        home: chat["home"].as_bool().unwrap_or(false),
     };
+    // ^ The chats as Home lists them: those with something for the owner first, then the newest
+    // message; the dismissed ones (`listed`, `chats_home::listed`) are one `+N dismissed` row.
+    let mut chats = list("chats");
+    chats.sort_by_key(|chat| {
+        (
+            chat["counts"]["needs"].as_u64().unwrap_or(0) == 0,
+            std::cmp::Reverse(chat["last_unix_ms"].as_u64().unwrap_or(0)),
+        )
+    });
+    let (listed, dismissed): (Vec<_>, Vec<_>) = chats
+        .iter()
+        .partition(|chat| chat["listed"].as_bool().unwrap_or(true));
+    let dismissed = (!dismissed.is_empty()).then(|| TaskRow {
+        id: 0,
+        title: format!("+{} dismissed", dismissed.len()),
+        state: String::new(),
+        status: String::new(),
+        counts: Default::default(),
+        section: Section::Chats,
+        home: false,
+    });
     open.iter()
         .map(|task| row(task, Section::Open))
-        .chain(list("chats").iter().map(chat))
+        .chain(listed.into_iter().map(chat).chain(dismissed))
         .chain(list("recent").iter().map(|task| row(task, Section::Recent)))
         .collect()
 }

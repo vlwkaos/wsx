@@ -193,6 +193,7 @@ impl App {
                 (Action::NavigateDown, false) => list.select(1),
                 (Action::NavigateUp, false) => list.select(-1),
                 (Action::Select, false) => list.open_selected(),
+                (Action::DismissAttention, false) => list.dismiss_chat(),
                 // ^ `u` is the Workspace's routine key; here it flips the day rows.
                 (Action::AddRoutine, false) => list.tokens = !list.tokens,
                 // ^ `a` is the Workspace's next-active key; here it picks the agent counted.

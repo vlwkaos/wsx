@@ -33,7 +33,7 @@ const { file: mobilePath, source: mobileSource } = mobileAudit();
 if (!mobileSource) await fail(`no mobile audit at ${mobilePath}; set WSX_MOBILE_AUDIT`);
 // The main screens that get the design lint (scripts/design-lint.js), at 390x844 and 1280x800 only.
 const linter = designLint({ evaluate, captures, file: "tasks" });
-const LINTED = new Set(["new-chat", "new-chat-refused", "chats-home-approval", "chats-home", "chats-home-wide", "home-long-name", "chat-room", "chat-room-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
+const LINTED = new Set(["new-chat", "new-chat-refused", "chats-home-approval", "chats-home", "chats-home-wide", "home-long-name", "chat-room", "chat-room-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "home-chats-dark", "home-chats-light", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
 let size = [390, 844, 2];
 const phone = () => size[0] < 600;
 const audits = [];
@@ -449,13 +449,13 @@ async function motion() {
     const ui = state.projects.find((project) => project.name === 'ui').id;
     const mover = state.projects.find((project) => project.name === 'gone');
     // ^ gone has no task and no activity: last of the quiet rows, so a newer message moves it up (calm leads them).
-    const rows = () => [...document.querySelectorAll('.home-rows > .row:not(.row-chat)')];
+    const rows = () => [...document.querySelectorAll('.home-rows > .row:has(.home-row)')];
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     // The manager of ui runs a turn: typing dots on its row. ^ Only ui's row: another fixture
     // manager may run a real turn at the same time.
     update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], busy: true } } });
     await frames();
-    const typing = document.querySelectorAll('.home-rows > .row:not(.row-chat)[data-key="' + ui + '"] .row-typing .typing-dot').length;
+    const typing = document.querySelectorAll('.home-rows > .row:has(.home-row)[data-key="' + ui + '"] .row-typing .typing-dot').length;
     toast('Saved the page');
     await frames();
     const notice = !!document.querySelector('.notice .notice-timer');
@@ -464,7 +464,7 @@ async function motion() {
     update({ tasks: { ...state.tasks, [mover.id]: { ...state.tasks[mover.id], last_unix_ms: Date.now() + 1e7 } } });
     await frames();
     const moved = rows().map((row) => row.dataset.key).join() !== before.join();
-    const glides = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row:not(.row-chat)')
+    const glides = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row:has(.home-row)')
       && String(animation.effect.getKeyframes()[0].transform ?? '').startsWith('translateY')).length;
     const projects = state.projects;
     update({ projects: projects.filter((project) => project !== mover) });
@@ -512,7 +512,7 @@ async function motion() {
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     update({ tasks: { ...state.tasks, [mover.id]: { ...state.tasks[mover.id], last_unix_ms: 1 } } });
     await frames();
-    const rows = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row:not(.row-chat)')).length;
+    const rows = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row:has(.home-row)')).length;
     update(globalThis.motionKept);
     return rows;
   })()`);
@@ -594,8 +594,8 @@ async function homeUnread() {
     // ^ calm has a message nobody read here; gone and quiet are read, and gone is newer by activity.
     localStorage.setItem('wsx-read', JSON.stringify(Object.fromEntries([calm, gone, quiet].map((project) => ['project-' + project.id, { read: T - 1000, place: null }]))));
     const overview = (project, extra) => ({ ...state.tasks[project.id], ...extra });
-    const names = () => [...document.querySelectorAll('.home-rows > .row:not(.row-chat)')].map((row) => row.querySelector('.row-label').textContent).filter((name) => ['calm', 'gone', 'quiet'].includes(name));
-    const marked = (project) => document.querySelector('.home-rows > .row:not(.row-chat)[data-key="' + project.id + '"]').hasAttribute('data-news');
+    const names = () => [...document.querySelectorAll('.home-rows > .row:has(.home-row)')].map((row) => row.querySelector('.row-label').textContent).filter((name) => ['calm', 'gone', 'quiet'].includes(name));
+    const marked = (project) => document.querySelector('.home-rows > .row:has(.home-row)[data-key="' + project.id + '"]').hasAttribute('data-news');
     update({ tasks: { ...state.tasks,
       [calm.id]: overview(calm, { news: { unix_ms: T, text: 'new' }, last_unix_ms: T - 9e6 }),
       [gone.id]: overview(gone, { news: null, last_unix_ms: T + 9e6 }),
@@ -1331,7 +1331,7 @@ await until(`(() => { const bubbles = [...document.querySelectorAll('.log .bubbl
 if ((await evaluate(`${askTags}.length`)) !== 1) await fail("a later report dropped the chat's Asks you");
 if ((await overviewAsks())?.length !== 1) await fail("a later report dropped the overview's asks");
 const askingChat = await evaluate("location.hash");
-const homeAskRows = "[...document.querySelectorAll('.home-rows > .row:not(.row-chat)')].filter((row) => row.querySelector('.row-label[data-tone=accent]') && /Asks you/.test(row.querySelector('.row-label').textContent) && !row.querySelector('.row-asks, .row-label .icon')).map((row) => row.dataset.key).sort().join()";
+const homeAskRows = "[...document.querySelectorAll('.home-rows > .row:has(.home-row)')].filter((row) => row.querySelector('.row-label[data-tone=accent]') && /Asks you/.test(row.querySelector('.row-label').textContent) && !row.querySelector('.row-asks, .row-label .icon')).map((row) => row.dataset.key).sort().join()";
 // ^ plans may still hold an open question of its log (test-web-client.py): the rows that ask are
 // the projects whose overview lists one, ui among them.
 const askingNow = async () => (await evaluate(`Promise.all([${project}, ${plansArg}].map((id) => fetch('api/tasks/' + id).then((r) => r.json()).then((view) => view.asks.length ? String(id) : '')))`)).filter(Boolean).sort().join();
@@ -1359,7 +1359,7 @@ await go("#/");
 const askingLeft = await askingNow();
 // ^ ui's question is answered; plans' older questions (test-web-client.py) are not, so only plans may still ask.
 if (askingLeft.split(",").includes(String(project))) await fail(`ui still asks after the owner wrote: ${askingLeft}`);
-await until(`!!document.querySelector('.home-rows > .row:not(.row-chat)') && ${homeAskRows} === ${JSON.stringify(askingLeft)}`, "Asks you stayed on the Home row after the owner wrote", 100);
+await until(`!!document.querySelector('.home-rows > .row:has(.home-row)') && ${homeAskRows} === ${JSON.stringify(askingLeft)}`, "Asks you stayed on the Home row after the owner wrote", 100);
 await go(askingChat);
 await until(`!!${asking}`, "the chat did not come back after Home", 100);
 await openReservoir();
@@ -2522,7 +2522,7 @@ if (await count(".task-sheet textarea, .task-message, .task-steer")) await fail(
 await closeSheet("#4", chat);
 await typeInto(".composer-field", "see the logs");
 await go("#/");
-await until("!!document.querySelector('.home-rows > .row:not(.row-chat)')", "Home did not open");
+await until("!!document.querySelector('.home-rows > .row:has(.home-row)')", "Home did not open");
 await go(page(4));
 await until("!!document.querySelector('.task-next button[aria-label^=\"Answer #4\"]')", "#4's sheet has no Answer");
 await click(".task-next button[aria-label^=\"Answer #4\"]");
@@ -2904,13 +2904,13 @@ await closeReservoir();
 // mark and the message's first line; opening the chat clears it (docs/web-client-tasks.md "Home").
 await go("#/");
 await until("!!document.querySelector('.home-row')", "home did not open for the new message");
-const newsRow = `document.querySelector('.home-rows > .row:not(.row-chat)[data-key="${project}"]')`;
+const newsRow = `document.querySelector('.home-rows > .row:has(.home-row)[data-key="${project}"]')`;
 if (await evaluate(`!!${newsRow}.querySelector('.news-mark')`)) await fail("a project whose chat was read is marked new");
 await evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'STATUS for home' }) })`);
 await until(`!!${newsRow}?.querySelector('.news-mark') && /^open: /.test(${newsRow}.querySelector('.row-context[data-news]')?.textContent.trim() ?? '')`, "the new reply did not mark the project's home row", 300);
 const marked = await evaluate(`(() => { const mark = getComputedStyle(${newsRow}.querySelector('.news-mark')).backgroundColor;
   const probe = document.createElement('span'); probe.style.color = 'var(--color-accent)'; document.body.append(probe); const accent = getComputedStyle(probe).color; probe.remove();
-  return { mark, accent, others: [...document.querySelectorAll('.home-rows > .row:not(.row-chat):not([data-news]) .news-mark')].length }; })()`);
+  return { mark, accent, others: [...document.querySelectorAll('.home-rows > .row:has(.home-row):not([data-news]) .news-mark')].length }; })()`);
 if (marked.mark !== marked.accent || marked.others) await fail(`the new message's mark is not the accent alone: ${JSON.stringify(marked)}`);
 await shot("home-news");
 await go(chat);
@@ -3722,13 +3722,13 @@ for (const wide of [false, true]) {
   await until("!!document.querySelector('.composer-field')", "the chat did not open for Chats");
   const projectName = (await text(".bar-label"))[0];
   const shownName = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((data) => data.manager.name)`);
-  // ^ Home lists the open chat under its project: its name, the project's name under it, no dot
-  // before this device opened its chat; a click opens the chat.
+  // ^ Home lists the open chat as a row of its own: its name, its project's name before its reply,
+  // no dot before this device opened its chat; a click opens the chat.
   await go("#/");
   const chatRow = `[...document.querySelectorAll('.home-rows .chat-row')].find((r) => r.querySelector('.row-label').textContent === 'billing')`;
-  await until(`!!(${chatRow})`, "Home lists no billing chat under its project");
-  const listed = await evaluate(`(() => { const row = ${chatRow}; const before = row.closest('li').previousElementSibling; return { name: row.querySelector('.row-label').textContent, context: row.querySelector('.row-context').textContent.trim(), dots: row.querySelectorAll('.news-mark').length, under: before && !before.classList.contains('row-chat') ? before.querySelector('.row-label').firstChild.textContent : before?.className }; })()`);
-  if (listed.name !== "billing" || !listed.context || listed.context === projectName || (!wide && listed.dots) || listed.under !== projectName) await fail(`Home lists the chat as ${JSON.stringify(listed)}, not billing over ${projectName}`);
+  await until(`!!(${chatRow})`, "Home lists no billing chat");
+  const listed = await evaluate(`(() => { const row = ${chatRow}; return { name: row.querySelector('.row-label').textContent, context: row.querySelector('.row-context').textContent.trim(), dots: row.querySelectorAll('.news-mark').length }; })()`);
+  if (listed.name !== "billing" || !listed.context.startsWith(`${projectName} · `) || (!wide && listed.dots)) await fail(`Home lists the chat as ${JSON.stringify(listed)}, not billing of ${projectName}`);
   if (await count(".more-menu .chat-row")) await fail("the ⋯ menu lists chats");
   const chatHead = await homeHead(chatRow), chatFault = homeHeadFault(chatHead, false);
   if (chatFault) await fail(`the chat row's icons and time are not one group at the right edge: ${chatFault}`);
@@ -3764,6 +3764,52 @@ for (const wide of [false, true]) {
 await go("#/");
 await until("!!document.querySelector('.home-rows .chat-row')", "Home lost the chat");
 if (await count(".chat-row .news-mark")) await fail("a chat read on this device still shows unread");
+
+// Dismiss: a slide to the left shows it on a chat's row; the row leaves Home at once while the chat,
+// its project and the project's tasks go on; a message brings the row back (docs/web-client-tasks.md "Home").
+{
+  const billing = `[...document.querySelectorAll('.home-rows > .row:has(.chat-row)')].find((r) => r.querySelector('.row-label').textContent === 'billing')`;
+  const overview = () => evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((data) => ({ tasks: data.tasks.length, working: data.working, billing: data.chats.find((chat) => chat.name === 'billing')?.listed }))`);
+  const rowsOf = () => evaluate(`fetch('api/tasks/${project}/chat?chat=billing').then((r) => r.json()).then((data) => data.rows.length)`);
+  await resize([390, 844, 2]);
+  await go("#/");
+  await until(`!!(${billing})`, "Home lists no billing chat to dismiss");
+  const before = await overview();
+  if (before.billing !== true) await fail(`billing is not listed before Dismiss: ${JSON.stringify(before)}`);
+  await evaluate(`(() => { const row = ${billing}; row.scrollLeft = row.scrollWidth; })()`);
+  await until(`!!(${billing})?.hasAttribute('data-open')`, "the chat's row did not open its Dismiss");
+  const button = await evaluate(`(() => { const box = ${billing}.querySelector('[aria-label="Dismiss chat billing"]').getBoundingClientRect(); return { name: ${billing}.querySelector('[aria-label="Dismiss chat billing"]').title, width: box.width, height: box.height }; })()`);
+  if (button.name !== "Dismiss" || button.width < 44 || button.height < 44) await fail(`the Dismiss button is ${JSON.stringify(button)}`);
+  await shot(`home-dismiss`);
+  await evaluate(`${billing}.querySelector('[aria-label="Dismiss chat billing"]').click()`);
+  await until(`!(${billing})`, "Dismiss left the chat's row on Home", 30);
+  if (!(await count(`.home-rows > .row[data-key="${project}"]`))) await fail("Dismiss took the project's own row away");
+  const after = await overview();
+  if (after.billing !== false || after.tasks !== before.tasks || after.working !== before.working) await fail(`Dismiss changed more than the row: ${JSON.stringify({ before, after })}`);
+  await go("#/c/billing");
+  await until("!!document.querySelector('.composer-field') && !!document.querySelector('.log .bubble[data-side=in]')", "a dismissed chat did not open by its link");
+  await go("#/");
+  await until(`!(${billing})`, "the dismissed row came back by itself");
+  // ^ The owner writes to it, as a message of another chat or an event would: the row is back, and the reply is read in the chat.
+  const rows = await rowsOf();
+  await evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'STATUS', chat: 'billing' }) })`);
+  await until(`!!(${billing})`, "a message did not bring the dismissed chat back", 30);
+  await shot(`home-dismiss-back`);
+  await until(`fetch('api/tasks/${project}/chat?chat=billing').then((r) => r.json()).then((data) => data.rows.length >= ${rows} + 2)`, "the chat did not answer the message", 60);
+  await go("#/c/billing");
+  await until("!!document.querySelector('.log .bubble[data-side=in]')", "the chat did not open after its message");
+  await go("#/");
+  await until(`!!(${billing}) && !${billing}.hasAttribute('data-news')`, "the chat's reply stayed unread after it was read");
+  // ^ The list as the owner reads it, at the two phone widths and at 1280 px, in both schemes.
+  for (const next of [[375, 812, 2], [390, 844, 2], [1280, 800, 1]]) {
+    await resize(next);
+    for (const scheme of ["dark", "light"]) {
+      await inScheme(scheme);
+      await shot(`home-chats-${scheme}`);
+    }
+  }
+  await inScheme("dark");
+}
 
 // Chat unread is the server's `news` (the newest reply that is not quiet), read against what this
 // device read: a ping, a quiet reply and the owner's own message are no news; a reply is.
@@ -3902,7 +3948,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   if (asks.title !== "Close qa?" || asks.text !== "Its log and notes stay; New chat with the same name opens it again." || asks.buttons.join() !== "Cancel,Close chat") await fail(`the Close chat confirm is ${JSON.stringify(asks)}`);
   await shot("close-chat");
   await evaluate(`[...document.querySelectorAll('${sheet} button')].find((button) => button.textContent === 'Close chat').click()`);
-  await until(`location.hash === '#/' && !!document.querySelector('.home-row') && !document.querySelector('.row-chat[data-key="${project}/c/qa"]')`, "Close chat did not go Home without the qa row", 30);
+  await until(`location.hash === '#/' && !!document.querySelector('.home-row') && !document.querySelector('.row:has(.chat-row)[data-key="${project}/c/qa"]')`, "Close chat did not go Home without the qa row", 30);
   const cli = JSON.parse(fs.readFileSync(wsxCli));
   const listed = JSON.parse(execFileSync(cli.wsx, ["task", "chat", "list", "--json", "-p", "ui"], { env: cli.env, cwd: cli.cwd, stdio: "pipe" }));
   if (listed.chats.find((chat) => chat.name === "qa")?.state !== "closed") await fail(`chat list after Close chat: ${JSON.stringify(listed)}`);

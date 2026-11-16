@@ -124,20 +124,26 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         .collect();
     let main_checkout = main_checkout(main, &mut git);
     let (strays, stray_omitted) = stray_worktrees(main, &copies, &mut git);
-    // ^ Open chats with their pill counts (`needs::chat_counts`) while any is above 0: the TUI's
-    // chat rows mark them as the web's Home rows do; a closed chat is history (docs/tasks.md "Chats").
+    // ^ Open chats with their pill counts (`needs::chat_counts`) while any is above 0, the home
+    // chat too (`home`): the TUI's chat rows mark them as the web's Home rows do. `listed` says
+    // whether Home shows the row (`chats_home::listed`, one rule for both); a closed chat is
+    // history (docs/tasks.md "Chats").
     let counts = super::needs::chat_counts(&project_id, settings.land_auto);
-    // ^ The home chat is the manager (`m` in the TUI, the project's row in the web), not a contact.
-    let home = super::store::home_chat(&project_id);
     let chats: Vec<Value> = super::chats::rows(&project_id)
         .into_iter()
-        .filter(|row| row["state"] != "closed" && row["name"].as_str() != home.as_deref())
-        .map(|mut row| {
-            let own = row["name"].as_str().and_then(|name| counts.get(name));
-            if let Some(own) = own.filter(|own| **own != super::needs::ChatCounts::default()) {
+        .filter(|row| row["state"] != "closed")
+        .filter_map(|mut row| {
+            let name = row["name"].as_str()?.to_string();
+            let dir = super::chats::open_chat(&name).ok()?;
+            row["listed"] = super::chats_home::listed(&dir).into();
+            row["last_unix_ms"] = super::chats_home::last_message_ms(&dir).into();
+            if let Some(own) = counts
+                .get(&name)
+                .filter(|own| **own != super::needs::ChatCounts::default())
+            {
                 row["counts"] = json!(own);
             }
-            row
+            Some(row)
         })
         .collect();
     let mut ledger = json!({

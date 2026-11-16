@@ -6698,10 +6698,13 @@ def part_host(created=None):
     with (chats_dir / 'billing/log.jsonl').open('a') as chat_log:
         chat_log.write(json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': 9000001,
                                    'from': 'chat:demo', 'text': 'MANAGER PING'}) + '\n')
+    # ^ The list shows the home chat too: the chats with needs first, then the newest message, as Home lists them.
+    listed = sorted((c for c in js('task', 'ledger')['chats'] if c['listed']), key=lambda c: (not c.get('counts', {}).get('needs'), -c['last_unix_ms']))
+    above = [c['name'] for c in listed].index('billing')
     for cols in (120, 80):
         shots = tui_screens(wsx, env, project, [
             (r'WORKSPACE', b't'),
-            (r'(?ms)^ Chats$.*^ billing +(?:[…!✓]\d+ +)*open +haiku · Drive the billing', b'j' * below),
+            (r'(?ms)^ Chats$.*^ billing +(?:[…!✓]\d+ +)*open +haiku · Drive the billing', b'j' * (below + above)),
             (r'\(enter\)chat', b'\r'),
             (r'(?ms)^ billing +\d\d:\d\d$.*CHAT', b'\x1b'),
             (r'\(m\)anager', b'\x1b'),
@@ -6711,6 +6714,20 @@ def part_host(created=None):
         # ^ The title is the chat's name and its model; the home chat's message is under its own name.
         assert 'billing · haiku' in talk and 'demo · billing' not in talk and 'MANAGER PING' in talk, talk
         assert re.search(r'(?m)^ demo +\d\d:\d\d$', talk), talk
+    # Dismiss (docs/tasks.md "Chats"): `x` on the chat's row takes it off the list and shows `+1 dismissed`;
+    # the chat stays open, and a message to it lists the row again (`chats_home::listed`).
+    row = r'(?m)^ billing +(?:[…!✓]\d+ +)*open'
+    shots = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'),
+        (r'(?ms)^ Chats$.*^ billing +(?:[…!✓]\d+ +)*open +haiku · Drive the billing', b'j' * (below + above)),
+        (r'\(x\)dismiss', b'x'),
+        (r'\+1 dismissed', b'')])
+    assert re.search(row, shots[1]) and not re.search(row, shots[3]), shots[3]
+    assert not next(c for c in js('task', 'ledger')['chats'] if c['name'] == 'billing')['listed']
+    assert chats()['billing']['state'] == 'open'
+    again = js('task', 'say', '--to', 'billing', 'STATUS')
+    assert chat_reply('billing', again['id'])
+    assert next(c for c in js('task', 'ledger')['chats'] if c['name'] == 'billing')['listed']
     # chat close keeps the notes; the chat's tasks go back to the manager.
     (chats_dir / 'billing/notes/context.md').write_text('billing notes\n')
     assert js('task', 'chat', 'close', 'billing')['state'] == 'closed'

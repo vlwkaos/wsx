@@ -8,6 +8,7 @@
 pub mod build;
 pub mod chat;
 pub mod chats;
+pub mod chats_home;
 mod chats_move;
 pub mod checks;
 pub mod copy;

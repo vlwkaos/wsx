@@ -800,8 +800,11 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
                 },
                 "(m)anager".into(),
             ];
-            if list.selected_chat().is_some() {
+            if list.closable_chat().is_some() {
                 hints.push("(d)close chat".into());
+            }
+            if list.selected_chat().is_some() {
+                hints.push("(x)dismiss".into());
             }
             hints.extend(["(S)hell".into(), "Esc: close".into(), "(?)help".into()]);
             // ^ The agent the spend counts; its name is on the spend line.

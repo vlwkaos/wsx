@@ -1,10 +1,10 @@
 // Projects: every project this site may reach. A project opens its worktrees and
 // their sessions (with task_view too, not its chat); Files and New session stay on each row.
-import { html, Loading, plural, useEffect, useNow, useRef, useState } from "./lib.js";
+import { html, Icon, Loading, plural, useEffect, useNow, useRef, useState } from "./lib.js";
 import { api } from "./api.js";
 import { can, listedSessions, shows, stateOf, useStore } from "./store.js";
 import { NewSession, SessionRow } from "./inbox.js";
-import { Back } from "./ui.js";
+import { Back, slid } from "./ui.js";
 import { PanelsButton } from "./panels.js";
 
 const counted = (count) => plural(count, "session");
@@ -16,10 +16,95 @@ const waiting = (store, project) => {
 const filesLink = (project) => shows("files") && can("files_read") && html`
   <a class="link-action" href=${`#/p/${project.id}/files`} aria-label=${`Files of ${project.name}`}>Files</a>`;
 
+// ^ A sheet with one path field registers a git repository of the host, as the TUI's `p` does
+// (docs/web-client.md "Projects"). The server's refusal stays in the sheet; the row comes with
+// the next workspace event.
+export function AddProject({ onClose }) {
+  const dialog = useRef();
+  const field = useRef();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    dialog.current.showModal();
+    field.current.focus();
+  }, []);
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api("api/projects", { method: "POST", json: { path: field.current.value } });
+      dialog.current.close();
+    } catch (failure) {
+      setError(failure.message);
+      setBusy(false);
+      field.current.focus();
+    }
+  };
+  return html`
+    <dialog class="sheet" ref=${dialog} aria-labelledby="add-project-title" onClose=${onClose}>
+      <form onSubmit=${submit}>
+        <h2 class="sheet-title" id="add-project-title">Add project</h2>
+        <label class="field">Path of a git repository
+          <input class="input" type="text" name="path" ref=${field} placeholder="~/code/app" required autocomplete="off"
+            autocapitalize="none" autocorrect="off" spellcheck=${false} enterkeyhint="go" />
+        </label>
+        <p class="error" role="alert">${error}</p>
+        <div class="actions sheet-actions">
+          <button class="button" type="button" onClick=${() => dialog.current.close()}>Cancel</button>
+          <button class="button button-primary" type="submit" disabled=${busy}>Add</button>
+        </div>
+      </form>
+    </dialog>`;
+}
+
+// ^ The confirmation of Remove: it unregisters the project from wsx only (its folder, worktrees,
+// branches and running sessions stay), or, if ticked, also halts all its sessions, the hidden
+// task ones too, as the TUI's `d` asks (docs/web-client.md "Projects"). A failure stays in the sheet.
+function RemoveProject({ project, onClose }) {
+  const dialog = useRef();
+  const [halt, setHalt] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => dialog.current.showModal(), []);
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api(`api/projects/${project.id}${halt ? "?halt=true" : ""}`, { method: "DELETE" });
+      dialog.current.close();
+    } catch (failure) {
+      setError(failure.message);
+      setBusy(false);
+    }
+  };
+  return html`
+    <dialog class="sheet" ref=${dialog} aria-labelledby="remove-project-title" onClose=${onClose}>
+      <form onSubmit=${submit}>
+        <h2 class="sheet-title" id="remove-project-title">Remove ${project.name}?</h2>
+        <p class="muted">The folder, worktrees, branches and tasks stay.</p>
+        <label class="option">
+          <input type="checkbox" name="halt" checked=${halt} onChange=${(event) => setHalt(event.target.checked)} />
+          Also halt all its sessions (agents, shells and task sessions)
+        </label>
+        <p class="error" role="alert">${error}</p>
+        <div class="actions sheet-actions">
+          <button class="button" type="button" onClick=${() => dialog.current.close()}>Cancel</button>
+          <button class="button button-primary" type="submit" disabled=${busy}>Remove</button>
+        </div>
+      </form>
+    </dialog>`;
+}
+
 export function Projects({ rail }) {
   const store = useStore();
   const count = (project) => listedSessions(store.sessions).filter((session) => session.project.id === project.id).length;
   const [, , open] = location.hash.split("/");
+  // ^ Where the site manages projects, the + adds one and a slide to the left removes one: the projects are no Home rows.
+  const manage = store.site.manage_projects;
+  const [sheet, setSheet] = useState(null);
+  const [removing, setRemoving] = useState(null);
   let body;
   if (!store.daemon) body = html`<p class="empty">wsx is not running on the host.</p>`;
   else if (!store.loaded) body = html`<${Loading} />`;
@@ -28,7 +113,7 @@ export function Projects({ rail }) {
     body = html`
       <ul class="rows">
         ${store.projects.map((project) => html`
-          <li class="row" key=${project.id}>
+          <li class=${manage ? "row row-slide" : "row"} onScroll=${manage ? slid : null} key=${project.id}>
             <div class="row-link" aria-current=${rail && Number(open) === project.id ? "page" : null}>
               <a class="row-main row-open" href=${can("task_view") ? `#/p/${project.id}/sessions` : `#/p/${project.id}`}>
                 <span class="row-label">${project.name}</span>
@@ -39,12 +124,20 @@ export function Projects({ rail }) {
                 <${NewSession} project=${project} />
               </span>
             </div>
+            ${manage && html`<button class="row-remove" type="button" onClick=${() => setRemoving(project)}
+              aria-label=${`Remove project ${project.name}`} title="Remove"><${Icon} name="fail" /></button>`}
           </li>`)}
       </ul>`;
   }
   return html`
     <div class="page">
-      ${!rail && html`<h1 class="title">Projects</h1>`}
+      ${(!rail || manage) && html`
+        <div class="home-top">
+          ${!rail && html`<h1 class="title">Projects</h1>`}
+          ${manage && html`<button class="icon-button new-chat" type="button" onClick=${() => setSheet("project")} aria-label="Add project" title="Add project"><${Icon} name="plus" /></button>`}
+        </div>`}
+      ${sheet === "project" && html`<${AddProject} onClose=${() => setSheet(null)} />`}
+      ${removing && html`<${RemoveProject} project=${removing} onClose=${() => setRemoving(null)} />`}
       <div class="scroll">${body}</div>
     </div>`;
 }
