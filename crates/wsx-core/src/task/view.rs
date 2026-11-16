@@ -631,12 +631,21 @@ fn task_list_plain(ids: impl IntoIterator<Item = u32>) -> String {
         .join(" ")
 }
 
-/// `#a, #b` for an error that names tasks.
+/// `#a, #b` for an error or a chat line that names tasks. At most `TASK_LIST_SHOWN` numbers show:
+/// a longer list reads `#a, #b, #c … #y, #z (297 tasks)`, so a release that lands hundreds of
+/// tasks is one short line.
 pub fn task_list(ids: impl IntoIterator<Item = u32>) -> String {
-    ids.into_iter()
-        .map(|id| format!("#{id}"))
-        .collect::<Vec<_>>()
-        .join(", ")
+    const TASK_LIST_SHOWN: usize = 6;
+    let named: Vec<String> = ids.into_iter().map(|id| format!("#{id}")).collect();
+    if named.len() <= TASK_LIST_SHOWN {
+        return named.join(", ");
+    }
+    format!(
+        "{} … {} ({} tasks)",
+        named[..3].join(", "),
+        named[named.len() - 2..].join(", "),
+        named.len()
+    )
 }
 
 /// The other open tasks whose paths meet this task's. A task's paths are the ones its
