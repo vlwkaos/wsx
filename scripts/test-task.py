@@ -208,7 +208,7 @@ SWEEP = 2
 # The check-in outlasts the linger, so m2 sees a check-in due after its chat's host left.
 EVENT_QUIET = 1.5
 CHECKIN_MINUTE = 15
-CHAT_LINGER = 5
+CHAT_LINGER = 8
 # ^ How long a failed sign-in on record keeps the account skipped (store.rs `sign_in_retry_ms`).
 SIGN_IN_RETRY = 12
 # ^ The hung-turn bound of 37c and 39b (the real one is 10 min): above the fakes' plain turns.
@@ -918,15 +918,19 @@ def manager_up(created):
     # ^ The name the owner reads, trimmed; the session is labelled `task-<chat name>`.
     assert js('task', 'manager')['name'] == 'Atlas'
     # ^ The TUI's manager row reads the name; without one the project's (docs/tasks.md "Config").
+    # ^ The chat's host leaves CHAT_LINGER after its last message: each TUI read starts with a fresh answer.
+    reply_to(js('task', 'say', 'STATUS')['id'])
     named = tui_text(wsx, env, project, r'task-demo\s*\n*\s*\(Atlas\)')
     assert re.search(r'task-demo\s*\n*\s*\(Atlas\)', named) and '(manager)' not in named, named[-3000:]
     config_text = (project / 'wsx.config.yml').read_text()
     (project / 'wsx.config.yml').write_text(config_text.replace('name: "  Atlas ", ', ''))
+    reply_to(js('task', 'say', 'STATUS')['id'])
     plain = tui_text(wsx, env, project, r'task-demo\s*\n*\s*\(demo\)')
     plain_name = js('task', 'manager')['name']
     (project / 'wsx.config.yml').write_text(config_text)
     assert re.search(r'task-demo\s*\n*\s*\(demo\)', plain) and '(Atlas)' not in plain, plain[-3000:]
     assert plain_name == 'demo', plain_name
+    reply_to(js('task', 'say', 'STATUS')['id'])
     assert js('task', 'manager')['state'] == 'running'
     # A new task and an add to the running one, each by a wsx task command the manager runs.
     started = js('task', 'say', 'RUN wsx task new "WORK s1.txt" -p demo --json')
