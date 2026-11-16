@@ -76,7 +76,7 @@ const pasteInto = (selector, what) => evaluate(`(async () => {
 })()`);
 
 // ^ A sheet that is still sliding in passes the edge.
-const sound = soundCheck(cdp, () => size, { free: ".code-block pre, .table-wrap, .diagram, .since p", apart: ".rail, .reservoir, .slash, .task-sheet",
+const sound = soundCheck(cdp, () => size, { free: ".row-slide, .code-block pre, .table-wrap, .diagram, .since p", apart: ".rail, .reservoir, .slash, .task-sheet",
   settle: (label) => until("(document.querySelector('dialog.task-sheet')?.getAnimations().length ?? 0) === 0", `${label}: the sheet kept moving`) });
 const shot = shooter(cdp, { captures, prefix: "tasks-", size: () => size, fileOf: (name) => `${size[0]}x${size[1]}-${name}`, linter, linted: LINTED, auditSource, mobileSource, before: sound,
   record: (file, mobile) => audits.push(mobile ? { capture: file, contentShare: mobile.contentShare, smallTargets: mobile.smallTargets.items.map((item) => `${item.label || item.el} ${item.size.join("x")}`),
