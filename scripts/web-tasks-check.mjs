@@ -2338,6 +2338,7 @@ async function readAndReply(where) {
   };
   await openMenu(point);
   await shot("reply-menu");
+  if (!(await evaluate("document.querySelector('.swipe-hint').hidden"))) await fail(`${where}: the swipe icon shows beside an open menu (a right click draws none)`);
   if (!(await evaluate(menuReply))) await replyFromMenu(point);
   await until(`${quote} === 'Five columns:'`, `${where}: the reply shows no quote over the composer`);
   if (await evaluate(`${fiveColumns}.style.translate`)) await fail(`${where}: the swiped bubble did not come back`);
@@ -2352,6 +2353,50 @@ async function readAndReply(where) {
       const dragged = await evaluate(`({ quote: ${quote}, menu: !!document.querySelector('.reply-menu') })`);
       if (dragged.quote || dragged.menu) await fail(`${where}: a drag of ${dx} px on a bubble quoted or opened a menu: ${JSON.stringify(dragged)}`);
     }
+    // ^ The icon of the action in the gap a swipe leaves (reply.js): at half the threshold it is
+    // half there, beside the row; at 64 px it is solid in the accent; after the release it is gone.
+    // Touch events, not a scroll gesture (task 291): the page gets pointer events as a finger sends them.
+    const hintRead = () => evaluate(`(() => { const node = document.querySelector('.swipe-hint'); const icon = node.getBoundingClientRect(), row = ${fiveColumns}.getBoundingClientRect();
+      return { shown: !node.hidden && getComputedStyle(node).display !== 'none', opacity: Number(getComputedStyle(node).opacity), ready: node.hasAttribute('data-ready'), inGap: icon.right <= row.left + 1 && icon.left >= 0, accent: getComputedStyle(node).color }; })()`);
+    const touchTo = (from, to, start = 0) => (async () => { for (let step = 1; step <= 5; step++) await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: from.x + start + ((to - start) * step) / 5, y: from.y }] }); })();
+    const touchDown = (from) => send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: from.x, y: from.y }] });
+    const touchUp = () => send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    const restSize = size;
+    {
+      const at = await pressPoint(fiveColumns);
+      await touchDown(at);
+      await touchTo(at, 32);
+      const during = await hintRead();
+      await touchUp();
+      await pause(300);
+      const after = await hintRead();
+      if (!during.shown || during.opacity < 0.35 || during.opacity > 0.65 || during.ready || !during.inGap || after.shown || await count(".reply-menu")) {
+        await fail(`${where}: a half swipe shows ${JSON.stringify(during)}, after the release ${JSON.stringify(after)}`);
+      }
+    }
+    for (const next of [restSize, [375, 812, 2]]) {
+      if (next !== size) await resize(next);
+      for (const scheme of ["dark", "light"]) {
+        await inScheme(scheme);
+        const at = await pressPoint(fiveColumns);
+        await touchDown(at);
+        await touchTo(at, 32);
+        const half = await hintRead();
+        if (!half.shown || half.opacity < 0.35 || half.opacity > 0.65 || half.ready || !half.inGap) await fail(`${where}: at half the swipe the icon is ${JSON.stringify(half)} at ${size[0]} px ${scheme}`);
+        await capture(`${size[0]}x${size[1]}-reply-swipe-${scheme}`);
+        await touchTo(at, 70, 32);
+        const solid = await hintRead();
+        if (!solid.shown || solid.opacity !== 1 || !solid.ready || !solid.inGap || solid.accent === half.accent) await fail(`${where}: at the threshold the icon is ${JSON.stringify(solid)} (half: ${JSON.stringify(half)}) at ${size[0]} px ${scheme}`);
+        await capture(`${size[0]}x${size[1]}-reply-swipe-ready-${scheme}`);
+        await touchUp();
+        await until("!!document.querySelector('.reply-menu')", `${where}: a swipe to 70 px opened no menu at ${size[0]} px ${scheme}`);
+        if ((await hintRead()).shown) await fail(`${where}: the icon stayed after the release at ${size[0]} px ${scheme}`);
+        await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))");
+        await until(`!document.querySelector('.reply-menu') && ${fiveColumns}.getAnimations().length === 0`, `${where}: Escape did not close the reply menu after the swipe at ${size[0]} px`);
+      }
+    }
+    await inScheme("dark");
+    if (size !== restSize) await resize(restSize);
     // ^ A press of 700 ms is the system's: no menu, and the page leaves its text selectable. A real
     // long press cannot be sent (Chrome's touch emulation starts no selection), so a double click
     // selects a word the engine's way, and a tap then only clears that selection (reply.js).

@@ -578,6 +578,10 @@ div.steps .steps-summary { cursor: default; }
 /* A message under a finger: a swipe right moves it and opens the menu; a tap and a long press
    (the system's text selection) are not the page's (reply.js). */
 .log > [data-quote] { touch-action: pan-y; }
+/* The icon of the swipe's action in the gap the row leaves (reply.js): muted while it grows,
+   the accent and solid from the swipe's threshold on. Drawn only during a touch swipe. */
+.swipe-hint { position: fixed; z-index: 2; line-height: 0; pointer-events: none; color: var(--color-muted); }
+.swipe-hint[data-ready] { color: var(--color-accent); }
 /* The chat opened at a quoted message: the note over the log says so, with the way back. */
 .note.around { flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2); margin: 0; padding: var(--space-1) var(--column-inset); border-bottom: var(--border-width) solid var(--color-hairline); color: var(--color-muted); }
 /* A message or item found (reply.js `markFound`): an accent tint over its box for 2 s, no line

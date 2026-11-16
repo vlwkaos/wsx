@@ -13,6 +13,7 @@ import { toast } from "./ui.js";
 // `user-select: none`, no menu).
 const SWIPE_PX = 64;
 const SLOP_PX = 10;
+const HINT_PX = 20;
 // ^ Pressing these keeps their own meaning: a link, a control, or a block that scrolls sideways.
 const OWN = "a, button, input, textarea, summary, pre, .table-wrap, .diagram";
 
@@ -82,10 +83,11 @@ export const QuoteChip = ({ quote, onRemove }) => quote ? html`
   </div>` : null;
 
 // The log's swipe and right click and its menu. `onReply(quote, id)` takes a row's quote and its
-// id (a string, or undefined). Returns the handlers for the log element and the menu to render
-// beside it.
+// id (a string, or undefined). Returns the handlers for the log element and the menu (with the
+// swipe's icon) to render beside it.
 export function useReply(onReply) {
   const gesture = useRef(null);
+  const hint = useRef();
   const [menu, setMenu] = useState(null);
   const row = (event) => {
     const found = event.target.closest?.("[data-quote]");
@@ -97,6 +99,7 @@ export function useReply(onReply) {
     if (now.swiping) {
       now.row.style.translate = "";
       delete now.row.dataset.swiping;
+      hint.current.hidden = true;
     }
     gesture.current = null;
   };
@@ -119,9 +122,25 @@ export function useReply(onReply) {
         if (dx < SLOP_PX || dx < Math.abs(dy) * 2) { gesture.current = null; return; }
         now.swiping = true;
         now.row.dataset.swiping = "";
+        now.box = now.row.getBoundingClientRect();
+        now.log = now.row.parentElement.getBoundingClientRect();
       }
       now.dx = dx;
-      now.row.style.translate = `${Math.max(0, Math.min(dx, SWIPE_PX * 1.25))}px 0`;
+      const shown = Math.max(0, Math.min(dx, SWIPE_PX * 1.25));
+      now.row.style.translate = `${shown}px 0`;
+      // ^ The icon of the action (Reply, as the menu names it) in the gap the row leaves: it
+      // grows and fades in with the drag and is solid, in the accent, from SWIPE_PX on. It stays
+      // beside the finger, inside the row and the log.
+      const node = hint.current;
+      const progress = Math.min(shown / SWIPE_PX, 1);
+      const top = Math.max(now.box.top, now.log.top) + HINT_PX;
+      const middle = Math.max(top, Math.min(event.clientY, Math.min(now.box.bottom, now.log.bottom) - HINT_PX));
+      node.hidden = false;
+      node.toggleAttribute("data-ready", progress === 1);
+      node.style.left = `${now.box.left + shown / 2 - HINT_PX / 2}px`;
+      node.style.top = `${middle - HINT_PX / 2}px`;
+      node.style.opacity = String(progress);
+      node.style.scale = String(0.5 + progress / 2);
     },
     onPointerUp: (event) => {
       const now = gesture.current;
@@ -139,7 +158,9 @@ export function useReply(onReply) {
       setMenu({ row: found, x: event.clientX, y: event.clientY });
     },
   };
-  return [handlers, menu && html`<${Menu} menu=${menu} onReply=${onReply} onClose=${() => setMenu(null)} />`];
+  return [handlers, html`
+    <span class="swipe-hint" ref=${hint} hidden><${Icon} name="reply" /></span>
+    ${menu && html`<${Menu} menu=${menu} onReply=${onReply} onClose=${() => setMenu(null)} />`}`];
 }
 
 // Reply and Copy beside the swiped message. A tap outside, Escape or a scroll closes it.
