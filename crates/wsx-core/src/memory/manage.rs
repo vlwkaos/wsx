@@ -11,7 +11,7 @@ use crate::task::manager::{Author, ManagerEvent};
 use crate::task::store::{read_bounded_if_exists, write_note, ManagerDir, TaskDir};
 use crate::task::text::day_of;
 use crate::task::view::clip;
-use crate::task::{LogEvent, TaskRecord, TaskState};
+use crate::task::{Actor, LogEvent, TaskRecord, TaskState};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -631,7 +631,8 @@ fn views_after_write(store: &Store) -> Vec<Drift> {
 }
 
 /// A rule's `--words` are the owner's: `--source msg:<id>`, `--verified-by owner:<id>`, and the
-/// words must stand in that message, which the owner wrote.
+/// words must stand in that message, which the owner wrote in the calling chat (message ids are
+/// per chat; no chat, as for the owner or a worker, is the repo's home chat).
 fn check_words(store: &Store, new: &NewRecord, words: &str) -> Result<(), Error> {
     let id = new
         .source
@@ -646,7 +647,7 @@ fn check_words(store: &Store, new: &NewRecord, words: &str) -> Result<(), Error>
     let Some((project, _)) = store.project_ids() else {
         return usage("--words needs a project scope");
     };
-    let dir = io(ManagerDir::home(project))?;
+    let dir = io(ManagerDir::existing_in(project, Actor::from_env().chat()))?;
     let entries = match dir {
         Some(dir) => io(read_chat(&dir, &Window::Around(id)))?,
         None => Vec::new(),
@@ -664,7 +665,7 @@ fn check_words(store: &Store, new: &NewRecord, words: &str) -> Result<(), Error>
     match said {
         Some(said) if said.contains(&squeeze(words)) => Ok(()),
         Some(_) => usage(format!("those words are not in the owner's message {id}")),
-        None => usage(format!("no message {id} of the owner in this project")),
+        None => usage(format!("no message {id} of the owner in this chat")),
     }
 }
 

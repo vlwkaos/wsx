@@ -380,6 +380,20 @@ def notes_part(pid, notes):
     check(present == list(range(150)), 'every memo is in one view')
     check(not any(('- #%d: memo %03d ' % (100 + n, n)) in main and ('- #%d: memo %03d ' % (100 + n, n)) in archive for n in range(150)), 'in one only')
 
+    # message ids are per chat: a rule added from a topic chat takes its words from that chat's owner message
+    chat = os.path.join(os.path.dirname(os.path.dirname(notes)), 'topic')
+    os.makedirs(chat, mode=0o700)
+    open(os.path.join(chat, 'chat.json'), 'w').write(json.dumps({'repos': [pid]}))
+    open(os.path.join(chat, 'log.jsonl'), 'w').write(json.dumps({'unix_ms': 1, 'kind': 'message', 'id': 7, 'from': 'owner',
+                                                                  'text': 'Always run the tests before you push.'}) + '\n')
+    topic = {'WSX_TASK_ACTOR': 'chat:topic'}
+    rule = ['add', '--kind', 'rule', '--text-file', '-', '--source', 'msg:7', '--verified-by', 'owner:7']
+    exits(2, *rule, '--slug', 'topic-home-words', '--words', 'never paste secrets in chat', text='x y z', scope=pid, env=topic)
+    ok(*rule, '--slug', 'topic-tests', '--words', 'run the tests before you push', text='Run the tests before every push.', scope=pid, env=topic)
+    check(ok('get', 'topic-tests', scope=pid)['kind'] == 'rule', 'the record is in the project scope')
+    exits(2, *rule, '--slug', 'home-topic-words', '--words', 'run the tests before you push', text='x y z', scope=pid)
+    ok(*rule, '--slug', 'home-no-actor', '--words', 'never paste secrets in chat', text='Never paste secrets, even in a topic chat.', scope=pid)
+
 
 def start_part(pid, project):
     """The start set and the stale rule (docs/memory.md "Start set"): wsx only. The project is a git
