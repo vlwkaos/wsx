@@ -1733,7 +1733,7 @@ fn flush_needs(app: &Arc<App>, watch: &Watch, new: Vec<(u64, Key)>, badge: usize
 /// differs from the last one published.
 fn watch_overview(app: &Arc<App>, scope: &Scope, watch: &mut Watch) {
     let overview = overview(app, scope);
-    let text = overview.to_string();
+    let mut text = overview.to_string();
     let mut needs = overview["needs"].as_array().map_or(0, Vec::len);
     let mut open = attention(scope.project, &overview);
     // ^ What the open chats own needs the owner too: the push and the badge count it (a chat's
@@ -1743,6 +1743,8 @@ fn watch_overview(app: &Arc<App>, scope: &Scope, watch: &mut Watch) {
             continue;
         };
         let own = overview_of(app, scope, Some(name));
+        // ^ A change of what a chat owns is published as a `tasks` event too: its page reads its own overview again.
+        text.push_str(&own.to_string());
         needs += own["needs"].as_array().map_or(0, Vec::len);
         for item in attention(scope.project, &own) {
             match open
