@@ -886,7 +886,8 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 .reservoir .need[data-group] { margin-inline: var(--space-2); background: var(--color-raised); }
 .reservoir .need[data-group] .row-link { padding-inline: calc(var(--column-inset, var(--space-4)) - var(--space-2)); }
 .reservoir .need[data-group="first"] { border-top: 0; border-radius: var(--radius-control) var(--radius-control) 0 0; }
-.reservoir .need[data-group="last"] { margin-bottom: var(--space-2); border-radius: 0 0 var(--radius-control) var(--radius-control); }
+.reservoir .need[data-group="last"] { border-radius: 0 0 var(--radius-control) var(--radius-control); }
+.reservoir .need[data-group="last"]:not(:last-child) { margin-bottom: var(--space-2); }
 .reservoir .need[data-nest] .row-main, .reservoir .need[data-nest] .row-open { border-left: calc(var(--border-width) * 2) solid var(--color-hairline); padding-left: var(--space-2); }
 .reservoir .need[data-nest="2"] .row-main, .reservoir .need[data-nest="2"] .row-open { margin-left: var(--space-3); }
 /* The task page's chain: the same rows as a connected list. */
