@@ -860,10 +860,8 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
   font-size: var(--font-size-sm); padding: var(--space-1) var(--column-inset, var(--space-4));
 }
 .reservoir .row-link > .row-main, .reservoir .row-link > .row-open { grid-column: 2; align-self: stretch; padding-block: var(--space-1); min-height: var(--size-key); box-sizing: border-box; }
-/* ^ The reason and the relations of a task (`flow.phrase`) are the point of the row: two lines, not a cut. */
-.reservoir .row-context, .chain-row .row-context { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; overflow-wrap: anywhere; }
-.chain-row .row-label { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.reservoir .row-label { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+/* ^ The title, the reason and the relations of a task (`flow.phrase`) are the point of the row: they wrap, never a cut. */
+.reservoir .row-context, .chain-row .row-context, .reservoir .row-label, .chain-row .row-label { white-space: normal; overflow-wrap: anywhere; }
 .reservoir .row-actions { grid-column: 2; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-1) var(--space-2); }
 .row-num { grid-column: 1; min-width: 0; padding-top: var(--space-1); color: var(--color-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .row-num .icon { display: block; width: var(--space-4); height: var(--space-4); }
