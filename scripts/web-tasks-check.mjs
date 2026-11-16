@@ -36,6 +36,8 @@ const linter = designLint({ evaluate, captures, file: "tasks" });
 const LINTED = new Set(["new-chat", "new-chat-refused", "chats-home-approval", "chats-home", "chats-home-wide", "home-long-name", "chat-room", "chat-room-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "home-chats-dark", "home-chats-light", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
 let size = [390, 844, 2];
 const phone = () => size[0] < 600;
+// ^ In a page script: the overview with its home chat's newest message at `ms`: Home sorts by it (home.js `homeOrder`).
+const lastAt = "const lastAt = (overview, ms) => ({ ...overview, chats: overview.chats.map((chat) => chat.name === overview.home_chat ? { ...chat, last_unix_ms: ms } : chat) });";
 const audits = [];
 
 // ^ Across 900 px the app swaps its layout (main.js useWide) and an open task sheet mounts again
@@ -442,6 +444,7 @@ async function motion() {
     if (!seen.length || seen.some((item) => item !== name)) await fail(`motion at ${w}px: ${label} (${selector}) animates ${JSON.stringify(seen)}, not ${name}`);
   };
   const run = (reduced) => evaluate(`(async () => {
+    ${lastAt}
     const { state, update } = await ${pageModule("store.js")};
     const { toast } = await ${pageModule("ui.js")};
     const { render, html, Loading } = await ${pageModule("lib.js")};
@@ -459,9 +462,9 @@ async function motion() {
     toast('Saved the page');
     await frames();
     const notice = !!document.querySelector('.notice .notice-timer');
-    // gone becomes the newest: it moves up; then it goes: its row fades out where it was.
+    // gone's home chat gets the newest message (the chat's last_unix_ms sorts Home): it moves up; then it goes: its row fades out where it was.
     const before = rows().map((row) => row.dataset.key);
-    update({ tasks: { ...state.tasks, [mover.id]: { ...state.tasks[mover.id], last_unix_ms: Date.now() + 1e7 } } });
+    update({ tasks: { ...state.tasks, [mover.id]: lastAt(state.tasks[mover.id], Date.now() + 1e7) } });
     await frames();
     const moved = rows().map((row) => row.dataset.key).join() !== before.join();
     const glides = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row:has(.home-row)')
@@ -506,11 +509,12 @@ async function motion() {
   // Reduced motion: the same states, no animation and no script-driven motion.
   await setMotion("reduce");
   const still = await evaluate(`(async () => {
+    ${lastAt}
     const { state, update } = await ${pageModule("store.js")};
     const mover = state.projects.find((project) => project.name === 'gone');
     // ^ gone has no task and no activity: last of the quiet rows, so a newer message moves it up (calm leads them).
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
-    update({ tasks: { ...state.tasks, [mover.id]: { ...state.tasks[mover.id], last_unix_ms: 1 } } });
+    update({ tasks: { ...state.tasks, [mover.id]: lastAt(state.tasks[mover.id], 1) } });
     await frames();
     const rows = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row:has(.home-row)')).length;
     update(globalThis.motionKept);
@@ -585,6 +589,7 @@ async function homeTimers() {
 async function homeUnread() {
   const pageModule = (name) => `import(new URL(${JSON.stringify(name)}, [...document.scripts].find((script) => script.type === 'module').src))`;
   const result = await evaluate(`(async () => {
+    ${lastAt}
     const { state, update } = await ${pageModule("store.js")};
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     const by = (name) => state.projects.find((project) => project.name === name);
@@ -593,7 +598,7 @@ async function homeUnread() {
     const T = Date.now() + 2e7;
     // ^ calm has a message nobody read here; gone and quiet are read, and gone is newer by activity.
     localStorage.setItem('wsx-read', JSON.stringify(Object.fromEntries([calm, gone, quiet].map((project) => ['project-' + project.id, { read: T - 1000, place: null }]))));
-    const overview = (project, extra) => ({ ...state.tasks[project.id], ...extra });
+    const overview = (project, { last_unix_ms: last, ...extra }) => ({ ...(last === undefined ? state.tasks[project.id] : lastAt(state.tasks[project.id], last)), ...extra });
     const names = () => [...document.querySelectorAll('.home-rows > .row:has(.home-row)')].map((row) => row.querySelector('.row-label').textContent).filter((name) => ['calm', 'gone', 'quiet'].includes(name));
     const marked = (project) => document.querySelector('.home-rows > .row:has(.home-row)[data-key="' + project.id + '"]').hasAttribute('data-news');
     update({ tasks: { ...state.tasks,
