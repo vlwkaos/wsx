@@ -92,7 +92,7 @@ enum Event {
     /// A sweep of stale worktrees and sessions ended: its notes, or why it failed.
     Pruned(Result<Vec<stale::Note>, String>),
     /// A pass that follows origin ended: what it found, or why nothing was fetched.
-    Synced(Result<Followed, String>),
+    Synced(Result<Option<Followed>, String>),
     /// `wsx task new` with `tasks.workflow.idle` ended: when it began, and the task number or
     /// the error.
     IdleStarted(u64, Result<u32, String>),
@@ -1093,10 +1093,11 @@ impl Repo {
 
     /// A move is a quiet event line; no move says nothing; a refusal is one line to the chat
     /// for each origin tip. An origin that cannot be fetched is the owner's network, not news.
-    fn synced_done(&mut self, result: Result<Followed, String>) {
+    fn synced_done(&mut self, result: Result<Option<Followed>, String>) {
         self.syncing = false;
         let followed = match result {
-            Ok(followed) => followed,
+            Ok(Some(followed)) => followed,
+            Ok(None) => return,
             Err(error) => return self.say(&format!("cannot follow origin: {error}")),
         };
         let Followed {

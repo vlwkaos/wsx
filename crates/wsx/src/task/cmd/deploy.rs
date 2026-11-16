@@ -1,4 +1,4 @@
-//! `wsx task push`, `deploy`, `release`, `trial` and `deployed` (docs/tasks.md).
+//! `wsx task push`, `sync`, `deploy`, `release`, `trial` and `deployed` (docs/tasks.md).
 
 use super::approve::{after_landing, ask_covering, request_of};
 use crate::task::args::{DeployArgs, PushArgs};
@@ -232,19 +232,22 @@ pub(crate) struct Followed {
 
 /// Fetch origin's default branch and move the local one to its tip when no work is lost
 /// (`copy::sync`). Under the push lock, so no approved push runs between the read and the
-/// move. `Err`: nothing was fetched (no remote, the lock, the network).
-pub(crate) fn follow_origin(project_id: &str, main: &Path) -> Result<Followed> {
+/// move. `None`: the project has no origin. `Err`: nothing was fetched (the lock, the network).
+pub(crate) fn follow_origin(project_id: &str, main: &Path) -> Result<Option<Followed>> {
+    if copy::read(main, &["remote", "get-url", PUSH_REMOTE]).is_err() {
+        return Ok(None);
+    }
     let branch = default_ref(main)
         .trim_start_matches("refs/heads/")
         .to_string();
     let _one_at_a_time = store::lock_pushes(project_id)?;
     let target = copy::fetch_tip(main, PUSH_REMOTE, &branch)?;
     let outcome = copy::sync(main, &branch, &target);
-    Ok(Followed {
+    Ok(Some(Followed {
         branch,
         target,
         outcome,
-    })
+    }))
 }
 
 /// `wsx task sync`: the default branch follows origin after a merge there, with no approval and
@@ -253,7 +256,9 @@ pub(crate) fn sync(project: Option<&str>, json: bool) -> Result<()> {
     let (project_name, main) = project_entry(project)?;
     let project_id = store::project_id(&project_name, &main);
     let refuse = |error: anyhow::Error| anyhow::anyhow!("{error:#}; nothing was moved");
-    let followed = follow_origin(&project_id, &main).map_err(refuse)?;
+    let followed = follow_origin(&project_id, &main)
+        .map_err(refuse)?
+        .with_context(|| format!("the project has no remote {PUSH_REMOTE}; nothing was moved"))?;
     let synced = followed.outcome.map_err(refuse)?;
     let message = synced.words(&followed.branch, PUSH_REMOTE);
     if json {
