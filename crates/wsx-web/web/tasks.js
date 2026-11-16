@@ -275,10 +275,15 @@ function Reservoir({ project, open, items, tasks, waiting, checks, routines, onR
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
   // ^ A tag under a reply asked for this row: it scrolls into view and shows marked, as a found message does.
+  // The list reveals by growing from no height, so the row is brought into view again when the reveal ends.
   useLayoutEffect(() => {
     if (!look || open !== "you") return;
     const row = node.current?.querySelector(`.need[data-key="${CSS.escape(look)}"]`);
-    if (row) { row.scrollIntoView({ block: "nearest" }); markFound(row); }
+    if (row) {
+      const show = () => row.isConnected && row.scrollIntoView({ block: "nearest" });
+      show(); markFound(row);
+      Promise.allSettled(node.current.getAnimations({ subtree: true }).map((animation) => animation.finished)).then(show);
+    }
     onLooked();
   }, [look, open]);
   // ^ Open, each item's task is read ahead, so its sheet shows at once.

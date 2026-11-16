@@ -2080,8 +2080,8 @@ def part_core(created=None):
     assert wait_state(lt, 'ready', 'failed')['state'] == 'ready', show(lt)
     ask = js('task', 'new', 'NEEDS WebSearch NOOP')['id']
     wait_state(ask, 'waiting')
-    ordered = sorted(js('task', 'ledger')['open'], key=lambda task: rank.get(task['state'], 4))
-    rows_to = lambda n: b'j' * [task['id'] for task in ordered].index(n) + b'\r'
+    # ^ The list opens on its first row, in the ledger's chain order: `j` moves down to the row of `n`, read when asked.
+    rows_to = lambda n: b'j' * [task['id'] for task in js('task', 'ledger')['open']].index(n) + b'\r'
     ready_footer = r'(?m)^ TASK +\(j/k\)scroll +\(S\)hell +\(L\)and +\(H\)and +Esc: back'
     seen = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
