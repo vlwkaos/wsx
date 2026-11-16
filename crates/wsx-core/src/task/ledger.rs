@@ -126,7 +126,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
     let (strays, stray_omitted) = stray_worktrees(main, &copies, &mut git);
     // ^ Open chats with their pill counts (`needs::chat_counts`) while any is above 0, the home
     // chat too (`home`): the TUI's chat rows mark them as the web's Home rows do. `listed` says
-    // whether Home shows the row (`chats_home::listed`, one rule for both); a closed chat is
+    // whether Home shows the row (`chats::rows`, from `chats_home::listed`); a closed chat is
     // history (docs/tasks.md "Chats").
     let counts = super::needs::chat_counts(&project_id, settings.land_auto);
     let chats: Vec<Value> = super::chats::rows(&project_id)
@@ -134,9 +134,6 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         .filter(|row| row["state"] != "closed")
         .filter_map(|mut row| {
             let name = row["name"].as_str()?.to_string();
-            let dir = super::chats::open_chat(&name).ok()?;
-            row["listed"] = super::chats_home::listed(&dir).into();
-            row["last_unix_ms"] = super::chats_home::last_message_ms(&dir).into();
             if let Some(own) = counts
                 .get(&name)
                 .filter(|own| **own != super::needs::ChatCounts::default())

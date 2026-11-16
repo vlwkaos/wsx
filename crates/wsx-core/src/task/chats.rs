@@ -4,6 +4,7 @@
 //! owns. The repo (files, tasks, rules, memory) is shared; a chat reaches another's context by
 //! search or by `say`. ref: docs/tasks.md "Chats"
 
+use super::chats_home;
 use super::checks::CheckItem;
 use super::manager::ApprovalLine;
 use super::store::{self, ManagerDir};
@@ -22,8 +23,6 @@ pub const CLOSED_FILE: &str = "closed";
 pub const CHAT_FILE: &str = "chat.json";
 pub const MAX_GOAL_BYTES: usize = 8 * 1024;
 pub const MAX_NAME_CHARS: usize = 24;
-/// How much of a chat's log is read for its last turn.
-const TAIL_BYTES: u64 = 64 * 1024;
 
 /// A chat's name: a lowercase letter, then lowercase letters, digits and `-`, as the end of its
 /// session label `task-<name>`; never `manager`.
@@ -376,6 +375,7 @@ pub fn create(
         }
         _ => {}
     }
+    chats_home::clear(&dir)?;
     Ok(dir)
 }
 
@@ -457,20 +457,6 @@ fn hand_back(dir: &ManagerDir) -> String {
     )
 }
 
-/// When the chat last had anything in its conversation, else when it was opened.
-pub fn last_active_ms(dir: &ManagerDir) -> u64 {
-    dir.read_tail(TAIL_BYTES)
-        .ok()
-        .and_then(|entries| entries.last().map(|entry| entry.unix_ms))
-        .unwrap_or_else(|| {
-            std::fs::metadata(dir.path.join(CHAT_FILE))
-                .and_then(|meta| meta.modified())
-                .ok()
-                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0, |since| since.as_millis() as u64)
-        })
-}
-
 /// The chats as rows for the ledger, `chat list` and the views, by name: `{name, state, goal,
 /// last_unix_ms, agent?, adapter?, model?}`. `goal` is the goal's first line; `agent` is the
 /// entry's name, `adapter` and `model` its own, left out for a chat on the manager's.
@@ -484,7 +470,8 @@ pub fn rows(project_id: &str) -> Vec<Value> {
                 "name": dir.name(),
                 "state": if is_open(&dir) { "open" } else { "closed" },
                 "goal": goal.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
-                "last_unix_ms": last_active_ms(&dir),
+                "last_unix_ms": chats_home::last_message_ms(&dir),
+                "listed": chats_home::listed(&dir),
                 "home": home.as_deref() == Some(dir.name()),
             });
             if let (Some(entry), Some(own)) = (chat_file(&dir).agent, agent(&dir)) {

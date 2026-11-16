@@ -4434,6 +4434,13 @@ merge_seconds = 3
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'STATUS', 'chat': 'tidy'})
         assert status == 200 and body['ok'], body
         wait(lambda: listed('tidy') or None, 'a message lists the dismissed chat again')
+        # ^ A dismissed chat that is closed and made again is listed: `create` clears the mark.
+        assert steady(owner, 'POST', dismiss_url('tidy'), {})[0] == 200
+        wait(lambda: listed('tidy') is False or None, 'the chat is dismissed again')
+        assert steady(owner, 'POST', close_url('tidy'), {})[0] == 200
+        assert steady(owner, 'POST', '/api/tasks/%d/chats' % demo, {'name': 'tidy'})[0] == 200
+        wait(lambda: listed('tidy') or None, 'a chat made again after its close is listed')
+        assert {c['name']: c['listed'] for c in js('task', 'chat', 'list', '-p', 'demo')['chats']}['tidy'] is True
         assert steady(owner, 'POST', close_url('tidy'), {})[0] == 200
         ok('chats: Dismiss unlists a row and keeps the chat; a message or a new chat lists it; a viewer is refused')
         assert steady(owner, 'POST', close_url('made'), {})[0] == 409

@@ -2384,7 +2384,7 @@ try:
     for _ in range(10):
         if "(d)close chat" in remove_tui.text().splitlines()[-1]:
             break
-        remove_tui.send(b"j")
+        remove_tui.send(b"k")
         time.sleep(0.3)
     wait_for(lambda: "(d)close chat" in remove_tui.text().splitlines()[-1], lambda: f"no chat row to close:\n{remove_tui.text()}", seconds=30)
     asks = "Close qa? Its log and notes stay; New chat with the same name opens it again. (y)es  (n)o"
