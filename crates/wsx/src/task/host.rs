@@ -362,7 +362,7 @@ fn alert_unreadable(dir: &TaskDir, error: anyhow::Error) -> Result<()> {
         .chars()
         .take(64)
         .collect();
-    let posted = store::post_once(
+    store::post_once(
         &dir.project_id,
         &key,
         now_unix_ms() / 1000,
@@ -376,10 +376,9 @@ fn alert_unreadable(dir: &TaskDir, error: anyhow::Error) -> Result<()> {
                 || vec![line.clone()],
             )
         },
-    );
-    posted
-        .map(drop)
-        .with_context(|| format!("{line}; the alert was not posted"))
+    )
+    .map(drop)
+    .with_context(|| format!("{line}; the alert was not posted"))
 }
 
 pub fn run(project_id: &str, id: u32) -> Result<()> {
