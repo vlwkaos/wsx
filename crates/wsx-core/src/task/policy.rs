@@ -55,7 +55,7 @@ pub enum Capability {
     Discard,
     /// `land` onto the default branch, `commit` in the main checkout.
     Land,
-    /// `deploy`, `release`, `push`, `trial`.
+    /// `deploy`, `release`, `push`, `sync`, `trial`.
     Deploy,
     /// `routine add|edit|delete|enable|disable|run|cancel|fire`, `checkin`.
     Routine,
