@@ -1184,7 +1184,7 @@ def web_journey(args):
                 if value:
                     return value
                 time.sleep(0.1)
-            raise AssertionError(label + ' timeout')
+            raise AssertionError((label() if callable(label) else label) + ' timeout')
 
         def cli(*arguments, expect=0):
             result = subprocess.run([str(wsx), *map(str, arguments)], env=env, cwd=project,
@@ -2390,8 +2390,10 @@ capabilities = ["terminal_view"]
         assert call('terminal_acquire', {'pane_id': resume_pane, 'client_id': 7, 'takeover': True})['type'] == 'ack'
         assert call('terminal_input', {'pane_id': resume_pane, 'client_id': 7, 'bytes': list(b'WSX_FIXTURE_CONVERSATION=second claude\r')})['type'] == 'ack'
         assert call('terminal_release', {'pane_id': resume_pane, 'client_id': 7})['type'] == 'ack'
+        # ^ A timeout names the notices and the agent the page shows: the first wrong state.
         wait(lambda: [item['text'] for item in resume_timeline()['items'] if item['kind'] == 'notice'][-1] == 'Same conversation, continued',
-             'the continued line', timeout=20)
+             lambda: 'the continued line: notices %s, agent %s' % ([item['text'] for item in resume_timeline()['items'] if item['kind'] == 'notice'], resume_agent()),
+             timeout=20)
         settle('resume')
         # ^ An agent started by hand runs in its shell's job, not the pane's process group: end it.
         assert steady(owner, 'POST', resume_chat + '/send', {'text': 'leave now'})[0] == 200
