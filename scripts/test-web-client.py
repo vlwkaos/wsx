@@ -2348,6 +2348,20 @@ capabilities = ["terminal_view"]
         def resume_timeline():
             return steady(owner, 'GET', resume_chat + '/timeline')[1]
 
+        def resume_screen():
+            frames = call('view', {'pane_ids': [resume_pane]})['data']['frames']
+            rows = [''.join(cell[0] for cell in frames[0]['cells'][row * frames[0]['cols']:(row + 1) * frames[0]['cols']]).rstrip()
+                    for row in range(frames[0]['rows'])] if frames else []
+            return [row for row in rows if row]
+
+        def start_second_by_hand():
+            # ^ The command waits for the shell's prompt: typed before the pane's shell has set its
+            # terminal modes, the line is flushed on Linux and no conversation starts.
+            wait(lambda: (lambda rows: rows and rows[-1] == '$')(resume_screen()), lambda: 'the pane shell prompt, screen %s' % resume_screen())
+            assert call('terminal_acquire', {'pane_id': resume_pane, 'client_id': 7, 'takeover': True})['type'] == 'ack'
+            assert call('terminal_input', {'pane_id': resume_pane, 'client_id': 7, 'bytes': list(b'WSX_FIXTURE_CONVERSATION=second claude\r')})['type'] == 'ack'
+            assert call('terminal_release', {'pane_id': resume_pane, 'client_id': 7})['type'] == 'ack'
+
         def said(words):
             return wait(lambda: any(item['kind'] == 'assistant' and item['text'] == words for item in resume_timeline()['items']), words, timeout=30)
         wait(lambda: (resume_agent() or {}).get('attached'), 'resume agent report')
@@ -2370,10 +2384,8 @@ capabilities = ["terminal_view"]
         # A new conversation in the pane, started by hand: a line, and the earlier one stays above it.
         assert steady(owner, 'POST', resume_chat + '/send', {'text': 'leave now'})[0] == 200
         wait(lambda: not resume_agent()['attached'], 'the agent detached again')
-        assert call('terminal_acquire', {'pane_id': resume_pane, 'client_id': 7, 'takeover': True})['type'] == 'ack'
-        assert call('terminal_input', {'pane_id': resume_pane, 'client_id': 7, 'bytes': list(b'WSX_FIXTURE_CONVERSATION=second claude\r')})['type'] == 'ack'
-        assert call('terminal_release', {'pane_id': resume_pane, 'client_id': 7})['type'] == 'ack'
-        wait(lambda: (resume_agent() or {}).get('attached'), 'the second conversation')
+        start_second_by_hand()
+        wait(lambda: (resume_agent() or {}).get('attached'), lambda: 'the second conversation, screen %s' % resume_screen())
         settle('resume')
         assert steady(owner, 'POST', resume_chat + '/send', {'text': 'in the second'})[0] == 200
         said('echo: in the second')
@@ -2387,9 +2399,7 @@ capabilities = ["terminal_view"]
         settle('resume')
         assert steady(owner, 'POST', resume_chat + '/send', {'text': 'leave now'})[0] == 200
         wait(lambda: not resume_agent()['attached'], 'the agent detached a third time')
-        assert call('terminal_acquire', {'pane_id': resume_pane, 'client_id': 7, 'takeover': True})['type'] == 'ack'
-        assert call('terminal_input', {'pane_id': resume_pane, 'client_id': 7, 'bytes': list(b'WSX_FIXTURE_CONVERSATION=second claude\r')})['type'] == 'ack'
-        assert call('terminal_release', {'pane_id': resume_pane, 'client_id': 7})['type'] == 'ack'
+        start_second_by_hand()
         # ^ A timeout names the notices and the agent the page shows: the first wrong state.
         wait(lambda: [item['text'] for item in resume_timeline()['items'] if item['kind'] == 'notice'][-1] == 'Same conversation, continued',
              lambda: 'the continued line: notices %s, agent %s' % ([item['text'] for item in resume_timeline()['items'] if item['kind'] == 'notice'], resume_agent()),
