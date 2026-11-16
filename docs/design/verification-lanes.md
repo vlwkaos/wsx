@@ -30,12 +30,12 @@ flowchart LR
   F -- yes --> L["here: ci-scenario.py name --local"]
   L -- exit 69, job not for this OS --> C[CI: ci-scenario.py name]
   F -- no --> C
-  L --> A[answer: command '... --local']
-  C --> A2[answer: the ci: command]
+  L --> A[answer: the ci: command, output names the lane]
+  C --> A
 ```
 
 - `slot::take_free` takes the slot only when nobody holds it or waits for it, so a local run never queues and CI stays the overflow.
-- The result keeps the command that ran. A run here never answers for a run on CI (`kept_checks` compares commands).
+- The result keeps the configured `ci:` command in either lane, so a stored result (`kept_checks`), a shared failure and the outside rule match it. A pass here on the final head is the proof; the host does not run it again on CI.
 - CI keeps what only it gives: `weblinux` (Linux), a clean machine, and no load when the Mac is busy.
 
 ## 3. Every failure per run

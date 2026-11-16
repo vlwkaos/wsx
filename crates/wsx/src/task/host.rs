@@ -3268,30 +3268,26 @@ impl Host {
                 let (events, label) = (events.clone(), label.clone());
                 std::thread::spawn(move || {
                     // ^ Whichever lane is free first: the scenario slot when nobody holds it or
-                    // waits for it, else CI. The result keeps the `--local` command, so a run
-                    // here never answers for a run on CI. ref: docs/tasks.md "Scenarios"
+                    // waits for it, else CI. The result keeps the configured command in either
+                    // lane, so a stored result, a shared failure and the outside rule match it;
+                    // the output's first line names the lane. ref: docs/tasks.md "Scenarios"
                     let here = (!remote.is_empty())
                         .then(|| slot::take_free(Lane::Scenarios, &label))
                         .flatten();
                     remote
                         .into_iter()
                         .map(|(at, (command, log))| {
-                            if here.is_some() {
+                            let local = here.as_ref().map(|_| {
                                 let local =
                                     format!("{} --local", ci_command(&command).unwrap_or_default());
-                                let ran = run_check(&working_copy, &local, &env, CI_TIMEOUT, &log);
-                                if ran.exit != Some(UNAVAILABLE) {
-                                    return (
-                                        at,
-                                        CheckResult {
-                                            command: local,
-                                            ..ran
-                                        },
-                                    );
+                                run_check(&working_copy, &local, &env, CI_TIMEOUT, &log)
+                            });
+                            let ran = match local {
+                                Some(ran) if ran.exit != Some(UNAVAILABLE) => ran,
+                                _ => {
+                                    run_ci((&working_copy, &env, &log), &command, (&events, &halt))
                                 }
-                            }
-                            let ran =
-                                run_ci((&working_copy, &env, &log), &command, (&events, &halt));
+                            };
                             (at, CheckResult { command, ..ran })
                         })
                         .collect::<Vec<_>>()

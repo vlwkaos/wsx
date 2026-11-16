@@ -168,7 +168,8 @@ def fail(index, error):
     text = (str(error).strip().splitlines() or [''])[0][:240]
     first = type(error).__name__ + (': ' + text if text else '')
     after = ' (after section %s failed)' % _first[0] if _first else ''
-    _first[:] = _first or [_labels[index]]
+    if not _first:
+        _first.append(_labels[index])
     _broken[index] = 'failed'
     line = 'FAILED section %s at %s: %s%s' % (_labels[index], where, first, after)
     failed.append(line)

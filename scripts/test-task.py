@@ -5560,7 +5560,8 @@ def part_worker(created=None):
     lane_sh.write_text('if [ "$2" = --local ]; then echo lane=here; exit "$1"; fi\necho lane=ci\n')
     configure(LAND_CONFIG + '  scenarios:\n    here: "ci: sh %s 0"\n    away: "ci: sh %s 69"\n' % (lane_sh, lane_sh),
               'lane scenarios')
-    for name, command, said in (('here', 'sh %s 0 --local' % lane_sh, 'lane=here'), ('away', 'ci: sh %s 69' % lane_sh, 'lane=ci')):
+    # ^ The result keeps the configured command in either lane; its output names the lane.
+    for name, command, said in (('here', 'ci: sh %s 0' % lane_sh, 'lane=here'), ('away', 'ci: sh %s 69' % lane_sh, 'lane=ci')):
         n = js('task', 'new', 'CHECKRUN_LATER %s WORK lane-%s.txt' % (name, name))['id']
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
         ran = next(e for e in log(n) if e['kind'] == 'check_run')['results']
