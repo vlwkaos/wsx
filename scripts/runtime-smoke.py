@@ -2205,7 +2205,8 @@ try:
     wait_for(lambda: "All projects" in remove_tui.text(), "t opened no Tasks view for keep-me", seconds=60)
     wait_for(lambda: re.search(r"#2\s+ready\s+Waiting for #1 to land · its checks fail", remove_tui.text()),
              lambda: f"the Tasks view row did not give the reason of the wait:\n{remove_tui.text()}", seconds=60)
-    remove_tui.send(b"\r")
+    # ^ The list is in chain order: #1 (working) first, #2 under it; `j` selects #2.
+    remove_tui.send(b"j\r")
     # ^ A narrow detail wraps the sentence: the words are read with their line breaks as one space.
     wait_for(lambda: "Its checks fail" in " ".join(remove_tui.text().split())
              and re.search(r"Waits on\s+#1 to land, its checks fail", remove_tui.text()) and re.search(r"Goes\s+into main", remove_tui.text())
@@ -2226,7 +2227,7 @@ try:
     remove_tui.send(b"\x1b")
     wait_for(lambda: "Its checks fail" not in " ".join(remove_tui.text().split()) and re.search(r"#1\s+working", remove_tui.text()),
              "Esc did not close the detail", seconds=60)
-    remove_tui.send(b"j\r")
+    remove_tui.send(b"k\r")
     wait_for(lambda: re.search(r"(?s)Chain.*?>\s*#1.*?#2", remove_tui.text()) and re.search(r"Goes\s+into main", remove_tui.text()),
              lambda: f"the detail of #1 did not list who waits for it in its Chain:\n{remove_tui.text()}", seconds=60)
     remove_tui.send(b"\x1b")
