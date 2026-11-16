@@ -177,14 +177,30 @@ async function rowReads(task, good, why) {
 // last frame is where it rests. On a phone it rises from below; on a wide screen it comes in
 // from the right.
 async function oneMotion(where, open) {
-  await evaluate(`(() => { window.sheetFrames = []; window.sheetWatched = false; let seen = null;
+  // ^ Each frame also notes the dialogs, the sheet's animations (state and time) and the page's
+  // own events about the sheet (an animation start or cancel, a dialog added or removed, `open`
+  // or `data-fit` changed): a step back then names its cause (docs/design/scenario-flakes.md).
+  await evaluate(`(() => { window.sheetFrames = []; window.sheetEvents = []; window.sheetWatched = false; let seen = null;
+    const note = (text) => window.sheetEvents.push(window.sheetFrames.length + ' ' + text);
+    for (const type of ['animationstart', 'animationcancel']) {
+      document.removeEventListener(type, window.sheetNote, true);
+    }
+    window.sheetNote = (event) => { if (event.target.matches?.('dialog.task-sheet')) note(event.type + ' ' + event.animationName); };
+    for (const type of ['animationstart', 'animationcancel']) document.addEventListener(type, window.sheetNote, true);
+    window.sheetObserver?.disconnect();
+    window.sheetObserver = new MutationObserver((records) => records.forEach((record) => {
+      const nodes = [...record.addedNodes, ...record.removedNodes].filter((node) => node.matches?.('dialog.task-sheet'));
+      if (record.type === 'attributes' ? record.target.matches('dialog.task-sheet') : nodes.length) note(record.attributeName ?? (record.addedNodes.length ? 'added' : 'removed'));
+    }));
+    window.sheetObserver.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['open', 'data-fit', 'class', 'style'] });
     const step = (now) => { const sheet = document.querySelector('dialog.task-sheet[open]');
-      if (sheet) { const box = sheet.getBoundingClientRect(); window.sheetFrames.push([box.top, box.left]); seen ??= now; }
+      if (sheet) { const box = sheet.getBoundingClientRect(); window.sheetFrames.push([box.top, box.left, document.querySelectorAll('dialog.task-sheet').length + ' ' + sheet.getAnimations().map((animation) => animation.animationName + ' ' + animation.playState + ' ' + Math.round(animation.currentTime ?? -1)).join(',') + ' h' + Math.round(box.height)]); seen ??= now; }
       if (seen === null || now - seen < 700) requestAnimationFrame(step); else window.sheetWatched = true; };
     requestAnimationFrame(step); })()`);
   await open();
   await until("window.sheetWatched", `${where}: the sheet did not open`);
-  const { frames, end } = await evaluate("({ frames: window.sheetFrames, end: (({ top, left }) => [top, left])(document.querySelector('dialog.task-sheet').getBoundingClientRect()) })");
+  const { frames, end, events } = await evaluate("({ frames: window.sheetFrames, events: window.sheetEvents, end: (({ top, left }) => [top, left])(document.querySelector('dialog.task-sheet').getBoundingClientRect()) })");
+  await evaluate("window.sheetObserver.disconnect()");
   const moving = phone() ? 0 : 1;
   for (const axis of [0, 1]) {
     const values = frames.map((frame) => frame[axis]);
@@ -192,7 +208,7 @@ async function oneMotion(where, open) {
     // ^ A still axis stays at its end; a moving one never steps back by more than half a pixel.
     const back = values.some((value, index) => way ? index > 0 && (value - values[index - 1]) * way < -0.5 : Math.abs(value - end[axis]) > 0.5);
     if (back || Math.abs(values.at(-1) - end[axis]) > 0.5 || (axis === moving) !== (Math.abs(values[0] - end[axis]) > 50)) {
-      await fail(`${where}: the sheet does not open in one motion on ${axis ? "left" : "top"}: ${JSON.stringify(values.map(Math.round))}, rests at ${Math.round(end[axis])}`);
+      await fail(`${where}: the sheet does not open in one motion on ${axis ? "left" : "top"}: ${JSON.stringify(values.map(Math.round))}, rests at ${Math.round(end[axis])}; frames (top, dialogs, animations, height): ${JSON.stringify(frames.slice(0, 8).map((frame) => [Math.round(frame[0]), frame[2]]))}; events by frame: ${JSON.stringify(events.slice(0, 20))}`);
     }
   }
 }
