@@ -3759,7 +3759,11 @@ def task_journey(args):
             return js('task', 'show', n, '-p', 'demo')['state']
 
         def wait_state(n, *states):
-            return wait(lambda: task_state(n) in states and task_state(n), '#%d %s' % (n, '/'.join(states)))
+            try:
+                return wait(lambda: task_state(n) in states and task_state(n), '#%d %s' % (n, '/'.join(states)))
+            except AssertionError as error:
+                # ^ The first wrong state: what the task waits on, its last turn and the end of its log.
+                raise AssertionError('%s; wsx task why: %s' % (error, cli('task', 'why', n, '-p', 'demo').stdout[-2000:])) from error
 
         daemon = start(work, [str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait(path.exists, 'daemon')
