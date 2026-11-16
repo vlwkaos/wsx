@@ -632,18 +632,18 @@ await until("document.querySelectorAll('.home-row').length >= 3", "home does not
 // ^ A row's name is its label's first text: an asking row's label adds a hidden ", Asks you".
 await until(`[...document.querySelectorAll('.home-row .row-label')].map((node) => node.firstChild.textContent).join() === ${JSON.stringify(homeOrder)}`, "home did not settle in the expected order", 30);
 const homeRows = await evaluate(`[...document.querySelectorAll('.home-row')].map((row) => ({ name: row.querySelector('.row-label').firstChild.textContent,
-  count: row.querySelector('.tray[data-kind=needs] .tray-count')?.textContent ?? '', trays: [...row.querySelectorAll('.tray')].map((tray) => tray.dataset.kind + ':' + tray.querySelector('.tray-count').textContent + ':' + !!tray.querySelector('svg.icon')).join(),
+  count: row.querySelector('.tray[data-kind=you] .tray-count')?.textContent ?? '', trays: [...row.querySelectorAll('.tray')].map((tray) => tray.dataset.kind + ':' + tray.querySelector('.tray-count').textContent + ':' + !!tray.querySelector('svg.icon')).join(),
   status: row.querySelector('.row-context').textContent, state: row.querySelector('.time')?.textContent ?? '' }))`);
 const uiRow = homeRows.find((row) => row.name === "ui");
-// ^ The tray icons are the pills' (trays.js): the needs tray reads the needs count, and a row with nothing to count shows none.
-if (!uiRow.trays.split(",").includes("needs:6:true") || homeRows.find((row) => row.name === "calm").trays) await fail(`the Home trays read ${JSON.stringify(homeRows.map((row) => [row.name, row.trays]))}`);
-if (uiRow.count !== "6" || uiRow.status !== "#1 Waiting for your answer" || !/ago|now/.test(uiRow.state)) await fail(`the ui row reads ${JSON.stringify(uiRow)}`);
+// ^ The tray icons are the pills' (trays.js): the For you tray reads needs plus to check, and a row with nothing to count shows none.
+if (!uiRow.trays.split(",").includes("you:8:true") || homeRows.find((row) => row.name === "calm").trays) await fail(`the Home trays read ${JSON.stringify(homeRows.map((row) => [row.name, row.trays]))}`);
+if (uiRow.count !== "8" || uiRow.status !== "#1 Waiting for your answer" || !/ago|now/.test(uiRow.state)) await fail(`the ui row reads ${JSON.stringify(uiRow)}`);
 const calmRow = homeRows.find((row) => row.name === "calm");
 if (!calmRow || calmRow.count || calmRow.status !== "No tasks yet" || calmRow.state) await fail(`the calm row reads ${JSON.stringify(calmRow)}`);
 const plansRow = homeRows.find((row) => row.name === "plans");
-// ^ #1 waits for an answer; #2 is ready to land. The needs tray counts them with the project's open questions, as the pill does.
-const plansView = await evaluate(`fetch('api/tasks/${plansArg}').then((r) => r.json()).then((view) => ({ needs: view.needs.length, asks: view.asks.length }))`);
-if (plansRow?.status !== "#1 Waiting for your answer" || plansView.needs !== 2 || plansRow.count !== String(plansView.needs + plansView.asks)) await fail(`the plans row reads ${JSON.stringify([plansRow, plansView])}`);
+// ^ #1 waits for an answer; #2 is ready to land. The For you tray counts them with the project's open questions and its items to check, as the pill does.
+const plansView = await evaluate(`fetch('api/tasks/${plansArg}').then((r) => r.json()).then((view) => ({ needs: view.needs.length, asks: view.asks.length, check: view.to_check }))`);
+if (plansRow?.status !== "#1 Waiting for your answer" || plansView.needs !== 2 || plansRow.count !== String(plansView.needs + plansView.asks + plansView.check)) await fail(`the plans row reads ${JSON.stringify([plansRow, plansView])}`);
 // Projects with agent sessions and no task: the row says only what the project has, never what
 // its agent sessions do (a session left in an error would pin its words on the row for good).
 // `busy` (working), `quiet` (done) and `gone` (exited, and one in an error) have no task: "No tasks yet", no time, no count.
@@ -948,14 +948,14 @@ await until("[...document.querySelectorAll('.reply-text')].some((node) => /^note
 await evaluate("[...document.querySelectorAll('.log .bubble, .log .status-line, .log .reply-line')].at(-1).scrollIntoView({ block: 'end' })");
 await until(atEnd, "the chat did not go back to its end");
 
-// --- The pills: the composer row holds one pill for each of Running, Needs you and To check,
+// --- The pills: the composer row holds one pill for each of For you (Needs you and To check), Tasks and Routines,
 // between the attach button and Send, each an icon and its count (the label from 900 px, the wide layout) and
 // none for a count of 0. A tap opens that pill's list over the composer; one list at a time. No
 // deploy facts here. Opening a list keeps the chat at its end.
 const pillWords = () => evaluate("[...document.querySelectorAll('.pill')].map((node) => node.getAttribute('aria-label')).join(' | ')");
 const pressed = () => evaluate("[...document.querySelectorAll('.pill[aria-pressed=true]')].map((node) => node.dataset.kind).join()");
-// ^ Routines is the fourth pill: nightly and idle are on (weekly is off), and its list is read after the chat.
-const PILLS = "1 running | 6 need you | 2 to check | 2 routines";
+// ^ Routines is the third pill: nightly and idle are on (weekly is off), and its list is read after the chat.
+const PILLS = "8 for you | 5 tasks | 2 routines";
 const expectPills = async (who) => {
   for (let attempt = 0; attempt < 100 && (await pillWords()) !== PILLS; attempt++) await pause(100);
   if ((await pillWords()) !== PILLS) await fail(`${who} read ${await pillWords()}`);
@@ -1576,9 +1576,9 @@ await closeSheet("the usage sheet", chat);
     const pills = await evaluate(trayOf(".pill", ".pill-count"));
     await go("#/");
     const homeTrays = `.home-rows > .row[data-key="${project}"] .tray`;
-    await until(`document.querySelectorAll('${homeTrays}').length === 4`, "Home shows no four trays on the project's row", 50);
+    await until(`document.querySelectorAll('${homeTrays}').length === 3`, "Home shows no three trays on the project's row", 50);
     const trays = await evaluate(trayOf(homeTrays, ".tray-count"));
-    if (trays !== pills || pills.split(",").length !== 4) await fail(`Home's trays are ${trays}, the pills ${pills}`);
+    if (trays !== pills || pills.split(",").length !== 3) await fail(`Home's trays are ${trays}, the pills ${pills}`);
     const lines = await evaluate(`(() => { const row = document.querySelector('.home-rows > .row[data-key="${project}"] .row-link'), head = row.querySelector('.row-head'), main = row.querySelector('.row-main');
       return { children: [...main.children].map((node) => node.className), time: !!head.querySelector('.time'), height: Math.round(row.getBoundingClientRect().height) }; })()`);
     if (lines.children.join() !== "row-head,row-context" || !lines.time) await fail(`the project's row is not two lines: ${JSON.stringify(lines)}`);

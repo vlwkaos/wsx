@@ -1930,7 +1930,8 @@ def part_core(created=None):
         (r'WORKSPACE', b'')])
     listed, asked, _, checked = shots[1:5]
     # ^ The rows are the ledger's open list in its order (wsx-core `task::chains`), each under its band.
-    ledger_order = [r['id'] for r in js('task', 'ledger')['open'] if r['id'] in (asking, failing, x1, d1)]
+    # ^ Read before the screens: the gate opens in them and the working task moves to For you.
+    ledger_order = [n for n in at if n in (asking, failing, x1, d1)]
     assert sorted(ledger_order) == sorted((asking, failing, x1, d1)), ledger_order
     order = [listed.index(row(listed, n)) for n in ledger_order + [memo_task]]
     assert order == sorted(order) and order[-1] > listed.index('Recent'), listed
