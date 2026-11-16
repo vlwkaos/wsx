@@ -2078,6 +2078,12 @@ capabilities = ["terminal_view"]
             return wait(lambda: any([a['hash'] for a in m['attachments']] == [attachment['hash']] and '[attached files]' not in m['text']
                                     for m in messages(site, session)['messages']), 'attachment shown for ' + attachment['name'])
 
+        # ^ The system folders on the server's PATH hold the tools on Linux (apt installs them in
+        # /usr/bin; macOS has them under Homebrew, off that PATH): work/bin shadows each with a
+        # tool that fails, until the block links the real one, so "no tool" holds on both.
+        for name in ('pdftotext', 'ffmpeg', 'ffprobe'):
+            (bin_dir / name).write_text('#!/bin/sh\nexit 127\n')
+            (bin_dir / name).chmod(0o755)
         media_dir = (work / 'state/wsx/web/owner/media').resolve()
         pdf_plain = pdf_fixture('alpha')
         plain = owner.request('PUT', '/api/media?name=plain.pdf', pdf_plain)[1]
@@ -2089,6 +2095,8 @@ capabilities = ["terminal_view"]
         # and the gate holds it open long enough to send a message before it is ready.
         gate = work / 'video.gate'
         for name, found in tools.items():
+            if found:
+                (bin_dir / name).unlink()
             if found and name == 'ffprobe':
                 (bin_dir / name).write_text('#!/bin/sh\nwhile [ -e "%s" ]; do sleep 0.1; done\nexec "%s" "$@"\n' % (gate, Path(found).resolve()))
                 (bin_dir / name).chmod(0o755)
