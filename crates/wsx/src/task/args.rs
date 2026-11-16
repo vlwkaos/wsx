@@ -169,6 +169,8 @@ pub enum TaskCmd {
     Release(ReleaseArgs),
     /// Push the default branch, or one commit, to origin's default branch and move the local one there (the manager asks the owner first)
     Push(PushArgs),
+    /// Fetch origin and move the local default branch to its tip when no work is lost (a branch that is behind, or whose commits origin has already after a rebase or squash merge); else refuse and name the commits or files
+    Sync,
     /// Commit files of the main checkout on the default branch once its light checks pass on
     /// that commit (the manager: with the owner's message)
     Commit {
@@ -541,6 +543,7 @@ impl TaskCmd {
             | Self::Deploy(_)
             | Self::Release(_)
             | Self::Push(_)
+            | Self::Sync
             | Self::Project { .. } => &[Deploy],
             Self::Checkin { .. } => &[Routine],
             Self::Routine { action, .. } => match action {

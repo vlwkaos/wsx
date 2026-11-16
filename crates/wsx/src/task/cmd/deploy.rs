@@ -222,6 +222,53 @@ pub(crate) fn spawn_quiet_deploy(project: &str, project_id: &str, main: &Path) -
     hosting::spawn_wsx(&args, store::follow_up_log(project_id)?, None)
 }
 
+/// What one pass of `follow_origin` found: origin's tip it fetched, and what the move to it
+/// did or why it refused.
+pub(crate) struct Followed {
+    pub branch: String,
+    pub target: String,
+    pub outcome: Result<copy::Synced>,
+}
+
+/// Fetch origin's default branch and move the local one to its tip when no work is lost
+/// (`copy::sync`). Under the push lock, so no approved push runs between the read and the
+/// move. `Err`: nothing was fetched (no remote, the lock, the network).
+pub(crate) fn follow_origin(project_id: &str, main: &Path) -> Result<Followed> {
+    let branch = default_ref(main)
+        .trim_start_matches("refs/heads/")
+        .to_string();
+    let _one_at_a_time = store::lock_pushes(project_id)?;
+    let target = copy::fetch_tip(main, PUSH_REMOTE, &branch)?;
+    let outcome = copy::sync(main, &branch, &target);
+    Ok(Followed {
+        branch,
+        target,
+        outcome,
+    })
+}
+
+/// `wsx task sync`: the default branch follows origin after a merge there, with no approval and
+/// no `--force`, since it moves only when no commit or file is lost. ref: docs/tasks.md "Sync"
+pub(crate) fn sync(project: Option<&str>, json: bool) -> Result<()> {
+    let (project_name, main) = project_entry(project)?;
+    let project_id = store::project_id(&project_name, &main);
+    let refuse = |error: anyhow::Error| anyhow::anyhow!("{error:#}; nothing was moved");
+    let followed = follow_origin(&project_id, &main).map_err(refuse)?;
+    let synced = followed.outcome.map_err(refuse)?;
+    let message = synced.words(&followed.branch, PUSH_REMOTE);
+    if json {
+        let (from, to) = match &synced {
+            copy::Synced::Moved { from, to } => (Some(from), Some(to)),
+            copy::Synced::Current => (None, None),
+        };
+        return print_json(
+            &json!({ "moved": from.is_some(), "from": from, "to": to, "message": message }),
+        );
+    }
+    println!("{message}");
+    Ok(())
+}
+
 /// Run the project's deploy or release command in a temporary copy of one commit.
 /// ^ Never from a task's working copy: what runs is always a default-branch commit.
 /// `if_new`: skip a commit that is already deployed, so the deploys that follow quick lands

@@ -35,7 +35,7 @@ use cmd::chat::{
 };
 use cmd::check::check;
 use cmd::commit::commit;
-use cmd::deploy::{deploy, deployed, push, trial_command};
+use cmd::deploy::{deploy, deployed, push, sync, trial_command};
 use cmd::land::{after_command, hold_command, land_command, run_batch};
 use cmd::new::new;
 use cmd::project::project;
@@ -118,6 +118,7 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
             json,
         ),
         TaskCmd::Push(args) => push(args, project, json),
+        TaskCmd::Sync => sync(project, json),
         TaskCmd::Deployed => deployed(project, json),
         TaskCmd::Digest { since } => digest(project, since),
         TaskCmd::Post { title, level, key } => post(project, &title, &level, key.as_deref()),

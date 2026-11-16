@@ -597,6 +597,11 @@ fn move_as(
 ) -> Result<Option<LockCleared>> {
     match checked_move(main, branch, commit, what)? {
         Some((checkout, same)) => {
+            // ^ `reset --keep` has no guard of its own: a land that moved the branch since
+            // `old_tip` was read would be dropped by it.
+            if force && resolve_commit(main, &format!("refs/heads/{branch}"))? != old_tip {
+                bail!("{branch} moved since {} was read", short(old_tip));
+            }
             if !same.is_empty() {
                 let mut add = vec!["add", "--all", "--"];
                 add.extend(same.iter().map(String::as_str));
@@ -793,6 +798,20 @@ pub enum Synced {
         from: String,
         to: String,
     },
+}
+
+impl Synced {
+    /// What happened, in a line.
+    pub fn words(&self, branch: &str, remote: &str) -> String {
+        match self {
+            Self::Current => format!("{branch} has {remote}'s tip already"),
+            Self::Moved { from, to } => format!(
+                "{branch} moved from {} to {}, {remote}'s tip; the old tip stays in the reflog",
+                short(from),
+                short(to)
+            ),
+        }
+    }
 }
 
 /// Fetch `remote`'s `branch` into its remote-tracking ref and give its tip.
