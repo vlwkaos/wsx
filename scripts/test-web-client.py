@@ -2355,9 +2355,9 @@ capabilities = ["terminal_view"]
             return [row for row in rows if row]
 
         def start_second_by_hand():
-            # ^ The command waits for the shell's prompt: typed before the pane's shell has set its
+            # ^ The command waits for the shell's prompt (it follows the agent's last row: no new line): typed before the pane's shell has set its
             # terminal modes, the line is flushed on Linux and no conversation starts.
-            wait(lambda: (lambda rows: rows and rows[-1] == '$')(resume_screen()), lambda: 'the pane shell prompt, screen %s' % resume_screen())
+            wait(lambda: (lambda rows: rows and rows[-1].endswith('$'))(resume_screen()), lambda: 'the pane shell prompt, screen %s' % resume_screen())
             assert call('terminal_acquire', {'pane_id': resume_pane, 'client_id': 7, 'takeover': True})['type'] == 'ack'
             assert call('terminal_input', {'pane_id': resume_pane, 'client_id': 7, 'bytes': list(b'WSX_FIXTURE_CONVERSATION=second claude\r')})['type'] == 'ack'
             assert call('terminal_release', {'pane_id': resume_pane, 'client_id': 7})['type'] == 'ack'
