@@ -368,13 +368,10 @@ fn alert_unreadable(dir: &TaskDir, error: anyhow::Error) -> Result<()> {
         now_unix_ms() / 1000,
         POST_KEY_WINDOW_SECS,
         || {
-            post_when_free(
-                &dir.project_id,
-                &dir.project_id,
-                "task host",
-                Some(Level::Bad),
-                || vec![line.clone()],
-            )
+            let (name, main) = super::project_by_id(&dir.project_id)?;
+            post_when_free(&main, &name, "task host", Some(Level::Bad), || {
+                vec![line.clone()]
+            })
         },
     )
     .map(drop)
