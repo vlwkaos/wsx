@@ -34,11 +34,11 @@ use wsx_core::task::{
     build, call_host, checks,
     copy::{self, Rebase},
     failure::{self, NO_SPACE},
-    manager::{Author, Short},
+    manager::{Author, Level, Short},
     now_unix_ms, owner,
     owner::HOST_TIMEOUT,
     report, stall,
-    store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
+    store::{self, TaskDir, RECORD_FILE, REPORT_FILE, RESULT_FILE},
     view, Actor, After, AfterKind, CheckResult, Evidence, Home, HostRequest, HostResponse,
     HumanVerify, LogEvent, MessageKind, TaskRecord, TaskState, TurnTrigger, WaitOn, Waiting,
     WorkerResult, MAX_MESSAGE_BYTES,
@@ -348,9 +348,46 @@ struct Host {
     started: Instant,
 }
 
+/// A host that cannot load its record posts one alert to the project's home chat (`wsx task
+/// post --level bad`, once per 10 minutes) with the file and the cause, and ends; it ended
+/// without a word before. When the alert cannot be posted either, the error says both.
+fn alert_unreadable(dir: &TaskDir, error: anyhow::Error) -> Result<()> {
+    use super::cmd::routine::{post_when_free, POST_KEY_WINDOW_SECS};
+    let id = dir.id;
+    let line = format!(
+        "task t{id} has no host: {} does not load: {error:#}",
+        dir.file(RECORD_FILE).display()
+    );
+    let key: String = format!("host.{id}.{}", dir.project_id)
+        .chars()
+        .take(64)
+        .collect();
+    let posted = store::post_once(
+        &dir.project_id,
+        &key,
+        now_unix_ms() / 1000,
+        POST_KEY_WINDOW_SECS,
+        || {
+            post_when_free(
+                &dir.project_id,
+                &dir.project_id,
+                "task host",
+                Some(Level::Bad),
+                || vec![line.clone()],
+            )
+        },
+    );
+    posted
+        .map(drop)
+        .with_context(|| format!("{line}; the alert was not posted"))
+}
+
 pub fn run(project_id: &str, id: u32) -> Result<()> {
     let dir = TaskDir::open(project_id, id)?;
-    let mut record = dir.read_record()?;
+    let mut record = match dir.read_record() {
+        Ok(record) => record,
+        Err(error) => return alert_unreadable(&dir, error),
+    };
     if record.state == TaskState::Closed {
         bail!("task t{id} is closed");
     }

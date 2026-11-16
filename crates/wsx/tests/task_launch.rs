@@ -319,3 +319,49 @@ fn usage_sums_a_tasks_turns_and_older_running_totals() {
     let text = String::from_utf8_lossy(&text.stdout);
     assert!(text.contains("usage:        $0.0"), "{text}");
 }
+
+/// A host whose record does not load posts one alert to the home chat and ends with status 0,
+/// not silently; a second start inside the dedupe window posts none (docs/tasks.md "Routines").
+#[test]
+fn a_host_that_cannot_load_its_record_posts_one_alert() {
+    let fixture = Fixture::new();
+    let project = fixture.root.join("project");
+    let project_id = wsx_core::task::store::project_id("demo", &project.canonicalize().unwrap());
+    let dir = fixture
+        .root
+        .join("state/wsx/tasks")
+        .join(&project_id)
+        .join("7");
+    fs::create_dir_all(&dir).expect("create the task folder");
+    fs::write(dir.join("task.json"), "garbage").expect("write it");
+    // ^ The manager host receives the post; its start also makes the home chat.
+    let started = fixture.wsx(&["task", "manager"]);
+    assert!(started.status.success(), "{started:?}");
+
+    let alerts = || -> Vec<String> {
+        let chats = fixture.root.join("state/wsx/tasks/chats");
+        let mut found = Vec::new();
+        for chat in fs::read_dir(chats).into_iter().flatten().flatten() {
+            let log = fs::read_to_string(chat.path().join("log.jsonl")).unwrap_or_default();
+            found.extend(
+                log.lines()
+                    .filter(|line| line.contains("\"level\":\"bad\""))
+                    .map(String::from),
+            );
+        }
+        found
+    };
+    for _ in 0..2 {
+        let ended = fixture.wsx(&["task", "host", &project_id, "7"]);
+        assert!(ended.status.success(), "{ended:?}");
+    }
+    let alerts = alerts();
+    assert_eq!(alerts.len(), 1, "{alerts:?}");
+    assert!(
+        alerts[0].contains("task t7 has no host")
+            && alerts[0].contains("task.json does not load")
+            && alerts[0].contains("expected value at line 1 column 1"),
+        "{}",
+        alerts[0]
+    );
+}
