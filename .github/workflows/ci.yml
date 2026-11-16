@@ -151,6 +151,19 @@ jobs:
           version: 0.15.2
           use-cache: false
 
+      # ^ Zig package cache rule (every job that builds wsx-terminal without setup-zig's own cache):
+      # rust-cache drops the workspace crates, so crates/wsx-terminal/build.rs runs `zig build` in
+      # every job, and with `use-cache: false` the Zig package dir (`$ZIG_GLOBAL_CACHE_DIR/p`) is
+      # empty: 23 packages come from deps.files.ghostty.org, and a dropped connection fails the job.
+      # Every such job only restores `zig-packages-*` (keyed on build.zig.zon, zig checks each
+      # package's hash); `scenario-cache` is the one job that saves it, on a push to main.
+      - name: Restore Zig packages
+        if: steps.changed.outputs.run == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIG_GLOBAL_CACHE_DIR }}/p
+          key: zig-packages-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/libghostty-vt/build.zig.zon') }}
+
       - name: Cache Rust build
         if: steps.changed.outputs.run == 'true'
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -206,6 +219,13 @@ jobs:
           version: 0.15.2
           use-cache: false
 
+      # ^ Restores and saves (see the Zig package cache rule in `task-scenario`).
+      - name: Cache Zig packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIG_GLOBAL_CACHE_DIR }}/p
+          key: zig-packages-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/libghostty-vt/build.zig.zon') }}
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -213,6 +233,10 @@ jobs:
 
       - name: Build wsx and wsxd
         run: cargo build --locked -p wsx -p wsx-daemon
+
+      # ^ An empty `p/` would be saved under the key for good: fail before the cache saves it.
+      - name: Check the Zig packages
+        run: test -n "$(ls -A "$ZIG_GLOBAL_CACHE_DIR/p")"
 
   # ^ The web scenario of a worker's `wsx task check-run web` (scripts/ci-scenario.py). Its parts
   # (test-web-client.py --part) run as one job each, at once; the run passes when all pass. A
@@ -263,6 +287,14 @@ jobs:
         with:
           version: 0.15.2
           use-cache: false
+
+      # ^ Restore only (see the Zig package cache rule in `task-scenario`).
+      - name: Restore Zig packages
+        if: steps.part.outputs.run == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIG_GLOBAL_CACHE_DIR }}/p
+          key: zig-packages-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/libghostty-vt/build.zig.zon') }}
 
       - name: Cache Rust build
         if: steps.part.outputs.run == 'true'

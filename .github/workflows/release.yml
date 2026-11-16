@@ -134,6 +134,14 @@ jobs:
         with:
           version: 0.15.2
 
+      # ^ A tag's own setup-zig cache is never found by the next tag, so this job starts with an
+      # empty Zig package dir. Restore only the main push's `zig-packages-*` (ci.yml `scenario-cache`).
+      - name: Restore Zig packages
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIG_GLOBAL_CACHE_DIR }}/p
+          key: zig-packages-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/libghostty-vt/build.zig.zon') }}
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
