@@ -3387,7 +3387,7 @@ def part_worker(created=None):
         assert owner_items() == 0, (decide, js('task', 'chat')['asks'], js('task', 'ledger')['approvals'])
         wait(lambda: events_with('approval %s (discard #%d)' % (request, one)), '%s event' % decide)
         if decide == 'approve':
-            wait_closed(one)
+            wait_state(one, 'closed')
         else:
             js('task', 'close', one, '--discard')
     earlier = js('task', 'new', 'WORK two.txt')['id']
