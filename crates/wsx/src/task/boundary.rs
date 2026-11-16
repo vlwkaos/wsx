@@ -52,6 +52,10 @@ pub struct Boundary {
     deny_write: Vec<PathBuf>,
     /// A file and its `.lock`, as git writes a ref.
     deny_write_prefix: Vec<PathBuf>,
+    /// The main checkout, written by none but the owner and wsx: its files, its index and its
+    /// HEAD. The main repository's git folder stays open but for `deny_write*` below, which
+    /// is where a worker's own copy keeps its objects, branch and `worktrees/<copy>` folder.
+    checkout: Option<PathBuf>,
     /// Other tasks' copies `<parent>/<repo>-t<n>`, also those created after the launch.
     deny_copies: Option<(PathBuf, String)>,
     own: Vec<PathBuf>,
@@ -76,7 +80,9 @@ pub struct Boundary {
 }
 
 impl Boundary {
-    /// A worker: its own copy and task folder; never the default branch's ref: wsx lands.
+    /// A worker: its own copy and task folder; never the default branch's ref: wsx lands, nor
+    /// the main checkout's files, index or HEAD (a `git reset --hard` there once moved them
+    /// while the ref held, 2026-11-16).
     /// A child's default branch is its parent's branch; the branch the parent lands on is
     /// denied too. ref: docs/tasks.md "Parent tasks"
     pub fn worker(record: &TaskRecord, own: &Path, policy: Policy) -> Result<Self> {
@@ -92,6 +98,14 @@ impl Boundary {
             .map(|branch| format!("refs/heads/{branch}"))
             .flat_map(|branch| [common.join(&branch), common.join("logs").join(&branch)])
             .collect();
+        // ^ The main checkout's own git folder holds its HEAD and index: the common folder for
+        // the primary checkout, `worktrees/<name>` for a linked one.
+        let git_dir = copy::read(&record.project_path, &["rev-parse", "--absolute-git-dir"])?;
+        let git_dir = real(Path::new(&git_dir));
+        boundary
+            .deny_write_prefix
+            .extend(["HEAD", "index"].map(|name| git_dir.join(name)));
+        boundary.checkout = Some(real(&record.project_path));
         boundary.own.push(real(&record.working_copy));
         Ok(boundary)
     }
@@ -144,6 +158,7 @@ impl Boundary {
             deny_read,
             deny_write,
             deny_write_prefix: Vec::new(),
+            checkout: None,
             deny_copies,
             own: vec![real(own)],
             own_prefix: Vec::new(),
@@ -325,6 +340,11 @@ impl Boundary {
             if let Some((dir, _)) = &self.adapter_home {
                 rule("allow file-write*", subpath(dir));
             }
+        }
+        // ^ The main checkout is shut and its git folder opens again, for the worker's own copy.
+        if let Some(checkout) = &self.checkout {
+            rule("deny file-write*", subpath(checkout));
+            rule("allow file-write*", subpath(&self.common));
         }
         let (folders, credential) = self.read_denials();
         for path in folders {

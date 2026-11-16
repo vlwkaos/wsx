@@ -479,20 +479,44 @@ fn checkout_of(main: &Path, branch: &str) -> Result<Option<PathBuf>> {
 }
 
 /// Files `checkout` has changed (tracked or new) that `landing` (a `git diff` range from its
-/// HEAD) changes too: moving the checkout there would overwrite them. Other changes stay as
-/// they are. ref: docs/tasks.md "Landing"
-fn overlapping_changes(checkout: &Path, landing: &str) -> Result<Vec<String>> {
+/// HEAD) changes too, as (those the move would overwrite, those that already have `commit`'s
+/// content). Other changes stay as they are. ref: docs/tasks.md "Landing"
+fn overlapping_changes(
+    checkout: &Path,
+    landing: &str,
+    commit: &str,
+) -> Result<(Vec<String>, Vec<String>)> {
     let landing = read(checkout, &["diff", "--name-only", "--no-renames", landing])?;
     let landing: std::collections::HashSet<&str> = landing.lines().collect();
     let tracked = read(checkout, &["diff", "--name-only", "--no-renames", "HEAD"])?;
     let new = read(checkout, &["ls-files", "--others", "--exclude-standard"])?;
-    Ok(tracked
+    let (mut blocked, mut same) = (Vec::new(), Vec::new());
+    for path in tracked
         .lines()
         .chain(new.lines())
-        .filter(|path| landing.contains(path))
-        .take(MAX_LISTED_CHANGES)
-        .map(str::to_string)
-        .collect())
+        .filter(|p| landing.contains(p))
+    {
+        let list = if same_as_commit(checkout, commit, path)? {
+            &mut same
+        } else {
+            &mut blocked
+        };
+        if list.len() < MAX_LISTED_CHANGES {
+            list.push(path.to_string());
+        }
+    }
+    Ok((blocked, same))
+}
+
+/// Whether `path` in `checkout` has the content it has in `commit` (both absent counts).
+fn same_as_commit(checkout: &Path, commit: &str, path: &str) -> Result<bool> {
+    let spec = format!("{commit}:{path}");
+    let committed = read(checkout, &["rev-parse", "--verify", "--quiet", &spec]).ok();
+    let on_disk = match checkout.join(path).is_file() {
+        true => Some(read(checkout, &["hash-object", "--", path])?),
+        false => None,
+    };
+    Ok(committed == on_disk)
 }
 
 /// What would stop `commit` from landing on `default_branch`: the checkout's changed files
@@ -501,19 +525,31 @@ pub fn land_blockers(main: &Path, default_branch: &str, commit: &str) -> Result<
     match checkout_of(main, default_branch)? {
         // ^ Three dots: from where `commit` left HEAD, so a task that still needs its rebase
         // shows the files its own commits change.
-        Some(checkout) => overlapping_changes(&checkout, &format!("HEAD...{commit}")),
+        Some(checkout) => overlapping_changes(&checkout, &format!("HEAD...{commit}"), commit)
+            .map(|(blocked, _)| blocked),
         None => Ok(Vec::new()),
     }
 }
 
-/// Refuse to move `branch` to `commit` (a `what`: land or push) when its checkout has changed
-/// files that differ between its HEAD and `commit`: the move would overwrite them. Other
-/// changes stay. Nothing to check when the branch is not checked out.
+/// Refuse to move `branch` to `commit` (a `what`: land, push or sync) when its checkout has
+/// changed files that differ between its HEAD and `commit`: the move would overwrite them.
+/// Other changes stay, and so do files that already have `commit`'s content. Nothing to check
+/// when the branch is not checked out.
 pub fn check_move(main: &Path, branch: &str, commit: &str, what: &str) -> Result<()> {
+    checked_move(main, branch, commit, what).map(drop)
+}
+
+/// `check_move`, and the checkout with the files that already have `commit`'s content.
+fn checked_move(
+    main: &Path,
+    branch: &str,
+    commit: &str,
+    what: &str,
+) -> Result<Option<(PathBuf, Vec<String>)>> {
     let Some(checkout) = checkout_of(main, branch)? else {
-        return Ok(());
+        return Ok(None);
     };
-    let blocked = overlapping_changes(&checkout, &format!("HEAD..{commit}"))?;
+    let (blocked, same) = overlapping_changes(&checkout, &format!("HEAD..{commit}"), commit)?;
     if !blocked.is_empty() {
         // ^ Words first: a path at the start of the line lost its `/` when the owner
         // copied the message from the page (2026-10-25).
@@ -523,13 +559,14 @@ pub fn check_move(main: &Path, branch: &str, commit: &str, what: &str) -> Result
             checkout.display(),
         );
     }
-    Ok(())
+    Ok(Some((checkout, same)))
 }
 
 /// Move `branch` from `old_tip` to `commit`: a fast-forward, or any commit with `force` (a
 /// push that rewrites the default branch). Where the branch is checked out, its changed
 /// files that the move also changes refuse it (`check_move`); other changes stay (`git merge
-/// --ff-only` and `git reset --keep` keep them). Elsewhere the ref moves with `old_tip` as
+/// --ff-only` and `git reset --keep` keep them), and a file that has `commit`'s content is
+/// staged first, which both steps need. Elsewhere the ref moves with `old_tip` as
 /// guard, so a branch that moved meanwhile is never overwritten. Nothing stashes or commits
 /// the owner's files. Gives back the stale index lock it cleared, if any.
 /// ref: docs/tasks.md "Landing"
@@ -540,9 +577,31 @@ pub fn move_branch(
     commit: &str,
     force: bool,
 ) -> Result<Option<LockCleared>> {
-    check_move(main, branch, commit, if force { "push" } else { "land" })?;
-    match checkout_of(main, branch)? {
-        Some(checkout) => {
+    move_as(
+        main,
+        branch,
+        old_tip,
+        commit,
+        force,
+        if force { "push" } else { "land" },
+    )
+}
+
+fn move_as(
+    main: &Path,
+    branch: &str,
+    old_tip: &str,
+    commit: &str,
+    force: bool,
+    what: &str,
+) -> Result<Option<LockCleared>> {
+    match checked_move(main, branch, commit, what)? {
+        Some((checkout, same)) => {
+            if !same.is_empty() {
+                let mut add = vec!["add", "--all", "--"];
+                add.extend(same.iter().map(String::as_str));
+                git_clearing_lock(&checkout, &add)?;
+            }
             let step: &[&str] = if force {
                 &["reset", "--keep", "--quiet", commit]
             } else {
@@ -723,6 +782,100 @@ pub fn push(
     args.extend(lease.as_deref());
     args.extend([remote, refspec.as_str()]);
     remote_git(main, &args).map(|_| ())
+}
+
+/// What `sync` did to the local branch.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Synced {
+    /// The local branch has the remote's tip already, or more.
+    Current,
+    Moved {
+        from: String,
+        to: String,
+    },
+}
+
+/// Fetch `remote`'s `branch` into its remote-tracking ref and give its tip.
+pub fn fetch_tip(main: &Path, remote: &str, branch: &str) -> Result<String> {
+    let tracking = format!("refs/remotes/{remote}/{branch}");
+    let refspec = format!("+refs/heads/{branch}:{tracking}");
+    remote_git(main, &["fetch", "--quiet", remote, &refspec])?;
+    resolve_commit(main, &tracking)
+}
+
+/// Move the local `branch` to `target` (a fetched remote tip) when no work is lost: the
+/// branch is behind it, or each of its own commits is on `target` already (`git cherry`: a
+/// rebase merge) or its files equal `target`'s (a squash merge); and the checkout has no
+/// changed file that the move would overwrite with other content. Else refuse and name the
+/// commits or files. Takes no approval and no `--force`. ref: docs/tasks.md "Sync"
+pub fn sync(main: &Path, branch: &str, target: &str) -> Result<Synced> {
+    let from = resolve_commit(main, &format!("refs/heads/{branch}"))?;
+    if is_ancestor(main, target, &from)? {
+        return Ok(Synced::Current);
+    }
+    let fast_forward = is_ancestor(main, &from, target)?;
+    if !fast_forward {
+        let lost = unmerged_work(main, &from, target)?;
+        if !lost.is_empty() {
+            bail!(
+                "local {branch} ({}) has work that {} lacks: {}; nothing was moved",
+                short(&from),
+                short(target),
+                lost.join("; ")
+            );
+        }
+    }
+    move_as(main, branch, &from, target, !fast_forward, "sync")?;
+    Ok(Synced::Moved {
+        from,
+        to: target.to_string(),
+    })
+}
+
+fn short(commit: &str) -> &str {
+    commit.get(..12).unwrap_or(commit)
+}
+
+/// The work of `local` that `target` lacks, one line each: its commits that are not patch
+/// equivalent on `target`, when files they changed differ there. None when `target` has it all.
+fn unmerged_work(main: &Path, local: &str, target: &str) -> Result<Vec<String>> {
+    let cherry = read(main, &["cherry", target, local])?;
+    let ahead: Vec<&str> = cherry
+        .lines()
+        .filter_map(|l| l.strip_prefix("+ "))
+        .collect();
+    if ahead.is_empty() {
+        return Ok(Vec::new());
+    }
+    let base = merge_base(main, local, target)?;
+    let changed = read(main, &["diff", "--name-only", "--no-renames", &base, local])?;
+    let differ = read(
+        main,
+        &["diff", "--name-only", "--no-renames", local, target],
+    )?;
+    let differ: std::collections::HashSet<&str> = differ.lines().collect();
+    let files: Vec<&str> = changed
+        .lines()
+        .filter(|path| differ.contains(path))
+        .collect();
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut lost: Vec<String> = Vec::new();
+    for commit in ahead.iter().take(MAX_LISTED_CHANGES) {
+        let line = read(main, &["log", "-1", "--format=%h %s", commit])?;
+        lost.push(line);
+    }
+    lost.push(format!(
+        "differing files: {}",
+        files
+            .iter()
+            .take(MAX_LISTED_CHANGES)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    Ok(lost)
 }
 
 /// Commits on `branch` that `target` does not have.
