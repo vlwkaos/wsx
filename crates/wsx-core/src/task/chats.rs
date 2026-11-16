@@ -466,12 +466,13 @@ pub fn rows(project_id: &str) -> Vec<Value> {
         .into_iter()
         .map(|dir| {
             let goal = goal(&dir);
+            let last = chats_home::last_message_ms(&dir);
             let mut row = serde_json::json!({
                 "name": dir.name(),
                 "state": if is_open(&dir) { "open" } else { "closed" },
                 "goal": goal.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
-                "last_unix_ms": chats_home::last_message_ms(&dir),
-                "listed": chats_home::listed(&dir),
+                "last_unix_ms": last,
+                "listed": chats_home::listed_at(&dir, || last),
                 "home": home.as_deref() == Some(dir.name()),
             });
             if let (Some(entry), Some(own)) = (chat_file(&dir).agent, agent(&dir)) {

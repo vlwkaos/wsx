@@ -840,6 +840,7 @@ fn chat_contacts(scope: &Scope, land_auto: bool) -> Vec<Value> {
             let own = counts.get(dir.name()).copied().unwrap_or_default();
             let tail = dir.read_tail(MANAGER_TAIL_BYTES).unwrap_or_default();
             let news = newest_news(&tail).map(news_value);
+            let at = task::chats_home::last_message_ms(dir);
             let last = tail
                 .into_iter()
                 .rev()
@@ -858,8 +859,8 @@ fn chat_contacts(scope: &Scope, land_auto: bool) -> Vec<Value> {
                 "last_reply": last,
                 "news": news,
                 "home": home.as_deref() == Some(dir.name()),
-                "listed": task::chats_home::listed(dir),
-                "last_unix_ms": task::chats_home::last_message_ms(dir),
+                "listed": task::chats_home::listed_at(dir, || at),
+                "last_unix_ms": at,
                 "counts": own,
             })
         })

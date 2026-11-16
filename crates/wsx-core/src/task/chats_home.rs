@@ -4,7 +4,7 @@
 //! after that time, or when the chat is opened again (`clear`). ref: docs/tasks.md "Chats"
 
 use super::chats::{self, CHAT_FILE};
-use super::manager::{Author, ManagerEntry, ManagerEvent};
+use super::manager::{Author, ManagerEntry, ManagerEvent, Short};
 use super::store::{self, ManagerDir};
 use anyhow::Result;
 use std::io::ErrorKind;
@@ -19,7 +19,7 @@ pub fn is_message(entry: &ManagerEntry) -> bool {
     match &entry.event {
         ManagerEvent::Message { from, short, .. } => match from {
             Author::Owner | Author::Peer { .. } => true,
-            Author::Events => short.is_empty() || short.iter().any(|line| line.wakes),
+            Author::Events => Short::any_wakes(short),
             Author::Recap => false,
         },
         ManagerEvent::Reply { quiet, .. } => !quiet,
@@ -50,10 +50,15 @@ pub fn last_message_ms(dir: &ManagerDir) -> u64 {
 
 /// Whether the chat's row is on Home: not dismissed, or a message after the dismissal.
 pub fn listed(dir: &ManagerDir) -> bool {
+    listed_at(dir, || last_message_ms(dir))
+}
+
+/// `listed` for a caller that has `last_message_ms` already, or reads it only when a mark exists.
+pub fn listed_at(dir: &ManagerDir, last: impl FnOnce() -> u64) -> bool {
     let at = std::fs::read_to_string(dir.path.join(DISMISSED_FILE))
         .ok()
         .and_then(|text| text.trim().parse::<u64>().ok());
-    at.is_none_or(|at| last_message_ms(dir) > at)
+    at.is_none_or(|at| last() > at)
 }
 
 /// The owner dismisses an open chat's row at `now` (ms). An unknown or a closed name is refused.
