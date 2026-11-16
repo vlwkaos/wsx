@@ -2360,6 +2360,7 @@ async function readAndReply(where) {
     }
     // ^ The icon of the action in the gap a swipe leaves (reply.js): at half the threshold it is
     // half there, beside the row; at 64 px it is solid in the accent; after the release it is gone.
+    // The engine's touch slop takes about 7 px of a drag before the page sees it: 40 px reads as half, 90 px as past 64.
     // Touch events, not a scroll gesture (task 291): the page gets pointer events as a finger sends them.
     const hintRead = () => evaluate(`(() => { const node = document.querySelector('.swipe-hint'); const icon = node.getBoundingClientRect(), row = ${fiveColumns}.getBoundingClientRect();
       return { shown: !node.hidden && getComputedStyle(node).display !== 'none', opacity: Number(getComputedStyle(node).opacity), ready: node.hasAttribute('data-ready'), inGap: icon.right <= row.left + 1 && icon.left >= 0, accent: getComputedStyle(node).color }; })()`);
@@ -2370,7 +2371,7 @@ async function readAndReply(where) {
     {
       const at = await pressPoint(fiveColumns);
       await touchDown(at);
-      await touchTo(at, 32);
+      await touchTo(at, 40);
       const during = await hintRead();
       await touchUp();
       await pause(300);
@@ -2385,16 +2386,16 @@ async function readAndReply(where) {
         await inScheme(scheme);
         const at = await pressPoint(fiveColumns);
         await touchDown(at);
-        await touchTo(at, 32);
+        await touchTo(at, 40);
         const half = await hintRead();
         if (!half.shown || half.opacity < 0.35 || half.opacity > 0.65 || half.ready || !half.inGap) await fail(`${where}: at half the swipe the icon is ${JSON.stringify(half)} at ${size[0]} px ${scheme}`);
         await capture(`${size[0]}x${size[1]}-reply-swipe-${scheme}`);
-        await touchTo(at, 70, 32);
+        await touchTo(at, 90, 40);
         const solid = await hintRead();
         if (!solid.shown || solid.opacity !== 1 || !solid.ready || !solid.inGap || solid.accent === half.accent) await fail(`${where}: at the threshold the icon is ${JSON.stringify(solid)} (half: ${JSON.stringify(half)}) at ${size[0]} px ${scheme}`);
         await capture(`${size[0]}x${size[1]}-reply-swipe-ready-${scheme}`);
         await touchUp();
-        await until("!!document.querySelector('.reply-menu')", `${where}: a swipe to 70 px opened no menu at ${size[0]} px ${scheme}`);
+        await until("!!document.querySelector('.reply-menu')", `${where}: a swipe of 90 px opened no menu at ${size[0]} px ${scheme}`);
         if ((await hintRead()).shown) await fail(`${where}: the icon stayed after the release at ${size[0]} px ${scheme}`);
         await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))");
         await until(`!document.querySelector('.reply-menu') && ${fiveColumns}.getAnimations().length === 0`, `${where}: Escape did not close the reply menu after the swipe at ${size[0]} px`);
