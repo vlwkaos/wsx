@@ -17,6 +17,13 @@ ROOT = Path(__file__).resolve().parents[1]
 ACTOR = r'''
 import json, os, pathlib, signal, socket, sys, time, tty
 signal.signal(signal.SIGHUP, signal.SIG_IGN)
+# ^ The hangup is ignored so a write in progress finishes; the next read then sees the closed PTY
+# (b'' or EIO) and the agent ends, as a real one does. A run killed by SIGKILL leaves none behind.
+def read_input(size):
+ try: data = os.read(0, size)
+ except OSError: data = b''
+ if not data: os._exit(0)
+ return data
 provider, history, trace = sys.argv[1], pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
 pane = int(os.environ['WSX_PANE_ID']); generation = os.environ['WSX_RUNTIME_GENERATION']
 trace.with_suffix('.pid').write_text(str(os.getpid()))
@@ -57,7 +64,7 @@ def paint(fragmented=False):
  sys.stdout.flush()
 report('idle'); paint()
 while True:
- pending += os.read(0,4096)
+ pending += read_input(4096)
  while pending:
   if pending.startswith(b'\x1b[200~'):
    end = pending.find(b'\x1b[201~')
@@ -110,6 +117,13 @@ while True:
 WORKER = r'''
 import json, os, pathlib, signal, socket, sys, time, tty
 signal.signal(signal.SIGHUP, signal.SIG_IGN)
+# ^ The hangup is ignored so a write in progress finishes; the next read then sees the closed PTY
+# (b'' or EIO) and the agent ends, as a real one does. A run killed by SIGKILL leaves none behind.
+def read_input(size):
+ try: data = os.read(0, size)
+ except OSError: data = b''
+ if not data: os._exit(0)
+ return data
 root = pathlib.Path(sys.argv[1]); name = pathlib.Path.cwd().name
 history, trace, stall = root / (name+'.jsonl'), root / (name+'.trace'), root / (name+'.stall')
 pane = int(os.environ['WSX_PANE_ID']); generation = os.environ['WSX_RUNTIME_GENERATION']
@@ -138,7 +152,7 @@ if (root / (name+'.ask-trust')).exists():
    +' Enter to confirm\r\n'); sys.stdout.flush()
  ask()
  while True:
-  key = os.read(0,16)
+  key = read_input(16)
   if key == b'\x1b[B': choice = 1; ask()
   elif key == b'\r':
    if choice == 0: sys.exit(0)
@@ -148,7 +162,7 @@ draft, pending, leaf, turn = '', b'', 'before', 0
 report('idle')
 if stall.exists(): time.sleep(float(stall.read_text())); stall.unlink()
 while True:
- pending += os.read(0,65536)
+ pending += read_input(65536)
  while pending:
   if pending.startswith(b'\x1b[200~'):
    end = pending.find(b'\x1b[201~')
@@ -492,11 +506,6 @@ for X in $A $B; do "$WSX" agent wait $X --result --timeout 30 --json > result-$X
                 daemon.terminate()
                 try: daemon.wait(timeout=5)
                 except subprocess.TimeoutExpired: daemon.kill(); daemon.wait(timeout=3)
-        # A worker ignores the hangup of its closed PTY so that it can finish a write.
-        # Its PID file names a process that only this journey started.
-        for record in (work / 'run').glob('*.pid'):
-            try: os.kill(int(record.read_text()),signal.SIGKILL)
-            except ProcessLookupError: pass
         if success: shutil.rmtree(work)
         else: print('diagnostics retained at '+str(work),file=sys.stderr)
     print(json.dumps({'result':'PASS','seconds':round(time.monotonic()-started,2),'model_calls':0,'skipped':skipped,

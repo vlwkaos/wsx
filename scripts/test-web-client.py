@@ -36,6 +36,13 @@ ROOT = Path(__file__).resolve().parents[1]
 ACTOR = r'''
 import json, os, pathlib, re, select, signal, socket, sys, termios, time, tty
 signal.signal(signal.SIGHUP, signal.SIG_IGN)
+# ^ The hangup is ignored so a write in progress finishes; the next read then sees the closed PTY
+# (b'' or EIO) and the agent ends, as a real one does. A run killed by SIGKILL leaves none behind.
+def read_input(size):
+ try: data = os.read(0, size)
+ except OSError: data = b''
+ if not data: os._exit(0)
+ return data
 history, trace, project = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
 # Claude unless the test asks for Pi, whose records chain by id and parentId.
 provider = os.environ.get('WSX_FIXTURE_PROVIDER', 'claude')
@@ -147,7 +154,7 @@ def gate(name):
  global draft
  while not trace.with_suffix('.'+name).exists():
   if select.select([0],[],[],0.02)[0]:
-   data = os.read(0,4096)
+   data = read_input(4096)
    if b'\x03' in data:
     report('idle'); raise Stopped()
    # ^ Claude takes a line entered while it works at its next step and saves it as a
@@ -263,7 +270,7 @@ def turn(text):
   # the dialog from the screen (docs/agent-reporting.md).
   draw(); report('working')
   while True:
-   data = os.read(0, 4096)
+   data = read_input(4096)
    with trace.with_suffix('.answers').open('a') as out: out.write(json.dumps({'keys': data.hex()})+'\n')
    if data in (b'\x1b[A', b'\x1bOA'): cursor = (cursor - 1) % len(choices); draw()
    elif data in (b'\x1b[B', b'\x1bOB'): cursor = (cursor + 1) % len(choices); draw()
@@ -294,7 +301,7 @@ def turn(text):
 signal.signal(signal.SIGWINCH, lambda *_: paint())
 report('idle'); paint()
 while True:
- pending += os.read(0,4096)
+ pending += read_input(4096)
  while pending:
   if pending.startswith(b'\x1b[200~'):
    end = pending.find(b'\x1b[201~')
@@ -1037,6 +1044,53 @@ def compact_tools(*names):
     return tools
 
 
+def killed_daemon_leaves_no_agent(work, wsx, wsxd):
+    """A fixture wsxd killed with SIGKILL and its folder deleted leave no fixture agent: the
+    agent's PTY closes, it reads the end and ends (`read_input` in ACTOR). The agent runs in the
+    PTY's own session, in none of the groups `start` records, so only its own end can stop it."""
+    folder = work / 'killed'
+    folder.mkdir(mode=0o700)
+    socket_path = folder / 's'
+    env = {'HOME': str(folder), 'XDG_CONFIG_HOME': str(folder / 'c'), 'XDG_STATE_HOME': str(folder / 'st'),
+           'XDG_CACHE_HOME': str(folder / 'ca'), 'WSX_SOCKET': str(socket_path), 'WSX_DAEMON_BIN': str(wsxd),
+           'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'GIT_CEILING_DIRECTORIES': str(folder)}
+    subprocess.run(['git', 'init', '-q', '-b', 'main', str(folder / 'project')], env=env, check=True, timeout=5)
+    (folder / 'actor.py').write_text(wsxd_client.fixture(ACTOR))
+    daemon = start(work, [str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    agent = None
+    try:
+        deadline = time.monotonic() + 10
+        while not socket_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        call = lambda method, params=None: wsxd_client.call(socket_path, method, params, timeout=30)
+        assert call('synchronize_projects', {'projects': [{'name': 'project', 'path': str(folder / 'project'),
+            'worktrees': [{'path': str(folder / 'project'), 'branch': 'main'}]}]})['type'] == 'ack'
+        tree = call('snapshot')['data']['worktrees'][0]['id']
+        created = call('session_create', {'worktree_id': tree, 'label': 'agent', 'rows': 12, 'cols': 100,
+            'command': [sys.executable, str(folder / 'actor.py'), str(folder / 'a.jsonl'), str(folder / 'a.trace'), str(folder)]})
+        assert created['type'] == 'created', created
+        pid_file = folder / 'a.pid'
+        deadline = time.monotonic() + 10
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        agent = int(pid_file.read_text())
+        assert alive(agent), 'the fixture agent did not start'
+        os.kill(daemon.pid, signal.SIGKILL)
+        daemon.wait(timeout=5)
+        deadline = time.monotonic() + 10
+        while alive(agent) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not alive(agent), 'the fixture agent %d outlived its SIGKILLed wsxd' % agent
+        shutil.rmtree(folder)
+        named = subprocess.run(['pgrep', '-lf', str(folder)], capture_output=True, text=True, timeout=10)
+        assert named.returncode == 1, 'a process still names the deleted folder: ' + named.stdout
+    finally:
+        # The check's own proof failed or the run broke: leave nothing behind.
+        if agent is not None and alive(agent):
+            os.kill(agent, signal.SIGKILL)
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def web_journey(args):
     wsx, wsxd = args.wsx.resolve(), args.daemon.resolve()
     if not wsx.is_file() or not wsxd.is_file() or wsx.parent != wsxd.parent:
@@ -1058,6 +1112,8 @@ def web_journey(args):
         timed(label)
 
     try:
+        killed_daemon_leaves_no_agent(work, wsx, wsxd)
+        ok('a SIGKILLed wsxd leaves no fixture agent')
         for name in ('home', 'state', 'project', 'project2', 'project3', 'design', 'design-login', 'bare', 'bin'):
             (work / name).mkdir(mode=0o700)
         # ^ The pane shells find this run's fake `claude` here, for the resume of an exited agent.
