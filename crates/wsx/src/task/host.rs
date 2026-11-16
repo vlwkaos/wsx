@@ -217,12 +217,16 @@ const CHECK_RUN_QUEUED: &str = "its answer comes after your result. Do not wait 
 finish this step and return its result now. The host sends you the answer as your next turn, \
 in this step.\n";
 
-/// A `ci:` scenario's command runs on CI and waits there: its own time limit, the runner queue
+/// A `ci:` scenario's command, here or on CI: its own time limit, the runner queue
 /// limit (60 min) plus the run limit (60 min) of scripts/ci-scenario.py and 5 min to start and
 /// fetch the files. ref: docs/tasks.md "Scenarios"
 const CI_TIMEOUT: Duration = Duration::from_secs(125 * 60);
 
-/// The command of a `ci:` scenario: it runs on CI and takes no check slot.
+/// EX_UNAVAILABLE: a `ci:` command run here with `--local` exits with it when its job does not
+/// run on this machine (scripts/ci-scenario.py); the host then runs it on CI.
+const UNAVAILABLE: i32 = 69;
+
+/// The command of a `ci:` scenario: it runs here when the scenario slot is free, else on CI.
 fn ci_command(command: &str) -> Option<&str> {
     command.strip_prefix("ci:").map(str::trim)
 }
@@ -3078,7 +3082,8 @@ impl Host {
             )));
             return;
         }
-        // ^ A `ci:` scenario runs on CI: it takes no slot and answers `queued` at once.
+        // ^ A `ci:` scenario waits for no slot and answers `queued` at once: it runs here when
+        // the scenario slot is free, else on CI.
         // ref: docs/tasks.md "Scenarios"
         let ci = to_run
             .iter()
@@ -3125,7 +3130,9 @@ impl Host {
             ));
         });
         if ci {
-            self.say("check-run: a scenario runs on CI; its answer comes after the result");
+            self.say(
+                "check-run: a scenario runs in the free scenario slot, else on CI; its answer comes after the result",
+            );
             if let Some(run) = &mut self.check_run {
                 run.queued = true;
                 for reply in run.replies.drain(..) {
@@ -3219,8 +3226,8 @@ impl Host {
     }
 
     /// Run `checks` in a thread, holding a machine check slot (lane and priority) unless `priority` is
-    /// `None`; each check's timeout counts from the slot. A `ci:` command takes no slot: it starts
-    /// at once beside the others, with `CI_TIMEOUT`. Check `n`'s whole output goes to
+    /// `None`; each check's timeout counts from the slot. A `ci:` command waits for no slot: it
+    /// starts at once beside the others, with `CI_TIMEOUT`, here when the scenarios slot is free. Check `n`'s whole output goes to
     /// `<kind>-<n>.log` in the task folder. ref: docs/tasks.md "Checks, revisions and report"
     fn spawn_checks(
         &self,
@@ -3248,11 +3255,31 @@ impl Host {
         std::thread::spawn(move || {
             let on_ci = {
                 let (working_copy, env) = (working_copy.clone(), env.clone());
-                let events = events.clone();
+                let (events, label) = (events.clone(), label.clone());
                 std::thread::spawn(move || {
+                    // ^ Whichever lane is free first: the scenario slot when nobody holds it or
+                    // waits for it, else CI. The result keeps the `--local` command, so a run
+                    // here never answers for a run on CI. ref: docs/tasks.md "Scenarios"
+                    let here = (!remote.is_empty())
+                        .then(|| slot::take_free(Lane::Scenarios, &label))
+                        .flatten();
                     remote
                         .into_iter()
                         .map(|(at, (command, log))| {
+                            if here.is_some() {
+                                let local =
+                                    format!("{} --local", ci_command(&command).unwrap_or_default());
+                                let ran = run_check(&working_copy, &local, &env, CI_TIMEOUT, &log);
+                                if ran.exit != Some(UNAVAILABLE) {
+                                    return (
+                                        at,
+                                        CheckResult {
+                                            command: local,
+                                            ..ran
+                                        },
+                                    );
+                                }
+                            }
                             let ran =
                                 run_ci((&working_copy, &env, &log), &command, (&events, &halt));
                             (at, CheckResult { command, ..ran })
@@ -4480,7 +4507,7 @@ fn check_run_response(
 
 fn queued_response(ci: bool) -> broker::Response {
     let on = match ci {
-        true => "queued on CI",
+        true => "queued on CI, or here when the scenario slot is free",
         false => "queued for the machine's check slot",
     };
     broker::Response {

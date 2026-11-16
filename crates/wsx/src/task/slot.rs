@@ -83,6 +83,15 @@ pub fn take(
     }
 }
 
+/// The slot when nobody holds it and nobody waits for it, else `None` at once: a `ci:` scenario
+/// then runs on CI. ref: docs/tasks.md "Scenarios"
+pub fn take_free(lane: Lane, label: &str) -> Option<Slot> {
+    Ticket::join(lane.queue(), lane.what(), Priority::Normal)
+        .ok()?
+        .try_take(label)
+        .ok()
+}
+
 /// A place in the queue of `tasks/<queue>/`, kept while this value lives.
 pub struct Ticket {
     dir: PathBuf,

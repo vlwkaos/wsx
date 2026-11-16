@@ -29,7 +29,8 @@ tasks:
   # `scenarioPaths` name a path the task's commits changed; a changed path that no scenario and no
   # `scenarioFree` glob names runs every one with paths. One without paths runs only when a
   # worker names it (`wsx task check-run weblinux`). Each builds the binaries it runs first. A
-  # `ci:` one runs on GitHub Actions without the check slot (scripts/ci-scenario.py, ci.yml);
+  # `ci:` one waits for no slot: it runs here with `--local` when the scenario slot is free, else
+  # on GitHub Actions (scripts/ci-scenario.py, ci.yml);
   # by hand, run its job's command locally: `cargo build -p wsx -p wsx-daemon && python3 -B
   # scripts/test-web-client.py --browser` (docs/tasks.md "Scenarios").
   scenarios:
@@ -71,9 +72,12 @@ tasks:
       scripts/test-*.py and scripts/*-check.mjs for each UI string, label, menu item or route
       the diff adds, renames or removes, and update those asserts. When a scenario's answer comes
       as your next turn, fix what fails, also an assert your change made stale. `task` and `web`
-      run on GitHub Actions; their captures come back to .work/web-captures. After a rebase or a
-      conflict fix run no check-run: the host's checks follow. Never commit knowledge/: it is
-      git-ignored.
+      run here when the scenario slot is free, else on GitHub Actions; their captures come
+      back to .work/web-captures. In your own copy only `python3 -B
+      scripts/test-web-client.py --part chat` (no --browser) runs, in about 5 min; the task
+      scenario, the `tasks` part and --browser need the host's check-run. After a rebase or
+      a conflict fix run no check-run: the host's checks follow. Never commit knowledge/: it
+      is git-ignored.
     # ^ When session notes are newer than the last idle task, the manager host starts one task
     # with this prompt.
     idle: >-

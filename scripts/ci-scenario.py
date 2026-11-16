@@ -22,6 +22,11 @@ script exits 75, as it does for a run that GitHub or another script cancelled. A
 scenario assert prints, after its own log, the failed log of main's latest `ci.yml` push run (the
 `task` jobs run on main; `web` does not), after the line `MAIN_MARK`: the host takes the failure
 key of both and answers "fails on main too" (docs/tasks.md "Shared failure"). The task host runs it outside the slot (docs/tasks.md "Scenarios").
+
+`--local` runs the job's own command from this checkout's ci.yml on this machine instead, each part in
+turn (or `--part`), every part also after one failed, and ends with each part's time and every
+`FAILED section` line. It exits 69 (EX_UNAVAILABLE) when the job does not run on this OS: the host then
+runs the scenario on CI. A worker's check-run takes this lane when the scenario slot is free.
 """
 
 import argparse
@@ -63,6 +68,10 @@ STALE_SECONDS = 3 * 3600
 FILES_UNDER = '.work/'
 # ^ Exit status of a failure outside the tree: the host never keeps a result that exits with it.
 TEMPFAIL = 75
+# ^ `--local` on a machine the job does not run on (UNAVAILABLE in crates/wsx/src/task/host.rs).
+UNAVAILABLE = 69
+# ^ The lines scripts/sections.py prints for each failed and skipped section.
+SECTION_LINE = re.compile(r'(?:FAILED|SKIPPED) section .*')
 # ^ The script's whole time: the host's `ci:` limit (CI_TIMEOUT in crates/wsx/src/task/host.rs). A rate
 # limit that resets after it is a temporary failure.
 DEADLINE = time.monotonic() + QUEUE_SECONDS + RUN_SECONDS + 5 * 60
@@ -313,16 +322,50 @@ def parts_of(workflow, name):
     return [p.strip() for p in found.group(1).split(',')] if found else []
 
 
+def run_local(root, name, part):
+    """The scenario job's own command from this checkout's ci.yml, run here: each part in turn."""
+    workflow = (root / '.github/workflows/ci.yml').read_text()
+    job = next((j for j in re.split(r'(?m)^  [\w-]+:\s*$', workflow) if "'wsx-scenario/%s/'" % name in j), '')
+    command = re.search(r'(?m)^\s+run: (.*python3 -B scripts/test-[\w-]+\.py.*)$', job)
+    os_name = re.search(r'(?m)^\s+runs-on: (\S+)', job)
+    here = {'darwin': 'macos', 'linux': 'ubuntu'}.get(sys.platform, sys.platform)
+    if not command or not os_name or not os_name.group(1).startswith(here):
+        say('%s does not run here (%s): its job in ci.yml runs on %s; run it on CI.'
+            % (name, sys.platform, os_name.group(1) if os_name else 'no job'))
+        return UNAVAILABLE
+    parts = [part] if part else parts_of(workflow, name) or ['']
+    ended, lines = [], []
+    for each in parts:
+        started = time.monotonic()
+        say('%s%s here: %s' % (name, ' part ' + each if each else '', command.group(1)))
+        env = dict(os.environ, WSX_SCENARIO_PART=each) if each else dict(os.environ)
+        with subprocess.Popen(['bash', '-c', command.group(1).replace('${{ matrix.part }}', each)], cwd=root,
+                              env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as job_run:
+            for line in job_run.stdout:
+                sys.stdout.write(line)
+                found = SECTION_LINE.search(line)
+                if found and found.group(0) not in lines:
+                    lines.append(found.group(0))
+        ended.append('%s exit %d in %d s' % (each or name, job_run.returncode, time.monotonic() - started))
+    say('%s here: %s' % (name, '; '.join(ended)))
+    if lines:
+        say('\n'.join(lines))
+    return 0 if all(' exit 0 ' in line for line in ended) else 1
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('name')
     parser.add_argument('--part', default=os.environ.get('WSX_SCENARIO_PART') or None)
+    parser.add_argument('--local', action='store_true', help="run the job's command on this machine")
     args = parser.parse_args()
     name, part = args.name, args.part
     if not name.replace('-', '').isalnum() or (part and not part.replace('-', '').isalnum()):
-        sys.exit('usage: ci-scenario.py <name> [--part <part>]')
+        sys.exit('usage: ci-scenario.py <name> [--part <part>] [--local]')
     root = Path(git('rev-parse', '--show-toplevel'))
     os.chdir(root)
+    if args.local:
+        return run_local(root, name, part)
     dirty = git('status', '--porcelain')
     if dirty:
         sys.exit('commit first: CI runs HEAD\'s tree, and these are not in it:\n' + dirty)

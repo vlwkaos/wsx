@@ -337,8 +337,9 @@ fn check_run_note(record: &TaskRecord) -> String {
          `wsx task check-run 2 3` runs checks or scenarios by number or name before that: the \
          task host runs them outside your boundary exactly as it will after your result, so a \
          test that needs a terminal or a browser works there. A local run waits for the \
-         machine's one check slot, often 20 to 90 minutes, and a `ci:` scenario runs on CI, \
-         20 minutes or more. Commit first and run it in the \
+         machine's one check slot, often 20 to 90 minutes; a `ci:` scenario runs here when \
+         the scenario slot is free, else on CI, 20 minutes or more. A scenario run names every \
+         failed section (`FAILED section`) and every section it skipped after one. Commit first and run it in the \
          foreground: a run that must wait or runs on CI answers `queued` at once; \
          then do not wait or poll, finish the step and return its result, and the host sends \
          the answer as your next turn. A check that already ran on the \

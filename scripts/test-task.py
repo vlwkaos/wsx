@@ -5396,6 +5396,12 @@ def part_worker(created=None):
     # its result waits for it, and the record shows the wait on `check_run` with the run's time
     # limit, so the stall check does not call it silent; the pass then goes on to the checks.
     mark('32t3')
+    # ^ A fixture holds the scenario slot through 32t7, so each `ci:` scenario there runs on CI;
+    # 32t8 frees it (docs/tasks.md "Scenarios", whichever lane is free first).
+    scenario_slot = state / 'wsx/tasks/scenario-slot'
+    scenario_slot.mkdir(parents=True, exist_ok=True)
+    ci_holder = subprocess.Popen([sys.executable, '-c', HOLD_SLOT, str(scenario_slot), 'ci sections'])
+    wait(lambda: (scenario_slot / 'slot.lock').read_text() == 'ci sections', 'the fixture holds the scenario slot')
     ci_mark, ci_pass, ci_go = base / 'ci-again-mark', base / 'ci-again-gate', base / 'ci-fail-gate'
     # ^ The first runs fail only after both results: a run that ends first takes another path.
     hold = gate_cmd(ci_go)
@@ -5540,6 +5546,23 @@ def part_worker(created=None):
     for n in (main_task, known_a, known_b, own):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'no ci assert scenarios')
+    # 32t8. Whichever lane is free first (docs/tasks.md "Scenarios"): with the scenario slot free, a `ci:`
+    # scenario runs here as `<command> --local`, and its result keeps that command; one whose job does
+    # not run here exits 69 and goes on to CI.
+    mark('32t8')
+    ci_holder.kill()
+    ci_holder.wait()
+    lane_sh = base / 'lane.sh'
+    lane_sh.write_text('if [ "$2" = --local ]; then echo lane=here; exit "$1"; fi\necho lane=ci\n')
+    configure(LAND_CONFIG + '  scenarios:\n    here: "ci: sh %s 0"\n    away: "ci: sh %s 69"\n' % (lane_sh, lane_sh),
+              'lane scenarios')
+    for name, command, said in (('here', 'sh %s 0 --local' % lane_sh, 'lane=here'), ('away', 'ci: sh %s 69' % lane_sh, 'lane=ci')):
+        n = js('task', 'new', 'CHECKRUN_LATER %s WORK lane-%s.txt' % (name, name))['id']
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+        ran = next(e for e in log(n) if e['kind'] == 'check_run')['results']
+        assert len(ran) == 1 and ran[0]['command'] == command and ran[0]['exit'] == 0 and said in ran[0]['output'], ran
+        js('task', 'close', n, '--discard')
+    configure(LAND_CONFIG, 'no lane scenarios')
     # 32v. Two lanes (docs/tasks.md "Check slot"): a scenario check-run holds the scenarios lane, a
     # task's result checks still run at once in the checks lane, and a second scenario run waits
     # with the scenarios reason.
