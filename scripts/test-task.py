@@ -8273,7 +8273,8 @@ def part_host(created=None):
     # chat that owns it, else to the home chat; every chat's host (the home chat's too) only talks and
     # leaves 20 s after its queue is empty. Two repos here, each with a home chat, and named chats in demo.
     mark('m2')
-    m2_registry = registry.read_text()
+    m2_config = config_dir / 'config-v2.toml'  # ^ `registry` is a closed file by here (a `with` above)
+    m2_registry = m2_config.read_text()
     twin = base / 'twin'
     twin.mkdir()
     git('init', '-q', '-b', 'main', cwd=twin)
@@ -8281,7 +8282,7 @@ def part_host(created=None):
     (twin / 'wsx.config.yml').write_text('tasks:\n  minFreeGb: 0\n')
     git('add', '.', cwd=twin)
     git('commit', '-q', '-m', 'start', cwd=twin)
-    registry.write_text(m2_registry + '[[projects]]\nname = "twin"\npath = ' + json.dumps(str(twin)) + '\n')
+    m2_config.write_text(m2_registry + '[[projects]]\nname = "twin"\npath = ' + json.dumps(str(twin)) + '\n')
     twin_id = 'twin-' + hashlib.sha256(str(twin).encode()).hexdigest()[:8]
     chat_host = lambda name: [l for l in leftovers('task chat-host ') if l.split()[-1] == name]
     service = lambda rid: [l for l in leftovers('task repo-host ') if l.split()[-1] == rid]
@@ -8389,7 +8390,7 @@ def part_host(created=None):
     for name in ('m2n', 'm2idle', 'm2o'):
         js('task', 'chat', 'close', name, '-p', 'demo')
     wait(lambda: not chat_host('twin') and not chat_host('m2n'), 'the chat hosts leave', 60)
-    registry.write_text(m2_registry)
+    m2_config.write_text(m2_registry)
     return created
 
 
