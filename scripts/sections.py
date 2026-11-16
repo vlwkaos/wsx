@@ -165,7 +165,9 @@ def fail(index, error):
     inner = frames[-1] if frames else None
     if inner is not None and own and inner is not own[0]:
         where += ' (in %s, %s:%d)' % (inner.name, os.path.basename(inner.filename), inner.lineno)
-    text = (str(error).strip().splitlines() or [''])[0][:240]
+    # A check script's whole output is the message: its first line is info, the cause a later FAIL: line.
+    lines = str(error).strip().splitlines() or ['']
+    text = next((line for line in lines if line.startswith('FAIL:')), lines[0])[:240]
     first = type(error).__name__ + (': ' + text if text else '')
     after = ' (after section %s failed)' % _first[0] if _first else ''
     if not _first:
