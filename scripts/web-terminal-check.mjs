@@ -73,7 +73,19 @@ const press = (label) => evaluate(`(() => {
 async function run(command, marker) {
   await type(command);
   await enter();
-  await until(screenHas(marker), `${command} did not print ${marker}`);
+  // ^ A page that is live but shows nothing says which side lost the input: its state and notice,
+  // the focused element and the rows wsxd holds for the pane.
+  await until(screenHas(marker), async () => {
+    const page = await evaluate(`JSON.stringify({ state: document.querySelector('.terminal')?.dataset.state,
+      notice: document.querySelector('.terminal-notice')?.textContent, focus: document.activeElement?.className })`).catch(() => "?");
+    const held = await daemon("view", { pane_ids: [Number(paneId)] }).then((view) => {
+      const frame = view.frames[0];
+      const rows = [];
+      for (let row = 0; row < frame.rows; row++) rows.push(frame.cells.slice(row * frame.cols, (row + 1) * frame.cols).map((cell) => cell[0]).join("").trimEnd());
+      return JSON.stringify(rows.filter(Boolean).slice(-4));
+    }, (failure) => String(failure));
+    return `${command} did not print ${marker}; page ${page}; wsxd ${held}`;
+  });
 }
 // One request to wsxd, as any local client makes it.
 function daemon(method, params) {
