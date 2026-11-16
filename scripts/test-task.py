@@ -204,11 +204,11 @@ def gate_cmd(path):
 STALL_GRACE = 4
 SWEEP = 2
 # ^ Product timers the scenario shortens the same way (docs/tasks.md "Scenarios"): the quiet before the
-# repo service sends its event lines (3 s), a check-in's `--in 1m` (60 s) and a chat host's linger (20 s).
+# repo service sends its event lines (3 s) and a check-in's `--in 1m` (60 s). The chat host's linger (20 s)
+# stays real: a host that left restarts under a new session label (`task-demo-2`) and reads the config again.
 # The check-in outlasts the linger, so m2 sees a check-in due after its chat's host left.
 EVENT_QUIET = 1.5
-CHECKIN_MINUTE = 15
-CHAT_LINGER = 8
+CHECKIN_MINUTE = 35
 # ^ How long a failed sign-in on record keeps the account skipped (store.rs `sign_in_retry_ms`).
 SIGN_IN_RETRY = 12
 # ^ The hung-turn bound of 37c and 39b (the real one is 10 min): above the fakes' plain turns.
@@ -375,7 +375,6 @@ def run(wsx, wsxd, work, owned, part):
            'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(daemon_socket),
            'WSX_TEST_STALL_GRACE_SECS': str(STALL_GRACE), 'WSX_TEST_STALL_SWEEP_SECS': str(SWEEP), 'WSX_TEST_ALLOW_FILE_CLONE': '1',
            'WSX_TEST_PRUNE_SWEEP_SECS': '3', 'WSX_TEST_EVENT_QUIET_SECS': str(EVENT_QUIET), 'WSX_TEST_CHECKIN_MINUTE_SECS': str(CHECKIN_MINUTE),
-           'WSX_TEST_CHAT_LINGER_SECS': str(CHAT_LINGER),
            'WSX_TEST_SIGN_IN_RETRY_SECS': str(SIGN_IN_RETRY), 'WSX_TEST_CI_BACKOFF_SECS': '1', **start_floor(work),
            # ^ The disk wait's poll (30 s) and settle (60 s), waited out in 27m and 32d.
            'WSX_TEST_DISK_POLL_SECS': '3', 'WSX_TEST_DISK_SETTLE_SECS': '10',
@@ -918,9 +917,6 @@ def manager_up(created):
     # ^ The name the owner reads, trimmed; the session is labelled `task-<chat name>`.
     assert js('task', 'manager')['name'] == 'Atlas'
     # ^ The TUI's manager row reads the name; without one the project's (docs/tasks.md "Config").
-    # ^ The chat's host leaves CHAT_LINGER after its last message, and a TUI start can take longer: a 25 s
-    # turn (LONG) keeps it and its manager row up for the two reads and the state check.
-    long_turn = js('task', 'say', 'STATUS LONG')
     named = tui_text(wsx, env, project, r'task-demo\s*\n*\s*\(Atlas\)')
     assert re.search(r'task-demo\s*\n*\s*\(Atlas\)', named) and '(manager)' not in named, named[-3000:]
     config_text = (project / 'wsx.config.yml').read_text()
@@ -931,7 +927,6 @@ def manager_up(created):
     assert re.search(r'task-demo\s*\n*\s*\(demo\)', plain) and '(Atlas)' not in plain, plain[-3000:]
     assert plain_name == 'demo', plain_name
     assert js('task', 'manager')['state'] == 'running'
-    reply_to(long_turn['id'], 60)
     # A new task and an add to the running one, each by a wsx task command the manager runs.
     started = js('task', 'say', 'RUN wsx task new "WORK s1.txt" -p demo --json')
     assert 'ran: wsx task new' in reply_to(started['id'])['text']

@@ -40,7 +40,7 @@ use wsx_core::task::status;
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks};
-use wsx_core::task::{chats, owner, test_secs, Actor};
+use wsx_core::task::{chats, owner, Actor};
 use wsx_core::task::{checks, ledger, now_unix_ms, TaskRecord, TaskState, MAX_MESSAGE_BYTES};
 
 use wsx_core::task::owner::ACTOR_ENV;
@@ -82,10 +82,6 @@ const STAND_IN_LOOK: Duration = Duration::from_secs(10);
 const ERROR_ROTATE_ATTEMPTS: u32 = 3;
 /// A chat's host leaves after this long with no message and no turn; `say` starts it again.
 const CHAT_LINGER: Duration = Duration::from_secs(20);
-/// `CHAT_LINGER`, or the seconds in `WSX_TEST_CHAT_LINGER_SECS`: for the task scenario only.
-fn chat_linger() -> Duration {
-    test_secs("WSX_TEST_CHAT_LINGER_SECS", CHAT_LINGER)
-}
 /// A message in a handover: one line, clipped, so a quote never reads as a new message.
 fn one_line(text: &str) -> String {
     clip(
@@ -622,7 +618,7 @@ impl Manager {
         let idle = self.turn.is_none()
             && !self.work_waiting()
             && self.state.limit.is_none()
-            && self.last_activity.elapsed() >= chat_linger();
+            && self.last_activity.elapsed() >= CHAT_LINGER;
         if closed || idle {
             self.say(match closed {
                 true => "the chat is closed: its host leaves",
