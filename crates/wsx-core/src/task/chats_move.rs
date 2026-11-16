@@ -264,11 +264,11 @@ fn rename_text(text: &str, names: &BTreeMap<String, String>) -> Option<String> {
 /// The one rule of the move and of `TaskDir::read_record`, which reads a record an older
 /// host wrote after the move. ref: docs/tasks.md "Chats"
 pub(super) fn creator(by: &str, home_by: impl FnOnce() -> String) -> Option<String> {
-    match by.strip_prefix("manager@") {
-        _ if by == "manager" => Some(home_by()),
-        Some(repo) => Some(format!("chat:{}", chats::slug_name(repo))),
-        None => None,
+    if by == "manager" {
+        return Some(home_by());
     }
+    let repo = by.strip_prefix("manager@")?;
+    Some(format!("chat:{}", chats::slug_name(repo)))
 }
 
 /// The name of the repo's home chat: the one `home.json` names, else the one the move gives.
