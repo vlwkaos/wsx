@@ -2389,16 +2389,19 @@ async function readAndReply(where) {
         await touchTo(at, 40);
         const half = await hintRead();
         if (!half.shown || half.opacity < 0.35 || half.opacity > 0.65 || half.ready || !half.inGap) await fail(`${where}: at half the swipe the icon is ${JSON.stringify(half)} at ${size[0]} px ${scheme}`);
+        await evaluate("new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))");
         await capture(`${size[0]}x${size[1]}-reply-swipe-${scheme}`);
         await touchTo(at, 90, 40);
         const solid = await hintRead();
         if (!solid.shown || solid.opacity !== 1 || !solid.ready || !solid.inGap || solid.accent === half.accent) await fail(`${where}: at the threshold the icon is ${JSON.stringify(solid)} (half: ${JSON.stringify(half)}) at ${size[0]} px ${scheme}`);
+        await evaluate("new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))");
         await capture(`${size[0]}x${size[1]}-reply-swipe-ready-${scheme}`);
         await touchUp();
         await until("!!document.querySelector('.reply-menu')", `${where}: a swipe of 90 px opened no menu at ${size[0]} px ${scheme}`);
         if ((await hintRead()).shown) await fail(`${where}: the icon stayed after the release at ${size[0]} px ${scheme}`);
-        await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))");
-        await until(`!document.querySelector('.reply-menu') && ${fiveColumns}.getAnimations().length === 0`, `${where}: Escape did not close the reply menu after the swipe at ${size[0]} px`);
+        // ^ The menu listens for Escape from its first effect on: press until it is gone.
+        await until("(() => { const open = !!document.querySelector('.reply-menu'); if (open) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); return !open; })()", `${where}: Escape did not close the reply menu after the swipe at ${size[0]} px`);
+        await until(`${fiveColumns}.getAnimations().length === 0 && !${fiveColumns}.style.translate`, `${where}: the swiped bubble did not settle at ${size[0]} px`);
       }
     }
     await inScheme("dark");
