@@ -3364,6 +3364,43 @@ def part_worker(created=None):
     wait_closed(ap)
     js('task', 'close', keep, '--discard')
 
+    # 22ab. One pending decision shows once (docs/tasks.md "Approvals"): a reply whose turn made a
+    # request is no open question, so the owner has the card only, and the decision leaves nothing
+    # behind. A question in a turn with no request is unchanged: it stays until an owner message,
+    # also while a request of an earlier turn is decided.
+    def owner_items():
+        return len(js('task', 'chat')['asks']) + len(js('task', 'ledger')['approvals'])
+
+    def ask_and_discard(n):
+        """A turn that closes #n with --discard and ends with a question; the request's id."""
+        reply = reply_to(js('task', 'say', 'ASK\nRUN wsx task close %d --discard -p demo --json' % n)['id'])
+        assert reply['text'].endswith('Should I land it now?'), reply
+        return re.search(r'the owner was asked \((a\d+)\)', reply['text']).group(1)
+
+    for decide in ('approve', 'deny'):
+        one = js('task', 'new', 'WORK one.txt')['id']
+        assert wait_state(one, 'ready', 'failed')['state'] == 'ready'
+        request = ask_and_discard(one)
+        assert [p['id'] for p in js('task', 'ledger')['approvals']] == [request] and js('task', 'chat')['asks'] == [], request
+        assert owner_items() == 1, (js('task', 'chat')['asks'], js('task', 'ledger')['approvals'])
+        js('task', decide, request)
+        assert owner_items() == 0, (decide, js('task', 'chat')['asks'], js('task', 'ledger')['approvals'])
+        wait(lambda: events_with('approval %s (discard #%d)' % (request, one)), '%s event' % decide)
+        if decide == 'approve':
+            wait_closed(one)
+        else:
+            js('task', 'close', one, '--discard')
+    earlier = js('task', 'new', 'WORK two.txt')['id']
+    assert wait_state(earlier, 'ready', 'failed')['state'] == 'ready'
+    request = re.search(r'the owner was asked \((a\d+)\)', reply_to(js('task', 'say', 'RUN wsx task close %d --discard -p demo --json' % earlier)['id'])['text']).group(1)
+    plain = reply_to(js('task', 'say', 'ASK with no request')['id'])
+    assert js('task', 'chat')['asks'] == [plain['id']] and owner_items() == 2
+    js('task', 'deny', request)
+    assert js('task', 'chat')['asks'] == [plain['id']] and owner_items() == 1
+    reply_to(js('task', 'say', 'yes, land it')['id'])
+    assert js('task', 'chat')['asks'] == [], js('task', 'chat')['asks']
+    js('task', 'close', earlier, '--discard')
+
     # 22a. Push (docs/tasks.md "Push"): the manager's push asks; a denied one leaves origin, an
     # approved one runs in the host and moves it. A rewrite (a squash) leases the origin tip it
     # saw and names the open tasks on the old main. A worker's push is refused (part 27's

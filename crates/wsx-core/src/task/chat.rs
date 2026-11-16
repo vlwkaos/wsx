@@ -7,7 +7,7 @@ use super::manager::{
     quote_of, says_nothing, split_quote, ApprovalLine, Author, Level, ManagerEntry, ManagerEvent,
     Party, Short,
 };
-use super::store::{contains_bytes, ManagerDir, FIRST_READ_BYTES};
+use super::store::{self, contains_bytes, ManagerDir, FIRST_READ_BYTES};
 use crate::routine::RunRecord;
 use anyhow::{bail, Result};
 use serde::Serialize;
@@ -324,20 +324,33 @@ pub struct OpenAsk {
 /// message that quotes one answers it; one with no quote answers the newest open one before
 /// it; one that quotes anything else answers none. A dismiss (`Answered`) answers its reply.
 /// A question older than `ASKS_WITHIN_MS` before `now` asks no more (docs/tasks.md "Manager").
-pub fn open_asks(log: &[ManagerEntry], now: u64) -> Vec<OpenAsk> {
+/// A reply whose turn made an approval request with a card (`asked_in_turn`) is no question: the
+/// card is the one item, and the decision settles it (docs/tasks.md "Approvals").
+pub fn open_asks(
+    log: &[ManagerEntry],
+    approvals: &[ApprovalLine],
+    chat: &str,
+    now: u64,
+) -> Vec<OpenAsk> {
     let mut open: Vec<OpenAsk> = Vec::new();
+    // ^ The turn began when its messages were delivered; its reply ends it.
+    let mut turn_from: Option<u64> = None;
     for entry in log {
         match &entry.event {
+            ManagerEvent::Delivered { .. } => turn_from = Some(entry.unix_ms),
             ManagerEvent::Reply {
                 id,
                 text,
                 asks: true,
                 ..
-            } => open.push(OpenAsk {
-                id: *id,
-                unix_ms: entry.unix_ms,
-                quote: quote_of(text),
-            }),
+            } if !asked_in_turn(approvals, chat, turn_from.take(), entry.unix_ms) => {
+                open.push(OpenAsk {
+                    id: *id,
+                    unix_ms: entry.unix_ms,
+                    quote: quote_of(text),
+                })
+            }
+            ManagerEvent::Reply { .. } => turn_from = None,
             ManagerEvent::Message {
                 from: Author::Owner,
                 text,
@@ -362,6 +375,24 @@ pub fn open_asks(log: &[ManagerEntry], now: u64) -> Vec<OpenAsk> {
     open
 }
 
+/// Whether chat `chat`'s agent made a request with a Yes/No card (`said` none) between `from`, the
+/// delivery of its turn, and `to`, the turn's reply. A request is stamped with the chat of the
+/// agent that ran the command (`Actor`) and the time it ran; one turn runs at a time in a chat,
+/// so a request in its bounds is the turn's own. No delivery in the log: no link.
+fn asked_in_turn(approvals: &[ApprovalLine], chat: &str, from: Option<u64>, to: u64) -> bool {
+    from.is_some_and(|from| {
+        approvals.iter().any(|line| match line {
+            ApprovalLine::Request {
+                said: None,
+                chat: Some(by),
+                unix_ms,
+                ..
+            } => by == chat && (from..=to).contains(unix_ms),
+            _ => false,
+        })
+    })
+}
+
 /// The open questions of `dir`'s chat: the chats mark them, the Home row and the Workspace
 /// row show them in the accent, the TUI's items and the web's reservoir list them. Only the
 /// lines `open_asks` reads are parsed: on the wsx log, 7 days are 1 MB of it.
@@ -374,6 +405,7 @@ pub fn asking(dir: &ManagerDir, now: u64) -> Result<Vec<OpenAsk>> {
         let head = &line[..line.len().min(128)];
         let tail = &line[line.len().saturating_sub(256)..];
         contains_bytes(head, b"\"answered\"")
+            || contains_bytes(head, b"\"delivered\"")
             || (contains_bytes(head, b"\"message\"") && contains_bytes(head, b"\"owner\""))
             || (contains_bytes(head, b"\"reply\"")
                 && contains_bytes(tail, b"\"asks\"")
@@ -381,6 +413,8 @@ pub fn asking(dir: &ManagerDir, now: u64) -> Result<Vec<OpenAsk>> {
     };
     Ok(open_asks(
         &dir.read_back_where(FIRST_READ_BYTES, keep, |log| reaches_asks(log, now))?,
+        &store::read_approvals(&dir.project_id).unwrap_or_default(),
+        &dir.chat,
         now,
     ))
 }
