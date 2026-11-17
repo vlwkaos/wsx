@@ -6757,7 +6757,7 @@ def part_host(created=None):
         # one): this task's only, oldest first.
         return [x for x in event['short'] if x.get('task') == n]
     assert ready_short(parent, 1)[0].get('wakes', True), 'the held parent\'s own first ready wakes'
-    assert ready_short(parent, 2)[-1] == {'text': '#%d ready' % parent, 'task': parent, 'wakes': False}, ready_short(parent, 2)
+    assert unmarked(ready_short(parent, 2))[-1] == {'text': '#%d ready' % parent, 'task': parent, 'wakes': False}, ready_short(parent, 2)
     # The second child rebases onto the moved parent, is checked, lands, and the parent checks again;
     # with a broken.txt in the parent's copy its checks fail, and that wakes.
     broken = Path(show(parent)['record']['working_copy']) / 'broken.txt'

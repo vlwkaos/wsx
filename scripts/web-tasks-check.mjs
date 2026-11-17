@@ -1349,8 +1349,8 @@ await shot("asks-you", ".composer-send");
 // is not quiet and asks nothing. The chat keeps its tag and the Home row, from the real overview,
 // shows the same on that row only (docs/web-client-tasks.md "Home").
 await evaluate(`fetch('api/tasks/${plansArg}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ text: 'RUN wsx task say -p ui --from-chat "How is ui now?" --json' }))} })`);
-await until(`(() => { const bubbles = [...document.querySelectorAll('.log .bubble[data-side=in]')], heard = bubbles.findIndex((node) => node.textContent.includes('How is ui now?'));
-  return heard >= 0 && heard < bubbles.length - 1 && !document.querySelector('.log .typing'); })()`, "no report after the question", 300);
+// ^ The question and ui's report are `Talked to` rows of the chat (the question first, then its words).
+await until(`fetch('api/tasks/${plansArg}/chat').then((r) => r.json()).then((data) => { const said = data.rows.filter((row) => row.kind === 'talk').flatMap((row) => row.said); const asked = said.findIndex((one) => one.text.includes('How is ui now?')); return asked >= 0 && asked < said.length - 1 && !document.querySelector('.log .typing'); })`, "no report after the question", 300);
 if ((await evaluate(`${askTags}.length`)) !== 1) await fail("a later report dropped the chat's Asks you");
 if ((await overviewAsks())?.length !== 1) await fail("a later report dropped the overview's asks");
 const askingChat = await evaluate("location.hash");
