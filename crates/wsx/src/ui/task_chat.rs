@@ -579,15 +579,13 @@ pub fn chat_lines(
                 for (link, run) in chunk_by_link(&part) {
                     let style = match link {
                         None => base,
-                        Some(link) if selected == Some((row.unix_ms, link)) => {
-                            selected_line = Some(lines.len());
-                            Style::default()
-                                .fg(theme::ACCENT)
-                                .add_modifier(Modifier::UNDERLINED | Modifier::REVERSED)
+                        Some(link) => {
+                            let on = selected == Some((row.unix_ms, link));
+                            if on {
+                                selected_line = Some(lines.len());
+                            }
+                            link_style(on)
                         }
-                        Some(_) => Style::default()
-                            .fg(theme::ACCENT)
-                            .add_modifier(Modifier::UNDERLINED),
                     };
                     spans.push(Span::styled(run, style));
                 }
@@ -602,6 +600,17 @@ pub fn chat_lines(
 /// events (`Token`), then its first sentence or all of it, with `More` when there is more; a
 /// talk as its heading and `Show`. An open row shows its words wrapped under it. `on`: the row's
 /// link (`More`, `Show`) is the selected one.
+/// A link's look: accent and underlined, reversed while it is the selected one.
+fn link_style(on: bool) -> Style {
+    let style = Style::default()
+        .fg(theme::ACCENT)
+        .add_modifier(Modifier::UNDERLINED);
+    match on {
+        true => style.add_modifier(Modifier::REVERSED),
+        false => style,
+    }
+}
+
 fn muted_lines(row: &ChatRow, width: usize, open: bool, on: bool) -> Vec<Line<'static>> {
     let faint = Style::default().fg(theme::TEXT_MUTED);
     let more = match row.kind {
@@ -614,14 +623,7 @@ fn muted_lines(row: &ChatRow, width: usize, open: bool, on: bool) -> Vec<Line<'s
         (_, false) => "More",
         (_, true) => "Hide",
     };
-    let link = match on {
-        true => Style::default()
-            .fg(theme::ACCENT)
-            .add_modifier(Modifier::UNDERLINED | Modifier::REVERSED),
-        false => Style::default()
-            .fg(theme::ACCENT)
-            .add_modifier(Modifier::UNDERLINED),
-    };
+    let link = link_style(on);
     let mut spans = token_spans(&row.tokens);
     let words = match (row.kind, open) {
         (RowKind::Talk, _) => row.tag.clone().unwrap_or_default(),

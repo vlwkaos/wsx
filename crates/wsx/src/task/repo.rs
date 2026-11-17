@@ -1283,10 +1283,11 @@ impl Repo {
                 }
                 summary
             };
+            let state_word = wsx_core::task::status::state_word(&record);
             let line = format!(
                 "#{} {} r{}: {}; {}",
                 record.id,
-                wsx_core::task::status::state_word(&record),
+                state_word,
                 record.revision,
                 clip(&title, EVENT_TITLE_CHARS),
                 summary,
@@ -1294,11 +1295,10 @@ impl Repo {
             // ^ The chat says `done` for a landing (docs/web-client-tasks.md "Project screen").
             let words = match record.state {
                 TaskState::Landed => "done",
-                _ => wsx_core::task::status::state_word(&record),
+                _ => state_word,
             };
             let counts = (!checks.is_empty()).then_some([passed as u32, checks.len() as u32]);
-            let mut short = Short::task(record.id, words)
-                .with_state(wsx_core::task::status::state_word(&record), counts);
+            let mut short = Short::task(record.id, words).with_state(state_word, counts);
             short.wakes = state_wakes(&dir, &record);
             self.task_event(&record, &open_chats, line, short);
             let state = record.state.as_str();

@@ -1138,11 +1138,16 @@ impl Host {
         check_message(&text)?;
         self.require_open()?;
         let title = title.as_deref().map(checked_title).transpose()?;
-        if !files.is_empty() || title.is_some() {
+        if !files.is_empty() {
             self.record.files = checked_files(&self.record.files, &files)?;
-            // ^ The words an add widened the task by name it: the title is what the lists, the
-            // events and the owner read (docs/tasks.md "Title").
-            self.record.title = title.or(self.record.title.take());
+        }
+        // ^ The words an add widened the task by name it: the title is what the lists, the
+        // events and the owner read (docs/tasks.md "Title").
+        let retitled = title.is_some();
+        if retitled {
+            self.record.title = title;
+        }
+        if retitled || !files.is_empty() {
             self.save();
         }
         self.log(LogEvent::Message {
