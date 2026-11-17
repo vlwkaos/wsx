@@ -176,7 +176,7 @@ async function rowReads(task, good, why) {
 // after the sheet is first seen open. On each axis it moves one way only, never back, and its
 // last frame is where it rests. On a phone it rises from below; on a wide screen it comes in
 // from the right.
-async function oneMotion(where, open, tally = null) {
+async function oneMotion(where, open) {
   // ^ Each frame also notes the dialogs, the sheet's animations (state and time) and the page's
   // own events about the sheet (an animation start or cancel, a dialog added or removed, `open`
   // or `data-fit` changed): a step back then names its cause (docs/design/scenario-flakes.md).
@@ -208,7 +208,7 @@ async function oneMotion(where, open, tally = null) {
     // ^ A still axis stays at its end; a moving one never steps back by more than half a pixel.
     const back = values.some((value, index) => way ? index > 0 && (value - values[index - 1]) * way < -0.5 : Math.abs(value - end[axis]) > 0.5);
     if (back || Math.abs(values.at(-1) - end[axis]) > 0.5 || (axis === moving) !== (Math.abs(values[0] - end[axis]) > 50)) {
-      { const message = `${where}: the sheet does not open in one motion on ${axis ? "left" : "top"}: ${JSON.stringify(values.map(Math.round))}, rests at ${Math.round(end[axis])}; frames (top, dialogs, animations, height): ${JSON.stringify(frames.slice(0, 8).map((frame) => [Math.round(frame[0]), frame[2]]))}; events by frame: ${JSON.stringify(events.slice(0, 20))}`; if (tally) { tally.push(message); continue; } await fail(message); }
+      await fail(`${where}: the sheet does not open in one motion on ${axis ? "left" : "top"}: ${JSON.stringify(values.map(Math.round))}, rests at ${Math.round(end[axis])}; frames (top, dialogs, animations, height): ${JSON.stringify(frames.slice(0, 8).map((frame) => [Math.round(frame[0]), frame[2]]))}; events by frame: ${JSON.stringify(events.slice(0, 20))}`);
     }
   }
 }
@@ -2780,23 +2780,6 @@ await openReservoir("you");
 await until(`document.querySelectorAll('.reservoir-list[aria-label="For you"] ${CHECK_ROWS}').length === 3`, "For you has no row for each To check item", 60);
 // ^ A tap on a row opens the sheet at its item, scrolled to it and marked. The list and #8's
 // capture are in the sheet before it moves, so it rises once and stays.
-// TEMP repro of the one-motion flake (#482): the same open, repeated under a throttled CPU, with and without the scroll.
-for (const fill of [false, true]) {
-  for (const rate of [10, 16]) {
-    await send("Emulation.setCPUThrottlingRate", { rate });
-    const tally = [];
-    for (let again = 0; again < 60; again++) {
-      await evaluate(`document.documentElement.toggleAttribute('data-fill', ${fill})`);
-      await oneMotion(`To check (fill ${fill}, cpu x${rate}, try ${again})`, async () => {
-        await evaluate(`${rowOf("#2", CHECK_ROWS)}.querySelector('.row-open').click()`);
-        await until(`/^#\\/p\\/${project}\\/checks\\/c\\d+$/.test(location.hash) && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open at the item");
-      }, tally);
-      await closeSheet("the To check list", chat);
-    }
-    console.error(`REPRO fill=${fill} cpu x${rate}: ${tally.length} of 60 opens failed ${JSON.stringify(tally.map((message) => message.slice(0, 160)))}`);
-  }
-}
-await send("Emulation.setCPUThrottlingRate", { rate: 1 });
 await oneMotion("To check on a phone", async () => {
   await evaluate(`${rowOf("#2", CHECK_ROWS)}.querySelector('.row-open').click()`);
   await until(`/^#\\/p\\/${project}\\/checks\\/c\\d+$/.test(location.hash) && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open at the item");
