@@ -4981,7 +4981,6 @@ merge_seconds = 3
                                   str(ids['ui']), str(args.captures), ','.join(home_order),
                                   str(audit) if audit.exists() else '', str(ids['plans']), str(restart),
                                   str(plans), LONG_NAME, str(work / 'relay'), str(work / 'wsx-cli.json'), str(news_file)], timeout=900)
-            print('\n'.join(line for line in (result.stdout + result.stderr).splitlines() if line.startswith('REQUESTS')), flush=True)  # TEMP (#482)
             assert result.returncode == 0, result.stdout + result.stderr
             # ^ Try started #7's preview: its mapping goes with it.
             assert js('task', 'preview', 7, '--stop', '-p', 'ui')['stopped'] is True

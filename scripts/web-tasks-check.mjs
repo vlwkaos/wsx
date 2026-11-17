@@ -26,15 +26,15 @@ const project = Number(projectArg);
 const cdp = await launch({
   captures, prefix: "tasks-", timeoutSeconds: 840,
 });
-const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key, keyboard, watch, watched, setMotion } = cdp;
+const { send, evaluate, until, untilApi, viewport, capture, fail, cleanup, problems, go, text, count, key, keyboard, watch, watched, setMotion } = cdp;
 await watchFetch(cdp);
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
 const { file: mobilePath, source: mobileSource } = mobileAudit();
 if (!mobileSource) await fail(`no mobile audit at ${mobilePath}; set WSX_MOBILE_AUDIT`);
 // The main screens that get the design lint (scripts/design-lint.js), at 390x844 and 1280x800 only.
 const linter = designLint({ evaluate, captures, file: "tasks" });
-// ^ Well under the server's 240 a minute per device: before #482 the busiest minute of this journey was 277.
-const REQUESTS_PER_MINUTE = 150;
+// ^ The server's budget is 240 a minute per device.
+const REQUESTS_PER_MINUTE = 240;
 const LINTED = new Set(["new-chat", "new-chat-refused", "chats-home-approval", "chats-home", "chats-home-wide", "home-long-name", "chat-room", "chat-room-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "tasks-check-queue-dark", "tasks-check-queue-light", "home", "home-chats-dark", "home-chats-light", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
 let size = [390, 844, 2];
 const phone = () => size[0] < 600;
@@ -2771,7 +2771,7 @@ async function replyQuotesAndCloses(back) {
   if (quotedState !== "open") await fail(`Reply left #7's item ${quotedState} before the words were sent`);
   await typeInto(".composer-field", "the text is cut off");
   await click(".composer-send");
-  await until(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.items.find((item) => item.task === 7)).then((item) => item?.state === 'replied' && item.note === 'the text is cut off')`, "the reply did not close #7's item as replied with its note", 300);
+  await untilApi(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.items.find((item) => item.task === 7)).then((item) => item?.state === 'replied' && item.note === 'the text is cut off')`, "the reply did not close #7's item as replied with its note", 30);
   await go(back);
   await until("document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 2", "the replied item stayed in the list after the reply");
 }
@@ -2936,7 +2936,7 @@ const afterPass = await evaluate(chatPlace);
 const samePlace = afterPass.keys.startsWith(beforePass.keys) && afterPass.at === beforePass.at && !afterPass.fresh
   && (afterPass.keys !== beforePass.keys || afterPass.jump === beforePass.jump);
 if (!samePlace) await fail(`a passed item's bubble moved or counts as new: ${JSON.stringify({ beforePass, afterPass })}`);
-await until(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.items.filter((item) => item.state === 'open').length === 1)`, "Pass in the To check row did not drop the To check count", 60);
+await untilApi(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.items.filter((item) => item.state === 'open').length === 1)`, "Pass in the To check row did not drop the To check count", 10);
 await go(`#/p/${project}/checks`);
 await until("document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 1", "the item passed in the chat stayed in the list", 60);
 // ^ Fail closes an item at once and opens nothing (docs/tasks.md "To check"). Its bubble shows
@@ -2953,7 +2953,7 @@ await go(`#/p/${project}/checks`);
 await until("(document.querySelector('dialog.task-sheet .empty')?.textContent ?? '') === 'Nothing to check.'", "the failed item stayed in the list", 60);
 await shot("to-check-done");
 await closeSheet("the To check list", chat);
-await until(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => !list.items.some((item) => item.state === 'open'))`, "the lists still count items to check", 60);
+await untilApi(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => !list.items.some((item) => item.state === 'open'))`, "the lists still count items to check", 10);
 // ^ With #4 and the fix task landed (a pending approval denied) only Running is left: the one
 // pill, and its list's first row whole at the reservoir's top.
 const onlyRunning = "document.querySelectorAll('.pill').length > 0 && [...document.querySelectorAll('.pill')].every((node) => ['tasks', 'routines'].includes(node.dataset.kind))";
@@ -3264,7 +3264,7 @@ await until("!!document.querySelector('.log .bubble') && !document.querySelector
 const plansAsks = () => evaluate(`fetch('api/tasks/${plansArg}').then((r) => r.json()).then((data) => data.asks)`);
 // ^ The fake manager answers ASK with "Should I land it now?" (scripts/fake-claude-stream.py).
 await evaluate(`fetch('api/tasks/${plansArg}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ text: "ASK" }))} })`);
-await until(`fetch('api/tasks/${plansArg}').then((r) => r.json()).then((data) => data.asks.some((ask) => ask.quote.includes('Should I land it now?')))`, "plans' manager did not ask", 300);
+await untilApi(`fetch('api/tasks/${plansArg}').then((r) => r.json()).then((data) => data.asks.some((ask) => ask.quote.includes('Should I land it now?')))`, "plans' manager did not ask", 30);
 const openAsks = await plansAsks();
 const plansQuestion = openAsks.find((ask) => ask.quote.includes("Should I land it now?"));
 if (openAsks.some((ask) => ask !== plansQuestion && !["Should the fold keep five rows?", "Can #92 wait for Monday?"].includes(ask.quote))) await fail(`plans' open questions read ${JSON.stringify(openAsks)}`);
@@ -3883,7 +3883,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'STATUS', chat: 'billing' }) })`);
   await until(`!!(${billing})`, "a message did not bring the dismissed chat back", 30);
   await shot(`home-dismiss-back`);
-  await until(`fetch('api/tasks/${project}/chat?chat=billing').then((r) => r.json()).then((data) => data.rows.length >= ${rows} + 2)`, "the chat did not answer the message", 60);
+  await untilApi(`fetch('api/tasks/${project}/chat?chat=billing').then((r) => r.json()).then((data) => data.rows.length >= ${rows} + 2)`, "the chat did not answer the message", 10);
   await go("#/c/billing");
   await until("!!document.querySelector('.log .bubble[data-side=in]')", "the chat did not open after its message");
   await go("#/");
@@ -4791,12 +4791,12 @@ await closeSheet("the page", plansChat);
   fs.rmSync(path.join(plansCheckout, ".env"));
   await go(plansChat);
 }
-// ^ The page's own request rate over the whole journey: the server's budget is 240 a minute per device
-// (`Paired`, crates/wsx-web/src/http.rs), and a burst of events must not refetch each panel once per event
-// (`READ_GAP_MS` in lib.js). The by-path and by-caller counts name the cause when it fails.
+// ^ The page's own request rate over the whole journey: its busiest 60 s must stay under the server's
+// budget of 240 a minute per device (`Paired`, crates/wsx-web/src/http.rs), whatever the waits of this
+// check ask for (`untilApi`). The by-path and by-caller counts name the cause when it fails.
 const rates = requestRates(cdp);
-console.log(`REQUESTS ${JSON.stringify(rates)}`); // TEMP: print only until the fix is decided (#482)
-console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail closing the item and its reply kept as the note, Pass in a bubble that stays in place, Skip), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Chats (a Home row under its project with its unread dot, none in the ⋯ menu, its chat at #/p/<project>/c/<chat> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures; ${rates.busiest} API requests in the busiest 60 s of ${rates.total} in ${rates.minutes} min (limit ${REQUESTS_PER_MINUTE}, budget 240)`);
+if (rates.own > REQUESTS_PER_MINUTE) await fail(`the page asked ${rates.own} times in its busiest 60 s, over ${REQUESTS_PER_MINUTE}: ${JSON.stringify(rates)}`);
+console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail closing the item and its reply kept as the note, Pass in a bubble that stays in place, Skip), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Chats (a Home row under its project with its unread dot, none in the ⋯ menu, its chat at #/p/<project>/c/<chat> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures; the page's own API requests in its busiest 60 s: ${rates.own} (limit ${REQUESTS_PER_MINUTE}; ${rates.busiest} with this check's reads, of ${rates.total} in ${rates.minutes} min)`);
 await linter.finish(fail);
 await cleanup();
 process.exit(0);

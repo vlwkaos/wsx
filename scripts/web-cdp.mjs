@@ -116,21 +116,26 @@ export async function watchFetch({ send, evaluate }) {
   await evaluate(source);
 }
 
-// The API requests the page sent (`requests` of `launch`): the total, the busiest 60 s window (the
-// server's budget is 240 a minute per device, `Paired` in crates/wsx-web/src/http.rs) and, within it,
-// the counts by path and by asking page function.
+// The API requests the page sent (`requests` of `launch`): the busiest 60 s window of all of them and
+// of the page's own (the asking page function is known; a read the check sends from here has none,
+// and neither has a retry of `watchFetch`), the server's budget being 240 a minute per device
+// (`Paired` in crates/wsx-web/src/http.rs), and the counts by path and by asking function in the
+// busiest window.
 export function requestRates({ requests }) {
-  const rates = { total: requests.length, busiest: 0, minutes: requests.length ? Math.round((requests.at(-1).at - requests[0].at) / 600) / 100 : 0 };
-  let low = 0, best = [0, -1];
-  requests.forEach((request, index) => {
-    while (request.at - requests[low].at > 60_000) low++;
-    if (index - low + 1 > rates.busiest) { rates.busiest = index - low + 1; best = [low, index]; }
-  });
-  const within = requests.slice(best[0], best[1] + 1);
-  const count = (key) => Object.entries(within.reduce((by, request) => ({ ...by, [request[key]]: (by[request[key]] ?? 0) + 1 }), {})).sort((a, b) => b[1] - a[1]).slice(0, 14);
-  return { ...rates, refused: within.filter((request) => request.status === 429).length, byPath: count("path"), byCaller: count("from"),
-    // TEMP (#482): the window's requests in order, to read what triggers them
-    lines: within.map((request) => `${((request.at - within[0].at) / 1000).toFixed(1)} ${request.status ?? "-"} ${request.method} ${request.path.replace("/api/tasks/N", "")} ${request.from.split(" < ")[0]}`) };
+  const busiest = (list) => {
+    let low = 0, best = [0, 0];
+    list.forEach((request, index) => {
+      while (request.at - list[low].at > 60_000) low++;
+      if (index - low + 1 > best[1] - best[0]) best = [low, index + 1];
+    });
+    return list.slice(...best);
+  };
+  const all = busiest(requests), own = busiest(requests.filter((request) => request.from));
+  const count = (key) => Object.entries(all.reduce((by, request) => ({ ...by, [request[key]]: (by[request[key]] ?? 0) + 1 }), {})).sort((a, b) => b[1] - a[1]).slice(0, 14);
+  return {
+    total: requests.length, busiest: all.length, own: own.length, refused: all.filter((request) => request.status === 429).length,
+    minutes: requests.length ? Math.round((requests.at(-1).at - requests[0].at) / 600) / 100 : 0, byPath: count("path"), byCaller: count("from"),
+  };
 }
 
 // Layout rules of every screen: nothing past the right edge, no raw null, one scroll container
@@ -246,7 +251,7 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
   process.once("unhandledRejection", end("unhandled rejection"));
   const fail = async (message) => {
     console.error(`FAIL: ${message}`);
-    console.error(`REQUESTS ${JSON.stringify(requestRates({ requests }))}`); // TEMP (#482)
+    console.error(`REQUESTS ${JSON.stringify(requestRates({ requests }))}`);
     await cleanup();
     process.exit(1);
   };
@@ -314,13 +319,17 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
   }
   // Poll the page from here; the page itself has no timers to wait on. label: text, or an async
   // function that reads the page when the wait fails.
-  async function until(expression, label, attempts = 100) {
+  async function until(expression, label, attempts = 100, every = 100) {
     for (let attempt = 0; attempt < attempts; attempt++) {
       if (await evaluate(expression).catch(() => false)) return;
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, every));
     }
     await fail(`${typeof label === "function" ? await label() : label}; page says: ${await evaluate("document.body.innerText.slice(0, 300)").catch(() => "?")}`);
   }
+  // ^ A wait whose expression reads the API: once a second for `seconds`. `until` asks every 100 ms,
+  // and an API read in it would spend 600 requests a minute of the device's budget (240 a minute,
+  // `Paired` in crates/wsx-web/src/http.rs) and make the page's own reads fail with 429.
+  const untilApi = (expression, label, seconds = 10) => until(expression, label, seconds, 1000);
   // scale: device pixel ratio. A phone-sized viewport is emulated as a touch device.
   async function viewport(width, height, scale = 1) {
     const mobile = width < 600;
@@ -378,7 +387,7 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
   })()`);
   const watched = () => evaluate("(() => { const seen = window.wsxFrames ?? []; window.wsxFrames = null; return seen; })()");
   return {
-    send, evaluate, until, viewport, capture, fail, problems, requests, go, text, count, key, keyboard, watch, watched, setMotion,
+    send, evaluate, until, untilApi, viewport, capture, fail, problems, requests, go, text, count, key, keyboard, watch, watched, setMotion,
     cleanup: async () => { socket.close(); await cleanup(); },
   };
 }

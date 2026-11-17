@@ -829,11 +829,15 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   const roomRows = room ? chat?.rows?.length : null;
   // ^ A reply to a decided item is its note: read again when one more reply names an item.
   const noted = chat?.rows?.filter((row) => row.quoted_check).map((row) => row.id).join();
+  // ^ Read once the chat is in: `noted` is unknown before it, and a read at the mount followed by
+  // another when the chat arrives asked twice for one list (docs/design/scenario-flakes.md).
+  const chatIn = Boolean(chat);
   useEffect(() => {
+    if (!chatIn) return undefined;
     let live = true;
     api(`api/tasks/${id}/checks`, { query: room && { chat: room } }).then((value) => { if (live) setCheckItems(value.items); }, () => { if (live) setCheckItems((now) => now ?? []); });
     return () => { live = false; };
-  }, [id, room, toCheck, roomRows, noted]);
+  }, [id, room, toCheck, roomRows, noted, chatIn]);
   const ready = Boolean(chat) && checkItems !== null;
   const [sent, setSent] = useState(null);
   const place = room ? `project-${id}-c-${room}` : `project-${id}`;
@@ -882,7 +886,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   // ^ What waits for the owner is the needs and the open questions (docs/web-client-tasks.md "Project screen").
   const asking = (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote }));
   const needing = [...(overview?.needs ?? []), ...asking];
-  const [routineList, setRoutineList] = useRoutines(id, !room, chat?.rows?.at(-1)?.key);
+  const [routineList, setRoutineList] = useRoutines(id, !room && chatIn, chat?.rows?.at(-1)?.key);
   const counts = trayCounts(overview, routineList?.counts);
   const [tray, toggleTray, setTray] = useTray(counts);
   const [look, setLook] = useState(null);

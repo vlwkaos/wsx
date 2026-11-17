@@ -16,7 +16,7 @@ const ids = JSON.parse(sessionsJson);
 const cdp = await launch({
   captures, prefix: "", timeoutSeconds: mode === "tour" ? 420 : 100,
 });
-const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key, keyboard, watch, watched, setMotion } = cdp;
+const { send, evaluate, until, untilApi, viewport, capture, fail, cleanup, problems, go, text, count, key, keyboard, watch, watched, setMotion } = cdp;
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
 const mobileSource = mobileAudit().source;
 // The main screens that get the design lint (scripts/design-lint.js), at 390x844 and 1280x800 only.
@@ -1326,7 +1326,7 @@ await shot("chat-not-delivered");
 const round = () => evaluate(`fetch(new URL('api/chat/${ids.done}/timeline', document.baseURI)).then((r) => r.json()).then((data) => data.exchange.round)`);
 const before = await round();
 await evaluate(`[...${failedRow}.querySelectorAll('button')].find((button) => button.title === 'Send again').click()`);
-await until(`fetch(new URL('api/chat/${ids.done}/timeline', document.baseURI)).then((r) => r.json()).then((data) => data.exchange.round === ${before + 1})`, "Send again did not send the message again");
+await untilApi(`fetch(new URL('api/chat/${ids.done}/timeline', document.baseURI)).then((r) => r.json()).then((data) => data.exchange.round === ${before + 1})`, "Send again did not send the message again");
 await until(`(${notDelivered}).startsWith('Not delivered')`, "the message sent again did not keep its reason");
 
 // Files: each shows at once while it uploads and Send waits; a photo larger than 2000 px
@@ -1386,7 +1386,7 @@ await evaluate(`(() => { window.sentBodies = []; const original = window.fetch;
 await typeInto("a pasted screenshot");
 const beforePaste = await round();
 await evaluate("document.querySelector('.composer .button-primary').click()");
-await until(`fetch(new URL('api/chat/${ids.done}/timeline', document.baseURI)).then((r) => r.json()).then((data) => data.exchange.round === ${beforePaste + 1})`, "the message with a pasted image was not sent");
+await untilApi(`fetch(new URL('api/chat/${ids.done}/timeline', document.baseURI)).then((r) => r.json()).then((data) => data.exchange.round === ${beforePaste + 1})`, "the message with a pasted image was not sent");
 const carried = await evaluate("window.sentBodies");
 if (carried.length !== 1 || JSON.stringify(carried[0].attachments) !== JSON.stringify([pasted.hash])) await fail(`Send carried ${JSON.stringify(carried)}, not ${pasted.hash}`);
 await until("!document.querySelector('.chips li')", "the sent pasted image stayed in the composer");
