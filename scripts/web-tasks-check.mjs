@@ -3871,9 +3871,13 @@ for (const wide of [false, true]) {
   // ^ The chat shows its own model, as the manager's chat shows the manager's (billing opened with --agent haiku-chat).
   if (!/^haiku\b/.test((await text(".bar-model"))[0] ?? "")) await fail(`the chat's bar shows the model ${JSON.stringify(await text(".bar-model"))}, not haiku`);
   // ^ The chat holds its own log: none of the project's resolutions ("#5 was closed") is in it.
-  if (await count(".log .status-line, .log .fold")) await fail(`a chat shows the project's events: ${await text(".log .status-line, .log .fold")}`);
-  // ^ The speakers: the home chat's message is under its chat name, the chat's reply under the chat's own.
-  const speakers = await evaluate(`[...document.querySelectorAll('.log .bubble')].map((node) => node.querySelector('.bubble-author')?.textContent ?? '').filter(Boolean)`);
+  // ^ A fold of another chat's words ("Talked to ui", data-talk) is no event line.
+  const events = await evaluate(`[...document.querySelectorAll('.log .status-line, .log .fold')].filter((node) => !node.matches('[data-talk]')).map((node) => node.textContent)`);
+  if (events.length) await fail(`a chat shows the project's events: ${events}`);
+  // ^ The speakers: the home chat's message is under its chat name, the chat's reply under the chat's own. Its message is
+  // a Talked to row, closed: open it to read who wrote.
+  await evaluate("(async () => { for (const toggle of document.querySelectorAll('.log [data-talk] .fold-toggle')) if (toggle.getAttribute('aria-expanded') === 'false') toggle.click(); await new Promise((done) => setTimeout(done, 100)); })()");
+  const speakers = await evaluate(`[...document.querySelectorAll('.log .bubble, .log [data-talk] .reply-text')].map((node) => node.querySelector('.bubble-author')?.textContent ?? '').filter(Boolean)`);
   if (!speakers.includes(await homeOf(project)) || !speakers.includes("billing") || speakers.includes(shownName)) await fail(`the chat's speakers are ${speakers}`);
   if (!wide) {
     const answered = await count(".log .bubble[data-side=in]");
