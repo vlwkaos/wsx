@@ -8818,9 +8818,9 @@ def part_host(created=None):
         (bin_dir / 'claude.next').symlink_to(versions / version)
         os.replace(bin_dir / 'claude.next', fake)
 
-    def started(wanted):
+    def started(manager, session=None):
         return [(t['binary'].rsplit('/', 1)[1], t['resume'], t['session']) for t in traces()
-                if t.get('launch') and t.get('binary') and ('You are the manager' in t['instructions']) == wanted]
+                if t.get('launch') and t.get('binary') and t['manager'] == manager and session in (None, t['session'])]
 
     point('2.1.1')
     # ^ WORK a.txt passes the project's checks; each turn is settled (ready) before the next add.
@@ -8848,14 +8848,15 @@ def part_host(created=None):
     js('task', 'add', updated, 'NOOP')
     settled(3, 'the third turn')
     assert started(False)[2:] == [('2.1.3', True, first[2])] and len(started(False)) == 3, started(False)
-    # ^ The manager's host keeps its agent between messages and starts it on the new file too.
+    # ^ A chat's manager keeps its agent between messages and starts it on the new file too.
+    cli('task', 'chat', 'new', 'upd', '--goal', str(m2_goal), '-p', 'demo', '--json')
     point('2.1.1')
-    asked = js('task', 'say', 'STATUS on 2.1.1')
-    reply_to(asked['id'])
-    seen = started(True)
+    chat_reply('upd', js('task', 'say', '--to', 'upd', 'STATUS on 2.1.1')['id'])
+    chat_session = next(t['session'] for t in traces() if t.get('manager') and 'STATUS on 2.1.1' in str(t.get('message', '')))
     point('2.1.2')
-    reply_to(js('task', 'say', 'STATUS on 2.1.2')['id'])
-    assert started(True)[len(seen):] == [('2.1.2', True, seen[-1][2])], (seen, started(True))
+    chat_reply('upd', js('task', 'say', '--to', 'upd', 'STATUS on 2.1.2')['id'])
+    assert started(True, chat_session) == [('2.1.1', False, chat_session), ('2.1.2', True, chat_session)], started(True, chat_session)
+    js('task', 'chat', 'close', 'upd', '-p', 'demo')
     js('task', 'close', updated, '--discard')
     return created
 
