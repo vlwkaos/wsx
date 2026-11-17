@@ -119,20 +119,14 @@ export function keepIn(key, id, value) {
 // await: a change of `deps` (the screen shows another id) or the unmount ends the reads of
 // the old ones, and their answers are dropped. `fail(error)` is called for a failed read that
 // is still current. The generation guard is chat.js's pattern, shared.
-// ^ `gap` (ms): a read starts at most that long after the one before, so a burst of events
-// is one read per resource, not one per event (the device's request budget is 240 a minute,
-// crates/wsx-web/src/http.rs `Paired`; docs/web-client.md "Event stream"). A read after a
-// quiet time starts at once.
-export const READ_GAP_MS = 1500;
-export function useCoalescedLoad(step, fail, deps, gap = 0) {
-  const run = useRef({ generation: 0, loading: false, again: false, pending: null, started: 0 });
+export function useCoalescedLoad(step, fail, deps) {
+  const run = useRef({ generation: 0, loading: false, again: false, pending: null });
   const latest = useRef(null);
   latest.current = { step, fail };
   useEffect(() => () => {
     run.current.generation += 1;
     run.current.loading = false;
     run.current.again = false;
-    run.current.started = 0;
   }, deps);
   return useCallback(() => {
     const state = run.current;
@@ -145,14 +139,8 @@ export function useCoalescedLoad(step, fail, deps, gap = 0) {
     const current = () => mine === state.generation;
     state.pending = (async () => {
       try {
-        let wait = state.started + gap - Date.now();
         do {
-          if (wait > 0) {
-            await new Promise((resolve) => setTimeout(resolve, wait));
-            if (!current()) return;
-          }
           state.again = false;
-          state.started = Date.now();
           // ^ A read that failed (one that gave up on a dead connection) still runs again
           // when a change came during it (docs/web-client.md "Event stream").
           try {
@@ -161,7 +149,6 @@ export function useCoalescedLoad(step, fail, deps, gap = 0) {
             if (current()) latest.current.fail(error);
           }
           if (!current()) return;
-          wait = state.started + gap - Date.now();
         } while (state.again);
       } finally {
         if (current()) state.loading = false;

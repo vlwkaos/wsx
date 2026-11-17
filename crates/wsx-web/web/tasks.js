@@ -3,7 +3,7 @@
 // task's or the project overview's sheet over the chat (docs/web-client-tasks.md). Fixed actions
 // go straight to wsx.
 import { api } from "./api.js";
-import { html, Icon, keepIn, plural, READ_GAP_MS, readMap, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
+import { html, Icon, keepIn, plural, readMap, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, goBack, leaveFor, shows, state, touch, useEventLoad, useStore } from "./store.js";
 import { Back, confirmDialog, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, useDraft, useListKeys, useRecent, withNewLine } from "./chat.js";
@@ -739,7 +739,7 @@ function useManagerLog(id, room) {
     }
     setChat({ ...next, rows: shown.current });
     setFailure("");
-  }, (error) => setFailure(error.message), [id], READ_GAP_MS);
+  }, (error) => setFailure(error.message), [id]);
   useEventLoad("manager", load, (detail) => detail.project == null
     || (detail.project === id && (!room || detail.chat === room)), [id]);
   // ^ A tap on a quote whose message is not among the rows (`Quote`, reply.js) reads the chat
@@ -829,15 +829,11 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   const roomRows = room ? chat?.rows?.length : null;
   // ^ A reply to a decided item is its note: read again when one more reply names an item.
   const noted = chat?.rows?.filter((row) => row.quoted_check).map((row) => row.id).join();
-  const readChecks = useCoalescedLoad(async (current) => {
-    try {
-      const value = await api(`api/tasks/${id}/checks`, { query: room && { chat: room } });
-      if (current()) setCheckItems(value.items);
-    } catch {
-      if (current()) setCheckItems((now) => now ?? []);
-    }
-  }, () => {}, [id, room], READ_GAP_MS);
-  useEffect(() => { readChecks(); }, [id, room, toCheck, roomRows, noted]);
+  useEffect(() => {
+    let live = true;
+    api(`api/tasks/${id}/checks`, { query: room && { chat: room } }).then((value) => { if (live) setCheckItems(value.items); }, () => { if (live) setCheckItems((now) => now ?? []); });
+    return () => { live = false; };
+  }, [id, room, toCheck, roomRows, noted]);
   const ready = Boolean(chat) && checkItems !== null;
   const [sent, setSent] = useState(null);
   const place = room ? `project-${id}-c-${room}` : `project-${id}`;

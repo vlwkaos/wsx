@@ -278,7 +278,7 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
       const { request, initiator, wallTime } = message.params;
       const frames = [];
       for (let stack = initiator.stack; stack; stack = stack.parent) frames.push(...stack.callFrames);
-      const from = frames.filter((frame) => /\.js$/.test(frame.url) && !/\/api\.js$/.test(frame.url)).slice(0, 2)
+      const from = frames.filter((frame) => /\.js$/.test(frame.url) && !/\/api\.js$/.test(frame.url)).slice(0, 5)
         .map((frame) => `${frame.functionName || "(anonymous)"} ${frame.url.split("/").pop()}:${frame.lineNumber + 1}`).join(" < ");
       const url = new URL(request.url);
       requests.push({ at: wallTime * 1000, method: request.method, path: url.pathname.replace(/\/\d+(?=\/|$)/g, "/N"), from });

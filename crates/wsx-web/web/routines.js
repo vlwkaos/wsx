@@ -1,7 +1,7 @@
 // The project's routines: the data the Routines pill and its list read, and the list's rows
 // (docs/web-client-tasks.md "Routines"). The pill and the list are in tasks.js.
 import { api } from "./api.js";
-import { ago, html, Icon, READ_GAP_MS, useCoalescedLoad, useEffect, useState } from "./lib.js";
+import { ago, html, Icon, useCoalescedLoad, useEffect, useState } from "./lib.js";
 import { loadTasks } from "./task-api.js";
 
 const DAYS = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"];
@@ -38,7 +38,7 @@ export function useRoutines(project, active, key) {
     const next = await api(`api/tasks/${project}/routines`);
     // ^ An unchanged answer keeps the list as it was: the whole manager screen would draw again for nothing.
     if (current()) setList((old) => JSON.stringify(old) === JSON.stringify(next) ? old : next);
-  }, () => {}, [project], READ_GAP_MS);
+  }, () => {}, [project]);
   // ^ A routine that runs is read again every 2 s, so its end shows without a tap.
   const running = Boolean(list?.routines?.some((row) => row.running || row.last?.status === "running"));
   useEffect(() => {
