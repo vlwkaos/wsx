@@ -1664,14 +1664,11 @@ impl Host {
                 }
                 Next::Wait(until_ms) => {
                     // ^ Away, the wait is on the own account: the record goes home first.
-                    match self.away() {
-                        true => self.wait_away(
-                            "could not take the turn: its account is limited",
-                            text,
-                            until_ms,
-                            now,
-                        ),
-                        false => self.wait_at_home(text.to_string(), until_ms, now),
+                    if self.away() {
+                        let did = "could not take the turn: its account is limited";
+                        self.wait_away(did, text, until_ms, now);
+                    } else {
+                        self.wait_at_home(text.to_string(), until_ms, now);
                     }
                     return Ok(());
                 }
