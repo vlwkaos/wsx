@@ -46,7 +46,8 @@ early, journey = sections.failed
 assert early.startswith('FAILED section early never early at journey.py:') and 'last step that passed' not in early, early
 # ^ The line shows the first FAIL line only (#488), the section that ends at `post levels`, and the step that passed last.
 assert journey.startswith('FAILED section journey post levels at journey.py:'), journey
-assert journey.endswith('AssertionError: FAIL: To check on a phone: the sheet does not open in one motion [last step that passed: inner step]'), journey
+assert 'AssertionError: FAIL: To check on a phone: the sheet does not open in one motion' in journey, journey
+assert journey.endswith(' failed) [last step that passed: inner step]'), journey
 assert 'frames follow' not in journey, journey
 print('ok: sections name the last step that passed')
 sys.exit(0)
