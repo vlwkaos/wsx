@@ -77,11 +77,11 @@ function RowText({ name, asks, counts, last, now, line, news, typing }) {
 
 // A chat's row, the same two lines for the project's home chat (`.home-row`, keyed by its project) and any other (`.chat-row`). The home chat's
 // line 2 is the project's (statusLine); another chat's is its unread reply, else its last reply,
-// else its goal, after its project's name. A slide to the left shows Dismiss.
+// else its goal, never its project's name (that is the row's aria-label). A slide to the left shows Dismiss.
 function ChatRow({ row, current, now, onDismiss }) {
   const { project, overview, chat, home, news } = row;
   const counts = trayCounts(home ? overview : chat);
-  const text = home ? news?.text.split("\n")[0] ?? null : [project.name, news?.text.split("\n")[0] ?? (chat.last_reply || chat.goal || "No messages yet")].join(" · ");
+  const text = news?.text.split("\n")[0] ?? (home ? null : chat.last_reply || chat.goal || "No messages yet");
   const line = home && !news ? statusLine(row) : { text };
   const slidable = can("task_act");
   return html`

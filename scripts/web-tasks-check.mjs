@@ -3867,13 +3867,16 @@ for (const wide of [false, true]) {
   await until("!!document.querySelector('.composer-field')", "the chat did not open for Chats");
   const projectName = (await text(".bar-label"))[0];
   const shownName = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((data) => data.manager.name)`);
-  // ^ Home lists the open chat as a row of its own: its name, its project's name before its reply,
+  // ^ Home lists the open chat as a row of its own: its name, its reply alone on line 2 (no project name),
   // no dot before this device opened its chat; a click opens the chat.
   await go("#/");
   const chatRow = `[...document.querySelectorAll('.home-rows .chat-row')].find((r) => r.querySelector('.row-label').textContent === 'billing')`;
   await until(`!!(${chatRow})`, "Home lists no billing chat");
-  const listed = await evaluate(`(() => { const row = ${chatRow}; return { name: row.querySelector('.row-label').textContent, context: row.querySelector('.row-context').textContent.trim(), dots: row.querySelectorAll('.news-mark').length }; })()`);
-  if (listed.name !== "billing" || !listed.context.startsWith(`${projectName} · `) || (!wide && listed.dots)) await fail(`Home lists the chat as ${JSON.stringify(listed)}, not billing of ${projectName}`);
+  const listed = await evaluate(`(() => { const row = ${chatRow}; return { name: row.querySelector('.row-label').textContent, label: row.getAttribute('aria-label'), context: row.querySelector('.row-context').textContent.trim(), dots: row.querySelectorAll('.news-mark').length }; })()`);
+  if (listed.name !== "billing" || (!wide && listed.dots)) await fail(`Home lists the chat as ${JSON.stringify(listed)}, not billing of ${projectName}`);
+  // ^ The owner's rule (msgs 5164, 5239): line 2 of a chat's row is only its message; the project is in the label.
+  const labelled = /^Chat billing of (.+?)(?:, [^,]+)*$/.exec(listed.label ?? "")?.[1];
+  if (!labelled || listed.context.includes(labelled) || listed.context.includes(" · ")) await fail(`the chat row's line 2 carries its project or the label does not name it: ${JSON.stringify(listed)}`);
   if (await count(".more-menu .chat-row")) await fail("the ⋯ menu lists chats");
   const chatHead = await homeHead(chatRow), chatFault = homeHeadFault(chatHead, false);
   if (chatFault) await fail(`the chat row's icons and time are not one group at the right edge: ${chatFault}`);
