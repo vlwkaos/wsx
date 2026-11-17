@@ -249,6 +249,15 @@ const CI_TIMEOUT: Duration = Duration::from_secs(125 * 60);
 /// run on this machine (scripts/ci-scenario.py); the host then runs it on CI.
 const UNAVAILABLE: i32 = 69;
 
+/// How often a `ci:` run whose jobs wait for a runner looks at the scenario slot.
+const CI_LANE_POLL: Duration = Duration::from_secs(2);
+
+/// How long a CI run that hands over to the local lane has to cancel its run (SIGTERM, then SIGKILL).
+const CI_CANCEL_GRACE: Duration = Duration::from_secs(60);
+
+/// What scripts/ci-scenario.py prints when the first job of its run leaves GitHub's queue.
+const CI_STARTED: &str = "min before its jobs started";
+
 /// The command of a `ci:` scenario: it runs here when the scenario slot is free, else on CI.
 fn ci_command(command: &str) -> Option<&str> {
     command.strip_prefix("ci:").map(str::trim)
@@ -3374,25 +3383,42 @@ impl Host {
                 let (working_copy, env) = (working_copy.clone(), env.clone());
                 let (events, label) = (events.clone(), label.clone());
                 std::thread::spawn(move || {
-                    // ^ Whichever lane is free first: the scenario slot when nobody holds it or
-                    // waits for it, else CI. The result keeps the configured command in either
-                    // lane, so a stored result, a shared failure and the outside rule match it;
-                    // the output's first line names the lane. ref: docs/tasks.md "Scenarios"
-                    let here = (!remote.is_empty())
+                    // ^ Whichever lane is free first, decided again while the run waits for a
+                    // CI job: the scenario slot when nobody holds it or waits for it, else CI
+                    // until the slot frees (`run_ci` hands it over). The result keeps the
+                    // configured command in either lane, so a stored result, a shared failure
+                    // and the outside rule match it; the output's first line names the lane.
+                    // ref: docs/tasks.md "Scenarios"
+                    let mut here = (!remote.is_empty())
                         .then(|| slot::take_free(Lane::Scenarios, &label))
                         .flatten();
+                    let mut watch = here.is_none();
                     remote
                         .into_iter()
                         .map(|(at, (command, log))| {
-                            let local = here.as_ref().map(|_| {
-                                let local =
-                                    format!("{} --local", ci_command(&command).unwrap_or_default());
-                                run_check(&working_copy, &local, &env, CI_TIMEOUT, &log)
-                            });
-                            let ran = match local {
-                                Some(ran) if ran.exit != Some(UNAVAILABLE) => ran,
-                                _ => {
-                                    run_ci((&working_copy, &env, &log), &command, (&events, &halt))
+                            let ran = loop {
+                                if here.is_some() {
+                                    let local = format!(
+                                        "{} --local",
+                                        ci_command(&command).unwrap_or_default()
+                                    );
+                                    let ran =
+                                        run_check(&working_copy, &local, &env, CI_TIMEOUT, &log);
+                                    if ran.exit != Some(UNAVAILABLE) {
+                                        break ran;
+                                    }
+                                    // ^ The job does not run here: no handover would help.
+                                    (here, watch) = (None, false);
+                                }
+                                let lane = watch.then_some(label.as_str());
+                                match run_ci(
+                                    (&working_copy, &env, &log),
+                                    &command,
+                                    (&events, &halt),
+                                    lane,
+                                ) {
+                                    Ok(ran) => break ran,
+                                    Err(slot) => here = Some(slot),
                                 }
                             };
                             (at, CheckResult { command, ..ran })
@@ -4692,28 +4718,34 @@ pub(super) fn run_check(
 /// A `ci:` command (its text without the prefix is run) until a run answers: one that exits
 /// `TEMPFAIL` ran into the rate limit, a queue cancel or a lost runner, not into the tree, so it
 /// runs again on the same tree after a wait, up to `CI_TRIES` runs. Each retry is sent as an
-/// event (the log records it); a stopped task (`halt`) retries no more.
-/// ref: docs/tasks.md "Scenarios"
+/// event (the log records it); a stopped task (`halt`) retries no more. With a `lane` label, a
+/// run whose CI jobs have not started stops when the scenario slot frees: `Err` holds the slot
+/// for the caller's `--local` run. ref: docs/tasks.md "Scenarios"
 fn run_ci(
     (working_copy, env, log): (&Path, &BTreeMap<String, String>, &Path),
     command: &str,
     (events, halt): (&Sender<Event>, &AtomicBool),
-) -> CheckResult {
+    lane: Option<&str>,
+) -> Result<CheckResult, slot::Slot> {
     let mut attempt = 1;
     loop {
-        let ran = run_check(
-            working_copy,
-            ci_command(command).unwrap_or_default(),
-            env,
-            CI_TIMEOUT,
-            log,
-        );
+        let ci = ci_command(command).unwrap_or_default();
+        let ran = match lane {
+            Some(label) => {
+                let (ran, free) = run_ci_watched((working_copy, env, log), ci, label);
+                if let Some(slot) = free.filter(|_| !halt.load(Ordering::Relaxed)) {
+                    return Err(slot);
+                }
+                ran
+            }
+            None => run_check(working_copy, ci, env, CI_TIMEOUT, log),
+        };
         let retry = (ran.exit == Some(TEMPFAIL) && attempt < CI_TRIES)
             .then(|| ci_retry_wait(attempt, &ran.output))
             .flatten()
             .filter(|_| !halt.load(Ordering::Relaxed));
         let Some(wait) = retry else {
-            return ran;
+            return Ok(ran);
         };
         // ^ The line that says why: the script's own closing lines (`a temporary failure`,
         // `retry-after:`, `retry: no`, `gh calls:`) come after it.
@@ -4736,10 +4768,60 @@ fn run_ci(
         });
         std::thread::sleep(wait);
         if halt.load(Ordering::Relaxed) {
-            return ran;
+            return Ok(ran);
         }
         attempt += 1;
     }
+}
+
+/// One CI run of `ci` that gives way to the scenario slot: every `CI_LANE_POLL` while the log
+/// does not say a CI job started (`CI_STARTED`), it takes the slot when it is free. Then it
+/// stops the run's process group (SIGTERM: the script cancels the CI run and deletes its
+/// branch) and returns the slot; a run that ended or started on CI returns none.
+fn run_ci_watched(
+    (working_copy, env, log): (&Path, &BTreeMap<String, String>, &Path),
+    ci: &str,
+    label: &str,
+) -> (CheckResult, Option<slot::Slot>) {
+    // ^ The shell leads the group, so its pid (in `pid`) is the group to stop.
+    let pid = log.with_extension("pid");
+    let quoted = pid.to_string_lossy().replace('\'', "'\\''");
+    let (stop, stopped) = channel::<()>();
+    std::thread::scope(|scope| {
+        let (pid_file, label) = (&pid, label);
+        let watcher = scope.spawn(move || {
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                stopped.recv_timeout(CI_LANE_POLL)
+            {
+                if log_tail(log).is_ok_and(|text| text.contains(CI_STARTED)) {
+                    return None;
+                }
+                let Some(slot) = slot::take_free(Lane::Scenarios, label) else {
+                    continue;
+                };
+                let Some(group) = std::fs::read_to_string(pid_file)
+                    .ok()
+                    .and_then(|text| text.trim().parse::<libc::pid_t>().ok())
+                else {
+                    continue;
+                };
+                wsx_core::process::terminate_group(group, CI_CANCEL_GRACE);
+                return Some(slot);
+            }
+            None
+        });
+        let ran = run_check(
+            working_copy,
+            &format!("echo $$ >'{quoted}'\n{ci}"),
+            env,
+            CI_TIMEOUT,
+            log,
+        );
+        drop(stop);
+        let slot = watcher.join().ok().flatten();
+        let _ = std::fs::remove_file(&pid);
+        (ran, slot)
+    })
 }
 
 /// The last `CHECK_OUTPUT_BYTES` of a check's log: a long output (a test run) ends with its

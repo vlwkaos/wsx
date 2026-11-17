@@ -265,6 +265,7 @@ def wait_run(repo, run_id, part=None):
     read when its status changes, every JOBS_SECONDS and at the end."""
     said = {}
     begun = time.monotonic()
+    started = False
     status, read_at, jobs = None, None, []
     while True:
         run = json.loads(gh('api', 'repos/%s/actions/runs/%s' % (repo, run_id)).stdout)
@@ -277,6 +278,10 @@ def wait_run(repo, run_id, part=None):
                 if said.get(job['name']) != state and state != 'skipped':
                     say('%s  %s: %s' % (time.strftime('%H:%M:%S'), job['name'], state))
                     said[job['name']] = state
+            if not started and any(job['status'] in ('in_progress', 'completed') and job['conclusion'] != 'skipped' for job in jobs):
+                started = True
+                # ^ The host reads this line (CI_STARTED in crates/wsx/src/task/host.rs): after it the run stays on CI.
+                say('%s  queued %d min before its jobs started' % (time.strftime('%H:%M:%S'), (time.time() - stamp(run['created_at'])) // 60))
         status = run['status']
         if status == 'completed' and not part:
             return {'status': status, 'conclusion': run['conclusion'], 'jobs': jobs, 'run_done': True}

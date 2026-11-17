@@ -5663,6 +5663,45 @@ def part_worker(created=None):
         assert len(ran) == 1 and ran[0]['command'] == command and ran[0]['exit'] == 0 and said in ran[0]['output'], ran
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'no lane scenarios')
+    # 32t9. The lane is decided again while a `ci:` run waits (docs/tasks.md "Scenarios"): the
+    # scenario slot is held at the start, so the run starts on CI and waits for a runner. When the
+    # slot frees first, the host stops the CI run (SIGTERM, the script's cancel path) and runs
+    # `--local`: one result, in the local lane. Once the script says a CI job started, it stays.
+    mark('32t9')
+    handover_sh, handover_mark = base / 'handover.sh', base / 'handover-cancelled'
+    handover_sh.write_text(
+        'if [ "$1" = --local ]; then echo lane=here; exit 0; fi\n'
+        "trap 'echo cancelled >> %s; exit 143' TERM\n" % handover_mark
+        + 'echo lane=ci\n'
+        'if [ "$1" = started ]; then echo "00:00:00  queued 0 min before its jobs started"; fi\n'
+        'while [ ! -e %s ]; do sleep 0.2; done\n' % (base / 'handover-gate'))
+    configure(LAND_CONFIG + '  scenarios:\n    move: "ci: sh %s"\n    stay: "ci: sh %s started"\n' % (handover_sh, handover_sh),
+              'handover scenarios')
+    for name, lane in (('move', 'here'), ('stay', 'ci')):
+        scenario_slot.mkdir(parents=True, exist_ok=True)
+        holder = subprocess.Popen([sys.executable, '-c', HOLD_SLOT, str(scenario_slot), 'handover holder'])
+        wait(lambda: (scenario_slot / 'slot.lock').read_text() == 'handover holder', 'the fixture holds the scenario slot')
+        n = js('task', 'new', 'CHECKRUN_LATER %s WORK handover-%s.txt' % (name, name))['id']
+        wait(lambda: kinds(n, 'result'), 'the result before the answer', 30)
+        time.sleep(4)
+        assert not kinds(n, 'check_run'), log(n)
+        holder.kill()
+        holder.wait()
+        if lane == 'ci':
+            # ^ A CI job started: the free slot is not taken, the run is not stopped.
+            time.sleep(6)
+            assert not handover_mark.exists() and not kinds(n, 'check_run'), log(n)
+            (base / 'handover-gate').touch()
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+        ran = next(e for e in log(n) if e['kind'] == 'check_run')['results']
+        assert len(kinds(n, 'check_run')) == 1 and len(ran) == 1, log(n)
+        assert ran[0]['command'].startswith('ci: ') and ran[0]['exit'] == 0 and 'lane=' + lane in ran[0]['output'], ran
+        assert 'lane=' + ('ci' if lane == 'here' else 'here') not in ran[0]['output'], ran
+        assert (handover_mark.read_text() if handover_mark.exists() else '') == ('cancelled\n' if lane == 'here' else ''), handover_mark
+        js('task', 'close', n, '--discard')
+        handover_mark.unlink(missing_ok=True)
+        (base / 'handover-gate').unlink(missing_ok=True)
+    configure(LAND_CONFIG, 'no handover scenarios')
     # 32v. Two lanes (docs/tasks.md "Check slot"): a scenario check-run holds the scenarios lane, a
     # task's result checks still run at once in the checks lane, and a second scenario run waits
     # with the scenarios reason.
