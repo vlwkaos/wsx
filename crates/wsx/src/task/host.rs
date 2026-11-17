@@ -1663,7 +1663,16 @@ impl Host {
                     return Ok(());
                 }
                 Next::Wait(until_ms) => {
-                    self.wait_at_home(text.to_string(), until_ms, now);
+                    // ^ Away, the wait is on the own account: the record goes home first.
+                    match self.away() {
+                        true => self.wait_away(
+                            "could not take the turn: its account is limited",
+                            text,
+                            until_ms,
+                            now,
+                        ),
+                        false => self.wait_at_home(text.to_string(), until_ms, now),
+                    }
                     return Ok(());
                 }
             }
@@ -2663,10 +2672,16 @@ impl Host {
         if !self.away() {
             return self.wait_at_home(text, until_ms, now);
         }
+        self.wait_away(&did, "", until_ms, now);
+    }
+
+    /// A task on a fallback that no fallback can take goes home for the wait on the own
+    /// account: `did` is what the fallback did, `text` the message the turn adds.
+    fn wait_away(&mut self, did: &str, text: &str, until_ms: u64, now: u64) {
         let reason = format!("back on {}: {did}; waits for it", self.home().adapter);
-        match self.come_home(&did, reason.clone()) {
-            Some(opening) => self.wait_at_home(opening, until_ms, now),
-            None => self.rotate(self.fresh_turn(&did, ""), Some(reason)),
+        match self.come_home(did, reason.clone()) {
+            Some(opening) => self.wait_at_home(join_turn(opening, text), until_ms, now),
+            None => self.rotate(self.fresh_turn(did, text), Some(reason)),
         }
     }
 
@@ -2677,13 +2692,7 @@ impl Host {
         let reason = format!("back on {}", self.home().adapter);
         let did = did.unwrap_or_else(|| self.notes_did());
         match self.come_home(&did, reason.clone()) {
-            Some(opening) => {
-                let turn = match text.is_empty() || opening.contains(&text) {
-                    true => opening,
-                    false => format!("{opening}\n\n{text}"),
-                };
-                self.start_turn(&turn, TurnTrigger::Limit);
-            }
+            Some(opening) => self.start_turn(&join_turn(opening, &text), TurnTrigger::Limit),
             None => self.rotate(self.fresh_turn(&did, &text), Some(reason)),
         }
     }
@@ -4539,6 +4548,14 @@ fn check_message(text: &str) -> Result<()> {
         bail!("the message is larger than the limit of {MAX_MESSAGE_BYTES} bytes");
     }
     Ok(())
+}
+
+/// The turn that opens a conversation, then `text` unless it says nothing new.
+fn join_turn(opening: String, text: &str) -> String {
+    match text.is_empty() || opening.contains(text) {
+        true => opening,
+        false => format!("{opening}\n\n{text}"),
+    }
 }
 
 fn first_line(text: &str) -> &str {

@@ -8117,7 +8117,24 @@ def part_host(created=None):
     assert s2x_turn.startswith('The usage limit has reset') and 'pi/fake/pi-model was refused: 400' in s2x_turn \
         and 'the turn it could not finish:\nPIERROR' in s2x_turn, s2x_turn[:600]
     assert len(lc_claude_launches(s2x_before)) == 1 and lc_claude_launches(s2x_before)[0]['resume'], lc_claude_launches(s2x_before)
-    for n in (s1, s2, s2r):
+    # S2, a fallback whose own account is on record as limited when a message comes, with no other
+    # fallback free: the turn is held as a wait on the own account, and the record goes home first
+    # (`agent::next` answers `Wait` for a host away on a fallback). The record is staged by hand, so
+    # no race with another host's turn is needed to make it.
+    (agents / 'pi-fake.json').unlink(missing_ok=True)
+    limit_for(600)
+    s2q = js('task', 'new', 'born on the fallback, then its account is limited')['id']
+    assert wait_state(s2q, 'ready', 'failed')['record']['adapter'] == 'pi', show(s2q)
+    (agents / 'pi-fake.json').write_text(json.dumps({'since_ms': int(time.time() * 1000), 'until_ms': int((time.time() + 600) * 1000)}))
+    js('task', 'add', s2q, 'WORK s2q.txt')
+    wait(lambda: show(s2q)['state'] == 'waiting' and show(s2q)['record']['adapter'] == 'claude',
+         lambda: 'the limited fallback sends the worker home for the wait: %s %s' % (show(s2q)['record']['adapter'], log(s2q)[-3:]), 40)
+    assert lc_switches(s2q)[-1][1].startswith('back on claude: could not take the turn: its account is limited'), lc_switches(s2q)
+    assert show(s2q)['record']['waiting']['on'] == 'limit' and not show(s2q)['record'].get('fallback'), show(s2q)['record']
+    (agents / 'pi-fake.json').unlink()
+    limit_file.unlink()
+    assert wait_state(s2q, 'ready', 'failed')['state'] == 'ready' and (Path(show(s2q)['record']['working_copy']) / 's2q.txt').exists(), show(s2q)
+    for n in (s1, s2, s2r, s2q):
         js('task', 'close', n, '--discard')
     # S3, the worker: a turn with no output past the bound ends as the turn's failed result.
     turn_quiet = work / 'turn-quiet'

@@ -103,3 +103,10 @@ The scenario loads its own runner, and the load is the same whether a run fails 
 1. **Build `expect()`, `watchUntil()` and the pause ratchet as one task, and migrate the 33 pause-then-judge sites and the 9 loops?** Recommendation: yes. It is the only shared cause in the check code. It costs one web check-run per batch of migrated files.
 2. **Open the To check sheet animation as a product task now, beside #463?** Recommendation: yes. Its step back is not a timing artifact, and it has the same symptom as followEnd (a frame in the wrong place). Hold the card pictures until the next failure, which should be read with the server log.
 3. **Run the touched scenarios again at land when main has changed their paths since the pass?** Recommendation: not yet. No failure since #441 needs it. Run this script again on 2026-11-22.
+
+## Task scenario, host part: 37c and 39b (task 502)
+
+Two causes, not one. The #484, #490 and #491 failures of 37c ran on trees without 457bdb23; #470, #482, #485, #495 and #498 failed 39b.
+
+- **37c, "the refused fallback sends the worker home for the wait".** A task away on a fallback whose account holds a limit record, with no other fallback free, got `Next::Wait` from `agent::next` before its turn. The host held the turn with `wait_at_home` and left the record on pi (log tail: `message`, `limit_wait`, no `agent_switch`). `refused()` went home first. Both now use `wait_away`. The record came from another host's pi turn (the manager quoting PIREFUSE, fixed by 457bdb23); section S2q stages the record by hand, so the check no longer depends on that race.
+- **39b, `KeyError: 'limit'`.** The manager logged `stopped` and `limit`, then ran `alert_failed` (reads every task record of the project), and only then saved `state.limit`. The check reads the state as soon as it sees `stopped`. The hold is now saved first, in the error branch and in `hold_on_account`. Not done: `refused()` on a fallback still logs `rotated` before the hold is saved (37c S1 reads state after `rotated`).

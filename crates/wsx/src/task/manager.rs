@@ -1155,13 +1155,6 @@ impl Manager {
         now: u64,
     ) {
         let auth = store::sign_in_failed_until(&self.current_account(), now).is_some();
-        // ^ A `limit` entry names a reset the owner waits for. A sign-in has none: its `stopped`
-        // entry says to sign in again, and a `limit` would show a pause with a time.
-        if announce && !auth {
-            self.log(ManagerEvent::Limit {
-                until: Some(self.held_until(until_ms, now)),
-            });
-        }
         let before = self.state.limit.as_ref();
         self.state.limit = Some(LimitHold {
             until_ms,
@@ -1173,6 +1166,14 @@ impl Manager {
             account: true,
         });
         self.save();
+        // ^ A `limit` entry names a reset the owner waits for. A sign-in has none: its `stopped`
+        // entry says to sign in again, and a `limit` would show a pause with a time. It follows
+        // the saved hold: whoever sees the entry finds the hold in the state.
+        if announce && !auth {
+            self.log(ManagerEvent::Limit {
+                until: Some(self.held_until(until_ms, now)),
+            });
+        }
     }
 
     /// Back on the own agent in a fresh conversation that opens with the handover and the
@@ -1906,19 +1907,9 @@ impl Manager {
                 return;
             }
             let until_ms = limit::resume_at(None, attempt, now);
-            self.log(ManagerEvent::Stopped {
-                reason: reason.clone(),
-            });
-            self.log(ManagerEvent::Limit {
-                until: Some(status::resume_time(until_ms, now)),
-            });
-            if attempt == 1 {
-                self.alert_failed(&reason, Some(until_ms));
-            }
             let rotate = attempt == ERROR_ROTATE_ATTEMPTS;
-            if rotate {
-                self.rotate(0, Some(reason));
-            }
+            // ^ The hold is saved before the entries and the alert that announce it: whoever
+            // sees the `stopped` entry finds the hold in the state.
             self.state.limit = Some(LimitHold {
                 until_ms,
                 attempt,
@@ -1929,6 +1920,18 @@ impl Manager {
                 account: false,
             });
             self.save();
+            self.log(ManagerEvent::Stopped {
+                reason: reason.clone(),
+            });
+            self.log(ManagerEvent::Limit {
+                until: Some(status::resume_time(until_ms, now)),
+            });
+            if attempt == 1 {
+                self.alert_failed(&reason, Some(until_ms));
+            }
+            if rotate {
+                self.rotate(0, Some(reason));
+            }
             self.report(runtime::AgentState::Error);
             return;
         }
