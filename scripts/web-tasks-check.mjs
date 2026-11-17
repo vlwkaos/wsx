@@ -4375,7 +4375,8 @@ await closeSheet("the page", plansChat);
   // ^ What another chat said shows in a folded "Talked to <chat>" row (TalkLine): the helper opens every talk, then finds the
   // post's bubble or the message under its writer's name.
   const said = ".log .bubble, .log [data-talk] .reply-open";
-  const openTalks = "document.querySelectorAll('.log [data-talk] .fold-toggle[aria-expanded=\"false\"]').forEach((node) => node.click())";
+  // ^ A run of three or more muted rows is a closed "N updates" fold that holds its Talked to rows: open every fold.
+  const openTalks = "document.querySelectorAll('.log .fold-toggle[aria-expanded=\"false\"]').forEach((node) => node.click())";
   const findSaid = (needle) => `(() => { ${openTalks}; return [...document.querySelectorAll(${JSON.stringify(said)})].find((node) => node.textContent.includes(${JSON.stringify(needle)})); })()`;
   const chipsIn = (needle) => evaluate(`(() => { const bubble = ${findSaid(needle)};
     return bubble && { text: bubble.textContent.trim().replace(/\\s+/g, ' '),
