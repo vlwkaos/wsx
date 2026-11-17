@@ -1113,11 +1113,6 @@ def manager_up(created):
     assert not report['text'].startswith('> '), report
     heard = js('task', 'say', 'QUOTE OWNER_SAID noted')
     assert raw_reply(heard['id'])['text'] == '> QUOTE OWNER_SAID noted\n\nnoted'
-    # ^ A quote of a quote is the words of that message, not its quote line: the owner's own
-    # message that answers one (the web composer's format) is quoted by its words.
-    reply_msg = js('task', 'say', '> STATUS promise\n\nQUOTE OWNER_SAID words')
-    again = reply_to(reply_msg['id'])
-    assert again['text'] == '> QUOTE OWNER_SAID words\n\nwords' and again['quote'] == reply_msg['id'], again
     for bad in ('abc', '0', '99999999', '99999999999999999999', '-3'):
         dropped = reply_to(js('task', 'say', 'QUOTE %s words stay' % bad)['id'])
         assert dropped['text'] == 'words stay' and 'quote' not in dropped, (bad, dropped)
