@@ -6689,7 +6689,6 @@ def part_host(created=None):
     # ^ Where each goes (`flow`, docs/tasks.md "Where a task goes"): the parent counts its children
     # by state, each child lands into the parent.
     assert rows[parent]['flow']['phrase'].endswith('0/2 landed, 2 ready'), rows[parent]['flow']
-    assert rows[parent]['flow']['children'] == [{'id': first, 'state': 'ready'}, {'id': second, 'state': 'ready'}], rows[parent]['flow']
     assert rows[first]['flow']['phrase'] == 'step 1/2 of #%d' % parent and rows[first]['flow']['into'] == '#%d' % parent, rows[first]['flow']
     assert rows[second]['flow']['phrase'] == 'step 2/2 of #%d' % parent, rows[second]['flow']
     # ^ The list's order is the ledger's one rule (wsx-core `task::chains`): two chains and the

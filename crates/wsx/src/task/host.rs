@@ -16,9 +16,10 @@ use super::trial;
 use super::RECORDED_BY_HOST;
 use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, VecDeque};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wsx_core::config::project::{load_project_config, load_task_config};
@@ -4761,17 +4762,27 @@ fn run_ci(
         // older attempt's log goes first, with its line. ref: docs/tasks.md "Status"
         let _ = std::fs::remove_file(log);
         let _ = events.send(Event::CiQueued);
-        let ended = Arc::new(AtomicBool::new(false));
+        let (ended, ended_rx) = channel::<()>();
         let watch = {
-            let (ended, events, log) = (ended.clone(), events.clone(), log.to_path_buf());
+            let (events, log) = (events.clone(), log.to_path_buf());
             std::thread::spawn(move || {
-                while !ended.load(Ordering::Relaxed) {
-                    let said = std::fs::read(&log).unwrap_or_default();
+                // ^ Only the bytes since the last read, with the marker's length kept for a line split in two reads.
+                let mut from = 0u64;
+                while ended_rx
+                    .recv_timeout(Duration::from_millis(500))
+                    .is_err_and(|e| e == RecvTimeoutError::Timeout)
+                {
+                    let mut said = Vec::new();
+                    if let Ok(mut file) = std::fs::File::open(&log) {
+                        if file.seek(SeekFrom::Start(from)).is_ok() {
+                            let _ = file.read_to_end(&mut said);
+                        }
+                    }
                     if String::from_utf8_lossy(&said).contains(CI_STARTED) {
                         let _ = events.send(Event::CiStarted);
                         return;
                     }
-                    std::thread::sleep(Duration::from_millis(500));
+                    from = (from + said.len() as u64).saturating_sub(CI_STARTED.len() as u64);
                 }
             })
         };
@@ -4784,7 +4795,7 @@ fn run_ci(
             }
             None => Ok(run_check(working_copy, ci, env, CI_TIMEOUT, log)),
         };
-        ended.store(true, Ordering::Relaxed);
+        drop(ended);
         let _ = watch.join();
         let ran = ran?;
         let retry = (ran.exit == Some(TEMPFAIL) && attempt < CI_TRIES)

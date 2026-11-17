@@ -669,7 +669,7 @@ fn detail(task: &Value, rows: &[TaskRow]) -> Vec<Line<'static>> {
             ),
         ]),
     ];
-    // ^ Held, after, step, parent, children and blocks: wsx-core `view::flow`, as the web's sheet.
+    // ^ Held, after, step and parent: wsx-core `view::flow`, as the web's sheet.
     let waits: Vec<String> = [
         flow["after"]["task"].as_u64().map(|after| {
             format!(

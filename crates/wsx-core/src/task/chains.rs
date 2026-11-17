@@ -197,18 +197,6 @@ impl Chains {
     pub fn order(&self) -> &[u32] {
         &self.order
     }
-
-    /// The tasks of `id`'s group in list order: upstream, the task itself, downstream.
-    pub fn group_of(&self, id: u32) -> Vec<u32> {
-        let Some(place) = self.place(id) else {
-            return Vec::new();
-        };
-        self.order
-            .iter()
-            .copied()
-            .filter(|other| self.places[other].root == place.root)
-            .collect()
-    }
 }
 
 /// Two tasks that wait for each other never end by themselves: the lowest number of each loop

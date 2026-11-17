@@ -31,8 +31,6 @@ const STAGES = {
 export const taskStage = (task) => STAGES[task?.stage] ?? [task?.stage ?? "", "muted"];
 export const taskLink = (project, task) => `#/p/${project}/t/${task}`;
 
-// A task the agents work on.
-export const running = (task) => task?.stage === "working";
 // ^ A task whose worker's turn runs: nothing else holds it (the server's `status.waits_on`,
 // wsx-core `status::waits_on`, holder `host`). Its dot pulses; a ready task, a plan, a paused
 // worker, a hand-off, a limit or its checks keep a calm dot.

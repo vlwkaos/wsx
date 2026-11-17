@@ -476,8 +476,7 @@ pub fn children(project_id: &str, parent: u32) -> Result<Vec<(TaskDir, TaskRecor
 /// Where a task stands among the others and where it goes, the one read every view shows:
 /// `held` (the reason), `after` (`{task, because}`), `parent`, `into` (while open, the branch it
 /// lands into: the default branch or `#<parent>`), `step` (`{name, at, of}` while it works on a
-/// workflow step), `children` (`[{id, state}]`), `blocks` (the open tasks that wait for it,
-/// `status.waited_by`), `place` (`chains::Place`: root, under, depth, holds, band, sibling; the
+/// workflow step), `place` (`chains::Place`: root, under, depth, holds, band, sibling; the
 /// order of every list) and `phrase`, the row's few words that the status label (`status`) does
 /// not say already: "build 2/3 · frees #482", "after #453", "held: deploy freeze",
 /// "2/4 landed, 1 working", "queued 12 min". Empty for a finished task.
@@ -608,8 +607,6 @@ pub fn flow(
         "parent": record.parent,
         "into": into,
         "step": step.map(|step| json!({ "name": step.name, "at": record.step + 1, "of": record.steps.len() })),
-        "children": children.iter().map(|child| json!({ "id": child.id, "state": child.state })).collect::<Vec<_>>(),
-        "blocks": status.waited_by.iter().map(|waiter| waiter.task).collect::<Vec<_>>(),
         "place": place,
         // ^ Who it waits on (`status::waits_on`): clients group and word by it, never derive it.
         "waits_on": status.waits_on,

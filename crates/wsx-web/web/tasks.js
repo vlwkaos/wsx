@@ -63,7 +63,7 @@ const actionOf = (key) => {
 // icon in that column; the label (two lines at most) and the one line under it, with its glyph;
 // the row's actions in a line of their own. The text opens `href`, or `onOpen` when it is a
 // button. `nest` and `group` come from the server's `flow.place` (a task in a chain).
-function ListRow({ rowKey, leaving, project, task = null, icon, tone, glyph, label, context, href, onOpen, openLabel, actions, error, nest = 0, group = null }) {
+function ListRow({ rowKey, leaving, task = null, icon, tone, glyph, label, context, href, onOpen, openLabel, actions, error, nest = 0, group = null }) {
   const line = [context].flat().map((text, at) => text && html`<span class="row-context" key=${at}>${glyph && html`<span class="row-glyph" data-tone=${tone}><${Icon} name=${glyph} /></span>`}${text}</span>`);
   const body = html`<span class="row-label">${label}</span>${line}`;
   return html`
@@ -150,7 +150,7 @@ function NeedRow({ project, item, index, onActing, onFailed, onMention, onReply,
     : item.kind === "land" && trial?.stage === "live" ? "on the live site: try it" : [item.status.label, item.flow?.phrase].filter(Boolean).join(" · ");
   const asks = item.kind === "ask";
   return html`
-    <${ListRow} rowKey=${itemKey(item)} leaving=${leaving} project=${project} task=${item.kind === "approval" || asks ? null : item.task} icon=${asks ? "reply" : "unchecked"} tone=${KIND_TONE[item.kind]}
+    <${ListRow} rowKey=${itemKey(item)} leaving=${leaving} task=${item.kind === "approval" || asks ? null : item.task} icon=${asks ? "reply" : "unchecked"} tone=${KIND_TONE[item.kind]}
       label=${asks || item.kind === "approval" ? item.label : item.title} context=${context}
       href=${item.task != null ? taskLink(project, item.task) : null}
       onOpen=${asks ? () => onShow(item.id) : null} openLabel=${`Show the question: ${item.label}`}
@@ -160,7 +160,7 @@ function NeedRow({ project, item, index, onActing, onFailed, onMention, onReply,
 // An action the owner approved in the chat that runs when its task lands: no choice left, so no
 // button (docs/tasks.md "Approvals").
 const WaitingRow = ({ project, item }) => html`
-  <${ListRow} rowKey=${`wait-${item.approval}`} project=${project} icon="pause" label=${item.label}
+  <${ListRow} rowKey=${`wait-${item.approval}`} icon="pause" label=${item.label}
     context=${`Runs when #${item.after} lands`} href=${taskLink(project, item.after)} />`;
 
 // An open task in the Tasks list: its number, title and `rowLine`; a task in a chain nests under
@@ -169,7 +169,7 @@ const WaitingRow = ({ project, item }) => html`
 const TaskRow = ({ project, task, leaving, group }) => {
   const { glyph, text } = rowLine(task);
   return html`
-    <${ListRow} rowKey=${`run-${task.id}`} leaving=${leaving} project=${project} task=${task.id} glyph=${glyph} tone=${glyph === "play" ? "working" : null}
+    <${ListRow} rowKey=${`run-${task.id}`} leaving=${leaving} task=${task.id} glyph=${glyph} tone=${glyph === "play" ? "working" : null}
       label=${task.title} context=${text} href=${taskLink(project, task.id)} nest=${task.flow.place.depth} group=${group} />`;
 };
 
@@ -185,7 +185,7 @@ function CheckingRow({ project, item, index, onActing, onFailed, onReply, leavin
     ${button("Fail", "fail", "danger", () => decide("fail"), { "aria-label": `Fail: ${item.check}` })}
     ${button("Pass", "pass", "accent", () => decide("pass"), { "aria-label": `Pass: ${item.check}` })}`;
   return html`
-    <${ListRow} rowKey=${item.id} leaving=${leaving} project=${project} task=${item.task} label=${item.check}
+    <${ListRow} rowKey=${item.id} leaving=${leaving} task=${item.task} label=${item.check}
       context=${`Passes if ${item.pass_if}`} href=${`#/p/${project}/checks/${item.id}`} actions=${actions} error=${status.error} />`;
 }
 
@@ -224,7 +224,7 @@ function RoutineRow({ project, row, now, onList, onShow }) {
   const { tone, message, context } = routineRow(row, now);
   const actions = can("task_act") && html`<${RoutineActions} row=${row} busy=${status.busy} onAct=${(verb) => doAct(async () => onList(await routineAct(project, row.name, verb)))} />`;
   return html`
-    <${ListRow} rowKey=${`routine-${row.name}`} project=${project} icon="routines" tone=${tone} label=${row.name} context=${context}
+    <${ListRow} rowKey=${`routine-${row.name}`} icon="routines" tone=${tone} label=${row.name} context=${context}
       onOpen=${message != null ? () => onShow(message) : null} openLabel=${`Show the message of ${row.name}'s last run`}
       actions=${actions} error=${status.error} />`;
 }
