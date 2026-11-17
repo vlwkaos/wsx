@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""Writes the static mock pages of docs/design/chat-system.md (task 508) next to this file.
+
+Usage: build.py   (then capture.mjs shoots them)
+Each page links the real crates/wsx-web/web/app.css, the default theme's tokens (theme.css, written from
+theme.toml) and mock.css (the few rules a build would add). The data is made up in the shape of real chats.
+Dark is the page default; a light page sets data-scheme="light" on <html>, as the client does.
+"""
+import html
+import pathlib
+import re
+
+HERE = pathlib.Path(__file__).parent
+TOML = HERE / "../../../crates/wsx-web/web/themes/default/theme.toml"
+
+
+def tokens():
+    """The default theme's [tokens] and [tokens_dark] as theme.rs writes them."""
+    block, found = None, {"tokens": [], "tokens_dark": []}
+    for line in TOML.read_text().splitlines():
+        if line.startswith("["):
+            block = line.strip("[]")
+        elif block in found and re.match(r"^[a-z0-9-]+ = ", line):
+            key, value = line.split(" = ", 1)
+            found[block].append("--%s:%s" % (key, value.strip().strip('"')))
+    return found
+
+
+css = tokens()
+(HERE / "theme.css").write_text(
+    ':root{color-scheme:light;%s}\n:root:not([data-scheme="light"]),[data-scheme="dark"]{color-scheme:dark;%s}\n'
+    % (";".join(css["tokens"]), ";".join(css["tokens_dark"])))
+PATH = {
+    "play": "M7 4.5v11l8.5-5.5z",
+    "unchecked": "M10 3 18 17H2ZM10 8.5v3.5M10 14.5h.01",
+    "back": "M12.5 4.5 7 10l5.5 5.5",
+    "plus": "M10 4.5v11M4.5 10h11",
+    "fail": "M5.5 5.5l9 9M14.5 5.5l-9 9",
+    "search": "M8.5 3.5a5 5 0 1 0 0 10 5 5 0 0 0 0-10ZM12.2 12.2l4.3 4.3",
+    "pause": "M7 4.5v11M13 4.5v11",
+    "pass": "M4.5 10.5l3.5 3.5 7-8",
+    "send": "M10 16V4.5M5 9l5-5 5 5",
+}
+e = html.escape
+
+
+def icon(name):
+    return ('<svg class="icon" viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" '
+            'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="%s" /></svg>' % PATH[name])
+
+
+def trays(play=0, you=0):
+    out = ""
+    if you:
+        out += '<span class="tray" data-kind="you" data-tone="attention">%s<span class="tray-count">%d</span></span>' % (icon("unchecked"), you)
+    if play:
+        out += '<span class="tray" data-kind="tasks">%s<span class="tray-count">%d</span></span>' % (icon("play"), play)
+    return '<span class="trays">%s</span>' % out if out else ""
+
+
+# name, the projects the chat involves, the message, unread, time, running tasks, items for you
+CHATS = [
+    ("wsx", "wsx", "Task 496 waits for your check", True, "2m ago", 3, 2),
+    ("Fee table", "studio-app", "Draft ready: the table has 3 fee lines", True, "14m ago", 0, 1),
+    ("machine", "dotfiles, shopfront", "Both repos are in sync", False, "52m ago", 0, 0),
+    ("research", "wsx", "I found two ways to cut the poll; notes are in the log", False, "1h ago", 1, 0),
+    ("studio-app", "studio-app", "Nothing to do", False, "3h ago", 0, 0),
+]
+
+
+def chat_row(name, projects, line, news, time, play, you):
+    mark = '<span class="news-mark" role="img" aria-label="New message"></span>' if news else ""
+    return (
+        '<li class="row row-slide" data-news="%s"><a class="row-link chat-row" href="#"><span class="row-main"><span class="row-head">'
+        '<span class="row-work">%s<span class="row-label">%s</span></span>%s<span class="time">%s</span></span>'
+        '<span class="row-projects">%s</span><span class="row-context"%s>%s</span></span></a>'
+        '<button class="row-remove" data-quiet type="button" aria-label="Dismiss chat" title="Dismiss">%s</button></li>'
+        % ("" if news else "x", mark, e(name), trays(play, you), time, e(projects), " data-news" if news else "", e(line), icon("fail")))
+
+
+def for_you_row():
+    return (
+        '<li class="row"><a class="row-link chat-row" href="#"><span class="row-main"><span class="row-head"><span class="row-work">'
+        '<span class="row-label">For you</span></span><span class="trays"><span class="tray" data-kind="you" data-tone="attention">%s'
+        '<span class="tray-count">5</span></span></span></span><span class="row-context">5 items in 3 chats: 2 questions, 1 approval, 2 checks</span></span></a></li>'
+        % icon("unchecked"))
+
+
+def home():
+    return ('<div class="page"><div class="home-top"><h1 class="title">Home</h1><button class="icon-button new-chat" type="button" aria-label="New chat">%s</button></div>'
+            '<div class="scroll"><ul class="rows home-rows" aria-label="Chats">%s%s</ul></div></div>'
+            % (icon("plus"), for_you_row(), "".join(chat_row(*c) for c in CHATS)))
+
+
+def bar(title, state, menu=False, items=("Rename chat", "Close chat")):
+    more = ('<div class="more"><button class="icon-button more-button" type="button" aria-label="More" aria-haspopup="menu" aria-expanded="%s"><span aria-hidden="true">⋯</span></button>%s</div>'
+            % ("true" if menu else "false", '<div class="more-menu" role="menu">%s</div>' % "".join('<button type="button" role="menuitem">%s</button>' % i for i in items) if menu else ""))
+    return ('<header class="bar"><a class="icon-button" href="#" aria-label="Back">%s</a><div class="bar-title"><span class="bar-label">%s</span>'
+            '<span class="bar-state">%s</span></div><div class="bar-tools"><button class="icon-button" type="button" aria-label="Find">%s</button>%s</div></header>'
+            % (icon("back"), title, e(state), icon("search"), more))
+
+
+def strip(active):
+    chips = [("Chat", 0), ("Fee table", 1), ("Poll cut", 0)]
+    return ('<nav class="threads" aria-label="Threads">%s<button class="thread-new" type="button" aria-label="New thread">%s</button></nav>'
+            % ("".join('<a class="thread-chip" href="#" aria-current="%s">%s%s</a>' % ("true" if n == active else "false", e(n), '<span class="thread-ask">%d</span>' % k if k else "")
+                       for n, k in chips), icon("plus")))
+
+
+def bubble(side, text, author=None, time="", first=True, asks=False):
+    return ('<div class="bubble" data-side="%s"%s%s>%s<div class="bubble-box">%s</div><span class="bubble-time">%s</span></div>'
+            % (side, " data-first" if first else "", " data-asks" if asks else "",
+               '<span class="bubble-author">%s</span>' % author if author else "", text, time))
+
+
+def note(text):
+    return '<p class="note note-row">%s</p>' % text
+
+
+def composer(token=None, you=2, tasks=3):
+    pills = ('<div class="pills" role="group"><button class="pill" type="button" data-kind="you" data-tone="attention">%s<span class="pill-count">%d</span><span class="pill-label">For you</span></button>'
+             '<button class="pill" type="button" data-kind="tasks">%s<span class="pill-count">%d</span><span class="pill-label">Tasks</span></button></div>' % (icon("unchecked"), you, icon("play"), tasks))
+    return ('<div class="composer">%s<div class="composer-row"><button class="icon-button" type="button" aria-label="Attach">%s</button><div class="composer-input"><textarea class="composer-field" rows="1" aria-label="Message" placeholder="%s"></textarea></div>'
+            '<button class="button button-primary composer-send" type="button" aria-label="Send"><span class="send-mark">%s</span><span class="send-text">Send</span></button></div></div>' % (pills, icon("plus"), "Message in " + token if token else "Message", icon("send")))
+
+
+def tasks_in(rows):
+    return ('<div class="reservoir inline thread-tasks"><ul class="reservoir-list" aria-label="Tasks of this thread">%s</ul></div>'
+            % "".join(task_row(num, title, glyph, tone, now, True) for num, title, glyph, tone, now in rows))
+
+
+def chat_trunk():
+    body = (bubble("out", "What is left before the 0.43 release?", time="14:01")
+            + bubble("in", "Two things: the changelog (#97, working) and your check of #96. Nothing else blocks the tag.", "manager", "14:02")
+            + note('<span class="chip">#94</span> landed · 2 of 2 checks')
+            + note("Talked to research · Show")
+            + note("Opened the thread <b>Fee table</b> from your message of 13:40 · #96")
+            + note("<b>Poll cut</b> closes tomorrow. Write in it to keep it open."))
+    return '<div class="page manager">%s%s<div class="chat"><div class="scroll chat-body">%s</div>%s</div></div>' % (
+        bar("wsx", "", menu=False), strip("Chat"), body, composer())
+
+
+def thread_page(menu=False):
+    body = (tasks_in([(96, "Fee table: add the setup fee line", "unchecked", "attention", "waits for your check · 2 of 2 checks"),
+                      (98, "Fee table: round to whole cents", "play", "working", "working · build 2/3")])
+            + note("Thread opened 13:40 · 1 question for you")
+            + bubble("out", "Put the fee table in the invoice page too.", time="13:40")
+            + bubble("in", "Started #96 for the invoice page and #98 for the rounding. One question: which fee line goes first, setup or monthly?", "manager", "13:44", asks=True)
+            + note('<span class="chip">#98</span> working · build 2/3'))
+    return '<div class="page manager">%s%s<div class="chat"><div class="scroll chat-body">%s</div>%s</div></div>' % (
+        bar('<span class="bar-parent">wsx ›</span> Fee table', "open since 13:40", menu=menu, items=("Rename thread", "Merge into…", "Close thread")),
+        strip("Fee table"), body, composer(token="Fee table", you=1, tasks=2))
+
+
+def item(label, ctx, glyph, tone, actions):
+    acts = "".join('<button class="button need-action" type="button" data-tone="%s">%s</button>' % (t, e(w)) for w, t in actions)
+    return ('<li class="need"><div class="row-link"><span class="row-main row-open"><span class="row-label">%s</span><span class="row-context"><span class="row-glyph" data-tone="%s">%s</span>%s</span></span>'
+            '<span class="row-actions">%s</span></div></li>' % (e(label), tone, icon(glyph), e(ctx), acts))
+
+
+def band(text, kind="you"):
+    return '<li class="reservoir-band" data-band="%s">%s</li>' % (kind, e(text))
+
+
+def for_you():
+    rows = (band("wsx › Fee table")
+            + item("Which fee line goes first, setup or monthly?", "asks you · 16 min", "unchecked", "attention", [("Answer", "accent")])
+            + item("Check #96: the invoice page shows the setup fee", "to check · passes if the page shows 3 lines", "pass", "attention", [("Pass", "accent"), ("Fail", "danger")])
+            + band("wsx › trunk")
+            + item("Approve land #97", "approval · changelog for 0.43", "unchecked", "attention", [("Approve", "accent"), ("Deny", "danger")])
+            + band("studio-app › Voice")
+            + item("Pause rule: 2 s or 3 s?", "asks you · 3 h", "unchecked", "attention", [("Answer", "accent")])
+            + band("machine › trunk")
+            + item("#12 failed: 1 of 2 checks", "dotfiles · the sync check failed", "fail", "danger", [("Open", "")]))
+    return ('<div class="page manager"><header class="bar"><a class="icon-button" href="#" aria-label="Back">%s</a><div class="bar-title"><span class="bar-label">For you</span>'
+            '<span class="bar-state">5 items</span></div></header><div class="scroll"><div class="reservoir inline"><ul class="reservoir-list" aria-label="For you">%s</ul></div></div></div>'
+            % (icon("back"), rows))
+
+
+def task_row(num, title, glyph, tone, now, inline):
+    id_ = '<span class="row-id">#%d</span>' % num
+    return ('<li class="need"><div class="row-link">%s<span class="row-main row-open"><span class="row-label">%s%s</span><span class="row-context">'
+            '<span class="row-glyph" data-tone="%s">%s</span>%s</span></span></div></li>'
+            % ("" if inline else '<span class="row-num">#%d</span>' % num, e(title), " " + id_ if inline else "", tone, icon(glyph), e(now)))
+
+
+def tasks_list(after):
+    you = [(96, "Fee table: add the setup fee line", "unchecked", "attention", "waits for your check"),
+           (12, "Sync the shell profile", "fail", "danger", "failed · 1 of 2 checks")]
+    moving = [(98, "Fee table: round to whole cents", "play", "working", "build 2/3"), (97, "Changelog for 0.43", "play", "working", "CI check-run 12 min")]
+    waiting = [(99, "Release tag 0.43", "pause", "muted", "after #97")]
+    rows = ""
+    if after:
+        rows += ('<li class="need"><a class="row-link row-wait" href="#"><span class="row-main row-open"><span class="row-label">2 wait for you</span>'
+                 '<span class="row-context"><span class="row-glyph" data-tone="attention">%s</span>Open For you</span></span></a></li>' % icon("unchecked"))
+    else:
+        rows += band("For you") + "".join(task_row(*r, inline=False) for r in you)
+    rows += band("Moving", "moving") + "".join(task_row(*r, inline=after) for r in moving)
+    rows += band("Waiting", "waiting") + "".join(task_row(*r, inline=after) for r in waiting)
+    return ('<div class="page manager"><header class="bar"><a class="icon-button" href="#" aria-label="Back">%s</a><div class="bar-title"><span class="bar-label">Tasks</span>'
+            '<span class="bar-state">wsx</span></div></header><div class="scroll"><div class="reservoir%s"><ul class="reservoir-list" aria-label="Tasks">%s</ul></div></div></div>'
+            % (icon("back"), " inline" if after else "", rows))
+
+
+def page(file, body, light, label):
+    scheme = ' data-scheme="light"' if light else ""
+    (HERE / file).write_text(
+        '<!doctype html>\n<html lang="en"%s><head><meta charset="utf-8"><title>%s</title><meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<link rel="stylesheet" href="../../../crates/wsx-web/web/app.css"><link rel="stylesheet" href="theme.css"><link rel="stylesheet" href="mock.css"></head>'
+        '<body data-theme="default"><div id="app"><div class="app"><main class="screen">%s</main></div></div></body></html>\n' % (scheme, label, body))
+
+
+PAGES = {
+    "home": (home(), "Home"),
+    "chat": (chat_trunk(), "A chat: trunk and thread strip"),
+    "thread": (thread_page(), "A thread window"),
+    "thread-menu": (thread_page(menu=True), "A thread window, menu open"),
+    "foryou": (for_you(), "For you, all chats"),
+    "tasks-before": (tasks_list(False), "Tasks list today"),
+    "tasks-after": (tasks_list(True), "Tasks list, one For you list"),
+}
+for light in (False, True):
+    for name, (body, label) in PAGES.items():
+        page("%s-%s.html" % (name, "light" if light else "dark"), body, light, label)

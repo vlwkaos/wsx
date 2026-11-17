@@ -1,0 +1,31 @@
+/* Chat system mockups (task 508): the rules a build would add to app.css. Tokens only. */
+
+/* Home: line 2 is the projects the chat involves, line 3 the message (owner choice, msg 5242). */
+.row-projects { font-size: var(--font-size-sm); color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The chat's threads: one strip under the bar, "Chat" is the trunk. Scrolls sideways on a phone. */
+.threads { scrollbar-width: none; flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2); overflow-x: auto; padding: var(--space-2) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); }
+.thread-chip {
+  flex: none; display: inline-flex; align-items: center; gap: var(--space-1); min-height: var(--size-control); padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--color-hairline); border-radius: calc(var(--size-control) / 2); color: var(--color-muted); text-decoration: none; font-size: var(--font-size-sm);
+}
+.thread-chip[aria-current="true"] { color: var(--color-text); border-color: var(--color-accent); }
+.thread-ask { min-width: var(--space-4); text-align: center; border-radius: var(--space-4); background: var(--color-attention); color: var(--color-surface); font-size: var(--font-size-sm); font-weight: var(--font-weight-strong); }
+.thread-new { flex: none; width: var(--size-control); height: var(--size-control); display: inline-flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--color-muted); }
+
+/* A thread window: its tasks above the rows, the composer names the thread. */
+.thread-tasks { border-top: 0; max-height: none; }
+.thread-tasks .row-link, .thread-tasks .row-link:has(> .row-open) { padding-inline: 0; }
+.composer-field::placeholder { color: var(--color-muted); }
+.chat-body { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) var(--column-inset, var(--space-4)); }
+.note-row { font-size: var(--font-size-sm); color: var(--color-muted); margin: 0; }
+.chip { display: inline-block; padding: 0 var(--space-1); border-radius: var(--radius-control); background: var(--color-raised); }
+.bar-parent { color: var(--color-muted); font-weight: normal; }
+
+/* One list, no number column: the number follows the title; the line under it takes the full width. */
+.reservoir.inline { --num-col: 0px; }
+.reservoir.inline .row-link, .reservoir.inline .row-link:has(> .row-open) { grid-template-columns: minmax(0, 1fr); }
+.reservoir.inline .row-link > .row-main, .reservoir.inline .row-link > .row-open { grid-column: 1; }
+.reservoir.inline .row-actions { grid-column: 1; }
+.row-id { color: var(--color-muted); font-weight: normal; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.row-wait { text-decoration: none; color: inherit; }
