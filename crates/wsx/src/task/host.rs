@@ -112,6 +112,10 @@ enum Event {
     CheckQueued(String),
     /// Checks took the slot, or run without it after this error.
     CheckSlot(Option<String>),
+    /// A `ci:` run starts and waits for GitHub to start its jobs.
+    CiQueued,
+    /// Its jobs started: `ci-scenario.py` printed `CI_STARTED`.
+    CiStarted,
     /// A `ci:` run ended outside the tree and runs again after the wait (seconds).
     CiRetry {
         command: String,
@@ -685,6 +689,8 @@ impl Host {
                 }
                 Event::CheckQueued(reason) => self.check_queued(reason),
                 Event::CheckSlot(error) => self.check_slot(error),
+                Event::CiQueued => self.log(LogEvent::CiQueued {}),
+                Event::CiStarted => self.log(LogEvent::CiStarted {}),
                 Event::CiRetry {
                     command,
                     attempt,
@@ -4750,17 +4756,37 @@ fn run_ci(
 ) -> Result<CheckResult, slot::Slot> {
     let mut attempt = 1;
     loop {
+        // ^ The run waits for GitHub until `ci-scenario.py` prints that its jobs started: the
+        // log is read while it runs, so the record knows a queued run from a running one. An
+        // older attempt's log goes first, with its line. ref: docs/tasks.md "Status"
+        let _ = std::fs::remove_file(log);
+        let _ = events.send(Event::CiQueued);
+        let ended = Arc::new(AtomicBool::new(false));
+        let watch = {
+            let (ended, events, log) = (ended.clone(), events.clone(), log.to_path_buf());
+            std::thread::spawn(move || {
+                while !ended.load(Ordering::Relaxed) {
+                    let said = std::fs::read(&log).unwrap_or_default();
+                    if String::from_utf8_lossy(&said).contains(CI_STARTED) {
+                        let _ = events.send(Event::CiStarted);
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            })
+        };
         let ci = ci_command(command).unwrap_or_default();
         let ran = match lane {
             Some(label) => {
                 let (ran, free) = run_ci_watched((working_copy, env, log), ci, label);
-                if let Some(slot) = free.filter(|_| !halt.load(Ordering::Relaxed)) {
-                    return Err(slot);
-                }
-                ran
+                free.filter(|_| !halt.load(Ordering::Relaxed))
+                    .map_or(Ok(ran), Err)
             }
-            None => run_check(working_copy, ci, env, CI_TIMEOUT, log),
+            None => Ok(run_check(working_copy, ci, env, CI_TIMEOUT, log)),
         };
+        ended.store(true, Ordering::Relaxed);
+        let _ = watch.join();
+        let ran = ran?;
         let retry = (ran.exit == Some(TEMPFAIL) && attempt < CI_TRIES)
             .then(|| ci_retry_wait(attempt, &ran.output))
             .flatten()

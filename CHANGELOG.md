@@ -5,6 +5,7 @@
 ### Changed
 
 - CI: the `web` scenario's `chat` part runs on Ubuntu and its `tasks` part stays on macOS, where task agents run (the Seatbelt boundary); the `weblinux` probe scenario is gone, and the Linux jobs restore the Zig packages and the Rust build that a push to main saves.
+- Tasks: a task whose checks wait in a queue (the machine's check slot, or a `ci:` run whose jobs GitHub has not started) is in *Waiting*, held by `queue` (`status.waits_on`), and its row says `queued 12 min`; *Moving* means an agent turn or a check that runs now. The task host logs `ci_queued` and `ci_started` (the line `scripts/ci-scenario.py` prints when the jobs start).
 
 ## [0.43.0] - 2026-11-16
 

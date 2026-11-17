@@ -35,7 +35,7 @@ wsx task commit <file>... -m <message> [--owner-said <id>] --json   # commit mai
 | File | Content | Limit |
 |---|---|---|
 | `task.json` | id, project, base, branch `wsx/t<n>`, working copy, pane, adapter, model, tools, checks, agent session, state, revision, `created_by` (`owner` or `chat:<name>`, the chat that created it, of this or another project: see Chats), `small`, `simplified`, `simplify_asked` (the simplify check, see Workflow), `hold` (why the owner tries it first), `after` (`{task, text, since_unix_ms}`: it waits for that task to land), `files` (expected path globs), `plan` (true until a `--plan` task's first result), `waiting` (`{on, reason}` while the state is `waiting`, on `check_slot` while checks wait for the check slot, on `check_run` while a result waits for its check-run, on `land_stopped` while a ready task's landing stopped, and on `asks` while a ready task's result asks the owner; on `limit` and `check_run` also `until_ms`) | 64 KiB |
-| `log.jsonl` | append-only: `created`, `message{prompt\|steer\|add}`, `agent` (short progress; `said: true` on the worker's own words, not a tool call), `blocked{denials}`, `result`, `checks`, `check_retry`, `check_run`, `ci_retry`, `check_queued{reason}`, `disk_wait{free_mb, min_gb}`, `revision`, `preview{url, port}`, `hand{by, dropped}`, `handback{by, commits}`, `hold{reason, by}`, `after{task, text, by}` (`task` null: the wait was ended by hand), `after_ended{task, landed}`, `limit_wait{until_ms}`, `ping{usage}`, `trial{revision, commit}`, `trial_ended{reason}`, `stopped`, `closed` | 8 MiB for progress, 16 MiB hard |
+| `log.jsonl` | append-only: `created`, `message{prompt\|steer\|add}`, `agent` (short progress; `said: true` on the worker's own words, not a tool call), `blocked{denials}`, `result`, `checks`, `check_retry`, `check_run`, `ci_retry`, `check_queued{reason}`, `ci_queued`, `ci_started`, `disk_wait{free_mb, min_gb}`, `revision`, `preview{url, port}`, `hand{by, dropped}`, `handback{by, commits}`, `hold{reason, by}`, `after{task, text, by}` (`task` null: the wait was ended by hand), `after_ended{task, landed}`, `limit_wait{until_ms}`, `ping{usage}`, `trial{revision, commit}`, `trial_ended{reason}`, `stopped`, `closed` | 8 MiB for progress, 16 MiB hard |
 | `result.json` | latest worker result and check results and `denials` | 256 KiB |
 | `report.md` | report of the latest revision | |
 | `captures/` | the To check captures and posters kept at the land; kept within `tasks.captureBudgetMb` of the project (see To check) | 2 MiB each image, 25 MiB each video |
@@ -88,11 +88,12 @@ One function, `task::status::status` in `crates/wsx-core/src/task/status.rs`, pu
 | `landed` | Landed | on main (the web adds "; the last deploy does not have it yet"). |
 | `closed` | Closed | it ended without landing. |
 
-**Who it waits on.** `task::status::waits_on` is the one rule that says who holds an open task now. It reads `state`, `waiting`, `hold` and `after`, and keeps no stored copy. It gives `{kind, task, since_unix_ms}`, where `kind` is one of `owner`, `manager`, `task` (with the number in `task`), `host`, `check`, `limit` or `disk`. A landed or closed task gives none. `status.waits_on` and `flow.waits_on` carry it, so the web and the TUI read it and never work it out themselves. The stall check, the needs of the owner and the manager's event model read it too.
+**Who it waits on.** `task::status::waits_on` is the one rule that says who holds an open task now. It reads `state`, `waiting`, `hold` and `after`, and keeps no stored copy. It gives `{kind, task, since_unix_ms}`, where `kind` is one of `owner`, `manager`, `task` (with the number in `task`), `host`, `check`, `queue`, `limit` or `disk`. A landed or closed task gives none. `status.waits_on` and `flow.waits_on` carry it, so the web and the TUI read it and never work it out themselves. The stall check, the needs of the owner and the manager's event model read it too.
 
 | Facts | `kind` |
 |---|---|
-| `checking`, or a wait on `check_slot` or `check_run` | `check` |
+| `checking`, or a wait on `check_slot` or `check_run`, whose checks run | `check` |
+| the same, while the checks wait in a queue: the machine's check slot (`check_slot`, since its `check_queued`), or a `ci:` run that has not said its jobs started (`ci_queued` or `ci_retry` newer than any `ci_started`, `check_run` or `checks`; since that entry) | `queue` |
 | a wait on `disk` or `limit` | `disk`, `limit` |
 | a wait on `hand`, `land_stopped` or `asks`; `ready` and held; `failed` | `owner` |
 | a wait on `plan` or `paused` | `manager`, or `task` with an `after` |
@@ -436,7 +437,7 @@ Long work in several steps lands on main once. Any open task becomes a parent wh
 
 ## Where a task goes
 
-The open tasks form a forest: a task sits under the task it waits for (`after`), else under its parent (a task that waits for a sibling nests under that sibling). `wsx_core::task::chains` orders it once: bands by who has the ball (`you`, `moving`, `waiting`; the band of a chain's head, and a task that needs the owner is `you`), then the chain that holds the most work, then the oldest, each task before the tasks that wait for it. The ledger's `open` rows, the web overview's `tasks` and every list draw that order and each row's `flow.place`; no client sorts or counts again.
+The open tasks form a forest: a task sits under the task it waits for (`after`), else under its parent (a task that waits for a sibling nests under that sibling). `wsx_core::task::chains` orders it once: bands by who has the ball (`you`, `moving`, `waiting`; the band of a chain's head, and a task that needs the owner is `you`; a task whose checks wait in a queue, holder `queue`, is `waiting`, so `moving` means an agent turn or a check that runs now; the tasks that wait alone in the queue share one `place.card`, the list's tinted group, and their phrase says `queued 12 min`), then the chain that holds the most work, then the oldest, each task before the tasks that wait for it. The ledger's `open` rows, the web overview's `tasks` and every list draw that order and each row's `flow.place`; no client sorts or counts again.
 
 `wsx_core::task::view::flow` is the one read of where an open task stands among the others and where it goes. The ledger's open rows, the web overview's task and need rows and the task sheet carry it as `flow`, and every view shows it:
 

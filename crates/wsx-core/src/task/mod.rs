@@ -522,6 +522,12 @@ pub enum LogEvent {
     CheckQueued {
         reason: String,
     },
+    /// A `ci:` run of the task's checks waits for GitHub to start its jobs (`ci-scenario.py`
+    /// has not said `before its jobs started`); each retry waits again. `status::waits_on`
+    /// reads it: the task waits in a queue, not on a running check.
+    CiQueued {},
+    /// The jobs of the task's `ci:` run started: the line `ci-scenario.py` printed.
+    CiStarted {},
     /// A preview of the task answers at `url` (docs/tasks.md "Preview").
     Preview {
         url: String,

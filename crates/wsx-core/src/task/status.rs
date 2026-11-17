@@ -52,8 +52,11 @@ pub enum Holder {
     Task,
     /// Its own host: the worker's turn runs.
     Host,
-    /// Its checks, the check slot or its own check-run.
+    /// Its checks or its own check-run run now.
     Check,
+    /// Its checks or its own check-run wait in a queue: the machine's check slot, or a CI run
+    /// whose jobs have not started. `WaitsOn::since_unix_ms` is when it began to wait.
+    Queue,
     Limit,
     Disk,
 }
@@ -90,7 +93,14 @@ pub fn waits_on(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Option<W
         match (record.state, record.waiting.as_ref().map(|w| w.on)) {
             (TaskState::Landed | TaskState::Closed, _) => return None,
             (TaskState::Checking, _) | (_, Some(WaitOn::CheckSlot | WaitOn::CheckRun)) => {
-                on(Holder::Check)
+                match queued_since(dir, record, entered) {
+                    Some(since_unix_ms) => WaitsOn {
+                        kind: Holder::Queue,
+                        task: None,
+                        since_unix_ms,
+                    },
+                    None => on(Holder::Check),
+                }
             }
             (_, Some(WaitOn::Disk)) => on(Holder::Disk),
             (_, Some(WaitOn::Limit)) => on(Holder::Limit),
@@ -109,6 +119,24 @@ pub fn waits_on(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Option<W
             (TaskState::Working | TaskState::Waiting, None) => on(Holder::Host),
         },
     )
+}
+
+/// When the task's checks began to wait in a queue, or none while they run: the check slot
+/// (`waiting` on `check_slot`, since its `check_queued`), or a `ci:` run that has not said its
+/// jobs started (`ci_queued` or `ci_retry` newer than any `ci_started` or result). The one place that tells
+/// a queued check from a running one. ref: docs/tasks.md "Status"
+fn queued_since(dir: &TaskDir, record: &TaskRecord, entered: u64) -> Option<u64> {
+    if record.waits_on(WaitOn::CheckSlot) {
+        return Some(slot_since(dir, entered));
+    }
+    dir.last_entry(|entry| match entry.event {
+        LogEvent::CiQueued {} | LogEvent::CiRetry { .. } => Some(Some(entry.unix_ms)),
+        LogEvent::CiStarted {} | LogEvent::CheckRun { .. } | LogEvent::Checks { .. } => Some(None),
+        _ => None,
+    })
+    .ok()
+    .flatten()
+    .flatten()
 }
 
 /// An open task that waits for another task to land, and why.
@@ -274,6 +302,20 @@ fn status_of(
             None,
             why,
             "The manager hears of the stall and decides what to do.",
+            now_ms,
+        );
+    }
+    // ^ A `ci:` run whose jobs have not started: no check runs, and no slot is waited for.
+    if let (Some(on), false) = (
+        waits_on.filter(|on| on.kind == Holder::Queue),
+        record.waits_on(WaitOn::CheckSlot),
+    ) {
+        return words(
+            "ci_queue",
+            "Waiting for CI to start",
+            Some(on.since_unix_ms),
+            "its check-run waits for a runner",
+            "Its checks run when GitHub starts the jobs.",
             now_ms,
         );
     }
@@ -663,14 +705,7 @@ fn held(reason: &str, now_ms: u64) -> Status {
 
 /// A run that waits for the machine's check slot, in its lane, since its `check_queued`.
 fn slot(dir: &TaskDir, record: &TaskRecord, reason: &str, entered: u64, now_ms: u64) -> Status {
-    let since = dir
-        .last_entry(|entry| match entry.event {
-            LogEvent::CheckQueued { .. } => Some(entry.unix_ms),
-            _ => None,
-        })
-        .ok()
-        .flatten()
-        .unwrap_or(entered);
+    let since = slot_since(dir, entered);
     let scenarios = queue(reason).is_some_and(|queue| queue.what.contains("scenario"));
     let (kind, label, run, next) = match scenarios {
         true => (
@@ -694,6 +729,17 @@ fn slot(dir: &TaskDir, record: &TaskRecord, reason: &str, entered: u64, now_ms: 
         next,
         now_ms,
     )
+}
+
+/// When the run's `check_queued` was logged, else when the task entered its state.
+fn slot_since(dir: &TaskDir, entered: u64) -> u64 {
+    dir.last_entry(|entry| match entry.event {
+        LogEvent::CheckQueued { .. } => Some(entry.unix_ms),
+        _ => None,
+    })
+    .ok()
+    .flatten()
+    .unwrap_or(entered)
 }
 
 /// A queue reason as "#233 runs its checks now, 2 more tasks ahead"; any other reason as is.

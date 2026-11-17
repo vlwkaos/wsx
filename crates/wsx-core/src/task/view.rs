@@ -480,7 +480,7 @@ pub fn children(project_id: &str, parent: u32) -> Result<Vec<(TaskDir, TaskRecor
 /// `status.waited_by`), `place` (`chains::Place`: root, under, depth, holds, band, sibling; the
 /// order of every list) and `phrase`, the row's few words that the status label (`status`) does
 /// not say already: "build 2/3 · frees #482", "after #453", "held: deploy freeze",
-/// "2/4 landed, 1 working". Empty for a finished task.
+/// "2/4 landed, 1 working", "queued 12 min". Empty for a finished task.
 /// `records` are the project's tasks. ref: docs/tasks.md "Where a task goes"
 pub fn flow(
     record: &TaskRecord,
@@ -522,6 +522,16 @@ pub fn flow(
             "after" => super::status::kind_words(after.because).to_string(),
             _ => format!("after #{}", after.task),
         });
+    }
+    // ^ How long its checks have waited in the queue (`Holder::Queue`); the label names the queue.
+    if let Some(on) = status
+        .waits_on
+        .filter(|on| on.kind == super::status::Holder::Queue)
+    {
+        phrase.push(format!(
+            "queued {}",
+            super::status::span(super::now_unix_ms().saturating_sub(on.since_unix_ms))
+        ));
     }
     if let Some(step) = step {
         phrase.push(format!(

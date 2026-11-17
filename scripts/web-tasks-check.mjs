@@ -33,7 +33,7 @@ const { file: mobilePath, source: mobileSource } = mobileAudit();
 if (!mobileSource) await fail(`no mobile audit at ${mobilePath}; set WSX_MOBILE_AUDIT`);
 // The main screens that get the design lint (scripts/design-lint.js), at 390x844 and 1280x800 only.
 const linter = designLint({ evaluate, captures, file: "tasks" });
-const LINTED = new Set(["new-chat", "new-chat-refused", "chats-home-approval", "chats-home", "chats-home-wide", "home-long-name", "chat-room", "chat-room-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "home-chats-dark", "home-chats-light", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
+const LINTED = new Set(["new-chat", "new-chat-refused", "chats-home-approval", "chats-home", "chats-home-wide", "home-long-name", "chat-room", "chat-room-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "tasks-check-queue-dark", "tasks-check-queue-light", "home", "home-chats-dark", "home-chats-light", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
 let size = [390, 844, 2];
 const phone = () => size[0] < 600;
 // ^ In a page script: the overview with its home chat's newest message at `ms`: Home sorts by it (home.js `homeOrder`).
@@ -3671,6 +3671,20 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   await shows(queued, "check slot", { health: "Waiting for the check slot", steps: "", now: "",
     next: new RegExp(`^Waiting for the check slot for [^:]+: #${holder} runs its checks now\\. Its checks start when the slot is free\\.$`) });
   await shot("progress-check-slot", ".composer-send");
+  // The run that holds the slot is Moving; the one that waits for it is Waiting, its row says "queued" and since when
+  // (`status.waits_on` kind `queue`, docs/tasks.md "Where a task goes"), and the queued rows sit in one card.
+  await go(plansChat);
+  await until("!document.querySelector('dialog.task-sheet')", "the check slot's sheet did not close");
+  await openReservoir("tasks");
+  await rowReads(queued, (text) => text.startsWith("Waiting for the check slot") && /queued /.test(text), "the queued run's row does not read the check slot and its wait");
+  const bandOf = (task) => evaluate(`(() => { let node = ${rowOf(`#${task}`)}; while (node && !node.classList.contains('reservoir-band')) node = node.previousElementSibling; return node?.dataset.band; })()`);
+  if ((await bandOf(holder)) !== "moving" || (await bandOf(queued)) !== "waiting") await fail(`the check slot's holder is in ${await bandOf(holder)} and the queued run in ${await bandOf(queued)}, not moving and waiting`);
+  await evaluate(`${rowOf(`#${queued}`)}.scrollIntoView({ block: "center" })`);
+  for (const scheme of ["dark", "light"]) {
+    await inScheme(scheme);
+    await shot(`tasks-check-queue-${scheme}`, ".composer-send");
+  }
+  await inScheme("dark");
   for (const task of [holder, queued]) {
     await stateIs(task, "checking");
     fs.rmSync(path.join(show(task).record.working_copy, "hold-checks.txt"));

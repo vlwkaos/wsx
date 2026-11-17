@@ -27,6 +27,9 @@ const DEPTH_SHOWN: u8 = 2;
 pub struct Place {
     /// The head of the chain, or of the parent's group, this task sits in.
     pub root: u32,
+    /// The card the list draws it in: its chain's root, but one card for every task that waits
+    /// alone in the check queue (`Holder::Queue`), so their rows sit together under one holder.
+    pub card: u32,
     /// The task it nests under: the task it waits for (`after`), else its parent.
     pub under: Option<u32>,
     pub depth: u8,
@@ -116,18 +119,34 @@ impl Chains {
                 return Band::You;
             }
             match status::waits_on(dir, record, land_auto).map(|on| on.kind) {
-                Some(Holder::Task | Holder::Manager) => Band::Waiting,
+                Some(Holder::Task | Holder::Manager | Holder::Queue) => Band::Waiting,
                 _ => Band::Moving,
             }
         };
-        let mut roots: Vec<(Band, std::cmp::Reverse<u32>, u32)> = open
+        // ^ A task that waits alone in the check queue: no task waits for it or nests under it.
+        let queued_alone = |id: u32| {
+            let (dir, record) = all[&id];
+            !kids.contains_key(&id)
+                && status::waits_on(dir, record, land_auto)
+                    .is_some_and(|on| on.kind == Holder::Queue)
+        };
+        let mut roots: Vec<(Band, bool, std::cmp::Reverse<u32>, u32)> = open
             .iter()
             .filter(|id| under[id].is_none())
-            .map(|id| (band_of(*id), std::cmp::Reverse(holds(*id)), *id))
+            .map(|id| {
+                let band = band_of(*id);
+                let alone = band == Band::Waiting && queued_alone(*id);
+                (band, !alone, std::cmp::Reverse(holds(*id)), *id)
+            })
             .collect();
         roots.sort_unstable();
         let mut chains = Self::default();
-        for (band, _, root) in roots {
+        let mut queue_card = None;
+        for (band, together, _, root) in roots {
+            let card = match together {
+                true => root,
+                false => *queue_card.get_or_insert(root),
+            };
             let mut stack = vec![(root, 0u8)];
             while let Some((id, depth)) = stack.pop() {
                 let record = all[&id].1;
@@ -153,6 +172,7 @@ impl Chains {
                     id,
                     Place {
                         root,
+                        card,
                         under: under[&id],
                         depth: depth.min(DEPTH_SHOWN),
                         holds: holds(id),

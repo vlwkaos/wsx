@@ -5186,6 +5186,9 @@ def part_worker(created=None):
     queued = wait(lambda: queued_row(pair), 'a queued check run', 30)
     assert queued['waiting']['reason'].startswith('queued for the check slot behind demo t'), queued
     assert queued['status']['label'] == 'Waiting for the check slot', queued['status']
+    # ^ A run that waits for the slot waits on the check queue, in the Waiting band, and the row says since when.
+    assert queued['status']['waits_on']['kind'] == 'queue' and queued['flow']['place']['band'] == 'waiting', queued
+    assert queued['flow']['phrase'].startswith('queued ') and queued['flow']['waits_on'] == queued['status']['waits_on'], queued['flow']
     assert re.match(r'Waiting for the check slot for [^:]+: #\d+ runs its checks now(, \d+ more tasks? ahead)?\. Its checks start when the slot is free\.$', queued['status']['sentence']), queued['status']
     for n in pair:
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
@@ -5528,12 +5531,13 @@ def part_worker(created=None):
     ci_holder = subprocess.Popen([sys.executable, '-c', HOLD_SLOT, str(scenario_slot), 'ci sections'])
     wait(lambda: (scenario_slot / 'slot.lock').read_text() == 'ci sections', 'the fixture holds the scenario slot')
     ci_mark, ci_pass, ci_go = base / 'ci-again-mark', base / 'ci-again-gate', base / 'ci-fail-gate'
+    ci_start = base / 'ci-again-start'
     # ^ The first runs fail only after both results: a run that ends first takes another path.
     hold = gate_cmd(ci_go)
     configure(LAND_CONFIG + '  scenarios:\n    cifail: "ci: %s; exit 1"\n'
-              '    ciagain: "ci: if [ -e %s ]; then %s; echo ci-passed; '
+              '    ciagain: "ci: if [ -e %s ]; then %s; echo \'12:00:00  queued 3 min before its jobs started\'; %s; echo ci-passed; '
               'else %s; touch %s; echo WORK ciagain2.txt CHECKRUN_LATER ciagain ; exit 1; fi"\n'
-              % (hold, ci_mark, gate_cmd(ci_pass), hold, ci_mark), 'ci scenarios that fail')
+              % (hold, ci_mark, gate_cmd(ci_start), gate_cmd(ci_pass), hold, ci_mark), 'ci scenarios that fail')
     plain = js('task', 'new', 'CHECKRUN_LATER cifail WORK cifail.txt')['id']
     again = js('task', 'new', 'CHECKRUN_LATER ciagain WORK ciagain.txt')['id']
     wait(lambda: kinds(plain, 'result') and kinds(again, 'result'), 'both first results', 30)
@@ -5547,7 +5551,17 @@ def part_worker(created=None):
     assert held['state'] == 'working' and waiting['on'] == 'check_run', held['record']
     assert 'check-run ciagain on CI' in waiting['reason'], waiting
     assert now_ms + 120 * 60_000 < waiting['until_ms'] <= now_ms + 125 * 60_000, waiting
-    assert held['status']['kind'] == 'check_run' and held['status']['label'] == 'Waiting for its check-run', held['status']
+    # ^ Until `ci-scenario.py` says its jobs started, the run is in the queue: Waiting, held by the check queue, and the log has
+    # `ci_queued`; the line (the fixture prints it when `ci_start` exists) moves it to Moving, held by its check.
+    assert held['status']['kind'] == 'ci_queue' and held['status']['label'] == 'Waiting for CI to start', held['status']
+    assert held['status']['waits_on']['kind'] == 'queue' and held['status']['since_unix_ms'] == held['status']['waits_on']['since_unix_ms'], held['status']
+    ci_row = lambda: next(r for r in js('task', 'ledger')['open'] if r['id'] == again)
+    assert ci_row()['flow']['place']['band'] == 'waiting' and ci_row()['flow']['phrase'].startswith('queued '), ci_row()
+    assert kinds(again, 'ci_queued') and not kinds(again, 'ci_started'), log(again)
+    ci_start.touch()
+    held = wait(lambda: (current := show(again))['status']['kind'] == 'check_run' and current, 'the ci jobs started', 30)
+    assert held['status']['label'] == 'Waiting for its check-run' and held['status']['waits_on']['kind'] == 'check', held['status']
+    assert ci_row()['flow']['place']['band'] == 'moving' and kinds(again, 'ci_started'), (ci_row(), log(again))
     assert kinds(again, 'result', 'check_run', 'checks') == ['result', 'check_run', 'result'], log(again)
     ci_pass.touch()
     done = wait_state(again, 'ready', 'failed')
@@ -5742,6 +5756,7 @@ def part_worker(created=None):
     # ^ `show` and its text say the scenario wait in wsx-core's words (docs/tasks.md "Status").
     lane_status = show(waits)['status']
     assert lane_status['label'] == 'Waiting for the scenario test slot', lane_status
+    assert lane_status['waits_on']['kind'] == 'queue', lane_status
     assert re.match(r'Waiting for the scenario test slot for [^:]+: #%s runs its scenario tests now(, \d+ more tasks? ahead)?\. Its scenario tests start when the slot is free\.$' % holds, lane_status['sentence']), lane_status
     assert 'status:       Waiting for the scenario test slot for ' in cli('task', 'show', waits).stdout
     plain = js('task', 'new', 'WORK lane3.txt')['id']

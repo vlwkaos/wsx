@@ -307,7 +307,7 @@ function Reservoir({ project, open, items, tasks, waiting, checks, routines, onR
               <ul class="reservoir-list" aria-label="Tasks">
                 ${runRows.map(({ item, key, leaving }, at) => {
                   const [place, before, after] = [item.flow.place, runRows[at - 1]?.item.flow.place, runRows[at + 1]?.item.flow.place];
-                  const group = before?.root === place.root ? (after?.root === place.root ? "mid" : "last") : after?.root === place.root ? "first" : null;
+                  const group = before?.card === place.card ? (after?.card === place.card ? "mid" : "last") : after?.card === place.card ? "first" : null;
                   return html`
                     ${before?.band !== place.band && html`<li class="reservoir-band" data-band=${place.band} key=${`band-${place.band}`}>${BANDS[place.band]}</li>`}
                     <${TaskRow} key=${key} project=${project} task=${item} leaving=${leaving} group=${group} />`;
