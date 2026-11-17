@@ -1034,24 +1034,27 @@ fn host_pane_live(record: &TaskRecord) -> anyhow::Result<bool> {
 /// program exited, and the next `create_session_launch` under that label would take `<label>-2`.
 /// A live session is left alone. Best effort: a host that starts anyway takes a suffixed label.
 fn close_left_session(label: &str, folder: &std::path::Path) {
-    let client = crate::runtime::Client::local();
-    let Ok(snapshot) = crate::ops::runtime_snapshot(&client) else {
-        return;
-    };
-    if session_live(&snapshot, label, folder) {
-        return;
-    }
-    if let Some(session) = session_in(&snapshot, label, folder) {
-        let _ = crate::ops::kill_session(&client, session.id);
-    }
+    let _ = close_session_where(label, folder, true);
 }
 
 /// Close the session `label` of the worktree at `folder`; none is left to close when the
 /// daemon lost it. A live pane cannot be restarted (wsxd restarts only an exited one).
 fn close_session(label: &str, folder: &std::path::Path) -> anyhow::Result<()> {
+    close_session_where(label, folder, false)
+}
+
+/// The one path that finds and kills a host session; `only_left` spares one with a live pane.
+fn close_session_where(
+    label: &str,
+    folder: &std::path::Path,
+    only_left: bool,
+) -> anyhow::Result<()> {
     use anyhow::Context;
     let client = crate::runtime::Client::local();
     let snapshot = crate::ops::runtime_snapshot(&client)?;
+    if only_left && session_live(&snapshot, label, folder) {
+        return Ok(());
+    }
     if let Some(session) = session_in(&snapshot, label, folder) {
         crate::ops::kill_session(&client, session.id)
             .with_context(|| format!("cannot close the host session {label}"))?;
