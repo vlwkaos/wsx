@@ -7,12 +7,12 @@
 // server cuts it (wsx-core `quote_of`, sent as `quote`).
 import { html, Icon, motion, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
 import { toast } from "./ui.js";
+import { commits, speedAt, swipes, track } from "./swipe.js";
 
-// A swipe this far right opens the menu. A tap or a long press is the page's own and the
-// system's (a link, a control, the text selection): the page adds nothing to them (no
-// `user-select: none`, no menu).
+// A swipe this far right opens the menu (swipe.js `commits`: or a flick, or the finger stays
+// past it). A tap or a long press is the page's own and the system's (a link, a control, the
+// text selection): the page adds nothing to them (no `user-select: none`, no menu).
 const SWIPE_PX = 64;
-const SLOP_PX = 10;
 const HINT_PX = 20;
 // ^ Pressing these keeps their own meaning: a link, a control, or a block that scrolls sideways.
 const OWN = "a, button, input, textarea, summary, pre, .table-wrap, .diagram";
@@ -103,13 +103,15 @@ export function useReply(onReply) {
     }
     gesture.current = null;
   };
+  // ^ The swipe counts at SWIPE_PX, as a flick, or while the finger stays past it (swipe.js).
+  const opens = (now, time) => commits(now.dx, SWIPE_PX, { speed: speedAt(now.trail, time), past: now.past });
   const handlers = {
     onPointerDown: (event) => {
       end();
       const found = event.button === 0 && row(event);
       // ^ A mouse selects with its drag and opens the menu with a right click: only a finger swipes.
       if (!found || event.pointerType === "mouse") return;
-      gesture.current = { row: found, id: event.pointerId, x: event.clientX, y: event.clientY, swiping: false };
+      gesture.current = { row: found, id: event.pointerId, x: event.clientX, y: event.clientY, swiping: false, past: false, trail: [] };
     },
     onPointerMove: (event) => {
       const now = gesture.current;
@@ -117,26 +119,29 @@ export function useReply(onReply) {
       const dx = event.clientX - now.x;
       const dy = event.clientY - now.y;
       if (!now.swiping) {
-        if (Math.hypot(dx, dy) < SLOP_PX) return;
-        // ^ Mostly sideways and to the right is a swipe; anything else is the log's scroll.
-        if (dx < SLOP_PX || dx < Math.abs(dy) * 2) { gesture.current = null; return; }
+        // ^ A finger that is not yet clearly sideways and to the right waits: a vertical drag is the
+        // log's scroll and the browser ends it with a pointercancel; one that never turns is a tap.
+        if (!swipes(dx, dy)) return;
         now.swiping = true;
         now.row.dataset.swiping = "";
         now.box = now.row.getBoundingClientRect();
         now.log = now.row.parentElement.getBoundingClientRect();
       }
       now.dx = dx;
+      now.past ||= dx >= SWIPE_PX;
+      now.trail = track(now.trail, event.timeStamp, dx);
+      const ready = opens(now, event.timeStamp);
       const shown = Math.max(0, Math.min(dx, SWIPE_PX * 1.25));
       now.row.style.translate = `${shown}px 0`;
       // ^ The icon of the action (Reply, as the menu names it) in the gap the row leaves: it
-      // grows and fades in with the drag and is solid, in the accent, from SWIPE_PX on. It stays
+      // grows and fades in with the drag and is solid, in the accent, while the release would open the menu. It stays
       // beside the finger, inside the row and the log.
       const node = hint.current;
-      const progress = Math.min(shown / SWIPE_PX, 1);
+      const progress = ready ? 1 : Math.min(shown / SWIPE_PX, 1);
       const top = Math.max(now.box.top, now.log.top) + HINT_PX;
       const middle = Math.max(top, Math.min(event.clientY, Math.min(now.box.bottom, now.log.bottom) - HINT_PX));
       node.hidden = false;
-      node.toggleAttribute("data-ready", progress === 1);
+      node.toggleAttribute("data-ready", ready);
       node.style.left = `${now.box.left + shown / 2 - HINT_PX / 2}px`;
       node.style.top = `${middle - HINT_PX / 2}px`;
       node.style.opacity = String(progress);
@@ -145,9 +150,9 @@ export function useReply(onReply) {
     onPointerUp: (event) => {
       const now = gesture.current;
       if (now?.id !== event.pointerId) return;
-      const opens = now.swiping && now.dx >= SWIPE_PX;
+      const opened = now.swiping && opens(now, event.timeStamp);
       end();
-      if (opens) setMenu({ row: now.row, x: event.clientX, y: event.clientY });
+      if (opened) setMenu({ row: now.row, x: event.clientX, y: event.clientY });
     },
     onPointerCancel: end,
     onContextMenu: (event) => {

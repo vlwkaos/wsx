@@ -24,6 +24,7 @@ const FILES: &[(&str, &str, &str)] = &[
     ("api.js", JS, include_str!("../web/api.js")),
     ("dom.js", JS, include_str!("../web/dom.js")),
     ("ui.js", JS, include_str!("../web/ui.js")),
+    ("swipe.js", JS, include_str!("../web/swipe.js")),
     ("pair.js", JS, include_str!("../web/pair.js")),
     ("inbox.js", JS, include_str!("../web/inbox.js")),
     ("home.js", JS, include_str!("../web/home.js")),

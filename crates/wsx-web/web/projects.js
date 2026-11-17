@@ -4,7 +4,8 @@ import { html, Icon, Loading, plural, useEffect, useNow, useRef, useState } from
 import { api } from "./api.js";
 import { can, listedSessions, shows, stateOf, useStore } from "./store.js";
 import { NewSession, SessionRow } from "./inbox.js";
-import { Back, slid } from "./ui.js";
+import { Back } from "./ui.js";
+import { slide } from "./swipe.js";
 import { PanelsButton } from "./panels.js";
 
 const counted = (count) => plural(count, "session");
@@ -113,7 +114,7 @@ export function Projects({ rail }) {
     body = html`
       <ul class="rows">
         ${store.projects.map((project) => html`
-          <li class=${manage ? "row row-slide" : "row"} onScroll=${manage ? slid : null} key=${project.id}>
+          <li class=${manage ? "row row-slide" : "row"} ...${manage ? slide : null} key=${project.id}>
             <div class="row-link" aria-current=${rail && Number(open) === project.id ? "page" : null}>
               <a class="row-main row-open" href=${can("task_view") ? `#/p/${project.id}/sessions` : `#/p/${project.id}`}>
                 <span class="row-label">${project.name}</span>

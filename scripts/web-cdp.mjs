@@ -85,6 +85,27 @@ export function designLint({ evaluate, captures, file }) {
   return { lint, finish };
 }
 
+// A finger's path as [dx, dy, ms] points from `from` ({x, y}), each sent at its own time after the
+// touch start: a thumb arcs, a flick is short and fast, a drag is slow (swipe.js, task 499).
+export async function fingerPath({ send }, from, points) {
+  const start = Date.now() / 1000;
+  const touch = (type, x, y, ms) => send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x, y }], timestamp: start + ms / 1000 });
+  await touch("touchStart", from.x, from.y, 0);
+  let last = 0;
+  for (const [dx, dy, ms] of points) {
+    await pause(Math.max(0, ms - last));
+    last = ms;
+    await touch("touchMove", from.x + dx, from.y + dy, ms);
+  }
+  await touch("touchEnd", 0, 0, last + 10);
+}
+// `steps` points over `ms` ms to `total` px right (left when negative) along `deg` degrees off horizontal;
+// the arc flattens by `bend` (0.35: a thumb's) as it goes.
+export const thumbArc = (deg, total, steps, ms, bend = 0.35) => Array.from({ length: steps }, (_, step) => {
+  const share = (step + 1) / steps;
+  return [total * share, Math.abs(total) * share * Math.tan((deg * Math.PI) / 180) * (1 - bend * share), Math.round(ms * share)];
+});
+
 // Pairs the page with a site: opens `url`, types `code` into the pairing form and waits for `ready` (a
 // selector). `form` runs once the form shows, for a check of the form itself.
 export async function pair({ send, evaluate, until }, url, code, { ready = ".app", form } = {}) {

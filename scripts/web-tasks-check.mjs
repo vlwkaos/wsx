@@ -19,7 +19,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { designLint, jumps, launch, mobileAudit, pair, pause, requestRates, shooter, soundCheck, watchFetch } from "./web-cdp.mjs";
+import { designLint, fingerPath, jumps, launch, mobileAudit, pair, pause, requestRates, shooter, soundCheck, thumbArc, watchFetch } from "./web-cdp.mjs";
 
 const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile, plansCheckout, longName, relayFile, wsxCli, newsFile] = process.argv.slice(2);
 const project = Number(projectArg);
@@ -2378,6 +2378,39 @@ async function readAndReply(where) {
       await pause(300);
       const dragged = await evaluate(`({ quote: ${quote}, menu: !!document.querySelector('.reply-menu') })`);
       if (dragged.quote || dragged.menu) await fail(`${where}: a drag of ${dx} px on a bubble quoted or opened a menu: ${JSON.stringify(dragged)}`);
+    }
+    // ^ A swipe a person means is not cancelled (swipe.js, task 499): a thumb arcs 30 to 40 degrees
+    // off horizontal, a flick is short and fast, a finger eases back a little before it lifts. A
+    // vertical drag is still the log's scroll.
+    const closeMenu = async (what) => {
+      await until("(() => { const open = !!document.querySelector('.reply-menu'); if (open) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); return !open; })()", `${where}: Escape did not close the menu after ${what}`);
+      await until(`${fiveColumns}.getAnimations().length === 0 && !${fiveColumns}.style.translate`, `${where}: the bubble did not settle after ${what}`);
+    };
+    const means = [
+      ["a 30 degree arc", thumbArc(30, 130, 8, 400)],
+      ["a 40 degree arc", thumbArc(40, 130, 8, 400)],
+      ["a flick of 55 px in 120 ms", thumbArc(20, 55, 4, 120)],
+      ["70 px and back to 60 px", [...thumbArc(10, 70, 6, 400), [60, 10, 520]]],
+      ["a slow drag of 130 px", thumbArc(0, 130, 20, 1800)],
+    ];
+    for (const [what, path] of means) {
+      await fingerPath({ send }, await pressPoint(fiveColumns), path);
+      await until("!!document.querySelector('.reply-menu')", `${where}: ${what} opened no menu`);
+      await closeMenu(what);
+    }
+    for (const [what, path] of [["a drag left", thumbArc(0, -90, 8, 400)], ["a short slow drag", thumbArc(0, 25, 6, 400)]]) {
+      await fingerPath({ send }, await pressPoint(fiveColumns), path);
+      await pause(300);
+      if (await count(".reply-menu")) await fail(`${where}: ${what} opened a menu`);
+    }
+    {
+      const log = "document.querySelector('.log')";
+      await evaluate(`${log}.scrollTop = (${log}.scrollHeight - ${log}.clientHeight) / 2`);
+      const before = await evaluate(`${log}.scrollTop`);
+      const scrolls = await evaluate(`${log}.scrollHeight - ${log}.clientHeight > 100`);
+      await fingerPath({ send }, await pressPoint(fiveColumns), [[4, 30, 100], [8, 80, 200], [12, 130, 300]]);
+      await pause(300);
+      if (await count(".reply-menu") || (scrolls && await evaluate(`${log}.scrollTop`) === before)) await fail(`${where}: a vertical drag opened a menu or did not scroll the log (scrollTop ${before} to ${await evaluate(`${log}.scrollTop`)})`);
     }
     // ^ The icon of the action in the gap a swipe leaves (reply.js): at half the threshold it is
     // half there, beside the row; at 64 px it is solid in the accent; after the release it is gone.

@@ -3,7 +3,8 @@
 import { api } from "./api.js";
 import { elapsed, html, Icon, Loading, useNow, useState } from "./lib.js";
 import { can, isNew, listedSessions, sessionLink, shows, stateOf, useStore } from "./store.js";
-import { slid, toast } from "./ui.js";
+import { toast } from "./ui.js";
+import { slide } from "./swipe.js";
 
 // One session. Left: a state mark. Middle: the work first, project › worktree, then the
 // session and its provider, and for a working session what it does. Right: the state
@@ -34,7 +35,7 @@ export function SessionRow({ session, now, current, place }) {
   // ^ The owner's hand session of a task closes with its handback (docs/tasks.md "By hand").
   const removable = can("session_start") && !/^task-\d+-hand$/.test(session.label);
   return html`
-    <li class=${removable ? "row row-slide" : "row"} onScroll=${removable ? slid : null}>
+    <li class=${removable ? "row row-slide" : "row"} ...${removable ? slide : null}>
       <a class="row-link" href=${sessionLink(session)} aria-current=${current ? "page" : null}>
         <span class="mark" data-tone=${status.tone} data-running=${status.key === "working" ? "" : null} aria-hidden="true"></span>
         <span class="row-main">

@@ -6,7 +6,7 @@
 // Each capture is saved with the slop audit of /ui-view-standards beside it.
 import fs from "node:fs";
 import path from "node:path";
-import { designLint, jumps, launch, mobileAudit, pair, pause, shooter, soundCheck } from "./web-cdp.mjs";
+import { designLint, fingerPath, jumps, launch, mobileAudit, pair, pause, shooter, soundCheck, thumbArc } from "./web-cdp.mjs";
 
 const [mode, siteUrl, code, ...rest] = process.argv.slice(2);
 //   restart <site-url> <code> <capture-dir> <signal-dir> [slop-audit.js]   (the caller restarts the server)
@@ -323,6 +323,27 @@ async function inbox() {
     if (open.right !== size[0] || open.height < 44 || !open.filled || !/^Remove session /.test(open.name)) await fail(`a slide did not show Remove at the edge: ${JSON.stringify(open)}`);
     await shot("inbox-remove");
     await evaluate("document.querySelector('.scroll .row-slide').scrollTo({ left: 0 })");
+    // A slide a person means is not snapped back (swipe.js, task 499): a short slow drag, a thumb's
+    // arc and a flick open the row, a twitch leaves it closed; an open row closes by a drag back.
+    const settled = (open) => until(`(() => { const row = document.querySelector('.scroll .row-slide'); const room = row.scrollWidth - row.clientWidth;
+      return ${open ? "Math.abs(row.scrollLeft - room) < 1" : "row.scrollLeft === 0"} && !row.style.scrollSnapType; })()`, async () => `the row did not settle ${open ? "open" : "closed"}: ${JSON.stringify(await removeBox())}`);
+    const aimed = async () => { await until(`!!${aim}`, "the first row is not in view to slide"); const [x, y] = await evaluate(aim); return { x, y }; };
+    for (const [what, path, open] of [
+      ["a slow drag of 38 px", thumbArc(0, -38, 8, 500), true],
+      ["a 30 degree arc", thumbArc(30, -60, 8, 400), true],
+      ["a 40 degree arc", thumbArc(40, -60, 8, 400), true],
+      ["a flick of 40 px in 120 ms", thumbArc(20, -40, 4, 120), true],
+      ["a twitch of 8 px", thumbArc(0, -8, 3, 150), false],
+    ]) {
+      await fingerPath({ send }, await aimed(), path);
+      await settled(open);
+      await evaluate("document.querySelector('.scroll .row-slide').scrollTo({ left: 0, behavior: 'instant' })");
+      await settled(false);
+    }
+    await evaluate("(() => { const row = document.querySelector('.scroll .row-slide'); row.scrollTo({ left: row.scrollWidth, behavior: 'instant' }); })()");
+    await settled(true);
+    await fingerPath({ send }, { x: size[0] / 2, y: (await aimed()).y }, thumbArc(0, 60, 8, 400));
+    await settled(false);
   }
   // The elapsed time of a working session counts on the page.
   const before = await text("section[aria-label=Running] .time");

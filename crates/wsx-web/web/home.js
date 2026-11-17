@@ -7,7 +7,8 @@ import { loadTasks } from "./task-api.js";
 import { agentWords, needTone, needWords } from "./task-words.js";
 import { shownTrays, TrayIcons, trayCounts, trayWords } from "./trays.js";
 import { Dots } from "./bubbles.js";
-import { slid, toast } from "./ui.js";
+import { toast } from "./ui.js";
+import { slide } from "./swipe.js";
 import { AddProject } from "./projects.js";
 
 // The listed chats (`listed`: wsx-core `chats_home::listed`, the owner's Dismiss and a new
@@ -82,15 +83,15 @@ function ChatRow({ row, current, now, onDismiss }) {
   const counts = trayCounts(home ? overview : chat);
   const text = home ? news?.text.split("\n")[0] ?? null : [project.name, news?.text.split("\n")[0] ?? (chat.last_reply || chat.goal || "No messages yet")].join(" · ");
   const line = home && !news ? statusLine(row) : { text };
-  const slide = can("task_act");
+  const slidable = can("task_act");
   return html`
-    <li class=${slide ? "row row-slide" : "row"} onScroll=${slide ? slid : null} data-key=${home ? project.id : `${project.id}/c/${chat.name}`} data-news=${news ? "" : null}>
+    <li class=${slidable ? "row row-slide" : "row"} ...${slidable ? slide : null} data-key=${home ? project.id : `${project.id}/c/${chat.name}`} data-news=${news ? "" : null}>
       <a class=${home ? "row-link home-row" : "row-link chat-row"} href=${chatHash(chat.name)} aria-current=${current ? "page" : null}
         aria-label=${home ? null : [`Chat ${chat.name} of ${project.name}`, news && "unread", ...shownTrays(counts).map((tray) => trayWords(tray, counts))].filter(Boolean).join(", ")}>
         <${RowText} name=${home ? project.name : chat.name} asks=${home && Boolean(overview.asks?.length)} counts=${counts}
           last=${row.last} now=${now} line=${line} news=${Boolean(news)} typing=${home && overview.busy ? overview.manager : null} />
       </a>
-      ${slide && html`<button class="row-remove" data-quiet type="button" onClick=${() => onDismiss(row)}
+      ${slidable && html`<button class="row-remove" data-quiet type="button" onClick=${() => onDismiss(row)}
         aria-label=${`Dismiss chat ${chat.name}`} title="Dismiss"><${Icon} name="fail" /></button>`}
     </li>`;
 }
