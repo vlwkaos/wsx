@@ -27,8 +27,8 @@ tasks:
   agent: { rotateTokens: 200000, model: sonnet }
   # ^ The end-to-end scripts. After a done result the task host runs each one whose
   # `scenarioPaths` name a path the task's commits changed; a changed path that no scenario and no
-  # `scenarioFree` glob names runs every one with paths. One without paths runs only when a
-  # worker names it (`wsx task check-run weblinux`). Each builds the binaries it runs first. A
+  # `scenarioFree` glob names runs every one with paths. A scenario without paths runs only when a
+  # worker names it. Each builds the binaries it runs first. A
   # `ci:` one waits for no slot: it runs here with `--local` when the scenario slot is free, else
   # on GitHub Actions (scripts/ci-scenario.py, ci.yml);
   # by hand, run its job's command locally: `cargo build -p wsx -p wsx-daemon && python3 -B
@@ -36,7 +36,6 @@ tasks:
   scenarios:
     task: "ci: python3 -B scripts/ci-scenario.py task"
     web: "ci: python3 -B scripts/ci-scenario.py web"
-    weblinux: "ci: python3 -B scripts/ci-scenario.py weblinux"
     smoke: cargo build -p wsx -p wsx-daemon && python3 -B scripts/runtime-smoke.py
     boundary: cargo build -p wsx -p wsx-daemon && python3 -B scripts/test-manager-boundary.py
     memory: cargo build -p wsx && python3 -B scripts/test-memory.py "target/debug/wsx memory"

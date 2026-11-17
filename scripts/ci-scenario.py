@@ -3,7 +3,7 @@
 
 `python3 -B scripts/ci-scenario.py <name> [--part <part>]` pushes HEAD's tree, with origin/main's
 `.github/workflows`, to the branch `wsx-scenario/<name>/<commit>`. ci.yml runs the job for that
-name (`task`, `web`, and `weblinux`, the web scenario on Ubuntu); a scenario with parts (`web`: `chat`, `tasks`; `task`: `core`, `worker`, `host`) runs one job for each part at
+name (`task` and `web`; `web` runs its `chat` part on Ubuntu and its `tasks` part on macOS, see ci.yml); a scenario with parts (`web`: `chat`, `tasks`; `task`: `core`, `worker`, `host`) runs one job for each part at
 once, and the run passes only when all pass. `--part` (or `WSX_SCENARIO_PART`, which `wsx task
 check-run web --part tasks` sets) runs one part: the branch gets the suffix `--<part>` and the other
 parts start no job (ci.yml excludes them). A part run ends with its own part's jobs and is judged by
@@ -336,9 +336,11 @@ def run_local(root, name, part):
     workflow = (root / '.github/workflows/ci.yml').read_text()
     job = next((j for j in re.split(r'(?m)^  [\w-]+:\s*$', workflow) if "'wsx-scenario/%s/'" % name in j), '')
     command = re.search(r'(?m)^\s+run: (.*python3 -B scripts/test-[\w-]+\.py.*)$', job)
-    os_name = re.search(r'(?m)^\s+runs-on: (\S+)', job)
+    os_name = re.search(r'(?m)^\s+runs-on: (.*)$', job)
     here = {'darwin': 'macos', 'linux': 'ubuntu'}.get(sys.platform, sys.platform)
-    if not command or not os_name or not os_name.group(1).startswith(here):
+    # ^ `runs-on` may be an expression that names a runner for each part (`web`): a macOS host runs every part,
+    # as the `tasks` part needs macOS.
+    if not command or not os_name or here not in os_name.group(1):
         say('%s does not run here (%s): its job in ci.yml runs on %s; run it on CI.'
             % (name, sys.platform, os_name.group(1) if os_name else 'no job'))
         return UNAVAILABLE

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- CI: the `web` scenario's `chat` part runs on Ubuntu and its `tasks` part stays on macOS, where task agents run (the Seatbelt boundary); the `weblinux` probe scenario is gone, and the Linux jobs restore the Zig packages and the Rust build that a push to main saves.
+
 ## [0.43.0] - 2026-11-16
 
 ### Added
