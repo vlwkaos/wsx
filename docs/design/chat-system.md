@@ -107,7 +107,7 @@ stateDiagram-v2
 
 ## 5. Capability: one table
 
-Source of truth: `Role` and `ROLES` in `wsx-core/src/task/policy.rs:150-190`. Checks, the broker and the prompt lines read it. Every chat runs as the manager role (#506: `manager.rs:1752`, the manager caps are `ALL`); a chat is not a lesser manager.
+Source of truth: `Role` and `ROLES` in `wsx-core/src/task/policy.rs:150-190`. Checks, the broker and the prompt lines read it. Every chat runs as the manager role (#506: `manager.rs:1765`, the manager caps are `ALL`); a chat is not a lesser manager.
 
 | Can do | Chat (home or not) | Worker | Stand-in | You |
 |---|---|---|---|---|
