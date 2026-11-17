@@ -1350,7 +1350,16 @@ await shot("asks-you", ".composer-send");
 // shows the same on that row only (docs/web-client-tasks.md "Home").
 await evaluate(`fetch('api/tasks/${plansArg}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ text: 'RUN wsx task say -p ui --from-chat "How is ui now?" --json' }))} })`);
 // ^ In ui's chat the question is a `Talked to` row; ui's report on it is a muted line after it, not a bubble.
-await until(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((data) => { const asked = data.rows.findIndex((row) => row.kind === 'talk' && row.said.some((one) => one.text.includes('How is ui now?'))); return asked >= 0 && data.rows.slice(asked + 1).some((row) => (row.kind === 'quiet' || row.kind === 'message') && row.author !== 'owner') && !document.querySelector('.log .typing'); })`, "no report after the question", 300);
+// ^ A read of the route a second apart: `until` asks every 100 ms, and each ask spends the device's request budget (429 in the console).
+const reported = async () => {
+  const rows = await chatRows();
+  const asked = rows.findIndex((row) => row.kind === "talk" && row.said.some((one) => one.text.includes("How is ui now?")));
+  return asked >= 0 && rows.slice(asked + 1).some((row) => (row.kind === "quiet" || row.kind === "message") && row.author !== "owner") && !(await count(".log .typing"));
+};
+for (let waited = 0; !(await reported()); waited++) {
+  if (waited >= 120) await fail("no report after the question");
+  await pause(1000);
+}
 if ((await evaluate(`${askTags}.length`)) !== 1) await fail("a later report dropped the chat's Asks you");
 if ((await overviewAsks())?.length !== 1) await fail("a later report dropped the overview's asks");
 const askingChat = await evaluate("location.hash");
