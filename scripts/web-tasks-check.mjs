@@ -4721,6 +4721,11 @@ await closeSheet("the page", plansChat);
   three.forEach((name, n) => fs.writeFileSync(path.join(kept, name), drawn[n + 1]));
   fs.appendFileSync(checksFile, `${JSON.stringify({ id: "c904", task: 1, revision: 1, commit: "0".repeat(40), check: "the three sizes read", pass_if: "all three read well", state: "open", captures: three.map((name) => `captures/${name}`), unix_ms: Date.now() })}\n`);
   const card = ".check-item[data-check=c904]";
+  // ^ The list of the open items is read when the overview's count changes; the staged row changes
+  // nothing the page watches, so the page starts again and reads it.
+  await evaluate("window.staleMark = 1");
+  await send("Page.reload");
+  await until("window.staleMark === undefined && !!document.querySelector('.composer-field')", "the page did not come back before the card of c904", 60);
   for (const [wide, scheme] of [[false, "light"], [false, "dark"], [true, "dark"]]) {
     await resize(wide ? [1280, 800, 1] : [390, 844, 2]);
     await inScheme(scheme);

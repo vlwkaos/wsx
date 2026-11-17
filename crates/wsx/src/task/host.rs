@@ -2212,6 +2212,10 @@ impl Host {
         let unattached = result.unattached_images();
         if !unattached.is_empty() {
             self.say(&unattached);
+            self.log(LogEvent::Agent {
+                text: unattached,
+                said: false,
+            });
         }
         let items: Vec<&str> = result
             .human_verify
