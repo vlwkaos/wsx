@@ -76,10 +76,7 @@ fn prune_sweep() -> Duration {
 /// `WSX_TEST_SYNC_SECS`: for the task scenario only. The first pass is one period after the
 /// start. ref: docs/tasks.md "Sync"
 fn sync_every() -> Duration {
-    std::env::var("WSX_TEST_SYNC_SECS")
-        .ok()
-        .and_then(|secs| secs.parse().ok())
-        .map_or(Duration::from_secs(60 * 60), Duration::from_secs)
+    test_secs("WSX_TEST_SYNC_SECS", Duration::from_secs(60 * 60))
 }
 
 enum Event {
