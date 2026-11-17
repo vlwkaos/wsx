@@ -54,6 +54,7 @@ pub fn ensure_manager(
     let mut argv = vec![wsx.to_string_lossy().into_owned()];
     argv.extend(dir.host_args());
     let label = format!("task-{}", dir.name());
+    super::close_left_session(&label, main);
     launch(label.clone(), argv)
         .context("the manager did not start; no session was left running")?;
     let deadline = Instant::now() + MANAGER_START_WAIT;
@@ -115,6 +116,7 @@ pub fn ensure_repo_with(
     }
     let mut argv = vec![wsx.to_string_lossy().into_owned()];
     argv.extend(args.map(String::from));
+    super::close_left_session(&label, main);
     launch(label.clone(), argv)
         .context("the repo service did not start; no session was left running")?;
     let deadline = Instant::now() + MANAGER_START_WAIT;

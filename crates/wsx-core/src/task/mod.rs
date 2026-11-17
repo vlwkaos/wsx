@@ -1005,18 +1005,45 @@ fn session_in<'a>(
     })
 }
 
+/// True when the session `label` of the worktree at `folder` has a pane whose program has not
+/// exited.
+fn session_live(
+    snapshot: &crate::runtime::Snapshot,
+    label: &str,
+    folder: &std::path::Path,
+) -> bool {
+    session_in(snapshot, label, folder).is_some_and(|session| {
+        snapshot
+            .panes
+            .iter()
+            .any(|pane| pane.session_id == session.id && !pane.exited)
+    })
+}
+
 /// True when the host session has a pane whose program has not exited.
 fn host_pane_live(record: &TaskRecord) -> anyhow::Result<bool> {
     let snapshot = crate::ops::runtime_snapshot(&crate::runtime::Client::local())?;
-    let label = format!("task-{}", record.id);
-    Ok(
-        session_in(&snapshot, &label, &record.working_copy).is_some_and(|session| {
-            snapshot
-                .panes
-                .iter()
-                .any(|pane| pane.session_id == session.id && !pane.exited)
-        }),
-    )
+    Ok(session_live(
+        &snapshot,
+        &format!("task-{}", record.id),
+        &record.working_copy,
+    ))
+}
+
+/// Close the session `label` when its host has left (no live pane): wsxd keeps a session whose
+/// program exited, and the next `create_session_launch` under that label would take `<label>-2`.
+/// A live session is left alone. Best effort: a host that starts anyway takes a suffixed label.
+fn close_left_session(label: &str, folder: &std::path::Path) {
+    let client = crate::runtime::Client::local();
+    let Ok(snapshot) = crate::ops::runtime_snapshot(&client) else {
+        return;
+    };
+    if session_live(&snapshot, label, folder) {
+        return;
+    }
+    if let Some(session) = session_in(&snapshot, label, folder) {
+        let _ = crate::ops::kill_session(&client, session.id);
+    }
 }
 
 /// Close the session `label` of the worktree at `folder`; none is left to close when the

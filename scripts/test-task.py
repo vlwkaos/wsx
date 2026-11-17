@@ -213,7 +213,7 @@ STALL_GRACE = 4
 SWEEP = 2
 # ^ Product timers the scenario shortens the same way (docs/tasks.md "Scenarios"): the quiet before the
 # repo service sends its event lines (3 s) and a check-in's `--in 1m` (60 s). The chat host's linger (20 s)
-# stays real: a host that left restarts under a new session label (`task-demo-2`) and reads the config again.
+# stays real: a host that left restarts in a session of the same label (`task-demo`) and reads the config again.
 # The check-in outlasts the linger, so m2 sees a check-in due after its chat's host left.
 EVENT_QUIET = 1.5
 CHECKIN_MINUTE = 35
@@ -6765,6 +6765,12 @@ def part_host(created=None):
     wait(lambda: not chats()['billing']['running'], 'the idle chat host leaves', 60)
     back = js('task', 'say', '--to', 'billing', 'STATUS')
     assert chat_reply('billing', back['id']) and chats()['billing']['running']
+    # ^ The host that left closed nothing itself: the next start closes the dead session, so the chat has one
+    # session under its own label (not `task-billing-2`), and the TUI row reads it.
+    labels = sessions_at(project)
+    assert labels.count('task-billing') == 1 and 'task-billing-2' not in labels, labels
+    row = tui_text(wsx, env, project, r'task-billing\s*\n*\s*\(')
+    assert re.search(r'task-billing\s*\n*\s*\(', row), row[-3000:]
     # ^ The CLI prints the rows the other chats show: the speakers' names, no Debug text.
     printed = cli('task', 'chat', '--chat', 'billing').stdout
     assert re.search(r'(?m)^\[%d\] You: STATUS$' % back['id'], printed) and 'Owner' not in printed, printed
