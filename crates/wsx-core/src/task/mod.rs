@@ -1030,10 +1030,23 @@ fn host_pane_live(record: &TaskRecord) -> anyhow::Result<bool> {
     ))
 }
 
+/// How long a start waits for a host that is leaving to end its pane: the host removes its
+/// sockets first, then stops its agent (up to 5 s), so a `say` in between finds the pane live.
+const LEFT_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
+
 /// Close the session `label` when its host has left (no live pane): wsxd keeps a session whose
 /// program exited, and the next `create_session_launch` under that label would take `<label>-2`.
-/// A live session is left alone. Best effort: a host that starts anyway takes a suffixed label.
+/// A host that is leaving gets `LEFT_WAIT` to end; one that stays live (a host still starting)
+/// is left alone. Best effort: a host that starts anyway takes a suffixed label.
 fn close_left_session(label: &str, folder: &std::path::Path) {
+    let live = || {
+        crate::ops::runtime_snapshot(&crate::runtime::Client::local())
+            .is_ok_and(|snapshot| session_live(&snapshot, label, folder))
+    };
+    let deadline = std::time::Instant::now() + LEFT_WAIT;
+    while live() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
     let _ = close_session_where(label, folder, true);
 }
 
