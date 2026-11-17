@@ -7625,10 +7625,10 @@ def part_host(created=None):
     asked = js('task', 'say', 'RUN wsx task search -p demo --all --limit 3 %s' % rare)
     searched = reply_to(asked['id'])['text']
     assert 'demo:%d  > message %d' % (old['id'], old['id']) in searched, searched
-    # ^ A reply is no message to quote: the owner's message it answers is.
-    quoted = js('task', 'say', 'QUOTE %d Yes, that one.' % old['to'][0])
+    # ^ A reply is no message to quote: the owner's first message, which `old` quotes, is.
+    quoted = js('task', 'say', 'QUOTE 1 Yes, that one.')
     answer = reply_to(quoted['id'])['text']
-    assert answer == '> QUOTE 1 across the rolls\n\nYes, that one.', answer
+    assert answer == '> STATUS\n\nYes, that one.', answer
     # ^ A task's story (docs/tasks.md "Search"): the log of a landed and of a closed task, written
     # as the host writes it. A word of a later add finds the task with its outcome, and
     # `--task` lists its start, add, result, checks and landing in order.
