@@ -151,6 +151,18 @@ def passed(label):
     _passed[:] = [label[:80]]
 
 
+def fail_first(out, err):
+    """A check's output as (out, err) with its `FAIL:` line first in `out + err`: an assert that
+    shows that text has a FAILED line that keeps only the first line (#488), and a design lint
+    line came first."""
+    lines = (err or '').splitlines(keepends=True)
+    line = next((line for line in lines if line.startswith('FAIL')), None)
+    if line is None:
+        return out, err
+    lines.remove(line)
+    return line + (out or ''), ''.join(lines)
+
+
 def enter(index):
     broken = [(earlier, names) for earlier, names in sorted(_needs[index].items()) if earlier in _broken]
     if not broken:

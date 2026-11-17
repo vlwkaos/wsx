@@ -49,5 +49,9 @@ assert journey.startswith('FAILED section journey post levels at journey.py:'), 
 assert 'AssertionError: FAIL: To check on a phone: the sheet does not open in one motion' in journey, journey
 assert journey.endswith(' failed) [last step that passed: inner step]'), journey
 assert 'frames follow' not in journey, journey
+# ^ A check's FAIL line comes first in stdout + stderr, after a design lint line on stdout.
+out, err = sections.fail_first('design lint home: 0 errors\n', 'noise\nFAIL: the sheet\nmore\n')
+assert (out + err).splitlines()[0] == 'FAIL: the sheet' and 'noise' in err and (out + err).count('FAIL') == 1, (out, err)
+assert sections.fail_first('a', 'b') == ('a', 'b') and sections.fail_first(None, None) == (None, None)
 print('ok: sections name the last step that passed')
 sys.exit(0)

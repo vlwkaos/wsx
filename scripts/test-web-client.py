@@ -621,8 +621,10 @@ def finish(process, timeout):
 def check(work, args, timeout, **options):
     """Run a Node check in its own group. Its Chrome profile goes into the run's folder."""
     options.setdefault('stderr', subprocess.PIPE)
-    return finish(start(work, args, stdout=subprocess.PIPE, text=True,
+    done = finish(start(work, args, stdout=subprocess.PIPE, text=True,
                         env=dict(os.environ, WSX_TEST_WORK=str(work)), **options), timeout)
+    done.stdout, done.stderr = sections.fail_first(done.stdout, done.stderr)
+    return done
 
 
 def sweep():
