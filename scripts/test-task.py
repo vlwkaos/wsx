@@ -97,6 +97,11 @@ DEPLOY_CONFIG = LAND_CONFIG + '''  deploy:
 '''
 
 
+def bare(shorts):
+    # ^ An event's lines without the marks a state change adds (`state`, `checks`): the words and the task.
+    return [{k: v for k, v in x.items() if k not in ('state', 'checks')} for x in shorts]
+
+
 def unquoted(entry):
     """A reply without the quote wsx adds for the owner message it answers (`quote` is one of `to`,
     docs/tasks.md "A quote"): its words as the manager wrote them, for the checks that compare them.
@@ -3301,7 +3306,7 @@ def part_core(created=None):
     stop_event = wait(lambda: events_with('#%d waiting r' % halted, 'waits on owner: Stopped', 'stopped by request'),
                       'the stop event')[0]
     # ^ A stop someone asked for starts no manager turn: the line says `wakes: False`.
-    assert stop_event['short'] == [{'text': '#%d waiting' % halted, 'task': halted, 'wakes': False}], stop_event
+    assert stop_event['short'] == [{'text': '#%d waiting' % halted, 'task': halted, 'wakes': False, 'state': 'waiting'}], stop_event
     js('task', 'close', lone, '--discard')
     last_close = wait(lambda: events_with('#%d closed r1' % lone), 'the lone close event')[0]
     time.sleep(5)
@@ -4641,7 +4646,7 @@ def part_worker(created=None):
     assert len(waited) == 1 and re.search(r'^#%d stalled r1: .*; ready for .*; the manager has not reviewed it$' % idle, waited[0]), waited
     # ^ Its host answers, so the stall starts no manager turn (`stall_wakes`): it goes along with the next.
     stall_event = events_with('#%d stalled r1' % idle)[0]
-    assert [x for x in stall_event['short'] if x.get('task') == idle] == [{'text': '#%d stalled' % idle, 'task': idle, 'wakes': False}], stall_event
+    assert bare(x for x in stall_event['short'] if x.get('task') == idle) == [{'text': '#%d stalled' % idle, 'task': idle, 'wakes': False}], stall_event
     sweeps(1)
     assert stalls(idle) == waited and not stalls(landed_first) and not stalls(added), (stalls(idle), stalls(landed_first), stalls(added))
     stays(lambda: time.time() * 1000 - show(stopped)['record']['state_unix_ms'] > (12 + STALL_GRACE + 2 * SWEEP + 2) * 1000,
@@ -6071,11 +6076,11 @@ def part_host(created=None):
     wait(lambda: (pane_agent(idle) or {}).get('state') == 'idle', 'the idle worker reports idle')
     wait(lambda: (pane_agent(asking) or {}).get('state') == 'blocked', 'the asking worker reports blocked')
     quiet = wait(lambda: events_with('#%d waiting r' % idle), 'the idle worker event')[0]
-    assert [x for x in quiet['short'] if x.get('task') == idle] == [{'text': '#%d waiting' % idle, 'task': idle, 'wakes': False}], quiet
+    assert [x for x in quiet['short'] if x.get('task') == idle] == [{'text': '#%d waiting' % idle, 'task': idle, 'wakes': False, 'state': 'waiting'}], quiet
     line = [x for x in quiet['text'].split('\n') if x.startswith('#%d waiting' % idle)][0]
     assert 'waits on owner' not in line and 'waits for #%d to land' % wanted in line, line
     loud = wait(lambda: events_with('#%d waiting r' % asking, 'waits on owner: '), 'the asking worker event')[0]
-    assert [x for x in loud['short'] if x.get('task') == asking] == [{'text': '#%d waiting' % asking, 'task': asking}], loud
+    assert [x for x in loud['short'] if x.get('task') == asking] == [{'text': '#%d waiting' % asking, 'task': asking, 'state': 'waiting'}], loud
     # ^ The landing of the task it waits for sends its text, as before.
     assert land(wanted)['state'] == 'landed'
     wait(lambda: kinds(idle, 'after_ended'), 'the idle wait ends', 40)
@@ -6149,9 +6154,9 @@ def part_host(created=None):
     wait(lambda: (pane_agent(questioning) or {}).get('state') == 'blocked', 'the asking worker reports blocked')
     quiet = wait(lambda: events_with('#%d paused r' % pausing, 'waits on paused: Paused, the manager continues it'), 'the paused event')[0]
     assert 'waits on owner' not in [x for x in quiet['text'].split('\n') if x.startswith('#%d paused' % pausing)][0], quiet
-    assert [x for x in quiet['short'] if x.get('task') == pausing] == [{'text': '#%d paused' % pausing, 'task': pausing}], quiet
+    assert [x for x in quiet['short'] if x.get('task') == pausing] == [{'text': '#%d paused' % pausing, 'task': pausing, 'state': 'paused'}], quiet
     loud = wait(lambda: events_with('#%d waiting r' % questioning, 'waits on owner: Waiting for your answer'), 'the question event')[0]
-    assert [x for x in loud['short'] if x.get('task') == questioning] == [{'text': '#%d waiting' % questioning, 'task': questioning}], loud
+    assert [x for x in loud['short'] if x.get('task') == questioning] == [{'text': '#%d waiting' % questioning, 'task': questioning, 'state': 'waiting'}], loud
     turn = wait(lambda: turn_with('#%d paused r' % pausing), 'the manager turn that read the paused event')
     assert re.search(r'- open: [^\n]*\b1 paused', turn['message']), turn['message']
     assert js('task', 'add', pausing, 'WORK aj-p2.txt')['ok']
@@ -6215,7 +6220,7 @@ def part_host(created=None):
     assert show(parked)['status']['waits_on']['kind'] == 'task', show(parked)['status']
     for n in (parked, asking):
         event = wait(lambda: events_with('#%d ready r' % n), 'the quiet ready event of #%d' % n)[0]
-        assert [x for x in event['short'] if x.get('task') == n] == [{'text': '#%d ready' % n, 'task': n, 'wakes': False}], event
+        assert bare(x for x in event['short'] if x.get('task') == n) == [{'text': '#%d ready' % n, 'task': n, 'wakes': False}], event
     manager_settled('after the quiet events')
     assert len(manager_turns()) == before, manager_turns()[before:]
     review_gate.touch()

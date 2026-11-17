@@ -2165,7 +2165,7 @@ try:
         {"kind": "message", "id": 13, "from": "recap", "text": "RECAP REQUEST"},
         {"kind": "reply", "id": 14, "to": [13], "text": "Quiet day: one landing."},
         {"kind": "message", "id": 15, "from": "manager:elsewhere", "text": "Hello from elsewhere."},
-        {"kind": "message", "id": 16, "from": "manager:elsewhere", "text": "And one more."},
+        {"kind": "message", "id": 19, "from": "manager:elsewhere", "text": "And one more."},
         # ^ Thirty chats, one line each ("Talked to ..."), so the question is more than a screen below the chat's top.
         *[{"kind": "message", "id": 30 + n, "from": f"manager:peer{n}", "text": f"Filler line {n}."} for n in range(30)],
         {"kind": "ping", "usage": {"cost_micro_usd": 0, "turns": 1}},

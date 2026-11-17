@@ -1062,21 +1062,24 @@ fn reply_row(
         return None;
     };
     let asking = asks.iter().any(|ask| ask.id == *id);
-    let answers_owner = to.is_empty()
-        || to.iter().any(|id| {
+    // ^ A reply to events keeps the rule of `quiet`: a long one, or one for the owner, is a
+    // message. A reply only to another chat's words is its own work.
+    let to_peers = !to.is_empty()
+        && to.iter().all(|id| {
             matches!(
                 said.get(id),
-                None | Some(ManagerEvent::Message {
-                    from: Author::Owner | Author::Recap,
+                Some(ManagerEvent::Message {
+                    from: Author::Peer { .. },
                     ..
                 })
             )
         });
-    let keeps = !approvals.is_empty() || asking || *post || level.is_some();
+    // ^ A quiet reply stays a muted line unless it carries an approval; a posted line is quiet.
+    let keeps = !approvals.is_empty() || (!*quiet && (asking || *post || level.is_some()));
     if says_nothing(text) && !keeps {
         return None;
     }
-    if !keeps && (*quiet || !answers_owner) {
+    if !keeps && (*quiet || to_peers) {
         let text = text.trim();
         let first = super::view::first_sentence(text);
         let mut tokens: Vec<Token> = Vec::new();

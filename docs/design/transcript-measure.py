@@ -68,7 +68,7 @@ def count(path):
                 now["empty reply"] += 1
                 continue
             targets = {source.get(i, "?") for i in row["to"]}
-            answers = "owner" in targets or "recap" in targets
+            answers = not targets or not all(t not in ("owner", "events", "recap", "?") for t in targets)
             now["reply"] += 1
             after["reply" if answers else "quiet reply"] += 1
         if kind in ("reply", "message"):

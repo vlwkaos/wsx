@@ -3827,7 +3827,7 @@ def task_journey(args):
                             {'kind': 'delivered', 'ids': [said], 'unix_ms': at + 1},
                             {'kind': 'reply', 'id': said + 1, 'to': [said], 'text': reply, 'quiet': quiet, 'unix_ms': at + 2000}])
 
-        def event(task, state, title, reply, counts=None):
+        def event(task, state, title, reply, counts=None, marked=False):
             # ^ As the host writes a task's event: the line and its short form (`Short::task`),
             # where a landing says `done`. `counts`: the host's state-change event also names the state
             # and the checks (`Short::with_state`); an event of an older host has neither.
@@ -3835,6 +3835,8 @@ def task_journey(args):
             short = {'text': '#%d %s' % (task, words), 'task': task}
             if counts:
                 short.update(state=state, checks=counts)
+            elif marked:
+                short.update(state=state)
             logged('events', '#%d %s r1: %s' % (task, state, title), reply, short=[short])
         # ^ Not `for task, state, ...`: `state` is the state directory of this journey.
         for fields in ((89, 'ready', 'Fold the events', 'Landing #89.'), (89, 'landed', 'Fold the events', '#89 is on main.'),
@@ -3843,13 +3845,13 @@ def task_journey(args):
                                           (88, 'landed', 'Since line', '#88 is on main.')):
             event(*fields)
         logged('owner', 'Keep going.', 'On it.', quiet=False)
-        event(92, 'ready', 'Short run', 'Landing #92.')
+        event(92, 'ready', 'Short run', 'Landing #92.', marked=True)
         logged('owner', 'Thanks.', 'Noted.', quiet=False)
         # ^ The usage limit held that turn: wsx wrote a pause and a resume between the message and the reply.
         held_at = old_log[-3]['unix_ms']
         old_log[-1:-1] = [{'kind': 'limit', 'until': '07:45', 'unix_ms': held_at + 100},
                           {'kind': 'limit', 'unix_ms': held_at + 1500}]
-        # ^ Stored quiet before the length rule: a long reply to events reads as a message.
+        # ^ Stored quiet before the length rule: a long reply to events reads as a message, its event carries its marks.
         event(93, 'landed', 'Release notes', 'Release notes are ready:\n\n| Part | State |\n|---|---|\n| wsx | built |\n\n- the notes are written', counts=[2, 2])
         # ^ A failed sign-in, three times in an hour: stopped, paused, a new conversation at the third,
         # resumed. Nothing shows between them, so the chat folds them into one row

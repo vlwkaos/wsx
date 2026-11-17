@@ -8,7 +8,7 @@ Measure: `python3 -I docs/design/transcript-measure.py ~/.local/state/wsx/tasks 
 
 | Where | At c14c9e34 | Proof |
 |---|---|---|
-| A reply to an event or a peer becomes a bubble | `ManagerEntry::read` (`manager.rs:469`) mutes a reply only when `quiet_reply` holds: one line, at most 200 characters (`manager.rs:283`). A longer reply to an event is a bubble. `chat_rows` (`chat.rs:950-965`) then draws every non-quiet reply as a bubble, whoever it answers | studio-app replies 984 and 986 answer a peer (`chat:web-income`, `chat-reply:wsx`), 234 and 177 characters: bubbles. wsx 7 d: 426 replies, **173 answer the owner**, 253 answer events or peers |
+| A reply to an event or a peer becomes a bubble | `ManagerEntry::read` (`manager.rs:469`) mutes a reply only when `quiet_reply` holds: one line, at most 200 characters (`manager.rs:283`). A longer reply to an event is a bubble on purpose (`docs/tasks.md` "Manager"; a routine event for the owner gets a normal reply). `chat_rows` (`chat.rs:950-965`) then draws every non-quiet reply as a bubble, also one to another chat | studio-app replies 984 and 986 answer a peer (`chat:web-income`, `chat-reply:wsx`), 234 and 177 characters: bubbles. wsx 7 d: 417 replies, 43 more quiet, 61 to peers |
 | A peer message is a bubble | `chat_rows` draws `Message{from: peer}` (`chat.rs:802`) and `Sent` (`chat.rs:1005`) as a bubble each | wsx 7 d: 64 peer messages + 70 sent = 134 bubbles; studio-app 35 + 35 |
 | An empty `-` reply | Not a cause here. `says_nothing` marks it quiet at read (`manager.rs:469`) and the quiet branch dropped it: studio-app 988 and 990 (`quiet: true`, text `-`) never drew. The owner saw them in an older build or as a peer text; `talk()` now drops those too | log rows 988, 990 |
 | A task's scope outgrows its title | `HostRequest::Add` (`host.rs:1053`) logs the text and delivers it. No code path writes `record.title` after `task new` | studio-app #90 "Revoice unclaimed teaser": 1 prompt, 6 adds, 1 steer; message 991 (pause and caption rule) is the 5th add (task log, ts 1794872759653). Store, all tasks: studio-app 50 of 110 got an add (16 got 3 or more); wsx 319 of 493 (138 with 3 or more), median 1 KB of added text |
@@ -23,7 +23,8 @@ One rule, one owner: wsx-core `task::chat::chat_rows` (`reply_row`, `talk`, `pus
 | Owner message | bubble | the request |
 | Reply to an owner or recap message | bubble | the answer |
 | Reply that asks, carries an approval, is a post, or has a level | bubble | the owner must act |
-| Reply to events only, or to a peer only | quiet line: tokens, first sentence, **More** (opens the whole text) | wsx's own work |
+| Reply to a peer only, or a short reply to events (`quiet`) | quiet line: tokens, first sentence, **More** (opens the whole text) | wsx's own work |
+| Reply to events that is long or for the owner (not `quiet`) | bubble, as before | the manager's own rule at write time (`turn_events`) |
 | Peer message or `sent` | one `Talked to <chat>` line per run with that chat, **Show** opens the words | traffic between managers |
 | Empty or `-` reply, empty peer or `sent` text | no row | says nothing |
 | Event | muted line (tokens when the event names its state), runs fold as before | unchanged |
@@ -32,13 +33,13 @@ Counts, last 7 days, bubbles before to after:
 
 | Chat | Owner | Replies before | Replies after (bubble / quiet) | Peer + sent bubbles before | Talked-to lines | Bubbles |
 |---|---|---|---|---|---|---|
-| wsx | 183 | 426 (+48 quiet) | 173 / 301 | 134 | 100 | 745 to **358** |
-| studio-app | 59 | 131 (+10 quiet) | 61 / 80 | 70 | 60 | 260 to **120** |
-| all 18 chats | 446 | 962 (+122 quiet) | 436 / 648 | 408 | 320 | 1,840 to **906** |
+| wsx | 181 | 417 (+43 quiet) | 383 / 77 | 128 | 96 | 728 to **566** |
+| studio-app | 59 | 131 (+10 quiet) | 111 / 30 | 70 | 60 | 260 to **170** |
+| all chats | 444 | 954 (+120 quiet) | 834 / 240 | 402 | 316 | 1,824 to **1,302** |
 
 An open ask or an approval keeps its reply a bubble; the script cannot see them, so the bubble counts after are an upper bound. 10 empty replies show nowhere before or after.
 
-Corrections to the approved plan: the plan counted the 10 empty `-` replies as bubbles before; they were not (table above). A long reply to events was a bubble only through the 200-character rule; the new rule mutes it by who it answers, not by its length.
+Corrections to the approved plan: the plan counted the 10 empty `-` replies as bubbles before; they were not (table above). A first version of the rule muted every reply to events; the task scenario showed that hides a routine event's reply for the owner and the long replies the manager writes on purpose. Only a reply to another chat's words is muted by who it answers; a reply to events keeps the `quiet` flag (counts above, `python3 -I docs/design/transcript-measure.py`).
 
 ## 3. Muted lines carry tokens
 

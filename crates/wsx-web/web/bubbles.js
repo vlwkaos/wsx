@@ -229,8 +229,8 @@ export const Typing = ({ name, plain }) => html`
 export const Tokens = ({ project, tokens }) => tokens.map((token) => html`
   <span class="token" key=${token.task}>
     <${TaskChip} project=${project} id=${token.task} />
-    ${token.state && html`<span class="state-chip" data-tone=${token.tone ?? null}>${token.state}</span>`}
-    ${token.checks && html`<span class="state-chip" data-tone=${token.checks[0] < token.checks[1] ? "danger" : null}>${token.checks[0]} of ${token.checks[1]} checks</span>`}
+    ${token.state && html`${" "}<span class="state-chip" data-tone=${token.tone ?? null}>${token.state}</span>`}
+    ${token.checks && html`${" "}<span class="state-chip" data-tone=${token.checks[0] < token.checks[1] ? "danger" : null}>${token.checks[0]} of ${token.checks[1]} checks</span>`}
   </span>`);
 
 // One task change in a muted line: its marks when the event says the new state (the task's link
