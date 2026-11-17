@@ -7,9 +7,8 @@ rules a build would add). Dark is the page default; `?light` is not needed: a li
 data-scheme="light" on <html>, as the client does (ui.js applyScheme).
 """
 import html
-import re
 import pathlib
-import sys
+import re
 
 HERE = pathlib.Path(__file__).parent
 THEME = "theme.css"
