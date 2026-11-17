@@ -85,6 +85,9 @@ pub enum TaskCmd {
         /// Add a glob of the paths it expects to change (repeatable)
         #[arg(long, value_name = "GLOB")]
         files: Vec<String>,
+        /// Rename the task to what it now carries (at most 60 characters)
+        #[arg(long, value_name = "WORDS")]
+        title: Option<String>,
     },
     /// Interrupt the worker; the next add resumes the same conversation
     Stop { task: String },

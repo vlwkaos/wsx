@@ -8,6 +8,7 @@ use crate::{
 use ratatui::text::Line;
 use std::{
     cell::{Cell, RefCell},
+    collections::HashSet,
     io::Read as _,
     ops::Range,
     path::{Path, PathBuf},
@@ -47,6 +48,9 @@ pub enum Target {
         id: Option<u64>,
         check: Option<String>,
     },
+    /// The `More` or `Show` of a muted row (a reply to events, a talk with another chat): it opens
+    /// the row's words, or folds them again. The row's key.
+    More(String),
 }
 
 /// A piece of a message: plain words, or a link `[label](session/<id>)` / `[label](files/<path>)`.
@@ -110,10 +114,14 @@ pub fn parts(text: &str) -> Vec<Part<'_>> {
 pub fn links(rows: &[ChatRow]) -> Vec<(u64, usize, Target)> {
     let mut found = Vec::new();
     // ^ A queued message shows as one waiting line: it has no links.
-    for row in rows
-        .iter()
-        .filter(|row| row.kind == RowKind::Message && !row.queued)
-    {
+    for row in rows.iter().filter(|row| !row.queued) {
+        if row.kind == RowKind::Talk || (row.kind == RowKind::Quiet && row.first_sentence.is_some())
+        {
+            found.push((row.unix_ms, 0, Target::More(row.key.clone())));
+        }
+        if row.kind != RowKind::Message {
+            continue;
+        }
         // ^ The quote is link 0 of its message; `chat_lines` counts the same way.
         let quoted = row.quoted.clone().map(|line| Target::Quote {
             line,
@@ -338,6 +346,8 @@ pub struct ManagerChat {
     reveal_due: bool,
     /// The quoted message the chat went to: its heading is reversed.
     marked: Option<u64>,
+    /// The muted rows shown open (`Target::More`), by key.
+    opened: HashSet<String>,
     /// ^ The rows wrapped for the last width and link, until the rows change; the draw, a key
     /// and the find's count all read it, so a frame wraps nothing new.
     wrapped: RefCell<Option<Wrapped>>,
@@ -411,6 +421,7 @@ impl ManagerChat {
             reply: None,
             reveal_due: false,
             marked: None,
+            opened: HashSet::new(),
             wrapped: RefCell::new(None),
             acting: None,
             stamp: None,
@@ -910,6 +921,12 @@ impl ManagerChat {
                 check: Some(check), ..
             }) => self.show_check(&check),
             Some(Target::Quote { line, id, .. }) => self.show_quoted(&line, id),
+            Some(Target::More(key)) => {
+                if !self.opened.remove(&key) {
+                    self.opened.insert(key);
+                }
+                self.wrapped.take();
+            }
             None => self.link = None,
         }
     }
@@ -970,7 +987,7 @@ impl ManagerChat {
     fn center_row(&mut self, at: usize) {
         let (width, _) = self.area.get();
         let lines = |rows: &[ChatRow]| {
-            crate::ui::task_chat::chat_lines(rows, width, None, None)
+            crate::ui::task_chat::chat_lines(rows, width, None, None, &self.opened)
                 .0
                 .len()
         };
@@ -1208,8 +1225,13 @@ impl ManagerChat {
             cache.width == width && cache.link == self.link && cache.marked == self.marked
         });
         if !fresh {
-            let (lines, selected) =
-                crate::ui::task_chat::chat_lines(&self.rows, width, self.link, self.marked);
+            let (lines, selected) = crate::ui::task_chat::chat_lines(
+                &self.rows,
+                width,
+                self.link,
+                self.marked,
+                &self.opened,
+            );
             *cache = Some(Wrapped {
                 width,
                 link: self.link,

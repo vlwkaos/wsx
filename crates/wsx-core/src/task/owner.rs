@@ -165,11 +165,10 @@ pub fn close_chat(
     launch: impl Fn(String, Vec<String>) -> Result<()>,
 ) -> Result<()> {
     let (home, text) = super::chats::close(name)?;
-    let short = super::manager::Short {
-        text: format!("Chat {name} closed; its open tasks are yours"),
-        task: None,
-        wakes: false,
-    };
+    let short = super::manager::Short::event(
+        format!("Chat {name} closed; its open tasks are yours"),
+        false,
+    );
     say(
         project.0,
         project.1,

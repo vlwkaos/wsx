@@ -2160,13 +2160,14 @@ try:
         # ^ A turn took it (reply 16 answers it); only message 18 below is still waiting.
         {"kind": "delivered", "ids": [10]},
         {"kind": "message", "id": 11, "from": "events", "text": "#3 landed r2: Chat rows; worker says: done",
-         "short": [{"text": "#3 done", "task": 3}]},
+         "short": [{"text": "#3 done", "task": 3, "state": "landed", "checks": [4, 4]}]},
         {"kind": "reply", "id": 12, "to": [11], "text": "#3 is on main.", "quiet": True},
         {"kind": "message", "id": 13, "from": "recap", "text": "RECAP REQUEST"},
         {"kind": "reply", "id": 14, "to": [13], "text": "Quiet day: one landing."},
         {"kind": "message", "id": 15, "from": "manager:elsewhere", "text": "Hello from elsewhere."},
-        # ^ Thirty peer lines after Hello, so the question is more than a screen below the chat's top.
-        *[{"kind": "message", "id": 30 + n, "from": "manager:elsewhere", "text": f"Filler line {n}."} for n in range(30)],
+        {"kind": "message", "id": 16, "from": "manager:elsewhere", "text": "And one more."},
+        # ^ Thirty chats, one line each ("Talked to ..."), so the question is more than a screen below the chat's top.
+        *[{"kind": "message", "id": 30 + n, "from": f"manager:peer{n}", "text": f"Filler line {n}."} for n in range(30)],
         {"kind": "ping", "usage": {"cost_micro_usd": 0, "turns": 1}},
         {"kind": "rotated", "tokens": 152000, "reason": "the launch changed"},
         {"kind": "reply", "id": 16, "to": [10], "text": "Should I land #4?", "asks": True},
@@ -2290,11 +2291,12 @@ try:
     # up one line at a time to the top.
     remove_tui.send(b"k" * 200)
     wait_for(chat_top_shown, lambda: f"k did not scroll the TUI chat to its top:\n{remove_tui.text()}", seconds=60)
-    rows_in_order([r"^You\s+\d\d:\d\d", r"^Where is #3\?", r"^#3 done$", r"^Atlas$", r"^#3 is on main\.$",
-                   r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.", r"^elsewhere\s+\d\d:\d\d",
-                   r"^Hello from elsewhere\."])
-    # ^ Another chat's message is a row under its name; there is no peer key: a chat names its peer in `wsx task say`.
-    assert "(P)eer chat" not in remove_tui.text(), remove_tui.text()
+    rows_in_order([r"^You\s+\d\d:\d\d", r"^Where is #3\?", r"^#3 landed 4 of 4 checks$", r"^Atlas$",
+                   r"^#3 landed 4 of 4 checks\s+#3 is on main\.$", r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.",
+                   r"^Talked to elsewhere\s+Show$", r"^Talked to peer0\s+Show$"])
+    # ^ What another chat said folds to one line per chat that opens to the words; there is no peer
+    # key: a chat names its peer in `wsx task say`. The two messages of "elsewhere" are one line.
+    assert "(P)eer chat" not in remove_tui.text() and "Hello from elsewhere" not in remove_tui.text(), remove_tui.text()
     remove_tui.send(b"\x1b")
     wait_for(lambda: "press i to write a message" not in remove_tui.text(), "Esc did not close the manager chat", seconds=60)
     remove_tui.send(b"q")

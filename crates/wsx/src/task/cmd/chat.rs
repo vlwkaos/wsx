@@ -312,11 +312,10 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
             )?;
             // ^ The first row of a chat that a chat's agent opened links to the message that asked.
             if let Some(from) = from {
-                let short = Short {
-                    text: format!("Opened from chat {}, message {}", from.chat, from.message),
-                    task: None,
-                    wakes: false,
-                };
+                let short = Short::event(
+                    format!("Opened from chat {}, message {}", from.chat, from.message),
+                    false,
+                );
                 let text = format!("Opened from chat {}, message {}.", from.chat, from.message);
                 let exe = std::env::current_exe().context("cannot find the wsx binary")?;
                 owner::say(

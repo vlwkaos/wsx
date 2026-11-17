@@ -11,7 +11,7 @@ use super::store::{self, contains_bytes, ManagerDir, FIRST_READ_BYTES};
 use crate::routine::RunRecord;
 use anyhow::{bail, Result};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// The same line again this soon shows once.
 const REPEAT_MS: u64 = 60_000;
@@ -437,6 +437,9 @@ pub enum RowKind {
     Quiet,
     /// A new conversation, or the manager stopped.
     Note,
+    /// What the manager and another chat said to each other, folded into one line that opens to
+    /// the words: `Talked to <name>`.
+    Talk,
 }
 
 /// Who wrote a row: `owner`, `manager` (the chat's other side) or `peer:<key>` on the wire.
@@ -477,6 +480,49 @@ pub fn manager_name_in(chat: Option<&str>, shown: &str) -> String {
     }
 }
 
+/// What a muted row says as marks: one task, its new state and its checks. Built from the facts
+/// of the events the row is or answers (`Short`), never read from the manager's prose, so the
+/// web and the TUI draw the same marks (a `#n` link, a status chip, a check count).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Token {
+    pub task: u32,
+    /// The task's state in the words of `task::status` (`landed`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// `status::tone` of `state`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tone: Option<&'static str>,
+    /// How many checks passed, of how many.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checks: Option<[u32; 2]>,
+}
+
+impl Token {
+    fn of(short: &Short) -> Option<Self> {
+        Some(Self {
+            task: short.task?,
+            tone: short.state.as_deref().and_then(super::status::tone),
+            state: short.state.clone(),
+            checks: short.checks,
+        })
+    }
+}
+
+/// One message of a `Talk` row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Said {
+    /// Who wrote it: the other chat's name, or the chat's own manager.
+    pub name: String,
+    /// The other chat's key (`Party::key`) when it wrote it; none for the chat's own manager, so
+    /// a client reads a bare `#n` as the right project's task.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
+    pub text: String,
+}
+
+/// The most marks a muted reply shows.
+const TOKENS: usize = 4;
+
 /// One row of the chat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChatRow {
@@ -515,6 +561,13 @@ pub struct ChatRow {
     /// An event line's leading task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<u32>,
+    /// A `Talk` row's messages, oldest first; its `text` is empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub said: Vec<Said>,
+    /// The marks of an event line that changes a task's state, and of a muted reply to such
+    /// events: the newest per task, at most `TOKENS`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tokens: Vec<Token>,
     /// A reply that asks the owner, with no owner message after it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub asks: bool,
@@ -556,6 +609,8 @@ impl ChatRow {
             quoted_id: None,
             quoted_check: None,
             task: None,
+            said: Vec::new(),
+            tokens: Vec::new(),
             asks: false,
             post: false,
             level: None,
@@ -748,6 +803,14 @@ pub fn chat_rows(
         })
         .flatten()
         .collect();
+    // ^ What each message is, so a reply knows what it answers (`bubble`).
+    let said: HashMap<u64, &ManagerEvent> = entries
+        .iter()
+        .filter_map(|entry| match &entry.event {
+            ManagerEvent::Message { id, .. } => Some((*id, &entry.event)),
+            _ => None,
+        })
+        .collect();
     let mut carried: Vec<Vec<String>> = vec![Vec::new(); entries.len()];
     for line in approvals {
         let ApprovalLine::Request {
@@ -795,7 +858,8 @@ pub fn chat_rows(
                             ..row
                         })
                     }
-                    row => rows.extend(row),
+                    Some(row) => push_row(&mut rows, row),
+                    None => {}
                 }
             }
             ManagerEvent::Reply { .. } => rows.extend(reply_row(
@@ -804,8 +868,13 @@ pub fn chat_rows(
                 &recaps,
                 asks,
                 names,
+                &said,
             )),
-            _ => rows.extend(note_row(entry, names)),
+            _ => {
+                if let Some(row) = note_row(entry, names) {
+                    push_row(&mut rows, row);
+                }
+            }
         }
     }
     rows.extend(queued);
@@ -870,7 +939,7 @@ fn peer_name(party: &Party) -> String {
 /// request shows nothing.
 fn message_row(entry: &ManagerEntry, from: &Author, text: &str) -> Option<ChatRow> {
     let key = row_key(entry, "message");
-    let (peer, reply) = match from {
+    let peer = match from {
         Author::Owner => {
             return Some(ChatRow::said(
                 key,
@@ -880,19 +949,55 @@ fn message_row(entry: &ManagerEntry, from: &Author, text: &str) -> Option<ChatRo
                 text,
             ))
         }
-        Author::Peer { from, reply } => (from, reply),
+        Author::Peer { from, .. } => from,
         Author::Events | Author::Recap => return None,
     };
+    talk(key, entry, peer, Some(peer), "", text)
+}
+
+/// The row of what another chat and the manager said to each other: the muted line `Talked to
+/// <name>` that opens to the words (`push_row` joins a run with one chat). Empty words (`-`) show
+/// nothing. ref: docs/design/transcript.md
+fn talk(
+    key: String,
+    entry: &ManagerEntry,
+    with: &Party,
+    from: Option<&Party>,
+    own: &str,
+    text: &str,
+) -> Option<ChatRow> {
+    let text = text.trim();
+    if says_nothing(text) {
+        return None;
+    }
+    let name = peer_name(with);
     Some(ChatRow {
-        tag: reply.then(|| "Reply".into()),
-        ..ChatRow::said(
-            key,
-            entry,
-            Speaker::Peer(peer.clone()),
-            peer_name(peer),
-            text,
-        )
+        author: Some(Speaker::Peer(with.clone())),
+        tag: Some(format!("Talked to {name}")),
+        said: vec![Said {
+            name: from.map_or_else(|| own.to_string(), peer_name),
+            peer: from.map(Party::key),
+            text: text.to_string(),
+        }],
+        name: Some(name),
+        ..ChatRow::new(RowKind::Talk, key, entry, String::new())
     })
+}
+
+/// `row` after the rows shown, a `Talk` joined to the `Talk` with the same chat before it: one
+/// line for a run of messages, which keeps its first key and takes the last time.
+fn push_row(rows: &mut Vec<ChatRow>, row: ChatRow) {
+    match rows.last_mut() {
+        Some(last)
+            if row.kind == RowKind::Talk
+                && last.kind == RowKind::Talk
+                && last.author == row.author =>
+        {
+            last.said.extend(row.said);
+            last.unix_ms = row.unix_ms;
+        }
+        _ => rows.push(row),
+    }
 }
 
 /// The lines of an events message, one row each unless the line repeats the one before it.
@@ -915,6 +1020,7 @@ fn event_rows(rows: &mut Vec<ChatRow>, entry: &ManagerEntry, text: &str, short: 
         if !repeat {
             rows.push(ChatRow {
                 task: line.task,
+                tokens: line.state.iter().filter_map(|_| Token::of(&line)).collect(),
                 ..ChatRow::new(
                     RowKind::Line,
                     format!("{}-{nth}", row_key(entry, "message")),
@@ -926,13 +1032,21 @@ fn event_rows(rows: &mut Vec<ChatRow>, entry: &ManagerEntry, text: &str, short: 
     }
 }
 
-/// The row of a manager reply. `approvals`: the ids of the pending approvals it carries.
+/// The row of a manager reply. `approvals`: the ids of the pending approvals it carries. `said`:
+/// the messages of the window, which tell what the reply answers.
+///
+/// The one rule of what reaches the owner as a bubble: a reply is a bubble when it answers an
+/// owner message or a recap (or none the window knows), asks, carries an approval or is a post.
+/// Any other reply, one to events or to another chat, is a muted line (`Quiet`) with the marks of
+/// the events it answers; its words open under it. A reply that says nothing (`-`) has no row.
+/// ref: docs/design/transcript.md
 fn reply_row(
     entry: &ManagerEntry,
     approvals: Vec<String>,
     recaps: &HashSet<u64>,
     asks: &[OpenAsk],
     names: &Names,
+    said: &HashMap<u64, &ManagerEvent>,
 ) -> Option<ChatRow> {
     let ManagerEvent::Reply {
         to,
@@ -947,15 +1061,40 @@ fn reply_row(
     else {
         return None;
     };
-    // ^ A quiet reply is a muted line under the manager's name unless it carries an
-    // approval; `-` or nothing says nothing changed and shows nothing.
-    if *quiet && approvals.is_empty() {
+    let asking = asks.iter().any(|ask| ask.id == *id);
+    let answers_owner = to.is_empty()
+        || to.iter().any(|id| {
+            matches!(
+                said.get(id),
+                None | Some(ManagerEvent::Message {
+                    from: Author::Owner | Author::Recap,
+                    ..
+                })
+            )
+        });
+    let keeps = !approvals.is_empty() || asking || *post || level.is_some();
+    if says_nothing(text) && !keeps {
+        return None;
+    }
+    if !keeps && (*quiet || !answers_owner) {
         let text = text.trim();
         let first = super::view::first_sentence(text);
-        return (!says_nothing(text)).then(|| ChatRow {
+        let mut tokens: Vec<Token> = Vec::new();
+        for token in to.iter().filter_map(|id| match said.get(id) {
+            Some(ManagerEvent::Message { short, .. }) => Some(short),
+            _ => None,
+        }) {
+            for token in token.iter().filter_map(Token::of) {
+                tokens.retain(|kept| kept.task != token.task);
+                tokens.push(token);
+            }
+        }
+        tokens.drain(..tokens.len().saturating_sub(TOKENS));
+        return Some(ChatRow {
             author: Some(Speaker::Manager),
             name: Some(names.own.to_string()),
             first_sentence: (first != text).then_some(first),
+            tokens,
             ..ChatRow::new(
                 RowKind::Quiet,
                 row_key(entry, "reply"),
@@ -969,7 +1108,7 @@ fn reply_row(
             .iter()
             .any(|id| recaps.contains(id))
             .then(|| "Recap".into()),
-        asks: asks.iter().any(|ask| ask.id == *id),
+        asks: asking,
         post: *post,
         level: *level,
         approvals,
@@ -990,20 +1129,14 @@ fn note_row(entry: &ManagerEntry, names: &Names) -> Option<ChatRow> {
     match &entry.event {
         // ^ An empty `sent` (older hosts logged one without --json) shows nothing.
         ManagerEvent::Sent { text, .. } if text.trim().is_empty() => None,
-        ManagerEvent::Sent { to, text, reply } => Some(ChatRow {
-            tag: Some(format!(
-                "{} {}",
-                if *reply { "Reply to" } else { "To" },
-                peer_name(&Party::from_key(to))
-            )),
-            ..ChatRow::said(
-                row_key(entry, "sent"),
-                entry,
-                Speaker::Manager,
-                names.own.to_string(),
-                text,
-            )
-        }),
+        ManagerEvent::Sent { to, text, .. } => talk(
+            row_key(entry, "sent"),
+            entry,
+            &Party::from_key(to),
+            None,
+            names.own,
+            text,
+        ),
         ManagerEvent::Limit { until } => Some(ChatRow::new(
             RowKind::Line,
             row_key(entry, "limit"),

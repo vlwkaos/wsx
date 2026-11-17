@@ -225,6 +225,13 @@ pub struct Short {
     /// go along with the manager's next turn and cost none. ref: docs/tasks.md "Manager"
     #[serde(default = "wakes_default", skip_serializing_if = "is_wakes")]
     pub wakes: bool,
+    /// A task's new state in the words of `task::status` (`landed`, `ready`, `failed`): the
+    /// chats draw it as a status chip. None for an event that is no state change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// The checks of a task event: how many passed, of how many (`3 of 4`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checks: Option<[u32; 2]>,
 }
 
 fn wakes_default() -> bool {
@@ -241,9 +248,26 @@ impl Short {
     pub fn plain(line: &str) -> Self {
         Self {
             text: line.split("; ").next().unwrap_or(line).trim().to_string(),
-            task: None,
-            wakes: true,
+            ..Self::event("", true)
         }
+    }
+
+    /// An event with words of its own and no task.
+    pub fn event(text: impl Into<String>, wakes: bool) -> Self {
+        Self {
+            text: text.into(),
+            task: None,
+            wakes,
+            state: None,
+            checks: None,
+        }
+    }
+
+    /// The task's state after this event, and its checks when it ran any.
+    pub fn with_state(mut self, state: &str, checks: Option<[u32; 2]>) -> Self {
+        self.state = Some(state.to_string());
+        self.checks = checks;
+        self
     }
 
     /// The event starts no turn of its own.
@@ -261,9 +285,8 @@ impl Short {
     /// A task's event: `#<task> <words>`.
     pub fn task(task: u32, words: &str) -> Self {
         Self {
-            text: format!("#{task} {words}"),
             task: Some(task),
-            wakes: true,
+            ..Self::event(format!("#{task} {words}"), true)
         }
     }
 }

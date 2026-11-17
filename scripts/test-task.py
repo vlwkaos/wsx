@@ -1833,6 +1833,13 @@ def part_core(created=None):
     # `add --files` extends; a declared glob meets another task's changed path.
     js('task', 'add', d3, '--files', '*.txt', 'also the text files')
     assert show(d3)['record']['files'] == ['web/*.js', '*.txt']
+    # `add --title` names what the add made the task carry (docs/tasks.md "Store"); a bad title sends nothing.
+    js('task', 'add', d3, '--title', 'Web and text files', 'also the docs')
+    assert show(d3)['record']['title'] == 'Web and text files', show(d3)['record']
+    assert {row['id']: row['title'] for row in js('task', 'list')['tasks']}[d3] == 'Web and text files'
+    for bad in ('', 'x' * 61):
+        assert 'title' in cli('task', 'add', d3, '--title', bad, 'x', ok=False).stderr, bad
+    assert show(d3)['record']['title'] == 'Web and text files'
     ledger_rows = {row['id']: row for row in js('task', 'ledger')['open']}
     assert ledger_rows[d3]['overlaps'] == [{'id': n, 'count': 1, 'complete': True, 'declared': True}
                                            for n in (x1, y1, x2)], ledger_rows[d3]
@@ -6907,9 +6914,10 @@ def part_host(created=None):
             (r'WORKSPACE', b'')], cols=cols)
         talk = shots[3]
         assert 'to check' not in talk and re.search(r'(?m)^ billing +\d\d:\d\d$', talk), talk
-        # ^ The title is the chat's name and its model; the home chat's message is under its own name.
-        assert 'billing · haiku' in talk and 'demo · billing' not in talk and 'MANAGER PING' in talk, talk
-        assert re.search(r'(?m)^ demo +\d\d:\d\d$', talk), talk
+        # ^ The title is the chat's name and its model; the home chat's message is one folded line
+        # (`Talked to demo`) that opens to its words.
+        assert 'billing · haiku' in talk and 'demo · billing' not in talk and 'MANAGER PING' not in talk, talk
+        assert re.search(r'(?m)^ Talked to demo +Show', talk), talk
     # Dismiss (docs/tasks.md "Chats"): `x` on the chat's row takes it off the list and shows `+1 dismissed`;
     # the chat stays open, and a message to it lists the row again (`chats_home::listed`).
     row = r'(?m)^ billing +(?:[…!✓]\d+ +)*open'

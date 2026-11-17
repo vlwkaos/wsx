@@ -7,7 +7,7 @@ import { html, Icon, keepIn, plural, readMap, useCoalescedLoad, useEffect, useFo
 import { can, goBack, leaveFor, shows, state, touch, useEventLoad, useStore } from "./store.js";
 import { Back, confirmDialog, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, useDraft, useListKeys, useRecent, withNewLine } from "./chat.js";
-import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
+import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, TalkLine, Typing } from "./bubbles.js";
 import { FindBar, FindButton } from "./find.js";
 import { markFound, QuoteChip, quoteSplit, useReply, withQuote } from "./reply.js";
 import { readTaskAhead, TaskPage } from "./task.js";
@@ -940,7 +940,8 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   const managerWord = typing ? "typing" : stopped ? "stopped" : "";
   const draw = (row, isNew) => row.kind === "message" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} fresh=${isNew} onNeed=${room ? null : showNeed} plain=${plain} />`
     : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} row=${row} fresh=${isNew} />`
-    : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} fresh=${isNew} plain=${plain} />`
+    : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} project=${id} row=${row} words=${words} fresh=${isNew} plain=${plain} />`
+    : row.kind === "talk" ? html`<${TalkLine} key=${row.key} project=${id} row=${row} words=${words} all=${finding} />`
     : row.kind === "fold" ? html`<${Fold} key=${row.key} project=${id} row=${row} render=${show} all=${finding} want=${wanted} />`
     : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${isNew} onReply=${replyTo} plain=${plain} />`
     : html`<${Note} key=${row.key} row=${row} />`;

@@ -758,11 +758,7 @@ impl Repo {
                     "approval {id} ({asked}) {}",
                     clip(&verdict, EVENT_SUMMARY_CHARS * 2)
                 ),
-                Short {
-                    text: clip(&short, EVENT_SUMMARY_CHARS * 2),
-                    task: None,
-                    wakes: true,
-                },
+                Short::event(clip(&short, EVENT_SUMMARY_CHARS * 2), true),
             );
             self.emit(asker, line);
         }
@@ -1173,14 +1169,14 @@ impl Repo {
                 continue;
             }
             let title = view::title(&dir, &record).unwrap_or_default();
+            let result = read_result(&dir).unwrap_or_default();
+            let checks = view::check_outcomes(&result);
+            let passed = checks
+                .iter()
+                .filter(|(_, outcome)| *outcome == "passed")
+                .count();
+            // ^ The checks the host ran come before the worker's own words.
             let summary = {
-                // ^ The checks the host ran come before the worker's own words.
-                let result = read_result(&dir).unwrap_or_default();
-                let checks = view::check_outcomes(&result);
-                let passed = checks
-                    .iter()
-                    .filter(|(_, outcome)| *outcome == "passed")
-                    .count();
                 let words = result["result"]["summary"].as_str().unwrap_or_default();
                 // ^ The worker's own words, which nothing checked: the checks and the
                 // recorded runs before them are the host's facts.
@@ -1300,7 +1296,9 @@ impl Repo {
                 TaskState::Landed => "done",
                 _ => wsx_core::task::status::state_word(&record),
             };
-            let mut short = Short::task(record.id, words);
+            let counts = (!checks.is_empty()).then_some([passed as u32, checks.len() as u32]);
+            let mut short = Short::task(record.id, words)
+                .with_state(wsx_core::task::status::state_word(&record), counts);
             short.wakes = state_wakes(&dir, &record);
             self.task_event(&record, &open_chats, line, short);
             let state = record.state.as_str();

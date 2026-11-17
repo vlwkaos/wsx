@@ -461,6 +461,18 @@ pub fn state_word(record: &TaskRecord) -> &'static str {
     }
 }
 
+/// The tone a chat draws a state word in (`Short::state`): the web's `data-tone` and the TUI's
+/// color. A word with none is drawn plain.
+pub fn tone(word: &str) -> Option<&'static str> {
+    match word {
+        "working" | "checking" => Some("working"),
+        "ready" | "waiting" | "paused" => Some("attention"),
+        "failed" => Some("danger"),
+        "landed" => Some("accent"),
+        _ => None,
+    }
+}
+
 /// A task that waits on `waiting`: the owner, its plan reviewed, the owner's hand, disk,
 /// the usage limit, a slot for its checks or a check run.
 fn waiting_on(

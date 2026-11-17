@@ -15,7 +15,7 @@ use wsx_core::task::checks::{self};
 use wsx_core::task::manager::ApprovalAction;
 use wsx_core::task::owner::HOST_TIMEOUT;
 use wsx_core::task::status::Status;
-use wsx_core::task::view::{checked_files, short_commit};
+use wsx_core::task::view::{checked_files, checked_title, short_commit};
 use wsx_core::task::view::{
     overlaps, project_tasks, refuse_open_children, task_summary, MAX_RESULT_READ_BYTES,
 };
@@ -664,18 +664,21 @@ pub(crate) fn steer_command(
     send(&dir, HostRequest::Steer { text }, json)
 }
 
-/// `wsx task add`: a message after the current turn, with more paths it expects to change.
+/// `wsx task add`: a message after the current turn, with more paths it expects to change and
+/// the title of what it now carries.
 pub(crate) fn add_command(
     task: &str,
     text: PromptSource,
     files: &[String],
+    title: Option<&str>,
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let dir = open(project, task)?;
     let text = text.read(MAX_MESSAGE_BYTES)?;
     let files = checked_files(&dir.read_record()?.files, files)?;
-    send(&dir, HostRequest::Add { text, files }, json)
+    let title = title.map(checked_title).transpose()?;
+    send(&dir, HostRequest::Add { text, files, title }, json)
 }
 
 /// `wsx task stop`: interrupt the worker.

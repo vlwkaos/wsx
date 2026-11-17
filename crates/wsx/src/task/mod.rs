@@ -74,7 +74,12 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
             said,
         } => commit(&files, &message, said.owner_said, project, json),
         TaskCmd::Steer { task, text } => steer_command(&task, text, project, json),
-        TaskCmd::Add { task, text, files } => add_command(&task, text, &files, project, json),
+        TaskCmd::Add {
+            task,
+            text,
+            files,
+            title,
+        } => add_command(&task, text, &files, title.as_deref(), project, json),
         TaskCmd::Stop { task } => stop_command(&task, project, json),
         TaskCmd::Check { action } => check(action, project, json),
         TaskCmd::Land { task, tried, said } => land_command(task, tried, said, project, json),

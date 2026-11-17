@@ -2695,22 +2695,24 @@ await go(chat);
 await until("!!document.querySelector('.composer .icon-button[aria-label=\"Attach files\"]')", "the manager chat has no attach button");
 // ^ The reply to plans is older than the newest 60 rows the chat keeps at its end: the reader
 // goes up and shows earlier rows until it is there (docs/web-client-chat.md "Long chats").
-const replyToPlans = "[...document.querySelectorAll('.log .bubble-tag')].some((node) => node.textContent === 'Reply to plans')";
+const replyToPlans = "[...document.querySelectorAll('.log [data-talk] .fold-count')].some((node) => node.textContent === 'Talked to plans')";
 for (let n = 0; n < 20 && !(await evaluate(replyToPlans)) && await count(".log-earlier"); n++) {
   await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = 0; log.dispatchEvent(new Event('scroll')); })()");
   await pause(200);
   await click(".log-earlier");
   await pause(300);
 }
-const peers = await bubbles();
-if (!peers.some(({ author }) => author === "plans") || !peers.some(({ tag }) => tag === "Reply to plans")) await fail(`the managers' messages read ${JSON.stringify(peers)}`);
+// ^ What plans' manager and this chat said to each other is one muted "Talked to plans" row, closed: the words show on a tap, under the writer's name.
+const peers = await evaluate("[...document.querySelectorAll('.log [data-talk]')].map((node) => ({ tag: node.querySelector('.fold-count').textContent, open: node.querySelector('.fold-toggle').getAttribute('aria-expanded'), words: node.querySelectorAll('.reply-open').length }))");
+if (!peers.some(({ tag, open, words }) => tag === "Talked to plans" && open === "false" && words === 0)) await fail(`the managers' messages read ${JSON.stringify(peers)}`);
+if (await evaluate("document.querySelectorAll('.log .bubble[data-speaker=\"peer\"]').length")) await fail("a message of another chat is a bubble");
 if (await count(".jump")) await toLatest("the managers' messages");
 // ^ Each speaker with a name has its own color on that name, never on its box: this manager's
-// and the other manager's names and wsx's muted lines; the owner's bubble has no name and no color
+// name and wsx's muted lines; the owner's bubble has no name and no color
 // (docs/web-themes.md "Tokens").
 const speakerColors = () => evaluate(`(() => { const color = (selector) => { const node = document.querySelector(selector);
   return node && getComputedStyle(node).color; };
-  return [color('.log .bubble[data-speaker="manager"] .bubble-author'), color('.log .bubble[data-speaker="peer"] .bubble-author'), color('.log .status-line')]; })()`);
+  return [color('.log .bubble[data-speaker="manager"] .bubble-author'), color('.log .status-line')]; })()`);
 // ^ A box whose inline edges differ from its top edge has a side border, and a gradient, a shadow
 // or a drawn pseudo-element can tint an edge; the owner's box has no colored border at all.
 const sideBorders = () => evaluate(`[...document.querySelectorAll('.log .bubble-box')].filter((node) => { const style = getComputedStyle(node);
@@ -2724,7 +2726,7 @@ for (const scheme of ["dark", "light"]) {
   if (colors.some((color) => !color) || new Set(colors).size !== colors.length) await fail(`the speakers' colors in the ${scheme} scheme: ${JSON.stringify(colors)}`);
   const sides = await sideBorders();
   if (sides) await fail(`${sides} bubbles have a side border or a tinted edge in the ${scheme} scheme`);
-  await evaluate("document.querySelector('.log .bubble[data-speaker=\"peer\"]').scrollIntoView({ block: 'center' })");
+  await evaluate("document.querySelector('.log [data-talk]').scrollIntoView({ block: 'center' })");
   await shot(`speakers-${scheme}`);
   // ^ The owner's bubbles beside the manager's, with no tint on their right edge.
   await evaluate("[...document.querySelectorAll('.log .bubble[data-side=\"out\"]')].at(-1).scrollIntoView({ block: 'center' })");
@@ -3175,7 +3177,7 @@ const plans = Number(plansArg);
 const plansChat = `#/c/${await homeOf(plans)}`;
 await go(plansChat);
 await until("!!document.querySelector('.pill')", "plans has no reservoir");
-await until("document.querySelectorAll('.log .bubble').length >= 2", "plans' chat shows no managers' bubbles", 30);
+await until("document.querySelectorAll('.log .bubble').length >= 2 && !!document.querySelector('.log [data-talk]')", "plans' chat shows no managers' bubbles or talk", 30);
 const plansAuthors = await bubbles();
 // ^ A bubble's time shows once per run of one sender's bubbles in the same minute, whatever lines lie between them.
 const timeRuns = await evaluate(`(() => { const all = [...document.querySelectorAll('.log .bubble:not(.check-bubble)')]; const minute = (node) => Math.floor(Number(node.dataset.at) / 60000);
@@ -3183,7 +3185,9 @@ const timeRuns = await evaluate(`(() => { const all = [...document.querySelector
     && all[at + 1].dataset.peer === node.dataset.peer && minute(all[at + 1]) === minute(node)).map((node) => node.dataset.key); })()`);
 if (timeRuns.length) await fail(`a time shows under a bubble that the next one of its sender in the same minute follows: ${timeRuns}`);
 // ^ plans' manager has no name of its own: its bubbles keep no author line (the top row names plans); ui's chat is a peer, named by its chat name `ui` (not the manager's shown name "Atlas").
-if (!plansAuthors.some(({ author, tag }) => author === "" && tag === "To ui") || !plansAuthors.some(({ author }) => author === "ui") || plansAuthors.some(({ author }) => author === "plans")) await fail(`plans' managers read ${JSON.stringify(plansAuthors)}`);
+// A message of ui's chat is no bubble: it and plans' own are one muted row, "Talked to ui", that names its writers when it opens.
+const plansTalk = await evaluate("(async () => { const toggle = [...document.querySelectorAll('.log [data-talk] .fold-toggle')].find((node) => node.textContent.includes('Talked to ui')); if (!toggle) return null; if (toggle.getAttribute('aria-expanded') === 'false') toggle.click(); await new Promise((done) => setTimeout(done, 100)); return [...toggle.parentElement.querySelectorAll('.bubble-author')].map((node) => node.textContent.trim()); })()");
+if (!plansTalk?.includes("ui") || plansAuthors.some(({ author }) => author === "ui" || author === "plans")) await fail(`plans' managers read ${JSON.stringify({ plansAuthors, plansTalk })}`);
 // ^ An empty `sent` and a `-` reply in plans' older log are no bubbles: no bubble says nothing.
 const emptyBubbles = plansAuthors.filter(({ tag, text }) => ["", "-"].includes(text.slice(tag.length).trim()));
 if (emptyBubbles.length) await fail(`plans' chat shows bubbles that say nothing: ${JSON.stringify(emptyBubbles)}`);
@@ -3208,9 +3212,15 @@ if (JSON.stringify(folding.chips) !== JSON.stringify(["#89 done", "#91 done", "#
 const limitSeen = await evaluate(`(() => { const log = [...document.querySelectorAll('.log > *')]; const at = log.findIndex((node) => node.textContent.trim() === 'plans paused: usage limit, resumes at 07:45');
   return { at, resumed: log[at + 1]?.textContent.trim(), tone: at < 0 ? '' : log[at].className, before: log[at - 1]?.textContent.trim().slice(0, 12), after: log[at + 2]?.textContent.trim().slice(0, 12) }; })()`);
 if (limitSeen.at < 0 || limitSeen.resumed !== "plans resumed" || limitSeen.tone !== "status-line" || !/Thanks/.test(limitSeen.before) || !/Noted/.test(limitSeen.after)) await fail(`plans' limit rows read ${JSON.stringify(limitSeen)}`);
-// ^ A long reply stored as quiet (a table and a list after an event) is a whole bubble.
-const longQuiet = await evaluate("({ bubble: [...document.querySelectorAll('.log .bubble')].some((node) => /Release notes are ready/.test(node.textContent) && !!node.querySelector('table')), line: [...document.querySelectorAll('.reply-line')].some((node) => /Release notes are ready/.test(node.textContent)) })");
-if (!longQuiet.bubble || longQuiet.line) await fail(`a long reply to events reads ${JSON.stringify(longQuiet)}`);
+// ^ A long reply to an event (a table and a list after #93 landed) is a muted line: its marks, its first sentence and More; More shows the whole reply, table included.
+const longQuiet = await evaluate("({ bubble: [...document.querySelectorAll('.log .bubble')].some((node) => /Release notes are ready/.test(node.textContent)), line: [...document.querySelectorAll('.reply-line')].filter((node) => /Release notes are ready/.test(node.textContent)).length, marks: [...document.querySelectorAll('.reply-line')].filter((node) => /Release notes are ready/.test(node.textContent)).map((node) => node.querySelector('.reply-tokens')?.textContent.replace(/\\s+/g, ' ').trim()) })");
+if (longQuiet.bubble || longQuiet.line !== 1 || !/^#93 landed 2 of 2 checks$/.test(longQuiet.marks[0] ?? "")) await fail(`a long reply to events reads ${JSON.stringify(longQuiet)}`);
+// ^ The marks are wsx's facts, drawn as the chips the lists use: the `#93` link to the task, the `landed` status chip in its tone, the checks.
+const longMarks = await evaluate(`(() => { const line = [...document.querySelectorAll('.reply-line')].find((node) => /Release notes are ready/.test(node.textContent)); const token = line.querySelector('.reply-tokens .token');
+  return { link: token.querySelector('a.task-chip')?.textContent.trim(), href: token.querySelector('a.task-chip')?.getAttribute('href') ?? '', state: token.querySelector('.state-chip')?.textContent.trim(), tone: token.querySelector('.state-chip')?.dataset.tone, checks: token.querySelectorAll('.state-chip')[1]?.textContent.trim() }; })()`);
+if (!/#93$/.test(longMarks.link ?? "") || !/93/.test(longMarks.href) || longMarks.state !== "landed" || longMarks.tone !== "accent" || longMarks.checks !== "2 of 2 checks") await fail(`the muted reply to #93's landing reads ${JSON.stringify(longMarks)}`);
+await evaluate("[...document.querySelectorAll('.reply-line')].find((node) => /Release notes are ready/.test(node.textContent)).querySelector('.link-action').click()");
+await until("!![...document.querySelectorAll('.reply-line')].find((node) => /Release notes are ready/.test(node.textContent))?.querySelector('table')", "More did not open the whole reply with its table");
 await evaluate(`${foldRow}.scrollIntoView({ block: 'center' })`);
 await shot("fold-closed");
 await evaluate(`${foldRow}.querySelector('.fold-toggle').click()`);
@@ -4350,22 +4360,27 @@ await closeSheet("the page", plansChat);
     body: JSON.stringify({ text: ${JSON.stringify(`RUN wsx task say -p ui --from-chat "${fromBilling}" --json`)}, chat: 'billing' }) }).then((response) => response.status)`);
   if (billingAsked !== 200) await fail(`ui's chat billing was not asked to write to the first chat: ${billingAsked}`);
   await go(chat);
-  const chipsIn = (needle) => evaluate(`(() => { const bubble = [...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(needle)}));
-    return bubble && { author: bubble.dataset.speaker, text: bubble.querySelector('.bubble-body').textContent.trim().replace(/\\s+/g, ' '),
+  // ^ What another chat said shows in a folded "Talked to <chat>" row (TalkLine): the helper opens every talk, then finds the
+  // post's bubble or the message under its writer's name.
+  const said = ".log .bubble, .log [data-talk] .reply-open";
+  const openTalks = "document.querySelectorAll('.log [data-talk] .fold-toggle[aria-expanded=\"false\"]').forEach((node) => node.click())";
+  const findSaid = (needle) => `(() => { ${openTalks}; return [...document.querySelectorAll(${JSON.stringify(said)})].find((node) => node.textContent.includes(${JSON.stringify(needle)})); })()`;
+  const chipsIn = (needle) => evaluate(`(() => { const bubble = ${findSaid(needle)};
+    return bubble && { text: bubble.textContent.trim().replace(/\\s+/g, ' '),
       chips: [...bubble.querySelectorAll('a.task-chip')].map((chip) => ({ href: chip.getAttribute('href'), text: chip.textContent.trim(), label: chip.getAttribute('aria-label') })) }; })()`);
   for (const [what, needle] of [["the post of wsx task post", plansMark], ["plans' manager's note", peerWords], ["the billing chat's note", fromBilling]]) {
-    await until(`[...document.querySelectorAll('.log .bubble')].some((node) => node.textContent.includes(${JSON.stringify(needle)}))`, `${what} did not reach ui's chat`, 1200);
+    await until(`!!${findSaid(needle)}`, `${what} did not reach ui's chat`, 1200);
   }
   const own = await chipsIn(plansMark);
   if (own.chips.length !== 2 || own.chips[0].href !== `#/p/${plansArg}/t/1` || !/^plans #1$/.test(own.chips[0].text)
     || own.chips[1].href !== `#/p/${project}/t/1` || own.chips[1].text !== "#1") await fail(`ui's own reply reads ${JSON.stringify(own)}`);
   const theirs = await chipsIn(peerWords);
-  if (theirs.author !== "peer" || theirs.chips.length !== 1 || theirs.chips[0].href !== `#/p/${plansArg}/t/1` || !/^plans #1$/.test(theirs.chips[0].text)) await fail(`plans' message reads ${JSON.stringify(theirs)}`);
+  if (theirs.chips.length !== 1 || theirs.chips[0].href !== `#/p/${plansArg}/t/1` || !/^plans #1$/.test(theirs.chips[0].text)) await fail(`plans' message reads ${JSON.stringify(theirs)}`);
   // ^ The billing chat's bare #1 is ui's #1, and its name over the message is plain text, no link.
   const ours = await chipsIn(fromBilling);
-  const billingName = await evaluate(`(() => { const bubble = [...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(fromBilling)}));
+  const billingName = await evaluate(`(() => { const bubble = ${findSaid(fromBilling)};
     return bubble && { link: !!bubble.querySelector('a.bubble-author'), name: bubble.querySelector('.bubble-author')?.textContent.trim() ?? null }; })()`);
-  if (ours.author !== "peer" || ours.chips.length !== 1 || ours.chips[0].href !== `#/p/${project}/t/1` || ours.chips[0].text !== "#1" || billingName?.link !== false) {
+  if (ours.chips.length !== 1 || ours.chips[0].href !== `#/p/${project}/t/1` || ours.chips[0].text !== "#1" || billingName?.link !== false) {
     await fail(`the billing chat's message reads ${JSON.stringify({ ours, billingName })}`);
   }
   await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).scrollIntoView({ block: 'center' })`);
@@ -4373,16 +4388,16 @@ await closeSheet("the page", plansChat);
   await capture(`${size[0]}x${size[1]}-task-mentions`);
   // ^ plans' name over its message is a link to plans' manager chat (docs/web-client-tasks.md "Project screen"): a named,
   // underlined, peer-colored link, and a tap lands on plans' chat (its title and route); Back returns to ui's chat.
-  const nameOf = `(() => { const bubble = [...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(peerWords)}));
+  const nameOf = `(() => { const bubble = ${findSaid(peerWords)};
     const name = bubble?.querySelector('.bubble-author'); return name && { tag: name.tagName, href: name.getAttribute('href'), label: name.getAttribute('aria-label'), text: name.textContent.trim(),
-      color: getComputedStyle(name).color, plain: getComputedStyle(bubble.closest('.log').querySelector('.bubble[data-speaker="manager"] .bubble-author') ?? name).color }; })()`;
+      color: getComputedStyle(name).color, plain: getComputedStyle(document.querySelector('.log').querySelector('.bubble[data-speaker="manager"] .bubble-author') ?? name).color }; })()`;
   const nameLink = await evaluate(nameOf);
   if (nameLink?.tag !== "A" || nameLink.href !== plansChat || nameLink.label !== "Open chat plans" || nameLink.text !== "plans" || nameLink.color === nameLink.plain) {
     await fail(`plans' name over its message reads ${JSON.stringify(nameLink)}`);
   }
-  await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(peerWords)})).scrollIntoView({ block: 'center' })`);
+  await evaluate(`${findSaid(peerWords)}.scrollIntoView({ block: 'center' })`);
   await capture(`${size[0]}x${size[1]}-peer-name`);
-  await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(peerWords)})).querySelector('a.bubble-author').click()`);
+  await evaluate(`${findSaid(peerWords)}.querySelector('a.bubble-author').click()`);
   await until(`location.hash === '${plansChat}' && document.querySelector('.bar-label')?.textContent === 'plans'`, "plans' name did not open plans' manager chat", 60);
   await evaluate("history.back()");
   await until(`location.hash === '${chat}' && [...document.querySelectorAll('.log .bubble')].some((node) => node.textContent.includes(${JSON.stringify(plansMark)}))`, "Back did not return to ui's chat from plans'", 100);
@@ -4401,7 +4416,7 @@ await closeSheet("the page", plansChat);
   // ^ plans is not granted (taken out of the live store): its manager's bare #1 is text, no link.
   await evaluate(`(async () => { const { state, update } = await ${pageModule("store.js")}; globalThis.mentionKept = state.projects;
     update({ projects: state.projects.filter((other) => other.name !== 'plans') }); })()`);
-  await until(`(() => { const bubble = [...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(peerWords)}));
+  await until(`(() => { const bubble = ${findSaid(peerWords)};
     return bubble && !bubble.querySelector('a.task-chip, a.bubble-author') && bubble.textContent.includes('#1 waits for you'); })()`, "an ungranted sender's bare #1 or name is not plain text", 60);
   await evaluate(`(async () => { const { update } = await ${pageModule("store.js")}; update({ projects: globalThis.mentionKept }); })()`);
 }

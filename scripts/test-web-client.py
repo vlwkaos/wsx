@@ -3827,11 +3827,15 @@ def task_journey(args):
                             {'kind': 'delivered', 'ids': [said], 'unix_ms': at + 1},
                             {'kind': 'reply', 'id': said + 1, 'to': [said], 'text': reply, 'quiet': quiet, 'unix_ms': at + 2000}])
 
-        def event(task, state, title, reply):
+        def event(task, state, title, reply, counts=None):
             # ^ As the host writes a task's event: the line and its short form (`Short::task`),
-            # where a landing says `done`.
+            # where a landing says `done`. `counts`: the host's state-change event also names the state
+            # and the checks (`Short::with_state`); an event of an older host has neither.
             words = 'done' if state == 'landed' else state
-            logged('events', '#%d %s r1: %s' % (task, state, title), reply, short=[{'text': '#%d %s' % (task, words), 'task': task}])
+            short = {'text': '#%d %s' % (task, words), 'task': task}
+            if counts:
+                short.update(state=state, checks=counts)
+            logged('events', '#%d %s r1: %s' % (task, state, title), reply, short=[short])
         # ^ Not `for task, state, ...`: `state` is the state directory of this journey.
         for fields in ((89, 'ready', 'Fold the events', 'Landing #89.'), (89, 'landed', 'Fold the events', '#89 is on main.'),
                                           (91, 'ready', 'Chat chips', "I'm landing #91. It touches the chat, so I read its captures first."),
@@ -3846,7 +3850,7 @@ def task_journey(args):
         old_log[-1:-1] = [{'kind': 'limit', 'until': '07:45', 'unix_ms': held_at + 100},
                           {'kind': 'limit', 'unix_ms': held_at + 1500}]
         # ^ Stored quiet before the length rule: a long reply to events reads as a message.
-        event(93, 'landed', 'Release notes', 'Release notes are ready:\n\n| Part | State |\n|---|---|\n| wsx | built |\n\n- the notes are written')
+        event(93, 'landed', 'Release notes', 'Release notes are ready:\n\n| Part | State |\n|---|---|\n| wsx | built |\n\n- the notes are written', counts=[2, 2])
         # ^ A failed sign-in, three times in an hour: stopped, paused, a new conversation at the third,
         # resumed. Nothing shows between them, so the chat folds them into one row
         # (docs/tasks.md "Manager"); the first hold is a pause alone, a row of its own.
@@ -4377,7 +4381,7 @@ merge_seconds = 3
             steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]), 'manager reply')
         reply = next(r for r in chat['rows'] if answers(r))
         assert reply['text'].startswith('open: #1 ready') and reply['name'] == 'demo' and chat['running'], chat
-        assert {r['kind'] for r in chat['rows']} <= {'message', 'line', 'quiet', 'note'}, chat['rows']
+        assert {r['kind'] for r in chat['rows']} <= {'message', 'line', 'quiet', 'note', 'talk'}, chat['rows']
         # ^ The manager's replies count apart from the workers' (docs/tasks.md "Usage").
         manager_usage = steady(owner, 'GET', '/api/tasks/%d/usage' % demo)[1]['today']['manager']
         assert manager_usage['turns'] >= 1 and manager_usage['cost_micro_usd'] == 1000 * manager_usage['turns'], manager_usage

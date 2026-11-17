@@ -15,8 +15,9 @@ use ratatui::{
     widgets::{Clear, Paragraph},
     Frame,
 };
+use std::collections::HashSet;
 use std::ops::Range;
-use wsx_core::task::chat::{ChatRow, RowKind, Speaker};
+use wsx_core::task::chat::{ChatRow, RowKind, Speaker, Token};
 use wsx_core::task::manager::Level;
 
 /// Below this width a To check row drops where to look.
@@ -423,6 +424,7 @@ pub fn chat_lines(
     width: usize,
     selected: Option<(u64, usize)>,
     marked: Option<u64>,
+    opened: &HashSet<String>,
 ) -> (Vec<Line<'static>>, Option<usize>) {
     let mut lines = Vec::new();
     let mut selected_line = None;
@@ -468,11 +470,11 @@ pub fn chat_lines(
                     Style::default().fg(color).bold(),
                 )));
             }
-            let text = truncate_to_width(&row.text.replace('\n', " "), width);
-            lines.push(match row.danger {
-                true => Line::from(Span::styled(text, Style::default().fg(theme::ERROR))),
-                false => muted(&text),
-            });
+            let on = selected == Some((row.unix_ms, 0));
+            if on {
+                selected_line = Some(lines.len());
+            }
+            lines.extend(muted_lines(row, width, opened.contains(&row.key), on));
             continue;
         }
         if index > 0 {
@@ -594,6 +596,115 @@ pub fn chat_lines(
         }
     }
     (lines, selected_line)
+}
+
+/// A muted row: an event line or a note as one line; a reply to events as the marks of those
+/// events (`Token`), then its first sentence or all of it, with `More` when there is more; a
+/// talk as its heading and `Show`. An open row shows its words wrapped under it. `on`: the row's
+/// link (`More`, `Show`) is the selected one.
+fn muted_lines(row: &ChatRow, width: usize, open: bool, on: bool) -> Vec<Line<'static>> {
+    let faint = Style::default().fg(theme::TEXT_MUTED);
+    let more = match row.kind {
+        RowKind::Quiet => row.first_sentence.is_some(),
+        RowKind::Talk => true,
+        _ => false,
+    };
+    let word = match (row.kind, open) {
+        (RowKind::Talk, false) => "Show",
+        (_, false) => "More",
+        (_, true) => "Hide",
+    };
+    let link = match on {
+        true => Style::default()
+            .fg(theme::ACCENT)
+            .add_modifier(Modifier::UNDERLINED | Modifier::REVERSED),
+        false => Style::default()
+            .fg(theme::ACCENT)
+            .add_modifier(Modifier::UNDERLINED),
+    };
+    let mut spans = token_spans(&row.tokens);
+    let words = match (row.kind, open) {
+        (RowKind::Talk, _) => row.tag.clone().unwrap_or_default(),
+        (RowKind::Quiet, false) => row
+            .first_sentence
+            .clone()
+            .unwrap_or_else(|| row.text.clone()),
+        (RowKind::Quiet, true) => String::new(),
+        _ if row.tokens.is_empty() => row.text.clone(),
+        _ => String::new(),
+    };
+    let style = match row.danger {
+        true => Style::default().fg(theme::ERROR),
+        false => faint,
+    };
+    if !words.is_empty() {
+        let used: usize = spans.iter().map(|span| span.width()).sum();
+        let room = width.saturating_sub(used + if more { word.len() + 2 } else { 0 });
+        spans.push(Span::styled(
+            truncate_to_width(&words.replace('\n', " "), room.max(1)),
+            style,
+        ));
+    }
+    if more {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(word, link));
+    }
+    let mut lines = vec![Line::from(spans)];
+    if open && more {
+        let said: Vec<String> = match row.kind {
+            RowKind::Talk => row
+                .said
+                .iter()
+                .map(|said| format!("{}: {}", said.name, said.text))
+                .collect(),
+            _ => vec![row.text.clone()],
+        };
+        for paragraph in said.iter().flat_map(|said| said.lines()) {
+            let cells: Vec<_> = paragraph.chars().map(|char| (char, None)).collect();
+            for part in wrap_cells(&cells, width.saturating_sub(2).max(1)) {
+                let text: String = part.into_iter().map(|(char, _)| char).collect();
+                lines.push(Line::from(vec![Span::raw("  "), Span::styled(text, faint)]));
+            }
+        }
+    }
+    lines
+}
+
+/// The marks of an event: its task, its new state in the tone `status::tone` names, and its
+/// checks. ref: wsx-core `task::chat::Token`
+fn token_spans(tokens: &[Token]) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for token in tokens {
+        spans.push(Span::styled(
+            format!("#{}", token.task),
+            Style::default().fg(theme::ACCENT),
+        ));
+        if let Some(state) = &token.state {
+            let color = match token.tone {
+                Some("working") => theme::WORKING,
+                Some("attention") => theme::IDLE,
+                Some("danger") => theme::ERROR,
+                Some("accent") => theme::ACCENT,
+                _ => theme::TEXT_MUTED,
+            };
+            spans.push(Span::styled(
+                format!(" {state}"),
+                Style::default().fg(color).bold(),
+            ));
+        }
+        if let Some([passed, total]) = token.checks {
+            let color = match passed < total {
+                true => theme::ERROR,
+                false => theme::TEXT_MUTED,
+            };
+            spans.push(Span::styled(
+                format!(" {passed} of {total} checks"),
+                Style::default().fg(color),
+            ));
+        }
+        spans.push(Span::raw("  "));
+    }
+    spans
 }
 
 /// `text` as chars, each with the link it belongs to (numbered from `nth` on), so a link that

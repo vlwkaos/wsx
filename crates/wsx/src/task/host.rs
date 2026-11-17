@@ -30,7 +30,7 @@ use wsx_core::runtime;
 use wsx_core::task::manager::asks_owner;
 use wsx_core::task::replace::{Binary, HANDOFF_FILE};
 use wsx_core::task::status::{self, STOPPED_BY_REQUEST};
-use wsx_core::task::view::{checked_files, short_commit};
+use wsx_core::task::view::{checked_files, checked_title, short_commit};
 use wsx_core::task::{
     build, call_host, checks,
     copy::{self, Rebase},
@@ -1055,7 +1055,7 @@ impl Host {
             _ if held => Err(self.by_hand_refusal()),
             HostRequest::Status => Ok("".to_string()),
             HostRequest::Steer { text } => self.steer(text),
-            HostRequest::Add { text, files } => self.add(text, files),
+            HostRequest::Add { text, files, title } => self.add(text, files, title),
             HostRequest::Stop => self.stop(),
             HostRequest::Land { tried, batch_tree } => self.land(false, tried, batch_tree),
             HostRequest::Hold { reason, by } => self.hold(reason, by),
@@ -1134,11 +1134,15 @@ impl Host {
         Ok("steered the running turn".into())
     }
 
-    fn add(&mut self, text: String, files: Vec<String>) -> Result<String> {
+    fn add(&mut self, text: String, files: Vec<String>, title: Option<String>) -> Result<String> {
         check_message(&text)?;
         self.require_open()?;
-        if !files.is_empty() {
+        let title = title.as_deref().map(checked_title).transpose()?;
+        if !files.is_empty() || title.is_some() {
             self.record.files = checked_files(&self.record.files, &files)?;
+            // ^ The words an add widened the task by name it: the title is what the lists, the
+            // events and the owner read (docs/tasks.md "Title").
+            self.record.title = title.or(self.record.title.take());
             self.save();
         }
         self.log(LogEvent::Message {
@@ -1287,7 +1291,7 @@ impl Host {
             return Ok(format!("#{task} is over: the first turn started"));
         }
         match text {
-            Some(text) => self.add(text, Vec::new()),
+            Some(text) => self.add(text, Vec::new(), None),
             None => Ok(format!("#{task} was closed: the wait is over")),
         }
     }

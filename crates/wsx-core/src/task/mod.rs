@@ -789,6 +789,9 @@ pub enum HostRequest {
         /// More expected path globs (`task add --files`), already checked.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         files: Vec<String>,
+        /// The task's new title (`task add --title`), already checked: what it now carries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
     },
     Stop,
     /// Land the ready revision. `tried`: the owner passed its trial, so its Human Verify

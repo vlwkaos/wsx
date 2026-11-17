@@ -820,6 +820,14 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 .status-line, .reply-text { max-width: var(--size-prose); padding-inline: var(--space-1); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
 .reply-line { display: flex; flex-direction: column; align-items: flex-start; }
 .reply-text { white-space: pre-line; }
+.reply-text.reply-open { white-space: normal; }
+/* A task's marks in a muted row: its link and a status chip (Tokens in bubbles.js); the tone is wsx-core status::tone. */
+.reply-tokens { margin: 0; padding-inline: var(--space-1); font-size: var(--font-size-sm); }
+.token { display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-1); margin-right: var(--space-2); }
+.state-chip {
+  padding: 0 var(--space-1); border: var(--border-width) solid var(--color-hairline); border-radius: calc(var(--radius-key) / 2);
+  background: var(--color-raised); color: var(--color-muted); font-size: var(--font-size-sm); font-weight: var(--font-weight-medium);
+}
 /* More keeps its 44 px hit area without making its line taller. */
 .reply-text .link-action { margin-block: calc(-1 * var(--space-3)); }
 /* A folded run of those lines: its tasks with their newest words and a count, one tap target;

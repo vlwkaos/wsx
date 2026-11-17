@@ -62,6 +62,9 @@ export function conversation(entries, resolutions, approvals = [], checks = [], 
   return folded(rows);
 }
 
+// The muted rows: a task change, a reply to events and what the chats said to each other.
+const MUTED = new Set(["line", "quiet", "talk"]);
+
 // ^ Event lines and quiet replies in a row, three or more, fold into one row: each task of the
 // rows it hides once with its newest words, and how many rows a tap shows. The run's last event
 // line and the replies after it stay below the fold, so the fold never names them
@@ -70,7 +73,7 @@ function folded(rows) {
   const out = [];
   for (let start = 0; start < rows.length;) {
     let end = start;
-    while (end < rows.length && (rows[end].kind === "line" || rows[end].kind === "quiet")) end++;
+    while (end < rows.length && MUTED.has(rows[end].kind)) end++;
     if (end === start) {
       out.push(rows[start++]);
       continue;
@@ -85,7 +88,7 @@ function folded(rows) {
     }
     const chips = new Map();
     for (const row of run.slice(0, tail)) {
-      const rest = row.kind === "line" ? leading(row) : null;
+      const rest = row.kind === "line" ? (row.tokens?.[0]?.state ? ` ${row.tokens[0].state}` : leading(row)) : null;
       if (rest != null) chips.set(String(row.task), rest);
     }
     if (run[tail].kind === "quiet") run[tail].first = true;
@@ -148,6 +151,17 @@ const NeedTags = ({ items, onShow }) => items.map((item) => html`
 // ^ The chat of a row's peer key as wsx-core's `Party::from_key` reads it: `chat:<name>`.
 const peerChat = (peer) => peer?.startsWith("chat:") ? peer.slice(5) : null;
 
+// How a message of `peer` (a row's peer key, none for this chat's own manager) reads: `home` turns
+// its text runs into task chips; a chat of another project reads its bare `#n` as that project's
+// task and its name is a link, only for a project the site lists; else the words are plain text.
+function speakerWords(project, peer, home) {
+  const chat = peerChat(peer);
+  const place = chat ? chatPlace(chat) : {};
+  const elsewhere = place.id != null && place.id !== project;
+  const listed = elsewhere ? state.projects.find((other) => other.id === place.id) : null;
+  return { words: elsewhere ? withChips(project, listed?.name ?? `#${place.id}`) : home, target: listed ? chat : null };
+}
+
 // A message's author above its box. A chat of another project is a link to that chat, the route a Home row opens
 // (docs/web-client-tasks.md "Project screen").
 const Author = ({ name, target }) => target
@@ -161,14 +175,7 @@ const Author = ({ name, target }) => target
 export function Bubble({ project, row, words: home, fresh, onNeed, plain }) {
   const out = row.author === "owner";
   const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
-  const chat = peerChat(peer);
-  // ^ A chat of another project: its bare `#n` is that project's task and its name a link, only for a project the site
-  // lists; else the words are plain text.
-  const place = chat ? chatPlace(chat) : {};
-  const elsewhere = place.id != null && place.id !== project;
-  const listed = elsewhere ? state.projects.find((other) => other.id === place.id) : null;
-  const words = elsewhere ? withChips(project, listed?.name ?? `#${place.id}`) : home;
-  const target = listed ? chat : null;
+  const { words, target } = speakerWords(project, peer, home);
   const id = `bubble-${row.key}`;
   // ^ A post with a level (`wsx task post --level warn|bad`) says it in its tag (docs/web-client-tasks.md "Task notifications").
   const tag = row.level ? (row.level === "bad" ? "Bad" : "Warn") : row.tag;
@@ -216,22 +223,59 @@ export const Typing = ({ name, plain }) => html`
     <div class="bubble-box typing"><span class="visually-hidden">${name} is typing</span><${Dots} /></div>
   </article>`;
 
-// One task change in a muted line: its task's chip, then its words as plain text ("#2 ready",
+// A task's marks in a muted row (wsx-core `Token`): its `#n` link, its new state as a status chip
+// in the tone `status::tone` names, and how many checks passed. Built by wsx-core from the
+// event's facts: this only draws them.
+export const Tokens = ({ project, tokens }) => tokens.map((token) => html`
+  <span class="token" key=${token.task}>
+    <${TaskChip} project=${project} id=${token.task} />
+    ${token.state && html`<span class="state-chip" data-tone=${token.tone ?? null}>${token.state}</span>`}
+    ${token.checks && html`<span class="state-chip" data-tone=${token.checks[0] < token.checks[1] ? "danger" : null}>${token.checks[0]} of ${token.checks[1]} checks</span>`}
+  </span>`);
+
+// One task change in a muted line: its marks when the event says the new state (the task's link
+// and its status chip), else its task's chip and its words as plain text ("#2 stalled",
 // "Approved land #3").
 export function StatusLine({ project, row, fresh }) {
   const rest = leading(row);
-  return html`<p class="status-line" data-id=${row.id ?? null} data-fresh=${fresh ? "" : null}>${rest != null ? html`<${TaskChip} project=${project} id=${row.task} />${rest}` : row.text}</p>`;
+  const body = row.tokens?.length > 0 ? html`<${Tokens} project=${project} tokens=${row.tokens} />`
+    : rest != null ? html`<${TaskChip} project=${project} id=${row.task} />${rest}` : row.text;
+  return html`<p class="status-line" data-id=${row.id ?? null} data-fresh=${fresh ? "" : null}>${body}</p>`;
 }
 
-// The manager's reply to events: a muted line under its name, in full when it is one sentence,
-// else its first sentence and More.
-export function QuietReply({ row, fresh, plain }) {
+// The manager's reply to events or to another chat: a muted line under its name, the marks of the
+// events it answers first, then its words in full when it is one sentence, else its first
+// sentence and More.
+export function QuietReply({ project, row, words, fresh, plain }) {
   const [open, setOpen] = useState(false);
   // ^ Its first sentence (wsx-core `first_sentence`, none when that is all of it), never cut inside.
   const whole = open || row.first_sentence == null;
   return html`
     <article class="reply-line" data-speaker="manager" data-fresh=${fresh ? "" : null} data-key=${row.key} data-at=${row.at} aria-label=${`${row.name}, ${clock(row.at)}`}>
       ${row.first && !plain && html`<p class="bubble-author" aria-hidden="true">${row.name}</p>`}
-      <p class="reply-text">${whole ? row.text : row.first_sentence}${!whole && html` <button class="link-action" type="button" onClick=${() => setOpen(true)}>More</button>`}</p>
+      ${row.tokens?.length > 0 && html`<p class="reply-tokens"><${Tokens} project=${project} tokens=${row.tokens} /></p>`}
+      ${open
+        ? html`<div class="reply-text reply-open"><${Markdown} text=${row.text} words=${words} relative=${relativeOf(project)} prose /></div>`
+        : html`<p class="reply-text">${whole ? row.text : row.first_sentence}${!whole && html` <button class="link-action" type="button" onClick=${() => setOpen(true)}>More</button>`}</p>`}
     </article>`;
+}
+
+// What the manager and another chat said to each other, folded: "Talked to <chat>", one tap shows
+// each message under its writer's name (`row.said`), another folds them.
+export function TalkLine({ project, row, words: home, all = false }) {
+  const [opened, setOpen] = useState(false);
+  const open = opened || all;
+  return html`
+    <div class="fold" data-talk data-key=${row.key} data-at=${row.at}>
+      <button class="fold-toggle" type="button" aria-expanded=${open} onClick=${() => setOpen(!open)}>
+        <span class="fold-count">${row.tag}</span><span>${open ? "Hide" : "Show"}</span>
+      </button>
+      ${open && row.said.map((said, index) => {
+        const { words, target } = speakerWords(project, said.peer, home);
+        return html`<div class="reply-text reply-open" key=${index}>
+          ${target ? html`<a class="bubble-author" href=${`#/c/${encodeURIComponent(target)}`} aria-label=${`Open chat ${target}`}>${said.name}</a>` : html`<p class="bubble-author">${said.name}</p>`}
+          <${Markdown} text=${said.text} words=${words} relative=${relativeOf(project)} prose />
+        </div>`;
+      })}
+    </div>`;
 }
