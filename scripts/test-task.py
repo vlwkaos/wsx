@@ -2214,7 +2214,7 @@ def part_core(created=None):
     passed = js('task', 'check', 'pass', 'c1')
     assert [c['state'] for c in passed['changed']] == ['passed'] and passed['open'] == 2, passed
     assert 'already passed' in cli('task', 'check', 'pass', 'c1', '--json', ok=False).stderr
-    assert 'no item c9' in cli('task', 'check', 'pass', 'c9', ok=False).stderr
+    assert 'no item c99' in cli('task', 'check', 'pass', 'c99', ok=False).stderr
     refused = subprocess.run([str(wsx), 'task', 'check', 'pass', '--all'], cwd=project, env=manager_env,
                              capture_output=True, text=True)
     assert refused.returncode != 0 and 'for the owner' in refused.stderr, refused.stderr

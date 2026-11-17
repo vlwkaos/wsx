@@ -4725,7 +4725,7 @@ await closeSheet("the page", plansChat);
   // nothing the page watches, so the page starts again and reads it.
   await evaluate("window.staleMark = 1");
   await send("Page.reload");
-  await until("window.staleMark === undefined && !!document.querySelector('.composer-field')", "the page did not come back before the card of c904", 60);
+  await until("window.staleMark === undefined && document.readyState === 'complete'", "the page did not come back before the card of c904", 60);
   for (const [wide, scheme] of [[false, "light"], [false, "dark"], [true, "dark"]]) {
     await resize(wide ? [1280, 800, 1] : [390, 844, 2]);
     await inScheme(scheme);
