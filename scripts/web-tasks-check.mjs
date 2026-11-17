@@ -3186,8 +3186,9 @@ const timeRuns = await evaluate(`(() => { const all = [...document.querySelector
 if (timeRuns.length) await fail(`a time shows under a bubble that the next one of its sender in the same minute follows: ${timeRuns}`);
 // ^ plans' manager has no name of its own: its bubbles keep no author line (the top row names plans); ui's chat is a peer, named by its chat name `ui` (not the manager's shown name "Atlas").
 // A message of ui's chat is no bubble: it and plans' own are muted rows, "Talked to ui", that name their writers when they open.
-const plansTalk = await evaluate("(async () => { const toggles = [...document.querySelectorAll('.log [data-talk] .fold-toggle')].filter((node) => node.textContent.includes('Talked to ui')); if (!toggles.length) return null; for (const toggle of toggles) if (toggle.getAttribute('aria-expanded') === 'false') toggle.click(); await new Promise((done) => setTimeout(done, 100)); return toggles.flatMap((toggle) => [...toggle.parentElement.querySelectorAll('.bubble-author')].map((node) => node.textContent.trim())); })()");
-if (!plansTalk?.includes("ui") || plansAuthors.some(({ author }) => author === "ui" || author === "plans")) await fail(`plans' managers read ${JSON.stringify({ plansAuthors, plansTalk })}`);
+// ^ The rows come from the route: a run of muted rows folds on the page, closed, so its Talk rows are not drawn.
+const plansTalk = (await chatRows(plans)).filter((row) => row.kind === 'talk' && row.tag === 'Talked to ui').flatMap((row) => row.said.map((one) => one.name));
+if (!plansTalk.includes("ui") || plansAuthors.some(({ author }) => author === "ui" || author === "plans")) await fail(`plans' managers read ${JSON.stringify({ plansAuthors, plansTalk })}`);
 // ^ An empty `sent` and a `-` reply in plans' older log are no bubbles: no bubble says nothing.
 const emptyBubbles = plansAuthors.filter(({ tag, text }) => ["", "-"].includes(text.slice(tag.length).trim()));
 if (emptyBubbles.length) await fail(`plans' chat shows bubbles that say nothing: ${JSON.stringify(emptyBubbles)}`);

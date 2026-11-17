@@ -1502,7 +1502,9 @@ impl Manager {
             .iter()
             .map(|ask| format!("- {}: {}\n", ask.id, ask.quote))
             .collect();
-        format!("Open questions (the owner has them; do not ask again):\n{lines}\n")
+        format!(
+            "Open questions (the owner has them; do not ask again; unanswered: do not act on one until the owner answers):\n{lines}\n"
+        )
     }
 
     /// A few lines of the ledger for the end of a turn's message: the open tasks by state,
@@ -2038,15 +2040,13 @@ impl Manager {
         }
     }
 
-    /// A reply that opens with `> message <id>` quotes that message. One that opens with no quote
-    /// and says something quotes the message it relates to when it will not sit under it
-    /// (`chat::quoted_message`); an owner's own message (`to` empty) only its explicit quote.
-    /// ref: `resolve_quote`, docs/tasks.md "A quote"
+    /// A reply that opens with `> message <id>` quotes that message, when it is the owner's or
+    /// another chat's (`resolve_quote`). One that opens with no quote and says something quotes the
+    /// owner message it answers when it will not sit under it (`chat::quoted_message`); an owner's
+    /// own message (`to` empty) only its explicit quote. ref: docs/tasks.md "A quote"
     fn quoted(&self, text: String, to: &[u64]) -> (String, Option<u64>) {
         let explicit = text.trim_start().starts_with(QUOTE_REF);
-        // ^ A quiet line of an events turn is the manager's own work: a quote would make it a message.
-        let quiet = self.turn_events && !asks_owner(&text) && quiet_reply(&text);
-        if !explicit && (to.is_empty() || says_nothing(&text) || quiet) {
+        if !explicit && (to.is_empty() || says_nothing(&text)) {
             return (text, None);
         }
         // ^ The log back to the oldest id wanted, not all of it: ids grow (docs/tasks.md
@@ -2061,7 +2061,6 @@ impl Manager {
                 .read_around(QUOTE_READ_BYTES, |log| {
                     log.iter()
                         .any(|entry| entry.id().is_some_and(|at| at <= id))
-                        && (explicit || chat::reaches_follow_up(log))
                 })
                 .unwrap_or_default(),
             None => Vec::new(),

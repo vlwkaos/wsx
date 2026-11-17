@@ -1049,18 +1049,23 @@ def manager_up(created):
     # Quotes (docs/tasks.md "Manager"): a reply that opens with `> message <id>` is stored with
     # that message's first line in the owner's quote format; a bad or unknown id drops the line and
     # the reply stands. The next turn names the id of the manager's last reply.
-    promise = reply_to(js('task', 'say', 'STATUS promise')['id'])
-    own = reply_to(js('task', 'say', 'QUOTE %d still waiting on #8' % promise['id'])['id'])
-    assert own['text'] == '> %s\n\nstill waiting on #8' % promise['text'].splitlines()[0], own
+    asked_promise = js('task', 'say', 'STATUS promise')
+    promise = reply_to(asked_promise['id'])
+    own = reply_to(js('task', 'say', 'QUOTE %d still waiting on #8' % asked_promise['id'])['id'])
+    assert own['text'] == '> STATUS promise\n\nstill waiting on #8', own
     # ^ The entry keeps the quoted message's id, for a tap that opens the chat there at any age.
-    assert own['quote'] == promise['id'], own
-    assert 'Your last reply: %d.' % promise['id'] in turn_with('QUOTE %d still' % promise['id'])['message']
+    assert own['quote'] == asked_promise['id'], own
+    # ^ A quote means "this answers that message": one of the manager's own replies is dropped, and
+    # the reply stands (docs/tasks.md "A quote", `resolve_quote`).
+    self_quote = reply_to(js('task', 'say', 'QUOTE %d own words' % promise['id'])['id'])
+    assert self_quote['text'] == 'own words' and 'quote' not in self_quote, self_quote
+    assert 'Your last reply: %d.' % promise['id'] in turn_with('QUOTE %d still' % asked_promise['id'])['message']
     # ^ wsx quotes the owner message a reply answers when the reply opens with no quote of its own
     # and will not sit under it (docs/tasks.md "A quote", `chat::quoted_message`): the turn
     # held several owner messages (the sign-in turn above: the newest), or a chat item was logged
     # after the message. One a manager wrote wins.
-    mine = raw_reply(js('task', 'say', 'QUOTE %d keeps mine' % promise['id'])['id'])
-    assert mine['quote'] == promise['id'] and mine['text'].startswith('> %s\n\nkeeps mine' % promise['text'].splitlines()[0]), mine
+    mine = raw_reply(js('task', 'say', 'QUOTE %d keeps mine' % asked_promise['id'])['id'])
+    assert mine['quote'] == asked_promise['id'] and mine['text'].startswith('> STATUS promise\n\nkeeps mine'), mine
     # ^ A task event logged during its turn would sit between: the events of earlier tasks land first.
     manager_settled('the events before one owner message')
     one = js('task', 'say', 'STATUS one owner message')
@@ -1077,10 +1082,9 @@ def manager_up(created):
     assert far['id'] in js('task', 'chat')['asks'], js('task', 'chat')['asks']
     js('task', 'dismiss', str(far['id']))
     reply_to(second['id'], 60)
-    # ^ A follow-up to the manager's own earlier reply: a reply to an events turn that reports task
-    # #n quotes the newest earlier reply that names #n (a promise) when other chat items lie
-    # between, and none when the report sits right under it (`chat::quoted_message`). The task
-    # waits for a release file, so the promise comes first.
+    # ^ A reply to an events turn has no quote, whether or not the manager's earlier reply promised
+    # the task and other chat items lie between: no owner message is answered
+    # (`chat::quoted_message`). The task waits for a release file, so the promise comes first.
     def event_of(task):
         return next((e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
                      and '#%d ready r1' % task in e['text']), None)
@@ -1105,13 +1109,15 @@ def manager_up(created):
     pledge, report, items = follow_up('direct', None)
     assert not items and 'quote' not in report, (items, report)
     pledge, report, items = follow_up('apart', 'QUOTE OWNER_SAID between')
-    assert items and report['quote'] == pledge['id'], (pledge, report)
-    assert report['text'].startswith('> I will land #') and report['text'].endswith('Should I land it now?'), report
+    assert items and 'quote' not in report and report['text'].endswith('Should I land it now?'), (pledge, report)
+    assert not report['text'].startswith('> '), report
     heard = js('task', 'say', 'QUOTE OWNER_SAID noted')
     assert raw_reply(heard['id'])['text'] == '> QUOTE OWNER_SAID noted\n\nnoted'
-    # ^ A quote of a quote is the words of that reply, not its quote line.
-    again = reply_to(js('task', 'say', 'QUOTE %d and again' % own['id'])['id'])
-    assert again['text'] == '> still waiting on #8\n\nand again', again
+    # ^ A quote of a quote is the words of that message, not its quote line: the owner's own
+    # message that answers one (the web composer's format) is quoted by its words.
+    reply_msg = js('task', 'say', '> STATUS promise\n\nQUOTE OWNER_SAID words')
+    again = reply_to(reply_msg['id'])
+    assert again['text'] == '> QUOTE OWNER_SAID words\n\nwords' and again['quote'] == reply_msg['id'], again
     for bad in ('abc', '0', '99999999', '99999999999999999999', '-3'):
         dropped = reply_to(js('task', 'say', 'QUOTE %s words stay' % bad)['id'])
         assert dropped['text'] == 'words stay' and 'quote' not in dropped, (bad, dropped)
@@ -7624,9 +7630,10 @@ def part_host(created=None):
     asked = js('task', 'say', 'RUN wsx task search -p demo --all --limit 3 %s' % rare)
     searched = reply_to(asked['id'])['text']
     assert 'demo:%d  > message %d' % (old['id'], old['id']) in searched, searched
-    quoted = js('task', 'say', 'QUOTE %d Yes, that one.' % old['id'])
+    # ^ A reply is no message to quote: the owner's message it answers is.
+    quoted = js('task', 'say', 'QUOTE %d Yes, that one.' % old['to'][0])
     answer = reply_to(quoted['id'])['text']
-    assert answer.startswith('> ' + old['text'].splitlines()[0][:40]) and answer.endswith('Yes, that one.'), answer
+    assert answer == '> QUOTE 1 across the rolls\n\nYes, that one.', answer
     # ^ A task's story (docs/tasks.md "Search"): the log of a landed and of a closed task, written
     # as the host writes it. A word of a later add finds the task with its outcome, and
     # `--task` lists its start, add, result, checks and landing in order.

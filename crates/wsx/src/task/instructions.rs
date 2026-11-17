@@ -61,7 +61,7 @@ pub(super) fn instructions(
          your work: act, then reply with one short line of what you did, or with exactly `-` when \
          nothing changed for the owner (never to a line 'for the owner'). Ask a plain question only \
          for a new decision needed now, once. Never hand the owner chores or ask them to wait. Never \
-         retell an earlier message: open with `> message <id>`, then only what is new.\n\n\
+         retell an earlier message: open with `> message <id>` of the owner's message you answer, then only what is new.\n\n\
          Talk or work. Judge from the owner's words whether the owner wants to talk it \
          over (a question, 'one by one') or work ('fix', 'go'). To talk, read the code yourself and \
          answer the points in turn; no task, `add` or `steer` until the owner agrees, then one `new` \

@@ -442,12 +442,12 @@ pub fn quote_of(text: &str) -> String {
     super::view::clip(line, QUOTE_CHARS)
 }
 
-/// A message that opens with `> message <id>` (a manager's reply, or the owner's Reply) quotes
+/// A manager's reply that opens with `> message <id>` quotes
 /// that message in the owner's format (`> <its first line>` and an empty line) and keeps the id,
-/// so the chat needs no second format and a tap finds the message at any age. Only a message the
-/// chat shows as a bubble can be quoted: the owner's, another manager's, a role's or a reply that
-/// says something. A bad or unknown id drops the line: the message still stands, and the note
-/// says why. Returns the text, the quoted id and the note.
+/// so the chat needs no second format and a tap finds the message at any age. A quote means "this
+/// answers that message", so only the owner's or another chat's message can be quoted: one of the
+/// manager's own replies or an events message drops the line like a bad or unknown id. The
+/// message still stands, and the note says why. Returns the text, the quoted id and the note.
 pub fn resolve_quote(text: &str, log: &[ManagerEntry]) -> (String, Option<u64>, Option<String>) {
     let text = text.trim_start();
     let Some(line) = text.strip_prefix(QUOTE_REF) else {
@@ -464,12 +464,6 @@ pub fn resolve_quote(text: &str, log: &[ManagerEntry]) -> (String, Option<u64>, 
                 text,
                 ..
             } if *found == id => Some(text),
-            ManagerEvent::Reply {
-                id: found,
-                text,
-                quiet: false,
-                ..
-            } if *found == id && !says_nothing(text) => Some(text),
             _ => None,
         })
     });
@@ -481,7 +475,10 @@ pub fn resolve_quote(text: &str, log: &[ManagerEntry]) -> (String, Option<u64>, 
         None => (
             rest.to_string(),
             None,
-            Some(format!("no message {} to quote: line dropped", line.trim())),
+            Some(format!(
+                "no owner or chat message {} to quote: line dropped",
+                line.trim()
+            )),
         ),
     }
 }

@@ -176,28 +176,17 @@ fn in_chat(entry: &ManagerEntry) -> bool {
     )
 }
 
-/// A follow-up quotes an earlier reply only when it is among this many chat entries from the end.
-const FOLLOW_UP_WITHIN: usize = 50;
-
-/// Whether `log` (read back from the end) holds the chat entries a follow-up looks through.
-pub fn reaches_follow_up(log: &[ManagerEntry]) -> bool {
-    log.iter().filter(|entry| in_chat(entry)).count() > FOLLOW_UP_WITHIN
-}
-
-/// The message a manager's reply to the turn `to` quotes, or None. `log` holds the entries up to
-/// now, the reply not yet. The one place that chooses which message a reply relates to and whether
-/// the quote helps (docs/tasks.md "A quote"); a quote helps when the reply will not sit directly
-/// under what it answers:
-/// 1. A turn with owner messages: the newest is the one answered, quoted when the turn held more
-///    than one or any chat item was logged after it.
-/// 2. A turn of only events: the manager's newest earlier reply that names a task the events
-///    report (a promise), when it is among the last `FOLLOW_UP_WITHIN` chat entries and other
-///    chat items lie between it and this turn's messages.
+/// The owner message a manager's reply to the turn `to` quotes, or None. `log` holds the entries
+/// up to now, the reply not yet. The one place that chooses which message a reply relates to and
+/// whether the quote helps (docs/tasks.md "A quote"). A quote means "this answers that message",
+/// so only a message the manager answers can be quoted, and a turn with no owner message (events,
+/// another chat's words) has none. A quote helps when the reply will not sit directly under what
+/// it answers: the newest owner message of the turn, quoted when the turn held more than one or
+/// any chat item was logged after it.
 pub fn quoted_message(log: &[ManagerEntry], to: &[u64]) -> Option<u64> {
-    let mine = |entry: &ManagerEntry| entry.id().is_some_and(|id| to.contains(&id));
     let owners: Vec<usize> = (0..log.len())
         .filter(|&at| {
-            mine(&log[at])
+            log[at].id().is_some_and(|id| to.contains(&id))
                 && matches!(
                     &log[at].event,
                     ManagerEvent::Message {
@@ -207,50 +196,9 @@ pub fn quoted_message(log: &[ManagerEntry], to: &[u64]) -> Option<u64> {
                 )
         })
         .collect();
-    if let Some(&newest) = owners.last() {
-        let apart = owners.len() > 1 || log[newest + 1..].iter().any(in_chat);
-        return log[newest].id().filter(|_| apart);
-    }
-    let tasks: Vec<u64> = log
-        .iter()
-        .filter(|entry| mine(entry))
-        .filter_map(|entry| match &entry.event {
-            ManagerEvent::Message {
-                from: Author::Events,
-                text,
-                ..
-            } => Some(text),
-            _ => None,
-        })
-        .flat_map(|text| text.lines().filter_map(leading_task))
-        .collect();
-    let shown: Vec<usize> = (0..log.len()).filter(|&at| in_chat(&log[at])).collect();
-    let in_view = &shown[shown.len().saturating_sub(FOLLOW_UP_WITHIN)..];
-    let promise = in_view.iter().rev().copied().find(|&at| {
-        matches!(&log[at].event, ManagerEvent::Reply { text, quiet: false, post: false, .. }
-            if !says_nothing(text) && tasks.iter().any(|&task| names_task(text, task)))
-    })?;
-    let between = log[promise + 1..]
-        .iter()
-        .any(|entry| in_chat(entry) && !mine(entry));
-    log[promise].id().filter(|_| between)
-}
-
-/// The task a line of an events message reports: the number after its leading `#`.
-fn leading_task(line: &str) -> Option<u64> {
-    let digits: String = line
-        .strip_prefix('#')?
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    digits.parse().ok()
-}
-
-/// Whether `text` names task `task` as `#<task>`, not as the start of a longer number.
-fn names_task(text: &str, task: u64) -> bool {
-    let tag = format!("#{task}");
-    text.match_indices(&tag)
-        .any(|(at, _)| !text[at + tag.len()..].starts_with(|c: char| c.is_ascii_digit()))
+    let &newest = owners.last()?;
+    let apart = owners.len() > 1 || log[newest + 1..].iter().any(in_chat);
+    log[newest].id().filter(|_| apart)
 }
 
 /// The entries of `window` in `log` (`read_chat`), and how many older ones were left out.

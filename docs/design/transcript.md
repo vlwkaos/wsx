@@ -62,6 +62,12 @@ Another chat's `say` and the replies to it fold into the chat's `Talked to <chat
 
 Rule: the title names what the task carries. `wsx task add <n> --title <words>` sets the title in the host in the same step as the add (`checked_title`: 1 to 60 characters, no control characters); a bad title refuses the whole add. The manager instruction line "Similar work goes to the open task with `wsx task add`" gains "(`--title` when it now carries more)", 38 bytes. No add is refused for its words, and no word-overlap gate exists (owner decision, 5072). A new task is the manager's choice, as before.
 
+## 5a. A quote means "this answers that"
+
+Cause (chat ir, owner message 511, replies 504 and 508): 504 was an events-only turn, and `chat::quoted_message` rule 2 quoted the manager's own reply 499 (it named #22 in passing) with no author shown, so it read as an answer to 499. The agent copied that quote into 508 (`> message 499`), and `resolve_quote` took any reply that says something.
+
+Rule, one owner (`chat::quoted_message` chooses, `resolve_quote` checks): a manager's quote names only a message the manager answers, the owner's or another chat's. An events-only turn gets no quote (its muted line names the task). An explicit `> message <id>` of a manager reply or an events message is dropped with the note "no owner or chat message <id> to quote". The owner's Reply on a manager reply still quotes it. The prompt says "of the owner's message you answer"; the Open questions header says "unanswered: do not act on one until the owner answers".
+
 ## 6. Topics (steps 4 and 5, not built)
 
 Owner decisions: topics extend the 11-11 decision (pills, quotes, search); no thread feature. A topic is done only on the owner's word or a manager close with a reason, never because its tasks landed. States shown: `asked` (no task), `in progress` (an open task), `done`, `dropped` (closed with a reason).
@@ -81,6 +87,7 @@ Owner decisions: topics extend the 11-11 decision (pills, quotes, search); no th
 | 1 Measure and doc | `docs/design/transcript-measure.py`, this file | the script's totals above |
 | 2 Rule, tokens, peer fold | `wsx-core task/chat.rs`, `manager.rs` (`Short.state`, `.checks`), `status.rs` (`tone`), `repo.rs`; web `bubbles.js`, `tasks.js`, `app.css`; TUI `task_chat.rs`, `ui/task_chat.rs` | web scenario (`web-tasks-check.mjs`, `test-web-client.py` chat part): a muted reply to `#93 landed` shows the `#93` link, the `landed` chip in the accent tone and `2 of 2 checks`; `Talked to ui` opens to the words; smoke (`runtime-smoke.py`): TUI rows `#3 landed 4 of 4 checks` and `Talked to elsewhere  Show`, `test-task.py`: `Talked to demo` in a chat's TUI. Captures at 375, 390 and 1280 px, light and dark: web check-run only |
 | 3 `add --title` | `args.rs`, `cmd/work.rs`, `host.rs`, `HostRequest::Add.title`, `instructions.rs`, `docs/tasks.md` | `test-task.py` 14b: title set, listed, a 61-character or empty title refused, nothing sent |
+| 2b Quote rule | `chat.rs` `quoted_message`, `manager.rs` `resolve_quote`, `Manager::quoted`, `instructions.rs`, open-questions header, `docs/tasks.md` | `test-task.py` quote section: a manager quote of its own reply is dropped, an events turn has no quote, owner quotes resolve |
 | 4 Topics | record, `TaskRecord.topic`, `task new --topic`, `Short.topic` token | after the tree-context answer |
 | 5 Pill and Home band | web `tasks.js` pills, TUI, Home | web and TUI asserts with captures |
 
