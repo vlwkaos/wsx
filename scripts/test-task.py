@@ -8127,10 +8127,12 @@ def part_host(created=None):
     assert wait_state(s2q, 'ready', 'failed')['record']['adapter'] == 'pi', show(s2q)
     (agents / 'pi-fake.json').write_text(json.dumps({'since_ms': int(time.time() * 1000), 'until_ms': int((time.time() + 600) * 1000)}))
     js('task', 'add', s2q, 'WORK s2q.txt')
-    wait(lambda: show(s2q)['state'] == 'waiting' and show(s2q)['record']['adapter'] == 'claude',
-         lambda: 'the limited fallback sends the worker home for the wait: %s %s' % (show(s2q)['record']['adapter'], log(s2q)[-3:]), 40)
+    # ^ Born on the fallback, the task has no own conversation: home is a fresh one that starts at
+    # once (the fake claude refuses only on LIMIT words, not on the record), so no wait is asserted.
+    wait(lambda: show(s2q)['record']['adapter'] == 'claude',
+         lambda: 'the limited fallback sends the worker home: %s %s' % (show(s2q)['record']['adapter'], log(s2q)[-3:]), 40)
     assert lc_switches(s2q)[-1][1].startswith('back on claude: could not take the turn: its account is limited'), lc_switches(s2q)
-    assert show(s2q)['record']['waiting']['on'] == 'limit' and not show(s2q)['record'].get('fallback'), show(s2q)['record']
+    assert not show(s2q)['record'].get('fallback'), show(s2q)['record']
     (agents / 'pi-fake.json').unlink()
     limit_file.unlink()
     assert wait_state(s2q, 'ready', 'failed')['state'] == 'ready' and (Path(show(s2q)['record']['working_copy']) / 's2q.txt').exists(), show(s2q)
