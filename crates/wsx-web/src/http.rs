@@ -96,6 +96,10 @@ pub fn router(app: Shared) -> Router {
                 post(tasks_chat_close),
             )
             .route(
+                "/api/tasks/{project}/chats/{name}/rename",
+                post(tasks_chat_rename),
+            )
+            .route(
                 "/api/tasks/{project}/chats/{name}/dismiss",
                 post(tasks_chat_dismiss),
             )
@@ -1180,6 +1184,26 @@ async fn tasks_chat_close(
     act_budget(&app, &device)?;
     with_scope(&app, project, |scope| {
         crate::tasks::close_chat(&app, scope, &name)
+    })
+    .map(Json)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TitleInput {
+    title: String,
+}
+
+async fn tasks_chat_rename(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    UrlPath((project, name)): UrlPath<(u64, String)>,
+    Json(input): Json<TitleInput>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, true)?;
+    act_budget(&app, &device)?;
+    with_scope(&app, project, |_| {
+        crate::tasks::rename_chat(&name, &input.title)
     })
     .map(Json)
 }

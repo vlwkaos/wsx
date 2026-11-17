@@ -23,6 +23,8 @@ pub const CLOSED_FILE: &str = "closed";
 pub const CHAT_FILE: &str = "chat.json";
 pub const MAX_GOAL_BYTES: usize = 8 * 1024;
 pub const MAX_NAME_CHARS: usize = 24;
+/// A chat's shown title (`rename`), in characters.
+pub const MAX_TITLE_CHARS: usize = 40;
 
 /// A chat's name: a lowercase letter, then lowercase letters, digits and `-`, as the end of its
 /// session label `task-<name>`; never `manager`.
@@ -286,6 +288,9 @@ struct ChatFile {
     repos: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     from: Option<ChatFrom>,
+    /// The name the owner reads in place of the chat's id (`shown_name`); none shows the id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    title: String,
 }
 
 fn chat_file(dir: &ManagerDir) -> ChatFile {
@@ -303,6 +308,75 @@ fn write_chat_file(dir: &ManagerDir, file: &ChatFile) -> Result<()> {
 /// The repos the chat runs in; the first is its own.
 pub fn repos(dir: &ManagerDir) -> Vec<String> {
     chat_file(dir).repos
+}
+
+/// A chat's title as `rename` keeps it: trimmed, one line, at most `MAX_TITLE_CHARS`; empty
+/// clears it. The reason a title is refused is in the error.
+pub fn checked_title(title: &str) -> Result<&str> {
+    let title = title.trim();
+    if title.chars().any(char::is_control) {
+        bail!("a chat's title is one line");
+    }
+    let chars = title.chars().count();
+    if chars > MAX_TITLE_CHARS {
+        bail!("a chat's title is at most {MAX_TITLE_CHARS} characters, this is {chars}");
+    }
+    Ok(title)
+}
+
+/// The name the owner reads for a chat, the one rule of every surface: its title, else for the
+/// repo's home chat `home` (the project's shown name), else the chat's id.
+pub fn shown_name(dir: &ManagerDir, home: &str) -> String {
+    shown_of(&chat_file(dir).title, dir.is_home().then_some(home), dir.name())
+}
+
+fn shown_of(title: &str, home: Option<&str>, id: &str) -> String {
+    [title, home.unwrap_or_default(), id]
+        .into_iter()
+        .find(|name| !name.is_empty())
+        .unwrap_or(id)
+        .to_string()
+}
+
+/// Set (or, empty, clear) an open chat's title; the id, its folder and every reference stay.
+/// Returns the title kept. The repo's home chat is named by its project: refused.
+pub fn rename(name: &str, title: &str) -> Result<String> {
+    let title = checked_title(title)?;
+    let dir = open_chat(name)?;
+    if dir.is_home() {
+        bail!("{name} is the project's first chat: it is named by its project");
+    }
+    let mut file = chat_file(&dir);
+    file.title = title.to_string();
+    write_chat_file(&dir, &file)?;
+    Ok(file.title)
+}
+
+/// The names of the projects the chat runs in, its own first (`repos`, by the registered
+/// project's name; one the config does not know shows its id without the hash).
+pub fn project_names(dir: &ManagerDir) -> Vec<String> {
+    let registered = registered();
+    repos(dir).iter().map(|id| project_name(&registered, id)).collect()
+}
+
+/// Every registered project's store id and name.
+fn registered() -> Vec<(String, String)> {
+    crate::config::global::GlobalConfig::load()
+        .map(|(config, _)| {
+            config
+                .projects
+                .into_iter()
+                .map(|project| (store::project_id(&project.name, &project.path), project.name))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn project_name(registered: &[(String, String)], id: &str) -> String {
+    registered
+        .iter()
+        .find(|(each, _)| each == id)
+        .map_or_else(|| home_base(id), |(_, name)| name.clone())
 }
 
 /// A new chat folder gets its `chat.json` with its repo.
@@ -493,6 +567,7 @@ fn hand_back(dir: &ManagerDir) -> String {
 /// entry's name, `adapter` and `model` its own, left out for a chat on the manager's.
 pub fn rows(project_id: &str) -> Vec<Value> {
     let home = store::home_chat(project_id);
+    let registered = registered();
     all(project_id)
         .into_iter()
         .map(|dir| {
@@ -505,7 +580,14 @@ pub fn rows(project_id: &str) -> Vec<Value> {
                 "last_unix_ms": last,
                 "listed": chats_home::listed_at(&dir, || last),
                 "home": home.as_deref() == Some(dir.name()),
+                // ^ `projects` is where the chat runs, its own first, by name; `title` its
+                // own name for it (docs/tasks.md "Chats"); the row's shown name is `title`, else the id.
+                "projects": repos(&dir).iter().map(|id| project_name(&registered, id)).collect::<Vec<_>>(),
             });
+            let title = chat_file(&dir).title;
+            if !title.is_empty() {
+                row["title"] = title.into();
+            }
             if let (Some(entry), Some(own)) = (chat_file(&dir).agent, agent(&dir)) {
                 row["agent"] = entry.into();
                 row["adapter"] = own.adapter.into();

@@ -499,6 +499,9 @@ pub enum ChatCmd {
     },
     /// Make an open chat the repo's home chat, which hears what no chat owns (the owner's)
     Home { name: String },
+    /// Set the name the owner reads for a chat, up to 40 characters; an empty title clears it.
+    /// The chat's id stays what `say --to` and `chat close` take
+    Rename { name: String, title: String },
 }
 
 impl TaskCmd {

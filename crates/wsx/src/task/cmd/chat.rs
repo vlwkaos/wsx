@@ -390,6 +390,21 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
             println!("{message}");
             Ok(())
         }
+        ChatCmd::Rename { name, title } => {
+            owner_only("chat rename")?;
+            let (project, main) = project_entry(project)?;
+            chat_of_repo(&name, &store::project_id(&project, &main))?;
+            let title = chats::rename(&name, &title)?;
+            let message = match title.is_empty() {
+                true => format!("chat {name} is shown by its id again"),
+                false => format!("chat {name} is shown as {title:?}; its id stays {name}"),
+            };
+            if json {
+                return print_json(&json!({ "chat": name, "title": title, "message": message }));
+            }
+            println!("{message}");
+            Ok(())
+        }
         ChatCmd::Home { name } => {
             owner_only("chat home")?;
             let (project, main) = project_entry(project)?;

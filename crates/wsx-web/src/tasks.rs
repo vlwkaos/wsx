@@ -754,8 +754,8 @@ pub fn chat(
 ) -> Outcome<Value> {
     // ^ The name the owner reads (docs/tasks.md "Config"); the first chat stays `manager` inside.
     let settings = load_task_config(&scope.path).unwrap_or_default();
-    let mut manager =
-        json!({ "name": chat.unwrap_or_else(|| settings.manager_shown_name(&scope.name)) });
+    let shown = settings.manager_shown_name(&scope.name);
+    let mut manager = json!({ "name": chat.unwrap_or(shown) });
     let dir = match chat {
         None => ManagerDir::home(&scope.store).map_err(internal)?,
         Some(chat) => Some(
@@ -768,6 +768,11 @@ pub fn chat(
             json!({ "rows": [], "skipped": 0, "asks": [], "running": false, "busy": false, "manager": manager }),
         );
     };
+    // ^ A chat's shown name (`chats::shown_name`) and the projects it runs in, its own first.
+    if dir.named().is_some() {
+        manager["name"] = task::chats::shown_name(&dir, shown).into();
+        manager["projects"] = task::chats::project_names(&dir).into();
+    }
     // ^ The agent in use now, a fallback's while one runs; a chat's own, else the manager's.
     manager["agent"] = view::manager_agent(&dir, &settings);
     let window = task::chat::Window::new(find, after, around);
@@ -938,6 +943,17 @@ pub fn close_chat(app: &App, scope: &Scope, name: &str) -> Outcome<Value> {
     owner::close_chat((&scope.name, &scope.path), &wsx, name, launcher(app, scope))
         .map_err(|error| Fault::new(409, "invalid_chat", format!("{error:#}")))?;
     Ok(json!({ "ok": true, "chat": name, "state": "closed" }))
+}
+
+/// The owner sets (or, empty, clears) the name a chat is shown by; its id stays (docs/tasks.md
+/// "Chats"). A title that breaks the rule is 400 `invalid_title` with the reason; an unknown or
+/// a closed name, or the first chat, is 409.
+pub fn rename_chat(name: &str, title: &str) -> Outcome<Value> {
+    task::chats::checked_title(title)
+        .map_err(|error| Fault::new(400, "invalid_title", format!("{error:#}")))?;
+    let title = task::chats::rename(name, title)
+        .map_err(|error| Fault::new(409, "invalid_chat", format!("{error:#}")))?;
+    Ok(json!({ "ok": true, "chat": name, "title": title }))
 }
 
 /// The owner dismisses an open chat's row from Home; the chat, its repo and its tasks go on
