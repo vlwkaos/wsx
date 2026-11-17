@@ -4839,7 +4839,12 @@ def part_worker(created=None):
     asked = js('task', 'say', 'STATUS after the stale wait')
     reply_to(asked['id'])
     stale_turn = turn_with('STATUS after the stale wait')['message']
-    assert 'Events (message %d)' % stale_event['id'] in stale_turn and '#%d waiting r0' % stale in stale_turn, stale_turn
+    def stale_story():
+        # ^ Which turn took the event: the manager's log from 27c's last lines on, and each turn's first words.
+        kept = [(e['kind'], e.get('id') or e.get('ids') or e.get('to'), e.get('from'), str(e.get('text', ''))[:70])
+                for e in manager_entries()[-40:]]
+        return '%s\n%s\n%s' % (stale_turn, kept, [(t['manager'], str(t['message'])[:90]) for t in traces() if t.get('manager')][-8:])
+    assert 'Events (message %d)' % stale_event['id'] in stale_turn and '#%d waiting r0' % stale in stale_turn, stale_story()
     assert '\n\nsince then: #%d working r0\n\n' % stale in stale_turn, stale_turn
     assert stale_turn.index('since then:') > stale_turn.index('#%d waiting r0' % stale), stale_turn
     stale_release.write_text('')
