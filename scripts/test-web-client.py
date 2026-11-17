@@ -4376,12 +4376,13 @@ merge_seconds = 3
         events.expect('manager', lambda data: data == {'project': demo}, timeout=20)
         # ^ The chat route sends wsx-core chat rows (docs/web-client-tasks.md "Chat").
         manager_said = lambda row: row.get('author') == 'manager' and row['kind'] in ('message', 'quiet')
-        # ^ The repo service sent the events so far to the home chat before this say: a quiet reply to
-        # them can come first, so the reply is the manager's row after the say's id.
-        answers = lambda row, said=body['id']: manager_said(row) and row['id'] > said
-        chat = wait(lambda: (lambda data: data if any(answers(r) for r in data['rows']) else None)(
-            steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]), 'manager reply')
-        reply = next(r for r in chat['rows'] if answers(r))
+        # ^ A reply is the one that answers the say, by its `to` (the chat entries), not the next manager row:
+        # the events turn that runs while the say waits has its own quiet reply, whose id can follow the say's.
+        reply_id = wait(lambda: next((e['id'] for e in js('task', 'chat', '-p', 'demo')['entries']
+                                      if e['kind'] == 'reply' and body['id'] in e['to']), None), 'manager reply')
+        chat = wait(lambda: (lambda data: data if any(r.get('id') == reply_id for r in data['rows']) else None)(
+            steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]), 'manager reply row')
+        reply = next(r for r in chat['rows'] if r.get('id') == reply_id)
         assert reply['text'].startswith('open: #1 ready') and reply['name'] == 'demo' and chat['running'], chat
         assert {r['kind'] for r in chat['rows']} <= {'message', 'line', 'quiet', 'note', 'talk'}, chat['rows']
         # ^ The manager's replies count apart from the workers' (docs/tasks.md "Usage").
