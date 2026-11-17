@@ -94,10 +94,9 @@ export function CheckRow({ project, item: listed, revision, onChanged, onReply, 
     onReply(checkQuote(item), item.id);
   };
   const older = revision != null && item.revision !== revision ? ` (r${item.revision})` : "";
-  const capture = `api/tasks/${project}/checks/${item.id}/capture`;
   // ^ A video capture shows its poster (or a blank frame) with a play mark; the viewer plays it.
-  const video = item.capture?.endsWith(".mp4");
-  const poster = video && item.poster ? `api/tasks/${project}/checks/${item.id}/poster` : undefined;
+  // The poster is the first video's.
+  const firstVideo = item.captures?.findIndex((name) => name.endsWith(".mp4"));
   const did = item.did ?? item.title;
   return html`
     <${tag} class="check-item" data-check=${item.id} data-state=${item.state} data-gallery>
@@ -110,9 +109,16 @@ export function CheckRow({ project, item: listed, revision, onChanged, onReply, 
             <dt>Passes if</dt><dd class="check-pass">${item.pass_if}</dd>
           </dl>
           ${item.capture_removed && html`<p class="check-state">Capture removed</p>`}
-          ${item.capture && !item.capture_removed && html`
-            <${Capture} href=${capture} download=${`${capture}?download=1`} video=${video} poster=${poster} size=${item.capture_size}
-              label=${`${video ? "Video" : "Capture"} of: ${item.check}`} />`}
+          ${item.captures && !item.capture_removed && html`
+            <div class="check-strip">
+              ${item.captures.map((name, slot) => {
+                const href = `api/tasks/${project}/checks/${item.id}/capture/${slot}`;
+                const video = name.endsWith(".mp4");
+                const poster = slot === firstVideo && item.poster ? `api/tasks/${project}/checks/${item.id}/poster` : undefined;
+                return html`<${Capture} key=${slot} href=${href} download=${`${href}?download=1`} video=${video} poster=${poster} size=${item.capture_sizes?.[slot]}
+                  label=${`${video ? "Video" : "Capture"} ${item.captures.length > 1 ? `${slot + 1} of ${item.captures.length} ` : ""}of: ${item.check}`} />`;
+              })}
+            </div>`}
           ${item.state === "failed" && html`<p class="check-state">Failed${item.note ? `: ${item.note}` : ""}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
           ${item.state === "passed" && html`<p class="check-state">Passed${item.note ? `: ${item.note}` : ""}</p>`}
           ${item.state === "replied" && html`<p class="check-state">Replied: ${item.note}</p>`}

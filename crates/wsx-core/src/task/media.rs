@@ -79,6 +79,8 @@ pub struct Item {
     pub verdict: Option<CheckState>,
     pub check: Option<String>,
     pub path: Option<String>,
+    /// Which capture of its check a capture tile is (0 for the first), for the URL.
+    pub slot: usize,
     /// A capture has a poster image.
     pub poster: bool,
     /// The file is gone: a capture the budget removed, or a file no longer in the checkout. An
@@ -163,35 +165,47 @@ fn parse_cursor(cursor: &str) -> Option<(u64, String)> {
 fn capture_items(project_id: &str, filter: &Filter) -> Result<Vec<Item>> {
     let mut found = Vec::new();
     for item in checks::read(project_id)? {
-        let Some(capture) = item.capture.as_deref() else {
-            continue;
-        };
-        let Some(kind) = Kind::of(capture) else {
-            continue;
-        };
-        if filter.task.is_some_and(|task| task != item.task)
-            || filter.kind.is_some_and(|wanted| wanted != kind)
-        {
+        if filter.task.is_some_and(|task| task != item.task) {
             continue;
         }
         let gone = TaskDir::open(project_id, item.task)
             .map_or(true, |dir| checks::capture_removed(&dir, &item));
-        found.push(Item {
-            id: item.id.clone(),
-            source: Source::Capture,
-            kind,
-            unix_ms: item.added_unix_ms,
-            task: Some(item.task),
-            who: "checks".into(),
-            text: item.check.clone(),
-            verdict: Some(item.state),
-            check: Some(item.id.clone()),
-            path: Some(capture.to_string()),
-            poster: item.poster.is_some(),
-            gone,
-        });
+        // ^ Each capture of an item is a tile; the first keeps the item's id.
+        for (slot, capture) in item.captures.iter().enumerate() {
+            let Some(kind) =
+                Kind::of(capture).filter(|kind| filter.kind.is_none_or(|k| k == *kind))
+            else {
+                continue;
+            };
+            found.push(Item {
+                id: match slot {
+                    0 => item.id.clone(),
+                    _ => format!("{}.{slot}", item.id),
+                },
+                source: Source::Capture,
+                kind,
+                unix_ms: item.added_unix_ms,
+                task: Some(item.task),
+                who: "checks".into(),
+                text: item.check.clone(),
+                verdict: Some(item.state),
+                check: Some(item.id.clone()),
+                path: Some(capture.clone()),
+                slot,
+                poster: item.poster.is_some() && slot == first_video(&item),
+                gone,
+            });
+        }
     }
     Ok(found)
+}
+
+/// The slot of an item's first video capture, the one its poster belongs to.
+fn first_video(item: &checks::CheckItem) -> usize {
+    item.captures
+        .iter()
+        .position(|capture| Kind::of(capture) == Some(Kind::Video))
+        .unwrap_or(usize::MAX)
 }
 
 /// The files one log entry posts: its links, and the uploads of an owner message.
@@ -221,6 +235,7 @@ fn entry_items(
         verdict: None,
         check: None,
         path: Some(path.to_string()),
+        slot: 0,
         poster: false,
         gone,
     };

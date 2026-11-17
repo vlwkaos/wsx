@@ -28,6 +28,12 @@ pub(crate) fn check(action: Option<CheckAction>, project: Option<&str>, json: bo
                     "{:<5} #{:<4} {} (pass if: {})",
                     item.id, item.task, item.check, item.pass_if
                 );
+                // ^ The kept captures, where the owner can open them.
+                if let Ok(dir) = TaskDir::open(&project_id, item.task) {
+                    for name in &item.captures {
+                        println!("      {}", dir.file(name).display());
+                    }
+                }
             }
             return Ok(());
         }

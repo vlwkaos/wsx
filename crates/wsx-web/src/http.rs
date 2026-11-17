@@ -125,6 +125,10 @@ pub fn router(app: Shared) -> Router {
                 "/api/tasks/{project}/checks/{id}/{decision}",
                 post(task_check).get(check_capture),
             )
+            .route(
+                "/api/tasks/{project}/checks/{id}/capture/{slot}",
+                get(check_capture_slot),
+            )
             .route("/api/media", put(media_put))
             .route("/api/media/{hash}", get(media_state))
             .route("/api/files", get(files_list))
@@ -1570,7 +1574,7 @@ async fn tasks_checks(
     .map(Json)
 }
 
-/// The capture kept with a "To check" item, `GET .../checks/<id>/capture`, and a video's
+/// The first capture kept with a "To check" item, `GET .../checks/<id>/capture`, and a video's
 /// poster, `.../poster`. One byte range is answered 206, so iPhone Safari plays a video.
 async fn check_capture(
     State(app): State<Shared>,
@@ -1579,17 +1583,40 @@ async fn check_capture(
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Outcome<Response> {
-    tasks_allowed(&app, false)?;
     let poster = match part.as_str() {
         "capture" => false,
         "poster" => true,
         _ => return Err(Fault::not_found()),
     };
-    let (bytes, media, name) = with_scope(&app, project, |scope| {
-        crate::tasks::check_capture(scope, &id, poster)
+    capture_response(&app, project, &id, poster, 0, &query, &headers)
+}
+
+/// The `slot`-th (from 0) capture of an item, `GET .../checks/<id>/capture/<slot>`.
+async fn check_capture_slot(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath((project, id, slot)): UrlPath<(u64, String, usize)>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Outcome<Response> {
+    capture_response(&app, project, &id, false, slot, &query, &headers)
+}
+
+fn capture_response(
+    app: &Shared,
+    project: u64,
+    id: &str,
+    poster: bool,
+    slot: usize,
+    query: &HashMap<String, String>,
+    headers: &HeaderMap,
+) -> Outcome<Response> {
+    tasks_allowed(app, false)?;
+    let (bytes, media, name) = with_scope(app, project, |scope| {
+        crate::tasks::check_capture(scope, id, poster, slot)
     })?;
     let size = bytes.len() as u64;
-    let range = match byte_range(&headers, size) {
+    let range = match byte_range(headers, size) {
         Ok(range) => range,
         Err(refused) => return Ok(refused.into_response()),
     };

@@ -2209,6 +2209,10 @@ impl Host {
         }
         // ^ What a test, an assert or a capture shows is the worker's to prove: such an item
         // goes back once, within the check retries. ref: docs/tasks.md "To check"
+        let unattached = result.unattached_images();
+        if !unattached.is_empty() {
+            self.say(&unattached);
+        }
         let items: Vec<&str> = result
             .human_verify
             .iter()
@@ -4233,23 +4237,22 @@ impl Host {
             }
         }
         for (index, item) in verify.iter_mut().enumerate() {
-            if item.capture.is_empty() {
-                item.poster.clear();
-                continue;
+            for (k, path) in std::mem::take(&mut item.captures).iter().enumerate() {
+                let kept = checks::keep_capture(
+                    &self.dir,
+                    &self.record.working_copy,
+                    self.record.revision,
+                    index + 1,
+                    k + 1,
+                    path,
+                );
+                match kept {
+                    Ok(name) => item.captures.push(name),
+                    Err(error) => self.say(&format!("capture not kept: {error:#}")),
+                }
             }
-            let kept = checks::keep_capture(
-                &self.dir,
-                &self.record.working_copy,
-                self.record.revision,
-                index + 1,
-                &item.capture,
-            );
-            if let Err(error) = &kept {
-                self.say(&format!("capture not kept: {error:#}"));
-            }
-            item.capture = kept.unwrap_or_default();
             // ^ A poster only goes with a video capture.
-            if !item.capture.ends_with(".mp4") || item.poster.is_empty() {
+            if !item.captures.iter().any(|name| name.ends_with(".mp4")) || item.poster.is_empty() {
                 item.poster.clear();
                 continue;
             }

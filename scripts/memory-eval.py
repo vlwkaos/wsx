@@ -67,7 +67,7 @@ SCHEMA = {'type': 'object', 'additionalProperties': False,
               'status': {'type': 'string', 'enum': ['done', 'blocked', 'failed']}, 'summary': {'type': 'string'},
               'decisions': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False, 'required': ['choice', 'reason'], 'properties': {'choice': {'type': 'string'}, 'reason': {'type': 'string'}}}},
               'evidence': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False, 'required': ['check', 'proof'], 'properties': {'check': {'type': 'string'}, 'proof': {'type': 'string'}}}},
-              'human_verify': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False, 'required': ['check', 'where', 'capture', 'poster', 'pass_if'], 'properties': {k: {'type': 'string'} for k in ['check', 'where', 'capture', 'poster', 'pass_if']}}},
+              'human_verify': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False, 'required': ['check', 'where', 'captures', 'poster', 'pass_if'], 'properties': {k: {'type': 'array', 'items': {'type': 'string'}} if k == 'captures' else {'type': 'string'} for k in ['check', 'where', 'captures', 'poster', 'pass_if']}}},
               'left_open': {'type': 'array', 'items': {'type': 'string'}}, 'notes': {'type': 'string'}, 'memo': {'type': 'string'}}}
 PLAN_END = ('Do only this step. When it is done, return status done with what it found or did; the next '
             'step follows. Before the result, wait for or stop each background job you started.')

@@ -267,9 +267,11 @@ fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: boo
          `human_verify` keeps only how it looks or feels, and an item about a screen comes \
          with a capture of that state; an item without a capture is only for a real device \
          or the owner's real data, and its `where` says so. Each item says in plain words \
-         what to look at, `where` (a URL, a page path or the screen), `capture` (the path \
-         of an image of it in this working copy, or of a short MP4 video of at most 25 MiB), \
-         `poster` (a video's thumbnail image in this working copy, else empty) and `pass_if`. \
+         what to look at, `where` (a URL, a page path or the screen), `captures` (a list: the \
+         path of each image of it in this working copy, or of a short MP4 video of at most 25 MiB; \
+         every image goes in this list, never as a file name in `pass_if` or `check`, and \
+         the working copy goes when the task lands), \
+         `poster` (the thumbnail image of the first video, else empty) and `pass_if`. \
          Before you finish a build, put in the result's memo a short, lean memo of durable \
          project knowledge a later task needs, a few lines at most: when you learned a \
          project convention, a gotcha or a decision and its reason, the memo must say it. \

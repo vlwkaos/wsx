@@ -2198,7 +2198,7 @@ try:
         (keep_store / str(number) / "log.jsonl").write_text("")
     # ^ #2's result: a summary and four checks, one failed, as a real task has them.
     (keep_store / "2" / "result.json").write_text(json.dumps({
-        "result": {"status": "done", "summary": "Rows show where each task goes. " * 5, "human_verify": [{"check": "the row", "where": "Home", "capture": "", "poster": "", "pass_if": "it reads"}]},
+        "result": {"status": "done", "summary": "Rows show where each task goes. " * 5, "human_verify": [{"check": "the row", "where": "Home", "captures": [], "poster": "", "pass_if": "it reads"}]},
         "checks": [{"command": command, "exit": exit} for command, exit in (("cargo fmt --check", 0), ("cargo build", 0), ("cargo clippy", 0), ("cargo nextest run", 1))]}))
     select_in_tui("keep-me")
     remove_tui.send(b"t")

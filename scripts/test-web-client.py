@@ -4224,7 +4224,7 @@ merge_seconds = 3
         assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'hand', 'try'], detail['actions']
         assert re.match(r'Ready, waiting for you to land it for [^:]+: checks 1 of 1 passed\. Land it to put it on main\.$', detail['status']['sentence']), detail['status']
         assert detail['to_check'] == [] and detail['fixes'] is None, detail
-        assert detail['result']['human_verify'] == [{'check': 'open the file', 'where': 'a real device', 'capture': '', 'poster': '', 'pass_if': 'it has text'}]
+        assert detail['result']['human_verify'] == [{'check': 'open the file', 'where': 'a real device', 'captures': [], 'poster': '', 'pass_if': 'it has text'}]
         headings = [line for line in detail['report'].splitlines() if line.startswith('## ')]
         assert headings == ['## Summary', '## Changes', '## Evidence', '## To check', '## Left open'], headings
         # ^ Usage: the task's sum is `show --json`'s, and the project's workers today hold every
@@ -4311,7 +4311,7 @@ merge_seconds = 3
         assert [(i['id'], i['task'], i['title'], i['check'], i['state']) for i in listed] == [
             ('c1', 2, 'did: WORK a.txt HV', 'open the file', 'open')], listed
         # ^ The title is already the worker's sentence; an item without a capture has no image.
-        assert listed[0]['did'] is None and 'capture' not in listed[0] and listed[0]['where'] == 'a real device', listed
+        assert listed[0]['did'] is None and 'captures' not in listed[0] and listed[0]['where'] == 'a real device', listed
         assert steady(owner, 'GET', '/api/tasks/%d/checks/c1/capture' % demo)[0] == 404
         assert steady(owner, 'GET', '/api/tasks/%d/checks/c99/capture' % demo)[0] == 404
         landed = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
@@ -4982,9 +4982,9 @@ merge_seconds = 3
             # A capture the manager's sweep removed (docs/tasks.md "To check"): the task's item says
             # so, and its route answers 404 while the poster is still served.
             captures = Path(js('task', 'show', 8, '-p', 'ui')['log']).parent / 'captures'
-            (captures / 'r1-1.mp4').unlink()
+            (captures / 'r1-1-1.mp4').unlink()
             (video_item,) = steady(owner, 'GET', '/api/tasks/%d/t/8' % ids['ui'])[1]['to_check']
-            assert video_item.get('capture_removed') is True and video_item['capture'] == 'captures/r1-1.mp4', video_item
+            assert video_item.get('capture_removed') is True and video_item['captures'] == ['captures/r1-1-1.mp4'], video_item
             assert steady(owner, 'GET', '/api/tasks/%d/checks/%s/capture' % (ids['ui'], video_item['id']))[0] == 404
             assert steady(owner, 'GET', '/api/tasks/%d/checks/%s/poster' % (ids['ui'], video_item['id']))[0] == 200
             ok('a removed capture: capture_removed on the task\'s item, its route 404, the poster still served')

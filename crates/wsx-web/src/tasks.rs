@@ -1128,15 +1128,20 @@ pub fn checks(scope: &Scope, chat: Option<&str>) -> Outcome<Value> {
                 .filter(|sentence| Some(sentence) != title.as_ref());
             row["title"] = json!(title);
             row["did"] = json!(did);
-            // ^ The page sizes the capture's box before the image arrives, so the sheet
-            // does not grow when it comes (docs/web-client-tasks.md "To check").
-            // ^ A video shows its poster, so the box is the poster's.
-            row["capture_size"] = json!(item
-                .poster
-                .as_deref()
-                .or(item.capture.as_deref())
-                .zip(dir.as_ref())
-                .and_then(|(name, dir)| checks::capture_size(dir, name)));
+            // ^ The page sizes each capture's box before the image arrives, so the sheet
+            // does not grow when it comes (docs/web-client-tasks.md "To check"). A video
+            // shows its poster, so its box is the poster's.
+            row["capture_sizes"] = json!(item
+                .captures
+                .iter()
+                .map(|name| {
+                    let name = match name.ends_with(".mp4") {
+                        true => item.poster.as_deref().unwrap_or(name),
+                        false => name,
+                    };
+                    dir.as_ref().and_then(|dir| checks::capture_size(dir, name))
+                })
+                .collect::<Vec<_>>());
             // ^ A capture the budget removed: its chat bubble says so.
             if dir.is_some_and(|dir| checks::capture_removed(&dir, item)) {
                 row["capture_removed"] = json!(true);
@@ -1148,26 +1153,39 @@ pub fn checks(scope: &Scope, chat: Option<&str>) -> Outcome<Value> {
     Ok(json!({ "open": open, "items": rows }))
 }
 
-/// The capture kept with an item, an image or a video, or with `poster` the video's poster.
-/// ref: docs/tasks.md "To check"
+/// The `slot`-th capture kept with an item, an image or a video, or with `poster` the poster of
+/// its first video. ref: docs/tasks.md "To check"
 pub fn check_capture(
     scope: &Scope,
     id: &str,
     poster: bool,
+    slot: usize,
 ) -> Outcome<(Vec<u8>, &'static str, String)> {
     let items = checks::read(&scope.store).map_err(internal)?;
     let item = items
         .iter()
         .find(|item| item.id == id)
         .ok_or_else(Fault::not_found)?;
-    let name = if poster { &item.poster } else { &item.capture };
-    let name = name.as_deref().ok_or_else(Fault::not_found)?;
+    let name = match poster {
+        true => item.poster.as_deref(),
+        false => item.captures.get(slot).map(String::as_str),
+    }
+    .ok_or_else(Fault::not_found)?;
     let dir = open_task(scope, item.task).map_err(|_| Fault::not_found())?;
     let (bytes, media) = checks::read_capture(&dir, name).map_err(|_| Fault::not_found())?;
     // ^ The name a saved copy gets: task, item and kind, such as `task-7-c12.png`.
     let kind = if poster { "-poster" } else { "" };
+    let number = if slot == 0 {
+        String::new()
+    } else {
+        format!("-{}", slot + 1)
+    };
     let ext = media.rsplit('/').next().unwrap_or("bin");
-    Ok((bytes, media, format!("task-{}-{id}{kind}.{ext}", item.task)))
+    Ok((
+        bytes,
+        media,
+        format!("task-{}-{id}{number}{kind}.{ext}", item.task),
+    ))
 }
 
 /// Pass, skip or fail an item as the owner, through `wsx task check`; a fail with a note starts
@@ -1832,7 +1850,7 @@ pub fn media(app: &App, scope: &Scope, filter: &task::media::Filter) -> Outcome<
                     item.check.as_deref().filter(|_| !item.gone).map(|id| {
                         let base = format!("api/tasks/{}/checks/{id}", scope.project);
                         let poster = item.poster.then(|| format!("{base}/poster"));
-                        (format!("{base}/capture"), poster, None)
+                        (format!("{base}/capture/{}", item.slot), poster, None)
                     })
                 }
                 task::media::Source::File => root

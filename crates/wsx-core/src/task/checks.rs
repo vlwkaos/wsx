@@ -47,10 +47,16 @@ pub struct CheckItem {
     /// Where a person looks (see `HumanVerify`).
     #[serde(default, rename = "where", skip_serializing_if = "String::is_empty")]
     pub place: String,
-    /// The capture kept in the task folder, such as `captures/r3-1.png` or `captures/r3-1.mp4`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capture: Option<String>,
-    /// A video capture's thumbnail kept in the task folder, such as `captures/r3-1.poster.png`.
+    /// The captures kept in the task folder, such as `captures/r3-1-1.png` or
+    /// `captures/r3-1-2.mp4`. A row from before the list has the one `capture` string.
+    #[serde(
+        default,
+        alias = "capture",
+        deserialize_with = "super::one_or_many",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub captures: Vec<String>,
+    /// The first video capture's thumbnail kept in the task folder, such as `captures/r3-1.poster.png`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poster: Option<String>,
     pub pass_if: String,
@@ -146,7 +152,7 @@ pub fn change(
 }
 
 /// Add the Human Verify items of a landed revision as open items, once per task and revision.
-/// Each `capture` and `poster` is already the name kept in the task folder, or empty.
+/// Each of `captures` and the `poster` is already the name kept in the task folder, or empty.
 pub fn collect(
     project_id: &str,
     task: u32,
@@ -174,7 +180,7 @@ pub fn collect(
                 commit: commit.to_string(),
                 check: item.check.clone(),
                 place: item.place.clone(),
-                capture: Some(item.capture.clone()).filter(|name| !name.is_empty()),
+                captures: item.captures.clone(),
                 poster: Some(item.poster.clone()).filter(|name| !name.is_empty()),
                 pass_if: item.pass_if.clone(),
                 state: CheckState::Open,
@@ -409,19 +415,21 @@ pub fn state_name(state: CheckState) -> &'static str {
     }
 }
 
-/// Keep a worker's capture in the task folder as `captures/r<revision>-<index>.<ext>`: a PNG,
-/// JPEG or WebP image of at most 2 MiB or an MP4 video of at most 25 MiB inside the working copy.
+/// Keep a worker's capture in the task folder as `captures/r<revision>-<index>-<k>.<ext>` (the
+/// item's `index`, its `k`-th capture): a PNG, JPEG or WebP image of at most 2 MiB or an MP4
+/// video of at most 25 MiB inside the working copy.
 pub fn keep_capture(
     dir: &TaskDir,
     working_copy: &Path,
     revision: u32,
     index: usize,
+    k: usize,
     path: &str,
 ) -> Result<String> {
     keep(
         dir,
         working_copy,
-        &format!("r{revision}-{index}"),
+        &format!("r{revision}-{index}-{k}"),
         path,
         true,
     )
@@ -480,10 +488,10 @@ pub fn read_capture(dir: &TaskDir, name: &str) -> Result<(Vec<u8>, &'static str)
 
 /// Whether the item had a capture that the sweep has removed.
 pub fn capture_removed(dir: &TaskDir, item: &CheckItem) -> bool {
-    item.capture
-        .as_deref()
-        .and_then(|name| capture_path(dir, name).ok())
-        .is_some_and(|path| !path.exists())
+    item.captures
+        .iter()
+        .filter_map(|name| capture_path(dir, name).ok())
+        .any(|path| !path.exists())
 }
 
 /// Keep the project's capture files (images, videos, posters) within `budget_bytes`: while
@@ -498,13 +506,14 @@ pub fn prune_captures(project_id: &str, budget_bytes: u64) -> Result<usize> {
     change(project_id, |items| {
         // ^ (item, its kept files with their sizes); a poster is only kept with a capture.
         let mut kept: Vec<(&CheckItem, Vec<(std::path::PathBuf, u64)>)> = Vec::new();
-        for item in items.iter().filter(|item| item.capture.is_some()) {
+        for item in items.iter().filter(|item| !item.captures.is_empty()) {
             let Ok(dir) = TaskDir::open(project_id, item.task) else {
                 continue;
             };
-            let files = [&item.capture, &item.poster]
-                .into_iter()
-                .flatten()
+            let files = item
+                .captures
+                .iter()
+                .chain(&item.poster)
                 .filter_map(|name| capture_path(&dir, name).ok())
                 .filter_map(|path| Some((path.clone(), path.metadata().ok()?.len())))
                 .collect();

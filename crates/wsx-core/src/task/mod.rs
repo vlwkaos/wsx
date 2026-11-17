@@ -1183,10 +1183,11 @@ pub struct HumanVerify {
     /// Where a person looks: a URL, a page path such as `/#/p/wsx/checks`, or a screen name.
     #[serde(rename = "where")]
     pub place: String,
-    /// A capture of it: the path of an image or a short MP4 video in the working copy, kept
-    /// with the task at the land.
-    pub capture: String,
-    /// A video capture's thumbnail image in the working copy, or empty.
+    /// Captures of it: the path of each image or short MP4 video in the working copy, kept with
+    /// the task at the land. A stored result may still have the one `capture` string.
+    #[serde(alias = "capture", deserialize_with = "one_or_many")]
+    pub captures: Vec<String>,
+    /// The thumbnail image of the first video capture in the working copy, or empty.
     pub poster: String,
     pub pass_if: String,
 }
@@ -1199,10 +1200,79 @@ impl HumanVerify {
         let place = self.place.to_lowercase();
         self.check.contains('`')
             || self.pass_if.contains('`')
-            || (self.capture.trim().is_empty()
+            || (self.captures.is_empty()
                 && !place.contains("real device")
                 && !place.contains("real data"))
     }
+}
+
+impl HumanVerify {
+    /// The image or video files the item's words name that none of its `captures` is: such a
+    /// file is not kept with the task, so the owner never sees it. ref: docs/tasks.md "To check"
+    pub fn unattached_images(&self) -> Vec<String> {
+        let base = |path: &str| path.rsplit('/').next().unwrap_or(path).to_string();
+        let kept: Vec<String> = self.captures.iter().map(|path| base(path)).collect();
+        let mut named: Vec<String> = Vec::new();
+        for words in [&self.check, &self.place, &self.pass_if] {
+            let tokens = words
+                .split(|c: char| !(c.is_alphanumeric() || "-_./".contains(c)))
+                .map(|word| base(word.trim_matches('.')));
+            for file in tokens {
+                let lower = file.to_lowercase();
+                let image = [".png", ".jpg", ".jpeg", ".webp", ".mp4"]
+                    .iter()
+                    .any(|ext| lower.len() > ext.len() && lower.ends_with(ext));
+                if image && !kept.contains(&file) && !named.contains(&file) {
+                    named.push(file);
+                }
+            }
+        }
+        named
+    }
+}
+
+impl WorkerResult {
+    /// The files `HumanVerify::unattached_images` finds in any item, in a sentence for the task
+    /// log and the ready event; empty when there are none.
+    pub fn unattached_images(&self) -> String {
+        let mut files: Vec<String> = Vec::new();
+        for file in self
+            .human_verify
+            .iter()
+            .flat_map(HumanVerify::unattached_images)
+        {
+            if !files.contains(&file) {
+                files.push(file);
+            }
+        }
+        match files.is_empty() {
+            true => String::new(),
+            false => format!(
+                "a To check item names {} but has no capture of it (images go in `captures`)",
+                files.join(", ")
+            ),
+        }
+    }
+}
+
+/// A list of paths read from a list or from the one string older results had; an empty string
+/// is no path.
+pub(crate) fn one_or_many<'de, D: serde::Deserializer<'de>>(
+    de: D,
+) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Paths {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match Paths::deserialize(de)? {
+        Paths::One(path) => vec![path],
+        Paths::Many(paths) => paths,
+    }
+    .into_iter()
+    .filter(|path| !path.trim().is_empty())
+    .collect())
 }
 
 /// JSON Schema given to the adapter for `WorkerResult`.
@@ -1228,8 +1298,8 @@ pub fn worker_result_schema() -> serde_json::Value {
             "human_verify": { "type": "array", "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["check", "where", "capture", "poster", "pass_if"],
-                "properties": { "check": text, "where": text, "capture": text, "poster": text, "pass_if": text },
+                "required": ["check", "where", "captures", "poster", "pass_if"],
+                "properties": { "check": text, "where": text, "captures": { "type": "array", "items": text }, "poster": text, "pass_if": text },
             } },
             "left_open": { "type": "array", "items": text },
             "notes": text,

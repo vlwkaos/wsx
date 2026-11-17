@@ -4715,6 +4715,32 @@ await closeSheet("the page", plansChat);
     await key("Escape", 27);
     await until("!document.querySelector('dialog.viewer')", "Escape did not close the viewer of the media video");
   }
+  // --- An item with three captures (docs/web-client-tasks.md "To check"): the card shows three
+  // pictures in one strip, each opens the viewer, and the viewer goes from one to the next.
+  const three = ["r1-5-1.png", "r1-5-2.png", "r1-5-3.png"];
+  three.forEach((name, n) => fs.writeFileSync(path.join(kept, name), drawn[n + 1]));
+  fs.appendFileSync(checksFile, `${JSON.stringify({ id: "c904", task: 1, revision: 1, commit: "0".repeat(40), check: "the three sizes read", pass_if: "all three read well", state: "open", captures: three.map((name) => `captures/${name}`), unix_ms: Date.now() })}\n`);
+  const card = ".check-item[data-check=c904]";
+  for (const [wide, scheme] of [[false, "light"], [false, "dark"], [true, "dark"]]) {
+    await resize(wide ? [1280, 800, 1] : [390, 844, 2]);
+    await inScheme(scheme);
+    await go(`#/p/${plansArg}/checks/c904`);
+    await until(`document.querySelectorAll('${card} .check-strip .check-capture').length === 3`, "the card of c904 does not show three captures");
+    await until(`[...document.querySelectorAll('${card} img')].every((image) => image.complete && image.naturalWidth)`, "a capture of c904 did not load", 60);
+    const strip = await evaluate(`[...document.querySelectorAll('${card} .check-capture')].map((link) => [link.getAttribute('href'), Math.round(link.getBoundingClientRect().width)])`);
+    if (strip.map(([href]) => href.split("/").slice(-2).join("/")).join() !== "capture/0,capture/1,capture/2" || strip.some(([, width]) => width < 40)) await fail(`the strip of c904 reads ${JSON.stringify(strip)} at ${size[0]} px`);
+    await shot(`to-check-three-${scheme}`, ".composer-send");
+  }
+  await click(`${card} .check-capture:nth-child(2)`);
+  await until("!!document.querySelector('dialog.viewer[open] .viewer-stage img:not([data-loading])')", "the second capture did not open in the viewer");
+  await key("ArrowRight", 39);
+  await until("/capture\\/2$/.test(document.querySelector('dialog.viewer[open] .viewer-stage img')?.getAttribute('src') ?? '')", "the viewer did not go to the third capture");
+  await key("Escape", 27);
+  await until("!document.querySelector('dialog.viewer')", "Escape did not close the viewer of c904");
+  for (const [n, name] of three.entries()) {
+    const copy = await evaluate(`fetch('api/tasks/${plansArg}/checks/c904/capture/${n}?download=1').then((r) => r.headers.get('content-disposition'))`);
+    if (!/task-1-c904(-\d)?\.png/.test(copy ?? "")) await fail(`the saved copy of ${name} is named ${copy}`);
+  }
   // ^ The fixtures go: the checks list as it was and the task's capture folder.
   if (checksBefore) fs.writeFileSync(checksFile, checksBefore); else fs.rmSync(checksFile);
   fs.rmSync(kept, { recursive: true });

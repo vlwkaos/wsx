@@ -738,6 +738,24 @@ fn item_lines(chat: &ManagerChat, width: usize) -> (Vec<Line<'static>>, Option<u
                     )
                     .patch_style(style),
                 );
+                // ^ The kept captures by file name; `wsx task check` prints their paths.
+                if !item.captures.is_empty() {
+                    let names: Vec<&str> = item
+                        .captures
+                        .iter()
+                        .map(|name| name.rsplit('/').next().unwrap_or(name))
+                        .collect();
+                    lines.push(
+                        Line::styled(
+                            truncate_to_width(
+                                &format!("{:12}captures: {}", "", names.join(" ")),
+                                width,
+                            ),
+                            Style::default().fg(theme::TEXT_MUTED),
+                        )
+                        .patch_style(style),
+                    );
+                }
             }
             Item::Approval { id, label } => lines.push(
                 Line::from(vec![
@@ -782,7 +800,7 @@ fn item_lines(chat: &ManagerChat, width: usize) -> (Vec<Line<'static>>, Option<u
     // ^ The selected item's rows are lit across the width, as a selected task row is.
     if let Some(start) = selected {
         let rows = match chat.items.get(chat.selected) {
-            Some(Item::Check(_)) => 2,
+            Some(Item::Check(item)) => 2 + usize::from(!item.captures.is_empty()),
             _ => 1,
         };
         for line in &mut lines[start..start + rows] {

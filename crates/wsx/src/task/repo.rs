@@ -1256,6 +1256,15 @@ impl Repo {
                 if record.state == TaskState::Ready && record.simplify_missing() {
                     summary.push_str(&format!("; {}", wsx_core::task::SIMPLIFY_MISSING));
                 }
+                // ^ An item that names an image file it has no capture of: the owner never sees it.
+                if record.state == TaskState::Ready {
+                    let result: wsx_core::task::WorkerResult =
+                        serde_json::from_value(result["result"].clone()).unwrap_or_default();
+                    let unattached = result.unattached_images();
+                    if !unattached.is_empty() {
+                        summary.push_str(&format!("; {unattached}"));
+                    }
+                }
                 // ^ The worker's memo reaches the manager when its task leaves, never later:
                 // the ledger lists only the last few. ref: docs/tasks.md "Memo"
                 if !record.state.is_open() {

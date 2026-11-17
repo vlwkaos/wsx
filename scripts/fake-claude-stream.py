@@ -15,6 +15,8 @@ Each user message is a small script of words:
   NORESULT <n> end this turn and the next n-1 without a result, each after a 0-token result as
                Claude's own turn for a background-task notification ends
   CAPTURE      (with HV) the item has a page path and a small PNG capture
+  CAPTURES3    (with HV) another item with three PNG captures
+  NAMEDHV      another item that names an image file in its words with no capture
   CMDHV        return a Human Verify item that names a command
   BAREHV       return a Human Verify item about a page without a capture
   WAIT <file>  keep working until <file> exists, at most 10 minutes
@@ -775,7 +777,7 @@ def main():
         if 'HV' in words:
             shown = 'CAPTURE' in words or 'VIDEO' in words
             verify.append({'check': 'open the file', 'where': '/#/x' if shown else 'a real device',
-                           'capture': 'clip.mp4' if 'VIDEO' in words else 'shot.png' if 'CAPTURE' in words else '',
+                           'captures': ['clip.mp4'] if 'VIDEO' in words else ['shot.png'] if 'CAPTURE' in words else [],
                            'poster': 'poster.png' if 'VIDEO' in words else '', 'pass_if': 'it has text'})
             if 'CAPTURE' in words:
                 # ^ Labeled by the first worked file's stem, so two captures differ: "CAPTURE D".
@@ -792,15 +794,24 @@ def main():
             with open('huge.mp4', 'wb') as out:
                 out.write(b'\0\0\0\x20ftypisom')
                 out.truncate(26 * 1024 * 1024)
-            verify.append({'check': 'the long video plays', 'where': '/#/x', 'capture': 'huge.mp4', 'poster': '', 'pass_if': 'it plays'})
+            verify.append({'check': 'the long video plays', 'where': '/#/x', 'captures': ['huge.mp4'], 'poster': '', 'pass_if': 'it plays'})
         if 'NOTVIDEO' in words:
             with open('notes.mp4', 'w') as out:
                 out.write('not a video\n')
-            verify.append({'check': 'the text video plays', 'where': '/#/x', 'capture': 'notes.mp4', 'poster': '', 'pass_if': 'it plays'})
+            verify.append({'check': 'the text video plays', 'where': '/#/x', 'captures': ['notes.mp4'], 'poster': '', 'pass_if': 'it plays'})
+        # ^ CAPTURES3 is one item with three images; NAMEDHV names an image in its words with no
+        # capture: wsx reports it in the log and in the ready event.
+        if 'CAPTURES3' in words:
+            for n in (1, 2, 3):
+                with open('shot%d.png' % n, 'wb') as out:
+                    out.write(capture_png('CAPTURE %d' % n))
+            verify.append({'check': 'the three sizes', 'where': '/#/x', 'captures': ['shot1.png', 'shot2.png', 'shot3.png'], 'poster': '', 'pass_if': 'all three read well'})
+        if 'NAMEDHV' in words:
+            verify.append({'check': 'the dark home', 'where': 'a real device', 'captures': [], 'poster': '', 'pass_if': 'it looks like tasks-390x844-home-dark.png'})
         if 'CMDHV' in words:
-            verify.append({'check': 'run `wsx task list`', 'where': '', 'capture': '', 'pass_if': 'it lists the task'})
+            verify.append({'check': 'run `wsx task list`', 'where': '', 'captures': [], 'pass_if': 'it lists the task'})
         if 'BAREHV' in words:
-            verify.append({'check': 'the page reads well', 'where': '/#/x', 'capture': '', 'pass_if': 'it reads well'})
+            verify.append({'check': 'the page reads well', 'where': '/#/x', 'captures': [], 'pass_if': 'it reads well'})
         if 'BACKGROUND' in words:
             # ^ BACKGROUND <s>: the turn ends while a job runs, which ends after s seconds and
             # gets Claude's own turn with the result. BACKGROUND never: it never ends.

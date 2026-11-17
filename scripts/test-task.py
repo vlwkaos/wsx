@@ -2162,8 +2162,8 @@ def part_core(created=None):
     sent = [t['message'] for t in traces() if 'yours to prove' in str(t.get('message'))]
     assert len(sent) == 1 and 'wsx task list' in sent[0] and 'the page reads well' in sent[0], sent
     kept = [i for i in js('task', 'check')['open'] if i['task'] in (shot, command)]
-    assert [(i['task'], i['where'], i['capture']) for i in kept] == [(shot, '/#/x', 'captures/r1-1.png')], kept
-    stored = Path(show(shot)['report']).parent / 'captures' / 'r1-1.png'
+    assert [(i['task'], i['where'], i['captures']) for i in kept] == [(shot, '/#/x', ['captures/r1-1-1.png'])], kept
+    stored = Path(show(shot)['report']).parent / 'captures' / 'r1-1-1.png'
     assert stored.read_bytes().startswith(b'\x89PNG'), stored
     assert stored.parent.stat().st_mode & 0o777 == 0o700, oct(stored.parent.stat().st_mode)
     js('task', 'check', 'pass', kept[0]['id'])
@@ -2175,14 +2175,31 @@ def part_core(created=None):
     wait_closed(video)
     folder = Path(show(video)['report']).parent
     clip = (ROOT / 'scripts/fixtures/check-clip.mp4').read_bytes()
-    assert (folder / 'captures/r1-1.mp4').read_bytes() == clip, folder
+    assert (folder / 'captures/r1-1-1.mp4').read_bytes() == clip, folder
     assert (folder / 'captures/r1-1.poster.png').read_bytes().startswith(b'\x89PNG'), folder
-    assert sorted(p.name for p in (folder / 'captures').iterdir()) == ['r1-1.mp4', 'r1-1.poster.png'], folder
+    assert sorted(p.name for p in (folder / 'captures').iterdir()) == ['r1-1-1.mp4', 'r1-1.poster.png'], folder
     rows = [json.loads(line) for line in (folder.parent / 'checks.jsonl').read_text().splitlines()]
-    rows = [{k: row.get(k) for k in ('check', 'capture', 'poster')} for row in rows if row['task'] == video]
-    assert rows == [{'check': 'open the file', 'capture': 'captures/r1-1.mp4', 'poster': 'captures/r1-1.poster.png'},
-                    {'check': 'the long video plays', 'capture': None, 'poster': None},
-                    {'check': 'the text video plays', 'capture': None, 'poster': None}], rows
+    rows = [{k: row.get(k) for k in ('check', 'captures', 'poster')} for row in rows if row['task'] == video]
+    assert rows == [{'check': 'open the file', 'captures': ['captures/r1-1-1.mp4'], 'poster': 'captures/r1-1.poster.png'},
+                    {'check': 'the long video plays', 'captures': None, 'poster': None},
+                    {'check': 'the text video plays', 'captures': None, 'poster': None}], rows
+    # Several captures: one item keeps three files as r<k>-<n>-<m>.png and lists three in
+    # `wsx task check --json`. An item whose words name an image file it has no capture of is
+    # reported in the log and in the ready event (docs/tasks.md "To check").
+    multi = js('task', 'new', 'WORK m.txt CAPTURES3 NAMEDHV')['id']
+    assert wait_state(multi, 'ready', 'failed')['state'] == 'ready', show(multi)
+    said = "a To check item names tasks-390x844-home-dark.png but has no capture of it"
+    assert any(said in str(e) for e in log(multi)), log(multi)
+    ready = wait(lambda: [line for e in events_with('#%d ready r1' % multi) for line in e['text'].split('\n')
+                          if line.startswith('#%d ready r1' % multi)], 'the ready event of #%d' % multi, 30)[0]
+    assert said in ready, ready
+    assert land(multi)['state'] == 'landed', show(multi)
+    wait_closed(multi)
+    three = [i for i in js('task', 'check')['open'] if i['task'] == multi and i['check'] == 'the three sizes']
+    folder = Path(show(multi)['report']).parent
+    assert [i['captures'] for i in three] == [['captures/r1-1-%d.png' % n for n in (1, 2, 3)]], three
+    assert sorted(p.name for p in (folder / 'captures').iterdir()) == ['r1-1-%d.png' % n for n in (1, 2, 3)], folder
+    js('task', 'check', 'skip', *[i['id'] for i in js('task', 'check')['open'] if i['task'] == multi])
     # ^ A third item with a capture for the capture sweep (part 20).
     recent = js('task', 'new', 'WORK r.txt HV CAPTURE')['id']
     assert reviewed(recent)['state'] == 'landed', show(recent)
@@ -2453,7 +2470,7 @@ def part_core(created=None):
     current = {}
     for line in checks_file.read_text().splitlines():
         current[json.loads(line)['id']] = json.loads(line)
-    video_item, recent_item, shot_item = (next(r for r in current.values() if r['task'] == n and r.get('capture')) for n in (video, recent, shot))
+    video_item, recent_item, shot_item = (next(r for r in current.values() if r['task'] == n and r.get('captures')) for n in (video, recent, shot))
     assert shot_item['state'] == 'passed' and video_item['state'] == 'skipped', (shot_item, video_item)
     day_ms = 24 * 3600 * 1000
     eight_days_ago = int(time.time() * 1000) - 8 * day_ms
@@ -2466,7 +2483,7 @@ def part_core(created=None):
     append_rows(dict(video_item, unix_ms=eight_days_ago), dict(recent_item, state='open', unix_ms=eight_days_ago),
                 dict(shot_item, unix_ms=eight_days_ago - day_ms))
     captures_of = {n: Path(show(n)['report']).parent / 'captures' for n in (video, recent, shot)}
-    assert sorted(p.name for p in captures_of[video].iterdir()) == ['r1-1.mp4', 'r1-1.poster.png']
+    assert sorted(p.name for p in captures_of[video].iterdir()) == ['r1-1-1.mp4', 'r1-1.poster.png']
     # Stop the manager host, finish a task while it is down, start it again.
     manager_socket = js('task', 'manager')['socket']
     assert len(manager_socket) < 104, manager_socket
@@ -2480,10 +2497,10 @@ def part_core(created=None):
     append_rows(dict(recent_item, unix_ms=int(time.time() * 1000)))
     late = wait(lambda: events_with('#%d ready r1' % unseen), 'event after restart')
     # ^ The restart swept (the default budget is 1 GiB): nothing decided 8 or 9 days ago went.
-    assert sorted(p.name for p in captures_of[video].iterdir()) == ['r1-1.mp4', 'r1-1.poster.png']
-    assert [p.name for p in captures_of[recent].iterdir()] == ['r1-1.png'] and [p.name for p in captures_of[shot].iterdir()] == ['r1-1.png']
+    assert sorted(p.name for p in captures_of[video].iterdir()) == ['r1-1-1.mp4', 'r1-1.poster.png']
+    assert [p.name for p in captures_of[recent].iterdir()] == ['r1-1-1.png'] and [p.name for p in captures_of[shot].iterdir()] == ['r1-1-1.png']
     after_sweep = [json.loads(line) for line in checks_file.read_text().splitlines()]
-    assert [r for r in after_sweep if r['id'] == video_item['id']][-1]['capture'] == 'captures/r1-1.mp4', after_sweep
+    assert [r for r in after_sweep if r['id'] == video_item['id']][-1]['captures'] == ['captures/r1-1-1.mp4'], after_sweep
     late_reply = reply_to(late[0]['id'])
     assert 'noted events' in late_reply['text']
     # ^ The resumed process restored the session's spend: the reply still costs only its own turn.
@@ -2493,7 +2510,7 @@ def part_core(created=None):
     # the three take 1.2 MB of the 1 MB budget. The skipped video (8 days old) goes before the
     # passed shot (9 days old, older), which stays with the open item's capture, as the files
     # left fit the budget.
-    for n, name in ((video, 'r1-1.mp4'), (recent, 'r1-1.png'), (shot, 'r1-1.png')):
+    for n, name in ((video, 'r1-1-1.mp4'), (recent, 'r1-1-1.png'), (shot, 'r1-1-1.png')):
         with open(captures_of[n] / name, 'ab') as pad:
             pad.write(b'\0' * (400 * 1024))
     plain_config = (project / 'wsx.config.yml').read_text()
@@ -2505,8 +2522,8 @@ def part_core(created=None):
          subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
     reply_to(js('task', 'say', 'STATUS budget')['id'])
     wait(lambda: not any(captures_of[video].iterdir()), 'the skipped video capture removed over the budget', 30)
-    assert [p.name for p in captures_of[recent].iterdir()] == ['r1-1.png'] and [p.name for p in captures_of[shot].iterdir()] == ['r1-1.png']
-    assert (captures_of[recent] / 'r1-1.png').stat().st_size > 400 * 1024
+    assert [p.name for p in captures_of[recent].iterdir()] == ['r1-1-1.png'] and [p.name for p in captures_of[shot].iterdir()] == ['r1-1-1.png']
+    assert (captures_of[recent] / 'r1-1-1.png').stat().st_size > 400 * 1024
     configure(plain_config, 'capture budget done')
     # The same instructions resume the conversation; other ones start a new conversation that
     # opens with the last exchanges (Claude keeps a conversation's first system prompt). A
@@ -6696,8 +6713,8 @@ def part_host(created=None):
     assert sorted(i['task'] for i in items) == sorted([parent, first, second]), items
     shot = next(i for i in items if i['task'] == first)
     # ^ Kept at the child's land: its working copy is gone by now.
-    assert shot['capture'] == 'captures/r1-1.png', shot
-    assert (Path(show(first)['log']).parent / 'captures/r1-1.png').read_bytes().startswith(b'\x89PNG')
+    assert shot['captures'] == ['captures/r1-1-1.png'], shot
+    assert (Path(show(first)['log']).parent / 'captures/r1-1-1.png').read_bytes().startswith(b'\x89PNG')
     wait_closed(parent)
     js('task', 'check', 'skip', *[i['id'] for i in items])
     configure(LAND_CONFIG, 'no parent gate')
