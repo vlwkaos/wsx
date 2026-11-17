@@ -35,6 +35,7 @@ if (!mobileSource) await fail(`no mobile audit at ${mobilePath}; set WSX_MOBILE_
 const linter = designLint({ evaluate, captures, file: "tasks" });
 // ^ Well under the server's 240 a minute per device: before #482 the busiest minute of this journey was 277.
 const REQUESTS_PER_MINUTE = 150;
+const READ_GAP = 1500;
 const LINTED = new Set(["new-chat", "new-chat-refused", "chats-home-approval", "chats-home", "chats-home-wide", "home-long-name", "chat-room", "chat-room-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "tasks-check-queue-dark", "tasks-check-queue-light", "home", "home-chats-dark", "home-chats-light", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
 let size = [390, 844, 2];
 const phone = () => size[0] < 600;
@@ -244,11 +245,14 @@ async function viewImages(name, links, many = 2, saves = false) {
   const place = "JSON.stringify([location.pathname, location.search, location.hash, [...document.querySelectorAll('.scroll, .log')].map((node) => Math.round(node.scrollTop))])";
   // ^ The set's images are in and the log has followed them to its end before the page's place is read.
   await evaluate(`Promise.all([...document.querySelectorAll(${JSON.stringify(links)})].map((link) => link.querySelector('img').decode().catch(() => {})))`);
-  // ^ Other rows still settle (images outside the set, a late row): the log follows its end until its place holds for a moment.
-  for (let tries = 0; tries < 20; tries++) {
-    const was = await evaluate(place);
+  // ^ Other rows still settle (images outside the set, a late row): the log follows its end until its place holds
+  // longer than a read can wait behind the one before it (`READ_GAP_MS`, crates/wsx-web/web/lib.js).
+  let was = await evaluate(place), held = 0;
+  for (let tries = 0; tries < 60 && held <= READ_GAP; tries++) {
     await pause(250);
-    if (was === await evaluate(place)) break;
+    const now = await evaluate(place);
+    held = now === was ? held + 250 : 0;
+    was = now;
   }
   const sources = await evaluate(`[...document.querySelectorAll(${JSON.stringify(links)})].map((link) => link.href)`);
   if (sources.length !== many) await fail(`${what}: the set has ${sources.length} image links, not ${many}`);
