@@ -1349,8 +1349,8 @@ await shot("asks-you", ".composer-send");
 // is not quiet and asks nothing. The chat keeps its tag and the Home row, from the real overview,
 // shows the same on that row only (docs/web-client-tasks.md "Home").
 await evaluate(`fetch('api/tasks/${plansArg}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ text: 'RUN wsx task say -p ui --from-chat "How is ui now?" --json' }))} })`);
-// ^ The question and ui's report are `Talked to` rows of the chat (the question first, then its words).
-await until(`fetch('api/tasks/${plansArg}/chat').then((r) => r.json()).then((data) => { const said = data.rows.filter((row) => row.kind === 'talk').flatMap((row) => row.said); const asked = said.findIndex((one) => one.text.includes('How is ui now?')); return asked >= 0 && asked < said.length - 1 && !document.querySelector('.log .typing'); })`, "no report after the question", 300);
+// ^ In ui's chat the question is a `Talked to` row; ui's report on it is a muted line after it, not a bubble.
+await until(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((data) => { const asked = data.rows.findIndex((row) => row.kind === 'talk' && row.said.some((one) => one.text.includes('How is ui now?'))); return asked >= 0 && data.rows.slice(asked + 1).some((row) => (row.kind === 'quiet' || row.kind === 'message') && row.author !== 'owner') && !document.querySelector('.log .typing'); })`, "no report after the question", 300);
 if ((await evaluate(`${askTags}.length`)) !== 1) await fail("a later report dropped the chat's Asks you");
 if ((await overviewAsks())?.length !== 1) await fail("a later report dropped the overview's asks");
 const askingChat = await evaluate("location.hash");
