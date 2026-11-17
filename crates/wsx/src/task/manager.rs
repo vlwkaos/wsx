@@ -658,7 +658,7 @@ impl Manager {
         }
         // ^ The owner's Reply sends `> message <id>`, as a manager's reply does.
         let (text, quote) = match from {
-            Author::Owner => self.quoted(text, &[]),
+            Author::Owner => self.quoted(text, &[], true),
             _ => (text, None),
         };
         if text.trim().is_empty() {
@@ -1395,7 +1395,7 @@ impl Manager {
                 let id = self.next_id();
                 self.say(&format!("{name} stood in: reply {id}"));
                 let answered = to.iter().copied().max().unwrap_or(0);
-                let (text, quote) = self.quoted(result.text, &to);
+                let (text, quote) = self.quoted(result.text, &to, false);
                 self.log(ManagerEvent::Reply {
                     id,
                     to,
@@ -1968,7 +1968,7 @@ impl Manager {
             result.text.lines().next().unwrap_or_default()
         ));
         let in_thinking = result.answered_in_thinking();
-        let (text, quote) = self.quoted(result.text, &to);
+        let (text, quote) = self.quoted(result.text, &to, false);
         let asks = asks_owner(&text);
         let quiet = self.turn_events && !asks && quiet_reply(&text);
         if !quiet && !says_nothing(&text) {
@@ -2041,10 +2041,10 @@ impl Manager {
     }
 
     /// A reply that opens with `> message <id>` quotes that message, when it is the owner's or
-    /// another chat's (`resolve_quote`). One that opens with no quote and says something quotes the
+    /// another chat's (`resolve_quote`; the owner's Reply may name a manager's reply too). One that opens with no quote and says something quotes the
     /// owner message it answers when it will not sit under it (`chat::quoted_message`); an owner's
     /// own message (`to` empty) only its explicit quote. ref: docs/tasks.md "A quote"
-    fn quoted(&self, text: String, to: &[u64]) -> (String, Option<u64>) {
+    fn quoted(&self, text: String, to: &[u64], by_owner: bool) -> (String, Option<u64>) {
         let explicit = text.trim_start().starts_with(QUOTE_REF);
         if !explicit && (to.is_empty() || says_nothing(&text)) {
             return (text, None);
@@ -2072,7 +2072,7 @@ impl Manager {
                 None => return (text, None),
             },
         };
-        let (text, quote, note) = resolve_quote(&text, &log);
+        let (text, quote, note) = resolve_quote(&text, &log, by_owner);
         if let Some(note) = note.filter(|_| explicit) {
             self.say(&note);
         }

@@ -442,13 +442,18 @@ pub fn quote_of(text: &str) -> String {
     super::view::clip(line, QUOTE_CHARS)
 }
 
-/// A manager's reply that opens with `> message <id>` quotes
-/// that message in the owner's format (`> <its first line>` and an empty line) and keeps the id,
-/// so the chat needs no second format and a tap finds the message at any age. A quote means "this
-/// answers that message", so only the owner's or another chat's message can be quoted: one of the
-/// manager's own replies or an events message drops the line like a bad or unknown id. The
-/// message still stands, and the note says why. Returns the text, the quoted id and the note.
-pub fn resolve_quote(text: &str, log: &[ManagerEntry]) -> (String, Option<u64>, Option<String>) {
+/// A message that opens with `> message <id>` quotes that message in the owner's format
+/// (`> <its first line>` and an empty line) and keeps the id, so the chat needs no second format
+/// and a tap finds the message at any age. A manager's quote means "this answers that message",
+/// so it names only the owner's or another chat's message (`by_owner` false): its own replies and
+/// events drop the line like a bad or unknown id. The owner's Reply (`by_owner`) may also name a
+/// reply that says something. The message still stands, and the note says why. Returns the text,
+/// the quoted id and the note.
+pub fn resolve_quote(
+    text: &str,
+    log: &[ManagerEntry],
+    by_owner: bool,
+) -> (String, Option<u64>, Option<String>) {
     let text = text.trim_start();
     let Some(line) = text.strip_prefix(QUOTE_REF) else {
         return (text.to_string(), None, None);
@@ -464,6 +469,12 @@ pub fn resolve_quote(text: &str, log: &[ManagerEntry]) -> (String, Option<u64>, 
                 text,
                 ..
             } if *found == id => Some(text),
+            ManagerEvent::Reply {
+                id: found,
+                text,
+                quiet: false,
+                ..
+            } if by_owner && *found == id && !says_nothing(text) => Some(text),
             _ => None,
         })
     });
