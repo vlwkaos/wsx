@@ -128,7 +128,7 @@ const story = () => evaluate(`({ summary: document.querySelector('.story-summary
 const statusLines = "(document.querySelectorAll('.log .fold-toggle[aria-expanded=\"false\"]').forEach((node) => node.click()), [...document.querySelectorAll('.status-line')])";
 // The chat route's rows of a project (wsx-core `chat_rows`): what the page renders.
 const chatRows = (of = project) => evaluate(`fetch('api/tasks/${of}/chat').then((r) => r.json()).then((data) => data.rows)`);
-// A muted line that names task n as `word` ("#7 done").
+// A muted line that names task n as `word` ("#7 landed").
 const statusSays = (n, word) => `${statusLines}.some((node) => node.textContent.includes('#${n} ${word}'))`;
 // The sheet's action buttons, under its top.
 const nextButtons = () => text(".task-sheet .task-next button");
@@ -920,8 +920,8 @@ await evaluate("document.querySelector('.log').scrollTop = 0");
 await until("!!document.querySelector('.jump')", "no jump button after scrolling the manager chat up");
 await click(".jump");
 await until(`!document.querySelector('.jump') && ${atEnd}`, "Jump to latest did not go to the end of the manager chat");
-// A landed task is the muted line "#7 done".
-await until(`${statusSays(7, "done")} && ${statusSays(8, "done")}`, "the landed tasks have no muted line");
+// A landed task is the muted line "#7 landed" (the state chip after the task link).
+await until(`${statusSays(7, "landed")} && ${statusSays(8, "landed")}`, "the landed tasks have no muted line");
 // ^ One line per task change: #5's close is the events line "#5 closed", never also its
 // resolution "#5 was closed and discarded".
 await until(statusSays(5, "closed"), "#5's close left no muted line");
@@ -1392,7 +1392,7 @@ if (await evaluate("[...document.querySelectorAll('.notice')].some((node) => /Ap
 await until(`!${rowOf("Approve land #3")} && !${rowOf("#3")}`, "the reservoir kept the approved landing", 300);
 // ^ The approval and the landing are muted lines.
 await until(`${statusLines}.some((node) => /Approved land #3/.test(node.textContent))`, "the approval left no muted line", 300);
-await until(statusSays(3, "done"), "the landing of #3 left no muted line", 300);
+await until(statusSays(3, "landed"), "the landing of #3 left no muted line", 300);
 // ^ The rows carry the short form the host wrote with each event, and its task: the page reads no event text.
 {
   const lines = (await chatRows()).filter((row) => row.kind === "line");
@@ -1795,7 +1795,7 @@ await closeSheet("the usage sheet", chat);
 // has short chips (the same task twice as two plain chips) and a table that scrolls inside it.
 // ^ #1's landing (Land above) ends when its checks pass. Its event must reach the chat before the
 // two sends, else it goes between them and they do not group.
-await until(`${statusSays(1, "done")} && !document.querySelector('.log .typing')`, "the landing of #1 left no muted line", 300);
+await until(`${statusSays(1, "landed")} && !document.querySelector('.log .typing')`, "the landing of #1 left no muted line", 300);
 await comeBack();
 await typeInto(".composer-field", "SLOW TABLE");
 await click(".composer-send");

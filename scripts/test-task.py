@@ -97,7 +97,7 @@ DEPLOY_CONFIG = LAND_CONFIG + '''  deploy:
 '''
 
 
-def bare(shorts):
+def unmarked(shorts):
     # ^ An event's lines without the marks a state change adds (`state`, `checks`): the words and the task.
     return [{k: v for k, v in x.items() if k not in ('state', 'checks')} for x in shorts]
 
