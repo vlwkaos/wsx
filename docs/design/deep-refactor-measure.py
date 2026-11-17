@@ -12,7 +12,7 @@ A call is a Bash tool_use whose command runs `wsx|$WSX|<path>/wsx [flags] task|m
 only real subcommand names count, so prose such as `wsx task and` in a commit message drops out.
 Workers that build wsx call `wsx memory` in tests: their counts are use by development, not use.
 """
-import collections, glob, json, os, re, sys, time
+import calendar, collections, glob, json, os, re, sys, time
 
 PJ = os.path.expanduser("~/.claude/projects")
 TASKS = os.path.expanduser("~/.local/state/wsx/tasks")
@@ -39,7 +39,7 @@ def role(path):
 
 def stamp(line):
     try:
-        return time.mktime(time.strptime(line["timestamp"][:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
+        return calendar.timegm(time.strptime(line["timestamp"][:19], "%Y-%m-%dT%H:%M:%S"))
     except (KeyError, TypeError, ValueError):
         return 0
 
