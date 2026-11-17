@@ -244,6 +244,7 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
   process.once("unhandledRejection", end("unhandled rejection"));
   const fail = async (message) => {
     console.error(`FAIL: ${message}`);
+    console.error(`REQUESTS ${JSON.stringify(requestRates({ requests }))}`); // TEMP (#482)
     await cleanup();
     process.exit(1);
   };
