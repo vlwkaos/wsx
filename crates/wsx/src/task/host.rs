@@ -1373,9 +1373,15 @@ impl Host {
         if self.turn.is_some() || self.record.state == TaskState::Checking {
             self.pending.push_back(text);
             "queued until the current turn ends".into()
-        } else if self.record.waits_on(WaitOn::CheckRun) {
-            // ^ The held result waits for its check-run: a turn now could only say the answer
-            // has not come. The add joins the turn the answer starts. ref: docs/tasks.md "Status"
+        } else if self.record.waits_on(WaitOn::CheckRun)
+            && self
+                .last_result
+                .as_ref()
+                .is_some_and(|r| r.status == "paused")
+        {
+            // ^ A paused result waits only for its check-run: a turn now could only say the
+            // answer has not come. The add joins the turn the answer starts. A done result's
+            // add may work on, also on a newer commit (32t4). ref: docs/tasks.md "Status"
             self.pending.push_back(text);
             "queued until the check-run answers".into()
         } else if unstarted {
