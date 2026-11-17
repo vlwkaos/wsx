@@ -4729,8 +4729,10 @@ await closeSheet("the page", plansChat);
   for (const [wide, scheme] of [[false, "light"], [false, "dark"], [true, "dark"]]) {
     await resize(wide ? [1280, 800, 1] : [390, 844, 2]);
     await inScheme(scheme);
+    await go(plansChat);
+    await until("!document.querySelector('dialog.task-sheet[open]')", "a sheet stayed open over the chat before the card of c904");
     await go(`#/p/${plansArg}/checks/c904`);
-    await until(`document.querySelectorAll('${card} .check-strip .check-capture').length === 3`, "the card of c904 does not show three captures");
+    await until(`document.querySelectorAll('${card} .check-strip .check-capture').length === 3`, async () => `the card of c904 does not show three captures at ${await evaluate("location.hash")}: dialogs ${await evaluate("document.querySelectorAll('dialog[open]').length")}, the list reads ${await evaluate(`fetch('api/tasks/${plansArg}/checks').then((r) => r.text()).then((t) => t.slice(0, 400))`)}`);
     await until(`[...document.querySelectorAll('${card} img')].every((image) => image.complete && image.naturalWidth)`, "a capture of c904 did not load", 60);
     const strip = await evaluate(`[...document.querySelectorAll('${card} .check-capture')].map((link) => [link.getAttribute('href'), Math.round(link.getBoundingClientRect().width)])`);
     if (strip.map(([href]) => href.split("/").slice(-2).join("/")).join() !== "capture/0,capture/1,capture/2" || strip.some(([, width]) => width < 40)) await fail(`the strip of c904 reads ${JSON.stringify(strip)} at ${size[0]} px`);
