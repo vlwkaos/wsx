@@ -19,6 +19,7 @@ export const resolve = (path) => new URL(path, document.baseURI).href;
 // `timeout`: a request on a connection that went silent (a phone back from sleep) would
 // wait for minutes, and a chat waits for its read; a read gives up after READ_MS.
 const READ_MS = 20_000;
+const RATE_TRIES = 2;
 export async function api(path, { method = "GET", json, body, query, timeout = method === "GET" ? READ_MS : 0 } = {}) {
   const url = new URL(path, document.baseURI);
   for (const [key, value] of Object.entries(query ?? {})) url.searchParams.set(key, value);
@@ -32,8 +33,14 @@ export async function api(path, { method = "GET", json, body, query, timeout = m
   if (timeout) init.signal = AbortSignal.timeout(timeout);
   let response, text;
   try {
-    response = await fetch(url, init);
-    text = await response.text();
+    // ^ A read the server refused for its budget (429) waits the `Retry-After` hint and asks again,
+    // twice at most (docs/web-client.md "Event stream"); a write or a third refusal fails.
+    for (let tries = 0; ; tries += 1) {
+      response = await fetch(url, init);
+      text = await response.text();
+      if (response.status !== 429 || method !== "GET" || tries === RATE_TRIES) break;
+      await new Promise((resolve) => setTimeout(resolve, (Number(response.headers.get("retry-after")) || 1) * 1000));
+    }
   } catch (error) {
     if (error?.name === "TimeoutError") throw new ApiError(0, "timeout", "The server did not answer in time. Try again.");
     throw new ApiError(0, "offline", "Cannot reach the server. Check the connection.");

@@ -1738,8 +1738,9 @@ fn watch_overview(app: &Arc<App>, scope: &Scope, watch: &mut Watch) {
     let mut open = attention(scope.project, &overview);
     // ^ What the open chats own needs the owner too: the push and the badge count it (a chat's
     // To check items fold into the project's one line).
+    // ^ The home chat is the project's own overview above: its row is not counted again.
     for chat in overview["chats"].as_array().into_iter().flatten() {
-        let Some(name) = chat["name"].as_str() else {
+        let Some(name) = chat["name"].as_str().filter(|_| chat["home"] != true) else {
             continue;
         };
         let own = overview_of(app, scope, Some(name));

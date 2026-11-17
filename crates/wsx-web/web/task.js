@@ -2,7 +2,7 @@
 // and the one action when it needs the owner, the To check items to act on, then three folds at one
 // level: the report, the messages to the worker and the history (docs/web-client-tasks.md "Task sheet").
 import { api } from "./api.js";
-import { clock, html, Icon, Loading, plural, short, useCoalescedLoad, useEffect, useState } from "./lib.js";
+import { clock, html, Icon, Loading, plural, short, READ_GAP_MS, useCoalescedLoad, useEffect, useState } from "./lib.js";
 import { can, useEventLoad, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { act } from "./task-api.js";
@@ -137,7 +137,7 @@ export function TaskPage({ project, task, onClose, onMention, onReply, grip }) {
     keepDetail(`${project}/${task}`, next);
     setDetail(next);
     setFailure("");
-  }, (error) => setFailure(error.status === 404 ? "This task is not in this site's projects." : error.message), [project, task]);
+  }, (error) => setFailure(error.status === 404 ? "This task is not in this site's projects." : error.message), [project, task], READ_GAP_MS);
   // ^ A silent task raises no `task` event: the manager's event on a stall reads it again.
   useEventLoad(["task", "manager"], load, (detail) => detail.project == null || (detail.project === project && (detail.task == null || detail.task === task)), [project, task]);
   // An approval or a decision changes the overview, not this task's files.

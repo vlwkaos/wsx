@@ -167,11 +167,18 @@ pub fn router(app: Shared) -> Router {
 impl IntoResponse for Fault {
     fn into_response(self) -> Response {
         let status = StatusCode::from_u16(self.0).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        (
+        let mut response = (
             status,
             Json(json!({ "error": { "code": self.1, "message": self.2 } })),
         )
-            .into_response()
+            .into_response();
+        // ^ One token of the budget comes back in 0.25 s (`Paired`): the page waits the hint, then asks again.
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, header::HeaderValue::from_static("1"));
+        }
+        response
     }
 }
 

@@ -1,6 +1,6 @@
 // Notices, the confirmation dialog, and the device's light or dark choice.
 import { api } from "./api.js";
-import { html, Icon, keep, kept, Loading, useCoalescedLoad, useEffect, useExit, useRef, useState } from "./lib.js";
+import { html, Icon, keep, kept, Loading, READ_GAP_MS, useCoalescedLoad, useEffect, useExit, useRef, useState } from "./lib.js";
 import { backTarget, can, goBack, parseRoute, reloadForBuild, state, update, useEventLoad, useStore } from "./store.js";
 
 // A theme with a dark scheme is dark unless this device chose light (docs/web-themes.md).
@@ -192,7 +192,7 @@ export function useSheetRead(path, { on = [], wanted = () => true, again = [] } 
     if (!current()) return;
     setValue(next);
     setFailure("");
-  }, (error) => setFailure(error.message), [path]);
+  }, (error) => setFailure(error.message), [path], READ_GAP_MS);
   useEventLoad(on, read, wanted, [path, ...again]);
   return [value, failure, read];
 }
