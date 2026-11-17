@@ -19,7 +19,6 @@ import math
 import random
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -300,7 +299,6 @@ def run_recall(_):
             print(f'  {label:25} recall {len(hit)}/{len(spec["truth"])} = {len(hit)/len(spec["truth"]):.2f}  '
                   f'precision {len(hit)}/{len(reach)} = {len(hit)/max(len(reach),1):.2f}  block {len(reach)} items ~{size} tokens'
                   + (f'  lost {[k for k in spec["truth"] if k not in reach]}' if label.startswith('D') else ''))
-        reach = closure(project, mine or [first], cut)
         # where each lost item stops: the rank of its best doc among all transcripts for arm A1
         seed = f"{spec['title']} {turn['text']}"
         ranked = project.transcripts(seed, cut)
