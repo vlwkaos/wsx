@@ -324,7 +324,7 @@ async function inbox() {
     await shot("inbox-remove");
     await evaluate("document.querySelector('.scroll .row-slide').scrollTo({ left: 0 })");
     // A slide a person means is not snapped back (swipe.js, task 499): a short slow drag, a thumb's
-    // arc and a flick open the row, a twitch leaves it closed; an open row closes by a drag back.
+    // arc and a flick open the row, a drag of 20 px leaves it closed (a touch under the slop is a tap, and opens the session); an open row closes by a drag back.
     const settled = (open) => until(`(() => { const row = document.querySelector('.scroll .row-slide'); const room = row.scrollWidth - row.clientWidth;
       return ${open ? "Math.abs(row.scrollLeft - room) < 1" : "row.scrollLeft === 0"} && !row.style.scrollSnapType; })()`, async () => `the row did not settle ${open ? "open" : "closed"}: ${JSON.stringify(await removeBox())}`);
     const aimed = async () => { await until(`!!${aim}`, "the first row is not in view to slide"); const [x, y] = await evaluate(aim); return { x, y }; };
@@ -333,7 +333,7 @@ async function inbox() {
       ["a 30 degree arc", thumbArc(30, -60, 8, 400), true],
       ["a 40 degree arc", thumbArc(40, -60, 8, 400), true],
       ["a flick of 40 px in 120 ms", thumbArc(20, -40, 4, 120), true],
-      ["a twitch of 8 px", thumbArc(0, -8, 3, 150), false],
+      ["a short drag of 20 px", thumbArc(0, -20, 4, 300), false],
     ]) {
       await fingerPath({ send }, await aimed(), path);
       await settled(open);
