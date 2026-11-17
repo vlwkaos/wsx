@@ -2,6 +2,7 @@
 //! of the main checkout's files, so builds start warm.
 //! ref: docs/tasks.md "Working copy"
 
+use super::view::short_commit;
 use crate::git::{git_cmd, run_clearing_stale_lock, worktree::list_worktrees, LockCleared};
 use anyhow::{bail, Context, Result};
 use std::fs;
@@ -600,7 +601,7 @@ fn move_as(
             // ^ `reset --keep` has no guard of its own: a land that moved the branch since
             // `old_tip` was read would be dropped by it.
             if force && resolve_commit(main, &format!("refs/heads/{branch}"))? != old_tip {
-                bail!("{branch} moved since {} was read", short(old_tip));
+                bail!("{branch} moved since {} was read", short_commit(old_tip));
             }
             if !same.is_empty() {
                 let mut add = vec!["add", "--all", "--"];
@@ -807,8 +808,8 @@ impl Synced {
             Self::Current => format!("{branch} has {remote}'s tip already"),
             Self::Moved { from, to } => format!(
                 "{branch} moved from {} to {}, {remote}'s tip; the old tip stays in the reflog",
-                short(from),
-                short(to)
+                short_commit(from),
+                short_commit(to)
             ),
         }
     }
@@ -838,8 +839,8 @@ pub fn sync(main: &Path, branch: &str, target: &str) -> Result<Synced> {
         if !lost.is_empty() {
             bail!(
                 "local {branch} ({}) has work that {} lacks: {}; nothing was moved",
-                short(&from),
-                short(target),
+                short_commit(&from),
+                short_commit(target),
                 lost.join("; ")
             );
         }
@@ -849,10 +850,6 @@ pub fn sync(main: &Path, branch: &str, target: &str) -> Result<Synced> {
         from,
         to: target.to_string(),
     })
-}
-
-fn short(commit: &str) -> &str {
-    commit.get(..12).unwrap_or(commit)
 }
 
 /// The work of `local` that `target` lacks, one line each: its commits that are not patch
