@@ -1633,6 +1633,15 @@ impl Manager {
                 Some(format!("idle over 60 min with {}k context", tokens / 1000)),
             );
         }
+        // ^ No turn runs here: a program updated since the agent started is replaced by one
+        // that resumes the same conversation, through the start below.
+        if self.state.agent_session.is_some() {
+            if let Some(change) = self.agent.as_ref().and_then(Agent::replaced) {
+                self.say(&format!("agent {} {change}", self.current_adapter()));
+                self.generation += 1;
+                self.agent = None;
+            }
+        }
         if self.agent.is_none() {
             let mut launch = self.launch()?;
             let digest = instructions_digest(&launch.instructions);

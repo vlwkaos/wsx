@@ -8801,6 +8801,55 @@ def part_host(created=None):
         js('task', 'chat', 'close', name, '-p', 'demo')
     wait(lambda: not chat_host('twin') and not chat_host('m2n'), 'the chat hosts leave', 60)
     m2_config.write_text(m2_registry)
+
+    # 41. An updated agent program (docs/tasks.md "Agents"): `claude` is a symlink into versions/<version>,
+    # as `claude update` leaves it. A host that finds the file moved starts the agent again between
+    # turns on the same conversation; a steer during a turn never does. Last: `claude` stays a link.
+    mark('41')
+    versions = tmp / 'claude-versions'
+    versions.mkdir()
+    for version in ('2.1.1', '2.1.2', '2.1.3'):
+        (versions / version).write_text('#!/bin/sh\nexport FAKE_CLAUDE_BINARY=' + str(versions / version) + '\n' + trace_env
+                                        + 'exec ' + sys.executable + ' ' + str(fake_script) + ' "$@"\n')
+        (versions / version).chmod(0o755)
+
+    def point(version):
+        (bin_dir / 'claude.next').unlink(missing_ok=True)
+        (bin_dir / 'claude.next').symlink_to(versions / version)
+        os.replace(bin_dir / 'claude.next', fake)
+
+    def started(wanted):
+        return [(t['binary'].rsplit('/', 1)[1], t['resume'], t['session']) for t in traces()
+                if t.get('launch') and t.get('binary') and ('You are the manager' in t['instructions']) == wanted]
+
+    point('2.1.1')
+    updated = js('task', 'new', 'NOOP')['id']
+    results = lambda: [e for e in log(updated) if e['kind'] == 'result']
+    wait(lambda: len(results()) == 1, 'the first turn on 2.1.1')
+    first = started(False)[-1]
+    assert first[:2] == ('2.1.1', False), first
+    point('2.1.2')
+    js('task', 'add', updated, 'SLOW SLOW')
+    wait(lambda: started(False)[-1][0] == '2.1.2', 'the next turn starts the agent on 2.1.2')
+    assert started(False)[-1][1:] == (True, first[2]) and len(started(False)) == 2, started(False)
+    # ^ The file moves in the middle of the turn: the steer reaches the running process.
+    point('2.1.3')
+    steered = js('task', 'steer', updated, 'keep going')
+    assert 'steered' in steered['message'], steered
+    wait(lambda: len(results()) == 2, 'the second turn ends')
+    assert len(started(False)) == 2 and any(t.get('steer_in_turn') == 'keep going' for t in traces()), started(False)
+    js('task', 'add', updated, 'NOOP')
+    wait(lambda: len(results()) == 3, 'the third turn')
+    assert started(False)[2:] == [('2.1.3', True, first[2])] and len(started(False)) == 3, started(False)
+    # ^ The manager's host keeps its agent between messages and starts it on the new file too.
+    point('2.1.1')
+    asked = js('task', 'say', 'STATUS on 2.1.1')
+    reply_to(asked['id'])
+    seen = started(True)
+    point('2.1.2')
+    reply_to(js('task', 'say', 'STATUS on 2.1.2')['id'])
+    assert started(True)[len(seen):] == [('2.1.2', True, seen[-1][2])], (seen, started(True))
+    js('task', 'close', updated, '--discard')
     return created
 
 

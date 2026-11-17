@@ -507,6 +507,7 @@ def main():
     project = instructions.split('wsx project ')[1].split('.')[0] if 'You are the manager' in instructions else None
     session = options.get('--resume') or options.get('--session-id')
     trace({'launch': True, 'pid': os.getpid(), 'session': session, 'resume': '--resume' in options,
+           'binary': os.environ.get('FAKE_CLAUDE_BINARY'),
            'argv': sys.argv[1:], 'instructions': instructions,
            'schema': '--json-schema' in options, 'model': options.get('--model'), 'effort': options.get('--effort'),
            'schema_required': json.loads(options['--json-schema']).get('required') if '--json-schema' in options else None,

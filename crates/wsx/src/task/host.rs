@@ -1743,6 +1743,14 @@ impl Host {
 
     /// Starts the agent when it does not run, and sends it one turn's message.
     fn send_to_agent(&mut self, text: &str) -> Result<()> {
+        // ^ No turn runs here: a program updated since the agent started is replaced by one
+        // that resumes the same conversation, through the start below.
+        if self.record.agent_session.is_some() {
+            if let Some(change) = self.agent.as_ref().and_then(Agent::replaced) {
+                self.say(&format!("agent {} {change}", self.record.adapter));
+                self.stop_agent();
+            }
+        }
         if self.agent.is_none() {
             let (session, resume) = match &self.record.agent_session {
                 Some(session) => (session.clone(), true),

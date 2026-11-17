@@ -253,6 +253,16 @@ impl Agent {
         })
     }
 
+    /// Whether the agent's program file is another than the one this process started from,
+    /// with the words for the log. Asked between turns only: a replaced agent is stopped and
+    /// started again on the same conversation.
+    pub fn replaced(&self) -> Option<String> {
+        match self {
+            Self::Claude(agent) => agent.process.replaced(),
+            Self::Pi(agent) => agent.process.replaced(),
+        }
+    }
+
     /// Send one user message; during a turn the agent takes it as a steer.
     pub fn send(&mut self, text: &str) -> Result<()> {
         match self {
@@ -635,6 +645,33 @@ pub(super) fn end_stream<E>(
 const INPUT_LINES: usize = 64;
 static SPAWNED: AtomicU64 = AtomicU64::new(0);
 
+/// The file an agent program resolves to: its first match on the search folders, through
+/// symlinks (`~/.local/bin/claude` points into `versions/<version>`), with its size and
+/// modification time, so an update in place counts too.
+#[derive(PartialEq)]
+struct Binary {
+    path: PathBuf,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl Binary {
+    fn find(program: &str, search: &[PathBuf]) -> Option<Self> {
+        let path = search
+            .iter()
+            .map(|dir| dir.join(program))
+            .find(|path| path.is_file())?
+            .canonicalize()
+            .ok()?;
+        let meta = path.metadata().ok()?;
+        Some(Self {
+            path,
+            len: meta.len(),
+            modified: meta.modified().ok(),
+        })
+    }
+}
+
 /// One agent process. It leads its own process group, a thread writes its stdin so a hung
 /// agent cannot block the host, and dropping it stops its whole tree and reaps it.
 /// ref: docs/tasks.md "Agents"
@@ -644,6 +681,9 @@ pub(super) struct AgentProcess {
     /// `WSX_AGENT_TREE=<value>` as it stands in each tree process's environment.
     marker: Vec<u8>,
     program: &'static str,
+    /// The file `program` was started from, and the folders it was looked up in.
+    binary: Option<Binary>,
+    search: Vec<PathBuf>,
     /// A strict agent's route to its remote provider; it ends after the agent's tree.
     _egress: Option<Egress>,
 }
@@ -681,14 +721,19 @@ impl AgentProcess {
                 command.env(name, value);
             }
         }
-        if let Some(prefix) = &launch.path_prefix {
-            let mut paths = vec![prefix.clone()];
-            paths.extend(
+        // ^ The folders the program is looked up in: the prefix first, as the agent's own PATH.
+        let search: Vec<PathBuf> = launch
+            .path_prefix
+            .iter()
+            .cloned()
+            .chain(
                 std::env::var_os("PATH")
                     .iter()
                     .flat_map(std::env::split_paths),
-            );
-            command.env("PATH", std::env::join_paths(paths)?);
+            )
+            .collect();
+        if launch.path_prefix.is_some() {
+            command.env("PATH", std::env::join_paths(&search)?);
         }
         for (name, value) in &launch.env {
             command.env(name, value);
@@ -727,6 +772,8 @@ impl AgentProcess {
             input: None,
             marker: format!("{TREE_ENV}={tree}").into_bytes(),
             program,
+            binary: Binary::find(program, &search),
+            search,
             _egress: egress,
         };
         let mut stdin = process
@@ -750,6 +797,27 @@ impl AgentProcess {
         });
         process.input = Some(input);
         Ok((process, stdout))
+    }
+
+    /// How the file `program` names now differs from the one this process started from, in the
+    /// words of the log line (`2.1.316 -> 2.1.326`). None when it is the same, or when either
+    /// lookup finds nothing (an update in the middle of its swap): the next turn looks again.
+    pub(super) fn replaced(&self) -> Option<String> {
+        let old = self.binary.as_ref()?;
+        let new = Binary::find(self.program, &self.search)?;
+        if *old == new {
+            return None;
+        }
+        let name = |binary: &Binary| {
+            binary
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        };
+        Some(match (name(old), name(&new)) {
+            (Some(a), Some(b)) if old.path != new.path => format!("{a} -> {b}"),
+            _ => format!("{} changed in place", new.path.display()),
+        })
     }
 
     /// The piped stderr, once; none when it is inherited.

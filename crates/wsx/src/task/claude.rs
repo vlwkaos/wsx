@@ -46,7 +46,7 @@ const KEPT_ENV: &[&str] = &[
 ];
 
 pub struct ClaudeAgent {
-    process: AgentProcess,
+    pub(super) process: AgentProcess,
     /// Control requests sent, for their ids.
     requests: u64,
 }

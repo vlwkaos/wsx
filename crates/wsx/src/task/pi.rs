@@ -46,7 +46,7 @@ const KEPT_ENV: &[&str] = &[
 ];
 
 pub struct PiAgent {
-    process: AgentProcess,
+    pub(super) process: AgentProcess,
     requests: u64,
     /// Dropped after the process: the launch's folder goes with its agent.
     _home: LaunchHome,
