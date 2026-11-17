@@ -2780,6 +2780,18 @@ await openReservoir("you");
 await until(`document.querySelectorAll('.reservoir-list[aria-label="For you"] ${CHECK_ROWS}').length === 3`, "For you has no row for each To check item", 60);
 // ^ A tap on a row opens the sheet at its item, scrolled to it and marked. The list and #8's
 // capture are in the sheet before it moves, so it rises once and stays.
+// TEMP repro of the one-motion flake (#482): the same open, repeated under a throttled CPU.
+for (const rate of [1, 4, 10]) {
+  await send("Emulation.setCPUThrottlingRate", { rate });
+  for (let again = 0; again < 8; again++) {
+    await oneMotion(`To check on a phone (repro, cpu x${rate}, try ${again})`, async () => {
+      await evaluate(`${rowOf("#2", CHECK_ROWS)}.querySelector('.row-open').click()`);
+      await until(`/^#\\/p\\/${project}\\/checks\\/c\\d+$/.test(location.hash) && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open at the item");
+    });
+    await closeSheet("the To check list", chat);
+  }
+}
+await send("Emulation.setCPUThrottlingRate", { rate: 1 });
 await oneMotion("To check on a phone", async () => {
   await evaluate(`${rowOf("#2", CHECK_ROWS)}.querySelector('.row-open').click()`);
   await until(`/^#\\/p\\/${project}\\/checks\\/c\\d+$/.test(location.hash) && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open at the item");
