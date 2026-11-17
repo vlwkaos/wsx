@@ -2185,14 +2185,11 @@ def part_core(created=None):
                     {'check': 'the text video plays', 'captures': None, 'poster': None}], rows
     # Several captures: one item keeps three files as r<k>-<n>-<m>.png and lists three in
     # `wsx task check --json`. An item whose words name an image file it has no capture of is
-    # reported in the log and in the ready event (docs/tasks.md "To check").
+    # reported in the log (docs/tasks.md "To check"); the ready event names it too (part 32ak).
     multi = js('task', 'new', 'WORK m.txt CAPTURES3 NAMEDHV')['id']
     assert wait_state(multi, 'ready', 'failed')['state'] == 'ready', show(multi)
     said = "a To check item names tasks-390x844-home-dark.png but has no capture of it"
     assert any(said in str(e) for e in log(multi)), log(multi)
-    ready = wait(lambda: [line for e in events_with('#%d ready r1' % multi) for line in e['text'].split('\n')
-                          if line.startswith('#%d ready r1' % multi)], 'the ready event of #%d' % multi, 30)[0]
-    assert said in ready, ready
     assert land(multi)['state'] == 'landed', show(multi)
     wait_closed(multi)
     three = [i for i in js('task', 'check')['open'] if i['task'] == multi and i['check'] == 'the three sizes']
@@ -5771,7 +5768,8 @@ def part_worker(created=None):
     ran = js('task', 'new', 'WORK ran.txt SIMPLIFY')['id']
     late = js('task', 'new', 'WORK late.txt SIMPLIFYLATE')['id']
     small = js('task', 'new', '--size', 'small', 'WORK small.txt')['id']
-    for n in (never, ran, late, small):
+    named = js('task', 'new', '--size', 'small', 'WORK named.txt NAMEDHV')['id']
+    for n in (never, ran, late, small, named):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
     asked = lambda n: [e for e in log(n) if e['kind'] == 'result' and e.get('trigger') == 'simplify']
     assert (len(asked(never)), len(asked(late))) == (1, 1) and not asked(ran) and not asked(small), \
@@ -5782,9 +5780,11 @@ def part_worker(created=None):
                                          if line.startswith('#%d ready r1' % n)], 'the ready event of #%d' % n, 30)[0]
     assert '; simplify did not run' in ready_line(never), manager_entries()[-6:]
     assert 'simplify did not run' not in ' '.join(ready_line(n) for n in (ran, late, small))
+    # An item naming an image file it has no capture of: the ready event says so.
+    assert 'a To check item names tasks-390x844-home-dark.png but has no capture of it' in ready_line(named), manager_entries()[-6:]
     assert 'simplify did not run' in show(never)['status']['sentence'], show(never)['status']
     assert 'simplify did not run' not in show(late)['status']['sentence'], show(late)['status']
-    for n in (never, ran, late, small):
+    for n in (never, ran, late, small, named):
         js('task', 'close', n, '--discard')
     shutil.rmtree(profile_root / 'skills')
     configure(LAND_CONFIG, 'no scenario')
