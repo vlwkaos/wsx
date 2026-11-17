@@ -1,0 +1,30 @@
+/* Chat rename mockups (task 496): the rules a build would add to app.css. Tokens only. */
+
+/* A: the project as a muted tag after the name on line 1. The tag gives way first. */
+.row-tag { flex: 0 100 auto; min-width: 0; font-size: var(--font-size-sm); font-weight: normal; color: var(--color-muted); }
+.row-label + .row-tag::before { content: "·"; margin-inline-end: var(--space-1); color: var(--color-faint); }
+
+/* B: a project's other chats sit under its own chat, one step in. */
+.row-child .row-link { padding-left: calc(var(--space-4) * 2); }
+.row-child { --row-inset: calc(var(--space-4) * 2); }
+
+/* C: a two-letter mark of the project at the row start. */
+.chat-mark, .bar-mark .chat-mark {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: var(--size-control); height: var(--size-control); border-radius: 50%;
+  background: var(--color-raised); color: var(--color-muted);
+  font-size: var(--font-size-sm); font-weight: var(--font-weight-strong); letter-spacing: 0.02em;
+}
+.row-link:has(> .chat-mark) { padding-left: var(--space-4); }
+.row:has(.chat-mark) { --row-inset: calc(var(--space-4) + var(--size-control) + var(--space-3)); }
+
+/* Header: the project as the small second line (A, C) or as the parent before the name (B). */
+.bar-parent { color: var(--color-muted); font-weight: normal; }
+.bar-title-mark { flex-direction: row !important; align-items: center !important; gap: var(--space-3) !important; }
+.bar-title-mark .chat-mark { width: calc(var(--size-control) * 0.8); height: calc(var(--size-control) * 0.8); }
+.bar-mark { flex: none; display: inline-flex; }
+.bar-text { min-width: 0; display: flex; flex-direction: column; }
+.chat-body { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
+
+/* The rename sheet, open and not modal: placed over the screen like the real one. */
+.sheet[open] { position: fixed; inset: auto 0 var(--space-4) 0; margin-inline: auto; }
