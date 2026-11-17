@@ -1204,9 +1204,7 @@ impl HumanVerify {
                 && !place.contains("real device")
                 && !place.contains("real data"))
     }
-}
 
-impl HumanVerify {
     /// The image or video files the item's words name that none of its `captures` is: such a
     /// file is not kept with the task, so the owner never sees it. ref: docs/tasks.md "To check"
     pub fn unattached_images(&self) -> Vec<String> {
@@ -1245,13 +1243,13 @@ impl WorkerResult {
                 files.push(file);
             }
         }
-        match files.is_empty() {
-            true => String::new(),
-            false => format!(
-                "a To check item names {} but has no capture of it (images go in `captures`)",
-                files.join(", ")
-            ),
+        if files.is_empty() {
+            return String::new();
         }
+        format!(
+            "a To check item names {} but has no capture of it (images go in `captures`)",
+            files.join(", ")
+        )
     }
 }
 
