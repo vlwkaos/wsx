@@ -18,8 +18,9 @@ request (the run), and the jobs are read when the run's status changes, every JO
 end. A branch a killed run left behind is deleted by a later run once it is STALE_SECONDS
 old, and it cancels every scenario run still queued or running after the script's whole time (the
 account runs at most 5 macOS jobs at once: an orphan holds a slot and every new run queues behind it). A
-run with no job started after QUEUE_SECONDS is a runner problem, not the tree: it is cancelled and the
-script exits 75, as it does for a run that GitHub or another script cancelled. A run that fails on a
+job still queued QUEUE_SECONDS after the run was created is a runner problem, not the tree: the run is cancelled and the
+script exits 75, as it does for a run that GitHub or another script cancelled. A job that runs over RUN_SECONDS after
+its own start (`started_at`) hangs: the run is cancelled and the script fails. Each job is judged by its own times. A run that fails on a
 scenario assert prints, after its own log, the failed log of main's latest `ci.yml` push run (the
 `task` jobs run on main; `web` does not), after the line `MAIN_MARK`: the host takes the failure
 key of both and answers "fails on main too" (docs/tasks.md "Shared failure"). The task host runs it outside the slot (docs/tasks.md "Scenarios").
@@ -51,10 +52,11 @@ SLOW_POLL_SECONDS = 60
 # once and the run is `in_progress` while the own job still queues): the jobs are read at least this often.
 JOBS_SECONDS = 5 * 60
 FIND_SECONDS = 180
-# ^ A run whose jobs started and have not ended by then hangs (the web scenario's step takes about 26 min
-# with its build): it is cancelled. The time the run waited for a runner does not count (QUEUE_SECONDS).
+# ^ A job that started and has not ended this long after its own start hangs (the web scenario's step
+# takes about 26 min with its build): the run is cancelled. Another job's queue time does not count.
 RUN_SECONDS = 60 * 60
-# ^ The account runs at most 5 macOS jobs at once: a run whose jobs have not started by then is cancelled.
+# ^ The account runs at most 5 macOS jobs at once: a job still queued this long after the run was
+# created is a runner problem, and the run is cancelled.
 QUEUE_SECONDS = 60 * 60
 LOG_LINES = 150
 # ^ The host reads the key of both logs from the last 8 KiB of this output: main's block is short and last.
@@ -236,26 +238,33 @@ def own_jobs(jobs, part):
     return [job for job in jobs if not re.search(r'\((?!%s\)$)[\w-]+\)$' % re.escape(part), job['name'])]
 
 
-def jobs_started(jobs):
-    """True once a job left the queue: it runs or ended (a skipped job never ran)."""
-    return any(job['status'] in ('in_progress', 'completed') and job['conclusion'] != 'skipped' for job in jobs)
+def overdue(created, now, jobs):
+    """Why the run is cancelled, as (the error to raise, the words), or None. Each job is judged by
+    its own times (epoch seconds from the jobs API): one that runs over RUN_SECONDS after its own
+    `started_at` hangs (RuntimeError, the tree); one still queued QUEUE_SECONDS after the run was
+    `created` waits for a runner (TempFail). A queue wait spent before another job's start never
+    counts against a run clock."""
+    for job in jobs:
+        if job['status'] == 'completed':
+            continue
+        if job['status'] == 'in_progress':
+            if now - stamp(job['started_at']) > RUN_SECONDS:
+                return RuntimeError, 'the job %s did not end in %d min' % (job['name'], RUN_SECONDS // 60)
+        elif now - created > QUEUE_SECONDS:
+            return TempFail, 'the job %s did not start in %d min of queue' % (job['name'], QUEUE_SECONDS // 60)
+    return None
 
 
-def overdue(queued, running):
-    """Why the run is cancelled, or None: `queued` seconds with no job started, else `running`
-    seconds since the first job started (None while it waits)."""
-    if running is None:
-        return 'no job started in %d min of queue' % (QUEUE_SECONDS // 60) if queued > QUEUE_SECONDS else None
-    return 'the jobs did not end in %d min' % (RUN_SECONDS // 60) if running > RUN_SECONDS else None
+def stamp(text):
+    """Epoch seconds of a GitHub timestamp (`2026-11-16T05:05:42Z`)."""
+    return calendar.timegm(time.strptime(text, '%Y-%m-%dT%H:%M:%SZ'))
 
 
 def wait_run(repo, run_id, part=None):
-    """The finished run's status, conclusion and jobs; the queue wait is in the first line said when
-    the jobs start. A poll is one request, the run; the jobs are read when its status changes, every
-    JOBS_SECONDS and at the end."""
+    """The finished run's status, conclusion and jobs. A poll is one request, the run; the jobs are
+    read when its status changes, every JOBS_SECONDS and at the end."""
     said = {}
     begun = time.monotonic()
-    started = None
     status, read_at, jobs = None, None, []
     while True:
         run = json.loads(gh('api', 'repos/%s/actions/runs/%s' % (repo, run_id)).stdout)
@@ -268,9 +277,6 @@ def wait_run(repo, run_id, part=None):
                 if said.get(job['name']) != state and state != 'skipped':
                     say('%s  %s: %s' % (time.strftime('%H:%M:%S'), job['name'], state))
                     said[job['name']] = state
-            if started is None and jobs_started(jobs):
-                started = now
-                say('%s  queued %d min before its jobs started' % (time.strftime('%H:%M:%S'), (started - begun) // 60))
         status = run['status']
         if status == 'completed' and not part:
             return {'status': status, 'conclusion': run['conclusion'], 'jobs': jobs, 'run_done': True}
@@ -281,10 +287,10 @@ def wait_run(repo, run_id, part=None):
             bad = [job['conclusion'] for job in jobs if job['conclusion'] not in ('success', 'skipped')]
             return {'status': 'completed', 'conclusion': bad[0] if bad else 'success', 'jobs': jobs,
                     'run_done': status == 'completed'}
-        late = overdue(now - begun, None if started is None else now - started)
+        late = overdue(stamp(run['created_at']), time.time(), jobs)
         if late:
-            # ^ No job started: the runners are full, not the tree. The caller's cleanup cancels the run.
-            raise (RuntimeError if started else TempFail)('the CI run is cancelled: %s' % late)
+            # ^ The caller's cleanup cancels the run.
+            raise late[0]('the CI run is cancelled: %s' % late[1])
         time.sleep(SLOW_POLL_SECONDS if now - begun > SLOW_AFTER else POLL_SECONDS)
 
 

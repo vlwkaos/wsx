@@ -64,18 +64,31 @@ if args[1].startswith('repos/o/r/actions/runs?status='):
                                         run(3, 'main', 500)] if 'queued' in args[1] else []}))
     sys.exit(0)
 n = bump('requests')
+def iso(minutes_ago):
+    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - minutes_ago * 60))
+def job(name, status, started, conclusion=None):
+    return {'name': name, 'status': status, 'conclusion': conclusion, 'started_at': iso(started) if started is not None else None}
+if args[1].endswith('/jobs?per_page=100') and mode.startswith('age'):
+    # ^ Jobs that started at different times: a run of three jobs, each judged by its own start.
+    last = int(open(os.path.join(d, 'runs')).read()) >= 5
+    ages = {'age-ok': (50, 1, 1), 'age-late': (61, 1, 1), 'age-queue': (5, None, 1)}[mode]
+    print(json.dumps({'jobs': [
+        job('task (%s)' % name, 'completed' if last else ('queued' if age is None else 'in_progress'), age,
+            'success' if last else None) for name, age in zip(('core', 'worker', 'host'), ages)]}))
+    sys.exit(0)
 if args[1].endswith('/jobs?per_page=100') and mode.startswith('part'):
     # ^ Run 43849076772: the asked part ends while another part's job still waits for a runner.
     own = 'completed' if int(open(os.path.join(d, 'runs')).read()) >= 2 else 'in_progress'
     print(json.dumps({'jobs': [
-        {'id': 11, 'name': 'web-scenario (chat)', 'status': own,
+        {'id': 11, 'name': 'web-scenario (chat)', 'status': own, 'started_at': iso(1),
          'conclusion': ('failure' if mode == 'part-fail' else 'success') if own == 'completed' else None},
         {'id': 12, 'name': 'web-scenario (tasks)', 'status': 'queued', 'conclusion': None}]}))
     sys.exit(0)
 if args[1].endswith('/jobs?per_page=100'):
     last = int(open(os.path.join(d, 'runs')).read()) >= 5
     print(json.dumps({'jobs': [
-        {'name': 'web-scenario (chat)', 'status': 'completed' if last else ('queued' if mode == 'idle' else 'in_progress'), 'conclusion': 'success' if last else None},
+        job('web-scenario (chat)', 'completed' if last else ('queued' if mode == 'idle' else 'in_progress'),
+            None if mode == 'idle' else 1, 'success' if last else None),
         {'name': 'web-scenario (tasks)', 'status': 'completed', 'conclusion': 'skipped'}]}))
     sys.exit(0)
 runs = bump('runs')
@@ -85,8 +98,9 @@ if mode in ('limit', 'late') and runs == 3 and not os.path.exists(os.path.join(d
     open(os.path.join(d, 'runs'), 'w').write(str(runs - 1))
     sys.stderr.write('gh: API rate limit exceeded for user ID 1. (HTTP 403)\n'); sys.exit(1)
 done = runs >= 5 and not mode.startswith('part')
+created = {'age-ok': 51, 'age-late': 62, 'age-queue': 61}.get(mode, 1)
 print(json.dumps({'status': 'completed' if done else ('queued' if runs == 1 else 'in_progress'),
-                  'conclusion': 'success' if done else None}))
+                  'conclusion': 'success' if done else None, 'created_at': iso(created)}))
 '''
 
 
@@ -132,8 +146,8 @@ def scenario(mode, folder):
         elif mode == 'cancel-limit':
             out = module.cancel_run('o/r', 7, time.monotonic() + 30)
         else:
-            out = module.wait_run('o/r', 1, 'chat')
-    except module.TempFail as why:
+            out = module.wait_run('o/r', 1, None if mode.startswith('age') else 'chat')
+    except (module.TempFail, RuntimeError) as why:
         out = why
     return out, time.monotonic() - begun, (work / 'calls').read_text().splitlines() if (work / 'calls').exists() else [], module
 
@@ -180,7 +194,18 @@ def main():
               'or one of an older main (%s)' % out)
 
         out, seconds, calls, module = scenario('idle', folder)
-        check(isinstance(out, module.TempFail) and 'no job started' in str(out), 'a run with no job started is a TempFail (%s)' % out)
+        check(isinstance(out, module.TempFail) and 'did not start' in str(out), 'a run with no job started is a TempFail (%s)' % out)
+
+        # ^ Each job is judged by its own times (run 43952934826: a job queued 30 min behind another's start).
+        out, seconds, calls, module = scenario('age-ok', folder)
+        check(not isinstance(out, Exception) and out['conclusion'] == 'success',
+              'the first job started 50 min before the others, none over 60 min from its own start: not overdue (%s)' % out)
+        out, seconds, calls, module = scenario('age-late', folder)
+        check(isinstance(out, RuntimeError) and not isinstance(out, module.TempFail) and 'task (core) did not end in 60 min' in str(out),
+              'a job that runs 61 min from its own start is a RuntimeError, the tree (%s)' % out)
+        out, seconds, calls, module = scenario('age-queue', folder)
+        check(isinstance(out, module.TempFail) and 'task (worker) did not start in 60 min' in str(out),
+              'a job still queued 61 min after the run was created is a TempFail although another job runs (%s)' % out)
 
 
 if __name__ == '__main__':
