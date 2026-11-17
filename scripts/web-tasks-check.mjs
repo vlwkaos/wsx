@@ -194,7 +194,7 @@ async function oneMotion(where, open, tally = null) {
     }));
     window.sheetObserver.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['open', 'data-fit', 'class', 'style'] });
     const step = (now) => { const sheet = document.querySelector('dialog.task-sheet[open]');
-      if (sheet) { const box = sheet.getBoundingClientRect(); window.sheetFrames.push([box.top, box.left, document.querySelectorAll('dialog.task-sheet').length + ' ' + sheet.getAnimations().map((animation) => animation.animationName + ' ' + animation.playState + ' ' + Math.round(animation.currentTime ?? -1)).join(',') + ' h' + Math.round(box.height)]); seen ??= now; }
+      if (sheet) { const box = sheet.getBoundingClientRect(); window.sheetFrames.push([box.top, box.left, document.querySelectorAll('dialog.task-sheet').length + ' ' + sheet.getAnimations().map((animation) => animation.animationName + ' ' + animation.playState + ' ' + (animation.currentTime ?? -1).toFixed(1)).join(',') + ' h' + Math.round(box.height)]); seen ??= now; }
       if (seen === null || now - seen < 700) requestAnimationFrame(step); else window.sheetWatched = true; };
     requestAnimationFrame(step); })()`);
   await open();
@@ -2781,19 +2781,19 @@ await until(`document.querySelectorAll('.reservoir-list[aria-label="For you"] ${
 // ^ A tap on a row opens the sheet at its item, scrolled to it and marked. The list and #8's
 // capture are in the sheet before it moves, so it rises once and stays.
 // TEMP repro of the one-motion flake (#482): the same open, repeated under a throttled CPU, with and without the scroll.
-for (const noScroll of [false, true]) {
-  for (const rate of [4, 10]) {
+for (const fill of [false, true]) {
+  for (const rate of [10, 16]) {
     await send("Emulation.setCPUThrottlingRate", { rate });
     const tally = [];
-    for (let again = 0; again < 25; again++) {
-      await evaluate(`window.noScroll = ${noScroll}`);
-      await oneMotion(`To check (noScroll ${noScroll}, cpu x${rate}, try ${again})`, async () => {
+    for (let again = 0; again < 60; again++) {
+      await evaluate(`document.documentElement.toggleAttribute('data-fill', ${fill})`);
+      await oneMotion(`To check (fill ${fill}, cpu x${rate}, try ${again})`, async () => {
         await evaluate(`${rowOf("#2", CHECK_ROWS)}.querySelector('.row-open').click()`);
         await until(`/^#\\/p\\/${project}\\/checks\\/c\\d+$/.test(location.hash) && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open at the item");
       }, tally);
       await closeSheet("the To check list", chat);
     }
-    console.error(`REPRO noScroll=${noScroll} cpu x${rate}: ${tally.length} of 25 opens failed ${JSON.stringify(tally.map((message) => message.slice(0, 160)))}`);
+    console.error(`REPRO fill=${fill} cpu x${rate}: ${tally.length} of 60 opens failed ${JSON.stringify(tally.map((message) => message.slice(0, 160)))}`);
   }
 }
 await send("Emulation.setCPUThrottlingRate", { rate: 1 });

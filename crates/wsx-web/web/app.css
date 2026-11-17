@@ -522,6 +522,7 @@ div.steps .steps-summary { cursor: default; }
   .since { animation: since-in var(--motion-duration) var(--motion-easing); }
   .task-sheet[open] { animation: sheet-in calc(var(--motion-duration) * 2) var(--motion-easing); }
   .app[data-wide] .task-sheet[open] { animation-name: sheet-in-side; }
+  html[data-fill] .task-sheet[open] { animation-fill-mode: backwards; } /* TEMP */
   .task-sheet[open]::backdrop { animation: arrive calc(var(--motion-duration) * 2) var(--motion-easing); }
   /* The viewer fades in, each image it goes to fades in, and a swiped image springs back. */
   .viewer[open], .viewer-stage img { animation: arrive calc(var(--motion-duration) * 2) var(--motion-easing); }
