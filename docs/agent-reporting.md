@@ -79,7 +79,7 @@ An installed integration is current when its version is newer than this build's,
 
 ## Output style
 
-Every wsx agent presents a reply by one rule, `crates/wsx-core/integrations/common/presentation.md` (`integration::PRESENTATION`): the answer first, an unverified assumption on the first line, structure as a mermaid diagram or a table, each fact once, about one phone screen. The manager's and the workers' instructions include it (docs/tasks.md "Workflow").
+Every wsx agent presents a reply by one rule, `crates/wsx-core/integrations/common/presentation.md` (`integration::PRESENTATION`): the answer first, an unverified assumption on the first line, structure as a mermaid diagram or a table, each fact once, a few short lines like a chat message. The manager's and the workers' instructions include it (docs/tasks.md "Workflow").
 
 `wsx agent install claude` also writes it as the Claude Code output style `wsx` (`output-styles/wsx.md` in the Claude config root, with `keep-coding-instructions: true`, https://code.claude.com/docs/en/output-styles). It sets `outputStyle` to `wsx` in `settings.json` only when that file names no style: a style the person chose stays, and a project's `.claude/settings.local.json` still wins. A session reads the style when it starts. `/output-style` switches it off for a session.
 
