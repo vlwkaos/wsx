@@ -8823,9 +8823,16 @@ def part_host(created=None):
                 if t.get('launch') and t.get('binary') and ('You are the manager' in t['instructions']) == wanted]
 
     point('2.1.1')
-    updated = js('task', 'new', 'NOOP')['id']
+    # ^ WORK a.txt passes the project's checks; each turn is settled (ready) before the next add.
+    updated = js('task', 'new', 'WORK a.txt')['id']
     results = lambda: [e for e in log(updated) if e['kind'] == 'result']
-    wait(lambda: len(results()) == 1, 'the first turn on 2.1.1')
+
+    def settled(count, label):
+        wait(lambda: len(results()) == count and show(updated)['state'] in ('ready', 'failed'),
+             lambda: '%s: %d results, %s' % (label, len(results()), show(updated)['state']), 40)
+        assert show(updated)['state'] == 'ready', show(updated)['result']
+
+    settled(1, 'the first turn on 2.1.1')
     first = started(False)[-1]
     assert first[:2] == ('2.1.1', False), first
     point('2.1.2')
@@ -8836,10 +8843,10 @@ def part_host(created=None):
     point('2.1.3')
     steered = js('task', 'steer', updated, 'keep going')
     assert 'steered' in steered['message'], steered
-    wait(lambda: len(results()) == 2, 'the second turn ends')
+    settled(2, 'the second turn')
     assert len(started(False)) == 2 and any(t.get('steer_in_turn') == 'keep going' for t in traces()), started(False)
     js('task', 'add', updated, 'NOOP')
-    wait(lambda: len(results()) == 3, 'the third turn')
+    settled(3, 'the third turn')
     assert started(False)[2:] == [('2.1.3', True, first[2])] and len(started(False)) == 3, started(False)
     # ^ The manager's host keeps its agent between messages and starts it on the new file too.
     point('2.1.1')
