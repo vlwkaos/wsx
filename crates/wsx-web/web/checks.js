@@ -161,7 +161,7 @@ export function ChecksPage({ project, item = null, onClose, onReply, grip }) {
         frame = requestAnimationFrame(show);
         return;
       }
-      if (!window.noScroll) node.scrollIntoView({ block: "center" }); // TEMP
+      node.scrollIntoView({ block: "center" });
       markFound(node);
     };
     frame = requestAnimationFrame(show);
