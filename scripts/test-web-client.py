@@ -2476,7 +2476,8 @@ capabilities = ["terminal_view"]
         settle('owner')
         assert steady(owner, 'POST', chat + '/queue/%d/retry' % stuck, {})[0] == 200
         wait(lambda: delivered()[-1] == 'after the typed line', 'retried after the typed line', timeout=20)
-        wait(lambda: timeline()['queue'] == [] and timeline()['exchange']['failure'] is None, 'delivered without a failure')
+        wait(lambda: timeline()['queue'] == [] and timeline()['exchange']['failure'] is None,
+             lambda: 'delivered without a failure: queue %s, exchange %s' % (timeline()['queue'], timeline()['exchange']))
         settle('owner')
         # Claude draws its editor idle a moment after the turn ends. wsxd says "not yet"
         # (editor_unavailable) meanwhile; the waiting message goes once the editor shows.
