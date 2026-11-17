@@ -935,7 +935,7 @@ if (await evaluate("document.querySelector('.reply-line')?.firstElementChild?.te
 // ^ Each event its own left-aligned line: at most one chip, only at its start; a task number
 // inside a sentence, also in a reply to events, is plain text.
 const eventLines = await evaluate(`[...document.querySelectorAll('.status-line')].filter((node) => / · /.test(node.textContent) || getComputedStyle(node).textAlign === 'center'
-  || node.querySelectorAll('.task-chip').length > (node.firstChild?.matches?.('.task-chip') ? 1 : 0)).map((node) => node.textContent)
+  || node.querySelectorAll('.task-chip').length > (node.firstChild?.matches?.('.task-chip, .token') ? 1 : 0)).map((node) => node.textContent)
   .concat([...document.querySelectorAll('.reply-text .task-chip')].map((node) => 'reply chip ' + node.textContent))`);
 if (eventLines.length) await fail(`the event lines read ${JSON.stringify(eventLines)}`);
 // ^ A long reply shows its first sentence whole and More; More shows the rest.

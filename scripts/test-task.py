@@ -4646,7 +4646,7 @@ def part_worker(created=None):
     assert len(waited) == 1 and re.search(r'^#%d stalled r1: .*; ready for .*; the manager has not reviewed it$' % idle, waited[0]), waited
     # ^ Its host answers, so the stall starts no manager turn (`stall_wakes`): it goes along with the next.
     stall_event = events_with('#%d stalled r1' % idle)[0]
-    assert bare(x for x in stall_event['short'] if x.get('task') == idle) == [{'text': '#%d stalled' % idle, 'task': idle, 'wakes': False}], stall_event
+    assert unmarked(x for x in stall_event['short'] if x.get('task') == idle) == [{'text': '#%d stalled' % idle, 'task': idle, 'wakes': False}], stall_event
     sweeps(1)
     assert stalls(idle) == waited and not stalls(landed_first) and not stalls(added), (stalls(idle), stalls(landed_first), stalls(added))
     stays(lambda: time.time() * 1000 - show(stopped)['record']['state_unix_ms'] > (12 + STALL_GRACE + 2 * SWEEP + 2) * 1000,
@@ -6220,7 +6220,7 @@ def part_host(created=None):
     assert show(parked)['status']['waits_on']['kind'] == 'task', show(parked)['status']
     for n in (parked, asking):
         event = wait(lambda: events_with('#%d ready r' % n), 'the quiet ready event of #%d' % n)[0]
-        assert bare(x for x in event['short'] if x.get('task') == n) == [{'text': '#%d ready' % n, 'task': n, 'wakes': False}], event
+        assert unmarked(x for x in event['short'] if x.get('task') == n) == [{'text': '#%d ready' % n, 'task': n, 'wakes': False}], event
     manager_settled('after the quiet events')
     assert len(manager_turns()) == before, manager_turns()[before:]
     review_gate.touch()
