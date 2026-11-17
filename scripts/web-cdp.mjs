@@ -128,7 +128,9 @@ export function requestRates({ requests }) {
   });
   const within = requests.slice(best[0], best[1] + 1);
   const count = (key) => Object.entries(within.reduce((by, request) => ({ ...by, [request[key]]: (by[request[key]] ?? 0) + 1 }), {})).sort((a, b) => b[1] - a[1]).slice(0, 14);
-  return { ...rates, byPath: count("path"), byCaller: count("from") };
+  return { ...rates, refused: within.filter((request) => request.status === 429).length, byPath: count("path"), byCaller: count("from"),
+    // TEMP (#482): the window's requests in order, to read what triggers them
+    lines: within.map((request) => `${((request.at - within[0].at) / 1000).toFixed(1)} ${request.status ?? "-"} ${request.method} ${request.path.replace("/api/tasks/N", "")} ${request.from.split(" < ")[0]}`) };
 }
 
 // Layout rules of every screen: nothing past the right edge, no raw null, one scroll container
@@ -263,7 +265,7 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
   let nextId = 0;
   const waiting = new Map();
   const problems = [];
-  const requests = [];
+  const requests = [], byId = new Map();
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(event.data);
     if (message.id) {
@@ -282,7 +284,9 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
       const from = frames.filter((frame) => /\.js$/.test(frame.url) && !/\/api\.js$/.test(frame.url)).slice(0, 5)
         .map((frame) => `${frame.functionName || "(anonymous)"} ${frame.url.split("/").pop()}:${frame.lineNumber + 1}`).join(" < ");
       const url = new URL(request.url);
-      requests.push({ at: wallTime * 1000, method: request.method, path: url.pathname.replace(/\/\d+(?=\/|$)/g, "/N"), from });
+      byId.set(message.params.requestId, requests.push({ at: wallTime * 1000, method: request.method, path: url.pathname.replace(/\/\d+(?=\/|$)/g, "/N"), from }) - 1);
+    } else if (message.method === "Network.responseReceived" && byId.has(message.params.requestId)) {
+      requests[byId.get(message.params.requestId)].status = message.params.response.status;
     } else if (message.method === "Log.entryAdded" && message.params.entry.level === "error") {
       problems.push(`log: ${message.params.entry.text} ${message.params.entry.url ?? ""}`);
     }
