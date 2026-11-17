@@ -1121,6 +1121,7 @@ def web_journey(args):
     def ok(label):
         checks.append(label)
         timed(label)
+        sections.passed(label)
 
     try:
         killed_daemon_leaves_no_agent(work, wsx, wsxd)
@@ -3662,6 +3663,7 @@ def task_journey(args):
     def ok(label):
         checks.append(label)
         timed(label)
+        sections.passed(label)
 
     def wait(test, label, timeout=20, retry=False):
         # ^ `retry`: an AssertionError of `test` (a CLI call that fails before its file exists) waits for the next try; the last one ends the wait.

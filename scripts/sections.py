@@ -10,7 +10,9 @@ can be damage the first failure left in the shared store. `report()` prints ever
 the end and answers whether any section failed.
 
 `start='mark'` splits where a `mark('<name>')` call starts a section (test-task.py);
-`end='ok'` splits after each `ok('<label>')` call (test-web-client.py).
+`end='ok'` splits after each `ok('<label>')` call (test-web-client.py): a section is named by the
+`ok` that ends it, and a step that fails inside it (a browser check in an `if`) is well before that
+`ok`; the script's `ok` calls `passed(label)`, so a FAILED line also names the last step that passed.
 """
 import ast
 import os
@@ -28,6 +30,7 @@ _labels = []   # section index -> label
 _needs = []    # section index -> {earlier index: names it reads from that section}
 _broken = {}   # section index -> 'failed' or 'skipped'
 _first = []    # the label of the first failed section
+_passed = []   # the label of the last step that passed (`passed`)
 
 
 def _call(stmt, name):
@@ -143,6 +146,11 @@ def sectioned(scope, path, names, start=None, end=None):
     exec(compile(module, path, 'exec'), scope)
 
 
+def passed(label):
+    """A step of the script passed: a FAILED line after it says so."""
+    _passed[:] = [label[:80]]
+
+
 def enter(index):
     broken = [(earlier, names) for earlier, names in sorted(_needs[index].items()) if earlier in _broken]
     if not broken:
@@ -173,7 +181,8 @@ def fail(index, error):
     if not _first:
         _first.append(_labels[index])
     _broken[index] = 'failed'
-    line = 'FAILED section %s at %s: %s%s' % (_labels[index], where, first, after)
+    last = ' [last step that passed: %s]' % _passed[0] if _passed else ''
+    line = 'FAILED section %s at %s: %s%s%s' % (_labels[index], where, first, after, last)
     failed.append(line)
     print(line, file=sys.stderr, flush=True)
 
