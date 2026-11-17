@@ -18,6 +18,9 @@ const WINDOW_MS: u64 = 24 * 60 * 60 * 1000;
 const MAX_TASKS: usize = 40;
 const LOG_TAIL_BYTES: u64 = 128 * 1024;
 const LINE_CHARS: usize = 160;
+/// The most of a section's label that the key and the shown line keep: the label says where, the
+/// error says why.
+const LABEL_CHARS: usize = 60;
 /// The summaries that follow every failure and tell nothing of its cause: cargo's, and the line
 /// GitHub Actions prints after every failed step. Lower case.
 const GENERIC: [&str; 4] = [
@@ -158,16 +161,67 @@ fn line_of(output: &str) -> Option<(String, String)> {
                 lower.contains("error") && !GENERIC.iter().any(|g| lower.contains(g))
             })
         })?;
-    let shown: String = line.chars().take(LINE_CHARS).collect();
+    Some(match section_line(line) {
+        Some((label, place, error)) => {
+            let error: String = error.chars().take(LINE_CHARS).collect();
+            let cut: String = label.chars().take(LABEL_CHARS).collect();
+            let shown_label = if cut.len() < label.len() {
+                format!("{cut}…")
+            } else {
+                cut.clone()
+            };
+            (
+                format!("FAILED section {shown_label} at {place}: {error}"),
+                zeros(&format!("{cut} | {error}")),
+            )
+        }
+        None => {
+            let shown: String = line.chars().take(LINE_CHARS).collect();
+            let key = zeros(&shown);
+            (shown, key)
+        }
+    })
+}
+
+/// `s` with each run of digits as one `0`.
+fn zeros(s: &str) -> String {
     let mut out = String::new();
-    for c in shown.chars() {
+    for c in s.chars() {
         match (c.is_ascii_digit(), out.ends_with('0')) {
             (true, true) => {}
             (true, false) => out.push('0'),
             _ => out.push(c),
         }
     }
-    Some((shown, out))
+    out
+}
+
+/// A `FAILED section <label> at <file>:<n>[ (in <fn>, <file>:<n>)]: <error>` line of
+/// scripts/sections.py as (label, where, error). The label is the section's first sentence and
+/// can be long: the cause is the error.
+fn section_line(line: &str) -> Option<(&str, &str, &str)> {
+    let rest = line.strip_prefix("FAILED section ")?;
+    rest.match_indices(" at ").find_map(|(i, mark)| {
+        let after = &rest[i + mark.len()..];
+        let colon = after.find(':')?;
+        let digits = after[colon + 1..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .count();
+        if digits == 0 || after[..colon].contains(char::is_whitespace) {
+            return None;
+        }
+        let number = colon + 1 + digits;
+        let tail = &after[number..];
+        let end = if tail.starts_with(": ") {
+            number
+        } else if tail.starts_with(" (in ") {
+            number + tail.find("): ")? + 1
+        } else {
+            return None;
+        };
+        Some((&rest[..i], &after[..end], &after[end + 2..]))
+    })
 }
 
 /// What the latest result of each command of `results` says: its failure line (as printed, and
@@ -269,4 +323,43 @@ pub fn outside(task: u32, result: &CheckResult) -> Option<SharedFailure> {
         on_main: false,
         outside: true,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::line_of;
+
+    const LABEL: &str = "FAILED section task_journey post levels: a warn or bad `wsx task post` from a LaunchAgent-like environment (";
+
+    fn key(line: &str) -> String {
+        line_of(line).unwrap().1
+    }
+
+    #[test]
+    fn section_lines_with_different_causes_do_not_match() {
+        let a = format!("{LABEL} at test-web-client.py:4919: AssertionError: FAIL: 390 px: the reply was not sent with its quote; page says: ui");
+        let b = format!("{LABEL} at test-web-client.py:4968: AssertionError: FAIL: 390 px: Jump to latest did not return to the end; page says: ui");
+        assert_ne!(key(&a), key(&b));
+        let (shown, _) = line_of(&b).unwrap();
+        assert!(shown.contains("Jump to latest did not return"), "{shown}");
+        assert!(shown.contains("…"), "{shown}");
+    }
+
+    #[test]
+    fn same_cause_on_another_line_and_size_matches() {
+        let a = format!("{LABEL} at test-web-client.py:4919: AssertionError: FAIL: 390 px: the reply was not sent with its quote; page says: ui");
+        let b = format!("{LABEL} at test-web-client.py:4950 (in reply, helpers.py:12): AssertionError: FAIL: 1280 px: the reply was not sent with its quote; page says: ui");
+        assert_eq!(key(&a), key(&b));
+    }
+
+    #[test]
+    fn other_lines_keep_their_key() {
+        assert_eq!(
+            key("FAIL [ 12.345s] wsx-core task::x::y"),
+            "FAIL [ 0.0s] wsx-core task::x::y"
+        );
+        let (shown, key) = line_of("FAILED section broken at nowhere").unwrap();
+        assert_eq!(shown, "FAILED section broken at nowhere");
+        assert_eq!(key, "FAILED section broken at nowhere");
+    }
 }
