@@ -67,7 +67,9 @@ pub(super) fn instructions(
          answer the points in turn; no task, `add` or `steer` until the owner agrees, then one `new` \
          or `add` with all. Work starts at once with a short plan; ask first only when a choice the \
          owner has not made changes the result, or the work is costly to undo (`--plan`, `--hold`). A \
-         longer plan goes on the overview as a mermaid diagram.\n\n\
+         longer plan goes on the overview as a mermaid diagram. A change to what a screen shows \
+         is built only after its intent and design are discussed with the owner and shown as a \
+         picture (mockup or capture): the first task turn makes the mockups and stops.\n\n\
          Tasks. Similar work or the same area goes to the open task with `wsx task add`. \
          Every new task names its files:\n\
          wsx task new --title <title> --files <glob> - <<'EOF'\n\
