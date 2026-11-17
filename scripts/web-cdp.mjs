@@ -116,6 +116,21 @@ export async function watchFetch({ send, evaluate }) {
   await evaluate(source);
 }
 
+// The API requests the page sent (`requests` of `launch`): the total, the busiest 60 s window (the
+// server's budget is 240 a minute per device, `Paired` in crates/wsx-web/src/http.rs) and, within it,
+// the counts by path and by asking page function.
+export function requestRates({ requests }) {
+  const rates = { total: requests.length, busiest: 0, minutes: requests.length ? Math.round((requests.at(-1).at - requests[0].at) / 600) / 100 : 0 };
+  let low = 0, best = [0, -1];
+  requests.forEach((request, index) => {
+    while (request.at - requests[low].at > 60_000) low++;
+    if (index - low + 1 > rates.busiest) { rates.busiest = index - low + 1; best = [low, index]; }
+  });
+  const within = requests.slice(best[0], best[1] + 1);
+  const count = (key) => Object.entries(within.reduce((by, request) => ({ ...by, [request[key]]: (by[request[key]] ?? 0) + 1 }), {})).sort((a, b) => b[1] - a[1]).slice(0, 14);
+  return { ...rates, byPath: count("path"), byCaller: count("from") };
+}
+
 // Layout rules of every screen: nothing past the right edge, no raw null, one scroll container
 // and the page itself never scrolls. `free`: selectors whose nodes may pass the edge or scroll
 // sideways; `apart`: selectors whose nodes hold scrollers of their own; `settle`: runs first.
@@ -247,6 +262,7 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
   let nextId = 0;
   const waiting = new Map();
   const problems = [];
+  const requests = [];
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(event.data);
     if (message.id) {
@@ -257,6 +273,15 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
     } else if (message.method === "Runtime.exceptionThrown") {
       const details = message.params.exceptionDetails;
       problems.push(`exception: ${details.exception?.description ?? details.text} (${details.url ?? ""}:${details.lineNumber ?? ""})`);
+    } else if (message.method === "Network.requestWillBeSent" && message.params.request.url.includes("/api/")) {
+      // ^ Every API request the page sends, with the page function that asked (`requestRates`).
+      const { request, initiator, wallTime } = message.params;
+      const frames = [];
+      for (let stack = initiator.stack; stack; stack = stack.parent) frames.push(...stack.callFrames);
+      const from = frames.filter((frame) => /\.js$/.test(frame.url) && !/\/api\.js$/.test(frame.url)).slice(0, 2)
+        .map((frame) => `${frame.functionName || "(anonymous)"} ${frame.url.split("/").pop()}:${frame.lineNumber + 1}`).join(" < ");
+      const url = new URL(request.url);
+      requests.push({ at: wallTime * 1000, method: request.method, path: url.pathname.replace(/\/\d+(?=\/|$)/g, "/N"), from });
     } else if (message.method === "Log.entryAdded" && message.params.entry.level === "error") {
       problems.push(`log: ${message.params.entry.text} ${message.params.entry.url ?? ""}`);
     }
@@ -348,7 +373,7 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
   })()`);
   const watched = () => evaluate("(() => { const seen = window.wsxFrames ?? []; window.wsxFrames = null; return seen; })()");
   return {
-    send, evaluate, until, viewport, capture, fail, problems, go, text, count, key, keyboard, watch, watched, setMotion,
+    send, evaluate, until, viewport, capture, fail, problems, requests, go, text, count, key, keyboard, watch, watched, setMotion,
     cleanup: async () => { socket.close(); await cleanup(); },
   };
 }
