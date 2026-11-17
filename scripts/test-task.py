@@ -7359,8 +7359,10 @@ def part_host(created=None):
     time.sleep(4)
     assert not events_with('#%d ' % qa_task)
     # ^ The chat's own summary lists the tasks it owns: its one ready task, not the repo's others.
-    status_text = chat_reply('qa', js('task', 'say', '--to', 'qa', 'STATUS')['id'])['text']
-    assert status_text.startswith('open: 1 ready'), status_text
+    status_say = js('task', 'say', '--to', 'qa', 'STATUS')
+    chat_reply('qa', status_say['id'])
+    status_turn = next(t for t in traces() if 'Owner (message %d)' % status_say['id'] in str(t.get('message', '')))
+    assert '- open: 1 ready;' in status_turn['message'], status_turn['message']
     # ^ A routine result has no chat: it goes to the home chat, not to qa.
     js('task', 'routine', 'add', 'chatproof', '-p', 'demo', '--cron', '0 5 * * *', '--arg=sh', '--arg=-c', '--arg=echo qaproof; exit 3')
     js('task', 'routine', 'run', 'chatproof', '-p', 'demo')

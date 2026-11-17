@@ -4609,7 +4609,8 @@ merge_seconds = 3
         assert not args.browser or by_name['ui']['manager'] == 'Atlas', mentions['projects']
         assert steady(owner, 'GET', '/api/tasks/%d/mentions' % 999999)[0] == 404
         since = steady(owner, 'GET', '/api/tasks/%d/since?after=1' % demo)[1]
-        assert since['tasks']['landed'] == [2, 3] and since['tasks']['started'] == [1, 2, 3, 4] and since['replies'] >= 3, since
+        assert since['tasks']['landed'] == [2, 3] and since['tasks']['started'] == [1, 2, 3, 4, 5] and since['replies'] >= 3, since
+        # ^ #5 is the task chat notes made in the chats section above.
         # ^ The routine digest's states: a ready task is listed too (view::REPORTED_STATES).
         assert 1 in since['tasks']['ready'], since
         # What was settled, newest first, one line each; the home row's last reply and activity.
