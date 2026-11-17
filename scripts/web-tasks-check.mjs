@@ -1908,6 +1908,7 @@ problems.splice(offlineFrom, problems.length - offlineFrom, ...problems.slice(of
 
 // --- The typing bubble is as wide as its dots, with even padding, and every dot shows whole
 // (docs/web-client-tasks.md "Project screen").
+const beforeLong = await evaluate(replies);
 await typeInto(".composer-field", "LONG STATUS");
 await click(".composer-send");
 await until("!!document.querySelector('.log .typing')", "no typing bubble for a long turn", 50);
@@ -1948,7 +1949,8 @@ await runs("after history.back()", ".log .typing .typing-dot");
 await stand();
 await evaluate("dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))");
 await runs("after a pageshow from the back-forward cache", ".log .typing .typing-dot");
-await until("!document.querySelector('.log .typing')", "the long turn did not end", 400);
+// ^ The reply is a row of its own after the dots go: the next check reads the chat once it is in (it follows the end).
+await until(`!document.querySelector('.log .typing') && ${replies} > ${beforeLong}`, "the long turn did not end with its reply", 400);
 
 // --- The task sheet: a chip or a reservoir row opens it over the chat, and the chat does not
 // scroll; Escape, Back and a swipe down close it, the composer keeps its draft and gets the

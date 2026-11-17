@@ -6159,11 +6159,13 @@ def part_host(created=None):
     # one turn that carries it.
     mark('32ap')
     ap_gate, ap_started = base / 'ap-gate', base / 'ap-started.log'
-    (base / 'ap-ci.sh').write_text('[ "$1" = --local ] && exit 69\necho started >> %s\n%s\necho ci-passed\n'
+    (base / 'ap-ci.sh').write_text('[ "$1" = --local ] && exit 69\necho started >> %s\necho \'12:00:00  queued 0 min before its jobs started\'\n%s\necho ci-passed\n'
                                    % (ap_started, gate_cmd(ap_gate)))
     configure(LAND_CONFIG + '  scenarios:\n    pausecheck: "ci: sh %s"\n' % (base / 'ap-ci.sh'), 'a ci scenario for 32ap')
     held = manager_new('WORK ap.txt CHECKRUN_LATER pausecheck PAUSE')
     wait(lambda: (show(held)['record'].get('waiting') or {}).get('on') == 'check_run', 'the paused result waits for its check-run', 60)
+    # ^ The fixture prints ci-scenario.py's line once its jobs start (host.rs `CI_STARTED`): until then the check-run is queued, not out.
+    wait(lambda: show(held)['status']['label'] == 'Waiting for its check-run', 'the check-run is out, not queued', 30)
     held_now = show(held)
     assert held_now['record']['state'] == 'working' and held_now['status']['label'] == 'Waiting for its check-run', held_now['status']
     assert [e['status'] for e in log(held) if e['kind'] == 'result'] == ['paused'], log(held)
