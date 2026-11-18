@@ -359,36 +359,69 @@ pub fn rename(name: &str, title: &str) -> Result<String> {
 /// The names of the projects the chat runs in, its own first (`repos`, by the registered
 /// project's name; one the config does not know shows its id without the hash).
 pub fn project_names(dir: &ManagerDir) -> Vec<String> {
-    let registered = registered();
-    repos(dir)
-        .iter()
-        .map(|id| project_name(&registered, id))
-        .collect()
+    let registered = Registered::load();
+    repos(dir).iter().map(|id| registered.name(id)).collect()
 }
 
 /// Every registered project's store id and name.
-fn registered() -> Vec<(String, String)> {
-    crate::config::global::GlobalConfig::load()
-        .map(|(config, _)| {
-            config
-                .projects
-                .into_iter()
-                .map(|project| {
-                    (
-                        store::project_id(&project.name, &project.path),
-                        project.name,
-                    )
+pub struct Registered(Vec<(String, String)>);
+
+impl Registered {
+    pub fn load() -> Self {
+        Self(
+            crate::config::global::GlobalConfig::load()
+                .map(|(config, _)| {
+                    config
+                        .projects
+                        .into_iter()
+                        .map(|project| {
+                            (
+                                store::project_id(&project.name, &project.path),
+                                project.name,
+                            )
+                        })
+                        .collect()
                 })
-                .collect()
-        })
-        .unwrap_or_default()
+                .unwrap_or_default(),
+        )
+    }
+
+    fn name(&self, id: &str) -> String {
+        self.0
+            .iter()
+            .find(|(each, _)| each == id)
+            .map_or_else(|| home_base(id), |(_, name)| name.clone())
+    }
 }
 
-fn project_name(registered: &[(String, String)], id: &str) -> String {
-    registered
-        .iter()
-        .find(|(each, _)| each == id)
-        .map_or_else(|| home_base(id), |(_, name)| name.clone())
+/// The fields that name a chat in a row, one owner for the chats' rows of the ledger and of the
+/// web overview: `shown` (`shown_name`, the project `project_id`'s name for its home chat),
+/// `projects` (where it runs, its own first, by name) and `title` when it has one.
+pub fn naming(
+    dir: &ManagerDir,
+    project_id: &str,
+    is_home: bool,
+    registered: &Registered,
+) -> serde_json::Map<String, Value> {
+    let file = chat_file(dir);
+    let own = registered.name(project_id);
+    let mut fields = serde_json::Map::new();
+    fields.insert(
+        "shown".into(),
+        shown_of(&file.title, is_home.then_some(own.as_str()), dir.name()).into(),
+    );
+    fields.insert(
+        "projects".into(),
+        file.repos
+            .iter()
+            .map(|id| registered.name(id))
+            .collect::<Vec<_>>()
+            .into(),
+    );
+    if !file.title.is_empty() {
+        fields.insert("title".into(), file.title.into());
+    }
+    fields
 }
 
 /// A new chat folder gets its `chat.json` with its repo.
@@ -581,29 +614,25 @@ fn hand_back(dir: &ManagerDir) -> String {
 /// is the entry's name, `adapter` and `model` its own, left out for a chat on the manager's.
 pub fn rows(project_id: &str) -> Vec<Value> {
     let home = store::home_chat(project_id);
-    let registered = registered();
+    let registered = Registered::load();
     all(project_id)
         .into_iter()
         .map(|dir| {
             let goal = goal(&dir);
             let last = chats_home::last_message_ms(&dir);
-            let file = chat_file(&dir);
             let is_home = home.as_deref() == Some(dir.name());
-            let own = project_name(&registered, project_id);
             let mut row = serde_json::json!({
                 "name": dir.name(),
-                "shown": shown_of(&file.title, is_home.then_some(own.as_str()), dir.name()),
-                "projects": file.repos.iter().map(|id| project_name(&registered, id)).collect::<Vec<_>>(),
                 "state": if is_open(&dir) { "open" } else { "closed" },
                 "goal": goal.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
                 "last_unix_ms": last,
                 "listed": chats_home::listed_at(&dir, || last),
                 "home": is_home,
             });
-            if !file.title.is_empty() {
-                row["title"] = file.title.as_str().into();
-            }
-            if let (Some(entry), Some(own)) = (file.agent, agent(&dir)) {
+            row.as_object_mut()
+                .expect("a row is an object")
+                .extend(naming(&dir, project_id, is_home, &registered));
+            if let (Some(entry), Some(own)) = (chat_file(&dir).agent, agent(&dir)) {
                 row["agent"] = entry.into();
                 row["adapter"] = own.adapter.into();
                 row["model"] = own.model.into();

@@ -878,6 +878,7 @@ fn news_value((unix_ms, text): (u64, String)) -> Value {
 fn chat_contacts(scope: &Scope, land_auto: bool) -> Vec<Value> {
     let counts = needs::chat_counts(&scope.store, land_auto);
     let home = store::home_chat(&scope.store);
+    let registered = task::chats::Registered::load();
     let mut rows: Vec<Value> = task::chats::open_chats(&scope.store)
         .iter()
         .map(|dir| {
@@ -897,25 +898,32 @@ fn chat_contacts(scope: &Scope, land_auto: bool) -> Vec<Value> {
                     }
                     _ => None,
                 });
-            json!({
+            let is_home = home.as_deref() == Some(dir.name());
+            let mut row = json!({
                 "name": dir.name(),
                 "goal": task::chats::goal(dir).lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
                 "last_reply": last,
                 "news": news,
-                "home": home.as_deref() == Some(dir.name()),
+                "home": is_home,
                 "listed": task::chats_home::listed_at(dir, || at),
                 "last_unix_ms": at,
                 "counts": own,
-            })
+            });
+            row.as_object_mut()
+                .expect("a row is an object")
+                .extend(task::chats::naming(dir, &scope.store, is_home, &registered));
+            row
         })
         .collect();
     // ^ A reader never makes the home chat's folder: a project nobody has spoken to still has its
     // row, empty, so the owner can write to it.
     if !rows.iter().any(|row| row["home"] == true) {
+        // ^ No folder to read: named by its project.
         rows.push(json!({
             "name": home.unwrap_or_else(|| task::chats::home_name(&scope.store)),
             "goal": "", "last_reply": null, "news": null, "home": true, "listed": true,
             "last_unix_ms": 0, "counts": needs::ChatCounts::default(),
+            "shown": scope.name, "projects": [scope.name],
         }));
     }
     rows

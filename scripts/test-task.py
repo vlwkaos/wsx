@@ -7359,7 +7359,7 @@ def part_host(created=None):
     js('task', 'routine', 'delete', 'chatproof', '-p', 'demo')
     # Rename: the owner's, a shown name only (docs/tasks.md "Chats"): the id, the folder and `say --to` stay;
     # the title rule is trimmed, one line, at most 40 characters; the home chat is named by its project; empty clears.
-    assert "chat rename is the owner's" in reply_to(js('task', 'say', 'RUN wsx task chat rename qa "Checkout QA" -p demo --json')['id'])['text']
+    assert "wsx task chat rename is for the owner" in reply_to(js('task', 'say', 'RUN wsx task chat rename qa "Checkout QA" -p demo --json')['id'])['text']
     assert chats()['qa']['shown'] == 'qa' and 'title' not in chats()['qa']
     renamed = js('task', 'chat', 'rename', 'qa', '  Checkout QA  ')
     assert renamed['title'] == 'Checkout QA', renamed
