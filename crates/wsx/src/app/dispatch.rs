@@ -186,7 +186,7 @@ impl App {
                 return Ok(());
             }
             match (action, list.detail.is_some()) {
-                (Action::EnterMove, false) => list.open_chat(None),
+                (Action::EnterMove, false) => list.open_chat(None, None),
                 (Action::Overview, false) => list.open_overview(),
                 // ^ `n` is the Workspace's next-attention key; here it opens the New chat form.
                 (Action::NextAttention, false) => list.open_new_chat(),

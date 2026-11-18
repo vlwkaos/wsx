@@ -197,6 +197,19 @@ Context = tokens a turn reads; cache = cold-rewrite rate and prefix bytes; memor
 
 Step 2 and steps 3 to 5 do not depend on threads and can run in any order. Steps 6 to 9 are in order. There is no reminder or close timer step (owner 5278).
 
+## Using threads (step 8, built)
+
+A thread opens in the chat's own window. The pictures of §1 are the spec.
+
+- **Strip.** Directly above the composer, sideways scroll: the chat, the threads that wait for you with their count (always first, whatever their age), the rest by last activity, `+` (New thread) last. One tap switches. The route is `#/c/<chat>/t/<thread>`; a thread that closed or never existed shows the chat. The order and the counts are the server's: `thread::list` over `needs::tally` (the same rule as the For you pill). The JS neither sorts nor counts. `GET /api/tasks/<project>/chat` returns them as `threads`, and takes `thread=<slug>` (rows of that thread), `thread=` (the chat's own rows) or none (every row: old clients, find, the CLI).
+- **Rows.** A row is in the thread it carries (a message, a reply) or its task's. A row of a thread that closed or merged away reads as the chat's own, so nothing vanishes. The thread filter runs after the newest 200 entries are read: a thread's rows older than those do not show in its window (find and a quote jump read wider).
+- **Writing.** A message written in a thread's window carries it (`say --thread`, `POST say {thread}`); the core's tag order is unchanged (quote, window, To check item's task, trunk).
+- **Lists.** In a thread, the For you, Tasks and Routines pills and lists hold that thread's things and its counts (`counts` of the thread); in the chat they hold the whole chat, threads included. Every item names its thread (`thread`), so a For you item can link `#/c/<chat>/t/<thread>`.
+- **The line.** The chat shows one line for each thread that waits: "<thread> waits for you · 1 question, 1 check · Open".
+- **Thread menu (⋯).** Merge into another open thread, Close thread (by hand, refused while a question of it waits; the core's words show). Rename is not built: the core has no rename event. No cap and no automatic close.
+- **TUI.** In the chat view `t` and `T` step through the chat and its threads in the same order; the third top line lists them with their waiting counts. In the Tasks list each chat has its open threads under it (Enter opens the chat at that thread). The TUI's To check, approval and question lists are not filtered by thread.
+- **CLI.** `wsx task thread list` prints the open threads in that order with `last_ms`, `counts` and `waits`.
+
 ## 8. What this design does not decide, and limits
 
 - How many real subjects you hold at once: the logs have no thread labels. There is no cap. Step 6 reports the open count for each chat after a week, so a cap, if wanted, is set from a number.

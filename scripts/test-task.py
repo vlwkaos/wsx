@@ -8810,6 +8810,15 @@ def part_host(created=None):
     asked = js('task', 'say', '--thread', 'open-question', 'ASK which one')['id']
     asking = chat_reply(chat42, asked)
     assert asking.get('asks') and asking['threads'] == ['open-question'], asking
+    # ^ The list puts a thread that waits for the owner first, whatever its age (the strip, the TUI and
+    # this list read one order): search-speed is the newer thread, with the newer message, and is listed after.
+    chat_reply(chat42, js('task', 'say', '--thread', speed, 'STATUS newer speed')['id'])
+    open42 = [t for t in listing()['threads'] if t['open']]
+    by42 = {t['thread']: t for t in open42}
+    assert open42[0]['thread'] == 'open-question' and open42[0]['waits'] == '1 question', open42
+    assert by42[speed]['last_ms'] > by42['open-question']['last_ms'] and not by42[speed]['waits'], by42
+    waiting42 = [bool(t['waits']) for t in open42]
+    assert waiting42 == sorted(waiting42, reverse=True), open42
     assert 'open question' in cli('task', 'thread', 'close', 'open-question', ok=False).stderr
     chat_reply(chat42, js('task', 'say', '> message %d\n\nthis one' % asking['id'])['id'])
     cli('task', 'thread', 'close', 'open-question')

@@ -172,7 +172,8 @@ export const shownTabs = (list = tabs()) => {
 // #/p/<id>/page (the manager with the project overview's sheet, `sheet: "overview"`), #/p/<id>/checks[/<item>] (with the To check list, at the item),
 // #/p/<id>/usage (with the project's token use and cost), #/p/<id>/panels (with its panels),
 // #/p/<id>/media (with the media archive),
-// #/c/<chat> (a chat, a project's home chat or another one, docs/tasks.md "Chats"). The older
+// #/c/<chat>[/t/<thread>] (a chat, a project's home chat or another one, docs/tasks.md "Chats", at one of its threads,
+// docs/design/chat-system.md). The older
 // #/p/<id>/c/<chat> reads as the same chat with `old`, and App replaces it.
 export const chatHash = (chat) => `#/c/${encodeURIComponent(chat)}`;
 // The project that runs chat `name` and its `room` (none for the project's home chat, which is
@@ -191,7 +192,7 @@ export function parseRoute(hash) {
   // ^ The sheets over the manager's chat: the route name `page` is the overview's (its API and event keep it).
   const sheet = { __proto__: null, page: "overview", checks: "checks", usage: "usage", panels: "panels", media: "media" }[third];
   if (first === "p" && Number(second) && sheet) return { screen: "task", id: Number(second), sheet, item: sheet === "checks" && /^c\d+$/.test(fourth ?? "") ? fourth : null };
-  if (first === "c" && second) return { screen: "chat", chat: decodeURIComponent(second), ...chatPlace(decodeURIComponent(second)) };
+  if (first === "c" && second) return { screen: "chat", chat: decodeURIComponent(second), ...chatPlace(decodeURIComponent(second)), thread: third === "t" && fourth ? decodeURIComponent(fourth) : null };
   if (first === "p" && Number(second) && third === "c" && fourth) return { screen: "chat", chat: decodeURIComponent(fourth), ...chatPlace(decodeURIComponent(fourth)), old: true };
   if (first === "p" && Number(second)) {
     // ^ `#/p/<project>/files/<path>` opens that file (a manager's message about a routine links it).

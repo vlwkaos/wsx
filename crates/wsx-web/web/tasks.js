@@ -3,7 +3,7 @@
 // task's or the project overview's sheet over the chat (docs/web-client-tasks.md). Fixed actions
 // go straight to wsx.
 import { api } from "./api.js";
-import { html, Icon, keepIn, plural, readMap, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
+import { clock, html, Icon, keepIn, plural, readMap, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, goBack, leaveFor, shows, state, touch, useEventLoad, useStore } from "./store.js";
 import { Back, confirmDialog, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, useDraft, useListKeys, useRecent, withNewLine } from "./chat.js";
@@ -18,6 +18,7 @@ import { MediaPage } from "./media.js";
 import { RoutineActions, routineAct, routineRow, useRoutines } from "./routines.js";
 import { present, shownTrays, TRAYS, trayCounts, trayWords } from "./trays.js";
 import { PanelsButton, PanelsPage } from "./panels.js";
+import { inThread, NewThread, ThreadMore, ThreadStrip, ThreadWaits, threadHash } from "./threads.js";
 import { loadTasks, act } from "./task-api.js";
 import { agentWords, BANDS, calm, KIND_TONE, LEAVE_MS, rowLine, taskLink, taskStage, TaskTitle, withChips } from "./task-words.js";
 
@@ -392,10 +393,10 @@ function withMention(text, n) {
   return [text, /\s/.test(text[end]) ? end + 1 : end];
 }
 
-function ManagerComposer({ project, room, busy: thinking, reply, onReply, onSent, field, pills }) {
+function ManagerComposer({ project, room, thread, busy: thinking, reply, onReply, onSent, field, pills }) {
   const store = useStore();
   // ^ Another chat's draft is its own.
-  const draft = room ? `${project}/${room}` : project;
+  const draft = [project, room, thread?.slug].filter(Boolean).join("/");
   const [text, setText] = useState(() => readMap(DRAFTS_KEY)[draft] ?? "");
   const [caret, setCaret] = useState(0);
   const { active, setActive, shut, keys } = useListKeys(text);
@@ -454,7 +455,7 @@ function ManagerComposer({ project, room, busy: thinking, reply, onReply, onSent
       const attachments = files.attachments.map((item) => item.hash);
       const text = withQuote(reply?.line, body);
       // ^ A say may start the manager first: up to about 40 s (docs/tasks.md "Manager").
-      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text: reply?.id != null || reply?.check ? body : text, attachments, ...(room && { chat: room }), ...(reply?.id != null && { quote_id: reply.id }), ...(reply?.check && { check: reply.check }) }, timeout: 60_000 });
+      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text: reply?.id != null || reply?.check ? body : text, attachments, ...(room && { chat: room }), ...(thread && { thread: thread.slug }), ...(reply?.id != null && { quote_id: reply.id }), ...(reply?.check && { check: reply.check }) }, timeout: 60_000 });
       field.current.value = "";
       files.attachments = [];
       changed();
@@ -485,7 +486,7 @@ function ManagerComposer({ project, room, busy: thinking, reply, onReply, onSent
         <${AttachButton} onFiles=${upload} />
         ${pills}
         <div class="composer-input">
-          <textarea class="composer-field" ref=${field} rows="1" aria-label=${`Message to ${room ?? "the manager"}`}
+          <textarea class="composer-field" ref=${field} rows="1" aria-label=${`Message to ${room ?? "the manager"}${thread ? ` in ${thread.title}` : ""}`}
             placeholder="Message · # task @ project / skill" role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
             aria-controls=${listOpen ? "slash-list" : null} aria-activedescendant=${listOpen && options.length ? `slash-${active}` : null}
             onInput=${changed} onKeyDown=${keydown} onPaste=${pasteFiles(upload)} onKeyUp=${() => setCaret(field.current.selectionStart)}
@@ -736,7 +737,7 @@ const SHEETS = {
 // (docs/web-client-chat.md "Find"). `around` is the message a tap on a quote opened the chat at
 // (docs/web-client-chat.md "Replies"): the rows are a snapshot of that part, no later read adds to
 // them, until `back` reads the newest part.
-function useManagerLog(id, room) {
+function useManagerLog(id, room, thread) {
   const [chat, setChat] = useState(null);
   const [failure, setFailure] = useState("");
   const [finding, setFinding] = useState(false);
@@ -754,7 +755,7 @@ function useManagerLog(id, room) {
     const taken = shown.current.filter((entry) => !entry.queued);
     const oldest = Math.min(...shown.current.filter((entry) => entry.queued).map((entry) => entry.id));
     const last = fresh ? null : taken.findLast((entry) => entry.id != null && entry.id < oldest)?.id;
-    const next = await api(`api/tasks/${id}/chat`, { query: { ...(last != null && { after: last }), ...(fresh && words && { find: words }), ...(fresh && !words && at != null && { around: at }), ...(room && { chat: room }) } });
+    const next = await api(`api/tasks/${id}/chat`, { query: { ...(last != null && { after: last }), ...(fresh && words && { find: words }), ...(fresh && !words && at != null && { around: at }), ...(room && { chat: room }), thread: thread ?? "" } });
     if (!current()) return;
     if (fresh) {
       search.current.read = words;
@@ -861,11 +862,11 @@ function useOverview(id, room) {
 // reservoir, and with a task or the page in the route its sheet over the chat. With `chat`, another
 // chat (#/p/<project>/c/<chat>): the same bubbles without the manager's reservoir, and with its own
 // approvals and To check items (docs/web-client-tasks.md "Chats").
-export function Manager({ project: id, sheet = null, task = null, item = null, chat: room = null }) {
+export function Manager({ project: id, sheet = null, task = null, item = null, chat: room = null, thread: threadSlug = null }) {
   const store = useStore();
   const project = store.projects.find((candidate) => candidate.id === id);
   const overview = useOverview(id, room);
-  const { reread, chat, failure, around, aroundRead, finding, setFinding, cut, loading, jump, back, findWords } = useManagerLog(id, room);
+  const { reread, chat, failure, around, aroundRead, finding, setFinding, cut, loading, jump, back, findWords } = useManagerLog(id, room, threadSlug);
   // ^ The To check items, each a bubble at the time it was added; read again when the open
   // count changes (a new item, a pass or a fail).
   const [checkItems, setCheckItems] = useState(null);
@@ -885,7 +886,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   }, [id, room, toCheck, roomRows, noted, chatIn]);
   const ready = Boolean(chat) && checkItems !== null;
   const [sent, setSent] = useState(null);
-  const place = room ? `project-${id}-c-${room}` : `project-${id}`;
+  const place = [`project-${id}`, room && `c-${room}`, threadSlug && `t-${threadSlug}`].filter(Boolean).join("-");
   const { log, node: logNode, away, unread, since, scrolled, toEnd, reveal } = useFollowEnd(place, ready);
   const field = useRef();
   const [reply, setReply] = useState(null);
@@ -929,10 +930,19 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   }, [refocus]);
 
   // ^ What waits for the owner is the needs and the open questions (docs/web-client-tasks.md "Project screen").
-  const asking = (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote }));
-  const needing = [...(overview?.needs ?? []), ...asking];
+  // ^ A thread's window: its own lists and counts (the server's, `thread::list`); the chat's hold the whole chat.
+  const listed = chat?.threads ?? [];
+  const current = threadSlug ? listed.find((found) => found.slug === threadSlug) ?? null : null;
+  const thread = threadSlug ? current ?? { slug: threadSlug, title: threadSlug, slugs: [threadSlug] } : null;
+  const scoped = (list) => thread ? list.filter((thing) => inThread(thread, thing)) : list;
+  const asking = (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote, thread: ask.threads?.[0] }));
+  const needing = scoped([...(overview?.needs ?? []), ...asking]);
   const [routineList, setRoutineList] = useRoutines(id, !room && chatIn, chat?.rows?.at(-1)?.key);
-  const counts = trayCounts(overview, routineList?.counts);
+  const counts = trayCounts(thread ? { counts: current?.counts } : overview, routineList?.counts);
+  const chatName = room ?? overview?.home_chat;
+  // ^ A thread that is no more (closed, merged, a mistyped link) shows the chat.
+  useEffect(() => { if (chat && threadSlug && !current && chatName) leaveFor(threadHash(chatName)); }, [chat, threadSlug, current, chatName]);
+  const [newThread, setNewThread] = useState(false);
   const [tray, toggleTray, setTray] = useTray(counts);
   const [look, setLook] = useState(null);
   const showNeed = (approval) => { setTray("you"); setLook(approval); };
@@ -949,10 +959,10 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   const all = chat?.rows ?? [];
   const entries = all.filter((row) => !row.queued);
   const waiting = all.filter((row) => row.queued);
-  const items = room ? chat?.approvals ?? [] : overview?.needs ?? [];
+  const items = scoped(room ? chat?.approvals ?? [] : overview?.needs ?? []);
   const words = withChips(id);
   // ^ Another chat holds its own log only: the project's resolutions are the manager's (docs/tasks.md "Chats").
-  const rows = ready ? conversation(entries, room ? [] : overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems, chat?.asks ?? []) : [];
+  const rows = ready ? conversation(entries, room ? [] : overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), scoped(checkItems), chat?.asks ?? []) : [];
   // The sent message shows until the log has it.
   if (sent && !all.some((row) => row.kind === "message" && row.id === sent.id)) {
     const last = rows.at(-1);
@@ -1003,20 +1013,22 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
     <header class="bar">
       <${Back} fallback=${room ? `#/p/${id}` : "#/"} />
       <div class="bar-title">
-        <span class="bar-label">${room ? chat?.manager.name ?? room : project.name}</span>
+        <span class="bar-label">${thread && html`<span class="bar-parent">${room ? chat?.manager.name ?? room : project.name} › </span>`}${thread ? thread.title : room ? chat?.manager.name ?? room : project.name}</span>
+        ${thread && current && html`<span class="bar-state">open since ${clock(current.opened_ms)}</span>`}
         ${room && chat?.manager.projects && html`<span class="bar-projects">${chat.manager.projects.join(", ")}</span>`}
-        ${!managerWord && chat?.manager.agent && html`<span class="bar-model" title="Model">${agentWords(chat.manager.agent)}</span>`}
+        ${!thread && !managerWord && chat?.manager.agent && html`<span class="bar-model" title="Model">${agentWords(chat.manager.agent)}</span>`}
         ${managerWord && html`<span class="bar-state" key=${managerWord} data-tone=${typing ? "working" : "danger"}>${typing
           ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><${Dots} /></span>`
           : managerWord}</span>`}
       </div>
       <div class="bar-tools">
         <${FindButton} open=${finding} onClick=${find} />
-        ${!room && html`
+        ${!room && !thread && html`
           <a class="icon-button" href=${`#/p/${id}/page`} aria-label="Overview" title="Overview"><${Icon} name="overview" /></a>
           <${PanelsButton} project=${id} />
           <${ProjectShell} project=${project} /><${More} project=${project} />`}
-        ${room && can("task_act") && html`<${ChatMore} project=${id} chat=${room} shown=${chat?.manager.name ?? room} onRenamed=${reread} />`}
+        ${thread && current && can("task_act") && html`<${ThreadMore} project=${id} chat=${chatName} thread=${current} others=${listed.filter((found) => found !== current)} />`}
+        ${room && !thread && can("task_act") && html`<${ChatMore} project=${id} chat=${room} shown=${chat?.manager.name ?? room} onRenamed=${reread} />`}
       </div>
     </header>`;
   // ^ The header sits at the bottom, above the composer, when this device chose it (settings.js).
@@ -1037,6 +1049,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
             ${earlier}
             ${withNewLine(recent, firstNew, show)}
             ${typing && html`<${Typing} name=${names.manager} plain=${plain} />`}
+            ${!thread && chatName && html`<${ThreadWaits} chat=${chatName} threads=${listed} />`}
           </div>
           ${away && html`<${JumpButton} unread=${unread} onClick=${around != null ? newest : toEnd} />`}
         </div>
@@ -1045,14 +1058,16 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
           <ul class="queue" aria-label=${`Messages waiting for ${room ?? "the manager"}`}>
             ${waiting.map((row) => html`<li key=${row.key} class="queued" data-key=${row.key}><span class="queued-text">${row.text || `${row.attachments?.length ?? 0} files`}</span></li>`)}
           </ul>`}
-        <${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${overview?.tasks ?? []} waiting=${overview?.waiting ?? []} checks=${overview?.check_items ?? []} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${replyTo} onShow=${goToReply} />
+        <${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${scoped(overview?.tasks ?? [])} waiting=${scoped(overview?.waiting ?? [])} checks=${scoped(overview?.check_items ?? [])} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${replyTo} onShow=${goToReply} />
         ${low && header}
+        ${chatName && html`<${ThreadStrip} chat=${chatName} threads=${listed} current=${threadSlug} onNew=${can("task_act") ? () => setNewThread(true) : null} />`}
         ${!can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
-        ${can("task_act") && html`<${ManagerComposer} project=${id} room=${room} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
+        ${can("task_act") && html`<${ManagerComposer} project=${id} room=${room} thread=${thread} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
           pills=${html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} />`}
           onSent=${(message) => { toEnd(); setSent(message); back(); }} />`}
       </div>
       ${menu}
+      ${newThread && html`<${NewThread} project=${id} chat=${chatName} onClose=${() => setNewThread(false)} />`}
       ${over && html`
         <${Sheet} key=${`${sheet}${task ?? ""}`} label=${task != null ? `${over.label} #${task}` : over.label} fit=${over.fit} onClose=${leave}>
           ${(grip) => html`<${over.Page} project=${id} task=${task} item=${item} onClose=${leave} onMention=${answer} onReply=${replyFrom} grip=${grip} />`}

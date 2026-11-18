@@ -2,13 +2,14 @@
 //! Workspace tree marks. ref: docs/tasks.md "Landing", "To check", "TUI"
 use super::{
     chat, chats, checks,
-    manager::{pending_approvals, waiting_approvals},
+    manager::{pending_approvals, waiting_approvals, ApprovalLine},
     status::{self, Holder},
-    store::{self, TaskDir},
-    view, TaskRecord, TaskState, WaitOn,
+    store::{self, ManagerDir, TaskDir},
+    thread, view, TaskRecord, TaskState, WaitOn,
 };
 use anyhow::Result;
 use std::collections::HashMap;
+use std::hash::Hash;
 
 /// The three states the owner sees (docs/web-client-tasks.md); the store keeps the rest. A task
 /// that needs the owner says what kind of need it is.
@@ -159,25 +160,91 @@ pub struct ChatCounts {
     pub open: usize,
     pub needs: usize,
     pub check: usize,
+    /// Of `needs`, the open questions.
+    pub asks: usize,
+}
+
+impl ChatCounts {
+    /// Whether anything waits for the owner.
+    pub fn waits(&self) -> bool {
+        self.needs + self.check > 0
+    }
+
+    /// What waits, in the owner's words: "1 question, 1 check", the other needs (a task, an
+    /// approval) as "to decide".
+    pub fn waits_words(&self) -> String {
+        let plural = |n: usize, one: &str, many: &str| match n {
+            1 => format!("1 {one}"),
+            n => format!("{n} {many}"),
+        };
+        let mut words = Vec::new();
+        if self.asks > 0 {
+            words.push(plural(self.asks, "question", "questions"));
+        }
+        if self.needs > self.asks {
+            words.push(format!("{} to decide", self.needs - self.asks));
+        }
+        if self.check > 0 {
+            words.push(plural(self.check, "check", "checks"));
+        }
+        words.join(", ")
+    }
 }
 
 /// The counts of every open chat of the project, by name.
 pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCounts> {
-    let open = chats::open_names();
-    let home = store::home_chat(project_id).unwrap_or_default();
-    let dirs = chats::open_chats(project_id);
-    let mut counts: HashMap<String, ChatCounts> = dirs
-        .iter()
-        .map(|dir| (dir.chat.clone(), ChatCounts::default()))
-        .collect();
-    if counts.is_empty() {
+    tally(
+        project_id,
+        land_auto,
+        &chats::open_chats(project_id),
+        |chat, _| chat.to_string(),
+    )
+}
+
+/// The counts of the chat `dir`, by the slug of the thread each item is in; the trunk is none.
+/// A thread merged into another counts as that one (`resolve`).
+pub fn thread_counts(
+    dir: &ManagerDir,
+    land_auto: bool,
+    resolve: impl Fn(&str) -> String,
+) -> HashMap<Option<String>, ChatCounts> {
+    tally(
+        &dir.project_id,
+        land_auto,
+        std::slice::from_ref(dir),
+        |_, thread| thread.map(&resolve),
+    )
+}
+
+/// The one count walk, for the open chats `dirs`: every item that needs the owner or runs, added
+/// to the entry `key(chat, thread)` names, `thread` being the slug of its thread in that chat.
+fn tally<K: Eq + Hash>(
+    project_id: &str,
+    land_auto: bool,
+    dirs: &[ManagerDir],
+    key: impl Fn(&str, Option<&str>) -> K,
+) -> HashMap<K, ChatCounts> {
+    let mut counts: HashMap<K, ChatCounts> = HashMap::new();
+    if dirs.is_empty() {
         return counts;
     }
+    let open = chats::open_names();
+    let home = store::home_chat(project_id).unwrap_or_default();
+    let mut thread_of: HashMap<u32, String> = HashMap::new();
     for (dir, record) in view::project_tasks(project_id).unwrap_or_default() {
         let Ok(record) = record else { continue };
-        let Some(own) = counts.get_mut(chats::owner(record.created_by.chat(), &open, &home)) else {
+        if let Some(thread) = &record.thread {
+            thread_of.insert(record.id, thread.clone());
+        }
+        let owner = chats::owner(record.created_by.chat(), &open, &home);
+        if !dirs.iter().any(|dir| dir.chat == owner) {
             continue;
-        };
+        }
+        let slug = record
+            .thread
+            .as_deref()
+            .and_then(|thread| thread::slug_in(owner, thread));
+        let own = counts.entry(key(owner, slug)).or_default();
         match stage(&dir, &record, land_auto) {
             Stage::Working => own.running += 1,
             Stage::NeedsYou(_) => own.needs += 1,
@@ -188,18 +255,44 @@ pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCou
     let approvals = store::read_approvals(project_id).unwrap_or_default();
     let items = checks::open_items(project_id).unwrap_or_default();
     let now = super::now_unix_ms();
-    for dir in &dirs {
+    for dir in dirs {
+        let slug_of_task = |task: Option<u32>| {
+            task.and_then(|task| thread_of.get(&task))
+                .and_then(|thread| thread::slug_in(&dir.chat, thread))
+        };
         let viewer = chats::Viewer::named(&dir.chat, open.clone(), &home);
         let own = chats::approvals_of(approvals.clone(), &viewer);
-        let Some(entry) = counts.get_mut(&dir.chat) else {
-            continue;
-        };
+        for line in pending_approvals(&own) {
+            if let ApprovalLine::Request { task, .. } = line {
+                counts
+                    .entry(key(&dir.chat, slug_of_task(*task)))
+                    .or_default()
+                    .needs += 1;
+            }
+        }
+        for line in waiting_approvals(&own) {
+            if let ApprovalLine::Request { task, .. } = line {
+                let entry = counts
+                    .entry(key(&dir.chat, slug_of_task(*task)))
+                    .or_default();
+                entry.running += 1;
+                entry.open += 1;
+            }
+        }
         // ^ An open question of the chat is an item for the owner too, as its own pill counts it.
-        entry.needs +=
-            pending_approvals(&own).len() + chat::asking(dir, now).map_or(0, |a| a.len());
-        entry.running += waiting_approvals(&own).len();
-        entry.open += waiting_approvals(&own).len();
-        entry.check = chats::checks_of(project_id, items.clone(), &viewer).len();
+        for ask in chat::asking(dir, now).unwrap_or_default() {
+            let entry = counts
+                .entry(key(&dir.chat, ask.threads.first().map(String::as_str)))
+                .or_default();
+            entry.needs += 1;
+            entry.asks += 1;
+        }
+        for item in chats::checks_of(project_id, items.clone(), &viewer) {
+            counts
+                .entry(key(&dir.chat, slug_of_task(Some(item.task))))
+                .or_default()
+                .check += 1;
+        }
     }
     counts
 }

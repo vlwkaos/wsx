@@ -4939,6 +4939,58 @@ await closeSheet("the page", plansChat);
   fs.rmSync(path.join(plansCheckout, ".env"));
   await go(plansChat);
 }
+// --- Threads (docs/design/chat-system.md "Using threads"): the strip above the composer, New thread,
+// a message written in a thread shows in it and not in the chat, a thread that waits for the owner has
+// its count and one line in the chat; captures of the chat and the thread at both sizes and schemes.
+{
+  const sayIn = (words, extra = {}) => evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(${JSON.stringify({ text: words, ...extra })}) }).then((response) => response.status)`);
+  const chips = () => text(".threads .thread-chip .thread-name");
+  const shown = (words) => evaluate(`[...document.querySelectorAll('.log .bubble')].some((bubble) => bubble.textContent.includes(${JSON.stringify(words)}))`);
+  await resize([390, 844, 2]);
+  await go(`#/p/${project}`);
+  await until("!!document.querySelector('.threads .thread-new') && document.querySelectorAll('.log .bubble').length > 0", "no thread strip above the composer");
+  if ((await chips()).join() !== "Chat") await fail(`the strip of a chat with no thread is ${JSON.stringify(await chips())}`);
+  await click(".thread-new");
+  await until("!!document.querySelector('dialog[open] input[name=title]')", "New thread did not open its form");
+  await typeInto("dialog[open] input[name=title]", "Fee table");
+  await click("dialog[open] button[type=submit]");
+  await until("/\\/t\\/fee-table$/.test(location.hash) && document.querySelector('.threads [aria-current=true] .thread-name')?.textContent === 'Fee table'", "New thread did not open its window");
+  // ^ Written in the thread's window: the message carries the thread, shows there and not in the chat.
+  await typeInto(".composer-field", "In the thread: fee setup");
+  await click(".composer-send");
+  await until(`document.querySelectorAll('.log .bubble').length > 0 && [...document.querySelectorAll('.log .bubble')].some((bubble) => bubble.textContent.includes('In the thread: fee setup'))`, "the message written in the thread is not in its window");
+  await click(".threads .thread-chip:first-child");
+  await until("document.querySelector('.threads [aria-current=true] .thread-name')?.textContent === 'Chat' && document.querySelectorAll('.log .bubble').length > 0", "the Chat chip did not show the chat");
+  if (await shown("In the thread: fee setup")) await fail("the chat shows a message written in a thread");
+  // ^ A question in the thread: its chip has the count, the chat one line for it, and it is listed first.
+  if (await sayIn("ASK which fee line goes first", { thread: "fee-table" }) !== 200) await fail("the question for the thread was not taken");
+  await until("!!document.querySelector('.threads .thread-ask') && !!document.querySelector('.thread-waits')", "the thread that waits has no count and no line in the chat");
+  if (!/Fee table waits for you · 1 question/.test((await text(".thread-waits"))[0] ?? "")) await fail(`the line in the chat is ${JSON.stringify(await text(".thread-waits"))}`);
+  for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
+    await resize([width, height, scale]);
+    for (const scheme of ["dark", "light"]) {
+      await inScheme(scheme);
+      await go(`#/p/${project}`);
+      await until("!!document.querySelector('.thread-waits') && !!document.querySelector('.composer-send')", "the chat with its thread line did not show");
+      await shot(`thread-chat-${width}-${scheme}`, ".composer-send");
+      await click(".threads .thread-chip:nth-child(2)");
+      await until("/Fee table/.test(document.querySelector('.bar-label')?.textContent ?? '') && document.querySelectorAll('.log .bubble').length > 0", "the thread's window did not show");
+      await shot(`thread-window-${width}-${scheme}`, ".composer-send");
+      await click(".more-button");
+      await until("!!document.querySelector('.more-menu')", "the thread's menu did not open");
+      await shot(`thread-menu-${width}-${scheme}`);
+      await key("Escape", 27);
+    }
+    await inScheme("dark");
+  }
+  await resize([390, 844, 2]);
+  // ^ The owner answers it: the count and the line go, and Close thread is refused no more.
+  const asked = await evaluate("fetch('api/tasks/' + " + project + " + '/chat?thread=fee-table').then((r) => r.json()).then((chat) => chat.asks)");
+  if (asked.length !== 1 || await sayIn("this one", { thread: "fee-table", quote_id: asked[0] }) !== 200) await fail(`the question of the thread: ${JSON.stringify(asked)}`);
+  await go(`#/p/${project}`);
+  await until("!!document.querySelector('.threads .thread-new') && !document.querySelector('.thread-ask') && !document.querySelector('.thread-waits')", "the answered thread still waits for the owner");
+}
 // ^ The page's own request rate over the whole journey: its busiest 60 s must stay under REQUESTS_PER_MINUTE
 // and the server must refuse none (`refused`), whatever the waits of this
 // check ask for (`untilApi`). The by-path and by-caller counts name the cause when it fails.

@@ -28,7 +28,7 @@ use wsx_core::task::{
     needs::{self, ChatCounts, Stage, APPROVAL_RANK},
     owner, stall, status,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
-    view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
+    thread, view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
 };
 
 const SUMMARY_CHARS: usize = 240;
@@ -330,6 +330,7 @@ fn build_overview(
         open: open_tasks + waiting_approvals(&approvals).len(),
         needs: needs.len() + asks.len(),
         check: open_checks.len(),
+        asks: asks.len(),
     };
     json!({
         "project": scope.project,
@@ -768,6 +769,7 @@ pub fn chat(
     scope: &Scope,
     chat: Option<&str>,
     (after, find, around): (Option<u64>, Option<&str>, Option<u64>),
+    thread: thread::Scope,
     media: &crate::media::Media,
     granted: &dyn Fn(&str) -> Vec<chat::Attachment>,
 ) -> Outcome<Value> {
@@ -804,6 +806,7 @@ pub fn chat(
         (&scope.name, &scope.store),
         &settings,
         &window,
+        thread,
         |entry| {
             if let ManagerEvent::Message {
                 id,
@@ -847,9 +850,12 @@ pub fn chat(
         .collect();
     let status = manager_status(&dir);
     let busy = status.as_ref().is_some_and(|status| status.busy);
+    let threads = thread::list(&dir, settings.land_auto).map_err(internal)?;
     Ok(json!({
         "manager": manager,
         "rows": rows,
+        // ^ The open threads, waiting first (`thread::list`): the strip reads this order.
+        "threads": threads,
         "skipped": page.skipped,
         "asks": page.asks.iter().map(|ask| ask.id).collect::<Vec<_>>(),
         // ^ This chat's own pending approvals, as the overview lists the first chat's.
@@ -953,6 +959,35 @@ pub fn close_chat(app: &App, scope: &Scope, name: &str) -> Outcome<Value> {
     owner::close_chat((&scope.name, &scope.path), &wsx, name, launcher(app, scope))
         .map_err(|error| Fault::new(409, "invalid_chat", format!("{error:#}")))?;
     Ok(json!({ "ok": true, "chat": name, "state": "closed" }))
+}
+
+/// The owner opens, closes or merges a thread of chat `chat` (the home chat when none) (docs/design/chat-system.md);
+/// the core's refusal (a closed target, a question still open) is 409 `invalid_thread`.
+pub fn thread_act(
+    scope: &Scope,
+    chat: Option<&str>,
+    action: &str,
+    slug: &str,
+    title_or_into: &str,
+) -> Outcome<Value> {
+    let invalid = |error: anyhow::Error| Fault::new(409, "invalid_thread", format!("{error:#}"));
+    let dir = match chat {
+        None => ManagerDir::home(&scope.store)
+            .map_err(internal)?
+            .ok_or_else(Fault::not_found)?,
+        Some(chat) => task::chats::open_chat(chat).map_err(invalid)?,
+    };
+    let slug = match action {
+        "open" => thread::open(&dir, title_or_into).map_err(invalid)?,
+        "close" => thread::close(&dir, slug, "closed by the owner", task::now_unix_ms())
+            .map_err(invalid)?,
+        "merge" => {
+            thread::merge(&dir, slug, title_or_into).map_err(invalid)?;
+            slug.to_string()
+        }
+        _ => return Err(Fault::not_found()),
+    };
+    Ok(json!({ "ok": true, "thread": slug }))
 }
 
 /// The owner sets (or, empty, clears) the name a chat is shown by; its id stays (docs/tasks.md

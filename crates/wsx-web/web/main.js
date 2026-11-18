@@ -118,7 +118,7 @@ function Screen({ route }) {
     return can("task_view") ? html`<${Manager} key=${route.id} project=${route.id} sheet=${route.sheet ?? null} task=${route.task ?? null} item=${route.item ?? null} />` : route.sheet === "panels" ? html`<${PanelsScreen} key=${route.id} project=${route.id} />` : html`<${Project} key=${route.id} id=${route.id} />`;
   }
   // ^ A project's home chat is its manager: the same Manager as its sheets, so a sheet keeps the conversation.
-  if (route.screen === "chat" && can("task_view") && route.id != null) return html`<${Manager} key=${route.room ? `${route.id}/${route.room}` : route.id} project=${route.id} chat=${route.room} />`;
+  if (route.screen === "chat" && can("task_view") && route.id != null) return html`<${Manager} key=${route.room || route.thread ? [route.id, route.room, route.thread].join("/") : route.id} project=${route.id} chat=${route.room} thread=${route.thread} />`;
   if (route.screen === "sessions") return html`<${ProjectSessions} key=${route.id} id=${route.id} />`;
   if (route.screen === "settings") return html`<${Settings} sub=${route.sub} />`;
   if (route.screen === "projects") return html`<${Projects} />`;

@@ -143,6 +143,7 @@ pub(crate) fn chat(
         (&name, &project_id),
         &settings,
         &window,
+        wsx_core::task::thread::Scope::All,
         |_| {},
     )?;
     let asks: Vec<u64> = page.asks.iter().map(|ask| ask.id).collect();

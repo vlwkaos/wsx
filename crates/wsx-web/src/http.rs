@@ -103,6 +103,7 @@ pub fn router(app: Shared) -> Router {
                 "/api/tasks/{project}/chats/{name}/dismiss",
                 post(tasks_chat_dismiss),
             )
+            .route("/api/tasks/{project}/threads/{action}", post(tasks_thread))
             .route("/api/tasks/{project}", get(tasks_overview))
             .route("/api/tasks/{project}/chat", get(tasks_chat))
             .route("/api/tasks/{project}/since", get(tasks_since))
@@ -1188,6 +1189,35 @@ async fn tasks_chat_close(
     .map(Json)
 }
 
+/// The body of a thread action: `open` takes `title`, `close` `thread`, `merge` `thread` and `into`.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct ThreadInput {
+    chat: Option<String>,
+    thread: String,
+    title: String,
+    into: String,
+}
+
+async fn tasks_thread(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    UrlPath((project, action)): UrlPath<(u64, String)>,
+    Json(input): Json<ThreadInput>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, true)?;
+    act_budget(&app, &device)?;
+    let other = if action == "open" {
+        &input.title
+    } else {
+        &input.into
+    };
+    with_scope(&app, project, |scope| {
+        crate::tasks::thread_act(scope, input.chat.as_deref(), &action, &input.thread, other)
+    })
+    .map(Json)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TitleInput {
@@ -1322,6 +1352,9 @@ struct AfterQuery {
     find: Option<String>,
     /// The chat around this message id, for a tap on a quote (docs/web-client-chat.md).
     around: Option<u64>,
+    /// Only the rows of this thread; empty is the chat's own rows, none every row
+    /// (docs/design/chat-system.md).
+    thread: Option<String>,
 }
 
 async fn tasks_chat(
@@ -1341,6 +1374,7 @@ async fn tasks_chat(
             scope,
             query.chat.as_deref(),
             (query.after, query.find.as_deref(), query.around),
+            wsx_core::task::thread::Scope::of(query.thread.as_deref()),
             &app.media,
             &|text| {
                 // ^ Pictures and videos of the main checkout that a message shows.

@@ -34,7 +34,11 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
         return;
     }
     let width = inner.width as usize;
-    let top = vec![heading(chat, width), status(chat, width), Line::raw("")];
+    let top = vec![
+        heading(chat, width),
+        status(chat, width),
+        threads_line(chat),
+    ];
     // ^ The items take at most a third of the height; the chat keeps the rest.
     let (items, item_selected) = item_lines(chat, width);
     let room = inner.height.saturating_sub(top.len() as u16 + 1);
@@ -291,6 +295,9 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
                 ];
             }
             let mut hints = vec!["(i)message".into(), "(/)find".into()];
+            if !chat.threads.is_empty() {
+                hints.push("(t/T)thread".into());
+            }
             if !links(&chat.rows).is_empty() {
                 hints.push("([/])link".into());
             }
@@ -375,6 +382,39 @@ fn heading(chat: &ManagerChat, width: usize) -> Line<'static> {
         Span::raw(" ".repeat(width.saturating_sub(used).max(2))),
         Span::styled(counts, Style::default().fg(theme::TEXT_MUTED)),
     ])
+}
+
+/// The chat's own rows and each open thread in the order of `thread::list`, the one shown
+/// reversed; a thread that waits for the owner has its count (docs/design/chat-system.md). The
+/// line under the status; empty while the chat has no thread.
+fn threads_line(chat: &ManagerChat) -> Line<'static> {
+    if chat.threads.is_empty() {
+        return Line::raw("");
+    }
+    let chip = |label: String, on: bool| {
+        let style = match on {
+            true => Style::default()
+                .fg(theme::ACCENT)
+                .bold()
+                .add_modifier(Modifier::REVERSED),
+            false => Style::default().fg(theme::TEXT_MUTED),
+        };
+        Span::styled(label, style)
+    };
+    let mut spans = vec![chip(" Chat ".into(), chat.thread.is_none())];
+    for found in &chat.threads {
+        let waiting = found.counts.needs + found.counts.check;
+        let label = match waiting {
+            0 => format!(" {} ", found.title),
+            n => format!(" {} {n} ", found.title),
+        };
+        spans.push(Span::raw(" "));
+        spans.push(chip(
+            label,
+            chat.thread.as_deref() == Some(found.slug.as_str()),
+        ));
+    }
+    Line::from(spans)
 }
 
 /// A read failure, else what the last action said, else what runs, else whether the

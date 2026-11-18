@@ -528,6 +528,9 @@ pub struct ChatRow {
     /// An event line's leading task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<u32>,
+    /// The thread the row is in: its message's or reply's, else its task's (`thread::Scope`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
     /// A `Talk` row's messages, oldest first; its `text` is empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub said: Vec<Said>,
@@ -576,6 +579,9 @@ impl ChatRow {
             quoted_id: None,
             quoted_check: None,
             task: None,
+            thread: super::thread::row_threads(entry)
+                .first()
+                .map(|slug| slug.to_string()),
             said: Vec::new(),
             tokens: Vec::new(),
             asks: false,
@@ -622,6 +628,7 @@ pub fn read_for(
     (project, store_id): (&str, &str),
     settings: &crate::model::workspace::TaskConfig,
     window: &Window,
+    scope: super::thread::Scope,
     edit: impl FnMut(&mut ManagerEntry),
 ) -> Result<Reading> {
     let shown = settings.manager_shown_name(project);
@@ -638,7 +645,7 @@ pub fn read_for(
     let viewer = super::chats::Viewer::new(store_id, dir.map(|dir| dir.chat.as_str()));
     let approvals = super::chats::approvals_of(super::store::read_approvals(store_id)?, &viewer);
     let items = super::chats::checks_of(store_id, super::checks::open_items(store_id)?, &viewer);
-    let page = match dir {
+    let mut page = match dir {
         Some(dir) => page(
             dir,
             window,
@@ -649,6 +656,9 @@ pub fn read_for(
         )?,
         None => Page::default(),
     };
+    if let Some(dir) = dir {
+        super::thread::scope_rows(dir, scope, &mut page.rows)?;
+    }
     Ok(Reading {
         page,
         approvals,

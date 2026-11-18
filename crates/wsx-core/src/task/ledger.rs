@@ -147,7 +147,13 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
     // (docs/tasks.md "Chats").
     let chats: Vec<Value> = super::chats::open_rows(&project_id, settings.land_auto)
         .into_iter()
-        .map(|(_, row)| row)
+        .map(|(dir, mut row)| {
+            // ^ The chat's open threads in the one order of `thread::list`, for the TUI's rows
+            // under it; the web reads them from the chat's own read.
+            row["threads"] = super::thread::list(&dir, settings.land_auto)
+                .map_or_else(|_| json!([]), |threads| json!(threads));
+            row
+        })
         .collect();
     let mut ledger = json!({
         "project": project_name,

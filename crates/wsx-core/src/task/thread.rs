@@ -4,15 +4,17 @@
 //! A row of the chat log carries the bare slug; a task, a memory record and a search record carry
 //! the key `<chat>/<slug>`, since chat names are unique on the machine and those live in the
 //! project. ref: docs/tasks.md "Threads", docs/design/chat-system.md
-use super::chat::{asking, OpenAsk};
+use super::chat::{asking, ChatRow, OpenAsk};
 use super::chats::{approvals_of, checks_of, Viewer};
 use super::checks::{self, CheckState};
 use super::manager::{pending_approvals, ApprovalLine, ManagerEntry, ManagerEvent};
+use super::needs::{self, ChatCounts};
 use super::store::{self, contains_bytes, ManagerDir, TaskDir, FIRST_READ_BYTES};
 use super::view::{checked_title, clip, project_tasks, readable_title};
 use super::{call_task_host, HostRequest};
 use anyhow::{bail, Result};
-use std::collections::BTreeMap;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, HashMap};
 
 /// The longest slug: the title's words, cut at a word.
 const MAX_SLUG_CHARS: usize = 40;
@@ -333,6 +335,128 @@ pub fn of_task(project_id: &str, task: u32) -> Option<String> {
         .read_record()
         .ok()?
         .thread
+}
+
+/// How far back from the log's end `list` looks for the newest row of a thread.
+const ACTIVITY_BYTES: u64 = 256 * 1024;
+
+/// An open thread as the strip lists it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Listed {
+    pub slug: String,
+    pub title: String,
+    pub opened_ms: u64,
+    /// The newest row of the thread in the log's tail, else when it opened.
+    pub last_ms: u64,
+    /// The slug and the slugs of the threads merged into it: what a question carries, and, after
+    /// the chat's name and a `/`, a task, a To check item or an approval.
+    pub slugs: Vec<String>,
+    /// What waits for the owner here (`needs`, the one rule of For you).
+    pub counts: ChatCounts,
+    /// `counts` in words ("1 question, 1 check"); empty when nothing waits.
+    pub waits: String,
+}
+
+/// The open threads of the chat in the order every list of them shows: those that wait for the
+/// owner first, whatever their age, then the rest by last activity, newest first. The web strip,
+/// the TUI and `wsx task thread list` all read this one order.
+pub fn list(dir: &ManagerDir, land_auto: bool) -> Result<Vec<Listed>> {
+    let threads = Threads::read(dir)?;
+    let counts = needs::thread_counts(dir, land_auto, |slug| threads.resolve(slug).to_string());
+    let tail = dir.read_tail(ACTIVITY_BYTES)?;
+    let mut listed: Vec<Listed> = threads
+        .open_list()
+        .into_iter()
+        .map(|found| {
+            let counts = counts
+                .get(&Some(found.slug.clone()))
+                .copied()
+                .unwrap_or_default();
+            let here = |slug: &str| threads.resolve(slug) == found.slug;
+            let last_ms = tail
+                .iter()
+                .filter(|entry| row_threads(entry).into_iter().any(here))
+                .map(|entry| entry.unix_ms)
+                .max()
+                .unwrap_or(0)
+                .max(found.opened_ms);
+            Listed {
+                slug: found.slug.clone(),
+                title: found.title.clone(),
+                opened_ms: found.opened_ms,
+                last_ms,
+                slugs: threads
+                    .0
+                    .keys()
+                    .filter(|slug| here(slug))
+                    .cloned()
+                    .collect(),
+                waits: counts.waits_words(),
+                counts,
+            }
+        })
+        .collect();
+    listed.sort_by_key(|found| {
+        (
+            !found.counts.waits(),
+            Reverse(found.last_ms),
+            found.opened_ms,
+        )
+    });
+    Ok(listed)
+}
+
+/// Which rows of a chat a read keeps: every row, the trunk's (rows in no open thread), or those of
+/// one thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope<'a> {
+    All,
+    Trunk,
+    Thread(&'a str),
+}
+
+impl<'a> Scope<'a> {
+    /// A request's `thread`: none is every row, empty the trunk, else that thread.
+    pub fn of(param: Option<&'a str>) -> Self {
+        match param.map(str::trim) {
+            None => Self::All,
+            Some("") => Self::Trunk,
+            Some(slug) => Self::Thread(slug),
+        }
+    }
+}
+
+/// Keep the rows of `scope`. A row is in the thread of its message or reply, else of its task,
+/// after merges; a row of a thread that is closed reads as the trunk's, so none is lost to view.
+/// Rows of an unscoped read keep what they were written with.
+pub fn scope_rows(dir: &ManagerDir, scope: Scope, rows: &mut Vec<ChatRow>) -> Result<()> {
+    if scope == Scope::All {
+        return Ok(());
+    }
+    let threads = Threads::read(dir)?;
+    let wanted = match scope {
+        Scope::Thread(slug) => Some(threads.resolve(slug).to_string()),
+        _ => None,
+    };
+    let mut of_tasks: HashMap<u32, Option<String>> = HashMap::new();
+    for row in rows.iter_mut() {
+        let slug = match (row.thread.take(), row.task) {
+            (Some(slug), _) => Some(slug),
+            (None, Some(task)) => of_tasks
+                .entry(task)
+                .or_insert_with(|| {
+                    of_task(&dir.project_id, task)
+                        .and_then(|found| slug_in(&dir.chat, &found).map(str::to_string))
+                })
+                .clone(),
+            (None, None) => None,
+        };
+        row.thread = slug
+            .map(|slug| threads.resolve(&slug).to_string())
+            .filter(|slug| threads.get(slug).is_some_and(|found| found.open));
+    }
+    rows.retain(|row| row.thread == wanted);
+    Ok(())
 }
 
 /// A search's `--thread`: one thread of one chat. A key of a thread merged into it matches too.
