@@ -155,6 +155,12 @@ export function useReply(onReply) {
       if (opened) setMenu({ row: now.row, x: event.clientX, y: event.clientY });
     },
     onPointerCancel: end,
+    // ^ A swipe owns its touch from the moment it starts: a cancelled touchmove leaves the browser no scroll to
+    // take, so the thumb's arc turning down does not end the swipe with a pointercancel (iOS Safari takes the
+    // vertical pan late, Chrome decides the direction once at the start). Preact adds it non-passive.
+    onTouchMove: (event) => {
+      if (gesture.current?.swiping && event.cancelable) event.preventDefault();
+    },
     onContextMenu: (event) => {
       const found = event.pointerType !== "touch" && row(event);
       if (!found) return;

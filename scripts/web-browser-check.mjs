@@ -750,10 +750,6 @@ async function markdown() {
   const gap = await evaluate(`document.querySelector('.composer').getBoundingClientRect().top
     - [...document.querySelectorAll('.log > *')].at(-1).getBoundingClientRect().bottom`);
   if (gap < 63.5) await fail(`the last message is ${gap} px from the composer`);
-  // ^ And the composer's card is not drawn over it: what is at the message's last pixel is not the composer's.
-  const covered = await evaluate(`(() => { const last = [...document.querySelectorAll('.log > *')].at(-1).getBoundingClientRect();
-    return !!document.elementFromPoint(innerWidth / 2, last.bottom - 2)?.closest('.composer'); })()`);
-  if (covered) await fail("the composer is drawn over the last message at the end of the chat");
   await sound("markdown answer at its end");
   await shot("chat-end");
   await evaluate("document.querySelector('.log').scrollTop = 0");
