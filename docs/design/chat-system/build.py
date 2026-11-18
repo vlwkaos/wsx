@@ -60,7 +60,7 @@ def trays(play=0, you=0):
 
 # name, the projects the chat involves, the message, unread, time, running tasks, items for you
 CHATS = [
-    ("wsx", "wsx", "Task 496 waits for your check", True, "2m ago", 3, 2),
+    ("wsx", "wsx", "Task 496 waits for your check", True, "2m ago", 3, 3),
     ("Fee table", "studio-app", "Draft ready: the table has 3 fee lines", True, "14m ago", 0, 1),
     ("machine", "dotfiles, shopfront", "Both repos are in sync", False, "52m ago", 0, 0),
     ("research", "wsx", "I found two ways to cut the poll; notes are in the log", False, "1h ago", 1, 0),
@@ -101,7 +101,8 @@ def bar(title, state, menu=False, items=("Rename chat", "Close chat")):
 
 
 def strip(active):
-    chips = [("Chat", 0), ("Fee table", 1), ("Poll cut", 0)]
+    # a thread that waits for you first, with its count, whatever its age; the rest by last activity
+    chips = [("Chat", 0), ("Fee table", 2), ("Changelog", 0), ("Poll cut", 0)]
     return ('<nav class="threads" aria-label="Threads">%s<button class="thread-new" type="button" aria-label="New thread">%s</button></nav>'
             % ("".join('<a class="thread-chip" href="#" aria-current="%s">%s%s</a>' % ("true" if n == active else "false", e(n), '<span class="thread-ask">%d</span>' % k if k else "")
                        for n, k in chips), icon("plus")))
@@ -135,15 +136,16 @@ def chat_trunk():
             + note('<span class="chip">#94</span> landed · 2 of 2 checks')
             + note("Talked to research · Show")
             + note("Opened the thread <b>Fee table</b> from your message of 13:40 · #96")
-            + note("<b>Poll cut</b> closes tomorrow. Write in it to keep it open."))
+            + note('<b>Fee table</b> waits for you · 1 question, 1 check · <a href="#">Open</a>')
+            + note("<b>Changelog</b>: #97 working, nothing waits for you"))
     return '<div class="page manager">%s%s<div class="chat"><div class="scroll chat-body">%s</div>%s</div></div>' % (
-        bar("wsx", "", menu=False), strip("Chat"), body, composer())
+        bar("wsx", "", menu=False), strip("Chat"), body, composer(you=3))
 
 
 def thread_page(menu=False):
     body = (tasks_in([(96, "Fee table: add the setup fee line", "unchecked", "attention", "waits for your check · 2 of 2 checks"),
                       (98, "Fee table: round to whole cents", "play", "working", "working · build 2/3")])
-            + note("Thread opened 13:40 · 1 question for you")
+            + note("Thread opened 13:40 · 1 question and 1 check for you")
             + bubble("out", "Put the fee table in the invoice page too.", time="13:40")
             + bubble("in", "Started #96 for the invoice page and #98 for the rounding. One question: which fee line goes first, setup or monthly?", "manager", "13:44", asks=True)
             + note('<span class="chip">#98</span> working · build 2/3'))
