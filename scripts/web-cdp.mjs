@@ -156,7 +156,8 @@ export function requestRates({ requests }) {
   return {
     total: requests.length, busiest: all.length, own: own.length, refused: all.filter((request) => request.status === 429).length,
     minutes: requests.length ? Math.round((requests.at(-1).at - requests[0].at) / 600) / 100 : 0,
-    // ^ Where the busiest window lies: seconds from the first request.
+    // ^ Where the busiest window lies (seconds from the first request) and which requests the server refused.
+    refusedBy: Object.entries(all.filter((request) => request.status === 429).reduce((by, request) => ({ ...by, [`${request.method} ${request.path}`]: (by[`${request.method} ${request.path}`] ?? 0) + 1 }), {})),
     window: all.length ? [Math.round((all[0].at - requests[0].at) / 1000), Math.round((all.at(-1).at - requests[0].at) / 1000)] : null, byPath: count("path"), byCaller: count("from"),
   };
 }
