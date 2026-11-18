@@ -9,6 +9,7 @@ WSX_SCENARIO_PART) runs one part; none runs all. ref: docs/tasks.md
 """
 import argparse
 import atexit
+import calendar
 import datetime
 import fcntl
 import hashlib
@@ -271,6 +272,52 @@ def forget_notes(store, notes):
             if record.get('kind') != 'rule' and not record.get('slug', '').startswith(('section-', 'memo-', 'start-', 'rotation-', 'handover-')):
                 kept.append(line + '\n')
         log.write_text(''.join(kept))
+
+
+def import_notes(store, notes):
+    """Records for the old notes files present in `notes`, as a store that was imported has them, and the
+    hash of each file in views.json, so the next write renders the files again from the records and
+    the fixture's lines stay (docs/memory.md "Notes"). Call it after `forget_notes` and the writes."""
+    memory = store / 'memory'
+    memory.mkdir(exist_ok=True)
+    now = int(time.time() * 1000)
+    lines, names = [], ('decisions.md', 'decisions-archive.md', 'context-archive.md', 'context.md')
+    text = {name: (notes / name).read_text() if (notes / name).is_file() else '' for name in names}
+
+    def add(slug, kind, status, body, updated, **more):
+        lines.append(json.dumps(dict(op='import', slug=slug, kind=kind, status=status, text=body, source='path:fixture',
+                                     updated=updated, **more)) + '\n')
+
+    for name, status in (('decisions.md', 'active'), ('decisions-archive.md', 'superseded')):
+        rows = text[name].splitlines()
+        for at, row in enumerate(rows):
+            body = row[2:].strip() if row.startswith('- ') else ''
+            if not body:
+                continue
+            day, _, rest = body.partition(' ')
+            try:
+                ms = calendar.timegm(time.strptime(day, '%Y-%m-%d')) * 1000
+            except ValueError:
+                ms = None
+            dated = ms is not None and bool(rest.strip())
+            words = rest.strip() if dated else body
+            updated = ms + at if dated else now - len(rows) + at
+            add('rule-' + hashlib.sha256(row.strip().encode()).hexdigest()[:16], 'rule', status, words, updated,
+                words=words, decided=updated, **({} if dated else {'undated': True}))
+    index = 0
+    for name in ('context-archive.md', 'context.md'):
+        for row in text[name].splitlines():
+            if not row.strip():
+                continue
+            index += 1
+            memo = re.match(r'- #(\d+):\s*(.+)', row)
+            if memo:
+                add('memo-%s-%s' % (memo[1], hashlib.sha256(memo[2].strip().encode()).hexdigest()[:16]), 'episode', 'active', memo[2].strip(), now + index)
+            elif name == 'context.md':
+                add('section-' + hashlib.sha256(row.rstrip().encode()).hexdigest()[:16], 'fact', 'active', row.rstrip(), now + index)
+    with open(memory / 'records.jsonl', 'a') as log:
+        log.writelines(lines)
+    (memory / 'views.json').write_text(json.dumps({name: hashlib.sha256(text[name].encode()).hexdigest() for name in names}))
 
 
 def memory_records(raw):
@@ -2582,12 +2629,13 @@ def part_core(created=None):
     notes.mkdir(exist_ok=True)
 
     def put(name, text=None):
-        # ^ decisions.md and context.md are views of the records: a fixture is written as old notes (forget_notes).
+        # ^ decisions.md and context.md are views of the records: a fixture is old notes with the records of an imported store (forget_notes, import_notes).
         forget_notes(Path(created['task_dir']).parent, notes)
         if text is None:
             (notes / name).unlink(missing_ok=True)
         else:
             (notes / name).write_text(text)
+        import_notes(Path(created['task_dir']).parent, notes)
 
     put('decisions.md', '- 2026-10-22 keep the store in sqlite\n')
     outside = manager_log.parent.parent / 'outside-context.md'
