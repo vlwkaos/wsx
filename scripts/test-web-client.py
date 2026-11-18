@@ -5342,10 +5342,11 @@ merge_seconds = 3
              'the followers wait')
         chained = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         shown = [row['id'] for row in chained['tasks'] if row['state'] != 'landed']
-        ledger_all = [row['id'] for row in js('task', 'ledger', '-p', 'demo')['open']]
-        assert by_notes in ledger_all and by_notes in task_ids('?chat=notes'), (by_notes, ledger_all)
-        ledger_ids = [n for n in ledger_all if n != by_notes]
-        # ^ The ledger lists every open task of the project; the home overview leaves out what the open chat `notes` made (`chats::owner`): the same order otherwise.
+        # ^ The ledger lists the open tasks of the project (the least urgent cut at 16 KiB, `open_omitted`); the home overview leaves out what an open chat made
+        # (`chats::owner`): the same order otherwise.
+        of_chats = {n for chat in chained['chats'] for n in task_ids('?chat=' + chat['name'])}
+        assert by_notes in of_chats, (by_notes, of_chats)
+        ledger_ids = [row['id'] for row in js('task', 'ledger', '-p', 'demo')['open'] if row['id'] not in of_chats]
         assert [row['id'] for row in chained['tasks']][:len(ledger_ids)] == ledger_ids, (ledger_ids, chained['tasks'])
         places = {row['id']: row['flow']['place'] for row in chained['tasks']}
         assert [places[n]['holds'] for n in fixture] == [2, 1, 0, 1, 0], places
