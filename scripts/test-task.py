@@ -8965,7 +8965,8 @@ def part_host(created=None):
     reopened = js('task', 'say', '--thread', billing, 'STATUS reopen')['id']
     assert threads()[billing]['open'] and row(reopened)['thread'] == billing, threads()[billing]
     chat_reply(chat42, reopened)
-    for task in (trunk_task, parent42, child42, waits42, merged_task):
+    # ^ A task with open children is closed after them.
+    for task in (trunk_task, merged_task, waits42, child42, parent42):
         js('task', 'close', task, '--discard')
 
     # 43. Open work from before threads (docs/tasks.md "Threads", docs/design/chat-system.md "Migration"):
