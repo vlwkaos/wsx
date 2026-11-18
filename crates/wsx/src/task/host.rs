@@ -1201,7 +1201,6 @@ impl Host {
         ))
     }
 
-    /// Hold the task for the owner to try before it lands, or release it.
     /// The task joins a thread of its chat (`wsx task thread move`).
     fn set_thread(&mut self, thread: String) -> Result<String> {
         self.record.thread = Some(thread.clone());

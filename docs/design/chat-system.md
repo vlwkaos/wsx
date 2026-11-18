@@ -213,3 +213,32 @@ Step 2 and steps 3 to 5 do not depend on threads and can run in any order. Steps
 | 3 | One list is named For you: the pill. The Tasks list drops its For you band and keeps one row "2 wait for you". Home gets a For you row on top that lists every item of every chat, grouped by chat and thread. OK? | Yes. Same word, two lists today (`trays.js:12`, `task_list.rs:99`). 25 items a day need one place |
 | 4 | **Answered (5278, 5280).** No cap and no automatic close. A thread closes by hand: you (Close thread) or the manager (one command, with one line in the chat). The manager closes a thread when its tasks have landed and nothing waits on you. The strip lists by last activity; a thread that waits for you is always first with its count, and its items stay in For you. | Done. Step 6 reports the open count for each chat after a week, so you can set a cap with a number later |
 | 5 | Remove `overview.md` once the open-thread list shows (deep-refactor Q3)? | Yes, in step 9: the list is built from wsx's data with no model call |
+
+## Migration
+
+Chats from before threads (owner 5291). Old log rows, `task.json` and records have no `thread` and read as the trunk; no file is rewritten and no old reader stays. Open work is placed once per chat: when a chat's host starts and its folder lacks `threads-placed`, its manager gets one turn with the fixed text of `thread::Unplaced::text` (the same for every adapter), opens a thread per subject (`thread open`) and moves tasks and open questions in (`thread move <slug> <task>... [--ask <reply id>...]`); approvals and To check items follow their task. A chat with nothing open gets no turn. A chat made now has the mark from the start. Closed and landed work with nothing open stays in the trunk; named chats stay chats; a closed chat gets no turn (no host) and its work reads as the home chat's (`chats::owner`).
+
+Proof, on a copy of this machine's state (a one-off script, not kept; `rsync` of `tasks/` without scratch and check logs, the config, `HOME` and `XDG_STATE_HOME` pointed at the copy; 18 chat folders, 16 read; `auwsx` has no registered project and `research` is closed, so both are skipped). The manager is stood in for by a script that opens `Subject <n>` for each open task and each landed task that owns an open item, and moves the open questions into `Open questions` with the real `thread open` and `thread move`; real agents cannot run in the boundary. The copy has no running task host, so 15 task moves were written into `task.json` by the script, which is what the host does (scenario part 43 runs the host path). Chats with nothing open (notevault, dotfiles, projq, mentoring, repetit, projr) are not listed: 0 before, 0 after, no turn.
+
+| chat | open root tasks | open questions | approvals | To check | in trunk after (tasks / questions / approvals / To check) | text bytes |
+|---|---|---|---|---|---|---|
+| studio-app (home) | 1 | 0 | 0 | 7 | 0/0/0/0 | 1225 |
+| ir (home) | 1 | 1 | 0 | 0 | 0/0/0/0 | 683 |
+| projk (home) | 1 | 0 | 0 | 1 | 0/0/0/0 | 630 |
+| shopfront (home) | 0 | 1 | 0 | 5 | 0/0/0/0 | 994 |
+| pr-review (home) | 0 | 1 | 0 | 0 | 0/0/0/0 | 691 |
+| projp (home) | 0 | 0 | 0 | 1 | 0/0/0/0 | 597 |
+| projy (home) | 0 | 0 | 0 | 9 | 0/0/0/0 | 1112 |
+| skiller (home) | 0 | 1 | 0 | 0 | 0/0/0/0 | 610 |
+| web-income (named) | 2 | 0 | 0 | 2 | 0/0/0/0 | 808 |
+| wsx (home) | 10 | 0 | 0 | 0 | 0/0/0/0 | 1042 |
+| **total, 10 chats** | 15 | 4 | 0 | 25 | 0 / 0 / 0 / 0 | 597 to 1,225 |
+
+| Check on the copy, per chat, before and after the placing | Result |
+|---|---|
+| `wsx task chat --json` and `--after 0` (the rows) | identical in all 16 chats: `thread_open`, `thread_closed`, `thread_merged` and `thread_moved` events are not chat rows |
+| open questions (`asks` of `wsx task chat --json`) | same ids, 4 of 4 reachable; each now carries its thread |
+| approvals, `wsx task check --json` (To check list) | identical |
+| left in the trunk after the stand-in | 0, because every open task, question and item had a subject; a manager that leaves one out leaves it in the trunk, listed by `thread unplaced` |
+
+Not run on the copy: the web client (it reads the same `chat_rows` of wsx-core; the `web` scenario and `test-task.py` section 43 read them through the real web and host). Cost of the one turn, measured from the manager logs: 10 of 16 chats have open work and get a turn; the text is 597 to 1,225 bytes. A manager turn that answers only events cost a median of 127,071 micro-USD over 2,161 replies (usage of each reply in the 16 `log.jsonl` read), and a reply of exactly `-` 32,876 micro-USD over 175 replies. The placing turn also runs one `thread open` and one `thread move` for each subject, so the estimate for the 10 chats is $0.33 (all quiet) to $1.27 (all median), paid once. Not measured with a real agent.
