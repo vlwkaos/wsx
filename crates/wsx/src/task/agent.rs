@@ -849,11 +849,13 @@ impl AgentProcess {
 /// ID is still the leader's own.
 impl Drop for AgentProcess {
     fn drop(&mut self) {
-        drop(self.input.take());
         let leader = self.child.id() as libc::pid_t;
         let marker = &self.marker;
         let tree = || Tree::find(&[leader], |_, env| env.contains(&marker.as_slice()));
+        // ^ Before stdin closes: an agent that reads its end ends at once, and the scan takes
+        // long enough for it to end before the SIGTERM it should have got.
         let first = tree();
+        drop(self.input.take());
         wsx_core::process::signal_group(leader, libc::SIGTERM);
         first.signal(libc::SIGTERM);
         let deadline = Instant::now() + wsx_core::process::STOP_GRACE;

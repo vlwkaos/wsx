@@ -137,21 +137,41 @@ def trace(record):
         out.write(json.dumps(record) + '\n')
 
 
-def leak(session):
+def leak(session, orphans=False):
     # ^ LEAK: two tool processes left running, one in the agent's process group and one in a
     # session of its own, as Claude's Bash tool starts its shells. Both keep its environment.
-    kids = [subprocess.Popen(['sleep', '600'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+    # ORPHANS (LEAKEXIT): the agent ends at once, so they are children of init when its host
+    # looks. macOS gives no environment for an Apple binary such as /bin/sleep, so their mark
+    # is readable only on this interpreter's process, which is not one.
+    argv = [sys.executable, '-c', 'import time; time.sleep(600)'] if orphans else ['sleep', '600']
+    kids = [subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=own) for own in (False, True)]
     trace({'leak': [kid.pid for kid in kids], 'agent': os.getpid(), 'session': session})
 
 def escape(session):
-    # ^ ESCAPE: what a daemon a worker started does (a wsxd of its own, from its copy's target/).
+    # ^ ESCAPE: what a daemon a worker started does (a wsxd of its own, from its copy's target/):
+    # its own session, no environment, and a parent that has ended (a double fork), so the
+    # agent's tree stop (mark, parent pids) does not find it; only `close` and the sweep do.
     source = '#include <unistd.h>\nint main(void) { sleep(600); return 0; }\n'
     binary = os.path.join(os.getcwd(), 'escape-bin')
     subprocess.run(['cc', '-x', 'c', '-', '-o', binary], input=source, text=True, check=True)
-    kid = subprocess.Popen([binary], env={}, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, start_new_session=True)
-    trace({'escape': kid.pid, 'bin': binary, 'session': session})
+    read, write = os.pipe()
+    if os.fork() == 0:
+        os.setsid()
+        pid = os.fork()
+        if pid == 0:
+            null = os.open(os.devnull, os.O_RDWR)
+            for fd in (0, 1, 2):
+                os.dup2(null, fd)
+            os.closerange(3, 256)
+            os.execve(binary, [binary], {})
+        os.write(write, str(pid).encode())
+        os._exit(0)
+    os.close(write)
+    pid = int(os.read(read, 32))
+    os.close(read)
+    os.wait()
+    trace({'escape': pid, 'bin': binary, 'session': session})
 
 SESSION = MODEL = None
 THOUGHT = ''  # ^ The words of the last `THINK` part: the manager's follow-up writes them as its answer.
@@ -642,7 +662,7 @@ def main():
             emit({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'x' * (5 << 20)}]}})
         # ^ Workers only: a manager's event lines carry task titles.
         if project is None and ('LEAK' in words or 'LEAKEXIT' in words):
-            leak(session)
+            leak(session, orphans='LEAKEXIT' in words)
         if project is None and 'ESCAPE' in words:
             escape(session)
         if project is None and 'LEAKEXIT' in words:
