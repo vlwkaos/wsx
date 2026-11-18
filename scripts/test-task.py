@@ -8906,9 +8906,9 @@ def part_host(created=None):
     clash = cli('task', 'new', '--into', parent42, '--thread', speed, 'NOOP y', ok=False).stderr
     assert 'joins %s' % key in clash and len(js('task', 'list')['tasks']) == made, clash
     # ^ A message is tagged by its window (`say --thread`) or the message it quotes, else it is in
-    # the trunk. The first message is slow, so the next ones come in one turn.
+    # the trunk. The first message takes 25 s (LONG), so the next three come in one turn.
     row = lambda i: next(e for e in chat_entries(chat42) if e.get('id') == i)
-    slow = js('task', 'say', '--thread', billing, 'SLOW marmot billing')['id']
+    slow = js('task', 'say', '--thread', billing, 'LONG marmot billing')['id']
     lynx = js('task', 'say', '--thread', speed, 'STATUS lynx speed')['id']
     otter = js('task', 'say', '> message %d\n\nSTATUS otter quoted' % slow)['id']
     stoat = js('task', 'say', 'STATUS stoat trunk')['id']
