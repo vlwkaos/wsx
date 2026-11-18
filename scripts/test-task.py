@@ -9003,7 +9003,9 @@ def part_host(created=None):
     placing = wait(lambda: next((e for e in chat_entries('old') if e['kind'] == 'message' and 'Place the open work below once.' in e['text']), None),
                    'the placing turn of the old chat', 90)
     assert placing['text'].count('#%d ' % old_work) == 1 and 'wsx task thread move' in placing['text'], placing
-    wait(lambda: show(old_work)['record'].get('thread', '').startswith('old/'), lambda: 'the manager placed #%d: %s' % (old_work, show(old_work)['record']), 60)
+    # ^ The fake manager moves the open questions last, so the `thread_moved` event ends the placing.
+    wait(lambda: any(e['kind'] == 'thread_moved' for e in chat_entries('old')), lambda: 'the manager placed the work: %s' % chat_entries('old')[-4:], 60)
+    assert show(old_work)['record'].get('thread', '').startswith('old/'), show(old_work)['record']
     old_log = chat_entries('old')
     assert [e['thread'] for e in old_log if e['kind'] == 'thread_open'] == ['subject-%d' % old_work, 'open-questions'], old_log
     assert any(e['kind'] == 'thread_moved' for e in old_log), old_log
