@@ -3,8 +3,11 @@
 //! agent may do is its role's group of [`Capability`] values, cut down to the ones its
 //! `[[agents]]` entry passed. Three consumers read it: the Seatbelt profile
 //! (`wsx/src/task/boundary.rs`), the brokers' command check (`broker.rs`, `host.rs`) and the
-//! approval rules of the outward commands (`WSX_TASK_TRUST`).
-//! ref: docs/tasks.md "Chats", "Permissions"; docs/design/local-model-fallback.md 3.2, 5
+//! approval rules of the outward commands (`WSX_TASK_TRUST`). What a role may reach in another
+//! project and lend a worker is in the same table, and the instruction lines an agent reads
+//! are built from it, so a prompt never promises what a broker refuses.
+//! ref: docs/tasks.md "Chats", "Permissions"; docs/design/local-model-fallback.md 3.2, 5;
+//! docs/design/chat-capability.md
 
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
@@ -146,7 +149,16 @@ impl Caps {
 pub struct RoleInfo {
     pub name: &'static str,
     pub caps: &'static [Capability],
+    /// The `wsx task` commands the role runs in another project's store (`-p <other>`), with its
+    /// numbers, checks and land target. `ledger` (a read) and `say --from-chat` (to that
+    /// project's home chat) are open to a role with any reach; `--discard` never is.
+    pub reach: &'static [&'static str],
 }
+
+/// What the manager, and so every chat, runs in another project.
+const MANAGER_REACH: [&str; 9] = [
+    "new", "show", "list", "add", "steer", "stop", "hold", "land", "close",
+];
 
 /// The one role enum: a launch site's role, and the job a fallback choice fills.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,6 +178,7 @@ pub const ROLES: [(Role, RoleInfo); 3] = [
         RoleInfo {
             name: "manager",
             caps: &ALL,
+            reach: &MANAGER_REACH,
         },
     ),
     (
@@ -173,6 +186,7 @@ pub const ROLES: [(Role, RoleInfo); 3] = [
         RoleInfo {
             name: "organizer",
             caps: &[Read, Answer, Backlog, Note, Recall],
+            reach: &[],
         },
     ),
     (
@@ -180,6 +194,7 @@ pub const ROLES: [(Role, RoleInfo); 3] = [
         RoleInfo {
             name: "worker",
             caps: &[Result, Recall, Remember],
+            reach: &[],
         },
     ),
 ];
@@ -197,6 +212,52 @@ impl Role {
         Caps::of(self.info().caps)
     }
 
+    /// Whether the role runs `sub` (a `wsx task` subcommand, not `--discard`) in another project.
+    pub fn reaches(self, sub: &str) -> bool {
+        self.info().reach.contains(&sub)
+    }
+
+    /// The instruction line of the role's reach into other projects.
+    pub fn reach_line(self) -> String {
+        match self.info().reach {
+            [] => "Stay in your own project.".into(),
+            reach => format!(
+                "`-p <project>` runs {} in another project, not its deploys, releases or pushes. Consult its manager ('@<project>') with `wsx task say -p <project> --from-chat`.",
+                reach.join(", ")
+            ),
+        }
+    }
+
+    /// Why a command the role may not run in project `other` is refused.
+    pub fn reach_refusal(self, other: &str) -> String {
+        match self.info().reach {
+            [] => format!(
+                "a {} acts only in its own project (for {other} it may read `wsx task ledger -p {other}`)",
+                self.info().name
+            ),
+            reach => format!(
+                "a manager acts in another project only with {}, never --discard or an approved action; for {other} it may also read `wsx task ledger -p {other}` and `wsx task say -p {other} --from-chat`",
+                reach.join(", ")
+            ),
+        }
+    }
+}
+
+/// The instruction sentence of `task new --skills`: offered only where the project lends the
+/// owner's skills (`tasks.skills: owner`), the same switch `lend_refusal` reads.
+pub fn lend_line(owner_skills: bool) -> &'static str {
+    match owner_skills {
+        true => "`new --skills` lends a worker the ones its task needs. ",
+        false => "",
+    }
+}
+
+/// Why `task new --skills` is refused, or none when the project lends skills.
+pub fn lend_refusal(owner_skills: bool) -> Option<&'static str> {
+    (!owner_skills).then_some("--skills: the project lends no skills (tasks.skills is not owner)")
+}
+
+impl Role {
     /// Whether an `[[agents]]` entry whose `may` is `may` fills this role in a fallback choice:
     /// with no `may` it is a full fallback (the manager's turns and a task's steps); with one,
     /// it fills each role whose own capability it lists: `create_task` the manager, `answer`
@@ -331,5 +392,41 @@ impl RunnerFile {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         (bytes, hash)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ^ Owner-asked check of docs/design/chat-capability.md: the instruction lines and the
+    // refusals read the one `reach` list, so a prompt never promises what a broker refuses.
+    #[test]
+    fn prompt_and_checks_read_one_table() {
+        for (role, info) in &ROLES {
+            let (line, refusal) = (role.reach_line(), role.reach_refusal("other"));
+            for sub in info.reach {
+                assert!(role.reaches(sub), "{} {sub}", info.name);
+                assert!(
+                    line.contains(sub) && refusal.contains(sub),
+                    "{} {sub}",
+                    info.name
+                );
+            }
+            // ^ A command outside the table is neither run nor promised.
+            assert!(
+                !role.reaches("deploy")
+                    && !line.contains("deploy,")
+                    && !refusal.contains("deploy,")
+            );
+            assert_eq!(
+                line.contains("--from-chat"),
+                !info.reach.is_empty(),
+                "{}",
+                info.name
+            );
+        }
+        assert!(lend_line(true).contains("--skills") && lend_refusal(true).is_none());
+        assert!(lend_line(false).is_empty() && lend_refusal(false).is_some());
     }
 }

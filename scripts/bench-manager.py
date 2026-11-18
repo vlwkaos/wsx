@@ -118,11 +118,17 @@ def source_at(commit):
     raise SystemExit('no instructions() at %s' % commit)
 
 
+# ^ The manager's lend_line(true) and reach_line() of wsx-core task/policy.rs (docs/design/chat-capability.md).
+LEND = '`new --skills` lends a worker the ones its task needs. '
+REACH = ("`-p <project>` runs new, show, list, add, steer, stop, hold, land, close in another project, not its deploys, "
+         "releases or pushes. Consult its manager ('@<project>') with `wsx task say -p <project> --from-chat`.")
+
+
 def skills_sentence(source, folder, names):
     """The `Skills::Folder` sentence of instructions() in task/instructions.rs for a manager that
     reads SKILL.md by path (docs/design/manager-context-split.md option 1)."""
     literal = re.search(r'Skills::Folder\(folder, names\) => format!\(\s*"((?:[^"\\]|\\.)*)"', source, re.S).group(1)
-    return unescape(literal).replace('{}', str(folder), 1).replace('{}', ', '.join(names), 1)
+    return unescape(literal).replace('{lend}', LEND).replace('{}', str(folder), 1).replace('{}', ', '.join(names), 1)
 
 
 def instructions(source, project, notes, page, skills=''):
@@ -130,7 +136,7 @@ def instructions(source, project, notes, page, skills=''):
     body = source.split('fn instructions(', 1)[1]
     literal = re.search(r'format!\(\s*"(You are the manager(?:[^"\\]|\\.)*)"', body, re.S).group(1)
     # ^ The default workflow (no review) and the shared presentation rule.
-    values = {'project': project, 'notes': notes, 'overview': page, 'skills': skills, 'review': '',
+    values = {'project': project, 'notes': notes, 'overview': page, 'skills': skills, 'review': '', 'reach': REACH,
               'presentation': (ROOT / 'crates/wsx-core/integrations/common/presentation.md').read_text().rstrip(),
               'context': notes + '/context.md', 'decisions': notes + '/decisions.md'}
     text = re.sub(r'(?<!\{)\{(\w+)\}(?!\})', lambda m: values[m.group(1)], unescape(literal))

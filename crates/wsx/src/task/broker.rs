@@ -197,10 +197,10 @@ pub fn serve_manager(
     serve(listener, move |request: Request| {
         let policy = policy.get();
         if request.argv.first().is_some_and(|first| first == "memory") {
-            return run_memory(&exe, request, &fallback_cwd, &project_id, policy);
+            return run_memory(&exe, request, &fallback_cwd, (&project_id, &actor), policy);
         }
         let target = match allowed(&request.argv, policy)
-            .and_then(|()| reach(&request.argv, &own, (&project_id, &actor)))
+            .and_then(|()| reach(&request.argv, &own, &project_id, policy.role))
         {
             Ok(target) => target,
             Err(error) => return refused(format!("{error:#}")),
@@ -247,15 +247,15 @@ pub fn run_memory(
     exe: &Path,
     mut request: Request,
     fallback: &Path,
-    own_id: &str,
+    (own_id, actor): (&str, &str),
     policy: Policy,
 ) -> Response {
     let outcome = memory_pin(&request.argv, own_id, policy).and_then(|pin| {
         if pin {
             request.argv.extend(["--scope".into(), own_id.into()]);
         }
-        // ^ A memory command reads no actor, and the owner's is the one an empty mark gives.
-        run(exe, request, fallback, own_id, "", policy)
+        // ^ The actor is the calling chat, so `--source msg:<id>` is read in that chat's own log.
+        run(exe, request, fallback, own_id, actor, policy)
     });
     outcome.unwrap_or_else(|error| refused(format!("{error:#}")))
 }
@@ -289,18 +289,12 @@ fn memory_pin(argv: &[String], own_id: &str, policy: Policy) -> Result<bool> {
     Ok(scope.is_empty())
 }
 
-/// The commands a manager may run in another registered project: that project's tasks, in its
-/// store, with its numbers, checks and land target.
-const MANAGER_REACH: [&str; 9] = [
-    "new", "show", "list", "add", "steer", "stop", "hold", "land", "close",
-];
-
-/// The other project a command reaches. A manager may run `MANAGER_REACH` there (the task
-/// lives in that project's store, as the owner's `-p` makes it) and `say --from-chat`, which
-/// reaches its first chat; a chat only reads `ledger`. A `say --from-chat` without `-p` reaches
-/// a chat of its own (`manager` without `--to`); `None` for anything else of its own.
-/// ref: docs/tasks.md "Managers talk"
-fn reach(argv: &[String], own: &str, (project_id, actor): (&str, &str)) -> Result<Option<Party>> {
+/// The other project a command reaches. The agent's role runs its `reach` there (the task
+/// lives in that project's store, as the owner's `-p` makes it; every chat is a manager) and
+/// `say --from-chat`, which reaches that project's home chat; any role only reads `ledger`.
+/// A `say --from-chat` without `-p` reaches a chat of its own (`manager` without `--to`);
+/// `None` for anything else of its own. ref: docs/tasks.md "Managers talk"; policy.rs
+fn reach(argv: &[String], own: &str, project_id: &str, role: Role) -> Result<Option<Party>> {
     let project = argv
         .iter()
         .enumerate()
@@ -325,7 +319,6 @@ fn reach(argv: &[String], own: &str, (project_id, actor): (&str, &str)) -> Resul
         });
     // ^ `manager` is the repo's home chat, as another chat names it.
     let home = store::home_chat(project_id).unwrap_or_default();
-    let is_home = actor == format!("chat:{home}");
     match project.filter(|project| project != own) {
         None if sub == "say" && from_chat => Ok(Some(Party::Chat(
             to.filter(|to| to != "manager").unwrap_or(home),
@@ -333,17 +326,11 @@ fn reach(argv: &[String], own: &str, (project_id, actor): (&str, &str)) -> Resul
         None => Ok(None),
         // ^ Reading another ledger is not a message; only a sent message is logged.
         Some(_) if sub == "ledger" => Ok(None),
-        Some(other) if is_home && sub == "say" && from_chat => {
+        Some(other) if sub == "say" && from_chat && !role.info().reach.is_empty() => {
             Ok(Some(Party::Chat(home_of(&other)?)))
         }
-        Some(_) if is_home && MANAGER_REACH.contains(&sub) && !discard => Ok(None),
-        Some(other) if is_home => bail!(
-            "a manager acts in another project only with {}, never --discard or an approved action; for {other} it may also read `wsx task ledger -p {other}` and `wsx task say -p {other} --from-chat`",
-            MANAGER_REACH.join(", ")
-        ),
-        Some(other) => bail!(
-            "only a project's manager acts in another project; a chat stays in its own (for {other} it may read `wsx task ledger -p {other}`)"
-        ),
+        Some(_) if role.reaches(sub) && !discard => Ok(None),
+        Some(other) => bail!("{}", role.reach_refusal(&other)),
     }
 }
 

@@ -1802,8 +1802,8 @@ impl Manager {
             .reach(adapter, model, &env)
             .broker(&broker_socket);
         let skills = skills_plugin(&self.dir.path, root.as_deref(), &[])?;
-        let workflow = load_task_config(&self.main)
-            .map(|settings| settings.workflow)
+        let (workflow, owner_skills) = load_task_config(&self.main)
+            .map(|settings| (settings.workflow, settings.owner_skills))
             .unwrap_or_default();
         let names = skills.as_deref().map(skill_names).unwrap_or_default();
         let folder = skills.as_deref().map(|plugin| plugin.join("skills"));
@@ -1812,8 +1812,13 @@ impl Manager {
             (Some(folder), "claude") => Skills::Folder(folder, &names),
             (Some(_), _) => Skills::Tool,
         };
-        let mut text =
-            super::instructions::instructions(&self.project, &notes, &overview, listed, &workflow);
+        let mut text = super::instructions::instructions(
+            &self.project,
+            &notes,
+            &overview,
+            listed,
+            (&workflow, policy.role, owner_skills),
+        );
         if let Some(chat) = self.dir.named() {
             text = chat_preamble(chat, &self.project, &chats::goal(&self.dir)) + &text;
         }

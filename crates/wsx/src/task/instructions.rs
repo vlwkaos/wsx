@@ -5,6 +5,7 @@ use super::claude::SKILLS_PLUGIN_NAME;
 use super::manager::{CONTEXT_FILE, DECISIONS_FILE};
 use std::path::Path;
 use wsx_core::model::workspace::TaskWorkflow;
+use wsx_core::task::policy::{lend_line, Role};
 
 /// How the manager reaches the owner's skills.
 pub(super) enum Skills<'a> {
@@ -27,15 +28,17 @@ pub(super) fn instructions(
     notes: &Path,
     overview: &Path,
     skills: Skills,
-    workflow: &TaskWorkflow,
+    (workflow, role, owner_skills): (&TaskWorkflow, Role, bool),
 ) -> String {
-    // ^ No skill is named: the owner's skills are whatever their folder holds.
+    // ^ No skill is named: the owner's skills are whatever their folder holds. The lending and
+    // reach lines come from policy.rs, which the brokers and `new` read too.
+    let lend = lend_line(owner_skills);
     let skills = match skills {
         Skills::Tool => format!(
-            "The owner's skills are yours with the Skill tool as `{SKILLS_PLUGIN_NAME}:<name>`; `new --skills` lends a worker the ones its task needs. "
+            "The owner's skills are yours with the Skill tool as `{SKILLS_PLUGIN_NAME}:<name>`; {lend}"
         ),
         Skills::Folder(folder, names) => format!(
-            "The owner's skills are not listed: read `{}/<name>/SKILL.md` when one fits; `new --skills` lends a worker the ones its task needs. Skills: {}. ",
+            "The owner's skills are not listed: read `{}/<name>/SKILL.md` when one fits; {lend}Skills: {}. ",
             folder.display(),
             names.join(", ")
         ),
@@ -100,9 +103,7 @@ pub(super) fn instructions(
          graph, live plans, open questions; update a section in place.\n\n\
          Update local. When the owner asks to update local to origin, run `wsx task sync`; it moves \
          main only when no work is lost and says why when it refuses.\n\n\
-         Other projects. `-p <project>` reaches another project's tasks, not its deploys, \
-         releases or pushes. Consult its manager ('@<project>') with `wsx task say -p <project> \
-         --from-chat`. Answer 'Chat <name>' once with `--from-chat --reply`; do not answer \
+         Other projects. {reach} Answer 'Chat <name>' once with `--from-chat --reply`; do not answer \
          'Chat <name> replies'. When the owner's message of this turn asks to open or close a chat, \
          run `wsx task chat new <name> --goal <file> --owner-said <id>` or `chat close <name> \
          --owner-said <id>`.",
@@ -110,6 +111,7 @@ pub(super) fn instructions(
             true => String::new(),
             false => format!("{} ", workflow.review),
         },
+        reach = role.reach_line(),
         presentation = wsx_core::integration::PRESENTATION.trim_end(),
         context = notes.join(CONTEXT_FILE).display(),
         decisions = notes.join(DECISIONS_FILE).display(),

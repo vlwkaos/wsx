@@ -7,7 +7,7 @@ use crate::task::{actor, ask_host, ask_host_ok, print_json, wait_for_host};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use wsx_core::config::project::load_task_config;
-use wsx_core::task::policy::Role;
+use wsx_core::task::policy::{self, Role};
 use wsx_core::task::view::{self, checked_files};
 use wsx_core::task::{
     copy, now_unix_ms,
@@ -297,8 +297,8 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
     let project = resolve_project(&workspace, project.as_deref())?;
     let settings = load_task_config(&project.path)
         .map_err(|error| anyhow::anyhow!("{error}; no task was created"))?;
-    if skills.is_some() && !settings.owner_skills {
-        bail!("--skills: the project lends no skills (tasks.skills is not owner); no task was created");
+    if let (Some(_), Some(why)) = (&skills, policy::lend_refusal(settings.owner_skills)) {
+        bail!("{why}; no task was created");
     }
     // ^ A missing profile folder would fail the host's start after the ID is taken.
     config

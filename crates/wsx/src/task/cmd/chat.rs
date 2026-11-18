@@ -60,7 +60,7 @@ pub(crate) fn say_command(
                 .filter(|_| acting_as_manager())
                 .context("--from-chat is for a chat's agent")?
                 .to_string();
-            // ^ Only a home chat reaches another project's home chat (broker.rs).
+            // ^ A chat reaches another project's home chat (broker.rs, policy.rs).
             let own = ManagerDir::existing(&sender)?.map(|dir| dir.project_id);
             let own_repo = own.as_deref() == Some(project_id.as_str());
             let target = match (to.filter(|to| *to != "manager"), own_repo) {

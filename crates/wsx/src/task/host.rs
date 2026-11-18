@@ -507,7 +507,9 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
             // ^ A `wsx memory` command runs for the worker in its project's scope.
             if request.argv.first().is_some_and(|first| first == "memory") {
                 return match std::env::current_exe() {
-                    Ok(exe) => broker::run_memory(&exe, request, &copy, &project_id, policy.get()),
+                    Ok(exe) => {
+                        broker::run_memory(&exe, request, &copy, (&project_id, ""), policy.get())
+                    }
                     Err(error) => broker::refused(format!("cannot find the wsx binary: {error}")),
                 };
             }
