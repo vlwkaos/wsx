@@ -10,11 +10,12 @@ use super::{
 use anyhow::Result;
 use std::collections::HashMap;
 
-/// The three states the owner sees (docs/web-client-tasks.md); the store keeps the rest.
+/// The three states the owner sees (docs/web-client-tasks.md); the store keeps the rest. A task
+/// that needs the owner says what kind of need it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     Working,
-    NeedsYou,
+    NeedsYou(NeedKind),
     Done,
     Closed,
 }
@@ -23,26 +24,44 @@ impl Stage {
     pub fn name(self) -> &'static str {
         match self {
             Self::Working => "working",
-            Self::NeedsYou => "needs_you",
+            Self::NeedsYou(_) => "needs_you",
             Self::Done => "done",
             Self::Closed => "closed",
         }
     }
+
+    /// The kind of need, for a task that needs the owner.
+    pub fn need(self) -> Option<NeedKind> {
+        match self {
+            Self::NeedsYou(kind) => Some(kind),
+            _ => None,
+        }
+    }
 }
 
-/// An open task needs the owner when it waits on the owner (`status::waits_on`), or on disk or
-/// the usage limit, which nobody else can act on. ref: docs/tasks.md "Status"
+/// The one rule for "the owner is needed": an open task needs the owner when it waits on the
+/// owner (`status::waits_on`), or on disk or the usage limit, which nobody else can act on. Every
+/// count, list, band and push of a task reads this. ref: docs/tasks.md "Status"
 pub fn stage(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Stage {
-    match (record.state, status::waits_on(dir, record, land_auto)) {
-        (TaskState::Landed, _) => Stage::Done,
-        (TaskState::Closed, _) => Stage::Closed,
+    match record.state {
+        TaskState::Landed => return Stage::Done,
+        TaskState::Closed => return Stage::Closed,
         // ^ The owner works on it: not a need of the owner, and not done.
-        _ if record.waits_on(WaitOn::Hand) => Stage::Working,
-        (_, Some(on)) if matches!(on.kind, Holder::Owner | Holder::Disk | Holder::Limit) => {
-            Stage::NeedsYou
+        _ if record.waits_on(WaitOn::Hand) => return Stage::Working,
+        _ => {}
+    }
+    match status::waits_on(dir, record, land_auto) {
+        Some(on) if matches!(on.kind, Holder::Owner | Holder::Disk | Holder::Limit) => {
+            NeedKind::of(record.state).map_or(Stage::Working, Stage::NeedsYou)
         }
         _ => Stage::Working,
     }
+}
+
+/// Whether a task that needs the owner is news for a push: an answer is asked of the owner.
+/// Not the limit (the host continues by itself), a ready task (the page shows it) or a failed one.
+pub fn pushes(stage: Stage, record: &TaskRecord) -> bool {
+    stage.need() == Some(NeedKind::Waiting) && !record.waits_on(WaitOn::Limit)
 }
 
 /// The kinds of need of an owner task, most urgent first (`rank`); an approval is the fourth.
@@ -54,8 +73,8 @@ pub enum NeedKind {
 }
 
 impl NeedKind {
-    /// The kind of a task in a state that needs the owner (`Stage::NeedsYou`).
-    pub fn of(state: TaskState) -> Option<Self> {
+    /// The kind of a task in a state that needs the owner.
+    fn of(state: TaskState) -> Option<Self> {
         match state {
             TaskState::Waiting => Some(Self::Waiting),
             TaskState::Failed => Some(Self::Failed),
@@ -116,7 +135,7 @@ impl Needs {
             let Ok(record) = record else { continue };
             match stage(&dir, &record, land_auto) {
                 Stage::Working => needs.working += 1,
-                Stage::NeedsYou => needs.owner += 1,
+                Stage::NeedsYou(_) => needs.owner += 1,
                 Stage::Done | Stage::Closed => {}
             }
         }
@@ -160,7 +179,7 @@ pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCou
         };
         match stage(&dir, &record, land_auto) {
             Stage::Working => own.running += 1,
-            Stage::NeedsYou => own.needs += 1,
+            Stage::NeedsYou(_) => own.needs += 1,
             Stage::Done | Stage::Closed => continue,
         }
         own.open += 1;

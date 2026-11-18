@@ -608,38 +608,54 @@ fn hand_back(dir: &ManagerDir) -> String {
 }
 
 /// The chats as rows for the ledger, `chat list` and the views, by name: `{name, shown, projects,
-/// state, goal, last_unix_ms, title?, agent?, adapter?, model?}`. `shown` is the name the owner
-/// reads (`shown_name`, the project's name for the home chat), `title` the chat's own, `projects`
-/// the names of the projects it runs in, its own first; `goal` is the goal's first line; `agent`
-/// is the entry's name, `adapter` and `model` its own, left out for a chat on the manager's.
+/// state, goal, last_unix_ms, listed, home, title?, agent?, adapter?, model?}`. `shown` is the
+/// name the owner reads (`shown_name`, the project's name for the home chat), `title` the chat's
+/// own, `projects` the names of the projects it runs in, its own first; `goal` is the goal's
+/// first line; `agent` is the entry's name, `adapter` and `model` its own, left out for a chat on
+/// the manager's.
 pub fn rows(project_id: &str) -> Vec<Value> {
-    let home = store::home_chat(project_id);
-    let registered = Registered::load();
+    let (home, registered) = (store::home_chat(project_id), Registered::load());
     all(project_id)
+        .iter()
+        .map(|dir| row(dir, project_id, home.as_deref(), &registered))
+        .collect()
+}
+
+/// The open chats with their row (`rows`) and pill counts (`counts`, `needs::chat_counts`): the
+/// ledger and the web's Home rows read the same row. A closed chat is history.
+pub fn open_rows(project_id: &str, land_auto: bool) -> Vec<(ManagerDir, Value)> {
+    let counts = super::needs::chat_counts(project_id, land_auto);
+    let (home, registered) = (store::home_chat(project_id), Registered::load());
+    open_chats(project_id)
         .into_iter()
         .map(|dir| {
-            let goal = goal(&dir);
-            let last = chats_home::last_message_ms(&dir);
-            let is_home = home.as_deref() == Some(dir.name());
-            let mut row = serde_json::json!({
-                "name": dir.name(),
-                "state": if is_open(&dir) { "open" } else { "closed" },
-                "goal": goal.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
-                "last_unix_ms": last,
-                "listed": chats_home::listed_at(&dir, || last),
-                "home": is_home,
-            });
-            row.as_object_mut()
-                .expect("a row is an object")
-                .extend(naming(&dir, project_id, is_home, &registered));
-            if let (Some(entry), Some(own)) = (chat_file(&dir).agent, agent(&dir)) {
-                row["agent"] = entry.into();
-                row["adapter"] = own.adapter.into();
-                row["model"] = own.model.into();
-            }
-            row
+            let mut row = row(&dir, project_id, home.as_deref(), &registered);
+            row["counts"] = serde_json::json!(counts.get(dir.name()).copied().unwrap_or_default());
+            (dir, row)
         })
         .collect()
+}
+
+fn row(dir: &ManagerDir, project_id: &str, home: Option<&str>, registered: &Registered) -> Value {
+    let last = chats_home::last_message_ms(dir);
+    let is_home = home == Some(dir.name());
+    let mut row = serde_json::json!({
+        "name": dir.name(),
+        "state": if is_open(dir) { "open" } else { "closed" },
+        "goal": goal(dir).lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
+        "last_unix_ms": last,
+        "listed": chats_home::listed_at(dir, || last),
+        "home": is_home,
+    });
+    row.as_object_mut()
+        .expect("a row is an object")
+        .extend(naming(dir, project_id, is_home, registered));
+    if let (Some(entry), Some(own)) = (chat_file(dir).agent, agent(dir)) {
+        row["agent"] = entry.into();
+        row["adapter"] = own.adapter.into();
+        row["model"] = own.model.into();
+    }
+    row
 }
 
 /// A project not yet migrated in this process; `migrate` runs once for each.

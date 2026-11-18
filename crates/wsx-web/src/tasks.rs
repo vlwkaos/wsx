@@ -25,10 +25,10 @@ use wsx_core::task::{
         activity, decided_request, pending_approvals, waiting_approvals, ApprovalLine, Author,
         ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse,
     },
-    needs::{self, ChatCounts, NeedKind, Stage, APPROVAL_RANK},
+    needs::{self, ChatCounts, Stage, APPROVAL_RANK},
     owner, stall, status,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
-    view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
+    view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
 };
 
 const SUMMARY_CHARS: usize = 240;
@@ -216,6 +216,7 @@ fn build_overview(
         };
         let status = status::status(dir, record, &facts, now);
         let flow = view::flow(record, &records, &status, &chains);
+        let stage = needs::stage(dir, record, land_auto);
         titles.insert(record.id, title.clone());
         // ^ Chain order, then the closed tasks newest first (`chains::Chains`).
         let order = chains
@@ -228,7 +229,7 @@ fn build_overview(
             order,
             u64::MAX - record.updated_unix_ms,
             json!({
-                "id": record.id, "title": title, "state": record.state, "stage": needs::stage(dir, record, land_auto).name(),
+                "id": record.id, "title": title, "state": record.state, "stage": stage.name(),
                 "revision": record.revision, "updated_unix_ms": record.updated_unix_ms,
                 "waiting": record.waiting,
                 "thread": record.thread,
@@ -244,12 +245,13 @@ fn build_overview(
                 "thread": record.thread,
             })
         };
-        if needs::stage(dir, record, land_auto) == Stage::Working {
-            working += 1;
-            continue;
-        }
-        let Some(kind) = NeedKind::of(record.state) else {
-            continue;
+        let kind = match stage {
+            Stage::Working => {
+                working += 1;
+                continue;
+            }
+            Stage::NeedsYou(kind) => kind,
+            Stage::Done | Stage::Closed => continue,
         };
         let (rank, mut row) = (kind.rank(), item(kind.name()));
         if let Some(waiting) = &record.waiting {
@@ -887,48 +889,31 @@ fn news_value((unix_ms, text): (u64, String)) -> Value {
     json!({ "unix_ms": unix_ms, "text": text })
 }
 
-/// The open chats as Home rows, the home chat too (`home`): name, the first line of the goal and
-/// of the last reply, `news` (as a project's: `{unix_ms, text}` of the newest reply that is news,
-/// or `null`), `last_unix_ms` (the newest message, `chats_home::last_message_ms`), `listed`
-/// (whether Home shows the row, `chats_home::listed`) and the pill counts `running`, `needs` and
-/// `check` (`needs::chat_counts`) (docs/web-client-tasks.md "Home").
+/// The open chats as Home rows, the home chat too: the row `chats::open_rows` builds (name, the
+/// first line of the goal, `last_unix_ms`, `listed`, `home`, the pill `counts`) with `last_reply`
+/// (the first line of the last reply) and `news` (as a project's: `{unix_ms, text}` of the newest
+/// reply that is news, or `null`) (docs/web-client-tasks.md "Home").
 fn chat_contacts(scope: &Scope, land_auto: bool) -> Vec<Value> {
-    let counts = needs::chat_counts(&scope.store, land_auto);
-    let home = store::home_chat(&scope.store);
-    let registered = task::chats::Registered::load();
-    let mut rows: Vec<Value> = task::chats::open_chats(&scope.store)
-        .iter()
-        .map(|dir| {
-            let own = counts.get(dir.name()).copied().unwrap_or_default();
+    let mut rows: Vec<Value> = task::chats::open_rows(&scope.store, land_auto)
+        .into_iter()
+        .map(|(dir, mut row)| {
             let tail = dir.read_tail(MANAGER_TAIL_BYTES).unwrap_or_default();
-            let news = newest_news(&tail).map(news_value);
-            let at = task::chats_home::last_message_ms(dir);
-            let last = tail
+            row["news"] = json!(newest_news(&tail).map(news_value));
+            row["last_reply"] = tail
                 .into_iter()
                 .rev()
                 .find_map(|entry| match entry.event {
-                    ManagerEvent::Reply { text, .. } => {
-                        Some(view::clip(
-                            task::manager::split_quote(&text).1.lines().next().unwrap_or_default(),
-                            LAST_REPLY_CHARS,
-                        ))
-                    }
+                    ManagerEvent::Reply { text, .. } => Some(view::clip(
+                        task::manager::split_quote(&text)
+                            .1
+                            .lines()
+                            .next()
+                            .unwrap_or_default(),
+                        LAST_REPLY_CHARS,
+                    )),
                     _ => None,
-                });
-            let is_home = home.as_deref() == Some(dir.name());
-            let mut row = json!({
-                "name": dir.name(),
-                "goal": task::chats::goal(dir).lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
-                "last_reply": last,
-                "news": news,
-                "home": is_home,
-                "listed": task::chats_home::listed_at(dir, || at),
-                "last_unix_ms": at,
-                "counts": own,
-            });
-            row.as_object_mut()
-                .expect("a row is an object")
-                .extend(task::chats::naming(dir, &scope.store, is_home, &registered));
+                })
+                .into();
             row
         })
         .collect();
@@ -937,7 +922,7 @@ fn chat_contacts(scope: &Scope, land_auto: bool) -> Vec<Value> {
     if !rows.iter().any(|row| row["home"] == true) {
         // ^ No folder to read: named by its project.
         rows.push(json!({
-            "name": home.unwrap_or_else(|| task::chats::home_name(&scope.store)),
+            "name": store::home_chat(&scope.store).unwrap_or_else(|| task::chats::home_name(&scope.store)),
             "goal": "", "last_reply": null, "news": null, "home": true, "listed": true,
             "last_unix_ms": 0, "counts": needs::ChatCounts::default(),
             "shown": scope.name, "projects": [scope.name],
@@ -1538,23 +1523,17 @@ fn attention(project: u64, overview: &Value) -> Vec<Open> {
 
 /// Note new tasks that wait on the owner and new approval requests for "Manager needs me".
 fn notice(scope: &Scope, watch: &mut Watch) {
+    let land_auto = load_task_config(&scope.path).is_ok_and(|settings| settings.land_auto);
     let first = !watch.seen.contains_key(&scope.project);
     let seen = watch.seen.entry(scope.project).or_default();
     for (dir, record) in view::project_tasks(&scope.store).unwrap_or_default() {
         let Ok(record) = record else { continue };
         let now = (record.state, record.revision);
         let before = seen.insert(record.id, now);
-        // ^ Hands at work, a plan or a pause for the manager and a usage limit need no push; a
-        // ready task whose result asks the owner does.
+        // ^ Only a task that waits for an answer pushes (`needs::pushes`).
         if !first
             && before != Some(now)
-            && ((record.state == TaskState::Waiting
-                && !record.waits_on(WaitOn::Hand)
-                && !record.waits_on(WaitOn::Plan)
-                && !record.waits_on(WaitOn::Paused)
-                && !record.waits_on(WaitOn::Limit)
-                && !status::owner_waits_after(&dir, &record))
-                || record.waits_on(WaitOn::Asks))
+            && needs::pushes(needs::stage(&dir, &record, land_auto), &record)
         {
             watch.pending.add((scope.project, Key::Task(record.id)));
         }

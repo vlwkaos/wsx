@@ -2,7 +2,7 @@
 //! lists and for the chain a task page shows. Web and TUI draw `view::flow`'s `place`, they
 //! never sort or count again. ref: docs/tasks.md "Where a task goes"
 
-use super::needs::{self, Stage};
+use super::needs;
 use super::status::{self, Holder};
 use super::store::TaskDir;
 use super::TaskRecord;
@@ -115,7 +115,7 @@ impl Chains {
         };
         let band_of = |id: u32| {
             let (dir, record) = all[&id];
-            if needs::stage(dir, record, land_auto) == Stage::NeedsYou {
+            if needs::stage(dir, record, land_auto).need().is_some() {
                 return Band::You;
             }
             match status::waits_on(dir, record, land_auto).map(|on| on.kind) {

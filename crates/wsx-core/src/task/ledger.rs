@@ -142,24 +142,12 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         .collect();
     let main_checkout = main_checkout(main, &mut git);
     let (strays, stray_omitted) = stray_worktrees(main, &copies, &mut git);
-    // ^ Open chats with their pill counts (`needs::chat_counts`) while any is above 0, the home
-    // chat too (`home`): the TUI's chat rows mark them as the web's Home rows do. `listed` says
-    // whether Home shows the row (`chats::rows`, from `chats_home::listed`); a closed chat is
-    // history (docs/tasks.md "Chats").
-    let counts = super::needs::chat_counts(&project_id, settings.land_auto);
-    let chats: Vec<Value> = super::chats::rows(&project_id)
+    // ^ Open chats with their pill counts (`chats::open_rows`), the home chat too (`home`): the
+    // TUI's chat rows mark them as the web's Home rows do. A closed chat is history
+    // (docs/tasks.md "Chats").
+    let chats: Vec<Value> = super::chats::open_rows(&project_id, settings.land_auto)
         .into_iter()
-        .filter(|row| row["state"] != "closed")
-        .filter_map(|mut row| {
-            let name = row["name"].as_str()?.to_string();
-            if let Some(own) = counts
-                .get(&name)
-                .filter(|own| **own != super::needs::ChatCounts::default())
-            {
-                row["counts"] = json!(own);
-            }
-            Some(row)
-        })
+        .map(|(_, row)| row)
         .collect();
     let mut ledger = json!({
         "project": project_name,
