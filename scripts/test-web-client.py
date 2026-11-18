@@ -5342,7 +5342,10 @@ merge_seconds = 3
              'the followers wait')
         chained = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         shown = [row['id'] for row in chained['tasks'] if row['state'] != 'landed']
-        ledger_ids = [row['id'] for row in js('task', 'ledger', '-p', 'demo')['open']]
+        ledger_all = [row['id'] for row in js('task', 'ledger', '-p', 'demo')['open']]
+        assert by_notes in ledger_all and by_notes in task_ids('?chat=notes'), (by_notes, ledger_all)
+        ledger_ids = [n for n in ledger_all if n != by_notes]
+        # ^ The ledger lists every open task of the project; the home overview leaves out what the open chat `notes` made (`chats::owner`): the same order otherwise.
         assert [row['id'] for row in chained['tasks']][:len(ledger_ids)] == ledger_ids, (ledger_ids, chained['tasks'])
         places = {row['id']: row['flow']['place'] for row in chained['tasks']}
         assert [places[n]['holds'] for n in fixture] == [2, 1, 0, 1, 0], places
