@@ -387,7 +387,7 @@ def run(wsx, wsxd, work, owned, part):
     env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
            'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(daemon_socket),
            'WSX_TEST_STALL_GRACE_SECS': str(STALL_GRACE), 'WSX_TEST_STALL_SWEEP_SECS': str(SWEEP), 'WSX_TEST_ALLOW_FILE_CLONE': '1',
-           'WSX_TEST_PRUNE_SWEEP_SECS': '3', 'WSX_TEST_SYNC_SECS': '6', 'WSX_TEST_EVENT_QUIET_SECS': str(EVENT_QUIET), 'WSX_TEST_CHECKIN_MINUTE_SECS': str(CHECKIN_MINUTE),
+           'WSX_TEST_PRUNE_SWEEP_SECS': '3', 'WSX_TEST_EVENT_QUIET_SECS': str(EVENT_QUIET), 'WSX_TEST_CHECKIN_MINUTE_SECS': str(CHECKIN_MINUTE),
            'WSX_TEST_SIGN_IN_RETRY_SECS': str(SIGN_IN_RETRY), 'WSX_TEST_CI_BACKOFF_SECS': '1', **start_floor(work),
            # ^ The disk wait's poll (30 s) and settle (60 s), waited out in 27m and 32d.
            'WSX_TEST_DISK_POLL_SECS': '3', 'WSX_TEST_DISK_SETTLE_SECS': '10',
@@ -901,6 +901,7 @@ def manager_up(created):
                  'Root cause first. A finding is its cause, the first state that goes wrong (file:line and log proof)',
                  'plus the design step that removes it; never a task that fixes a symptom',
                  'A second fix on one concern stops: name the shared owner of that concern',
+                 'Update local. When the owner asks to update local to origin, run `wsx task sync`',
                  'Say as fact only what wsx reported or you checked', '`since then:` line',
                  "state and `checks` from the ledger", 'live only when a deploy event names the task', 'or call it unchecked',
                  'Talk like a person in a chat, not a report', 'Replies are chat messages, not reports', 'Never coin a label',
@@ -3597,39 +3598,6 @@ def part_worker(created=None):
             sshd.wait()
             sshd_log.close()
         git('remote', 'remove', 'origin')
-
-    # 22a1. Sync (docs/tasks.md "Sync"): the repo service follows origin on its own pass. A merge on
-    # origin moves the local main with one quiet event; local work origin lacks refuses, in one line
-    # for that origin tip.
-    mark('22a1')
-    start = git('rev-parse', 'main')
-    sync_origin, side = work / 'sync-origin.git', work / 'sync-side'
-    git('init', '-q', '--bare', '--template=', str(sync_origin))
-    git('push', '-q', str(sync_origin), 'main:refs/heads/main')
-    git('remote', 'add', 'origin', str(sync_origin))
-    git('clone', '-q', str(sync_origin), str(side))
-
-    def on_origin(name):
-        (side / name).write_text(name)
-        git('add', '.', cwd=side)
-        git('commit', '-q', '-m', name, cwd=side)
-        git('push', '-q', 'origin', 'HEAD:main', cwd=side)
-        return git('rev-parse', 'HEAD', cwd=side)
-
-    merged = on_origin('sync1.txt')
-    wait(lambda: git('rev-parse', 'main') == merged, 'the repo follows origin', 60)
-    assert git('status', '--porcelain', '--untracked-files=no') == ''
-    wait(lambda: events_with('synced: main moved from', merged[:12]), 'the move is in the log', 60)
-    (project / 'local1.txt').write_text('local')
-    git('add', 'local1.txt')
-    git('commit', '-q', '-m', 'local1')
-    local = git('rev-parse', 'main')
-    refused = on_origin('sync2.txt')
-    wait(lambda: events_with('sync refused', refused[:12], 'local1.txt'), 'the refusal is in the log', 60)
-    time.sleep(8)  # ^ a pass or more after the refusal: the same origin tip says it once
-    assert len(events_with('sync refused', refused[:12])) == 1 and git('rev-parse', 'main') == local
-    git('remote', 'remove', 'origin')
-    git('reset', '-q', '--hard', start)
 
     # 22a2. Project add (docs/tasks.md "Approvals"): the manager's request names the path and the URL;
     # the owner's yes clones a bare repository (file:// is allowed by the scenario's env only) and

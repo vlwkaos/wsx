@@ -7,7 +7,6 @@
 //! deploy or a crash loses none. An event that needs no decision (`state_wakes`) is logged in
 //! the chat as a message that starts no turn. ref: docs/tasks.md "Chats"
 
-use super::cmd::deploy::{self, Followed};
 use super::manager::plain_event;
 use super::{hosting, notes};
 use crate::cli::existing_daemon_snapshot;
@@ -20,7 +19,6 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
 use wsx_core::stale;
-use wsx_core::task::copy::Synced;
 use wsx_core::task::manager::{
     decided_request, open_requests, stall_wakes, state_wakes, ApprovalLine, Author, Checkin, Level,
     ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse, RepoState, Seen, Short,
@@ -72,13 +70,6 @@ fn prune_sweep() -> Duration {
     test_secs("WSX_TEST_PRUNE_SWEEP_SECS", Duration::from_secs(60 * 60))
 }
 
-/// How often the repo follows origin's default branch, or the seconds in
-/// `WSX_TEST_SYNC_SECS`: for the task scenario only. The first pass is one period after the
-/// start. ref: docs/tasks.md "Sync"
-fn sync_every() -> Duration {
-    test_secs("WSX_TEST_SYNC_SECS", Duration::from_secs(60 * 60))
-}
-
 enum Event {
     /// The news of this session did not reach the home chat: it is posted again.
     Unposted(u64),
@@ -88,8 +79,6 @@ enum Event {
     Tick,
     /// A sweep of stale worktrees and sessions ended: its notes, or why it failed.
     Pruned(Result<Vec<stale::Note>, String>),
-    /// A pass that follows origin ended: what it found, or why nothing was fetched.
-    Synced(Result<Option<Followed>, String>),
     /// `wsx task new` with `tasks.workflow.idle` ended: when it began, and the task number or
     /// the error.
     IdleStarted(u64, Result<u32, String>),
@@ -143,11 +132,6 @@ struct Repo {
     /// The worktrees the last sweep left for the owner, with the text posted: posted again
     /// only when the text changes.
     flagged: BTreeMap<PathBuf, String>,
-    /// When the last pass that follows origin began, and whether one runs; the origin tip
-    /// whose refusal the chat has: said again only for another tip.
-    synced: Instant,
-    syncing: bool,
-    sync_refused: Option<String>,
     /// `tasks.manager.recapMinutes` as a duration; `None` is off.
     recap_quiet: Option<Duration>,
     /// When the host last removed old captures; `None` sweeps on the first tick.
@@ -194,9 +178,6 @@ pub fn run(project_id: &str) -> Result<()> {
         pruned: None,
         pruning: false,
         flagged: BTreeMap::new(),
-        synced: Instant::now(),
-        syncing: false,
-        sync_refused: None,
         recap_quiet: (settings.manager_recap_secs > 0)
             .then(|| Duration::from_secs(settings.manager_recap_secs)),
         captures_swept: None,
@@ -267,7 +248,6 @@ impl Repo {
                 }
                 Event::Tick => self.tick(),
                 Event::Pruned(result) => self.pruned_done(result),
-                Event::Synced(result) => self.synced_done(result),
                 Event::IdleStarted(began, Ok(id)) => {
                     self.say(&format!("started idle task #{id}"));
                     self.state.idle_task = Some(id);
@@ -336,7 +316,6 @@ impl Repo {
         self.ask_recap();
         self.sweep_captures();
         self.prune_stale();
-        self.follow_origin();
         self.suggest_closes();
         self.flush_events();
         self.save_seen();
@@ -1062,61 +1041,6 @@ impl Repo {
             });
             let _ = events.send(Event::Pruned(result));
         });
-    }
-
-    /// Once an hour, off the loop: fetch origin and move the local default branch to its tip
-    /// when no work is lost (`wsx task sync`, the same rule), so a merge on GitHub needs no
-    /// step of the owner's. ref: docs/tasks.md "Sync"
-    fn follow_origin(&mut self) {
-        if self.syncing || self.synced.elapsed() < sync_every() {
-            return;
-        }
-        self.synced = Instant::now();
-        self.syncing = true;
-        let (main, project_id, events) = (
-            self.main.clone(),
-            self.project_id.clone(),
-            self.events.clone(),
-        );
-        std::thread::spawn(move || {
-            let result = deploy::follow_origin(&project_id, &main).map_err(|e| format!("{e:#}"));
-            let _ = events.send(Event::Synced(result));
-        });
-    }
-
-    /// A move is a quiet event line; no move says nothing; a refusal is one line to the chat
-    /// for each origin tip. An origin that cannot be fetched is the owner's network, not news.
-    fn synced_done(&mut self, result: Result<Option<Followed>, String>) {
-        self.syncing = false;
-        let followed = match result {
-            Ok(Some(followed)) => followed,
-            Ok(None) => return,
-            Err(error) => return self.say(&format!("cannot follow origin: {error}")),
-        };
-        let Followed {
-            branch,
-            target,
-            outcome,
-        } = followed;
-        match outcome {
-            Ok(synced) => {
-                self.sync_refused = None;
-                if synced != Synced::Current {
-                    let (line, short) =
-                        plain_event(format!("synced: {}", synced.words(&branch, "origin")));
-                    self.emit("", (line, short.quiet()));
-                }
-            }
-            Err(error) if self.sync_refused.as_deref() != Some(&target) => {
-                let line = format!(
-                    "sync refused: local {branch} stays; origin is at {}: {error:#}",
-                    view::short_commit(&target)
-                );
-                self.sync_refused = Some(target);
-                self.emit("", plain_event(line));
-            }
-            Err(_) => {}
-        }
     }
 
     /// What a sweep did goes to the chat as events that start no turn, listed with the next one.

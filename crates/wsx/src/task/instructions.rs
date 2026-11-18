@@ -97,6 +97,8 @@ pub(super) fn instructions(
          --kind rule`; {decisions} and {context} are written from those records: never edit them. The \
          project overview {overview} is the owner's one-screen picture: goal, open tasks as a mermaid \
          graph, live plans, open questions; update a section in place.\n\n\
+         Update local. When the owner asks to update local to origin, run `wsx task sync`; it moves \
+         main only when no work is lost and says why when it refuses.\n\n\
          Other projects. `-p <project>` reaches another project's tasks, not its deploys, \
          releases or pushes. Consult its manager ('@<project>') with `wsx task say -p <project> \
          --from-chat`. Answer 'Chat <name>' once with `--from-chat --reply`; do not answer \

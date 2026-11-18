@@ -822,7 +822,7 @@ wsx task push -p <project> [--commit <ref>] [--force] [--owner-said <id> [--afte
 wsx task sync -p <project> --json
 ```
 
-After a pull request merges on GitHub, the local default branch follows origin in one step: no `--force`, no approval, no step in the owner's terminal. `sync` fetches origin's default branch (into `refs/remotes/origin/<branch>`, under `push.lock`) and moves the local one to its tip with `wsx_core::task::copy::sync`. It moves only when no work is lost, else it refuses, moves nothing and names what it found. It is a command of its own, not a mode of `push`: `push` writes origin and asks the owner; `sync` only reads origin.
+When the owner asks to update local after a pull request merges on GitHub, the manager runs this one step: no `--force`, no approval, no step in the owner's terminal. Nothing runs it on its own; the manager's instructions say to run it on the owner's word. `sync` fetches origin's default branch (into `refs/remotes/origin/<branch>`, under `push.lock`) and moves the local one to its tip with `wsx_core::task::copy::sync`. It moves only when no work is lost, else it refuses, moves nothing and names what it found. It is a command of its own, not a mode of `push`: `push` writes origin and asks the owner; `sync` only reads origin.
 
 | Local branch against origin's tip | Result |
 |---|---|
@@ -834,9 +834,9 @@ After a pull request merges on GitHub, the local default branch follows origin i
 
 The checkout follows `check_move`: a changed file that differs between its HEAD and the target refuses the move and is named; other changes stay. A changed file whose content already is the target's does not block it, and `move_branch` stages it first (a checkout a `git reset --hard` left half moved moves). `reset --keep` has no guard of its own, so `move_branch` reads the branch again first and refuses when a land moved it. The old tip stays in the reflog; the answer names both tips.
 
-The repo service runs the same step once an hour (`WSX_TEST_SYNC_SECS` sets the seconds, for the task scenario; the first pass is one period after the start): a move is one quiet event line ("synced: main moved from ... to ..."), no move says nothing, a refusal is one chat line for each origin tip ("sync refused: ..."), and an origin that cannot be fetched (a progress line only) or a project with no `origin` says nothing in the chat. The dedupe of refusals is in memory only. `wsx task sync` needs the `Deploy` capability, so the manager runs it and a worker cannot.
+`wsx task sync` needs the `Deploy` capability, so the manager runs it and a worker cannot.
 
-`crates/wsx/tests/task_sync.rs` drives the CLI on real repositories and a bare origin: rebase and squash merges move, a plain fast-forward moves and the next run is a no-op, a local commit origin lacks refuses and is named, a half moved checkout moves, a file with the target's content does not block, a differing file refuses and stays. `scripts/test-task.py` part 23 probes the worker's boundary (the main checkout's file, index and HEAD refused, `git reset --hard` there changes nothing, a commit in its own copy works) and section 22a1 the repo service's hourly pass.
+`crates/wsx/tests/task_sync.rs` drives the CLI on real repositories and a bare origin: rebase and squash merges move, a plain fast-forward moves and the next run is a no-op, a local commit origin lacks refuses and is named, a half moved checkout moves, a file with the target's content does not block, a differing file refuses and stays. `scripts/test-task.py` part 23 probes the worker's boundary (the main checkout's file, index and HEAD refused, `git reset --hard` there changes nothing, a commit in its own copy works).
 
 ## Close
 
