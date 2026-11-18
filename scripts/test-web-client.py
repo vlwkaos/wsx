@@ -4418,7 +4418,7 @@ merge_seconds = 3
         role_chat = wait(lambda: (lambda data: data if any(manager_said(r) for r in data['rows']) else None)(
             steady(owner, 'GET', '/api/tasks/%d/chat?chat=notes' % demo)[1]), 'chat reply')
         # ^ A chat with no agent of its own shows the manager's agent.
-        assert role_chat['manager'] == {'name': 'notes', 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and 'chats' not in role_chat and role_chat['running'], role_chat
+        assert role_chat['manager'] == {'name': 'notes', 'projects': ['demo'], 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and 'chats' not in role_chat and role_chat['running'], role_chat
         # ^ The overview is the observer's: it follows the chat's files within a poll.
         # ^ The chats besides the home chat, which is a row of Home as the others are (`home`).
         overview_chats = lambda count: wait(lambda: (lambda chats: chats if len(chats) == count and all(c['news'] for c in chats if c['name'] == 'notes') else None)(

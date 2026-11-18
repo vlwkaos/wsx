@@ -4023,8 +4023,13 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
     }
   }
   await inScheme("dark");
-  chatCmd("close", "tuning", "-p", "calm");
-  chatCmd("close", "shared", "-p", "plans");
+  // ^ The close writes the file first, then tells the home chat; with no manager host here that tell can fail. The chat is closed either way, which `chat list` says.
+  for (const [name, owner] of [["tuning", "calm"], ["shared", "plans"]]) {
+    let said = "";
+    try { chatCmd("close", name, "-p", owner); } catch (error) { said = String(error.stderr); }
+    const state = JSON.parse(chatCmd("list", "--json", "-p", owner)).chats.find((chat) => chat.name === name)?.state;
+    if (state !== "closed") await fail(`chat close ${name} left it ${state}: ${said}`);
+  }
 }
 
 // Chat unread is the server's `news` (the newest reply that is not quiet), read against what this
