@@ -608,11 +608,13 @@ function More({ project }) {
     </${MoreMenu}>`;
 }
 
-// ^ A chat's ⋯ menu: the owner closes it (docs/tasks.md "Chats", `chats::close`), after one
-// confirm, and the page goes to Home, where its row is gone. The first chat has none.
-function ChatMore({ project, chat }) {
+// ^ A chat's ⋯ menu: the owner renames it (the name Home and the room show; its id, its links and
+// `say --to` stay) and closes it (docs/tasks.md "Chats", `chats::close`), after one confirm, and
+// the page goes to Home, where its row is gone. The first chat has none.
+function ChatMore({ project, chat, shown, onRenamed }) {
+  const [renaming, setRenaming] = useState(false);
   const close = async () => {
-    const sure = await confirmDialog({ title: `Close ${chat}?`, text: "Its log and notes stay; New chat with the same name opens it again.", confirm: "Close chat" });
+    const sure = await confirmDialog({ title: `Close ${shown}?`, text: "Its log and notes stay; New chat with the same name opens it again.", confirm: "Close chat" });
     if (!sure) return;
     try {
       await api(`api/tasks/${project}/chats/${encodeURIComponent(chat)}/close`, { method: "POST" });
@@ -623,8 +625,50 @@ function ChatMore({ project, chat }) {
   };
   return html`
     <${MoreMenu}>
+      <button type="button" role="menuitem" onClick=${() => setRenaming(true)}>Rename chat</button>
       <button type="button" role="menuitem" onClick=${close}>Close chat</button>
-    </${MoreMenu}>`;
+    </${MoreMenu}>
+    ${renaming && html`<${RenameChat} project=${project} chat=${chat} title=${shown === chat ? "" : shown} onDone=${onRenamed} onClose=${() => setRenaming(false)} />`}`;
+}
+
+// ^ The Rename chat sheet: one name field, at most 40 characters (wsx-core `chats::checked_title`
+// says why when the server refuses one); empty shows the id again.
+function RenameChat({ project, chat, title, onDone, onClose }) {
+  const dialog = useRef();
+  const field = useRef();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { dialog.current.showModal(); field.current.focus(); field.current.select(); }, []);
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api(`api/tasks/${project}/chats/${encodeURIComponent(chat)}/rename`, { method: "POST", json: { title: field.current.value } });
+    } catch (failure) {
+      setError(failure.message);
+      setBusy(false);
+      return;
+    }
+    dialog.current.close();
+    loadTasks(project);
+    onDone();
+  };
+  return html`
+    <dialog class="sheet" ref=${dialog} aria-labelledby="rename-chat-title" onClose=${onClose}>
+      <form onSubmit=${submit} noValidate>
+        <h2 class="sheet-title" id="rename-chat-title">Rename chat</h2>
+        <label class="field">Name
+          <input class="input" type="text" name="title" ref=${field} value=${title} placeholder=${chat} maxlength="40" autocomplete="off" enterkeyhint="done" />
+          <span class="field-note">Shown on Home and in the chat. The chat keeps its id ${chat}, so links still work. Empty shows the id.</span>
+        </label>
+        <p class="error" role="alert">${error}</p>
+        <div class="actions sheet-actions">
+          <button class="button" type="button" onClick=${() => dialog.current.close()}>Cancel</button>
+          <button class="button button-primary" type="submit" disabled=${busy}>Save</button>
+        </div>
+      </form>
+    </dialog>`;
 }
 
 // A task or the project overview over the chat, about 85% of the height (a `fit` sheet only as
@@ -766,7 +810,7 @@ function useManagerLog(id, room) {
     if (search.current.words !== search.current.read) load();
   };
   const { around, readAround, words, read } = search.current;
-  return { chat, failure, around, aroundRead: around != null && readAround === around, finding, setFinding, cut: cut.current, loading: words !== read, jump, back, findWords };
+  return { reread: load, chat, failure, around, aroundRead: around != null && readAround === around, finding, setFinding, cut: cut.current, loading: words !== read, jump, back, findWords };
 }
 
 // ^ A read rebuilds every row from the entries it keeps: a row whose fields are the ones it was
@@ -820,7 +864,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   const store = useStore();
   const project = store.projects.find((candidate) => candidate.id === id);
   const overview = useOverview(id, room);
-  const { chat, failure, around, aroundRead, finding, setFinding, cut, loading, jump, back, findWords } = useManagerLog(id, room);
+  const { reread, chat, failure, around, aroundRead, finding, setFinding, cut, loading, jump, back, findWords } = useManagerLog(id, room);
   // ^ The To check items, each a bubble at the time it was added; read again when the open
   // count changes (a new item, a pass or a fail).
   const [checkItems, setCheckItems] = useState(null);
@@ -958,7 +1002,8 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
     <header class="bar">
       <${Back} fallback=${room ? `#/p/${id}` : "#/"} />
       <div class="bar-title">
-        <span class="bar-label">${room ?? project.name}</span>
+        <span class="bar-label">${room ? chat?.manager.name ?? room : project.name}</span>
+        ${room && chat?.manager.projects && html`<span class="bar-projects">${chat.manager.projects.join(", ")}</span>`}
         ${!managerWord && chat?.manager.agent && html`<span class="bar-model" title="Model">${agentWords(chat.manager.agent)}</span>`}
         ${managerWord && html`<span class="bar-state" key=${managerWord} data-tone=${typing ? "working" : "danger"}>${typing
           ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><${Dots} /></span>`
@@ -970,7 +1015,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
           <a class="icon-button" href=${`#/p/${id}/page`} aria-label="Overview" title="Overview"><${Icon} name="overview" /></a>
           <${PanelsButton} project=${id} />
           <${ProjectShell} project=${project} /><${More} project=${project} />`}
-        ${room && can("task_act") && html`<${ChatMore} project=${id} chat=${room} />`}
+        ${room && can("task_act") && html`<${ChatMore} project=${id} chat=${room} shown=${chat?.manager.name ?? room} onRenamed=${reread} />`}
       </div>
     </header>`;
   // ^ The header sits at the bottom, above the composer, when this device chose it (settings.js).

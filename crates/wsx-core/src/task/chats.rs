@@ -327,7 +327,11 @@ pub fn checked_title(title: &str) -> Result<&str> {
 /// The name the owner reads for a chat, the one rule of every surface: its title, else for the
 /// repo's home chat `home` (the project's shown name), else the chat's id.
 pub fn shown_name(dir: &ManagerDir, home: &str) -> String {
-    shown_of(&chat_file(dir).title, dir.is_home().then_some(home), dir.name())
+    shown_of(
+        &chat_file(dir).title,
+        dir.is_home().then_some(home),
+        dir.name(),
+    )
 }
 
 fn shown_of(title: &str, home: Option<&str>, id: &str) -> String {
@@ -356,7 +360,10 @@ pub fn rename(name: &str, title: &str) -> Result<String> {
 /// project's name; one the config does not know shows its id without the hash).
 pub fn project_names(dir: &ManagerDir) -> Vec<String> {
     let registered = registered();
-    repos(dir).iter().map(|id| project_name(&registered, id)).collect()
+    repos(dir)
+        .iter()
+        .map(|id| project_name(&registered, id))
+        .collect()
 }
 
 /// Every registered project's store id and name.
@@ -366,7 +373,12 @@ fn registered() -> Vec<(String, String)> {
             config
                 .projects
                 .into_iter()
-                .map(|project| (store::project_id(&project.name, &project.path), project.name))
+                .map(|project| {
+                    (
+                        store::project_id(&project.name, &project.path),
+                        project.name,
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -562,9 +574,11 @@ fn hand_back(dir: &ManagerDir) -> String {
     )
 }
 
-/// The chats as rows for the ledger, `chat list` and the views, by name: `{name, state, goal,
-/// last_unix_ms, agent?, adapter?, model?}`. `goal` is the goal's first line; `agent` is the
-/// entry's name, `adapter` and `model` its own, left out for a chat on the manager's.
+/// The chats as rows for the ledger, `chat list` and the views, by name: `{name, shown, projects,
+/// state, goal, last_unix_ms, title?, agent?, adapter?, model?}`. `shown` is the name the owner
+/// reads (`shown_name`, the project's name for the home chat), `title` the chat's own, `projects`
+/// the names of the projects it runs in, its own first; `goal` is the goal's first line; `agent`
+/// is the entry's name, `adapter` and `model` its own, left out for a chat on the manager's.
 pub fn rows(project_id: &str) -> Vec<Value> {
     let home = store::home_chat(project_id);
     let registered = registered();
@@ -573,22 +587,23 @@ pub fn rows(project_id: &str) -> Vec<Value> {
         .map(|dir| {
             let goal = goal(&dir);
             let last = chats_home::last_message_ms(&dir);
+            let file = chat_file(&dir);
+            let is_home = home.as_deref() == Some(dir.name());
+            let own = project_name(&registered, project_id);
             let mut row = serde_json::json!({
                 "name": dir.name(),
+                "shown": shown_of(&file.title, is_home.then_some(own.as_str()), dir.name()),
+                "projects": file.repos.iter().map(|id| project_name(&registered, id)).collect::<Vec<_>>(),
                 "state": if is_open(&dir) { "open" } else { "closed" },
                 "goal": goal.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
                 "last_unix_ms": last,
                 "listed": chats_home::listed_at(&dir, || last),
-                "home": home.as_deref() == Some(dir.name()),
-                // ^ `projects` is where the chat runs, its own first, by name; `title` its
-                // own name for it (docs/tasks.md "Chats"); the row's shown name is `title`, else the id.
-                "projects": repos(&dir).iter().map(|id| project_name(&registered, id)).collect::<Vec<_>>(),
+                "home": is_home,
             });
-            let title = chat_file(&dir).title;
-            if !title.is_empty() {
-                row["title"] = title.into();
+            if !file.title.is_empty() {
+                row["title"] = file.title.as_str().into();
             }
-            if let (Some(entry), Some(own)) = (chat_file(&dir).agent, agent(&dir)) {
+            if let (Some(entry), Some(own)) = (file.agent, agent(&dir)) {
                 row["agent"] = entry.into();
                 row["adapter"] = own.adapter.into();
                 row["model"] = own.model.into();
@@ -892,4 +907,28 @@ fn drop_role_approvals(path: &Path, bytes: &[u8]) -> Result<()> {
         out.push(b'\n');
     }
     store::write_atomic(path, &out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_shown_name_is_the_title_then_the_home_name_then_the_id() {
+        assert_eq!(shown_of("Fee table", None, "fees"), "Fee table");
+        assert_eq!(shown_of("Fee table", Some("wsx"), "fees"), "Fee table");
+        assert_eq!(shown_of("", Some("wsx"), "manager-chat"), "wsx");
+        assert_eq!(shown_of("", None, "fees"), "fees");
+    }
+
+    #[test]
+    fn a_title_is_trimmed_one_line_and_at_most_forty_characters() {
+        assert_eq!(checked_title("  Fee table \n").unwrap(), "Fee table");
+        assert_eq!(checked_title("   ").unwrap(), "");
+        assert!(checked_title(&"x".repeat(40)).is_ok());
+        let long = checked_title(&"é".repeat(41)).unwrap_err().to_string();
+        assert!(long.contains("at most 40") && long.contains("41"), "{long}");
+        let lines = checked_title("two\nlines").unwrap_err().to_string();
+        assert!(lines.contains("one line"), "{lines}");
+    }
 }

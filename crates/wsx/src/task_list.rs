@@ -66,11 +66,14 @@ impl Overview {
 }
 
 /// One row: an open task in the ledger's chain order (under its band), an open chat, then a
-/// recent landed or closed task. A chat row has no number; its title is the chat's name.
+/// recent landed or closed task. A chat row has no number; its title is the chat's shown name
+/// (`chats::shown_name`) and `chat` its id, which the actions take.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRow {
     pub id: u64,
     pub title: String,
+    /// A chat's id; empty for a task.
+    pub chat: String,
     pub state: String,
     /// The status label (wsx-core `task::status`), or a chat's goal; empty when nothing.
     pub status: String,
@@ -296,7 +299,7 @@ impl TaskList {
         self.rows
             .get(self.selected)
             .filter(|row| row.section == Section::Chats && row.state == "open")
-            .map(|row| row.title.as_str())
+            .map(|row| row.chat.as_str())
     }
 
     /// The selected row's chat when it can be closed: the home chat cannot (`chats::close`).
@@ -447,14 +450,14 @@ impl TaskList {
                 let selected = self
                     .rows
                     .get(self.selected)
-                    .map(|row| (row.id, row.title.clone()));
+                    .map(|row| (row.id, row.chat.clone()));
                 self.rows = rows(&ledger);
                 // ^ The selection and the detail follow their task, not its position.
                 self.selected = selected
-                    .and_then(|(id, title)| {
+                    .and_then(|(id, chat)| {
                         self.rows
                             .iter()
-                            .position(|row| row.id == id && (id != 0 || row.title == title))
+                            .position(|row| row.id == id && (id != 0 || row.chat == chat))
                     })
                     .unwrap_or(self.selected)
                     .min(self.rows.len().saturating_sub(1));
@@ -647,6 +650,7 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
     let open = list("open");
     let row = |task: &Value, section| TaskRow {
         id: task["id"].as_u64().unwrap_or_default(),
+        chat: String::new(),
         title: task["title"].as_str().unwrap_or_default().to_string(),
         state: state_word(task),
         // ^ The words of wsx-core `task::status` (docs/tasks.md "Status").
@@ -662,13 +666,26 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         root: task["flow"]["place"]["root"].as_u64().unwrap_or_default(),
         depth: task["flow"]["place"]["depth"].as_u64().unwrap_or_default() as u8,
     };
+    let projects = |chat: &Value| -> Vec<String> {
+        chat["projects"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|name| name.as_str().map(str::to_string))
+            .collect()
+    };
     let chat = |chat: &Value| TaskRow {
         id: 0,
-        title: chat["name"].as_str().unwrap_or_default().to_string(),
+        title: chat["shown"].as_str().unwrap_or_default().to_string(),
+        chat: chat["name"].as_str().unwrap_or_default().to_string(),
         state: chat["state"].as_str().unwrap_or_default().to_string(),
         // ^ The chat's own model first, as the room's heading shows it.
         status: [
             wsx_core::task::view::agent_label(chat),
+            // ^ A chat that runs in more projects than this one names them (`chats::rows`).
+            Some(projects(chat))
+                .filter(|names| names.len() > 1)
+                .map(|names| names.join(", ")),
             chat["goal"].as_str().map(str::to_string),
         ]
         .into_iter()
@@ -697,6 +714,7 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
     let dismissed = (!dismissed.is_empty()).then(|| TaskRow {
         id: 0,
         title: format!("+{} dismissed", dismissed.len()),
+        chat: String::new(),
         state: String::new(),
         status: String::new(),
         counts: Default::default(),

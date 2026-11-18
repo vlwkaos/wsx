@@ -720,9 +720,11 @@ fn read(
         approvals,
         items: checked,
     } = chat::read_for(dir, (project, store), &settings, &window, |_| {})?;
-    let name = dir
-        .and_then(|dir| dir.named().map(str::to_string))
-        .unwrap_or_else(|| settings.manager_shown_name(project).to_string());
+    let shown = settings.manager_shown_name(project);
+    let name = dir.map_or_else(
+        || shown.to_string(),
+        |dir| wsx_core::task::chats::shown_name(dir, shown),
+    );
     // ^ A fallback's while one runs, else the chat's own or the manager's (docs/tasks.md "Agents").
     let agent = dir
         .map(|dir| view::manager_agent(dir, &settings))

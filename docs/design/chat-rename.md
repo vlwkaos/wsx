@@ -1,6 +1,8 @@
 # Chat rename and project of a chat: mockups
 
-Task 496, mockups only: no product code changed. The owner asked (messages 5143, 5164, 5166) to rename a chat and to see which project a chat belongs to, without the `project ·` prefix that takes message space on a Home row. Nothing here is decided; the owner picks.
+Task 496. **Decided (owner, message 5242): none of A, B, C; a chat's Home row has three lines: its name, the projects it runs in, its message.** Built as in docs/web-client-tasks.md "Home" and docs/tasks.md "Chats". The options below are kept as the record.
+
+The mockups: The owner asked (messages 5143, 5164, 5166) to rename a chat and to see which project a chat belongs to, without the `project ·` prefix that takes message space on a Home row. Nothing here is decided; the owner picks.
 
 Method: static pages made by [chat-rename/build.py](chat-rename/build.py), with the real `app.css`, the default theme's tokens (`theme.css`, written from `theme.toml`) and the rules a build would add ([mock.css](chat-rename/mock.css)). Captures at 390 px, scale 2, light and dark, by headless Chrome. The data is made up in the shape of real chats: project `studio-app` with chat `web-income` (shown as "Fee table" once renamed), and project `wsx`. Design lint on all 18 pages: 0 errors; the warns are the same ones the unchanged row has.
 

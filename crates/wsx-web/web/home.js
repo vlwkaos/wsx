@@ -22,7 +22,8 @@ function homeOrder(projects, tasks, viewing) {
   for (const project of projects) {
     const overview = tasks[project.id];
     for (const chat of overview?.chats ?? []) {
-      if (chat.listed === false) continue;
+      // ^ A chat that runs in several projects is one row, under its own (the first of `projects`).
+      if (chat.listed === false || (chat.name !== overview.home_chat && chat.projects?.[0] !== project.name)) continue;
       const home = chat.name === overview.home_chat;
       const watched = viewing?.project === project.id && (viewing.room ?? overview.home_chat) === chat.name;
       const news = watched ? null : unreadNews(home ? `project-${project.id}` : `project-${project.id}-c-${chat.name}`, home ? overview.news : chat.news);
@@ -54,12 +55,12 @@ function statusLine({ overview, first }) {
   return { text: overview.tasks.length ? "Nothing needs you" : "No tasks yet" };
 }
 
-// What a Home row says in two lines, for a project and for a chat alike: line 1 the name, the
-// tray icons (trays.js: Running, Needs you, To check, Routines, each with its count, none at 0)
-// and the time; line 2 the status line, or, while the chat has a message this device has not
-// read, that message in bold (docs/web-client-tasks.md "Home"). `typing`: the manager's name
-// while its turn runs.
-function RowText({ name, asks, counts, last, now, line, news, typing }) {
+// What a Home row says: line 1 the name, the tray icons (trays.js: Running, Needs you, To check,
+// Routines, each with its count, none at 0) and the time; a chat that is not a project's first has
+// its projects on a line of their own (`projects`, muted); then the status line, or, while the chat
+// has a message this device has not read, that message in bold (docs/web-client-tasks.md "Home").
+// `typing`: the manager's name while its turn runs.
+function RowText({ name, projects, asks, counts, last, now, line, news, typing }) {
   return html`
     <span class="row-main">
       <span class="row-head">
@@ -69,30 +70,32 @@ function RowText({ name, asks, counts, last, now, line, news, typing }) {
         <${TrayIcons} counts=${counts} />
         ${last ? html`<span class="time">${ago(now - last)}</span>` : null}
       </span>
+      ${projects ? html`<span class="row-projects">${projects}</span>` : null}
       <span class="row-context" key=${line.text} data-tone=${line.tone ?? null} data-loading=${line.loading ? "" : null} data-news=${news ? "" : null}>
         ${typing ? html`<span class="row-typing" role="img" aria-label=${`${typing} is typing`}><${Dots} /></span>` : null}${line.text}
       </span>
     </span>`;
 }
 
-// A chat's row, the same two lines for the project's home chat (`.home-row`, keyed by its project) and any other (`.chat-row`). The home chat's
-// line 2 is the project's (statusLine); another chat's is its unread reply, else its last reply,
-// else its goal, never its project's name (that is the row's aria-label). A slide to the left shows Dismiss.
+// A chat's row: two lines for the project's home chat (`.home-row`, keyed by its project: its name is
+// the project's, then the project's statusLine), three for any other (`.chat-row`): its shown name, the
+// projects it runs in, then its unread reply, else its last reply, else its goal. A slide to the left shows Dismiss.
 function ChatRow({ row, current, now, onDismiss }) {
   const { project, overview, chat, home, news } = row;
   const counts = trayCounts(home ? overview : chat);
+  const projects = chat.projects.join(", ");
   const text = news?.text.split("\n")[0] ?? (home ? null : chat.last_reply || chat.goal || "No messages yet");
   const line = home && !news ? statusLine(row) : { text };
   const slidable = can("task_act");
   return html`
     <li class=${slidable ? "row row-slide" : "row"} ...${slidable ? slide : null} data-key=${home ? project.id : `${project.id}/c/${chat.name}`} data-news=${news ? "" : null}>
       <a class=${home ? "row-link home-row" : "row-link chat-row"} href=${chatHash(chat.name)} aria-current=${current ? "page" : null}
-        aria-label=${home ? null : [`Chat ${chat.name} of ${project.name}`, news && "unread", ...shownTrays(counts).map((tray) => trayWords(tray, counts))].filter(Boolean).join(", ")}>
-        <${RowText} name=${home ? project.name : chat.name} asks=${home && Boolean(overview.asks?.length)} counts=${counts}
+        aria-label=${home ? null : [`Chat ${chat.shown} of ${projects}`, news && "unread", ...shownTrays(counts).map((tray) => trayWords(tray, counts))].filter(Boolean).join(", ")}>
+        <${RowText} name=${home ? project.name : chat.shown} projects=${home ? null : projects} asks=${home && Boolean(overview.asks?.length)} counts=${counts}
           last=${row.last} now=${now} line=${line} news=${Boolean(news)} typing=${home && overview.busy ? overview.manager : null} />
       </a>
       ${slidable && html`<button class="row-remove" data-quiet type="button" onClick=${() => onDismiss(row)}
-        aria-label=${`Dismiss chat ${chat.name}`} title="Dismiss"><${Icon} name="fail" /></button>`}
+        aria-label=${`Dismiss chat ${chat.shown}`} title="Dismiss"><${Icon} name="fail" /></button>`}
     </li>`;
 }
 

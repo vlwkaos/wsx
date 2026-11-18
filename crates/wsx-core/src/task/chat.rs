@@ -608,7 +608,10 @@ pub fn read_for(
     let shown = settings.manager_shown_name(project);
     let chat = dir.and_then(ManagerDir::named);
     let manager = manager_name_in(chat, shown);
-    let own = dir.map_or_else(|| shown.to_string(), |dir| super::chats::shown_name(dir, shown));
+    let own = dir.map_or_else(
+        || shown.to_string(),
+        |dir| super::chats::shown_name(dir, shown),
+    );
     let names = Names {
         own: &own,
         manager: &manager,

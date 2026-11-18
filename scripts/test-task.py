@@ -7357,6 +7357,20 @@ def part_host(created=None):
     wait(lambda: events_with('routine chatproof failed (exit 3)'), 'the routine result at the home chat', 60)
     assert not any('chatproof' in e.get('text', '') for e in chat_entries('qa') if e['kind'] == 'message')
     js('task', 'routine', 'delete', 'chatproof', '-p', 'demo')
+    # Rename: the owner's, a shown name only (docs/tasks.md "Chats"): the id, the folder and `say --to` stay;
+    # the title rule is trimmed, one line, at most 40 characters; the home chat is named by its project; empty clears.
+    assert "chat rename is the owner's" in reply_to(js('task', 'say', 'RUN wsx task chat rename qa "Checkout QA" -p demo --json')['id'])['text']
+    assert chats()['qa']['shown'] == 'qa' and 'title' not in chats()['qa']
+    renamed = js('task', 'chat', 'rename', 'qa', '  Checkout QA  ')
+    assert renamed['title'] == 'Checkout QA', renamed
+    assert chats()['qa']['title'] == 'Checkout QA' and chats()['qa']['shown'] == 'Checkout QA' and chats()['qa']['projects'] == ['demo'], chats()['qa']
+    assert json.loads((chats_dir / 'qa/chat.json').read_text())['title'] == 'Checkout QA' and (chats_dir / 'qa/log.jsonl').exists()
+    assert 'at most 40' in cli('task', 'chat', 'rename', 'qa', 'x' * 41, '-p', 'demo', ok=False).stderr
+    assert 'one line' in cli('task', 'chat', 'rename', 'qa', 'two\nlines', '-p', 'demo', ok=False).stderr
+    assert 'named by its project' in cli('task', 'chat', 'rename', 'demo', 'Other', '-p', 'demo', ok=False).stderr
+    assert chats()['qa']['title'] == 'Checkout QA'
+    assert js('task', 'chat', 'rename', 'qa', '')['title'] == ''
+    assert chats()['qa']['shown'] == 'qa' and 'title' not in chats()['qa'] and 'title' not in json.loads((chats_dir / 'qa/chat.json').read_text())
     # Close: refused without the word, once with it; one hand-back row at the home chat.
     close_line = 'RUN wsx task chat close qa -p demo --json'
     assert "chat close is the owner's" in reply_to(js('task', 'say', close_line)['id'])['text'] and chats()['qa']['state'] == 'open'

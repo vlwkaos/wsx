@@ -3872,11 +3872,13 @@ for (const wide of [false, true]) {
   await go("#/");
   const chatRow = `[...document.querySelectorAll('.home-rows .chat-row')].find((r) => r.querySelector('.row-label').textContent === 'billing')`;
   await until(`!!(${chatRow})`, "Home lists no billing chat");
-  const listed = await evaluate(`(() => { const row = ${chatRow}; return { name: row.querySelector('.row-label').textContent, label: row.getAttribute('aria-label'), context: row.querySelector('.row-context').textContent.trim(), dots: row.querySelectorAll('.news-mark').length }; })()`);
+  const listed = await evaluate(`(() => { const row = ${chatRow}; return { name: row.querySelector('.row-label').textContent, label: row.getAttribute('aria-label'), lines: [...row.querySelector('.row-main').children].map((line) => line.className.split(' ')[0]).join(), projects: row.querySelector('.row-projects')?.textContent ?? '', context: row.querySelector('.row-context').textContent.trim(), dots: row.querySelectorAll('.news-mark').length }; })()`);
   if (listed.name !== "billing" || (!wide && listed.dots)) await fail(`Home lists the chat as ${JSON.stringify(listed)}, not billing of ${projectName}`);
-  // ^ The owner's rule (msgs 5164, 5239): line 2 of a chat's row is only its message; the project is in the label.
-  const labelled = /^Chat billing of (.+?)(?:, [^,]+)*$/.exec(listed.label ?? "")?.[1];
-  if (!labelled || listed.context.includes(labelled) || listed.context.includes(" · ")) await fail(`the chat row's line 2 carries its project or the label does not name it: ${JSON.stringify(listed)}`);
+  // ^ The owner's rule (msgs 5164, 5239, 5242): a chat that is not a project's first has three lines, its
+  // name, its projects (muted), then its message alone; the label names the projects.
+  const served = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((data) => data.chats.find((chat) => chat.name === 'billing'))`);
+  if (listed.lines !== "row-head,row-projects,row-context" || !served?.projects?.length || listed.projects !== served.projects.join(", ") || listed.context.includes(listed.projects)
+    || !listed.label.startsWith(`Chat ${served.shown} of ${served.projects.join(", ")}`)) await fail(`the chat row's lines are not name, projects, message: ${JSON.stringify({ listed, served })}`);
   if (await count(".more-menu .chat-row")) await fail("the ⋯ menu lists chats");
   const chatHead = await homeHead(chatRow), chatFault = homeHeadFault(chatHead, false);
   if (chatFault) await fail(`the chat row's icons and time are not one group at the right edge: ${chatFault}`);
@@ -3930,8 +3932,9 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   if (before.billing !== true) await fail(`billing is not listed before Dismiss: ${JSON.stringify(before)}`);
   await evaluate(`(() => { const row = ${billing}; row.scrollLeft = row.scrollWidth; })()`);
   await until(`!!(${billing})?.hasAttribute('data-open')`, "the chat's row did not open its Dismiss");
-  const button = await evaluate(`(() => { const box = ${billing}.querySelector('[aria-label="Dismiss chat billing"]').getBoundingClientRect(); return { name: ${billing}.querySelector('[aria-label="Dismiss chat billing"]').title, width: box.width, height: box.height }; })()`);
-  if (button.name !== "Dismiss" || button.width < 44 || button.height < 44) await fail(`the Dismiss button is ${JSON.stringify(button)}`);
+  const button = await evaluate(`(() => { const box = ${billing}.querySelector('[aria-label="Dismiss chat billing"]').getBoundingClientRect(); return { name: ${billing}.querySelector('[aria-label="Dismiss chat billing"]').title, width: box.width, height: box.height, top: box.top, rowTop: ${billing}.getBoundingClientRect().top, rowHeight: ${billing}.getBoundingClientRect().height }; })()`);
+  // ^ The taller three-line row: the button fills its height, as the two-line rows' does.
+  if (button.name !== "Dismiss" || button.width < 44 || button.height < 44 || Math.abs(button.height - button.rowHeight) > 1 || Math.abs(button.top - button.rowTop) > 1) await fail(`the Dismiss button is ${JSON.stringify(button)}`);
   await shot(`home-dismiss`);
   await evaluate(`${billing}.querySelector('[aria-label="Dismiss chat billing"]').click()`);
   await until(`!(${billing})`, "Dismiss left the chat's row on Home", 30);
@@ -3952,6 +3955,58 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await until("!!document.querySelector('.log .bubble[data-side=in]')", "the chat did not open after its message");
   await go("#/");
   await until(`!!(${billing}) && !${billing}.hasAttribute('data-news')`, "the chat's reply stayed unread after it was read");
+  // ^ A chat of another project with a title, and one that runs in two projects (a hand-written
+  // `repos`, no command makes one yet): Home shows each once, in three lines, with the project
+  // line muted (docs/web-client-tasks.md "Home"). Closed again after the captures.
+  const cli = JSON.parse(fs.readFileSync(wsxCli));
+  const chatCmd = (...args) => execFileSync(cli.wsx, ["task", "chat", ...args], { env: cli.env, cwd: cli.cwd, stdio: "pipe" }).toString();
+  const goal = path.join(path.dirname(wsxCli), "rename-goal.md");
+  fs.writeFileSync(goal, "Work out the fee table.\n");
+  const staged = cli.env.XDG_STATE_HOME;
+  const chatJson = (name) => path.join(staged, fs.readdirSync(staged, { recursive: true }).find((file) => file.endsWith(path.join("chats", name, "chat.json"))));
+  chatCmd("new", "tuning", "--goal", goal, "--agent", "haiku-chat", "-p", "calm");
+  chatCmd("rename", "tuning", "  Fee table  ", "-p", "calm");
+  chatCmd("new", "shared", "--goal", goal, "--agent", "haiku-chat", "-p", "plans");
+  {
+    const file = chatJson("shared");
+    const body = JSON.parse(fs.readFileSync(file));
+    body.repos.push(JSON.parse(fs.readFileSync(chatJson("tuning"))).repos[0]);
+    fs.writeFileSync(file, JSON.stringify(body));
+  }
+  const homeRow = (name) => `[...document.querySelectorAll('.home-rows .chat-row')].find((r) => r.getAttribute('aria-label').startsWith('Chat ${name} of'))`;
+  await resize([390, 844, 2]);
+  await go("#/");
+  await until(`!!(${homeRow("Fee table")}) && !!(${homeRow("shared")})`, "Home lists no renamed chat or no chat of two projects", 30);
+  const lines3 = await evaluate(`['Fee table', 'shared'].map((name) => { const rows = [...document.querySelectorAll('.home-rows .chat-row')].filter((r) => r.getAttribute('aria-label').startsWith('Chat ' + name + ' of')); return { name: rows[0].querySelector('.row-label').textContent, projects: rows[0].querySelector('.row-projects').textContent, context: rows[0].querySelector('.row-context').textContent.trim(), copies: rows.length }; })`);
+  if (lines3[0].projects !== "calm" || lines3[0].context !== "Work out the fee table." || lines3[1].projects !== "plans, calm" || lines3.some((line) => line.copies !== 1))
+    await fail(`Home lists the titled chat and the chat of two projects as ${JSON.stringify(lines3)}`);
+  if (await evaluate("[...document.querySelectorAll('.home-rows .home-row')].some((row) => row.querySelector('.row-projects'))")) await fail("a project's home row has a projects line");
+  // ^ A title the rule refuses is 400 with its reason; the id stays what `chat list` and the routes name.
+  const refused = await evaluate(`fetch('api/tasks/${project}/chats/tuning/rename', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'x'.repeat(41) }) }).then(async (r) => ({ status: r.status, body: await r.json() }))`);
+  if (refused.status !== 400 || !/at most 40/.test(JSON.stringify(refused.body))) await fail(`a 41-character title answered ${JSON.stringify(refused)}`);
+  const kept = JSON.parse(chatCmd("list", "--json", "-p", "calm")).chats.find((chat) => chat.name === "tuning");
+  if (kept?.title !== "Fee table" || kept.shown !== "Fee table" || kept.projects.join() !== "calm") await fail(`chat list names the renamed chat as ${JSON.stringify(kept)}`);
+  // ^ The room: the shown name and the projects as the small second line.
+  await go("#/c/shared");
+  await until("document.querySelector('.bar-label')?.textContent === 'shared' && !!document.querySelector('.bar-projects')", "the chat room's header has no projects line");
+  if (await text(".bar-projects").then((words) => words[0]) !== "plans, calm") await fail(`the room header's projects: ${await text(".bar-projects")}`);
+  for (const scheme of ["dark", "light"]) { await inScheme(scheme); await shot(`chat-room-projects-${scheme}`); }
+  await inScheme("dark");
+  // ^ Rename chat in the ⋯ menu, before Close chat: the sheet, then the room and Home read the new name.
+  await click(".bar .more-button");
+  if ((await evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].map((item) => item.textContent.trim()).join()")) !== "Rename chat,Close chat") await fail("the chat's ⋯ menu is not Rename chat, Close chat");
+  await evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].find((item) => item.textContent.trim() === 'Rename chat').click()");
+  await until("!!document.querySelector('dialog[open] input[name=title]')", "Rename chat opened no sheet");
+  for (const scheme of ["dark", "light"]) { await inScheme(scheme); await shot(`rename-chat-${scheme}`); }
+  await inScheme("dark");
+  await evaluate(`(() => { const input = document.querySelector('dialog[open] input[name=title]'); input.value = 'Fee table 2'; input.form.requestSubmit(); })()`);
+  await until("document.querySelector('.bar-label')?.textContent === 'Fee table 2' && !document.querySelector('dialog[open]')", "the room did not show the new name", 30);
+  if (JSON.parse(chatCmd("list", "--json", "-p", "plans")).chats.find((chat) => chat.name === "shared")?.title !== "Fee table 2") await fail("Save did not set the title");
+  await go("#/");
+  await until(`!!(${homeRow("Fee table 2")})`, "Home shows no new name");
+  chatCmd("rename", "shared", "", "-p", "plans");
+  if (JSON.parse(chatCmd("list", "--json", "-p", "plans")).chats.find((chat) => chat.name === "shared")?.shown !== "shared") await fail("an empty title did not show the id again");
+  await until(`!!(${homeRow("shared")})`, "Home shows no cleared name", 30);
   // ^ The list as the owner reads it, at the two phone widths and at 1280 px, in both schemes.
   for (const next of [[375, 812, 2], [390, 844, 2], [1280, 800, 1]]) {
     await resize(next);
@@ -3961,6 +4016,8 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
     }
   }
   await inScheme("dark");
+  chatCmd("close", "tuning", "-p", "calm");
+  chatCmd("close", "shared", "-p", "plans");
 }
 
 // Chat unread is the server's `news` (the newest reply that is not quiet), read against what this
@@ -4092,7 +4149,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await until("location.hash === '#/c/qa'", "the old route #/p/<id>/c/<chat> did not redirect to #/c/<chat>");
   await until("document.querySelector('.bar-label')?.textContent === 'qa' && !!document.querySelector('.bar .more-button')", "the qa chat has no ⋯ menu");
   await click(".bar .more-button");
-  if ((await menuItems()).join() !== "Close chat") await fail(`the qa chat's menu is ${await menuItems()}`);
+  if ((await menuItems()).join() !== "Rename chat,Close chat") await fail(`the qa chat's menu is ${await menuItems()}`);
   await evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].find((item) => item.textContent.trim() === 'Close chat').click()");
   await until(`!!document.querySelector('${sheet} #dialog-title')`, "Close chat asked nothing");
   const asks = await evaluate(`({ title: document.querySelector('${sheet} #dialog-title').textContent, text: document.querySelector('${sheet} p').textContent,
