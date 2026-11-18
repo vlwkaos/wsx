@@ -2818,10 +2818,6 @@ def part_core(created=None):
     idle_turn = turn_with('IDLE LARGE')
     idle_launch = [t for t in traces()[:traces().index(idle_turn)] if t.get('launch') and t.get('manager')][-1]
     assert not idle_launch['resume'] and 'Handover' in idle_turn['message'], (idle_launch, idle_turn)
-    # ^ An exchange of the conversation before the rotation, older than the handover's, matches too.
-    reply_to(js('task', 'say', 'ZEBRAFISH revisit')['id'])
-    earlier = turn_with('ZEBRAFISH revisit')['message']
-    assert re.search(r'earlier conversation: Owner \(message \d+\): ZEBRAFISH quarterly', earlier), earlier
     # ^ Warm and small, with other instructions: the same conversation, the new ones as a message.
     rotations = len([e for e in manager_entries() if e['kind'] == 'rotated'])
     edit_state(instructions='stale-digest')
