@@ -966,7 +966,7 @@ await evaluate(`${longReply}.querySelector('button').click()`);
 await until("[...document.querySelectorAll('.reply-text')].some((node) => /^noted events\\. #\\d+ landed, so its change is on main and nothing else waits for you\\.$/.test(node.textContent))", "More did not show the whole reply");
 // ^ The reader's scroll into the last 80 px is not pulled on to the end (lib.js `settle`, task 515): the reader goes to the end.
 await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = log.scrollHeight; })()");
-await until(atEnd, "the chat did not go back to its end");
+await until(atEnd, async () => `the chat did not go back to its end: ${JSON.stringify(await evaluate("(() => { const log = document.querySelector('.log'); return { height: log.scrollHeight, top: log.scrollTop, view: log.clientHeight, last: [...log.children].slice(-3).map((node) => node.className + ':' + node.offsetHeight) }; })()"))}`);
 
 // --- The pills: the composer row holds one pill for each of For you (Needs you and To check), Tasks and Routines,
 // between the attach button and Send, each an icon and its count (the label from 900 px, the wide layout) and
