@@ -155,7 +155,9 @@ export function requestRates({ requests }) {
   const count = (key) => Object.entries(all.reduce((by, request) => ({ ...by, [request[key]]: (by[request[key]] ?? 0) + 1 }), {})).sort((a, b) => b[1] - a[1]).slice(0, 14);
   return {
     total: requests.length, busiest: all.length, own: own.length, refused: all.filter((request) => request.status === 429).length,
-    minutes: requests.length ? Math.round((requests.at(-1).at - requests[0].at) / 600) / 100 : 0, byPath: count("path"), byCaller: count("from"),
+    minutes: requests.length ? Math.round((requests.at(-1).at - requests[0].at) / 600) / 100 : 0,
+    // ^ Where the busiest window lies: seconds from the first request.
+    window: all.length ? [Math.round((all[0].at - requests[0].at) / 1000), Math.round((all.at(-1).at - requests[0].at) / 1000)] : null, byPath: count("path"), byCaller: count("from"),
   };
 }
 
