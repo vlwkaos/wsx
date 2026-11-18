@@ -1209,13 +1209,13 @@ for (const [width, height, scale] of [[390, 560, 2], [1280, 520, 1]]) {
   await evaluate("document.querySelector('.reservoir-scroll').scrollTop = 0");
 }
 // ^ The open list ends at its last row: between that row and the composer is only the list's own
-// bottom padding, never an empty block.
+// bottom padding, never an empty block (the thread strip, when the chat has one, sits between the list and the composer).
 const noEmptyBlock = async (where) => {
   const seen = await evaluate(`(() => {
     const reservoir = document.querySelector('.reservoir'), last = [...reservoir.querySelectorAll('.need')].at(-1);
     let end = last.getBoundingClientRect().bottom;
     for (let node = last.parentElement; node !== reservoir; node = node.parentElement) if (/auto|scroll/.test(getComputedStyle(node).overflowY)) end = Math.min(end, node.getBoundingClientRect().bottom);
-    return { gap: document.querySelector('.composer').getBoundingClientRect().top - end, pad: parseFloat(getComputedStyle(document.querySelector('.reservoir-body')).paddingBottom), last: last.textContent.trim().replace(/\\s+/g, ' ').slice(0, 30) };
+    return { gap: (document.querySelector('.threads') ?? document.querySelector('.composer')).getBoundingClientRect().top - end, pad: parseFloat(getComputedStyle(document.querySelector('.reservoir-body')).paddingBottom), last: last.textContent.trim().replace(/\\s+/g, ' ').slice(0, 30) };
   })()`);
   if (seen.gap > seen.pad + 1.5) await fail(`${where}: ${Math.round(seen.gap)} px of empty space under the list's last row (${JSON.stringify(seen)}), only ${seen.pad} px is padding`);
 };
