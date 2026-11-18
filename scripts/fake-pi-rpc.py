@@ -165,7 +165,9 @@ def main():
         current = head + rest.partition('\n\n')[2] if handover else text
         own = current.rsplit('Owner (message', 1)[-1]
         # ^ The ledger summary at the end of a turn names tasks by title: it is no owner's word either.
-        own = own.split('\n\nLedger summary from wsx', 1)[0].split('Events (message', 1)[0].split()
+        own = own.split('\n\nLedger summary from wsx', 1)[0].split('Events (message', 1)[0]
+        # ^ The records that match the owner's words follow them: record text is no owner's word either.
+        own = own.split('Memory records that match this message', 1)[0].split()
         # ^ Event lines name tasks by title, and a title may hold a word of this fake: it is no owner's word.
         if 'PIREFUSE' in own:
             # ^ Pi refuses the prompt command itself (no API key): no run, no agent_settled.

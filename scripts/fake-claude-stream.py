@@ -108,6 +108,9 @@ import sys
 import time
 import zlib
 
+# ^ The records the host attaches to an owner message: their text is no one's word to the fake.
+MATCHED_RECORDS = re.compile(r'Memory records that match this message[^\n]*\n(?:- [^\n]*\n)*\n?')
+
 TRACE = os.environ.get('FAKE_CLAUDE_TRACE') or os.path.join(os.getcwd(), '..', 'fake-claude.trace')
 
 
@@ -610,6 +613,7 @@ def main():
         if project is not None:
             # ^ The host's ledger summary ends the message; its titles are not this turn's words.
             text = text.split('\n\nLedger summary from wsx', 1)[0]
+            text = re.sub(MATCHED_RECORDS, '', text)
             # ^ A handover quotes earlier messages; only the messages after it are this turn's.
             answer = manager_turn(text.split('\n\n', 1)[1] if text.startswith('Handover') else text, project,
                                   instructions.split('The project overview ', 1)[1].split(' ', 1)[0])
@@ -897,7 +901,7 @@ def own_words(text, project):
     name tasks, and a task's title (`LIMIT 600 WORK x`) is not the owner's trigger."""
     if project is None:
         return text
-    text = text.split('\n\nLedger summary from wsx', 1)[0]
+    text = re.sub(MATCHED_RECORDS, '', text.split('\n\nLedger summary from wsx', 1)[0])
     return '\n'.join(line for line in text.split('\n') if not re.match(r'#\d+ ', line))
 
 
