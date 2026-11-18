@@ -371,9 +371,6 @@ def edit_page(page, section, words):
 
 def manager_turn(text, project, page):
     replies = []
-    # ^ The notes the host attaches carry earlier owner messages ("Owner (message 5): STATUS ...") when a rotation
-    # came before: their words are no command of this turn. fake-pi-rpc.py does the same.
-    text = re.sub(r'Notes that match this message.*?\n\n', '', text, flags=re.S)
     if 'only in your thinking' in text:
         return '-' if THOUGHT.startswith('nothing') else THOUGHT
     if 'SLOW' in text.split():
@@ -386,8 +383,7 @@ def manager_turn(text, project, page):
     if '\nSCRIPT\n' in '\n' + text:
         # ^ Events that come along with the turn follow the owner's message: they are no script.
         script = ('\n' + text).split('\nSCRIPT\n', 1)[1].split('\n\nEvents (message ', 1)[0]
-        # ^ The notes the host attaches to an owner message are no part of the script.
-        script = script.split('\n\nNotes that match this message', 1)[0].split('\n\nYour last reply: ', 1)[0]
+        script = script.split('\n\nYour last reply: ', 1)[0]
         # ^ The host's line with the id of the manager's last reply ends the turn text.
         done = subprocess.run(script, shell=True, capture_output=True, text=True)
         return 'script -> %d %s' % (done.returncode, (done.stdout + done.stderr).strip()[:600])

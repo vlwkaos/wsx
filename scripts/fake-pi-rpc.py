@@ -159,12 +159,11 @@ def main():
         text = command['message']
         trace({'session': session, 'message': text})
         # ^ A handover quotes earlier messages: only this message's own words steer the fake.
-        # ^ So are the notes the host attaches, which carry earlier messages with their ids.
         # ^ A manager's new conversation starts with the last exchanges (`Handover (this is ...`), one line each, which
         # quote old owner messages: the current message follows the first blank line after them.
         head, handover, rest = text.partition('Handover (this is a new conversation')
         current = head + rest.partition('\n\n')[2] if handover else text
-        own = current.split('\n\nNotes that match this message', 1)[0].rsplit('Owner (message', 1)[-1]
+        own = current.rsplit('Owner (message', 1)[-1]
         own = own.split('Events (message', 1)[0].split()
         # ^ Event lines name tasks by title, and a title may hold a word of this fake: it is no owner's word.
         if 'PIREFUSE' in own:

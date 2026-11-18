@@ -2770,22 +2770,15 @@ def part_core(created=None):
     assert notice.group(2) == str((notes / 'context.md').resolve()) or notice.group(2).endswith('/chats/demo/notes/context.md'), notice.group(2)
     # ^ The first message holds at most the 10 KiB budget of the notes.
     assert len(head_text.encode()) < 10 * 1024 + 400, len(head_text)
-    # ^ A fresh conversation, an owner message whose key word matches a line it did not show:
-    # that line is attached, and nothing else of the notes. A message with no such word gets none.
+    # ^ A fresh conversation, an owner message whose key word matches a line it did not show: the
+    # line stays in the file (the NOT SHOWN notice names it); no notes are attached to the message.
     edit_state(instructions=None)
     put('context.md', pizza('# stubborn'))
     attached = js('task', 'say', 'Did you restart Claude.app yesterday?')
     reply_to(attached['id'])
     matched = turn_with('Did you restart Claude.app yesterday?')['message']
-    block = matched.split('Notes that match this message')[1].split('\n\n')[0]
-    assert 'context.md:10: - #7: restarted Claude.app with open -g -a Claude' in block, matched
-    assert block.count('\n- ') <= 5 and len(block.split('):\n', 1)[1].encode()) <= 1024, block
-    assert '/notes/context.md' in block.split('\n')[0] and 'qz' not in block, block
-    reply_to(js('task', 'say', 'GLOBETROTTER plain')['id'])
-    assert 'Notes that match' not in turn_with('GLOBETROTTER plain')['message']
-    shown_word = fixture[-1].split()[2]
-    reply_to(js('task', 'say', 'what is %s' % shown_word)['id'])
-    assert 'Notes that match' not in turn_with('what is %s' % shown_word)['message']
+    assert 'Notes that match' not in matched and 'context.md:10: - #7' not in matched, matched
+    assert re.search(r'NOT SHOWN: context\.md lines [0-9, -]+ of 60 .*Read /\S+/notes/context\.md for them, or find them with `wsx task search`\.', matched), matched
     # ^ Memo lines: one line of at most 240 characters, no 60-line cap, and past 32 KiB the
     # oldest go to context-archive.md, which the fresh conversation is told about.
     put('context.md', '# stubborn\n' + ''.join('- #%d: short memo %d\n' % (n, n) for n in range(100, 175)))
@@ -2886,10 +2879,6 @@ def part_core(created=None):
     assert re.search(r'Older lines that left decisions\.md for its size are in /\S+/notes/decisions-archive\.md\.', shown), shown
     context_part = big.split('Your project context (context.md):')[1]
     assert 'Shopfront sells pizza.' in context_part and len(context_part.split('NOT SHOWN')[0].encode()) > 3500, context_part[:200]
-    # ^ An owner message whose rare word is only in an archived rule gets that line.
-    reply_to(js('task', 'say', 'Did we settle tessellation?')['id'])
-    block = turn_with('Did we settle tessellation?')['message'].split('Notes that match this message')[1].split('\n\n')[0]
-    assert 'decisions-archive.md:4: - 2026-10-04 rule 003: never render the 3d scene with tessellation' in block, block
     # ^ `wsx task search` finds the rule of the archive.
     kept = js('task', 'search', '-p', 'demo', 'tessellation')['hits']
     assert [h['kind'] for h in kept if h['by'] == 'notes'] == ['decision'], kept

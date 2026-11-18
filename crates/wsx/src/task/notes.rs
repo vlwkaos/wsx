@@ -1,13 +1,10 @@
-//! The manager's notes (`notes/` in the chat's folder): what a fresh conversation opens with, what it is
-//! told is missing, the lines of the notes that match an owner's message, and how a finished
-//! task's memo joins `context.md`. For the manager the files are views of the records
-//! (`wsx_core::memory::manage`). ref: docs/tasks.md "Notes budget"
+//! The manager's notes (`notes/` in the chat's folder): what a fresh conversation opens with,
+//! what it is told is missing, and how a finished task's memo joins `context.md`. For the manager
+//! the files are views of the records (`wsx_core::memory::manage`). ref: docs/tasks.md "Notes budget"
 
 use super::manager::{read_note, CONTEXT_FILE, DECISIONS_FILE};
 use anyhow::Result;
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use wsx_core::task::view::clip;
 
 /// The most of both files a fresh conversation's first message carries.
 const MAX_NOTES_BYTES: usize = 10 * 1024;
@@ -17,20 +14,8 @@ const CONTEXT_FLOOR_BYTES: usize = 4 * 1024;
 const ARCHIVE_FILE: &str = "context-archive.md";
 /// The rules a later one replaced; a view of the records.
 const DECISIONS_ARCHIVE_FILE: &str = "decisions-archive.md";
-/// The lines and bytes of notes attached to one owner message, and one line's length.
-const MATCH_LINES: usize = 5;
-const MATCH_BYTES: usize = 1024;
-const MATCH_LINE_CHARS: usize = 240;
 /// Ranges named in one notice.
 const NOTICE_RANGES: usize = 4;
-
-/// Words that say nothing about a topic; a rare-word rule would otherwise let them through.
-const STOP_WORDS: &[&str] = &[
-    "about", "also", "been", "could", "does", "done", "from", "give", "have", "into", "just",
-    "know", "look", "make", "need", "please", "show", "should", "than", "that", "their", "them",
-    "then", "there", "they", "this", "tell", "want", "were", "what", "when", "where", "which",
-    "will", "with", "would", "your",
-];
 
 /// One notes file as read: its lines in file order and the indexes the first message shows.
 struct View {
@@ -166,8 +151,8 @@ pub(super) fn preamble(notes: &Path) -> String {
         }
         if !hidden.is_empty() {
             out.push_str(&format!(
-                "NOT SHOWN: {} {} of {} (over the start budget). Read {} for them; wsx also \
-                 attaches the lines that match an owner message.\n",
+                "NOT SHOWN: {} {} of {} (over the start budget). Read {} for them, or find them \
+                 with `wsx task search`.\n",
                 view.name,
                 view.ranges(&hidden),
                 view.lines.len(),
@@ -200,104 +185,4 @@ pub(super) fn record_memo(
 ) -> Result<Vec<wsx_core::memory::manage::Drift>> {
     let (commit, paths) = landed.map_or((None, &[][..]), |(commit, paths)| (Some(commit), paths));
     Ok(wsx_core::memory::manage::capture(store, project, task, memo, commit, paths)?.drift)
-}
-
-/// The words of `text` that name a topic: lowercase, cut to 6 characters so `restart` meets
-/// `restarted`; ASCII words need 4 characters, others 2.
-fn words(text: &str) -> BTreeSet<String> {
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter(|word| word.chars().count() >= if word.is_ascii() { 4 } else { 2 })
-        .map(str::to_lowercase)
-        .filter(|word| !STOP_WORDS.contains(&word.as_str()))
-        .map(|word| word.chars().take(6).collect())
-        .collect()
-}
-
-/// The lines of the notes and of earlier conversations that share a rare word with `message`,
-/// that the first message of the conversation did not show: lines it left out of both files,
-/// their archives, and `earlier` (the exchanges before the last rotation). A word is rare when at
-/// most a quarter of those lines hold it; lines rank by the rarity of the words they share.
-/// At most `MATCH_LINES` lines and `MATCH_BYTES` bytes. Empty when nothing matches.
-/// ref: docs/tasks.md "Notes budget"
-pub(super) fn matching(
-    notes: &Path,
-    message: &str,
-    earlier: impl FnOnce() -> Vec<String>,
-) -> String {
-    let wanted = words(message);
-    if wanted.is_empty() {
-        return String::new();
-    }
-    let (decisions, context) = split(notes);
-    let mut pool: Vec<(String, Option<PathBuf>, String)> = Vec::new();
-    for view in [&decisions, &context] {
-        for at in view.hidden() {
-            pool.push((
-                format!("{}:{}", view.name, at + 1),
-                Some(view.path.clone()),
-                view.lines[at].clone(),
-            ));
-        }
-    }
-    for view in [&decisions, &context] {
-        let archive = notes.join(view.archive);
-        for (at, line) in read_note(&archive).lines().enumerate() {
-            pool.push((
-                format!("{}:{}", view.archive, at + 1),
-                Some(archive.clone()),
-                line.to_string(),
-            ));
-        }
-    }
-    for line in earlier() {
-        pool.push(("earlier conversation".to_string(), None, line));
-    }
-    let sets: Vec<BTreeSet<String>> = pool.iter().map(|(_, _, line)| words(line)).collect();
-    let total = sets.len() as f64;
-    let rare_at = (sets.len() / 4).max(1);
-    let df = |word: &String| sets.iter().filter(|set| set.contains(word)).count();
-    let weights: Vec<(&String, usize)> = wanted.iter().map(|word| (word, df(word))).collect();
-    let mut ranked: Vec<(f64, usize)> = sets
-        .iter()
-        .enumerate()
-        .filter_map(|(at, set)| {
-            let shared: Vec<&(&String, usize)> = weights
-                .iter()
-                .filter(|(word, _)| set.contains(*word))
-                .collect();
-            let rare = shared.iter().any(|(_, df)| *df <= rare_at);
-            let score: f64 = shared
-                .iter()
-                .map(|(_, df)| (1.0 + total / *df as f64).ln())
-                .sum();
-            rare.then_some((score, at))
-        })
-        .collect();
-    // ^ Equal scores: the later line, which is the newer.
-    ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)));
-    let mut out = String::new();
-    let mut files: Vec<String> = Vec::new();
-    for (_, at) in ranked.into_iter().take(MATCH_LINES) {
-        let (label, path, text) = &pool[at];
-        let line = format!("- {label}: {}\n", clip(text.trim(), MATCH_LINE_CHARS));
-        if out.len() + line.len() > MATCH_BYTES {
-            break;
-        }
-        out.push_str(&line);
-        if let Some(path) = path.as_ref().map(|path| path.display().to_string()) {
-            if !files.contains(&path) {
-                files.push(path);
-            }
-        }
-    }
-    match out.is_empty() {
-        true => out,
-        false => format!(
-            "Notes that match this message and are not in your context{}:\n{out}\n",
-            match files.is_empty() {
-                true => String::new(),
-                false => format!(" (read {})", files.join(", ")),
-            }
-        ),
-    }
 }
