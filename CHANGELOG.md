@@ -7,6 +7,7 @@
 - Tasks: stopping an agent also stops the processes descended from it, found by parent pid before the first signal. On macOS 26 the system gives no environment for Apple system binaries (`/bin/zsh`, `/bin/sleep`), so the `WSX_AGENT_TREE` mark missed a tool shell that Claude started in a session of its own.
 - CI: the `web` scenario's `chat` part runs on Ubuntu and its `tasks` part stays on macOS, where task agents run (the Seatbelt boundary); the `weblinux` probe scenario is gone, and the Linux jobs restore the Zig packages and the Rust build that a push to main saves.
 - Tasks: a task whose checks wait in a queue (the machine's check slot, or a `ci:` run whose jobs GitHub has not started) is in *Waiting*, held by `queue` (`status.waits_on`), and its row says `queued 12 min`; *Moving* means an agent turn or a check that runs now. The task host logs `ci_queued` and `ci_started` (the line `scripts/ci-scenario.py` prints when the jobs start).
+- Tasks: every chat has the manager's capabilities. What a role runs in another project (`-p <other>`, `say --from-chat`) and whether `new --skills` is offered is one table in `wsx_core::task::policy`; the broker, `wsx task new` and the instructions an agent reads are built from it, so a prompt no longer promises what wsx refuses. A chat's `wsx memory add --source msg:<id>` now reads that chat's own log, not the first chat's.
 
 ## [0.43.0] - 2026-11-16
 
