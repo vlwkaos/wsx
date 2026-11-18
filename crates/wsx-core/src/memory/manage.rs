@@ -449,7 +449,10 @@ fn refuse_unimported(store: &Store) -> Result<(), Error> {
 /// found in the message, the close records of the same kind named, `supersedes` replaced by the
 /// new record in the same call, and the views written after.
 pub fn add(store: &Store, new: NewRecord, supersedes: Option<&str>) -> Result<Added, Error> {
-    refuse_unimported(store)?;
+    // ^ An episode is no line of a rule or section: it is kept while old notes wait (`render` leaves them as they are).
+    if new.kind != Kind::Episode {
+        refuse_unimported(store)?;
+    }
     if let Some(words) = new.words.as_deref() {
         check_words(store, &new, words)?;
     }

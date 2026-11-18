@@ -302,14 +302,17 @@ def notes_part(pid, notes):
     check(ok('status', scope=pid)['drift'] == [], 'old notes are no drift')
 
     before = ok('status', scope=pid)['counts']
-    # old notes: every write is refused with the release that imports them; no record, no view
-    for args in (('add', '--kind', 'episode', '--slug', 'early', '--text-file', '-', '--source', 'task:1'),
+    # old notes: a rule or fact write is refused with the release that imports them; no record, no view.
+    # An episode is stored and leaves the notes as they are.
+    for args in (('add', '--kind', 'fact', '--slug', 'early', '--text-file', '-', '--source', 'task:1', '--verified-by', 'README.md'),
                  ('update', '--slug', 'early', '--text-file', '-', '--source', 'task:1'),
                  ('supersede', 'early', 'later', '--source', 'task:1')):
         code, out, err = run(*args, text='x', scope=pid)
         check(code == 3 and 'v0.43.0' in err and 'wsx memory import' in err, (args[0], code, err))
-    check(all(view(name) == text for name, text in legacy.items()), 'a refused write leaves the old notes byte for byte')
     check(ok('status', scope=pid)['counts'] == before, 'a refused write stores no record')
+    ok('add', '--kind', 'episode', '--slug', 'handover-early', '--text-file', '-', '--source', 'task:1', text='x', scope=pid)
+    check(ok('status', scope=pid)['counts'] != before, 'an episode is stored beside old notes')
+    check(all(view(name) == text for name, text in legacy.items()), 'a write leaves the old notes byte for byte')
     for name in legacy:
         os.remove(os.path.join(notes, name))
 
