@@ -1750,9 +1750,10 @@ await closeSheet("the usage sheet", chat);
   }
 
   // The header at the bottom: the chat's bar sits between the log and the composer, the other
-  // screens' bar at the foot of the page, and the choice survives a reload.
+  // screens' bar at the foot of the page, and the choice survives a reload. In a chat the thread strip
+  // is between the bar and the composer, so `composer` here is the strip's top there.
   const place = () => evaluate(`(() => { const box = (selector) => document.querySelector(selector)?.getBoundingClientRect();
-    const bar = box('.page > .bar, .chat > .bar'), composer = box('.composer'), log = box('.log'), page = box('.page');
+    const bar = box('.page > .bar, .chat > .bar'), composer = box('.threads') ?? box('.composer'), log = box('.log'), page = box('.page');
     return { side: document.documentElement.dataset.bar ?? 'top', bar: bar && [Math.round(bar.top), Math.round(bar.bottom)], composer: composer && Math.round(composer.top),
       log: log && Math.round(log.bottom), page: page && [Math.round(page.top), Math.round(page.bottom)], menu: document.querySelector('.more-menu') ? 1 : 0 }; })()`);
   await go("#/settings/ui");
