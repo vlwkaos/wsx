@@ -32,8 +32,12 @@ export function speedAt(trail, time) {
 // that starts at the touch's end halfway (measured: at 37 of 52 px, or back at 0).
 // data-open fills Remove only while the row is slid open.
 const rows = new WeakMap();
+const ending = new WeakMap(); // row -> the settle that has not arrived yet
 const room = (row) => row.scrollWidth - row.clientWidth;
 const snap = (row, on) => { row.style.scrollSnapType = on ? "" : "none"; };
+// ^ The finger's last move can start a fling that goes on after touchend and after our scrollTo
+// (measured: a quick 20 px drag, or the reset after a flick, ended fully open). overflow hidden
+// ends it; the row is released when it is at `left`, or after 600 ms, or when a finger lands.
 function settle({ currentTarget: row, timeStamp }) {
   const now = rows.get(row);
   rows.delete(row);
@@ -41,14 +45,27 @@ function settle({ currentTarget: row, timeStamp }) {
   const travel = now.open ? room(row) - row.scrollLeft : row.scrollLeft;
   const went = commits(travel, room(row) / 4, { speed: speedAt(now.trail, timeStamp) });
   const left = now.open === went ? 0 : room(row);
-  if (Math.abs(row.scrollLeft - left) < 1) return snap(row, true);
-  row.addEventListener("scrollend", () => snap(row, true), { once: true });
-  setTimeout(() => snap(row, true), 600);
+  const token = {};
+  ending.set(row, token);
+  const done = () => {
+    if (ending.get(row) !== token) return;
+    ending.delete(row);
+    row.removeEventListener("scrollend", arrived);
+    row.style.overflowX = "";
+    snap(row, true);
+  };
+  const arrived = () => Math.abs(row.scrollLeft - left) < 1 && done();
+  row.style.overflowX = "hidden";
+  row.addEventListener("scrollend", arrived);
+  setTimeout(done, 600);
   row.scrollTo({ left, behavior: motion() ? "smooth" : "auto" });
+  requestAnimationFrame(arrived);
 }
 export const slide = {
   onPointerDown: ({ currentTarget: row, pointerType }) => {
     if (pointerType !== "touch") return;
+    ending.delete(row);
+    row.style.overflowX = "";
     rows.set(row, { open: row.scrollLeft > room(row) / 2, trail: [] });
     snap(row, false);
   },

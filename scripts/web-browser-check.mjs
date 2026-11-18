@@ -325,8 +325,8 @@ async function inbox() {
     await evaluate("document.querySelector('.scroll .row-slide').scrollTo({ left: 0 })");
     // A slide a person means is not snapped back (swipe.js, task 499): a short slow drag, a thumb's
     // arc and a flick open the row, a drag of 20 px leaves it closed (a touch under the slop is a tap, and opens the session); an open row closes by a drag back.
-    const settled = (open) => until(`(() => { const row = document.querySelector('.scroll .row-slide'); const room = row.scrollWidth - row.clientWidth;
-      return ${open ? "Math.abs(row.scrollLeft - room) < 1" : "row.scrollLeft === 0"} && !row.style.scrollSnapType; })()`, async () => `the row did not settle ${open ? "open" : "closed"}: ${JSON.stringify(await removeBox())}`);
+    const settled = (open, what) => until(`(() => { const row = document.querySelector('.scroll .row-slide'); const room = row.scrollWidth - row.clientWidth;
+      return ${open ? "Math.abs(row.scrollLeft - room) < 1" : "row.scrollLeft === 0"} && !row.style.scrollSnapType; })()`, async () => `${what}: the row did not settle ${open ? "open" : "closed"}: ${JSON.stringify(await removeBox())}`);
     const aimed = async () => { await until(`!!${aim}`, "the first row is not in view to slide"); const [x, y] = await evaluate(aim); return { x, y }; };
     for (const [what, path, open] of [
       ["a slow drag of 38 px", thumbArc(0, -38, 8, 500), true],
@@ -334,16 +334,18 @@ async function inbox() {
       ["a 40 degree arc", thumbArc(40, -60, 8, 400), true],
       ["a flick of 40 px in 120 ms", thumbArc(20, -40, 4, 120), true],
       ["a short drag of 20 px", thumbArc(0, -20, 4, 300), false],
+      // ^ A quick short drag starts a fling that went on past the snap's return and opened the row (swipe.js `settle`).
+      ["a quick short drag of 20 px in 80 ms", thumbArc(0, -20, 4, 80), false],
     ]) {
       await fingerPath({ send }, await aimed(), path);
-      await settled(open);
+      await settled(open, what);
       await evaluate("document.querySelector('.scroll .row-slide').scrollTo({ left: 0, behavior: 'instant' })");
-      await settled(false);
+      await settled(false, `${what}, then the reset`);
     }
     await evaluate("(() => { const row = document.querySelector('.scroll .row-slide'); row.scrollTo({ left: row.scrollWidth, behavior: 'instant' }); })()");
-    await settled(true);
+    await settled(true, "the row set open");
     await fingerPath({ send }, { x: size[0] / 2, y: (await aimed()).y }, thumbArc(0, 60, 8, 400));
-    await settled(false);
+    await settled(false, "the drag back");
   }
   // The elapsed time of a working session counts on the page.
   const before = await text("section[aria-label=Running] .time");
