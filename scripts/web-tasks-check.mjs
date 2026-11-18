@@ -4968,12 +4968,12 @@ await closeSheet("the page", plansChat);
   if (await sayIn("ASK which fee line goes first", { thread: "fee-table" }) !== 200) await fail("the question for the thread was not taken");
   await until("!!document.querySelector('.threads .thread-ask') && !!document.querySelector('.thread-waits')", "the thread that waits has no count and no line in the chat");
   if (!/Fee table waits for you · 1 question/.test((await text(".thread-waits"))[0] ?? "")) await fail(`the line in the chat is ${JSON.stringify(await text(".thread-waits"))}`);
+  // ^ One page load for all four captures (each `go` is a burst of reads in the busiest minute of the request-rate check below).
   for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
     await resize([width, height, scale]);
     for (const scheme of ["dark", "light"]) {
       await inScheme(scheme);
-      await go(`#/p/${project}`);
-      await until("!!document.querySelector('.thread-waits') && !!document.querySelector('.composer-send')", "the chat with its thread line did not show");
+      await until("document.querySelector('.threads [aria-current=true] .thread-name')?.textContent === 'Chat' && !!document.querySelector('.thread-waits') && !!document.querySelector('.composer-send')", "the chat with its thread line did not show");
       await shot(`thread-chat-${width}-${scheme}`, ".composer-send");
       await click(".threads .thread-chip:nth-child(2)");
       await until("/Fee table/.test(document.querySelector('.bar-label')?.textContent ?? '') && document.querySelectorAll('.log .bubble').length > 0", "the thread's window did not show");
@@ -4982,6 +4982,7 @@ await closeSheet("the page", plansChat);
       await until("!!document.querySelector('.more-menu')", "the thread's menu did not open");
       await shot(`thread-menu-${width}-${scheme}`);
       await key("Escape", 27);
+      await click(".threads .thread-chip:first-child");
     }
     await inScheme("dark");
   }
