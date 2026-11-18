@@ -773,8 +773,11 @@ const sinceFit = `(() => { const line = document.querySelector('.since'), p = li
 const sinceBox = await evaluate(sinceFit);
 if (sinceBox.lines > 2 || sinceBox.clipped || !sinceBox.inline || !sinceBox.left || /^Since you left/.test(sinceBox.text)) await fail(`the since line is not a short wrapped line: ${JSON.stringify(sinceBox)}`);
 await shot("since");
-await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
-for (let attempt = 0; attempt < 100 && (await count(".since")); attempt++) await pause(100);
+// ^ The end is asked for again each turn: a scroll a late re-pin moved back (the chat scroll jump, #515) is not what this step tests.
+for (let attempt = 0; attempt < 100 && (await count(".since")); attempt++) {
+  await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
+  await pause(100);
+}
 if (await count(".since")) {
   await fail(`the since line stayed after the newest reply was on screen: ${await evaluate(`(() => { const log = document.querySelector('.log'), list = [...log.querySelectorAll('.bubble[data-side=in]')], last = list.at(-1), box = log.getBoundingClientRect(), at = last?.getBoundingClientRect();
     return JSON.stringify({ top: log.scrollTop, height: log.scrollHeight, client: log.clientHeight, at: last?.dataset.at ?? null, bubbleTop: at && Math.round(at.top - box.top), bubbleBottom: at && Math.round(at.bottom - box.top), bubbles: list.length, attrs: list.map((n) => n.dataset.at ?? '-').join() }); })()`)}`);
