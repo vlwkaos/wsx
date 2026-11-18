@@ -8874,6 +8874,9 @@ def part_host(created=None):
     # (--into) and to the task that waits for it (--after). No model tags anything.
     mark('42')
     chat42 = 'demo'
+    # ^ Section m2 leaves the home manager in a retry hold of its limit (`limit.until_ms`); it answers
+    # no message before that ends, so wait for it first.
+    wait(lambda: not manager_state().get('limit'), lambda: 'the home manager leaves its limit hold: %r' % manager_state().get('limit'), 300)
     listing = lambda: js('task', 'thread', 'list')
     threads = lambda: {t['thread']: t for t in listing()['threads']}
     assert threads() == {}, threads()
