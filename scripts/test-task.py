@@ -7462,6 +7462,9 @@ def part_host(created=None):
     assert not any(h['reference'] in ('third:3', 'third:4') for h in found['hits']), refs
     assert found['hits'][0]['line'] == 'The zebra ledger rule is decided: marmalade stays out of it.', found['hits'][0]
     assert found['projects'] == 3 and found['docs'] > 3, found
+    top = found['hits'][0]
+    assert top['slug'] == top['reference'] and top['scope'] == third_id and top['status'] == 'active' and 'zebra ledger' in top['excerpt'] and top['path'].endswith('log.jsonl'), top
+    # ^ One hit type: the fields of a `memory search` hit come with the ones of a task search hit.
     assert 'an older line' not in json.dumps(js('task', 'search', '-p', 'demo', '--all', 'older'))
     assert 'third:1' in [h['reference'] for h in js('task', 'search', '-p', 'demo', '--all', 'ZEBRA')['hits']]
     # ^ The log was replaced (a roll that deleted the old file): the digest still holds the old

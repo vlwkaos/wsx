@@ -501,6 +501,8 @@ def project_scope():
     note = next(h for h in mixed if h['kind'] == 'decision')
     check(note['status'] == 'active' and note['scope'] == pid and note['path'].endswith('chats/proj/notes/decisions.md') and note['by'] == 'notes', note)
     check(all(0 < h['score'] <= 1 for h in mixed), mixed)
+    # ^ One hit type: a transcript hit of `memory search` has the keys of a `task search` hit (`reference` is its slug).
+    check(note['reference'] == note['slug'] and 'readme' in note['line'] and note['project'] == pid, note)
     check([h['slug'] for h in ok('search', 'readme', '--kind', 'decision', scope=pid)] == ['proj:notes/decisions.md'], '--kind decision')
     check([h['slug'] for h in ok('search', 'readme', '--kind', 'fact', scope=pid)] == ['readme'], '--kind fact leaves the transcripts out')
     # ^ An agent (the broker sets WSX_TASK_FROM to its project) finds transcripts in its own project only.
