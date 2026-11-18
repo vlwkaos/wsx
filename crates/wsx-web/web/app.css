@@ -924,7 +924,8 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 .pill[data-tone="attention"] { border-color: var(--color-attention); color: var(--color-attention); }
 /* The chat's threads: one strip directly above the composer that scrolls sideways; the chat is the first chip, `+` the last
    (docs/design/chat-system.md "Using threads"). A chip is as high as a pill, its hit area the control size. */
-.threads { flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2); overflow-x: auto; scrollbar-width: none; padding: var(--space-1) var(--column-inset, var(--space-4)); }
+/* ^ As high as a hit area: the chips' ::after fits inside, so the strip scrolls sideways only (soundCheck counts a vertical scroller). */
+.threads { flex: 0 0 auto; box-sizing: border-box; min-height: var(--size-control); display: flex; align-items: center; gap: var(--space-2); overflow: auto hidden; scrollbar-width: none; padding: 0 var(--column-inset, var(--space-4)); }
 .app[data-wide] .threads { background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
 .app[data-wide] .threads + .composer { border-top: 0; padding-top: 0; }
 .thread-chip {
@@ -935,7 +936,7 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 .thread-chip[aria-current="true"] { color: var(--color-text); border-color: var(--color-accent); }
 .thread-name { max-width: calc(var(--size-rail) / 2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thread-ask { min-width: var(--space-4); text-align: center; border-radius: var(--space-4); background: var(--color-attention); color: var(--color-surface); font-size: var(--font-size-sm); font-weight: var(--font-weight-strong); }
-.thread-new { flex: none; width: var(--size-key); height: var(--size-key); margin-block: calc((var(--pill-height) - var(--size-key)) / 2); display: inline-flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--color-muted); cursor: pointer; }
+.thread-new { flex: none; width: var(--size-key); height: var(--size-key); display: inline-flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--color-muted); cursor: pointer; }
 .thread-waits { margin: 0; padding-inline: var(--column-inset, var(--space-4)); color: var(--color-muted); }
 .thread-waits a { color: var(--color-accent); }
 /* A device that cannot act has no composer: the pills have a bar of their own. */
