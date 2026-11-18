@@ -8,10 +8,21 @@ import { launch } from "../../../scripts/web-cdp.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const only = process.argv[2] ?? "";
-const pages = fs.readdirSync(here).filter((name) => /-(light|dark)\.html$/.test(name) && name.startsWith(only)).sort();
+// round-* (task 519) are before/after pairs of iframes onto the x-* pages; the x-* pages are not shot alone.
+const pages = fs.readdirSync(here).filter((name) => (/-(light|dark)\.html$/.test(name) || /^round-.*-(390|1280)\.html$/.test(name)) && !name.startsWith("x-") && name.startsWith(only)).sort();
 const page = await launch({ captures: here, prefix: "", timeoutSeconds: 240 });
 for (const file of pages) {
   const name = file.replace(/\.html$/, "");
+  const pair = /^round-.*-(390|1280)$/.exec(name);
+  if (pair) {
+    const wide = pair[1] === "1280";
+    await page.viewport(wide ? 2610 : 830, wide ? 850 : 920, wide ? 1 : 2);
+    await page.send("Page.navigate", { url: pathToFileURL(path.join(here, file)).href });
+    await page.until("document.readyState === 'complete'", `${file} loads`, 10);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await page.capture(name);
+    continue;
+  }
   const sizes = name.startsWith("composer-") ? [[1280, 800, 1, "1280"], [1440, 900, 1, "1440"]] : [[390, 844, 2, "390"]];
   if (!name.startsWith("composer-") && name.endsWith("-dark")) sizes.push([1280, 800, 1, "1280"]);
   for (const [width, height, scale, tag] of sizes) {

@@ -240,13 +240,13 @@ def tasks_list(after):
             % (icon("back"), " inline" if after else "", rows))
 
 
-def page(file, body, light, label):
+def page(file, body, light, label, extra=""):
     scheme = ' data-scheme="light"' if light else ""
     (HERE / file).write_text(
         '<!doctype html>\n<html lang="en"%s><head><meta charset="utf-8"><title>%s</title><meta name="viewport" content="width=device-width, initial-scale=1">'
-        '<link rel="stylesheet" href="../../../crates/wsx-web/web/app.css"><link rel="stylesheet" href="theme.css"><link rel="stylesheet" href="mock.css"></head>'
+        '<link rel="stylesheet" href="../../../crates/wsx-web/web/app.css"><link rel="stylesheet" href="theme.css"><link rel="stylesheet" href="mock.css">%s</head>'
         '<body data-theme="default"><div id="app"><div class="app"><main class="screen">%s</main></div></div>'
-        '<script>if (innerWidth >= 900) document.querySelector(".app").setAttribute("data-wide", "")</script></body></html>\n' % (scheme, label, body))
+        '<script>if (innerWidth >= 900) { document.querySelector(".app").setAttribute("data-wide", ""); document.querySelectorAll(".tabbar").forEach((n) => n.remove()) }</script></body></html>\n' % (scheme, label, extra, body))
 
 
 PAGES = {
@@ -267,3 +267,78 @@ PAGES = {
 for light in (False, True):
     for name, (body, label) in PAGES.items():
         page("%s-%s.html" % (name, "light" if light else "dark"), body, light, label)
+
+
+# ---- Task 519: round corners and the composer without a band, before and after, side by side ----
+# before = the real app.css; after = the same plus round.css, which is the build's CSS change written as overrides:
+#   1. the three radius tokens retuned, the Home menu (tab bar: pill 2 x sheet, tab = sheet = 16 px) is the family's size;
+#   2. the ad-hoc radii (half of key, a fraction of space, half-round bar ends) go to a token;
+#   3. the composer rules of a phone (`.app:not([data-wide])`) lose that condition: one rule on every width, copied here from app.css.
+APP = (HERE / "../../../crates/wsx-web/web/app.css").read_text()
+APP_NOCOMMENT = re.sub(r"/\*.*?\*/", "", APP, flags=re.S)
+PHONE_COMPOSER = [
+    re.sub(r"\.app:not\(\[data-wide\]\) ?", ".app ", m.group(0)).replace("padding: var(--space-1) var(--space-4);", "padding: var(--space-1) var(--column-inset, var(--space-4));")
+    for m in re.finditer(r"[^{}]*\.app:not\(\[data-wide\]\)[^{}]*\{[^{}]*\}", APP_NOCOMMENT)
+    if re.search(r"composer|send-mark|send-text", m.group(0).split("{")[0])]
+(HERE / "round.css").write_text(
+    "/* Task 519, after: the build's CSS as overrides of app.css (see build.py). */\n"
+    ":root { --radius-key: 12px; --radius-control: 16px; --radius-sheet: 16px; }\n"
+    ".markdown :not(pre) > code, .state-chip, .task-chip, .markdown .task-chip { border-radius: var(--radius-key); }\n"
+    ".usage-legend i, .usage-parts dt i { border-radius: var(--radius-key); }\n"
+    "/* the composer: one rule on every width */\n" + "\n".join(" ".join(r.split()) for r in PHONE_COMPOSER) + "\n")
+print("composer rules made one:", len(PHONE_COMPOSER))
+
+TABS = {"Home": "M3 9.5 10 4l7 5.5V16H3Z", "Tasks": PATH["play"], "Projects": "M3 5h5l2 2h7v8H3Z", "Settings": "M4 6h12M4 10h12M4 14h12"}
+
+
+def tabbar():
+    def tab(name, now):
+        d = TABS[name]
+        count = ' data-count="3"' if name == "Tasks" else ""
+        return ('<a href="#" aria-current="%s"><span class="tab-icon"%s><svg class="icon" viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" '
+                'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="%s" /></svg></span><span class="tab-label">%s</span></a>' % ("page" if now else "false", count, d, name))
+    return '<nav class="tabbar" aria-label="Screens"><div class="tabbar-pill">%s</div></nav>' % "".join(tab(n, n == "Home") for n in TABS)
+
+
+def chat_plain(menu=False):
+    body = (bubble("out", "What is left before the 0.43 release?", time="14:01")
+            + bubble("in", "Two things: the changelog (#97, working) and your check of #96. Nothing else blocks the tag.", "manager", "14:02")
+            + note('<span class="chip">#94</span> landed \u00b7 2 of 2 checks')
+            + bubble("out", "Start #99 after #97 lands, and tell me when the tag is ready.", time="14:05")
+            + bubble("in", "Done: #99 waits for #97. I will write here when the tag is ready. See `wsx task show 99`.", "manager", "14:05"))
+    return '<div class="page manager">%s<div class="chat"><div class="scroll chat-body">%s</div>%s</div></div>' % (
+        bar("wsx", "", menu=menu, items=("Rename chat", "Close chat")), body, composer(you=3, real=True))
+
+
+def grouped_tasks():
+    html_ = tasks_list(False)
+    # the For you band is one card: first and last row carry the data-group the client sets
+    rows = html_.split('<li class="need">')
+    out = [rows[0]]
+    for i, r in enumerate(rows[1:], 1):
+        group = {1: ' data-group="first"', 2: ' data-group="last"'}.get(i, "")
+        out.append('<li class="need"%s>%s' % (group, r))
+    return "".join(out)
+
+
+def new_chat_sheet():
+    return (home() + '<dialog class="sheet" open style="position:fixed;inset:auto;top:50%;left:50%;transform:translate(-50%,-50%);margin:0"><form>'
+            '<h2 class="sheet-title">New chat</h2><label class="field">Project<select class="input"><option>wsx</option></select></label>'
+            '<label class="field">Name<input class="input" placeholder="research"><span class="field-note">Lowercase letters, digits and dashes.</span></label>'
+            '<label class="field">Goal (optional)<textarea class="input" rows="3" placeholder="What the chat is for"></textarea></label>'
+            '<div class="actions sheet-actions"><button class="button" type="button">Cancel</button><button class="button button-primary" type="submit">Create</button></div></form></dialog>')
+
+
+ROUND = {"home": (home() + tabbar(), "Home and its menu"), "chat": (chat_plain(), "A chat with the composer"),
+         "chat-menu": (chat_plain(menu=True), "A chat, the more menu open"), "tasks": (grouped_tasks(), "The Tasks page"),
+         "sheet": (new_chat_sheet(), "Home, the New chat sheet")}
+WRAP = ('<!doctype html>\n<html lang="en"%s><head><meta charset="utf-8"><title>%s</title><style>body{margin:0;background:#888;font:600 14px system-ui;color:#fff}'
+        '.pair{display:flex;gap:20px;padding:10px}.pair div{display:flex;flex-direction:column;gap:6px}iframe{border:0;width:%dpx;height:%dpx;background:#000}</style></head>'
+        '<body><div class="pair"><div>Before (app.css today)<iframe src="x-%s-before-%s.html"></iframe></div><div>After (round corners, one composer)<iframe src="x-%s-after-%s.html"></iframe></div></div></body></html>\n')
+for light in (False, True):
+    tag = "light" if light else "dark"
+    for name, (body, label) in ROUND.items():
+        page("x-%s-before-%s.html" % (name, tag), body, light, label + ", before")
+        page("x-%s-after-%s.html" % (name, tag), body, light, label + ", after", '<link rel="stylesheet" href="round.css">')
+        for width, height in ((390, 844), (1280, 800)):
+            (HERE / ("round-%s-%s-%d.html" % (name, tag, width))).write_text(WRAP % (' data-scheme="light"' if light else "", label, width, height, name, tag, name, tag))
