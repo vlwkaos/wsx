@@ -185,3 +185,54 @@ Not touched: wsx-terminal, wsx-daemon and sessions. That pass found 2 functions 
 | 3 | `overview.md` (written by the manager) once wsx shows the thread list? | Remove it. The open-thread list replaces its open-task part with no model call, and its size check and recap go too |
 | 4 | Thread-context questions 1 and 2 (block budget 1,500 tokens; one message may touch several threads, and the reply carries them)? | Yes, as written there |
 | 5 | Files with no retention rule: check logs (55 MiB), chat folders `scratch` (244 MiB), old `brief.json` files. Delete them 30 days after the task or chat closes? | Yes for check logs and `brief.*`. Keep captures and records. `scratch` only after we find its writer |
+
+## Step 3 proof
+
+Frozen copy of this machine's task stores (`~/.local/state/wsx/tasks` without check logs and scratch, and the config), 2026-11-18. The binary of `3ea26c86` (before) and the binary of the final head (after) ran the same 30 queries, each in a fresh clone of the copy: once as it was, once after a reindex (`task search --reindex` for each project, `memory reindex` for each scope). Task search lists the `reference` of the first 10 hits, memory search the `slug`. The queries are words, task numbers, Korean words, a commit hash and a task-number call of real managers (from the chat transcripts in `~/.claude/projects`); t15 and m13 (a file path) are made up, since no manager searched by path. The lists are in [deep-refactor-step3-refs.json](deep-refactor-step3-refs.json).
+
+| Query | Refs | before = after | before = after (reindexed) |
+|---|---|---|---|
+| t1 `wsx task search -p wsx --all root-cause review` | 10 | yes | yes |
+| t2 `wsx task search -p studio-app --all 598` | 10 | yes | yes |
+| t3 `wsx task search -p studio-app web income without video 알파남 천만원` | 10 | yes | yes |
+| t4 `wsx task search -p wsx --all TUI 최적화` | 10 | yes | yes |
+| t5 `wsx task search -p studio-app --all 티저` | 6 | yes | yes |
+| t6 `wsx task search -p pr-review --all 채움` | 10 | yes | yes |
+| t7 `wsx task search -p wsx --task 397 role rooms second chats home` | 10 | yes | yes |
+| t8 `wsx task search -p ir --task 22 miracl-ko` | 10 | yes | yes |
+| t9 `wsx task search -p wsx --all projk` | 10 | yes | yes |
+| t10 `wsx task search -p studio-app --all To check c35` | 10 | yes | yes |
+| t11 `wsx task search -p wsx --all role row home` | 10 | yes | yes |
+| t12 `wsx task search -p ir --limit 8 experiment SAG judge PRF tier-2 decided` | 8 | yes | yes |
+| t13 `wsx task search -p studio-app --task 91 result` | 2 | yes | yes |
+| t14 `wsx task search -p dotfiles --all contract ok 871665e` | 10 | yes | yes |
+| t15 `wsx task search -p wsx --all crates/wsx-core/src/task/mod.rs` | 10 | yes | yes |
+| t16 `wsx task search -p wsx --all message 315` | 10 | yes | yes |
+| m1 `wsx memory search --scope studio-app robots` | 7 | yes | yes |
+| m2 `wsx memory search --scope wsx fallback local model usage limit` | 9 | yes | yes |
+| m3 `wsx memory search --scope wsx swipe reply tap bubble` | 6 | yes | yes |
+| m4 `wsx memory search --scope wsx --kind rule thread` | 10 | yes | yes |
+| m5 `wsx memory search --scope wsx SUN_LEN` | 8 | yes | yes |
+| m6 `wsx memory search --scope wsx Pass/Fail buttons reply note` | 6 | yes | yes |
+| m7 `wsx memory search --scope pr-review 문서 싱크` | 10 | yes | yes |
+| m8 `wsx memory search --scope wsx --kind episode swipe` | 10 | yes | yes |
+| m9 `wsx memory search --scope wsx to check three actions` | 9 | yes | yes |
+| m10 `wsx memory search --scope wsx --include-inactive --limit 5 Target model` | 5 | yes | yes |
+| m11 `wsx memory search --scope wsx check-slot lanes overloaded` | 4 | yes | yes |
+| m12 `wsx memory search --scope wsx web ci scenario` | 6 | yes | yes |
+| m13 `wsx memory search --scope wsx crates/wsx-core/src/task/mod.rs` | 9 | yes | yes |
+| m14 `wsx memory search --scope studio-app research room` | 10 | yes | yes |
+
+All 30 lists are the same, in the same order, and a reindex with either binary moves none of them. There is no difference to list. The count of documents in the digest (`docs` of the task search JSON) is the same too.
+
+| Measure | Before | After |
+|---|---|---|
+| Ranking routines | 3 (`index::search`, the task search lines, `notes::matching`) | 1 (`backend::best`) on the BM25 of `index.rs` |
+| Result types | `index::Hit`, `backend::Hit`, `Found` | `backend::Hit` |
+| Owner messages with a matched-notes block (last 14 days, 808 messages) | 499 (62%), 477,233 bytes, about 956 bytes each | 0 (block deleted) |
+| Preamble of the 18 chats (`notes::preamble` on the copy) | a NOT SHOWN notice ends `; wsx also attaches the lines that match an owner message.` | ends `, or find them with \`wsx task search\`.` The other bytes are the same (cmp of the 18 files: 3 differ, in 5 notice lines) |
+
+- Context: a manager turn no longer carries the matched-notes block (about 956 bytes on 62% of owner messages; a lower bound, since the earlier-conversation lines were not counted). The first message changes by the NOT SHOWN sentence in 5 notice lines of 3 chats (studio-app, pr-review, wsx). A manager finds the same lines with `wsx task search`.
+- Cache: `instructions.rs` is untouched, so the cached instructions are the same bytes. The preamble moves only in that sentence, so the next fresh conversation of those 3 chats misses the cache once.
+- Long-term memory: the table above. `search.jsonl` keeps its format and a reindex gives the same refs.
+- Duplicate check of `memory add` now uses `index::tokens`: of 28,735 pairs of the same kind among 852 active records, none is a duplicate by the old words and none by the new ones.
