@@ -929,7 +929,8 @@ def manager_up(created):
                  'Continue a `paused` task.', 'Never touch a task on `hand`', '`wsx task checkin`',
                  'read-only git', 'The owner\'s skills are not listed: read `%s/<name>/SKILL.md`' % (plugin / 'skills'), 'Skills: other, scribe. ', 'check rather than guess', '`wsx memory add --kind rule`',
                  '/chats/demo/notes/decisions.md', '/chats/demo/notes/context.md', 'update a section in place',
-                 '--from-chat --reply', "do not answer 'Chat <name> replies'", "'@<project>'"):
+                 '--from-chat --reply', "do not answer 'Chat <name> replies'", "'@<project>'",
+                 '`new --skills` lends a worker the ones its task needs'):
         assert rule in launch['instructions'], rule
     # ^ No instruction names a brief or a goal file: only the owner's `chat new` takes one (docs/tasks.md "Chats").
     assert 'brief' not in launch['instructions'].lower().replace('--brief', ''), launch['instructions']
@@ -6809,15 +6810,15 @@ def part_host(created=None):
     text = reply_to(asked['id'])['text']
     assert "chat new is the owner's" in text and 'qa' not in chats(), text
     # A chat is the manager host with its goal, its own folder, session and actor; it starts
-    # on say. It runs with the manager's policy: only the owner's `chat new` and another project's
-    # work (the first chat's) are refused to it.
+    # on say. It runs with the manager's policy: only the owner's `chat new` and the commands a manager
+    # does not run in another project are refused to it.
     manager_task = js('task', 'new', 'WORK owner-chat.txt')['id']
     talk = js('task', 'say', '--to', 'billing',
               'RUN wsx task new "WORK chat.txt" -p demo --json\n'
               'RUN wsx task chat new more --goal %s -p demo --json\n'
               'RUN wsx task routine list -p other --json' % goal)
     text = chat_reply('billing', talk['id'])['text']
-    assert "chat new is the owner's" in text and "only a project's manager acts in another project" in text, text
+    assert "chat new is the owner's" in text and 'a manager acts in another project only with' in text, text
     chat_task = max(t['id'] for t in js('task', 'list')['tasks'])
     assert show(chat_task)['record']['created_by'] == 'chat:billing', show(chat_task)['record']
     chat_launch = next(t for t in traces() if t.get('launch') and t.get('actor') == 'chat:billing')
@@ -6826,6 +6827,26 @@ def part_host(created=None):
     assert chat_launch['model'] == 'haiku', chat_launch
     assert chat_launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], chat_launch
     assert chats()['billing']['running'], chats()
+    # ^ docs/design/chat-capability.md: demo lends no skills here, so a chat's prompt does not offer `new --skills`.
+    assert '--skills' not in chat_launch['instructions'] and 'Other projects.' in chat_launch['instructions'], chat_launch['instructions']
+    # A chat records a rule from its own message: `--source msg:<id>` resolves in the calling chat's log, not the first chat's.
+    chat_reply('billing', js('task', 'say', '--to', 'billing', 'Always run the billing export before a land.')['id'])
+    owner_word = js('task', 'say', '--to', 'billing', 'Rules must run the billing export.')['id']
+    chat_reply('billing', owner_word)
+    (base / 'chat-rule.txt').write_text('The billing export runs before a land.\n')
+    ruled = chat_reply('billing', js('task', 'say', '--to', 'billing',
+                                     'RUN wsx memory add --kind rule --slug billing-rule --text-file %s --source msg:%s '
+                                     '--verified-by owner:%s --words "run the billing export" --json' % (base / 'chat-rule.txt', owner_word, owner_word))['id'])['text']
+    assert '-> 0 {"slug":"billing-rule","kind":"rule"' in ruled, ruled
+    # A chat lends a worker the owner's skills where the project lends them, as the manager does.
+    configure(LAND_CONFIG + '  skills: owner\n', 'a project that lends skills')
+    lent = chat_reply('billing', js('task', 'say', '--to', 'billing',
+                                    'RUN wsx task new "WORK chat-lent.txt" -p demo --skills owner:other --json')['id'])['text']
+    assert '-> 0 ' in lent, lent
+    lent_id = max(t['id'] for t in js('task', 'list')['tasks'])
+    assert show(lent_id)['record']['skills'] == ['other'] and show(lent_id)['record']['created_by'] == 'chat:billing', show(lent_id)['record']
+    js('task', 'close', lent_id, '--discard')
+    configure(LAND_CONFIG, 'no skills lent')
     # ^ chat list and the ledger show the chat's own agent: the entry and its adapter and model.
     assert (chats()['billing']['agent'], chats()['billing']['model'], chats()['billing']['adapter']) == ('haiku-chat', 'haiku', 'claude'), chats()
     assert next(c for c in js('task', 'ledger')['chats'] if c['name'] == 'billing')['model'] == 'haiku'
@@ -7305,9 +7326,15 @@ def part_host(created=None):
     js('task', 'chat', 'new', 'reachr', '--goal', goal)
     before = other_ids()
     talk = js('task', 'say', '--to', 'reachr',
-              'RUN wsx task new "WORK z.txt" -p other --json\nRUN wsx task say -p other --from-chat hi')
+              'RUN wsx task list -p other --json\nRUN wsx task say -p other --from-chat hi\n'
+              'RUN wsx task deploy -p other --json\nRUN wsx task close %d --discard -p other --json' % n)
     text = chat_reply('reachr', talk['id'])['text']
-    assert text.count("only a project's manager acts in another project") == 2, text
+    # ^ A chat reaches another project as the manager does (docs/design/chat-capability.md): it lists and says there, and the
+    # manager's refusals (deploy, discard) are its own.
+    assert 'list -p other --json -> 0' in text and 'say -p other --from-chat hi -> 0' in text, text
+    assert text.count('a manager acts in another project only with') == 2, text
+    wait(lambda: next((e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'chat:reachr'), None),
+         'the chat reaches the other project', 60)
     refused = js('task', 'say', 'RUN wsx task close %d --discard -p other --json\nRUN wsx task deploy -p other --json\n'
                  'RUN wsx task new "WORK z.txt" -p ghost --json' % n)
     text = reply_to(refused['id'], 60)['text']
