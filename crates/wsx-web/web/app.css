@@ -936,7 +936,8 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 .thread-chip[aria-current="true"] { color: var(--color-text); border-color: var(--color-accent); }
 .thread-name { max-width: calc(var(--size-rail) / 2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thread-ask { min-width: var(--space-4); text-align: center; border-radius: var(--space-4); background: var(--color-attention); color: var(--color-surface); font-size: var(--font-size-sm); font-weight: var(--font-weight-strong); }
-.thread-new { flex: none; width: var(--size-key); height: var(--size-key); display: inline-flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--color-muted); cursor: pointer; }
+.thread-new { position: relative; flex: none; width: var(--size-key); height: var(--size-key); display: inline-flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--color-muted); cursor: pointer; }
+.thread-new::after { content: ""; position: absolute; inset: calc((var(--size-key) - var(--size-control)) / 2); }
 .thread-waits { margin: 0; padding-inline: var(--column-inset, var(--space-4)); color: var(--color-muted); }
 .thread-waits a { color: var(--color-accent); }
 /* A device that cannot act has no composer: the pills have a bar of their own. */
