@@ -7,10 +7,11 @@ use crate::task::args::ChatCmd;
 use crate::task::manager;
 use crate::task::{acting_as_manager, actor, launch_manager, open, print_json, project_entry};
 use anyhow::{bail, Context, Result};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
+use wsx_core::memory::{backend, index::Target};
 use wsx_core::task::chat::{self, Reading, Window};
 use wsx_core::task::chats::{self, ChatFrom};
 use wsx_core::task::manager::{
@@ -20,7 +21,7 @@ use wsx_core::task::owner::{self};
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::store::{self, TaskDir};
 use wsx_core::task::MAX_MESSAGE_BYTES;
-use wsx_core::task::{search, text, thread};
+use wsx_core::task::{text, thread};
 
 pub(crate) fn ensure_manager(project: Option<&str>) -> Result<(bool, ManagerDir)> {
     let (name, main) = project_entry(project)?;
@@ -192,18 +193,18 @@ pub(crate) fn search(
         only = Some(dir.id);
     }
     let current = project_entry(project).ok().map(|(name, _)| name);
-    let targets: Vec<search::Target> = match all {
+    let targets: Vec<Target> = match all {
         true => load_config()?
             .projects
             .iter()
-            .map(|project| search::Target {
+            .map(|project| Target {
                 name: project.name.clone(),
                 project_id: store::project_id(&project.name, &project.path),
             })
             .collect(),
         false => {
             let (name, main) = project_entry(project)?;
-            vec![search::Target {
+            vec![Target {
                 project_id: store::project_id(&name, &main),
                 name,
             }]
@@ -217,14 +218,13 @@ pub(crate) fn search(
         None => None,
     };
     let started = Instant::now();
-    let found = search::search(
+    let found = backend::lines(
         &targets,
         current.as_deref(),
         words,
         limit.unwrap_or(SEARCH_HITS),
         reindex,
-        only,
-        in_thread.as_ref(),
+        (only, in_thread.as_ref()),
     )?;
     if json {
         let mut value = serde_json::to_value(&found)?;
@@ -232,18 +232,20 @@ pub(crate) fn search(
         return print_json(&value);
     }
     for hit in &found.hits {
-        let reference = hit.quote.as_deref().map_or(hit.reference.clone(), |quote| {
-            format!("{}  {quote}", hit.reference)
-        });
-        let outcome = hit
-            .outcome
-            .as_deref()
-            .map_or(String::new(), |o| format!(" [{o}]"));
+        let said = |key: &str| hit.extra.get(key).and_then(Value::as_str);
+        let reference =
+            said("quote").map_or(hit.slug.clone(), |quote| format!("{}  {quote}", hit.slug));
+        let outcome = said("outcome").map_or(String::new(), |o| format!(" [{o}]"));
         println!(
             "{reference}{outcome}  {} {}  {}",
-            text::day_of(hit.unix_ms),
-            hit.by,
-            hit.line
+            text::day_of(
+                hit.extra
+                    .get("unix_ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            ),
+            said("by").unwrap_or_default(),
+            said("line").unwrap_or_default()
         );
     }
     for problem in &found.problems {

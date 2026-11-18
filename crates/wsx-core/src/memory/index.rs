@@ -1,21 +1,18 @@
-//! The built-in index: BM25 over what was said. The chats, the manager's
-//! notes and each task's title, story and results. One digest per project keeps the words of
-//! what was said, not the tool noise; it is built from the logs, caught up on read and rebuilt
-//! on request. `wsx task search` is this index alone; `wsx memory search` ranks the memory
-//! records with it (`backend::Builtin`). ref: docs/tasks.md "Search", docs/memory.md "Search"
+//! The built-in index: what can be searched and how it scores. The chats, the manager's notes
+//! and each task's title, story and results. One digest per project keeps the words of what was
+//! said, not the tool noise; it is built from the logs, caught up on read and rebuilt on request.
+//! `backend` ranks it (`rank`) alone for `wsx task search` and with the memory records for
+//! `wsx memory search`. ref: docs/tasks.md "Search", docs/memory.md "Search"
 
 use super::manage::clip_to;
-use crate::task::manager::{
-    says_nothing, split_quote, Author, ManagerEntry, ManagerEvent, QUOTE_REF,
-};
+use crate::task::manager::{says_nothing, split_quote, Author, ManagerEntry, ManagerEvent};
 use crate::task::store::{
     self, contains_bytes, ManagerDir, TaskDir, FIRST_READ_BYTES, LOG_FILE, RECORD_FILE, RESULT_FILE,
 };
-use crate::task::text::first_line;
 use crate::task::{chats, history, thread, view};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
@@ -60,6 +57,17 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// The kinds a search can return and `--kind` takes.
+    pub const ALL: [Kind; 7] = [
+        Self::Message,
+        Self::Reply,
+        Self::Task,
+        Self::Result,
+        Self::History,
+        Self::Decision,
+        Self::Memo,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Message => "message",
@@ -110,101 +118,6 @@ pub struct Target {
     pub project_id: String,
 }
 
-/// What a search found at one place, ranked.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Hit {
-    pub project: String,
-    pub kind: Kind,
-    /// The chat of a message of another chat than the manager's.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub chat: Option<String>,
-    /// The message id in that chat, or none.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task: Option<u32>,
-    pub unix_ms: u64,
-    pub by: String,
-    pub line: String,
-    pub score: f64,
-    /// Where it is: `<project>:<id>`, `<project>:<chat>:<id>`, `<project>#<task>`, or
-    /// `<project>:notes/<file>`.
-    pub reference: String,
-    /// The first line of a reply that quotes it by id (`resolve_quote`): only a message of the
-    /// manager chat of the project the search ran in can be quoted by id.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub quote: Option<String>,
-    /// Where the hit's task is now ("landed 11-07 cd67238e1f90", "closed: discarded", "ready r2"),
-    /// read when the search ran.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub outcome: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct Found {
-    pub hits: Vec<Hit>,
-    /// Records searched and projects they came from.
-    pub docs: usize,
-    pub projects: usize,
-    /// A project that could not be read, with the reason; the others are searched.
-    pub problems: Vec<String>,
-}
-
-/// The hits for `words` in `targets`, best first, at most `limit`. `current`: the project the
-/// asker works in, whose manager chat a hit can quote by id. `reindex` rebuilds the digests
-/// from the logs and the task files first. `only`: the hits of this task alone. `in_thread`:
-/// the hits of this thread alone.
-/// ref: docs/tasks.md "Search"
-pub fn search(
-    targets: &[Target],
-    current: Option<&str>,
-    words: &str,
-    limit: usize,
-    reindex: bool,
-    only: Option<u32>,
-    in_thread: Option<&thread::Filter>,
-) -> Result<Found> {
-    let terms = terms(words)?;
-    let mut found = Found::default();
-    let mut docs: Vec<(usize, Doc)> = Vec::new();
-    for (at, target) in targets.iter().enumerate() {
-        match gather(target, reindex, false) {
-            Ok(list) => {
-                found.projects += 1;
-                docs.extend(
-                    list.into_iter()
-                        .filter(|doc| only.is_none_or(|task| doc.task == Some(task)))
-                        .filter(|doc| in_thread.is_none_or(|thread| thread.matches(&doc.thread)))
-                        .map(|doc| (at, doc)),
-                );
-            }
-            Err(error) => found.problems.push(format!("{}: {error:#}", target.name)),
-        }
-    }
-    // ^ A search that could read no project at all failed; with several, the rest answer.
-    if found.projects == 0 && !found.problems.is_empty() {
-        bail!("{}", found.problems.join("; "));
-    }
-    found.docs = docs.len();
-    let mut scored = rank(docs.iter().map(|(_, doc)| doc.text.as_str()), &terms).scored;
-    // ^ Equal scores: the newer first.
-    scored.sort_by(|a, b| {
-        b.0.total_cmp(&a.0)
-            .then(docs[b.1].1.at.cmp(&docs[a.1].1.at))
-    });
-    found.hits = scored
-        .into_iter()
-        .take(limit)
-        .map(|(score, at)| {
-            let (target, doc) = &docs[at];
-            let mut found = hit(&targets[*target], doc, score, current);
-            found.outcome = doc.task.and_then(|task| outcome(&targets[*target], task));
-            found
-        })
-        .collect();
-    Ok(found)
-}
-
 /// The distinct lowercase words of a query.
 pub(super) fn terms(words: &str) -> Result<Vec<String>> {
     let words = words.to_lowercase();
@@ -218,6 +131,15 @@ pub(super) fn terms(words: &str) -> Result<Vec<String>> {
         bail!("search needs some words");
     }
     Ok(terms)
+}
+
+/// The distinct lowercase words of a text, cut as the query is.
+pub(super) fn tokens(text: &str) -> HashSet<String> {
+    let mut tokens = HashSet::new();
+    each_token(&text.to_lowercase(), |token| {
+        tokens.insert(token.to_string());
+    });
+    tokens
 }
 
 /// The BM25 score of every text that holds a term, as `(score, position)`, unsorted.
@@ -314,44 +236,6 @@ pub(super) fn source_path(project_id: &str, doc: &Doc) -> String {
 pub(super) fn outcome(target: &Target, task: u32) -> Option<String> {
     let dir = TaskDir::open(&target.project_id, task).ok()?;
     Some(history::outcome(&dir, &dir.read_record().ok()?))
-}
-
-pub(super) fn hit(target: &Target, doc: &Doc, score: f64, current: Option<&str>) -> Hit {
-    let project = target.name.as_str();
-    // ^ The repo's home chat is the manager's: its hits carry no chat name and can be quoted by id.
-    let home = crate::task::store::home_chat(&target.project_id);
-    let chat =
-        Some(doc.chat.clone()).filter(|chat| !chat.is_empty() && home.as_deref() != Some(chat));
-    let reference = match (doc.kind, doc.id, doc.task) {
-        (Kind::Message | Kind::Reply, Some(id), _) => match &chat {
-            Some(chat) => format!("{project}:{chat}:{id}"),
-            None => format!("{project}:{id}"),
-        },
-        (Kind::Decision, ..) => format!("{project}:notes/decisions.md"),
-        (Kind::Memo, ..) => format!("{project}:notes/context.md"),
-        (_, _, Some(task)) => format!("{project}#{task}"),
-        _ => project.to_string(),
-    };
-    let quote = match (doc.kind, doc.id) {
-        (Kind::Message | Kind::Reply, Some(id)) if chat.is_none() && current == Some(project) => {
-            Some(format!("{QUOTE_REF}{id}"))
-        }
-        _ => None,
-    };
-    Hit {
-        project: project.to_string(),
-        kind: doc.kind,
-        chat,
-        id: doc.id,
-        task: doc.task,
-        unix_ms: doc.at,
-        by: doc.by.clone(),
-        line: first_line(&doc.text),
-        score,
-        reference,
-        quote,
-        outcome: None,
-    }
 }
 
 /// Calls `f` with each word of lowercase `text`: a run of letters and digits is one token; a

@@ -1,13 +1,15 @@
 //! One record, one log line, and the fold of the log. ref: docs/memory.md "Record"
 
+use super::index::tokens;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 pub(super) const MAX_TEXT_BYTES: usize = 4096;
 pub const EXCERPT_CHARS: usize = 240;
-/// A new text this close to an active record (Jaccard index of the word sets) is a duplicate.
+/// A new text this close to an active record (Jaccard index of the word sets, cut as a search
+/// query is) is a duplicate.
 const DUPLICATE_JACCARD: f64 = 0.9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +33,8 @@ impl FromStr for Kind {
 }
 
 impl Kind {
+    pub const ALL: [Kind; 3] = [Self::Rule, Self::Fact, Self::Episode];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Rule => "rule",
@@ -132,15 +136,6 @@ pub(super) fn fold(bytes: &[u8]) -> Folded {
     folded
 }
 
-/// Lowercased words: runs of alphanumeric characters.
-fn words(text: &str) -> HashSet<String> {
-    text.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
 /// An active record of `kind` that `text` repeats: the same words in the same order after
 /// lowercasing, or a word set with a Jaccard index of 0.9 or more.
 pub(super) fn duplicate<'a>(
@@ -154,7 +149,7 @@ pub(super) fn duplicate<'a>(
             .collect::<Vec<_>>()
             .join(" ")
     };
-    let (wanted, new_words) = (normal(text), words(text));
+    let (wanted, new_words) = (normal(text), tokens(text));
     records.values().find(|r| {
         if r.status != Status::Active || r.kind != kind {
             return false;
@@ -162,7 +157,7 @@ pub(super) fn duplicate<'a>(
         if normal(&r.text) == wanted {
             return true;
         }
-        let old = words(&r.text);
+        let old = tokens(&r.text);
         let union = old.union(&new_words).count();
         union > 0 && old.intersection(&new_words).count() as f64 / union as f64 >= DUPLICATE_JACCARD
     })

@@ -1,15 +1,19 @@
 //! Search backends of the `memory` contract: the built-in BM25 index over a scope's records and
 //! its transcripts, and an external command that follows the contract's `search`, `reindex`
 //! and `status`. The built-in always answers; a backend adds hits, and a backend that fails
-//! (exit 3, 10 s, bad output) is named in a notice and left out.
+//! (exit 3, 10 s, bad output) is named in a notice and left out. `lines` is the built-in
+//! over the transcripts alone, for `wsx task search`; both answer with the one `Hit`.
 //! ref: docs/memory.md "Search backend", docs/design/memory-system.md "Retrieve"
 
-use super::index::{self, Target};
-use super::record::{Record, Status, EXCERPT_CHARS};
+use super::index::{self, Doc, Target};
+use super::record::{self, Record, Status, EXCERPT_CHARS};
 use super::start;
 use super::store::{Error, Store};
 use crate::process::{run_bounded, Bound, Options, Stderr};
+use crate::task::manager::QUOTE_REF;
+use crate::task::text::first_line;
 use crate::task::thread;
+use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -25,9 +29,10 @@ const MAX_ANSWER_BYTES: usize = 4 << 20;
 const RECALL_POOL: usize = 20;
 const RECALL_KEEP: usize = 5;
 
-/// A hit of the contract. `kind` is a record kind, or for a transcript of a project the kind of
-/// the line (`message`, `reply`, `task`, `result`, `history`, `decision`, `memo`), with the
-/// keys of a `wsx task search` hit in `extra`; a reader ignores what it does not know.
+/// A hit of the contract, and of `wsx task search`. `kind` is a record kind, or for a transcript
+/// of a project the kind of the line (`message`, `reply`, `task`, `result`, `history`,
+/// `decision`, `memo`), with `project`, `chat`, `id`, `task`, `unix_ms`, `by`, `line`,
+/// `reference`, `quote` and `outcome` in `extra`; a reader ignores what it does not know.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Hit {
     pub slug: String,
@@ -56,13 +61,14 @@ pub struct KindFilter(String);
 impl FromStr for KindFilter {
     type Err = String;
     fn from_str(value: &str) -> Result<Self, String> {
-        const KINDS: [&str; 10] = [
-            "rule", "fact", "episode", "message", "reply", "task", "result", "history", "decision",
-            "memo",
-        ];
-        match KINDS.contains(&value) {
+        let kinds: Vec<&str> = record::Kind::ALL
+            .iter()
+            .map(|kind| kind.as_str())
+            .chain(index::Kind::ALL.iter().map(|kind| kind.as_str()))
+            .collect();
+        match kinds.contains(&value) {
             true => Ok(Self(value.into())),
-            false => Err(format!("kind {value:?}: use {}", KINDS.join(", "))),
+            false => Err(format!("kind {value:?}: use {}", kinds.join(", "))),
         }
     }
 }
@@ -135,50 +141,48 @@ impl Backend for Builtin {
             &terms,
         );
         let wanted = query.kind.as_ref().map(|k| k.0.as_str());
-        let mut hits: Vec<(Hit, u64, Option<&Record>)> = Vec::new();
-        for (raw, at) in ranked.scored {
-            let score = (raw / ranked.bound).clamp(0.0, 1.0);
-            let (hit, newest, record) = match records.get(at) {
+        let thread_ok =
+            |threads: &[String]| query.thread.as_ref().is_none_or(|t| t.matches(threads));
+        // ^ Filters apply after the ranking: an inactive record still counts in the word statistics.
+        let kept = ranked
+            .scored
+            .into_iter()
+            .map(|(raw, at)| ((raw / ranked.bound).clamp(0.0, 1.0), at))
+            .filter(|(_, at)| match records.get(*at) {
                 Some(r) => {
-                    if (!query.include_inactive && r.status != Status::Active)
-                        || wanted.is_some_and(|k| k != r.kind.as_str())
-                        || query
-                            .thread
-                            .as_ref()
-                            .is_some_and(|only| !only.matches(r.thread.as_slice()))
-                    {
-                        continue;
-                    }
-                    (record_hit(store, r, score), r.updated, Some(r))
+                    (query.include_inactive || r.status == Status::Active)
+                        && wanted.is_none_or(|k| k == r.kind.as_str())
+                        && thread_ok(r.thread.as_slice())
                 }
                 None => {
-                    let (doc, target) = (&docs[at - records.len()], target.as_ref());
-                    let (Some(target), true) = (
-                        target,
-                        wanted.is_none_or(|k| k == doc.kind.as_str())
-                            && query
-                                .thread
-                                .as_ref()
-                                .is_none_or(|only| only.matches(&doc.thread)),
-                    ) else {
-                        continue;
-                    };
-                    (transcript_hit(store, target, doc, score), doc.at, None)
+                    let doc = &docs[at - records.len()];
+                    wanted.is_none_or(|k| k == doc.kind.as_str()) && thread_ok(&doc.thread)
                 }
-            };
-            hits.push((hit, newest, record));
-        }
-        // ^ Equal scores: the newer first.
-        hits.sort_by(|a, b| b.0.score.total_cmp(&a.0.score).then(b.1.cmp(&a.1)));
-        hits.truncate(query.limit);
-        // ^ Only the hits that stay are checked: one git call for each fact with a commit.
-        Ok(hits
+            })
+            .collect();
+        let newest = |at: usize| match records.get(at) {
+            Some(r) => r.updated,
+            None => docs[at - records.len()].at,
+        };
+        // ^ Only the hits that stay are built: a fact with a commit costs one git call to check.
+        Ok(best(kept, newest, query.limit)
             .into_iter()
-            .map(|(mut hit, _, record)| {
-                if record.is_some_and(|r| start::stale(store, r)) {
-                    hit.extra.insert("stale".into(), Value::Bool(true));
+            .filter_map(|(score, at)| match (records.get(at), &target) {
+                (Some(r), _) => {
+                    let mut hit = record_hit(store, r, score);
+                    if start::stale(store, r) {
+                        hit.extra.insert("stale".into(), Value::Bool(true));
+                    }
+                    Some(hit)
                 }
-                hit
+                (None, Some(target)) => Some(line_hit(
+                    store.scope(),
+                    target,
+                    &docs[at - records.len()],
+                    score,
+                    Some(&target.name),
+                )),
+                (None, None) => None,
             })
             .collect())
     }
@@ -235,26 +239,50 @@ pub(super) fn record_hit(store: &Store, r: &Record, score: f64) -> Hit {
     }
 }
 
-/// A transcript line as a hit: the slug is its `reference`, and the keys of a task-search hit
-/// (`project`, `task`, `by`, `unix_ms`, `quote`, `outcome`, ...) ride along.
-fn transcript_hit(store: &Store, target: &Target, doc: &index::Doc, score: f64) -> Hit {
-    let found = index::hit(target, doc, score, Some(&target.name));
-    let outcome = doc.task.and_then(|task| index::outcome(target, task));
-    let mut extra = match serde_json::to_value(&index::Hit { outcome, ..found }) {
-        Ok(Value::Object(map)) => map,
-        _ => Map::new(),
+/// A transcript line as a hit: the slug is its `reference`, and its other keys ride along.
+/// `current`: the project the asker works in, whose manager chat a hit can quote by id.
+fn line_hit(scope: &str, target: &Target, doc: &Doc, score: f64, current: Option<&str>) -> Hit {
+    let project = target.name.as_str();
+    // ^ The repo's home chat is the manager's: its hits carry no chat name and can be quoted by id.
+    let home = crate::task::store::home_chat(&target.project_id);
+    let chat =
+        Some(doc.chat.as_str()).filter(|chat| !chat.is_empty() && home.as_deref() != Some(chat));
+    let reference = match (doc.kind, doc.id, doc.task) {
+        (index::Kind::Message | index::Kind::Reply, Some(id), _) => match chat {
+            Some(chat) => format!("{project}:{chat}:{id}"),
+            None => format!("{project}:{id}"),
+        },
+        (index::Kind::Decision, ..) => format!("{project}:notes/decisions.md"),
+        (index::Kind::Memo, ..) => format!("{project}:notes/context.md"),
+        (_, _, Some(task)) => format!("{project}#{task}"),
+        _ => project.to_string(),
     };
-    let reference = extra
-        .get("reference")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    for key in ["kind", "line", "score"] {
-        extra.remove(key);
+    let mut extra = Map::new();
+    extra.insert("project".into(), project.into());
+    if let Some(chat) = chat {
+        extra.insert("chat".into(), chat.into());
+    }
+    if let Some(id) = doc.id {
+        extra.insert("id".into(), id.into());
+    }
+    if let Some(task) = doc.task {
+        extra.insert("task".into(), task.into());
+        if let Some(outcome) = index::outcome(target, task) {
+            extra.insert("outcome".into(), outcome.into());
+        }
+    }
+    extra.insert("unix_ms".into(), doc.at.into());
+    extra.insert("by".into(), doc.by.as_str().into());
+    extra.insert("line".into(), first_line(&doc.text).into());
+    extra.insert("reference".into(), reference.as_str().into());
+    if let (index::Kind::Message | index::Kind::Reply, Some(id), None, true) =
+        (doc.kind, doc.id, chat, current == Some(project))
+    {
+        extra.insert("quote".into(), format!("{QUOTE_REF}{id}").into());
     }
     Hit {
         slug: reference,
-        scope: store.scope().into(),
+        scope: scope.into(),
         path: index::source_path(&target.project_id, doc),
         kind: doc.kind.as_str().into(),
         status: active(),
@@ -262,6 +290,73 @@ fn transcript_hit(store: &Store, target: &Target, doc: &index::Doc, score: f64) 
         excerpt: doc.text.chars().take(EXCERPT_CHARS).collect(),
         extra,
     }
+}
+
+/// The best `limit` of `scored` (score, position), best first; equal scores go to the newer.
+fn best(
+    mut scored: Vec<(f64, usize)>,
+    newest: impl Fn(usize) -> u64,
+    limit: usize,
+) -> Vec<(f64, usize)> {
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(newest(b.1).cmp(&newest(a.1))));
+    scored.truncate(limit);
+    scored
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Found {
+    pub hits: Vec<Hit>,
+    /// Records searched and projects they came from.
+    pub docs: usize,
+    pub projects: usize,
+    /// A project that could not be read, with the reason; the others are searched.
+    pub problems: Vec<String>,
+}
+
+/// The transcript hits for `words` in `targets`, best first, at most `limit`, with raw BM25
+/// scores; the words of all projects count together. `current`: the project the asker works
+/// in. `reindex` rebuilds the digests from the logs and the task files first. `only` and
+/// `in_thread` cut the records before the ranking. ref: docs/tasks.md "Search"
+pub fn lines(
+    targets: &[Target],
+    current: Option<&str>,
+    words: &str,
+    limit: usize,
+    reindex: bool,
+    (only, in_thread): (Option<u32>, Option<&thread::Filter>),
+) -> anyhow::Result<Found> {
+    let terms = index::terms(words)?;
+    let mut found = Found::default();
+    let mut docs: Vec<(usize, Doc)> = Vec::new();
+    for (at, target) in targets.iter().enumerate() {
+        match index::gather(target, reindex, false) {
+            Ok(list) => {
+                found.projects += 1;
+                docs.extend(
+                    list.into_iter()
+                        .filter(|doc| only.is_none_or(|task| doc.task == Some(task)))
+                        .filter(|doc| in_thread.is_none_or(|thread| thread.matches(&doc.thread)))
+                        .map(|doc| (at, doc)),
+                );
+            }
+            Err(error) => found.problems.push(format!("{}: {error:#}", target.name)),
+        }
+    }
+    // ^ A search that could read no project at all failed; with several, the rest answer.
+    if found.projects == 0 && !found.problems.is_empty() {
+        bail!("{}", found.problems.join("; "));
+    }
+    found.docs = docs.len();
+    let ranked = index::rank(docs.iter().map(|(_, doc)| doc.text.as_str()), &terms);
+    found.hits = best(ranked.scored, |at| docs[at].1.at, limit)
+        .into_iter()
+        .map(|(score, at)| {
+            let (target, doc) = &docs[at];
+            let target = &targets[*target];
+            line_hit(&target.project_id, target, doc, score, current)
+        })
+        .collect();
+    Ok(found)
 }
 
 /// An external program that follows the contract, run as `<argv> <command> --scope S --json`.
