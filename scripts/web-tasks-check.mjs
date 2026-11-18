@@ -920,6 +920,18 @@ await evaluate("document.querySelector('.log').scrollTop = 0");
 await until("!!document.querySelector('.jump')", "no jump button after scrolling the manager chat up");
 await click(".jump");
 await until(`!document.querySelector('.jump') && ${atEnd}`, "Jump to latest did not go to the end of the manager chat");
+// ^ At the end, with the list closed and open, the last message stands 64 px clear of what is below the log (the composer, or the
+// open list) and neither is drawn over it: what is at its last pixel is a part of the message (task 515).
+for (const kind of [null, "you"]) {
+  if (kind) await openReservoir(kind);
+  await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
+  await until(atEnd, "the manager chat left its end");
+  const state = await evaluate(`(() => { const log = document.querySelector('.log'), last = [...log.children].at(-1).getBoundingClientRect(), below = log.getBoundingClientRect().bottom;
+    return { gap: below - last.bottom, over: document.elementFromPoint(innerWidth / 2, last.bottom - 2)?.closest('.composer, .reservoir')?.className ?? null }; })()`);
+  if (state.gap < 63.5 || state.over) await fail(`the last message of the manager chat ${kind ? "with the list open" : "with the list closed"}: ${JSON.stringify(state)}`);
+}
+await click(".pill[aria-pressed=true]");
+await until("!document.querySelector('.reservoir')", "the list stayed open after the cover check");
 // A landed task is the muted line "#7 landed" (the state chip after the task link).
 await until(`${statusSays(7, "landed")} && ${statusSays(8, "landed")}`, "the landed tasks have no muted line");
 // ^ One line per task change: #5's close is the events line "#5 closed", never also its
