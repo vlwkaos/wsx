@@ -3,8 +3,10 @@
 /* Home: line 2 is the projects the chat involves, line 3 the message (owner choice, msg 5242). */
 .row-projects { font-size: var(--font-size-sm); color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* The chat's threads: one strip under the bar, "Chat" is the trunk. Scrolls sideways on a phone. */
-.threads { scrollbar-width: none; flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2); overflow-x: auto; padding: var(--space-2) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); }
+/* Option A: the chat's threads in one strip directly above the composer, "Chat" is the trunk. Scrolls sideways. */
+.threads { scrollbar-width: none; flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2); overflow-x: auto; padding: var(--space-2) var(--column-inset, var(--space-4)); }
+.app[data-wide] .threads[data-above] { background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
+.app[data-wide] .threads[data-above] + .composer { border-top: 0; padding-top: 0; }
 .thread-chip {
   flex: none; display: inline-flex; align-items: center; gap: var(--space-1); min-height: var(--size-control); padding: 0 var(--space-3);
   border: var(--border-width) solid var(--color-hairline); border-radius: calc(var(--size-control) / 2); color: var(--color-muted); text-decoration: none; font-size: var(--font-size-sm);
@@ -29,3 +31,24 @@
 .reservoir.inline .row-actions { grid-column: 1; }
 .row-id { color: var(--color-muted); font-weight: normal; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .row-wait { text-decoration: none; color: inherit; }
+
+/* Option B: one thread button in the composer row (a pill that shows the thread's name) and a bottom sheet. */
+.thread-pick { max-width: calc(var(--size-rail) * 0.5); }
+.thread-pick-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text); }
+.thread-pick .icon { color: var(--color-muted); }
+.scrim { position: fixed; inset: 0; background: var(--color-overlay); }
+.thread-sheet {
+  position: fixed; inset: auto 0 0 0; margin: 0 auto; width: min(100%, calc(var(--size-rail) * 1.2)); display: flex; flex-direction: column;
+  padding: 0 var(--space-4) var(--space-4); background: var(--color-surface); border: var(--border-width) solid var(--color-hairline);
+  border-bottom: 0; border-radius: var(--radius-sheet) var(--radius-sheet) 0 0;
+}
+.thread-opts { list-style: none; margin: 0; padding: 0; }
+.thread-opt {
+  width: 100%; min-height: var(--size-control); display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3);
+  border: 0; border-bottom: var(--border-width) solid var(--color-hairline); background: none; color: var(--color-text); font: inherit; text-align: left;
+}
+.thread-opt-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.thread-opt-name { font-weight: var(--font-weight-medium); }
+.thread-opt-line { font-size: var(--font-size-sm); color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-opt[aria-current="true"] { box-shadow: inset 3px 0 0 var(--color-accent); }
+.thread-opt-new { border-bottom: 0; color: var(--color-accent); }

@@ -40,6 +40,7 @@ PATH = {
     "pause": "M7 4.5v11M13 4.5v11",
     "pass": "M4.5 10.5l3.5 3.5 7-8",
     "send": "M10 16V4.5M5 9l5-5 5 5",
+    "up": "M5 12.5l5-5 5 5",
 }
 e = html.escape
 
@@ -100,10 +101,13 @@ def bar(title, state, menu=False, items=("Rename chat", "Close chat")):
             % (icon("back"), title, e(state), icon("search"), more))
 
 
+# The chat first, then every thread that waits for you with its count, whatever its age; the rest by last activity.
+THREADS = [("Chat", 0, "the chat's own messages"), ("Fee table", 2, "1 question, 1 check for you"), ("Changelog", 0, "#97 working · 20 min ago"), ("Poll cut", 0, "idle · 2 days ago")]
+
+
 def strip(active):
-    # a thread that waits for you first, with its count, whatever its age; the rest by last activity
-    chips = [("Chat", 0), ("Fee table", 2), ("Changelog", 0), ("Poll cut", 0)]
-    return ('<nav class="threads" aria-label="Threads">%s<button class="thread-new" type="button" aria-label="New thread">%s</button></nav>'
+    chips = [(n, k) for n, k, _ in THREADS]
+    return ('<nav class="threads" data-above aria-label="Threads">%s<button class="thread-new" type="button" aria-label="New thread">%s</button></nav>'
             % ("".join('<a class="thread-chip" href="#" aria-current="%s">%s%s</a>' % ("true" if n == active else "false", e(n), '<span class="thread-ask">%d</span>' % k if k else "")
                        for n, k in chips), icon("plus")))
 
@@ -118,11 +122,27 @@ def note(text):
     return '<p class="note note-row">%s</p>' % text
 
 
-def composer(token=None, you=2, tasks=3):
+def pick(active):
+    """Option B: the thread button of the composer row; its badge counts what waits in the other threads."""
+    waits = sum(k for n, k, _ in THREADS if n != active)
+    return ('<button class="pill thread-pick" type="button" aria-haspopup="dialog" aria-label="Threads"><span class="thread-pick-name">%s</span>%s%s</button>'
+            % (e(active), '<span class="thread-ask">%d</span>' % waits if waits else "", icon("up")))
+
+
+def sheet(active):
+    """Option B: the bottom sheet; the same order as the strip, New thread last."""
+    rows = "".join(
+        '<li><button class="thread-opt" type="button" aria-current="%s"><span class="thread-opt-main"><span class="thread-opt-name">%s</span><span class="thread-opt-line">%s</span></span>%s</button></li>'
+        % ("true" if n == active else "false", e(n), e(line), '<span class="thread-ask">%d</span>' % k if k else "") for n, k, line in THREADS)
+    return ('<div class="scrim"></div><div class="thread-sheet" role="dialog" aria-label="Threads"><div class="task-sheet-top"><span class="sheet-grip"></span></div>'
+            '<ul class="thread-opts">%s</ul><button class="thread-opt thread-opt-new" type="button">%s<span class="thread-opt-name">New thread</span></button></div>' % (rows, icon("plus")))
+
+
+def composer(token=None, you=2, tasks=3, threads=""):
     pills = ('<div class="pills" role="group"><button class="pill" type="button" data-kind="you" data-tone="attention">%s<span class="pill-count">%d</span><span class="pill-label">For you</span></button>'
              '<button class="pill" type="button" data-kind="tasks">%s<span class="pill-count">%d</span><span class="pill-label">Tasks</span></button></div>' % (icon("unchecked"), you, icon("play"), tasks))
-    return ('<div class="composer">%s<div class="composer-row"><button class="icon-button" type="button" aria-label="Attach">%s</button><div class="composer-input"><textarea class="composer-field" rows="1" aria-label="Message" placeholder="%s"></textarea></div>'
-            '<button class="button button-primary composer-send" type="button" aria-label="Send"><span class="send-mark">%s</span><span class="send-text">Send</span></button></div></div>' % (pills, icon("plus"), "Message in " + token if token else "Message", icon("send")))
+    return ('<div class="composer"><div class="composer-row"><button class="icon-button" type="button" aria-label="Attach">%s</button>%s%s<div class="composer-input"><textarea class="composer-field" rows="1" aria-label="Message" placeholder="%s"></textarea></div>'
+            '<button class="button button-primary composer-send" type="button" aria-label="Send"><span class="send-mark">%s</span><span class="send-text">Send</span></button></div></div>' % (icon("plus"), pills, threads, "Message in " + token if token else "Message", icon("send")))
 
 
 def tasks_in(rows):
@@ -130,7 +150,7 @@ def tasks_in(rows):
             % "".join(task_row(num, title, glyph, tone, now, True) for num, title, glyph, tone, now in rows))
 
 
-def chat_trunk():
+def chat_trunk(option):
     body = (bubble("out", "What is left before the 0.43 release?", time="14:01")
             + bubble("in", "Two things: the changelog (#97, working) and your check of #96. Nothing else blocks the tag.", "manager", "14:02")
             + note('<span class="chip">#94</span> landed · 2 of 2 checks')
@@ -138,20 +158,21 @@ def chat_trunk():
             + note("Opened the thread <b>Fee table</b> from your message of 13:40 · #96")
             + note('<b>Fee table</b> waits for you · 1 question, 1 check · <a href="#">Open</a>')
             + note("<b>Changelog</b>: #97 working, nothing waits for you"))
-    return '<div class="page manager">%s%s<div class="chat"><div class="scroll chat-body">%s</div>%s</div></div>' % (
-        bar("wsx", "", menu=False), strip("Chat"), body, composer(you=3))
+    return '<div class="page manager">%s<div class="chat"><div class="scroll chat-body">%s</div>%s%s</div></div>' % (
+        bar("wsx", "", menu=False), body, strip("Chat") if option == "a" else "", composer(you=3, threads=pick("Chat") if option == "b" else ""))
 
 
-def thread_page(menu=False):
+def thread_page(option, menu=False, open_sheet=False):
     body = (tasks_in([(96, "Fee table: add the setup fee line", "unchecked", "attention", "waits for your check · 2 of 2 checks"),
                       (98, "Fee table: round to whole cents", "play", "working", "working · build 2/3")])
             + note("Thread opened 13:40 · 1 question and 1 check for you")
             + bubble("out", "Put the fee table in the invoice page too.", time="13:40")
             + bubble("in", "Started #96 for the invoice page and #98 for the rounding. One question: which fee line goes first, setup or monthly?", "manager", "13:44", asks=True)
             + note('<span class="chip">#98</span> working · build 2/3'))
-    return '<div class="page manager">%s%s<div class="chat"><div class="scroll chat-body">%s</div>%s</div></div>' % (
+    return '<div class="page manager">%s<div class="chat"><div class="scroll chat-body">%s</div>%s%s</div>%s</div>' % (
         bar('<span class="bar-parent">wsx ›</span> Fee table', "open since 13:40", menu=menu, items=("Rename thread", "Merge into…", "Close thread")),
-        strip("Fee table"), body, composer(token="Fee table", you=1, tasks=2))
+        body, strip("Fee table") if option == "a" else "", composer(token="Fee table", you=1, tasks=2, threads=pick("Fee table") if option == "b" else ""),
+        sheet("Fee table") if open_sheet else "")
 
 
 def item(label, ctx, glyph, tone, actions):
@@ -209,14 +230,18 @@ def page(file, body, light, label):
     (HERE / file).write_text(
         '<!doctype html>\n<html lang="en"%s><head><meta charset="utf-8"><title>%s</title><meta name="viewport" content="width=device-width, initial-scale=1">'
         '<link rel="stylesheet" href="../../../crates/wsx-web/web/app.css"><link rel="stylesheet" href="theme.css"><link rel="stylesheet" href="mock.css"></head>'
-        '<body data-theme="default"><div id="app"><div class="app"><main class="screen">%s</main></div></div></body></html>\n' % (scheme, label, body))
+        '<body data-theme="default"><div id="app"><div class="app"><main class="screen">%s</main></div></div>'
+        '<script>if (innerWidth >= 900) document.querySelector(".app").setAttribute("data-wide", "")</script></body></html>\n' % (scheme, label, body))
 
 
 PAGES = {
     "home": (home(), "Home"),
-    "chat": (chat_trunk(), "A chat: trunk and thread strip"),
-    "thread": (thread_page(), "A thread window"),
-    "thread-menu": (thread_page(menu=True), "A thread window, menu open"),
+    "chat-a": (chat_trunk("a"), "A chat, option A: thread strip above the composer"),
+    "thread-a": (thread_page("a"), "A thread, option A"),
+    "chat-b": (chat_trunk("b"), "A chat, option B: thread button in the composer row"),
+    "thread-b": (thread_page("b"), "A thread, option B"),
+    "thread-b-sheet": (thread_page("b", open_sheet=True), "A thread, option B, sheet open"),
+    "thread-menu": (thread_page("a", menu=True), "A thread window, menu open"),
     "foryou": (for_you(), "For you, all chats"),
     "tasks-before": (tasks_list(False), "Tasks list today"),
     "tasks-after": (tasks_list(True), "Tasks list, one For you list"),

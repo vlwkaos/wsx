@@ -26,19 +26,27 @@ flowchart LR
 
 **What waits for you stays easy to find (owner 5280).** An item in a thread that needs you (a question, an approval, a check) is never only inside the thread. Three places show it, as today: the For you pill and Home's For you row, which open the item inside its thread; and the chat's own view, which shows one line when a thread waits on you ("Fee table waits for you · 1 question, 1 check · Open"). In the thread strip a thread that waits for you comes first, with its count, whatever its age. The other threads follow by last activity, so a stale one drifts right and never hides an item for you.
 
-Pictures at 390 px light and dark, and 1280 px dark. Open the dark 390 px ones first. The chat picture shows the strip order and the waiting line.
+The For you, Tasks and Routines pills stay where they are today: inside the composer row, between the attach button and Send (`.pill-bar`, `tasks.js`). The pictures change only where the threads are. Two options; the owner picks one (To check c129 follow-up).
+
+- **A, strip above the composer.** The thread strip sits directly above the composer and scrolls sideways: the chat first, then the threads that wait for you with their count badge, then the rest by last activity, `+` at the end for a new thread. One tap on a chip switches; all the names show at once.
+- **B, one thread button in the composer row.** The row holds one more pill after the For you and Tasks pills: the current thread's name, or "Chat", with a badge when another thread waits for you. It opens a bottom sheet with the same order and a line under each name; New thread is the last row. The strip is gone, so the screen keeps its height; a switch is two taps.
+
+Pictures at 390 px light and dark, and 1280 px dark. Open the dark 390 px ones first. The 1280 px pictures use the wide composer of `app.css` but not the side rail. The chat pictures show the order and the waiting line.
 
 | Screen | 390 dark | 390 light | 1280 |
 |---|---|---|---|
 | Home | [png](chat-system/home-dark-390.png) | [png](chat-system/home-light-390.png) | [png](chat-system/home-dark-1280.png) |
-| A chat | [png](chat-system/chat-dark-390.png) | [png](chat-system/chat-light-390.png) | [png](chat-system/chat-dark-1280.png) |
-| A thread | [png](chat-system/thread-dark-390.png) | [png](chat-system/thread-light-390.png) | [png](chat-system/thread-dark-1280.png) |
-| A thread, menu open | [png](chat-system/thread-menu-dark-390.png) | [png](chat-system/thread-menu-light-390.png) | [png](chat-system/thread-menu-dark-1280.png) |
+| A, a chat | [png](chat-system/chat-a-dark-390.png) | [png](chat-system/chat-a-light-390.png) | [png](chat-system/chat-a-dark-1280.png) |
+| A, a thread | [png](chat-system/thread-a-dark-390.png) | [png](chat-system/thread-a-light-390.png) | [png](chat-system/thread-a-dark-1280.png) |
+| A, a thread, menu open | [png](chat-system/thread-menu-dark-390.png) | [png](chat-system/thread-menu-light-390.png) | [png](chat-system/thread-menu-dark-1280.png) |
+| B, a chat | [png](chat-system/chat-b-dark-390.png) | [png](chat-system/chat-b-light-390.png) | [png](chat-system/chat-b-dark-1280.png) |
+| B, a thread | [png](chat-system/thread-b-dark-390.png) | [png](chat-system/thread-b-light-390.png) | [png](chat-system/thread-b-dark-1280.png) |
+| B, a thread, sheet open | [png](chat-system/thread-b-sheet-dark-390.png) | [png](chat-system/thread-b-sheet-light-390.png) | [png](chat-system/thread-b-sheet-dark-1280.png) |
 | For you | [png](chat-system/foryou-dark-390.png) | [png](chat-system/foryou-light-390.png) | [png](chat-system/foryou-dark-1280.png) |
 | Tasks list today | [png](chat-system/tasks-before-dark-390.png) | [png](chat-system/tasks-before-light-390.png) | [png](chat-system/tasks-before-dark-1280.png) |
 | Tasks list after | [png](chat-system/tasks-after-dark-390.png) | [png](chat-system/tasks-after-light-390.png) | [png](chat-system/tasks-after-dark-1280.png) |
 
-**Answered** (§9): 2 a thread opens by you or by the manager with one command, never by a task. 4 no cap and no automatic close; a thread closes by hand. **Still open for you**: 1 thread by default, chat only on your word. 3 One For you list. 5 `overview.md`.
+**Answered** (§9): 2 a thread opens by you or by the manager with one command, never by a task. 4 no cap and no automatic close; a thread closes by hand. **Still open for you**: thread strip A or button B (§1); 1 thread by default, chat only on your word. 3 One For you list. 5 `overview.md`.
 
 ## 2. Evidence: is a thread the same as a chat?
 
@@ -187,7 +195,7 @@ Step 2 and steps 3 to 5 do not depend on threads and can run in any order. Steps
 - How many real subjects you hold at once: the logs have no thread labels. There is no cap. Step 6 reports the open count for each chat after a week, so a cap, if wanted, is set from a number.
 - The For you volume is 25 items a day over all chats (`measure.py asks`), counted as replies with an ask; approvals and checks are not in that figure.
 - The cache effect of the block is predicted from thread-context.md, not measured. Step 7 and step 10 measure it.
-- Pictures: a static page is not the running client. The thread strip is a plain row that scrolls sideways; the composer, the bar and the swipes are the real `app.css` where the page uses them, but the 1280 px chat column is not shown beside a task sheet. The TUI is not drawn: the TUI has the same rows (a thread list in the chat, a thread list under the chat in the tree), drawn in step 8 after your answer.
+- Pictures: a static page is not the running client. The thread strip (A) is a plain row that scrolls sideways and the sheet (B) is a fixed panel; the composer, the bar and the swipes are the real `app.css` where the page uses them, but the 1280 px chat column is not shown beside a task sheet. The TUI is not drawn: the TUI has the same rows (a thread list in the chat, a thread list under the chat in the tree), drawn in step 8 after your answer.
 
 ## 9. Questions for the owner
 
