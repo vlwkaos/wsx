@@ -2739,7 +2739,7 @@ def part_core(created=None):
         fact = '- #7: restarted Claude.app with open -g -a Claude from the Background session on 2026-10-31'
         memos = [fact if n == 7 else '- #%d: %s notes %s %s' % (n, word(n), 'fixture detail ' * 15, word(n + 100))
                  for n in range(1, 58)]
-        return first_line + '\n\nShopfront sells pizza.\n' + '\n'.join(memos) + '\n'
+        return first_line + '\nShopfront sells pizza.\nIt has an oven.\n' + '\n'.join(memos) + '\n'
 
     put('decisions.md', '- 2026-10-22 keep the store in sqlite\n')
     put('context.md')
