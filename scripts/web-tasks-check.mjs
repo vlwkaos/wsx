@@ -964,7 +964,8 @@ for (const scheme of ["dark", "light"]) {
 await inScheme("dark");
 await evaluate(`${longReply}.querySelector('button').click()`);
 await until("[...document.querySelectorAll('.reply-text')].some((node) => /^noted events\\. #\\d+ landed, so its change is on main and nothing else waits for you\\.$/.test(node.textContent))", "More did not show the whole reply");
-await evaluate("[...document.querySelectorAll('.log .bubble, .log .status-line, .log .reply-line')].at(-1).scrollIntoView({ block: 'end' })");
+// ^ The reader's scroll into the last 80 px is not pulled on to the end (lib.js `settle`, task 515): the reader goes to the end.
+await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = log.scrollHeight; })()");
 await until(atEnd, "the chat did not go back to its end");
 
 // --- The pills: the composer row holds one pill for each of For you (Needs you and To check), Tasks and Routines,
