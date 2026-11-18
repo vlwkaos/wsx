@@ -1317,7 +1317,10 @@ fn lost_to_handoff(error: &io::Error) -> bool {
 
 fn restart_once(client: &Client, binary: &Path) -> io::Result<DaemonRestart> {
     wait_for_handoff(client.socket(), HANDOFF_WAIT);
-    let _bootstrap = acquire_bootstrap_lock(client.socket())?;
+    // ^ A restart holds the lock while it waits for the successor (`wait_until_restarted`, up to
+    // HANDOFF_WAIT), so a second one waits as long, not IO_TIMEOUT: it then reads the first's
+    // result (a handoff that began under it) instead of failing with EAGAIN.
+    let _bootstrap = acquire_bootstrap_lock_for(client.socket(), HANDOFF_WAIT + IO_TIMEOUT)?;
     let status = match lifecycle_status(client) {
         Ok(status) => status,
         Err(error)
@@ -1819,6 +1822,10 @@ fn wait_for_singleton_release(socket: &Path) -> io::Result<()> {
 }
 
 fn acquire_bootstrap_lock(socket: &Path) -> io::Result<BootstrapLock> {
+    acquire_bootstrap_lock_for(socket, IO_TIMEOUT)
+}
+
+fn acquire_bootstrap_lock_for(socket: &Path, wait: Duration) -> io::Result<BootstrapLock> {
     let parent = socket
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "wsxd socket has no parent"))?;
@@ -1861,7 +1868,7 @@ fn acquire_bootstrap_lock(socket: &Path) -> io::Result<BootstrapLock> {
             "unsafe wsxd bootstrap lock",
         ));
     }
-    let deadline = Instant::now() + IO_TIMEOUT;
+    let deadline = Instant::now() + wait;
     loop {
         let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if result == 0 {
