@@ -31,6 +31,13 @@ The For you, Tasks and Routines pills stay where they are today: inside the comp
 - **A, strip above the composer.** The thread strip sits directly above the composer and scrolls sideways: the chat first, then the threads that wait for you with their count badge, then the rest by last activity, `+` at the end for a new thread. One tap on a chip switches; all the names show at once.
 - **B, one thread button in the composer row.** The row holds one more pill after the For you and Tasks pills: the current thread's name, or "Chat", with a badge when another thread waits for you. It opens a bottom sheet with the same order and a line under each name; New thread is the last row. The strip is gone, so the screen keeps its height; a switch is two taps.
 
+**Chosen (owner 5297): threads above the chat box, option A.** B stays above only as the record. The owner also found the desktop chat box sloppy. Today (1280 and 1440 px) it has no visible box: the field is a loose placeholder between the pills and Send, attach and the pills crowd the left, and Send is a large filled block. Phone composer stays as it is. Two desktop options, both with the thread strip above, on the same column edges as the messages, no full-width bar, and every control from theme tokens (controls `--size-key`, pills and chips `--pill-height`, box `--radius-sheet`, hairline, accent border on focus). Send is the round icon button of the phone.
+
+- **Desktop A, one box, two rows.** The phone's box: the field on its own line, attach, the pills and Send on the row under it. A build deletes `:not([data-wide])` from the phone's rules. The box is 92 px tall and grows with the text.
+- **Desktop B, one single-line box.** One 52 px row: attach, the field growing, the pills, Send. It keeps the most height for the messages; a long message grows the row upward.
+
+[Today 1280 dark](chat-system/composer-before-dark-1280.png), [today 1440 light](chat-system/composer-before-light-1440.png), [desktop A 1280 dark](chat-system/composer-a-dark-1280.png), [desktop A 1440 light](chat-system/composer-a-light-1440.png), [desktop B 1280 dark](chat-system/composer-b-dark-1280.png), [desktop B 1440 light](chat-system/composer-b-light-1440.png). All four sizes and schemes exist for today, A and B (`composer-{before,a,b}-{dark,light}-{1280,1440}.png`, from `build.py` and `capture.mjs composer`).
+
 Pictures at 390 px light and dark, and 1280 px dark. Open the dark 390 px ones first. The 1280 px pictures use the wide composer of `app.css` but not the side rail. The chat pictures show the order and the waiting line.
 
 | Screen | 390 dark | 390 light | 1280 |
@@ -46,7 +53,7 @@ Pictures at 390 px light and dark, and 1280 px dark. Open the dark 390 px ones f
 | Tasks list today | [png](chat-system/tasks-before-dark-390.png) | [png](chat-system/tasks-before-light-390.png) | [png](chat-system/tasks-before-dark-1280.png) |
 | Tasks list after | [png](chat-system/tasks-after-dark-390.png) | [png](chat-system/tasks-after-light-390.png) | [png](chat-system/tasks-after-dark-1280.png) |
 
-**Answered** (§9): 2 a thread opens by you or by the manager with one command, never by a task. 4 no cap and no automatic close; a thread closes by hand. **Still open for you**: thread strip A or button B (§1); 1 thread by default, chat only on your word. 3 One For you list. 5 `overview.md`.
+**Answered** (§9): 2 a thread opens by you or by the manager with one command, never by a task. 4 no cap and no automatic close; a thread closes by hand. **Still open for you**: desktop composer A or B (§1); 1 thread by default, chat only on your word. 3 One For you list. 5 `overview.md`.
 
 ## 2. Evidence: is a thread the same as a chat?
 

@@ -52,3 +52,37 @@
 .thread-opt-line { font-size: var(--font-size-sm); color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thread-opt[aria-current="true"] { box-shadow: inset 3px 0 0 var(--color-accent); }
 .thread-opt-new { border-bottom: 0; color: var(--color-accent); }
+
+/* Desktop composer (task 512), options A and B. Both: the strip, the box and the messages share the column edges
+   (--column-inset); the box sits on the page, not on a full-width bar; every control in it is --size-key tall, the
+   pills and chips --pill-height; the box has the radius of the phone's, a hairline, and the accent on focus.
+   A: the phone's box (field on its own line, attach, pills and Send on the row under it). B: one line. */
+.app[data-wide] .threads[data-above]:has(+ .composer[data-box]) { background: none; border-top: 0; padding-block: var(--space-2) 0; }
+.app[data-wide] .threads[data-above]:has(+ .composer[data-box]) .thread-chip { min-height: calc(var(--size-key) - var(--space-2)); }
+.app[data-wide] .threads[data-above]:has(+ .composer[data-box]) .thread-new { width: var(--size-key); height: var(--size-key); }
+.app[data-wide] .composer[data-box] { padding: var(--space-2) var(--column-inset) var(--space-4); background: none; border-top: 0; }
+.app[data-wide] .composer[data-box] .composer-row {
+  align-items: center; gap: var(--space-2); padding: var(--space-2);
+  background: var(--color-surface); border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-sheet);
+}
+.app[data-wide] .composer[data-box]:focus-within .composer-row { border-color: var(--color-accent); }
+.app[data-wide] .composer[data-box] .composer-row > .icon-button { width: var(--size-key); height: var(--size-key); margin: 0; }
+.app[data-wide] .composer[data-box] .pills { margin: 0; }
+.app[data-wide] .composer[data-box] .composer-field, .app[data-wide] .composer[data-box] .composer-mirror { min-height: 0; padding: calc((var(--size-key) - 1lh) / 2) var(--space-2); }
+.app[data-wide] .composer[data-box] .composer-send {
+  width: var(--size-key); height: var(--size-key); min-height: 0; margin: 0; padding: 0; background: none;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.app[data-wide] .composer[data-box] .send-mark {
+  width: var(--size-key); height: var(--size-key); display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: var(--color-accent); color: var(--color-accent-text);
+}
+.app[data-wide] .composer[data-box] .send-text { display: none; }
+/* A: wrap; the field takes the first line, attach and the pills follow, Send goes to the right end. */
+.app[data-wide] .composer[data-box="a"] .composer-row { flex-wrap: wrap; row-gap: var(--space-1); }
+.app[data-wide] .composer[data-box="a"] .composer-input { order: -1; flex-basis: 100%; }
+.app[data-wide] .composer[data-box="a"] .composer-send { margin-left: auto; }
+/* B: attach, the field growing, the pills, Send. */
+.app[data-wide] .composer[data-box="b"] .composer-input { order: 1; }
+.app[data-wide] .composer[data-box="b"] .pills { order: 2; }
+.app[data-wide] .composer[data-box="b"] .composer-send { order: 3; }

@@ -41,6 +41,7 @@ PATH = {
     "pass": "M4.5 10.5l3.5 3.5 7-8",
     "send": "M10 16V4.5M5 9l5-5 5 5",
     "up": "M5 12.5l5-5 5 5",
+    "attach": "M14.5 9.5 9 15a3 3 0 0 1-4.2-4.2l6-6a2 2 0 0 1 2.8 2.8l-5.7 5.7a1 1 0 0 1-1.4-1.4L11 7.4",
 }
 e = html.escape
 
@@ -138,11 +139,14 @@ def sheet(active):
             '<ul class="thread-opts">%s</ul><button class="thread-opt thread-opt-new" type="button">%s<span class="thread-opt-name">New thread</span></button></div>' % (rows, icon("plus")))
 
 
-def composer(token=None, you=2, tasks=3, threads=""):
+def composer(token=None, you=2, tasks=3, threads="", real=False, box=""):
+    """The composer DOM of tasks.js. real: the paperclip and the placeholder the client has; box: a desktop variant (composer.css rules in mock.css)."""
     pills = ('<div class="pills" role="group"><button class="pill" type="button" data-kind="you" data-tone="attention">%s<span class="pill-count">%d</span><span class="pill-label">For you</span></button>'
              '<button class="pill" type="button" data-kind="tasks">%s<span class="pill-count">%d</span><span class="pill-label">Tasks</span></button></div>' % (icon("unchecked"), you, icon("play"), tasks))
-    return ('<div class="composer"><div class="composer-row"><button class="icon-button" type="button" aria-label="Attach">%s</button>%s%s<div class="composer-input"><textarea class="composer-field" rows="1" aria-label="Message" placeholder="%s"></textarea></div>'
-            '<button class="button button-primary composer-send" type="button" aria-label="Send"><span class="send-mark">%s</span><span class="send-text">Send</span></button></div></div>' % (icon("plus"), pills, threads, "Message in " + token if token else "Message", icon("send")))
+    hint = "Message \u00b7 # task @ project / skill" if real else ("Message in " + token if token else "Message")
+    return ('<div class="composer"%s><div class="composer-row"><button class="icon-button" type="button" aria-label="%s">%s</button>%s%s<div class="composer-input"><textarea class="composer-field" rows="1" aria-label="Message" placeholder="%s"></textarea></div>'
+            '<button class="button button-primary composer-send" type="button" aria-label="Send"><span class="send-mark">%s</span><span class="send-text">Send</span></button></div></div>'
+            % (' data-box="%s"' % box if box else "", "Attach files" if real else "Attach", icon("attach" if real else "plus"), pills, threads, hint, icon("send")))
 
 
 def tasks_in(rows):
@@ -173,6 +177,17 @@ def thread_page(option, menu=False, open_sheet=False):
         bar('<span class="bar-parent">wsx ›</span> Fee table', "open since 13:40", menu=menu, items=("Rename thread", "Merge into…", "Close thread")),
         body, strip("Fee table") if option == "a" else "", composer(token="Fee table", you=1, tasks=2, threads=pick("Fee table") if option == "b" else ""),
         sheet("Fee table") if open_sheet else "")
+
+
+def composer_page(box):
+    """Task 512: the desktop composer. box "" is today's (no thread strip: threads do not exist yet); "a" and "b" are the options."""
+    body = (bubble("out", "What is left before the 0.43 release?", time="14:01")
+            + bubble("in", "Two things: the changelog (#97, working) and your check of #96. Nothing else blocks the tag.", "manager", "14:02")
+            + note('<span class="chip">#94</span> landed \u00b7 2 of 2 checks')
+            + bubble("out", "Start #99 after #97 lands, and tell me when the tag is ready.", time="14:05")
+            + bubble("in", "Done: #99 waits for #97. I will write here when the tag is ready.", "manager", "14:05"))
+    return '<div class="page manager">%s<div class="chat"><div class="scroll chat-body">%s</div>%s%s</div></div>' % (
+        bar("wsx", ""), body, strip("Chat") if box else "", composer(you=3, real=True, box=box))
 
 
 def item(label, ctx, glyph, tone, actions):
@@ -242,6 +257,9 @@ PAGES = {
     "thread-b": (thread_page("b"), "A thread, option B"),
     "thread-b-sheet": (thread_page("b", open_sheet=True), "A thread, option B, sheet open"),
     "thread-menu": (thread_page("a", menu=True), "A thread window, menu open"),
+    "composer-before": (composer_page(""), "Desktop composer today"),
+    "composer-a": (composer_page("a"), "Desktop composer, option A: one box, two rows"),
+    "composer-b": (composer_page("b"), "Desktop composer, option B: one single-line box"),
     "foryou": (for_you(), "For you, all chats"),
     "tasks-before": (tasks_list(False), "Tasks list today"),
     "tasks-after": (tasks_list(True), "Tasks list, one For you list"),
