@@ -19,7 +19,7 @@ import { RoutineActions, routineAct, routineRow, useRoutines } from "./routines.
 import { present, shownTrays, TRAYS, trayCounts, trayWords } from "./trays.js";
 import { PanelsButton, PanelsPage } from "./panels.js";
 import { loadTasks, act } from "./task-api.js";
-import { agentWords, BANDS, calm, KIND_TONE, LEAVE_MS, rowLine, taskLink, taskStage, withChips } from "./task-words.js";
+import { agentWords, BANDS, calm, KIND_TONE, LEAVE_MS, rowLine, taskLink, taskStage, TaskTitle, withChips } from "./task-words.js";
 
 // A count that ticks: it is a new element when it changes, which plays its entry.
 const Tick = ({ value }) => html`<span class="tick" key=${value}>${value}</span>`;
@@ -59,17 +59,18 @@ const actionOf = (key) => {
 };
 
 // One row of the For you, Tasks and Routines lists, the same in each (docs/web-client-tasks.md
-// "Project screen"): the task's number in a column of its own or, for a row without a task, an
-// icon in that column; the label (two lines at most) and the one line under it, with its glyph;
+// "Project screen"): the label, then the task's number after it (small, muted, never cut) or,
+// for a row without a task, an icon before it; the one line under it, with its glyph;
 // the row's actions in a line of their own. The text opens `href`, or `onOpen` when it is a
 // button. `nest` and `group` come from the server's `flow.place` (a task in a chain).
 function ListRow({ rowKey, leaving, task = null, icon, tone, glyph, label, context, href, onOpen, openLabel, actions, error, nest = 0, group = null }) {
   const line = [context].flat().map((text, at) => text && html`<span class="row-context" key=${at}>${glyph && html`<span class="row-glyph" data-tone=${tone}><${Icon} name=${glyph} /></span>`}${text}</span>`);
-  const body = html`<span class="row-label">${label}</span>${line}`;
+  const title = task != null ? html`<${TaskTitle} title=${label} id=${task} />`
+    : html`<span class="row-title"><span class="row-icon" data-tone=${tone}><${Icon} name=${icon} /></span><span class="row-label">${label}</span></span>`;
+  const body = html`${title}${line}`;
   return html`
     <li class="need" data-key=${rowKey} data-leaving=${leaving ? "" : null} data-nest=${nest || null} data-group=${group} inert=${Boolean(leaving)}>
       <div class="row-link">
-        ${task != null ? html`<span class="row-num">#${task}</span>` : html`<span class="row-num" data-tone=${tone}><${Icon} name=${icon} /></span>`}
         ${href ? html`<a class="row-main row-open" href=${href}>${body}</a>`
           : onOpen ? html`<button class="row-main row-open" type="button" aria-label=${openLabel} onClick=${onOpen}>${body}</button>`
           : html`<span class="row-main">${body}</span>`}

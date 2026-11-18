@@ -152,8 +152,8 @@ async function lean(where) {
 // The sheet's open sections, by heading.
 const openSections = () => evaluate("[...document.querySelectorAll('.task-sheet .scroll .task-section:not(.task-fold):not(.timeline) > .task-heading')].map((node) => node.textContent.trim())");
 // The reservoir's rows: [number, title, context, actions], in the order shown.
-// ^ A row's number is the "#n" in its number column (a row without a task has an icon there).
-const NUMBER = "(row.querySelector('.row-num')?.textContent.trim() ?? '')";
+// ^ A row's number is the "#n" after its title (a row without a task has an icon before it).
+const NUMBER = "(row.querySelector('.task-number')?.textContent.trim() ?? '')";
 const rows = () => evaluate(`[...document.querySelectorAll('.reservoir-list .need')].map((row) => [
   ${NUMBER}, row.querySelector('.row-label').textContent, row.querySelector('.row-context')?.textContent ?? '',
   [...row.querySelectorAll('.need-action')].map((node) => node.title).join('+')])`);
@@ -1104,12 +1104,16 @@ const listLook = async (kind) => {
   await openReservoir(kind);
   return evaluate(`(() => { const row = document.querySelector('.reservoir-list .need'), part = (selector) => getComputedStyle(row.querySelector(selector)), link = getComputedStyle(row.querySelector('.row-link'));
     return { label: [part('.row-label').fontSize, part('.row-label').fontWeight, part('.row-label').color].join(), context: [part('.row-context').fontSize, part('.row-context').color].join(),
-      chip: part('.row-num').fontSize, row: [link.paddingTop, link.paddingBottom, link.minHeight, link.columnGap, link.fontSize].join(), first: row.querySelector('.row-link').firstElementChild.className, number: ${NUMBER} }; })()`);
+      chip: part('.task-number, .row-icon').fontSize, row: [link.paddingTop, link.paddingBottom, link.minHeight, link.columnGap, link.fontSize].join(), number: ${NUMBER},
+      // ^ No number column: the title (or the icon before it) starts at the row's left text edge, and the number follows the title.
+      lead: (() => { const main = row.querySelector('.row-link').firstElementChild, style = getComputedStyle(main), edge = main.getBoundingClientRect().left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
+        return Math.abs(row.querySelector('.row-title').firstElementChild.getBoundingClientRect().left - edge) < 1 && (row.dataset.nest || Math.abs(main.getBoundingClientRect().left - (row.querySelector('.row-link').getBoundingClientRect().left + parseFloat(link.paddingLeft))) < 1); })(),
+      after: (() => { const number = row.querySelector('.task-number'); return !number || (number.previousElementSibling.className === 'row-label' && number.getBoundingClientRect().left >= number.previousElementSibling.getBoundingClientRect().right - 0.5); })() }; })()`);
 };
 const looks = { tasks: await listLook("tasks"), you: await listLook("you") };
 const same = (field) => new Set(Object.values(looks).map((look) => look[field])).size === 1;
 if (!["label", "context", "chip", "row"].every(same)) await fail(`the lists do not share one row type: ${JSON.stringify(looks)}`);
-if (looks.tasks.first !== "row-num" || looks.tasks.number !== "#1" || looks.you.first !== "row-num") await fail(`a row does not start with its number column: ${JSON.stringify(looks)}`);
+if (looks.tasks.number !== "#1" || !looks.tasks.after || !looks.tasks.lead || !looks.you.lead || !looks.you.after) await fail(`a row's title does not start at its left text edge with the number after it: ${JSON.stringify(looks)}`);
 if (looks.tasks.chip !== closedSize) await fail(`the number is ${looks.tasks.chip}, not ${closedSize}`);
 await openReservoir();
 // ^ The open list reads its tasks ahead: a row's sheet shows its content in the frame it opens,
@@ -1125,6 +1129,7 @@ for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
   if (!atOnce.open || atOnce.loading || !atOnce.story) await fail(`a need's sheet did not show its content at once at ${width} px: ${JSON.stringify(atOnce)}`);
   await shot(`need-open-${width}`, ".composer-send");
   await closeSheet("a need's sheet", chat);
+  await shot(`list-you-${width}`, ".composer-send");
   // ^ #3's land is a pending approval: its sheet offers Approve and Deny, not a Land beside them (`owner_actions`).
   await openReservoir();
   await evaluate(`${rowOf("#3")}.querySelector('.row-open').click()`);
@@ -1133,6 +1138,9 @@ for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
   if ((await nextButtons()).join() !== "Deny,Approve,Take over,Try") await fail(`#3 with a pending land approval offers ${await nextButtons()} at ${width} px`);
   if ((await evaluate("fetch('api/tasks/' + location.hash.split('/')[2] + '/t/3').then((r) => r.json()).then((task) => task.actions)")).includes("land")) await fail("the API offers Land beside a pending land approval");
   await closeSheet("#3's sheet", chat);
+  await openReservoir("tasks");
+  await shot(`list-tasks-${width}`, ".composer-send");
+  await openReservoir();
 }
 // ^ In the wide layout (900 px) the three pills carry their words after the count, so the field keeps a quarter of the row at least (170 of 680 px at 1280 px).
 await resize([1280, 800, 1]);
@@ -1165,11 +1173,10 @@ for (const [at, label] of [[1, "Approve discard #4"], [0, "Approve land #3"]]) {
 await openReservoir();
 await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = log.scrollHeight; })()");
 await until(atEnd, "the chat did not go back to its end", 100);
-// ^ A task row starts with its chip (number and state dot), never cut (docs/web-client-tasks.md "Project screen").
+// ^ A task row's number follows its title and is never cut (docs/web-client-tasks.md "Project screen").
 const chipFirstOk = async (where) => {
-  const chips = await evaluate(`[...document.querySelectorAll('.reservoir-list .need')].filter((row) => /^#\\d+/.test(row.querySelector('.row-num').textContent)).map((row) => { const num = row.querySelector('.row-link').firstElementChild;
-    return num.classList.contains('row-num') && num.scrollWidth <= num.clientWidth; })`);
-  if (!chips.length || chips.includes(false)) await fail(`${where}: a row does not start with its number: ${JSON.stringify(chips)}`);
+  const chips = await evaluate(`[...document.querySelectorAll('.reservoir-list .need')].map((row) => row.querySelector('.task-number')).filter(Boolean).map((num) => num.previousElementSibling.className === 'row-label' && num.scrollWidth <= num.clientWidth)`);
+  if (!chips.length || chips.includes(false)) await fail(`${where}: a row's number does not follow its title whole: ${JSON.stringify(chips)}`);
 };
 await chipFirstOk("For you");
 await openReservoir("tasks");
@@ -1233,7 +1240,7 @@ for (const [width, height, scale] of [[390, 844, 2], [390, 560, 2], [900, 700, 1
   const cut = await evaluate(`(() => {
     const box = (node) => node.getBoundingClientRect(), scroller = (node) => /auto|scroll/.test(getComputedStyle(node).overflowY);
     const reservoir = document.querySelector('.reservoir'), found = [];
-    for (const word of reservoir.querySelectorAll('.row-label, .row-context, .row-num')) {
+    for (const word of reservoir.querySelectorAll('.row-label, .row-context, .task-number')) {
       const name = word.textContent.trim().slice(0, 24);
       if (word.scrollHeight > word.clientHeight + 0.5) found.push(\`\${name}: taller than its box\`);
       let shown = box(word);
@@ -1588,9 +1595,9 @@ await closeSheet("the usage sheet", chat);
   const message = byName.weekly.last.message;
   await go(chat);
   await until("!!document.querySelector('.pill[data-kind=routines]')", "the project with routines has no Routines pill", 100);
-  // ^ The tone of a row without a task is on its number column's icon (`.row-num`), where a dot was.
+  // ^ The tone of a row without a task is on the icon before its title (`.row-icon`), where a dot was.
   const rowsOf = () => evaluate(`[...document.querySelectorAll('.reservoir .need')].map((row) => ({ name: row.querySelector('.row-label').textContent,
-    context: [...row.querySelectorAll('.row-context')].map((node) => node.textContent), main: row.querySelector('.row-main').tagName, mark: row.querySelector('.row-num')?.dataset.tone ?? null,
+    context: [...row.querySelectorAll('.row-context')].map((node) => node.textContent), main: row.querySelector('.row-main').tagName, mark: row.querySelector('.row-icon')?.dataset.tone ?? null,
     actions: [...row.querySelectorAll('.need-action')].map((node) => node.title), icons: [...row.querySelectorAll('.need-action path')].map((node) => node.getAttribute('d')) }))`);
   const pill = () => evaluate(`(() => { const node = document.querySelector('.pill[data-kind=routines]'); return node && { label: node.getAttribute('aria-label'), count: node.querySelector('.pill-count').textContent.trim(), tone: node.dataset.tone ?? null, icon: !!node.querySelector('svg.icon') }; })()`);
   // ^ The list is read as the answer to a fetch of the page: a run's state is set in the answer (the scheduler has no failed run to stage).
@@ -3785,7 +3792,7 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   await shot("running-after-reason", ".composer-send");
   await open(scenario);
   await until(`document.querySelector('.story-next')?.textContent.endsWith('Waited for by #${behind}.')`, `#${scenario}'s sheet does not say who waits for it`, 10);
-  const chain = await evaluate("[...document.querySelectorAll('.task-sheet .task-chain .chain-row')].map((row) => row.querySelector('.row-num').textContent.trim() + (row.hasAttribute('aria-current') ? '*' : ''))");
+  const chain = await evaluate("[...document.querySelectorAll('.task-sheet .task-chain .chain-row')].map((row) => row.querySelector('.task-number').textContent.trim() + (row.hasAttribute('aria-current') ? '*' : ''))");
   if (chain.join() !== `#${scenario}*,#${behind}`) await fail(`the Chain of #${scenario} reads ${JSON.stringify(chain)}, not itself then #${behind}`);
   await shot("task-waited-for-by", ".composer-send");
   await open(behind);
@@ -4385,7 +4392,7 @@ const reviewed = await evaluate(`(() => { const row = [...document.querySelector
 if (reviewed.running || reviewed.needs) await fail(`the review-waiting row is ${JSON.stringify(reviewed)}`);
 // ^ The row shows wsx-core's label and the sheet its sentence, as the task's JSON has them (docs/tasks.md "Status").
 {
-  const id = Number((await evaluate(`[...document.querySelectorAll('.reservoir-list[aria-label=Tasks] .need')].find((row) => /waiting for the manager's review/.test(row.textContent)).querySelector('.row-num').textContent.match(/#\\d+/)[0]`)).replace("#", ""));
+  const id = Number((await evaluate(`[...document.querySelectorAll('.reservoir-list[aria-label=Tasks] .need')].find((row) => /waiting for the manager's review/.test(row.textContent)).querySelector('.task-number').textContent.match(/#\\d+/)[0]`)).replace("#", ""));
   const rowWords = (await rows()).find((row) => row[0] === `#${id}`)[2];
   await go(`#/p/${project}/t/${id}`);
   await until("!!document.querySelector('dialog.task-sheet[open] .story-next')", "the review-waiting sheet did not open");

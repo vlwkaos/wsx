@@ -5,7 +5,7 @@ import { api } from "./api.js";
 import { ago, html, Icon, lastSentence, plural, short, useEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { useStore } from "./store.js";
-import { agentWords, chainOf, live, rowLine, statusTone, taskLink, TaskChip } from "./task-words.js";
+import { agentWords, chainOf, live, rowLine, statusTone, taskLink, TaskChip, TaskTitle } from "./task-words.js";
 
 // `refs/heads/main` reads as `main`, `refs/remotes/origin/main` as `origin/main`.
 const branchName = (ref) => (ref ?? "").replace(/^refs\/(heads|remotes)\//, "");
@@ -182,8 +182,7 @@ function Chain({ project, detail }) {
         ${rows.map((task) => html`
           <li key=${task.id} data-nest=${task.flow.place.depth || null}>
             <a class="chain-row" href=${taskLink(project, task.id)} aria-current=${task.id === detail.id ? "page" : null}>
-              <span class="row-num">#${task.id}</span>
-              <span class="row-main"><span class="row-label">${task.title}</span>
+              <span class="row-main"><${TaskTitle} title=${task.title} id=${task.id} />
                 <span class="row-context"><span class="row-glyph"><${Icon} name=${rowLine(task).glyph} /></span>${rowLine(task).text}</span></span>
             </a>
           </li>`)}

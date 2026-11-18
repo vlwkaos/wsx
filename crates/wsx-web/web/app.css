@@ -863,21 +863,20 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 .reservoir-close { margin-block: calc((var(--size-key) - var(--size-control)) / 2); margin-right: calc(-1 * var(--space-3)); }
 .reservoir-scroll { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 /* Every row of the open list is the small size (docs/web-client-tasks.md "Project screen"): the
-   number (or an icon) in a column of its own, the title and the one line under it, the actions in
-   a line of their own at the right. The full width is text; nothing sits in an indent or a dot. */
-.reservoir { --num-col: calc(var(--space-4) * 3); }
+   title with its number after it (or an icon before it) and the one line under it, the actions in
+   a line of their own at the right. The full width is text, from the left edge; no column. */
 .reservoir .row-link, .reservoir .row-link:has(> .row-open) {
-  display: grid; grid-template-columns: var(--num-col) minmax(0, 1fr); align-items: start; gap: 0 var(--space-1);
+  display: grid; grid-template-columns: minmax(0, 1fr); align-items: start;
   font-size: var(--font-size-sm); padding: var(--space-1) var(--column-inset, var(--space-4));
 }
-.reservoir .row-link > .row-main, .reservoir .row-link > .row-open { grid-column: 2; align-self: stretch; padding-block: var(--space-1); min-height: var(--size-key); box-sizing: border-box; }
+.reservoir .row-link > .row-main, .reservoir .row-link > .row-open { align-self: stretch; padding-block: var(--space-1); min-height: var(--size-key); box-sizing: border-box; }
 /* ^ The title, the reason and the relations of a task (`flow.phrase`) are the point of the row: they wrap, never a cut. */
 .reservoir .row-context, .chain-row .row-context, .reservoir .row-label, .chain-row .row-label { white-space: normal; overflow-wrap: anywhere; }
-.reservoir .row-actions { grid-column: 2; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-1) var(--space-2); }
-.row-num { grid-column: 1; min-width: 0; padding-top: var(--space-1); color: var(--color-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.row-num .icon { display: block; width: var(--space-4); height: var(--space-4); }
-.row-num[data-tone="attention"] { color: var(--color-attention); }
-.row-num[data-tone="danger"] { color: var(--color-danger); }
+.reservoir .row-actions { justify-content: flex-end; flex-wrap: wrap; gap: var(--space-1) var(--space-2); }
+.row-icon { flex: 0 0 auto; align-self: flex-start; margin-block: calc((1lh - var(--space-4)) / 2); color: var(--color-muted); }
+.row-icon .icon { display: block; width: var(--space-4); height: var(--space-4); }
+.row-icon[data-tone="attention"] { color: var(--color-attention); }
+.row-icon[data-tone="danger"] { color: var(--color-danger); }
 .row-glyph { display: inline-block; margin-right: var(--space-1); vertical-align: middle; }
 .row-glyph .icon { display: block; width: var(--space-3); height: var(--space-3); }
 .row-glyph[data-tone="working"] { color: var(--color-working); }
@@ -903,7 +902,7 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 .task-chain { margin-top: var(--space-2); }
 .task-chain-title { margin: 0; font-size: var(--font-size-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-faint); font-weight: var(--font-weight-strong); }
 .task-chain ol { list-style: none; margin: 0; padding: 0; }
-.chain-row { --num-col: calc(var(--space-4) * 3); display: grid; grid-template-columns: var(--num-col) minmax(0, 1fr); gap: 0 var(--space-1); min-height: var(--size-control); padding: var(--space-2) 0; font-size: var(--font-size-sm); color: inherit; text-decoration: none; }
+.chain-row { display: block; min-height: var(--size-control); padding: var(--space-2) 0; font-size: var(--font-size-sm); color: inherit; text-decoration: none; }
 .chain-row[aria-current="page"] { background: var(--color-raised); border-radius: var(--radius-control); padding-inline: var(--space-2); margin-inline: calc(-1 * var(--space-2)); }
 .chain-row[aria-current="page"] .row-label { font-weight: var(--font-weight-strong); }
 .task-chain li[data-nest] .row-main { border-left: calc(var(--border-width) * 2) solid var(--color-hairline); padding-left: var(--space-2); }
