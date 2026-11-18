@@ -187,8 +187,23 @@ pub(crate) fn open_locked(path: &Path, options: &mut OpenOptions) -> Result<File
 pub(super) fn open_if_exists(path: &Path) -> Result<Option<File>> {
     match open_nofollow(path, OpenOptions::new().read(true)) {
         Ok(file) => Ok(Some(file)),
-        Err(_) if !path.exists() => Ok(None),
-        Err(error) => Err(error),
+        Err(error) => {
+            // ^ Decide from the open's own error: a second look at the path can see a file
+            // that a rename created after the open failed.
+            let missing = match error.downcast_ref::<std::io::Error>() {
+                Some(io) if io.kind() == std::io::ErrorKind::NotFound => true,
+                // O_NOFOLLOW on a link gives ELOOP: only a dangling link counts as missing.
+                Some(io) if io.raw_os_error() == Some(libc::ELOOP) => {
+                    path.symlink_metadata().is_ok_and(|m| m.is_symlink()) && !path.exists()
+                }
+                _ => false,
+            };
+            if missing {
+                Ok(None)
+            } else {
+                Err(error)
+            }
+        }
     }
 }
 
@@ -1614,4 +1629,30 @@ pub fn free_mb(path: &Path) -> Option<u64> {
     #[allow(clippy::useless_conversion)]
     let (blocks, size): (u64, u64) = (stats.f_bavail.into(), stats.f_frsize.into());
     Some(blocks.saturating_mul(size) / (1024 * 1024))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    /// A test cannot hit the rename window itself: it sits between two syscalls in one
+    /// thread. The decision now reads only the open's own error, so these cases cover it.
+    #[test]
+    fn open_if_exists_decides_from_the_open_error() {
+        let dir = std::env::temp_dir().join(format!("wsx-store-open-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real");
+        fs::write(&real, "x").unwrap();
+        symlink(dir.join("gone"), dir.join("dangling")).unwrap();
+        symlink(&real, dir.join("live")).unwrap();
+
+        assert!(open_if_exists(&dir.join("missing")).unwrap().is_none());
+        assert!(open_if_exists(&dir.join("dangling")).unwrap().is_none());
+        assert!(open_if_exists(&dir.join("live")).is_err());
+        assert!(open_if_exists(&real).unwrap().is_some());
+        assert!(open_if_exists(&real.join("below")).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
