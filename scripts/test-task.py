@@ -253,10 +253,10 @@ def home_dir(store):
 
 
 def forget_notes(store, notes):
-    """Make the manager's notes folder old notes again (docs/memory.md "Notes"): drop the copies, the copies of
-    hand edits, the hashes of the views and the records the notes made, so a fixture written by hand is
-    imported at the next write. Records of other kinds stay."""
-    for found in list(notes.glob('*.pre-memory')) + list(notes.glob('*.drift')) if notes else []:
+    """Make the manager's notes folder old notes again (docs/memory.md "Notes"): drop the copies of hand
+    edits, the hashes of the views and the records the notes made, so a fixture written by hand stays as
+    written (no write renders over it). Records of other kinds stay."""
+    for found in list(notes.glob('*.drift')) if notes else []:
         found.unlink()
     memory = store / 'memory'
     (memory / 'views.json').unlink(missing_ok=True)
@@ -744,9 +744,15 @@ def manager_up(created):
         return next((t for t in traces() if t.get('manager') and text in str(t.get('message', ''))), None)
 
     running = js('task', 'new', 'SLOW SLOW SLOW WORK r.txt')['id']
-    # ^ A project with the old `page.md` and no overview gets it moved once, when the manager starts.
+    # ^ A `page.md` that is no unwritten overview is old data: refused, naming v0.43.0, and not moved. The
+    # unwritten one holds nothing: the manager writes a fresh overview.md with the same text, never reads or moves it.
     old_page = state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md'
-    old_page.write_text('# demo\n\n## Goal\n\nmigrated\n')
+    unwritten = '# demo\n\n## Goal\n\n_Not written yet._\n\n## Tasks\n\n```mermaid\ngraph LR\n  start[No tasks yet]\n```\n\n## Decisions\n\n_None yet._\n\n## Open questions\n\n_None yet._\n'
+    old_page.write_text(unwritten.replace('_Not written yet._', 'migrated'))
+    refused = cli('task', 'ledger', ok=False).stderr
+    assert 'from before chats' in refused and 'v0.43.0' in refused and 'page.md' in refused, refused
+    assert 'migrated' in old_page.read_text()
+    old_page.write_text(unwritten)
     asked = js('task', 'say', 'STATUS')
     assert asked['ok'] and asked['id'] == 1, asked
     asked_reply = reply_to(asked['id'])
@@ -761,7 +767,7 @@ def manager_up(created):
     # ^ The manager never commits in the main checkout (docs/design/root-cause-refactor.md step 1).
     assert 'git commit' not in launch['instructions'] and 'only after the owner says yes' not in launch['instructions']
     page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'overview.md')
-    assert not old_page.exists() and 'migrated' in Path(page).read_text(), old_page
+    assert Path(page).read_text() == unwritten and old_page.read_text() == unwritten, old_page
     # ^ It uses the owner's skills (docs/tasks.md "Manager"); no allow list: nothing prompts. Only
     # the tools no wsx agent calls leave its request, and Bash output is capped (context-budget.md).
     assert '--allowedTools' not in launch['argv'], launch['argv']
@@ -3375,23 +3381,6 @@ def part_worker(created=None):
     assert stale.get('stale') is True, stale
     after = first_prompt('free.txt', '--title', 'landing brings it')
     assert fact['slug'] not in after and 'stale' not in after and 'Records about' not in after, after
-    # Backfill (docs/memory.md "Capture"): a memo imported before paths existed has no commit or paths; the
-    # import gives it those of the landed task, once, and a rerun changes nothing.
-    store = Path(json.loads(cli('memory', 'status', '--json').stdout)['store'])
-    rows = [json.loads(line) for line in (store / 'records.jsonl').read_text().splitlines()]
-    for row in rows:
-        if row['slug'] == fact['slug']:
-            row.pop('commit', None)
-            row.pop('paths', None)
-    (store / 'records.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
-    (store / 'paths-backfilled').unlink(missing_ok=True)
-    assert 'paths' not in json.loads(cli('memory', 'get', fact['slug'], '--json').stdout)
-    cli('memory', 'import')
-    record = json.loads(cli('memory', 'get', fact['slug'], '--json').stdout)
-    assert record['paths'] == ['free.txt'] and record['commit'] == landed_tip, record
-    size = (store / 'records.jsonl').stat().st_size
-    cli('memory', 'import')
-    assert (store / 'records.jsonl').stat().st_size == size, 'the rerun changed the store'
     configure((project / 'wsx.config.yml').read_text().replace(
         '  land: { auto: false }\n', '  land: { auto: false, approve: true }\n'), 'land asks')
     ap = js('task', 'new', 'WORK ap.txt')['id']
@@ -6955,62 +6944,17 @@ def part_host(created=None):
     for n in (manager_task, chat_task):
         js('task', 'close', n, '--discard')
 
-    # 32rm. A store from before chats moves at its first open (docs/tasks.md "Chats"): `roles/research`
-    # with its brief, role.json, a log and notes becomes `tasks/chats/research`; the values `role:research`
-    # in a task record and the logs, and the approval lines of the removed `role` action, are rewritten
-    # or dropped; the argv wsxd stored for the role's session, `manager-host <id> --role research`, starts the chat.
+    # 32rm. A store from before chats is refused, not moved (docs/tasks.md "Chats"): each old folder names
+    # wsx v0.43.0, the last release that moves it, and nothing is moved or deleted.
     mark('32rm')
     mig_store = Path(created['task_dir']).parent
-    # ^ The store is opened (and moved) by the first `wsx task` that runs after the folder is there: the task is
-    # made first, the old-shaped files last.
-    old_task = js('task', 'new', 'WORK migrated.txt')['id']
-    assert wait_state(old_task, 'ready', 'failed')['state'] == 'ready'
-    old_role = mig_store / 'roles/research'
-    (old_role / 'notes').mkdir(parents=True)
-    (old_role / 'brief.md').write_text('Research the market.\n')
-    (old_role / 'role.json').write_text(json.dumps({'by': 'owner', 'adapter': 'claude', 'model': 'haiku'}))
-    (old_role / 'notes/context.md').write_text('research notes\n')
-    now_ms = int(time.time() * 1000)
-    (old_role / 'log.jsonl').write_text(''.join(json.dumps(line) + '\n' for line in (
-        {'unix_ms': now_ms, 'kind': 'message', 'id': 1, 'from': 'owner', 'text': 'find the numbers'},
-        {'unix_ms': now_ms, 'kind': 'message', 'id': 2, 'from': 'role:manager', 'text': 'manager asks research'},
-        {'unix_ms': now_ms, 'kind': 'reply', 'id': 3, 'to': [1], 'text': 'the numbers are in'})))
-    with open(mig_store / 'approvals.jsonl', 'a') as out:
-        out.write(json.dumps({'kind': 'request', 'id': 'a-old-role', 'action': 'role', 'role': 'qa', 'brief': 'x', 'unix_ms': now_ms}) + '\n')
-    (mig_store / 'search.jsonl').write_text(json.dumps({'kind': 'message', 'role': 'research', 'id': 1, 'at': 1, 'text': 'old'}) + '\n')
-    record_path = mig_store / str(old_task) / 'task.json'
-    record = json.loads(record_path.read_text())
-    record['created_by'] = 'role:research'
-    record_path.write_text(json.dumps(record))
-    migrated = chats()
-    assert 'research' in migrated and migrated['research']['state'] == 'open', migrated
-    assert not (mig_store / 'roles').exists() and not (mig_store / 'chats').exists()
-    new_chat = chats_dir / 'research'
-    assert (new_chat / 'goal.md').read_text() == 'Research the market.\n' and not (new_chat / 'brief.md').exists()
-    assert (new_chat / 'notes/context.md').read_text() == 'research notes\n' and not (new_chat / 'role.json').exists()
-    # ^ role.json's adapter and model map to the [[agents]] entry with the same two (haiku-chat above).
-    assert json.loads((new_chat / 'chat.json').read_text()) == {'agent': 'haiku-chat', 'repos': [repo_id]}, (new_chat / 'chat.json').read_text()
-    assert [(e['kind'], e.get('from')) for e in chat_entries('research')][:2] == [('message', 'owner'), ('message', 'chat:demo')]
-    assert json.loads(record_path.read_text())['created_by'] == 'chat:research'
-    assert show(old_task)['record']['created_by'] == 'chat:research'
-    assert '"action":"role"' not in (mig_store / 'approvals.jsonl').read_text().replace(' ', '')
-    assert all(a['action'] != 'role' for a in js('task', 'ledger')['approvals'])
-    assert not (mig_store / 'search.jsonl').exists(), 'the search digest with a role field is dropped (rebuilt on the next search)'
-    # ^ The migration is idempotent: a second run changes nothing.
-    again = (new_chat / 'log.jsonl').read_bytes()
-    chats()
-    assert (new_chat / 'log.jsonl').read_bytes() == again
-    host = subprocess.Popen([str(wsx), 'task', 'manager-host', mig_store.name, '--role', 'research'], cwd=project, env=env,
-                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        wait(lambda: chats()['research']['running'], 'the stored argv starts the migrated chat', 30)
-        said = js('task', 'say', '--to', 'research', 'STATUS')
-        assert chat_reply('research', said['id'])
-    finally:
-        host.terminate()
-        host.wait(timeout=30)
-    js('task', 'chat', 'close', 'research')
-    js('task', 'close', old_task, '--discard')
+    for old in ('manager', 'roles', 'chats'):
+        (mig_store / old).mkdir()
+        refused = cli('task', 'ledger', ok=False).stderr
+        assert 'from before chats' in refused and 'v0.43.0' in refused and str(mig_store / old) in refused, (old, refused)
+        assert (mig_store / old).is_dir() and not any((mig_store / old).iterdir()), old
+        (mig_store / old).rmdir()
+    js('task', 'ledger')
     registry.write_text(registry_before)
 
     # 32v. A turn that ends while a background job runs is no missing result (docs/tasks.md
@@ -7427,158 +7371,6 @@ def part_host(created=None):
     assert 'home chat' in cli('task', 'chat', 'close', 'demo', ok=False).stderr
     assert 'chat home is for the owner' in reply_to(js('task', 'say', 'RUN wsx task chat home qa -p demo --json')['id'])['text']
     js('task', 'close', qa_task, '--discard')
-
-    # 33m. A store from before the chats folder moves at its first open, with its host live
-    # (docs/tasks.md "Chats", "Old layout"): a process that runs `wsx task manager-host <id>` on the old
-    # folder is stopped before the folder moves, the owner message it never answered is answered once by
-    # the host the move starts, the log reads on at the new path, and nothing is written at the old one.
-    mark('33m')
-    registry_file = config_dir / 'config-v2.toml'
-    registry_plain = registry_file.read_text()
-    mig = base / 'mig'
-    mig.mkdir()
-    git('init', '-q', '-b', 'main', cwd=mig)
-    (mig / 'README').write_text('mig\n')
-    (mig / 'wsx.config.yml').write_text('tasks:\n  minFreeGb: 0\n')
-    git('add', '.', cwd=mig)
-    git('commit', '-q', '-m', 'start', cwd=mig)
-    registry_file.write_text(registry_plain + '[[projects]]\nname = "mig"\npath = ' + json.dumps(str(mig)) + '\n')
-    mig_id = 'mig-' + hashlib.sha256(str(mig).encode()).hexdigest()[:8]
-    mig_store = state / 'wsx/tasks' / mig_id
-    mig_n = js('task', 'new', '-p', 'mig', 'WORK m.txt')['id']
-    wait(lambda: js('task', 'show', mig_n, '-p', 'mig')['state'] == 'ready', 'the task of the mig repo', 60)
-    def drop_sessions():
-        # ^ A host that already left has no session: the delete's exit code is no matter.
-        for label in ('task-mig', 'task-repo-' + mig_id):
-            subprocess.run([str(wsx), 'session', 'delete', label, '-p', 'mig'], cwd=project, env=env, capture_output=True, timeout=60)
-
-    drop_sessions()
-    wait(lambda: not leftovers('task manager-host ' + mig_id) and not leftovers('task chat-host mig')
-         and not leftovers('task repo-host ' + mig_id), 'the mig hosts leave', 30)
-    # ^ Put the store back as before chats: the home chat's folder is `manager/`, a second chat is `chats/side/`.
-    old_home, old_side = mig_store / 'manager', mig_store / 'chats/side'
-    if not (chats_dir / 'mig/log.jsonl').exists():
-        # ^ No host ran for this repo (a task alone does not start one): the first chat's folder is staged by hand.
-        (chats_dir / 'mig').mkdir(exist_ok=True)
-        (chats_dir / 'mig/log.jsonl').write_text(json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': 1, 'from': 'owner', 'text': 'first'}) + '\n')
-    (chats_dir / 'mig').rename(old_home)
-    (old_home / 'chat.json').unlink(missing_ok=True)
-    for stale_socket in old_home.glob('*.sock'):
-        stale_socket.unlink()
-    (mig_store / 'home.json').unlink(missing_ok=True)
-    (old_side / 'notes').mkdir(parents=True)
-    (old_side / 'goal.md').write_text('Side work.\n')
-    side_line = json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': 1, 'from': 'owner', 'text': 'side hello'}) + '\n'
-    (old_side / 'log.jsonl').write_text(side_line)
-    record_file = mig_store / str(mig_n) / 'task.json'
-    mig_record = json.loads(record_file.read_text())
-    assert mig_record['created_by'] == 'owner', mig_record
-    mig_record['created_by'] = 'manager@demo'
-    record_file.write_text(json.dumps(mig_record))
-    now_ms = int(time.time() * 1000)
-    with open(mig_store / 'approvals.jsonl', 'a') as out:
-        for key, extra in (('a-mig', {}), ('a-side', {'chat': 'side'})):
-            out.write(json.dumps({'kind': 'request', 'id': key, 'action': 'discard', 'task': mig_n, 'unix_ms': now_ms, **extra}) + '\n')
-    (mig_store / 'search.jsonl').write_text(json.dumps({'kind': 'message', 'role': 'x', 'id': 1, 'at': 1, 'text': 'old'}) + '\n')
-    old_ids = [json.loads(line).get('id', 0) for line in (old_home / 'log.jsonl').read_text().splitlines()]
-    queued_id = max(old_ids) + 1
-    with (old_home / 'log.jsonl').open('a') as out:
-        out.write(json.dumps({'unix_ms': now_ms, 'kind': 'message', 'id': queued_id, 'from': 'owner', 'text': 'STATUS after the move'}) + '\n')
-    before_lines = (old_home / 'log.jsonl').read_text().splitlines()
-    # ^ The live old host: a process whose arguments are `task manager-host <id>`, which keeps writing the old log.
-    stand = base / 'stand-in'
-    stand.mkdir()
-    (stand / 'task').write_text(
-        'import os, sys, time\n'
-        'log = os.environ["STAND_LOG"]\n'
-        'while True:\n'
-        '    os.makedirs(os.path.dirname(log), exist_ok=True)\n'
-        '    open(log, "a").close()\n'
-        '    time.sleep(0.2)\n')
-    os.symlink(sys.executable, stand / 'wsx')
-    host = subprocess.Popen([str(stand / 'wsx'), 'task', 'manager-host', mig_id], cwd=stand,
-                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            env={**env, 'STAND_LOG': str(old_home / 'log.jsonl')})
-    wait(lambda: leftovers('task manager-host ' + mig_id), 'the stand-in host runs')
-    # ^ The first `wsx task` that opens the store moves it: the stand-in is stopped first, the home chat starts on the new folder.
-    # A deploy opens the store from several processes at once (its sweep, a host that starts, a command): four
-    # first opens race here; `tasks/chats.lock` makes one move and the others find nothing left to move.
-    opens = [subprocess.Popen([str(wsx), 'task', 'chat', 'list', '-p', 'mig', '--json'], cwd=project, env=env,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(4)]
-    for each in opens:
-        out, err = each.communicate(timeout=90)
-        assert each.returncode == 0, (out, err)
-        listed = {c['name']: c for c in json.loads(out)['chats']}
-        assert listed['mig']['home'] and 'side' in listed, (listed, err)
-    assert host.wait(timeout=30) is not None, 'the move stopped the old host'
-    new_log = chats_dir / 'mig/log.jsonl'
-    answered = wait(lambda: next((e for e in (json.loads(l) for l in new_log.read_text().splitlines())
-                                  if e['kind'] == 'reply' and queued_id in e['to']), None), 'the queued message is answered at the new path', 90)
-    lines = new_log.read_text().splitlines()
-    assert lines[:len(before_lines)] == before_lines, 'the log reads on from the old one'
-    assert len([l for l in lines if json.loads(l)['kind'] == 'reply' and queued_id in json.loads(l)['to']]) == 1, lines[-6:]
-    time.sleep(3)
-    for old in ('manager', 'chats', 'roles'):
-        assert not (mig_store / old).exists(), old
-    assert not (mig_store / 'search.jsonl').exists()
-    assert json.loads((mig_store / 'home.json').read_text()) == {'chat': 'mig'}
-    assert json.loads((chats_dir / 'mig/chat.json').read_text())['repos'] == [mig_id]
-    assert (chats_dir / 'side/log.jsonl').read_text() == side_line and (chats_dir / 'side/goal.md').read_text() == 'Side work.\n'
-    assert json.loads((chats_dir / 'side/chat.json').read_text())['repos'] == [mig_id]
-    assert json.loads(record_file.read_text())['created_by'] == 'chat:demo'
-    approvals = {a['id']: a for a in map(json.loads, (mig_store / 'approvals.jsonl').read_text().splitlines())}
-    assert (approvals['a-mig']['chat'], approvals['a-side']['chat']) == ('mig', 'side'), approvals
-    # ^ A second open changes nothing.
-    snapshot = {p: p.read_bytes() for p in (chats_dir / 'side').rglob('*') if p.is_file()}
-    js('task', 'chat', 'list', '-p', 'mig')
-    assert snapshot == {p: p.read_bytes() for p in (chats_dir / 'side').rglob('*') if p.is_file()}
-    # The owner repoints the home chat; a chat that is home is not closed.
-    js('task', 'chat', 'new', 'mside', '--goal', goal, '-p', 'mig')
-    js('task', 'chat', 'home', 'mside', '-p', 'mig')
-    assert json.loads((mig_store / 'home.json').read_text()) == {'chat': 'mside'}
-    assert 'home chat' in cli('task', 'chat', 'close', 'mside', '-p', 'mig', ok=False).stderr
-    js('task', 'chat', 'home', 'mig', '-p', 'mig')
-    js('task', 'chat', 'close', 'mside', '-p', 'mig')
-    js('task', 'close', mig_n, '--discard', '-p', 'mig')
-    drop_sessions()
-    mig_hosts = lambda: ([l for l in leftovers('task chat-host ') if l.endswith(('chat-host mig', 'chat-host side', 'chat-host mside'))]
-                         + leftovers('task manager-host ' + mig_id) + leftovers('task repo-host ' + mig_id))
-    wait(lambda: not mig_hosts(), 'the mig hosts leave', 30)
-    # ^ A record that does not parse stays on the ledger and in `task list`, as broken with its path and error;
-    # the other tasks still list (docs/tasks.md "Ledger").
-    bad_record = mig_store / '99/task.json'
-    bad_record.parent.mkdir()
-    bad_record.write_text('{"id": 99,')
-    ledger = js('task', 'ledger', '-p', 'mig')
-    assert [{**row, 'error': bool(row['error'])} for row in ledger['broken']] == [{'id': 99, 'path': str(bad_record), 'error': True}], ledger.get('broken')
-    assert 'line 1' in ledger['broken'][0]['error'], ledger['broken']
-    assert mig_n in [row['id'] for row in ledger['recent']], ledger['recent']
-    listed = {row['id']: row for row in js('task', 'list', '--all', '-p', 'mig')['tasks']}
-    assert listed[99]['state'] == 'broken' and listed[99]['path'] == str(bad_record) and str(bad_record) in listed[99]['error'], listed
-    assert listed[mig_n]['state'] != 'broken', listed
-    broken_line = next(line for line in cli('task', 'list', '--all', '-p', 'mig').stdout.splitlines() if line.startswith('t99 '))
-    assert 'broken' in broken_line and str(bad_record) in broken_line, broken_line
-    shutil.rmtree(bad_record.parent)
-    # ^ Every store with the old layout moves at the first open of any store, also one whose project is no
-    # longer registered and with no host: `task list` is no chat host (docs/tasks.md "Chats", "Old layout").
-    gone_id = 'gone-0a1b2c3d'
-    gone_store = mig_store.parent / gone_id
-    (gone_store / 'manager').mkdir(parents=True)
-    (gone_store / 'manager/log.jsonl').write_text(json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': 1, 'from': 'owner', 'text': 'old words'}) + '\n')
-    (gone_store / '1').mkdir()
-    (gone_store / '1/task.json').write_text(json.dumps({**mig_record, 'id': 1, 'project_id': gone_id, 'created_by': 'manager'}))
-    js('task', 'list', '-p', 'mig')
-    assert not (gone_store / 'manager').exists(), list(gone_store.iterdir())
-    assert 'old words' in (chats_dir / 'gone/log.jsonl').read_text()
-    assert json.loads((gone_store / 'home.json').read_text()) == {'chat': 'gone'}
-    assert json.loads((gone_store / '1/task.json').read_text())['created_by'] == 'chat:gone'
-    assert not leftovers('task chat-host gone'), 'the move starts no host of an unregistered store'
-    shutil.rmtree(gone_store)
-    shutil.rmtree(chats_dir / 'gone')
-    registry_file.write_text(registry_plain)
-    shutil.rmtree(mig_store)
-    for chat_name in ('mig', 'side', 'mside'):
-        shutil.rmtree(chats_dir / chat_name)
 
     # 33s. Search (docs/tasks.md "Search"): a manager finds an old decision across projects, ranked,
     mark('33s')

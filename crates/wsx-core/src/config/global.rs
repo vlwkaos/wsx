@@ -368,10 +368,6 @@ pub struct AgentEntry {
     /// Needs the `pi` adapter. ref: docs/tasks.md "Pi adapter"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extension: Option<PathBuf>,
-    /// The retired `roles` key (`may` replaced it): read so an old config still loads, never
-    /// used or written. ref: docs/tasks.md "Agents"
-    #[serde(default, skip_serializing, rename = "roles")]
-    _roles: Option<Vec<String>>,
     /// The capabilities this agent passed the test for (`task::policy`); its launch group is
     /// cut down to them, and a fallback choice gives it only the jobs they cover
     /// (`Role::filled_by`). None: all of the group's, a full fallback.
@@ -396,7 +392,6 @@ impl AgentEntry {
             model: Some(model.into()),
             budget_usd_per_day: None,
             extension: None,
-            _roles: None,
             may: Some(may),
         }
     }

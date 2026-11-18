@@ -993,9 +993,6 @@ pub enum MemoryCmd {
     },
     /// One record
     Get { slug: String },
-    /// Make records of the manager's old notes files, once (a rerun adds nothing)
-    #[command(hide = true)]
-    Import,
     /// Rebuild the index of the scope (the digest of its transcripts, and the backend's own)
     Reindex,
     /// Store folder, search backend and record counts
@@ -1016,7 +1013,6 @@ impl MemoryCmd {
             Self::Supersede { .. } => "supersede",
             Self::Reindex => "reindex",
             Self::Get { .. } => "get",
-            Self::Import => "import",
             Self::Status => "status",
             Self::List => "list",
         }
@@ -1037,7 +1033,6 @@ impl MemoryCmd {
             | Self::Update { .. }
             | Self::Capture { .. }
             | Self::Supersede { .. }
-            | Self::Import
             | Self::Reindex => &[Remember],
         }
     }

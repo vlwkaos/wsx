@@ -50,7 +50,6 @@ wsx also searches the transcripts of a project scope (a chat message or reply, a
 | `get` | `<slug>` | the record; unknown slug: exit 1 |
 | `capture` (wsx) | `--task N --memo TEXT [--commit SHA] [--paths a,b]` | the record, see "Capture" |
 | `start` (wsx) | `--files a,b ` | `{"scope","start"}`: the start block a worker with those `--files` gets (the area briefs), see "Start set" |
-| `import` (wsx) | none | `{"scope","imported":{"rules","archived","facts","episodes"}}`; see "Notes" |
 | `reindex` | none | `{"scope","ok"}`. wsx: drops the project's digest of transcripts and builds it again, then asks the backend to reindex (a backend that fails is exit 3) |
 | `status` | none | `{"scope","store","backend","search":{"network":bool,"model":bool},"limits":{"text_bytes":N},"counts":{"active","superseded","failed"}}` |
 | `list` | none | `[{"scope","store"}]` |
@@ -89,7 +88,7 @@ The manager's notes are views of the project scope's records ([tasks.md](tasks.m
 | `context.md` | the active `fact` records whose slug starts `section-` (the project section, in order), then the memos: records whose slug is `memo-<task>-<hash>`, as `- #<task>: <text>`, up to 32 KiB |
 | `context-archive.md` | the older memos past that ceiling |
 
-- **Import**, once: the first write of a writer that may give rules (or `wsx memory import`) copies each old file to `<file>.pre-memory` and reads only the copies, one record per line. The slug is a hash of the line, so a rerun adds nothing and an archive line that repeats an active rule stays one record. A dated rule line keeps its words and its date byte for byte; a line with no date is shown with none. A `- #<n>:` memo is a `fact` verified by `task:<n>` when that task landed, else an `episode`. Other `context.md` lines become `section-` facts. A line that is no bullet of `decisions.md` is not imported (the copy keeps it). A writer that may not give rules (a worker) imports nothing and renders nothing while old notes wait.
+- **Old notes**: notes files from before the memory store are not read any more. A write (`add`, `update`, `supersede`) is refused while a view file exists that no render has hashed (no entry in `views.json`), and no view is written; run `wsx memory import` with wsx v0.43.0 once. The files stay as they are.
 - **Write path**, records first: `wsx memory add|update|supersede` store the record and then write the four files, under the store's lock. A memo is stored by the manager host when a task leaves. A view that cannot be written is a notice on stderr; the record stays and the next write renders again.
 - **Owner's words**: `add --kind rule --words W` needs `--source msg:<id>` and `--verified-by owner:<id>`, and W must stand in that message, which the owner wrote (white space ignored), else exit 2. Message ids are per chat: the message is read in the calling chat (`WSX_TASK_ACTOR=chat:<name>`), else in the repo's home chat. The record still goes to the project scope, and a chat records a rule only in the scope of a repo it is part of (its `chat.json` `repos`), else exit 2. The manager's own wording may be the `text`.
 - **Top 5**: a new `rule` or `fact` first searches the active records of its kind (built-in index, records only, no model). The close ones (top 5, score 0.09 or more) come back as `similar` in the JSON, or as lines in the text form. They are never replaced by score alone: `add --supersedes <old>` stores the new record and supersedes `<old>` in one call, `supersede` does it later. An unknown `<old>` is exit 1 and stores nothing.
@@ -121,8 +120,6 @@ When a task leaves, the manager host (`manager.rs` `fold_memo`) stores its resul
 
 The slug is `memo-<n>-<digest>`, so the same memo is one record. A memo is one line of at most 240 characters. `wsx memory capture` does the same for a replay. A task created by a chat keeps its memo in the chat's own notes (not captured). When a worker's conversation ends for its size, its host also stores the handoff notes as an episode `rotation-<n>-<digest>` (cut at the text limit, with the path of the whole). When the manager starts a fresh conversation, the host also stores the handover it puts in that turn as an episode `handover-<digest>` (source `path:chats/<name>/log.jsonl`; a role's manager keeps files). Neither takes a turn of its own.
 
-**Backfill**: a memo imported before `paths` existed is a `fact` with no `commit` and no `paths`, so it could never be marked stale. `wsx memory import` and the first write of a rule writer (once, marked by `paths-backfilled` in the store folder) give each such fact of a landed task the landed commit and the task's `paths` from the task's own record and log, the data `capture` stores. The time of the record stays. A task with no landed diff stays without paths. A rerun changes nothing.
-
 ## Exit codes
 
 | Code | Meaning |
@@ -149,7 +146,7 @@ A task agent calls `wsx memory` through its host's broker (`WSX_TASK_BROKER`), w
 | Command | Who |
 |---|---|
 | `search`, `recall`, `status`, `list`, `get` | every agent, also an untrusted one; a read may name any scope |
-| `add`, `update`, `supersede`, `import`, `reindex` | the manager, a named chat and a worker, in the agent's own project scope only (`--scope` defaults to it, another one is refused) |
+| `add`, `update`, `supersede`, `reindex` | the manager, a named chat and a worker, in the agent's own project scope only (`--scope` defaults to it, another one is refused) |
 | a `rule` record (add, change, replace) | the manager and a named chat: it needs `owner:<id>`, and a worker's call is refused by the store |
 | any write | not an untrusted agent (strict profile): read only |
 

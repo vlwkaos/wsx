@@ -283,48 +283,57 @@ def backend_part():
 
 
 def notes_part(pid, notes):
-    """The manager's notes of a project (docs/memory.md "Notes"): the old files are imported once, the
-    views are rendered from the records with each rule's date and words, the write path writes the
-    record and then the view, a new rule names the close ones, and a hand edit is reported."""
+    """The manager's notes of a project (docs/memory.md "Notes"): old notes files are refused, not
+    imported; the views are rendered from the records with each rule's date and words, the write
+    path writes the record and then the view, a new rule names the close ones, and a hand edit is
+    reported."""
     log = os.path.join(os.path.dirname(notes), 'log.jsonl')
-    open(log, 'w').write(json.dumps({'unix_ms': 1, 'kind': 'message', 'id': 7, 'from': 'owner',
-                                     'text': 'From now on, never paste secrets in chat, ever.'}) + '\n'
-                         + json.dumps({'unix_ms': 2, 'kind': 'message', 'id': 8, 'from': 'events', 'text': 'never paste secrets'}) + '\n')
-    # ^ The archive's third line repeats an active rule: one record, shown in decisions.md only.
+    owner = lambda n, text: json.dumps({'unix_ms': n, 'kind': 'message', 'id': n, 'from': 'owner', 'text': text}) + '\n'
+    open(log, 'w').write(owner(7, 'From now on, never paste secrets in chat, ever.')
+                         + json.dumps({'unix_ms': 2, 'kind': 'message', 'id': 8, 'from': 'events', 'text': 'never paste secrets'}) + '\n'
+                         + owner(9, 'Keep the store in sqlite.') + owner(10, 'Always ship small changes with a readme.'))
     legacy = {
-        'decisions.md': '- 2026-10-22 keep the store in sqlite\n- 2026-10-22 never   paste secrets  in chat\n## Habits\n- 2026-11-01 Always ship small changes with a readme.\n',
-        'decisions-archive.md': '- 2026-09-01 use json files for the store\n- 2026-09-15 use yaml for the store\n- 2026-10-22 keep the store in sqlite\n',
-        'context.md': '# proj\nSection line two.\n- #3: first memo\n- #4: second memo text\n',
-        'context-archive.md': '- #1: oldest memo\n',
+        'decisions.md': '- 2026-10-22 keep the store in sqlite\n- 2026-10-22 never   paste secrets  in chat\n',
+        'context.md': '# proj\nSection line two.\n- #3: first memo\n',
     }
     for name, text in legacy.items():
         open(os.path.join(notes, name), 'w').write(text)
     view = lambda name: open(os.path.join(notes, name)).read()
-    records = os.path.join(ENV['XDG_STATE_HOME'], 'wsx', 'tasks', pid, 'memory', 'records.jsonl')
     check(ok('status', scope=pid)['drift'] == [], 'old notes are no drift')
 
-    # import: once; a rerun adds nothing; the views keep every line byte for byte
-    first = ok('import', scope=pid)
-    check(first['imported'] == {'rules': 3, 'archived': 2, 'facts': 2, 'episodes': 3}, first)
-    # ^ Memos of the old archive rejoin context.md while the file is under its ceiling.
-    # ^ A `## <area>` line is no rule and no view line: the area is a keyword of the rules after it.
-    shown = {**legacy, 'decisions.md': legacy['decisions.md'].replace('## Habits\n', ''), 'decisions-archive.md': ''.join(legacy['decisions-archive.md'].splitlines(True)[:2]),
-             'context.md': '# proj\nSection line two.\n- #1: oldest memo\n- #3: first memo\n- #4: second memo text\n', 'context-archive.md': ''}
-    for name, text in legacy.items():
-        check(view(name) == shown[name], (name, view(name)))
-        check(open(os.path.join(notes, name + '.pre-memory')).read() == text, name + ' copy')
-    lines = len(open(records).readlines())
-    check(ok('import', scope=pid)['imported'] == {'rules': 0, 'archived': 0, 'facts': 0, 'episodes': 0}, 'a rerun adds nothing')
-    check(len(open(records).readlines()) == lines and all(view(n) == t for n, t in shown.items()), 'a rerun writes nothing')
+    before = ok('status', scope=pid)['counts']
+    # old notes: every write is refused with the release that imports them; no record, no view
+    for args in (('add', '--kind', 'episode', '--slug', 'early', '--text-file', '-', '--source', 'task:1'),
+                 ('update', '--slug', 'early', '--text-file', '-', '--source', 'task:1'),
+                 ('supersede', 'early', 'later', '--source', 'task:1')):
+        code, out, err = run(*args, text='x', scope=pid)
+        check(code == 3 and 'v0.43.0' in err and 'wsx memory import' in err, (args[0], code, err))
+    check(all(view(name) == text for name, text in legacy.items()), 'a refused write leaves the old notes byte for byte')
+    check(ok('status', scope=pid)['counts'] == before, 'a refused write stores no record')
+    for name in legacy:
+        os.remove(os.path.join(notes, name))
+
+    # the first records: rules with the owner's words, a section and memos
+    today = time.strftime('%Y-%m-%d', time.gmtime())
+    for slug, words, msg, text in (('sqlite', 'Keep the store in sqlite', 9, 'Keep the store in sqlite.'),
+                                   ('paste', 'never   paste secrets  in chat', 7, 'Never paste secrets in chat.'),
+                                   ('ship-readme', 'Always ship small changes with a readme.', 10, 'Ship small changes with a readme.')):
+        ok('add', '--kind', 'rule', '--slug', slug, '--text-file', '-', '--source', 'msg:%d' % msg, '--verified-by', 'owner:%d' % msg,
+           '--words', words, text=text, scope=pid)
+    for slug, text in (('section-1', '# proj'), ('section-2', 'Section line two.')):
+        ok('add', '--kind', 'fact', '--slug', slug, '--text-file', '-', '--source', 'task:1', '--verified-by', 'README.md', text=text, scope=pid)
+    for n, text in ((1, 'oldest memo'), (3, 'first memo'), (4, 'second memo text')):
+        ok('add', '--kind', 'episode', '--slug', 'memo-%d-x' % n, '--text-file', '-', '--source', 'task:%d' % n, text=text, scope=pid)
+    shown = {'decisions.md': ''.join('- %s %s\n' % (today, w) for w in ('Keep the store in sqlite', 'never   paste secrets  in chat', 'Always ship small changes with a readme.')),
+             'context.md': '# proj\nSection line two.\n- #1: oldest memo\n- #3: first memo\n- #4: second memo text\n'}
+    for name, text in shown.items():
+        check(view(name) == text, (name, view(name)))
     check({h['kind'] for h in ok('search', 'sqlite', scope=pid)} == {'rule'}, 'the lines of a view are searched as records, not twice')
-    check(ok('get', next(h for h in ok('search', 'readme', '--kind', 'rule', scope=pid))['slug'], scope=pid)['keywords'] == ['Habits'], 'the area is a keyword')
     rule = next(h for h in ok('search', 'paste secrets', '--kind', 'rule', scope=pid))
     kept = ok('get', rule['slug'], scope=pid)
     check(kept['words'] == 'never   paste secrets  in chat' and kept['status'] == 'active' and kept['kind'] == 'rule', kept)
-    check(kept['verified_by'].startswith('owner:transcript:') and kept['source'] == 'path:decisions.md:2', kept)
 
     # the write path: the record, then the view; the owner's words must stand in their message
-    today = time.strftime('%Y-%m-%d', time.gmtime())
     new = ['add', '--kind', 'rule', '--slug', 'no-secrets', '--text-file', '-', '--source', 'msg:7', '--verified-by', 'owner:7']
     added = ok(*new, '--words', 'never paste secrets in chat', text='Never paste secrets into chat messages.', scope=pid)
     check([h['slug'] for h in added['similar']][:1] == [rule['slug']] and all(0.09 <= h["score"] <= 1 for h in added['similar']), added)
@@ -341,7 +350,7 @@ def notes_part(pid, notes):
     # supersede, by command and in one call with --supersedes: the old line leaves decisions.md for the archive
     old = ok('supersede', rule['slug'], 'no-secrets', '--source', 'msg:7', scope=pid)
     check(old['status'] == 'superseded' and old['superseded_by'] == 'no-secrets', old)
-    check('never   paste secrets  in chat' not in view('decisions.md') and view('decisions-archive.md').endswith('- 2026-10-22 never   paste secrets  in chat\n'), 'archive view')
+    check('never   paste secrets  in chat' not in view('decisions.md') and view('decisions-archive.md').endswith('- %s never   paste secrets  in chat\n' % today), 'archive view')
     again = ok('add', '--kind', 'rule', '--slug', 'no-secrets-2', '--text-file', '-', '--source', 'msg:7', '--verified-by', 'owner:7',
                '--words', 'never paste secrets', '--supersedes', 'no-secrets', text='Never paste secrets, tokens or keys into chat or logs.', scope=pid)
     check(again['status'] == 'active' and again['slug'] == 'no-secrets-2', again)

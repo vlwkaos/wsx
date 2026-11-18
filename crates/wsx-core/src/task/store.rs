@@ -81,6 +81,18 @@ pub fn prepare_socket_dir(socket: &Path) -> Result<()> {
 
 /// `<name-slug>-<8 hex of sha256(path)>`: readable, and unique per project path.
 pub fn project_id(name: &str, path: &Path) -> String {
+    let slug = id_slug(name);
+    let digest = Sha256::digest(path.as_os_str().as_encoded_bytes());
+    let hash: String = digest[..4].iter().map(|b| format!("{b:02x}")).collect();
+    if slug.is_empty() {
+        hash
+    } else {
+        format!("{slug}-{hash}")
+    }
+}
+
+/// The name part of a project id: lowercase letters and digits, `-` between, at most 40.
+fn id_slug(name: &str) -> String {
     let mut slug: String = name
         .chars()
         .map(|c| {
@@ -92,14 +104,7 @@ pub fn project_id(name: &str, path: &Path) -> String {
         })
         .collect();
     slug.truncate(40);
-    let slug = slug.trim_matches('-');
-    let digest = Sha256::digest(path.as_os_str().as_encoded_bytes());
-    let hash: String = digest[..4].iter().map(|b| format!("{b:02x}")).collect();
-    if slug.is_empty() {
-        hash
-    } else {
-        format!("{slug}-{hash}")
-    }
+    slug.trim_matches('-').to_string()
 }
 
 pub(super) fn validate_project_id(value: &str) -> Result<()> {
@@ -145,9 +150,38 @@ fn require_real_dir(path: &Path) -> Result<()> {
 pub(crate) fn project_dir(project_id: &str) -> Result<PathBuf> {
     validate_project_id(project_id)?;
     let dir = tasks_root().join(project_id);
-    // ^ Every store access starts here: a store from before chats moves first.
-    super::chats::migrate_once(project_id, &dir);
+    // ^ Every store access starts here: a store from before chats is refused, not moved.
+    refuse_old_layout(project_id, &dir)?;
     Ok(dir)
+}
+
+/// The last release that moves a store of before chats (`manager/`, `roles/`, `chats/` in the
+/// repo's folder, `page.md` for `overview.md`) to the layout now.
+const LAST_MOVING_RELEASE: &str = "v0.43.0";
+
+/// A store that still has the layout of before chats is not read: its owner runs
+/// `LAST_MOVING_RELEASE` once. A `page.md` that is the unwritten template holds no data.
+fn refuse_old_layout(project_id: &str, dir: &Path) -> Result<()> {
+    let old = ["manager", "roles", "chats"]
+        .into_iter()
+        .map(|name| dir.join(name))
+        .find(|path| path.is_dir())
+        .or_else(|| {
+            let page = dir.join("page.md");
+            let data = fs::symlink_metadata(dir.join(OVERVIEW_FILE)).is_err()
+                && match read_bounded_if_exists(&page, MAX_OVERVIEW_BYTES) {
+                    Ok(found) => found.is_some_and(|bytes| !is_unwritten_page(project_id, &bytes)),
+                    Err(_) => true,
+                };
+            data.then_some(page)
+        });
+    match old {
+        Some(path) => bail!(
+            "{} is from before chats: run wsx {LAST_MOVING_RELEASE} once to move it",
+            path.display()
+        ),
+        None => Ok(()),
+    }
 }
 
 /// Create `tasks/<project-id>/` and its parents, each owner-only.
@@ -684,9 +718,16 @@ impl TaskDir {
     fn legacy_record(&self, bytes: &[u8]) -> Option<TaskRecord> {
         let mut value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
         let by = value.get("created_by")?.as_str()?;
-        let renamed = super::chats_move::creator(by, || {
-            format!("chat:{}", super::chats_move::home_of(&self.project_id))
-        })?;
+        // ^ `manager` is the repo's home chat, `manager@<repo>` the chat named for that repo.
+        let renamed = match by.strip_prefix("manager@") {
+            Some(repo) => format!("chat:{}", super::chats::slug_name(repo)),
+            None if by == "manager" => format!(
+                "chat:{}",
+                home_chat(&self.project_id)
+                    .unwrap_or_else(|| super::chats::home_name(&self.project_id))
+            ),
+            None => return None,
+        };
         value["created_by"] = renamed.into();
         serde_json::from_value(value).ok()
     }
@@ -1494,8 +1535,6 @@ pub const OVERVIEW_FILE: &str = "overview.md";
 pub const MAX_OVERVIEW_LINES: usize = 60;
 pub const MAX_OVERVIEW_CHARS: usize = 4000;
 pub const MAX_OVERVIEW_BYTES: u64 = 256 * 1024;
-/// The name before the rename; `migrate_page` moves it.
-const OLD_PAGE_FILE: &str = "page.md";
 
 /// `tasks/<project-id>/overview.md`, the project's overview that the manager edits.
 /// ref: docs/tasks.md "Project overview"
@@ -1503,13 +1542,26 @@ pub fn overview_path(project_id: &str) -> Result<PathBuf> {
     Ok(project_dir(project_id)?.join(OVERVIEW_FILE))
 }
 
-/// A project that has `page.md` and no `overview.md` gets it renamed, once.
-fn migrate_page(dir: &Path) {
-    let overview = dir.join(OVERVIEW_FILE);
-    let old = dir.join(OLD_PAGE_FILE);
-    if fs::symlink_metadata(&overview).is_err() && old.is_file() {
-        let _ = fs::rename(old, overview);
-    }
+/// The overview of a project nobody has written yet.
+fn unwritten_overview(project: &str) -> String {
+    format!(
+        "# {project}\n\n## Goal\n\n_Not written yet._\n\n## Tasks\n\n```mermaid\ngraph LR\n  start[No tasks yet]\n```\n\n## Decisions\n\n_None yet._\n\n## Open questions\n\n_None yet._\n"
+    )
+}
+
+/// Whether `bytes` are `unwritten_overview` for the name of project `project_id`.
+fn is_unwritten_page(project_id: &str, bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let Some(title) = text.strip_prefix("# ").and_then(|rest| rest.lines().next()) else {
+        return false;
+    };
+    let slug = id_slug(title);
+    text == unwritten_overview(title)
+        && project_id
+            .strip_prefix(slug.as_str())
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
 }
 
 /// Lines and characters of an overview text.
@@ -1533,11 +1585,8 @@ pub fn cut_overview(text: &str) -> (String, bool) {
 /// Create the overview with its sections when it is missing, owner-only; an existing one stays.
 pub fn ensure_overview(project_id: &str, project: &str) -> Result<PathBuf> {
     let dir = ensure_project_dir(project_id)?;
-    migrate_page(&dir);
     let path = dir.join(OVERVIEW_FILE);
-    let skeleton = format!(
-        "# {project}\n\n## Goal\n\n_Not written yet._\n\n## Tasks\n\n```mermaid\ngraph LR\n  start[No tasks yet]\n```\n\n## Decisions\n\n_None yet._\n\n## Open questions\n\n_None yet._\n"
-    );
+    let skeleton = unwritten_overview(project);
     match open_nofollow(&path, OpenOptions::new().write(true).create_new(true)) {
         Ok(mut file) => file
             .write_all(skeleton.as_bytes())
@@ -1550,7 +1599,6 @@ pub fn ensure_overview(project_id: &str, project: &str) -> Result<PathBuf> {
 
 /// The overview's text and when it last changed, or none when it is missing.
 pub fn read_overview(project_id: &str) -> Result<Option<(String, u64)>> {
-    migrate_page(&project_dir(project_id)?);
     let path = overview_path(project_id)?;
     let Some(bytes) = read_bounded_if_exists(&path, MAX_OVERVIEW_BYTES)? else {
         return Ok(None);

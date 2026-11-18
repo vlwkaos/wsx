@@ -201,22 +201,6 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
         MemoryCmd::Get { slug } => {
             show(&one(&scopes)?.get(&slug)?, json, "record")?;
         }
-        MemoryCmd::Import => {
-            let store = one(&scopes)?;
-            let (imported, drift) = manage::import(&store)?;
-            notice_drift(&drift);
-            if json {
-                return print(&json!({ "scope": store.scope(), "imported": imported }));
-            }
-            println!(
-                "{}: imported {} rules, {} replaced rules, {} facts, {} episodes",
-                store.scope(),
-                imported.rules,
-                imported.archived,
-                imported.facts,
-                imported.episodes
-            );
-        }
         MemoryCmd::Reindex => {
             let store = one(&scopes)?;
             backend::reindex(&store, external().as_ref())?;

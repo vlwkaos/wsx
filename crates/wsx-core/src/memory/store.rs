@@ -489,47 +489,6 @@ impl Store {
         Ok(record)
     }
 
-    /// Add the records whose slug the log does not hold, in one write under the lock; the slugs
-    /// added. A rerun adds none. ref: docs/memory.md "Import"
-    pub fn import(&self, records: Vec<Record>) -> Result<Vec<String>> {
-        let _lock = self.lock(true)?;
-        let held = self.load()?.records;
-        let mut seen = std::collections::HashSet::new();
-        let fresh: Vec<Record> = records
-            .into_iter()
-            .filter(|r| !held.contains_key(&r.slug) && seen.insert(r.slug.clone()))
-            .collect();
-        if !fresh.is_empty() {
-            self.append_all("import", &fresh)?;
-        }
-        Ok(fresh.into_iter().map(|r| r.slug).collect())
-    }
-
-    /// Give the facts that hold no `commit` and no `paths` the pair `find` has for them, in one
-    /// write under the lock. Their time stays, so the views keep their
-    /// order. A rerun finds nothing to give. ref: docs/memory.md "Capture"
-    pub fn backfill(&self, find: impl Fn(&Record) -> Option<(String, Vec<String>)>) -> Result<()> {
-        let _lock = self.lock(true)?;
-        let mut changed = Vec::new();
-        for mut r in self.load()?.records.into_values() {
-            if r.kind != Kind::Fact || r.commit.is_some() || !r.paths.is_empty() {
-                continue;
-            }
-            let Some((commit, paths)) = find(&r) else {
-                continue;
-            };
-            r.paths = check_paths(paths)?;
-            if !r.paths.is_empty() {
-                r.commit = Some(commit);
-                changed.push(r);
-            }
-        }
-        if !changed.is_empty() {
-            self.append_all("backfill", &changed)?;
-        }
-        Ok(())
-    }
-
     /// Run `f` on the current records with the store locked, so no write lands meanwhile.
     pub fn locked<T>(&self, f: impl FnOnce(&[Record]) -> Result<T>) -> Result<T> {
         let _lock = self.lock(true)?;

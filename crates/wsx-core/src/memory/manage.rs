@@ -1,11 +1,12 @@
-//! The manager's notes as views of the records: import of the old notes files, the write path
-//! (records first, then the views), the top-5 check of a new rule or fact, and drift.
+//! The manager's notes as views of the records: the write path (records first, then the views),
+//! the top-5 check of a new rule or fact, and drift. Old notes files are not imported: a store
+//! that still holds them is refused (`refuse_unimported`).
 //! ref: docs/memory.md "Notes", docs/design/memory-system.md "Decisions stay the owner's words"
 
 use super::backend::{record_hit, searchable, Hit};
-use super::index::{self, day_ms};
+use super::index;
 use super::record::{Kind, Record, Status};
-use super::store::{usage, Error, NewRecord, Patch, Store, MAX_KEYWORD_BYTES};
+use super::store::{usage, Error, NewRecord, Patch, Store};
 use crate::task::chat::{read_chat, Window};
 use crate::task::manager::{Author, ManagerEvent};
 use crate::task::store::{read_bounded_if_exists, write_note, ManagerDir, TaskDir};
@@ -28,29 +29,18 @@ const CONTEXT_ARCHIVE: &str = "context-archive.md";
 // ^ Each archive comes before its file, so a crash between the two writes shows a memo twice
 // and never loses one.
 const VIEWS: [&str; 4] = [DECISIONS_ARCHIVE, DECISIONS, CONTEXT_ARCHIVE, CONTEXT];
-/// The old notes, copied here once before the first view replaces them.
-const COPY_SUFFIX: &str = ".pre-memory";
+/// The last release that imports the old notes files (`wsx memory import`).
+const IMPORTING_RELEASE: &str = "v0.43.0";
 /// A hand-edited view, copied here before it is rewritten from the records.
 const DRIFT_SUFFIX: &str = ".drift";
 /// The hash of each view as rendered, in the store's folder.
 const HASHES_FILE: &str = "views.json";
-/// Present once the imported memos have had their commit and paths (`backfill`).
-const BACKFILLED_FILE: &str = "paths-backfilled";
 /// Past this many bytes the oldest memos of `context.md` show in `context-archive.md` only.
 const CONTEXT_CEILING_BYTES: usize = 32 * 1024;
 const MAX_VIEW_BYTES: u64 = 4 << 20;
 /// A new rule or fact reports the records of its kind that rank in this many and score this much (docs/memory.md "Notes": measured).
 const SIMILAR_KEEP: usize = 5;
 const SIMILAR_MIN: f64 = 0.09;
-
-/// The records an import added.
-#[derive(Debug, Default, Serialize)]
-pub struct Imported {
-    pub rules: usize,
-    pub archived: usize,
-    pub facts: usize,
-    pub episodes: usize,
-}
 
 /// A view that was changed by hand: the lines it has and the records do not hold, and the lines
 /// the records hold and it lacks.
@@ -250,10 +240,8 @@ fn inspect(store: &Store, notes: &Path, records: &[Record]) -> Result<Vec<Seen>,
         let edited = match (&now, hashes.get(name)) {
             (None, _) => false,
             (Some(now), Some(known)) => hash(now) != *known,
-            // ^ Never rendered: the file is the old notes, which wait for the import (no copy
-            // yet) or equal their copy. Anything else was written by hand after the import.
-            (Some(now), None) => read_view(&notes.join(format!("{name}{COPY_SUFFIX}")))?
-                .is_some_and(|copy| copy != *now && *now != wanted),
+            // ^ Never rendered: old notes, which `refuse_unimported` keeps from any write.
+            (Some(_), None) => false,
         };
         let drift = (edited && now.as_deref().is_some_and(|n| !n.trim().is_empty())).then(|| {
             let (have, want) = (lines_of(now.as_deref().unwrap_or("")), lines_of(&wanted));
@@ -298,8 +286,8 @@ fn render(store: &Store) -> Result<Vec<Drift>, Error> {
     let Some(notes) = store.notes_dir() else {
         return Ok(Vec::new());
     };
-    // ^ Old notes that wait for an import (a writer that may not give rules cannot do it) stay.
-    if pending(store, &notes) {
+    // ^ Old notes that were never imported stay as they are.
+    if unimported(store, &notes) {
         return Ok(Vec::new());
     }
     store.locked(|records| {
@@ -324,247 +312,12 @@ fn render(store: &Store) -> Result<Vec<Drift>, Error> {
     })
 }
 
-// ^ Import: the four old files become records, once. The first run copies each file to
-// `<file>.pre-memory`; every run reads the copies only, so a line added by hand after the first
-// view is drift, not a late import, and a rerun finds every slug and adds nothing.
-
-/// Whether an old file waits to be imported: it has no copy yet and was never rendered.
-fn pending(store: &Store, notes: &Path) -> bool {
-    let hashes = read_hashes(store);
-    VIEWS.iter().any(|name| {
-        // ^ A link is no old file: the notes never read one.
-        fs::symlink_metadata(notes.join(name)).is_ok_and(|m| m.is_file())
-            && !notes.join(format!("{name}{COPY_SUFFIX}")).exists()
-            && !hashes.contains_key(*name)
-    })
-}
-
-fn copy_once(notes: &Path, name: &str, rendered: bool) -> Result<(), Error> {
-    let (from, to) = (notes.join(name), notes.join(format!("{name}{COPY_SUFFIX}")));
-    if rendered || to.exists() || !from.is_file() {
-        return Ok(());
-    }
-    let Some(text) = read_view(&from)? else {
-        return Ok(());
-    };
-    let modified = fs::metadata(&from).and_then(|m| m.modified());
-    io(write_note(&to, &text))?;
-    // ^ The copy keeps the file's time: the memos of an old file are as old as it.
-    if let Ok(modified) = modified {
-        let _ = fs::File::options()
-            .write(true)
-            .open(&to)
-            .and_then(|f| f.set_modified(modified));
-    }
-    Ok(())
-}
-
-fn copy_time_ms(path: &Path) -> u64 {
-    fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_millis() as u64)
-}
-
-/// `- #7: text` as `(7, text)`.
-fn parse_memo(line: &str) -> Option<(u32, String)> {
-    let (task, text) = line.strip_prefix("- #")?.split_once(':')?;
-    let text = text.trim();
-    (!text.is_empty()).then_some((task.parse().ok()?, text.to_string()))
-}
-
-/// `- 2026-10-22 words` as the day's start and the words; a line with no date has none.
-fn parse_rule(line: &str) -> Option<(Option<u64>, String)> {
-    let body = line.strip_prefix("- ")?.trim();
-    if body.is_empty() {
-        return None;
-    }
-    if let Some((date, rest)) = body.split_once(' ') {
-        let day = day_ms(date).filter(|ms| day_of(*ms) == date);
-        if let (Some(ms), false) = (day, rest.trim().is_empty()) {
-            return Some((Some(ms), rest.trim().to_string()));
-        }
-    }
-    Some((None, body.to_string()))
-}
-
 pub(super) fn clip_to(text: &str, max: usize) -> String {
     let mut end = text.len().min(max);
     while !text.is_char_boundary(end) {
         end -= 1;
     }
     text[..end].to_string()
-}
-
-#[derive(Clone, Copy)]
-enum Class {
-    Rule,
-    Archived,
-    Fact,
-    Episode,
-}
-
-fn old_record(slug: String, kind: Kind, text: String, source: String, updated: u64) -> Record {
-    Record {
-        slug,
-        kind,
-        status: Status::Active,
-        text,
-        title: None,
-        source,
-        updated,
-        verified_by: None,
-        commit: None,
-        superseded_by: None,
-        lesson: None,
-        description: None,
-        keywords: Vec::new(),
-        paths: Vec::new(),
-        words: None,
-        thread: None,
-        decided: None,
-        extra: Default::default(),
-    }
-}
-
-/// The records of the copies, with what each is, in file order.
-fn old_records(store: &Store, notes: &Path) -> Result<Vec<(Record, Class)>, Error> {
-    let limit = store.text_bytes();
-    let copy = |name: &str| notes.join(format!("{name}{COPY_SUFFIX}"));
-    let text =
-        |name: &str| -> Result<String, Error> { Ok(read_view(&copy(name))?.unwrap_or_default()) };
-    let mut out = Vec::new();
-    for (name, status) in [
-        (DECISIONS, Status::Active),
-        (DECISIONS_ARCHIVE, Status::Superseded),
-    ] {
-        let (lines, at) = (text(name)?, copy_time_ms(&copy(name)));
-        let lines: Vec<(usize, &str)> = lines.lines().enumerate().collect();
-        // ^ A `## <area>` line is no rule and the views have no headers (the start text lists the
-        // rules newest first, so a header would label the older group): the area stays with its
-        // rules as a keyword.
-        let mut area: Option<String> = None;
-        for (i, (number, line)) in lines.iter().enumerate() {
-            if line.starts_with('#') {
-                area = line
-                    .strip_prefix("## ")
-                    .map(|h| clip_to(h.trim(), MAX_KEYWORD_BYTES));
-                continue;
-            }
-            let Some((day, words)) = parse_rule(line) else {
-                continue;
-            };
-            let updated = match day {
-                Some(ms) => ms + i as u64,
-                None => at.saturating_sub(lines.len() as u64) + i as u64,
-            };
-            let mut r = old_record(
-                format!("rule-{}", digest(line.trim())),
-                Kind::Rule,
-                clip_to(&words, limit),
-                format!("path:{name}:{}", number + 1),
-                updated,
-            );
-            r.status = status;
-            r.keywords.extend(area.clone().filter(|h| !h.is_empty()));
-            r.verified_by = Some(format!(
-                "owner:transcript:{}#L{}",
-                copy(name).display(),
-                number + 1
-            ));
-            r.words = Some(words);
-            r.decided = Some(updated);
-            if day.is_none() {
-                r.extra.insert("undated".into(), true.into());
-            }
-            let class = match status {
-                Status::Active => Class::Rule,
-                _ => Class::Archived,
-            };
-            out.push((r, class));
-        }
-    }
-    // ^ The archive holds the older memos: they come first, so the order of the file is kept.
-    let (older, newer) = (text(CONTEXT_ARCHIVE)?, text(CONTEXT)?);
-    let at = copy_time_ms(&copy(CONTEXT));
-    let total = (older.lines().count() + newer.lines().count()) as u64;
-    let mut index = 0u64;
-    for (name, body) in [(CONTEXT_ARCHIVE, &older), (CONTEXT, &newer)] {
-        for (number, line) in body.lines().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            index += 1;
-            let updated = at.saturating_sub(total) + index;
-            let source = format!("path:{name}:{}", number + 1);
-            let r = match parse_memo(line) {
-                Some((task, memo)) => {
-                    let by = format!("task:{task}");
-                    let landed = store.can_verify(&by);
-                    let mut r = old_record(
-                        memo_slug(task, &memo),
-                        if landed { Kind::Fact } else { Kind::Episode },
-                        clip_to(&memo, limit),
-                        source,
-                        updated,
-                    );
-                    r.verified_by = landed.then_some(by);
-                    let class = if landed { Class::Fact } else { Class::Episode };
-                    out.push((r, class));
-                    continue;
-                }
-                None if name == CONTEXT => line.trim_end(),
-                None => continue,
-            };
-            let mut r = old_record(
-                format!("section-{}", digest(r)),
-                Kind::Fact,
-                clip_to(r, limit),
-                source,
-                updated,
-            );
-            r.verified_by = Some(format!(
-                "owner:transcript:{}#L{}",
-                copy(CONTEXT).display(),
-                number + 1
-            ));
-            out.push((r, Class::Fact));
-        }
-    }
-    Ok(out)
-}
-
-/// Make records of the old notes, once, and write the views from them. Idempotent: the copies
-/// never change, so a rerun adds nothing. A scope without a manager imports nothing.
-pub fn import(store: &Store) -> Result<(Imported, Vec<Drift>), Error> {
-    let Some(notes) = store.notes_dir() else {
-        return Ok((Imported::default(), Vec::new()));
-    };
-    store.may_write(Kind::Rule)?;
-    let hashes = read_hashes(store);
-    for name in VIEWS {
-        copy_once(&notes, name, hashes.contains_key(name))?;
-    }
-    let found = old_records(store, &notes)?;
-    // ^ A slug twice (an archive line that repeats an active rule) is the first one: the store
-    // keeps the first of them too.
-    let mut class: HashMap<String, Class> = HashMap::new();
-    for (r, c) in &found {
-        class.entry(r.slug.clone()).or_insert(*c);
-    }
-    let added = store.import(found.into_iter().map(|(r, _)| r).collect())?;
-    backfill(store)?;
-    let mut counts = Imported::default();
-    for slug in added {
-        match class[&slug] {
-            Class::Rule => counts.rules += 1,
-            Class::Archived => counts.archived += 1,
-            Class::Fact => counts.facts += 1,
-            Class::Episode => counts.episodes += 1,
-        }
-    }
-    Ok((counts, render(store)?))
 }
 
 /// The commit a task landed with, when it has landed: what `capture` stores with the paths of
@@ -579,47 +332,6 @@ pub fn landed_commit(dir: &TaskDir, record: &TaskRecord) -> Option<String> {
     })
     .ok()
     .flatten()
-}
-
-/// Give the imported facts of landed tasks the landed commit and the paths of the diff, from
-/// the task's own record and log: the same data `capture` stores. A task with no landed
-/// diff stays without paths. Idempotent; `import` runs it. ref: docs/memory.md "Capture"
-pub fn backfill(store: &Store) -> Result<(), Error> {
-    let Some((project, _)) = store.project_ids() else {
-        return Ok(());
-    };
-    store.backfill(|r| {
-        let task = r
-            .verified_by
-            .as_deref()?
-            .strip_prefix("task:")?
-            .parse()
-            .ok()?;
-        let dir = TaskDir::open(project, task).ok()?;
-        let record = dir.read_record().ok()?;
-        Some((landed_commit(&dir, &record)?, record.paths))
-    })?;
-    io(write_note(&store.dir().join(BACKFILLED_FILE), "done\n"))
-}
-
-/// `backfill` for a store that has not had it: run before the first write, so the memos imported
-/// before paths existed get theirs (search marks a stale fact by them).
-pub fn backfill_once(store: &Store) -> Result<(), Error> {
-    if !store.dir().join(BACKFILLED_FILE).exists() {
-        backfill(store)?;
-    }
-    Ok(())
-}
-
-fn ensure_imported(store: &Store) -> Result<(), Error> {
-    let waits = store
-        .notes_dir()
-        .is_some_and(|notes| pending(store, &notes));
-    // ^ Only a writer that may give rules imports; the others leave the notes as they are.
-    if waits && store.may_write(Kind::Rule).is_ok() {
-        import(store)?;
-    }
-    backfill_once(store)
 }
 
 // ^ The write path: the records first, then the views. A view that cannot be written is a
@@ -711,11 +423,33 @@ fn similar(store: &Store, kind: Kind, text: &str) -> Result<Vec<Hit>, Error> {
         .collect())
 }
 
-/// `Store::add`, with the checks of the notes: the old notes imported first, the owner's words
+/// Whether a view file holds old notes: it is a file that no render has hashed.
+fn unimported(store: &Store, notes: &Path) -> bool {
+    let hashes = read_hashes(store);
+    VIEWS.iter().any(|name| {
+        // ^ A link is no old file: the notes never read one.
+        fs::symlink_metadata(notes.join(name)).is_ok_and(|m| m.is_file())
+            && !hashes.contains_key(*name)
+    })
+}
+
+/// A write is refused while old notes wait: the first render would write the records over them.
+/// A release that imports them did not run here.
+fn refuse_unimported(store: &Store) -> Result<(), Error> {
+    match store.notes_dir() {
+        Some(notes) if unimported(store, &notes) => Err(Error::Store(format!(
+            "{} holds notes from before the memory store: run `wsx memory import` with wsx {IMPORTING_RELEASE} once",
+            notes.display()
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// `Store::add`, with the checks of the notes: the owner's words
 /// found in the message, the close records of the same kind named, `supersedes` replaced by the
 /// new record in the same call, and the views written after.
 pub fn add(store: &Store, new: NewRecord, supersedes: Option<&str>) -> Result<Added, Error> {
-    ensure_imported(store)?;
+    refuse_unimported(store)?;
     if let Some(words) = new.words.as_deref() {
         check_words(store, &new, words)?;
     }
@@ -843,7 +577,7 @@ pub fn add_episode(
 }
 
 pub fn update(store: &Store, patch: Patch) -> Result<(Record, Vec<Drift>), Error> {
-    ensure_imported(store)?;
+    refuse_unimported(store)?;
     let record = store.update(patch)?;
     Ok((record, views_after_write(store)))
 }
@@ -854,7 +588,7 @@ pub fn supersede(
     new: &str,
     source: &str,
 ) -> Result<(Record, Vec<Drift>), Error> {
-    ensure_imported(store)?;
+    refuse_unimported(store)?;
     let record = store.supersede(old, new, source)?;
     Ok((record, views_after_write(store)))
 }
