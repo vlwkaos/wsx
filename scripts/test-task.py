@@ -524,8 +524,16 @@ def run(wsx, wsxd, work, owned, part):
             return False
         return all(missing(pid) for pid in pids)
 
+    def present(pids):
+        # ^ What the timeout names for each pid still there: ps state, parent, group, and whether
+        # `ps -E` shows the agent mark in its environment (Apple system binaries show none).
+        ps = subprocess.run(['ps', '-Eww', '-axo', 'pid=,ppid=,pgid=,stat=,command='], capture_output=True, text=True).stdout
+        rows = [line.split(None, 4) for line in ps.splitlines() if line.split() and line.split()[0] in map(str, pids)]
+        return ['pid %s ppid %s pgid %s stat %s mark %s' % (r[0], r[1], r[2], r[3], 'WSX_AGENT_TREE=' in ' '.join(r[4:])) for r in rows]
+
     def tree_gone(record, label):
-        wait(lambda: gone(record['agent'], *record['leak']), label, 15)
+        pids = [record['agent'], *record['leak']]
+        wait(lambda: gone(*pids), lambda: '%s: still there %s' % (label, present(pids)), 15)
 
     def zombies(n):
         host = int(leftovers('task host %s %d' % (show(n)['record']['project_id'], n))[0].split()[0])

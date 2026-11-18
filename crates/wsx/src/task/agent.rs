@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Sender, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 use wsx_core::config::global::{AgentEntry, GlobalConfig};
+use wsx_core::process::Tree;
 use wsx_core::task::replace::TREE_ENV;
 use wsx_core::task::{policy, status, store, usage, TurnUsage};
 
@@ -839,31 +840,30 @@ impl AgentProcess {
             Err(TrySendError::Disconnected(_)) => bail!("cannot write to {}", self.program),
         }
     }
-
-    /// The agent's process group, and each process of its tree outside it. The leader is not
-    /// reaped yet, so its group ID is still its own.
-    fn signal(&self, signal: libc::c_int) {
-        let leader = self.child.id() as libc::pid_t;
-        wsx_core::process::signal_group(leader, signal);
-        for pid in marked(&self.marker) {
-            // SAFETY: a plain signal to a process that carries the agent's mark.
-            unsafe { libc::kill(pid, signal) };
-        }
-    }
 }
 
 /// Close stdin, SIGTERM the tree, give the leader `STOP_GRACE` to end, SIGKILL what is left,
-/// then reap the leader.
+/// then reap the leader. The tree is the leader's group, the processes that carry the mark and
+/// the processes descended from the leader or from them, taken before the first signal (an
+/// agent that ends leaves its children to init); the group has not been reaped yet, so its
+/// ID is still the leader's own.
 impl Drop for AgentProcess {
     fn drop(&mut self) {
         drop(self.input.take());
         let leader = self.child.id() as libc::pid_t;
-        self.signal(libc::SIGTERM);
+        let marker = &self.marker;
+        let tree = || Tree::find(&[leader], |_, env| env.contains(&marker.as_slice()));
+        let first = tree();
+        wsx_core::process::signal_group(leader, libc::SIGTERM);
+        first.signal(libc::SIGTERM);
         let deadline = Instant::now() + wsx_core::process::STOP_GRACE;
         while !exited(leader) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
         }
-        self.signal(libc::SIGKILL);
+        // ^ The set again: a tool the agent started while it ended is in it.
+        wsx_core::process::signal_group(leader, libc::SIGKILL);
+        first.signal(libc::SIGKILL);
+        tree().signal(libc::SIGKILL);
         let _ = self.child.wait();
     }
 }
@@ -883,11 +883,6 @@ fn exited(pid: libc::pid_t) -> bool {
     #[cfg(not(target_os = "macos"))]
     let ended = unsafe { info.si_pid() };
     ended != 0
-}
-
-/// The processes, other than this host, whose environment holds `marker`.
-fn marked(marker: &[u8]) -> Vec<libc::pid_t> {
-    wsx_core::process::find(|_, env| env.contains(&marker))
 }
 
 /// Drop the rest of an oversized line one buffer at a time. Returns false at end of input.

@@ -413,6 +413,25 @@ impl ProcArgs {
 #[cfg(target_os = "macos")]
 const RESUME_SUPERVISOR_ARG: &[u8] = b"__wsx_resume_supervisor";
 
+#[cfg(target_os = "macos")]
+type Block<'a> = (Vec<&'a [u8]>, Vec<&'a [u8]>);
+
+/// The arguments (`argv[0]` first) and the environment of a `KERN_PROCARGS2` block. The
+/// kernel withholds the environment of Apple system binaries (`/bin/sleep`, `/bin/zsh`): it
+/// reads as empty, so a mark in it is not found there (`Tree` follows parent pids too).
+#[cfg(target_os = "macos")]
+fn split_block(block: &[u8]) -> Option<Block<'_>> {
+    // ^ argc, the exec path, NUL padding, the arguments, then the environment.
+    let (argc, rest) = block.split_first_chunk::<4>()?;
+    let argc = i32::from_ne_bytes(*argc).max(0) as usize;
+    let mut strings = rest
+        .split(|byte| *byte == 0)
+        .filter(|text| !text.is_empty());
+    let _path = strings.next();
+    let args: Vec<&[u8]> = strings.by_ref().take(argc).collect();
+    Some((args, strings.collect()))
+}
+
 /// The processes, other than this one and a wsxd session supervisor, whose arguments
 /// (`argv[0]` first) and environment `pick` accepts. Another user's process does not answer
 /// `KERN_PROCARGS2`; on Linux none is found.
@@ -424,20 +443,12 @@ pub fn find(pick: impl Fn(&[&[u8]], &[&[u8]]) -> bool) -> Vec<libc::pid_t> {
         .into_iter()
         .filter(|pid| *pid > 1 && *pid != me)
         .filter(|pid| {
-            reader.read(*pid).is_some_and(|block| {
-                // ^ argc, the exec path, NUL padding, the arguments, then the environment.
-                let Some((argc, rest)) = block.split_first_chunk::<4>() else {
-                    return false;
-                };
-                let argc = i32::from_ne_bytes(*argc).max(0) as usize;
-                let mut strings = rest
-                    .split(|byte| *byte == 0)
-                    .filter(|text| !text.is_empty());
-                let _path = strings.next();
-                let args: Vec<&[u8]> = strings.by_ref().take(argc).collect();
-                let env: Vec<&[u8]> = strings.collect();
-                !args.contains(&RESUME_SUPERVISOR_ARG) && pick(&args, &env)
-            })
+            reader
+                .read(*pid)
+                .and_then(split_block)
+                .is_some_and(|(args, env)| {
+                    !args.contains(&RESUME_SUPERVISOR_ARG) && pick(&args, &env)
+                })
         })
         .collect()
 }
@@ -447,22 +458,116 @@ pub fn find(_pick: impl Fn(&[&[u8]], &[&[u8]]) -> bool) -> Vec<libc::pid_t> {
     Vec::new()
 }
 
-/// SIGTERM to each process `find` gives for `pick`, `grace` for all to go, then SIGKILL to
-/// those `pick` still accepts (a pid may be a newer process by then). Returns how many it found.
-pub fn stop_found(pick: impl Fn(&[&[u8]], &[&[u8]]) -> bool, grace: Duration) -> usize {
-    let found = find(&pick);
-    for pid in &found {
-        // SAFETY: a plain signal to a process `pick` accepted a moment ago.
-        unsafe { libc::kill(*pid, libc::SIGTERM) };
+/// A process's parent and its start time, which tells it from a newer process with its pid.
+/// None when it is gone, or on Linux.
+fn born(pid: libc::pid_t) -> Option<(libc::pid_t, (u64, u64))> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: a zeroed proc_bsdinfo is valid, and proc_pidinfo writes at most its size.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let read = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size,
+            )
+        };
+        (read == size).then_some((
+            info.pbi_ppid as libc::pid_t,
+            (info.pbi_start_tvsec, info.pbi_start_tvusec),
+        ))
     }
-    if !wait_until(grace, || found.iter().all(|pid| pid_gone(*pid))) {
-        for pid in find(&pick).into_iter().filter(|pid| found.contains(pid)) {
-            // SAFETY: as above, and it still matches.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Whether the process is a wsxd session supervisor, which no stop touches.
+fn supervisor(_pid: libc::pid_t) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let mut reader = ProcArgs::default();
+        reader
+            .read(_pid)
+            .and_then(split_block)
+            .is_some_and(|(args, _)| args.contains(&RESUME_SUPERVISOR_ARG))
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
+/// A set of processes to stop together: the roots, what `pick` accepts, and every process
+/// descended from either. It is taken before the first signal, because an agent that ends
+/// leaves its children to init, and it follows parent pids because the environment of an
+/// Apple system binary cannot be read. Each member keeps its start time, so a signal never
+/// reaches a newer process that took its pid. A process whose parent ended before the set was
+/// taken, and whose environment is not readable, is not in it.
+pub struct Tree(Vec<(libc::pid_t, (u64, u64))>);
+
+impl Tree {
+    pub fn find(roots: &[libc::pid_t], pick: impl Fn(&[&[u8]], &[&[u8]]) -> bool) -> Self {
+        let me = std::process::id() as libc::pid_t;
+        let table: Vec<_> = pids()
+            .into_iter()
+            .filter(|pid| *pid > 1 && *pid != me)
+            .filter_map(|pid| born(pid).map(|(parent, start)| (pid, parent, start)))
+            .collect();
+        let mut found = roots.to_vec();
+        for pid in find(pick) {
+            if !found.contains(&pid) {
+                found.push(pid);
+            }
         }
-        wait_until(KILL_WAIT, || found.iter().all(|pid| pid_gone(*pid)));
+        let mut next = 0;
+        while let Some(&parent) = found.get(next) {
+            next += 1;
+            for (pid, of, _) in &table {
+                if *of == parent && !found.contains(pid) && !supervisor(*pid) {
+                    found.push(*pid);
+                }
+            }
+        }
+        Self(
+            table
+                .iter()
+                .filter(|(pid, ..)| found.contains(pid))
+                .map(|(pid, _, start)| (*pid, *start))
+                .collect(),
+        )
     }
-    found.len()
+
+    /// Send `signal` to each member that is still the process it was.
+    pub fn signal(&self, signal: libc::c_int) {
+        for (pid, start) in &self.0 {
+            if born(*pid).is_some_and(|(_, now)| now == *start) {
+                // SAFETY: a plain signal to a process of the set, checked a moment ago.
+                unsafe { libc::kill(*pid, signal) };
+            }
+        }
+    }
+
+    /// Every member has ended (a child of the caller is reaped), or its pid is a newer process.
+    fn gone(&self) -> bool {
+        self.0
+            .iter()
+            .all(|(pid, start)| pid_gone(*pid) || born(*pid).is_none_or(|(_, now)| now != *start))
+    }
+}
+
+/// SIGTERM to each process of the `Tree` of `pick`, `grace` for all to go, then SIGKILL to
+/// those left.
+pub fn stop_found(pick: impl Fn(&[&[u8]], &[&[u8]]) -> bool, grace: Duration) {
+    let tree = Tree::find(&[], pick);
+    tree.signal(libc::SIGTERM);
+    if !wait_until(grace, || tree.gone()) {
+        tree.signal(libc::SIGKILL);
+        wait_until(KILL_WAIT, || tree.gone());
+    }
 }
 
 // ^ A tuple struct, so `ProcArgs::default()` is a call on both targets (a unit struct makes clippy
