@@ -381,7 +381,8 @@ async function openSession(role, tab = "chat") {
 // Nothing the reader did not do moves the session's chat (docs/web-client-chat.md "Following the
 // end"), read at every frame with CSS scroll anchoring off, as iOS Safari has none: at the end a
 // message that grows keeps the end; scrolled up, a refresh of the same timeline, the keyboard
-// opening and closing and "Show N earlier" keep the text in view where it is.
+// opening and closing and "Show N earlier" keep the text in view where it is; a drag down the
+// log into its last 80 px follows the finger (no leap to the end, no step back).
 // It runs in the long chat at its end, before a find shows every row.
 async function steadySession() {
   const moves = [];
@@ -398,6 +399,29 @@ async function steadySession() {
   const grown = Math.max(...(await watched()));
   await evaluate("document.querySelectorAll('.log .grown').forEach((node) => node.remove())");
   if (grown > 2) moves.push(`a message that grew left the end by ${Math.round(grown)} px in a frame`);
+  // A drag down that reaches the last 80 px follows the finger to the end (lib.js `settle`, task 515):
+  // the end is no step of its own, and the text does not go back.
+  await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = log.scrollHeight - log.clientHeight - 300; log.dispatchEvent(new Event('scroll')); })()");
+  await pause(300);
+  await watch("document.querySelector('.log').scrollTop");
+  const [fingerX, fingerY] = await evaluate("(() => { const box = document.querySelector('.log').getBoundingClientRect(); return [Math.round(box.left + 120), Math.round(box.top + box.height * 0.85)]; })()");
+  const finger = (type, y) => send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x: fingerX, y }] });
+  await finger("touchStart", fingerY);
+  for (let step = 1; step <= 40; step++) {
+    await finger("touchMove", fingerY - step * 10);
+    await pause(16);
+  }
+  await finger("touchEnd");
+  await pause(1200);
+  const dragged = await watched();
+  const stepsBack = dragged.filter((top, at) => at > 0 && top < dragged[at - 1] - 0.5).length;
+  const leaps = jumps(dragged, 45);
+  const reached = await evaluate(end);
+  if (stepsBack || leaps.length || reached > 1) {
+    await fail(`a drag down the chat did not follow the finger to its end: ${stepsBack} steps back, frames that leapt ${JSON.stringify(leaps)}, ${Math.round(reached)} px short of the end`);
+  }
+  await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
+  await pause(200);
   // ^ The probe is the first message wholly in view; its place in the log box must not change.
   const probe = "(() => { const log = document.querySelector('.log'); return document.querySelector('[data-follow-probe]').offsetTop - log.scrollTop; })()";
   const markProbe = `(() => { const log = document.querySelector('.log'), top = log.getBoundingClientRect().top;
@@ -726,6 +750,10 @@ async function markdown() {
   const gap = await evaluate(`document.querySelector('.composer').getBoundingClientRect().top
     - [...document.querySelectorAll('.log > *')].at(-1).getBoundingClientRect().bottom`);
   if (gap < 63.5) await fail(`the last message is ${gap} px from the composer`);
+  // ^ And the composer's card is not drawn over it: what is at the message's last pixel is not the composer's.
+  const covered = await evaluate(`(() => { const last = [...document.querySelectorAll('.log > *')].at(-1).getBoundingClientRect();
+    return !!document.elementFromPoint(innerWidth / 2, last.bottom - 2)?.closest('.composer'); })()`);
+  if (covered) await fail("the composer is drawn over the last message at the end of the chat");
   await sound("markdown answer at its end");
   await shot("chat-end");
   await evaluate("document.querySelector('.log').scrollTop = 0");

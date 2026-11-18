@@ -216,8 +216,9 @@ export function useFollowEnd(name, ready) {
   // The first row that starts in view and its distance from the top of the screen.
   const anchor = useRef(null);
   const height = useRef(0);
-  // The scroll position after the last settle or scroll.
+  // The scroll position and the content height after the last settle or scroll.
   const top = useRef(0);
+  const full = useRef(0);
   const [away, setAway] = useState(false);
   const [opened] = useState(() => readMap(READ_KEY)[name] ?? null);
   const placed = useRef(false);
@@ -259,6 +260,7 @@ export function useFollowEnd(name, ready) {
     const row = rows.find((child) => child.offsetTop >= element.scrollTop) ?? rows.at(-1);
     anchor.current = row ? { row, top: onScreen(row) } : null;
     top.current = element.scrollTop;
+    full.current = element.scrollHeight;
     if (placed.current) seen();
   };
   // ^ Read from the log as it is: a chat that closes still has its rows when its hooks clean up.
@@ -291,6 +293,10 @@ export function useFollowEnd(name, ready) {
     const element = node.current;
     // A change may still arrive after the view closed.
     if (!element) return;
+    // ^ The end is kept only when the content or the box changed since the last mark: a reader who
+    // scrolls down into the last 80 px flips `atEnd`, the render settles, and that must not pull the
+    // log on to the end (a jump of up to 80 px in a frame while the finger is down).
+    const changed = element.scrollHeight !== full.current || element.clientHeight !== height.current;
     height.current = element.clientHeight;
     if (!placed.current && loaded.current) return open();
     if (restore.current) {
@@ -305,8 +311,9 @@ export function useFollowEnd(name, ready) {
         return mark();
       }
     }
-    if (atEnd.current) element.scrollTop = element.scrollHeight;
-    else if (anchor.current?.row.isConnected) {
+    if (atEnd.current) {
+      if (changed) element.scrollTop = element.scrollHeight;
+    } else if (anchor.current?.row.isConnected) {
       const moved = onScreen(anchor.current.row) - anchor.current.top;
       // ^ Smaller moves add up against the same mark until they come to a pixel; the rows
       // below may still have changed, so the unread count is taken again.
@@ -364,7 +371,14 @@ export function useFollowEnd(name, ready) {
     rows.observe(element, { childList: true });
     watchers.current = [sizes, rows];
   }, []);
-  const toEnd = () => { restore.current = null; atEnd.current = true; setAway(false); settle(); };
+  // ^ Goes there itself: settle keeps the end only for content or a box that changed.
+  const toEnd = () => {
+    restore.current = null;
+    atEnd.current = true;
+    setAway(false);
+    if (node.current) node.current.scrollTop = node.current.scrollHeight;
+    settle();
+  };
   // ^ A move the page makes for the reader (a find's current match): the log leaves the end
   // and keeps the new place, so a later settle does not take it back.
   const reveal = (row) => {
