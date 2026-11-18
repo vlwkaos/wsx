@@ -1103,7 +1103,9 @@ if (!sizes.length || sizes.some((size) => size !== closedSize)) await fail(`the 
 // and a task's chip first (docs/web-client-tasks.md "Project screen").
 const listLook = async (kind) => {
   await openReservoir(kind);
-  return evaluate(`(() => { const row = document.querySelector('.reservoir-list .need'), part = (selector) => getComputedStyle(row.querySelector(selector)), link = getComputedStyle(row.querySelector('.row-link'));
+  await until(`!!document.querySelector('.reservoir-list[aria-label="${LISTS[kind]}"] .need .row-title > *')`, `the first row of ${LISTS[kind]} has no title`);
+  // ^ The row of the list just opened, not of the one that was open before.
+  return evaluate(`(() => { const row = document.querySelector('.reservoir-list[aria-label="${LISTS[kind]}"] .need'), part = (selector) => getComputedStyle(row.querySelector(selector)), link = getComputedStyle(row.querySelector('.row-link'));
     return { label: [part('.row-label').fontSize, part('.row-label').fontWeight, part('.row-label').color].join(), context: [part('.row-context').fontSize, part('.row-context').color].join(),
       chip: part('.task-number, .row-icon').fontSize, row: [link.paddingTop, link.paddingBottom, link.minHeight, link.columnGap, link.fontSize].join(), number: ${NUMBER},
       // ^ No number column: the title (or the icon before it) starts at the row's left text edge, and the number follows the title.
