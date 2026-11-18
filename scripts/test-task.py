@@ -8138,7 +8138,8 @@ def part_host(created=None):
     (agents / 'pi-fake.json').unlink()
     s1_say = js('task', 'say', 'PIREFUSE %s STATUS without a key' % no_key)
     wait(lambda: lc_rotated('back on claude: pi was refused: No API key found'), 'the manager back home for the wait', 40)
-    assert 'agent' not in manager_state() and manager_state()['limit']['account'] is True, manager_state()
+    wait(lambda: 'agent' not in manager_state() and (manager_state().get('limit') or {}).get('account') is True,
+         lambda: 'the manager state after the refusal: %r' % manager_state(), 20)
     # ^ The refusal ended the turn's record with Pi's words, at once; a move to the own agent is
     # no failure the owner must hear of (docs/tasks.md "Agents", "Manager").
     s1_turn = lc_turn(manager_log.parent)
