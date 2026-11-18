@@ -208,6 +208,7 @@ A thread opens in the chat's own window. The pictures of §1 are the spec.
 - **The line.** The chat shows one line for each thread that waits: "<thread> waits for you · 1 question, 1 check · Open".
 - **Thread menu (⋯).** Merge into another open thread, Close thread (by hand, refused while a question of it waits; the core's words show). Rename is not built: the core has no rename event. No cap and no automatic close.
 - **TUI.** In the chat view `t` and `T` step through the chat and its threads in the same order; the third top line lists them with their waiting counts. In the Tasks list each chat has its open threads under it (Enter opens the chat at that thread). The TUI's To check, approval and question lists are not filtered by thread.
+- **Proof.** `test-task.py` section 42 (order, waits), `test-web-client.py` (write in a thread, scoped read) and the browser block of `web-tasks-check.mjs` (strip, New thread, the line, captures `thread-*`).
 - **CLI.** `wsx task thread list` prints the open threads in that order with `last_ms`, `counts` and `waits`.
 
 ## 8. What this design does not decide, and limits
