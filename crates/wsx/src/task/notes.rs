@@ -5,6 +5,9 @@
 use super::manager::{read_note, CONTEXT_FILE, DECISIONS_FILE};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+use wsx_core::memory::backend;
+use wsx_core::memory::{KindFilter, Query, Store};
+use wsx_core::task::text::first_line;
 
 /// The most of both files a fresh conversation's first message carries.
 const MAX_NOTES_BYTES: usize = 10 * 1024;
@@ -16,6 +19,8 @@ const ARCHIVE_FILE: &str = "context-archive.md";
 const DECISIONS_ARCHIVE_FILE: &str = "decisions-archive.md";
 /// Ranges named in one notice.
 const NOTICE_RANGES: usize = 4;
+/// The records an owner message gets from the memory.
+const MATCH_RECORDS: usize = 5;
 
 /// One notes file as read: its lines in file order and the indexes the first message shows.
 struct View {
@@ -169,6 +174,41 @@ pub(super) fn preamble(notes: &Path) -> String {
         }
         out.push('\n');
     }
+    out
+}
+
+/// What an owner message gets from the project's memory: its best records of the `rule` and
+/// `fact` kinds, as lines under a heading; empty when none matches. The one search of
+/// `wsx memory search` ranks them, over the records alone. ref: docs/tasks.md "Notes budget"
+pub(super) fn matching(store: Store, said: &str) -> String {
+    let store = [store.without_transcripts()];
+    let mut hits = Vec::new();
+    for kind in ["rule", "fact"] {
+        let query = Query {
+            words: said.into(),
+            limit: MATCH_RECORDS,
+            include_inactive: false,
+            kind: kind.parse::<KindFilter>().ok(),
+            thread: None,
+        };
+        hits.extend(backend::search(&store, None, &query).map_or_else(|_| Vec::new(), |a| a.hits));
+    }
+    hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+    hits.truncate(MATCH_RECORDS);
+    if hits.is_empty() {
+        return String::new();
+    }
+    let mut out =
+        String::from("Memory records that match this message (`wsx memory search` finds more):\n");
+    for hit in hits {
+        out.push_str(&format!(
+            "- {} {}: {}\n",
+            hit.kind,
+            hit.slug,
+            first_line(&hit.excerpt)
+        ));
+    }
+    out.push('\n');
     out
 }
 

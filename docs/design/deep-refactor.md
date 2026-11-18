@@ -229,10 +229,18 @@ All 30 lists are the same, in the same order, and a reindex with either binary m
 |---|---|---|
 | Ranking routines | 3 (`index::search`, the task search lines, `notes::matching`) | 1 (`backend::best`) on the BM25 of `index.rs` |
 | Result types | `index::Hit`, `backend::Hit`, `Found` | `backend::Hit` |
-| Owner messages with a matched-notes block (last 14 days, 808 messages) | 499 (62%), 477,233 bytes, about 956 bytes each | 0 (block deleted) |
+| Owner messages with a matched-notes block (last 14 days, 808 messages) | 499 (62%), 477,233 bytes, about 956 bytes each, the lines of the notes files | the top 5 `rule` and `fact` records of the memory, by the one search (`notes::matching` takes `Store`); lines below |
 | Preamble of the 18 chats (`notes::preamble` on the copy) | a NOT SHOWN notice ends `; wsx also attaches the lines that match an owner message.` | ends `, or find them with \`wsx task search\`.` The other bytes are the same (cmp of the 18 files: 3 differ, in 5 notice lines) |
 
-- Context: a manager turn no longer carries the matched-notes block (about 956 bytes on 62% of owner messages; a lower bound, since the earlier-conversation lines were not counted). The first message changes by the NOT SHOWN sentence in 5 notice lines of 3 chats (studio-app, pr-review, wsx). A manager finds the same lines with `wsx task search`.
+- Context: the feature stays and the third ranker goes. `notes::matching` now asks the one search (`backend::search`, records only, no transcripts, no external backend) for the 5 best `rule` and `fact` records of the project, for each owner message; step 7 of chat-system.md deletes this call with the thread block. Three real owner messages of chat wsx, run on the frozen copy (before: `notes::matching` of 3ea26c86 without its earlier-conversation lines, so a lower bound; after: this head):
+
+| Message | Before (block bytes) | After (block bytes, time) |
+|---|---|---|
+| 5297 `> Which thread placement is easier to pick with a thumb: A (strip above the composer) or B ...` | 4 lines of `decisions-archive.md` (a composer pills rule, routines pill, To check Fail, pills size); 1,146 bytes | 5 records, scores 0.10 to 0.02: rules `thread-strip-above-composer`, `thread-owner-items-findable`, `to-check-three-actions`, memos of tasks 512 and 507; 1,060 bytes, 230 ms |
+| 5352 `그리고 스와이프 동작이 아직도 좀 엉성함 ...` | nothing; 0 bytes | 1 record, score 0.02: rule `e2e-only-when-needed`; 266 bytes, 111 ms |
+| 5371 `토픽 기능은언제됨` | nothing; 0 bytes | nothing; 0 bytes, 147 ms |
+
+  The after lines of 5297 name records of the thread placement the message is about; the before lines are old archived decisions about the composer. The 0.02 hit of 5352 is a weak match (it has no floor: the lead asked for the top 5); step 7 replaces it. First prompt of a fresh conversation of chat wsx (preamble plus the first owner message): preamble 10,869 bytes before, 10,829 after (the NOT SHOWN sentence, 2 notices), plus the block: 5297 is 12,015 before and 11,889 after, 5352 is 10,869 before and 11,095 after, 5371 is 10,869 before and 10,829 after.
 - Cache: `instructions.rs` is untouched, so the cached instructions are the same bytes. The preamble moves only in that sentence, so the next fresh conversation of those 3 chats misses the cache once.
 - Long-term memory: the table above. `search.jsonl` keeps its format and a reindex gives the same refs.
 - Duplicate check of `memory add` now uses `index::tokens`: of 28,735 pairs of the same kind among 852 active records, none is a duplicate by the old words and none by the new ones.

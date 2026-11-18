@@ -800,6 +800,7 @@ impl Manager {
             .map_or(Author::Owner, |(_, author, ..)| author.clone());
         let mut ids = Vec::new();
         let mut text = String::new();
+        let mut said = String::new();
         // ^ Events that need no judgment go along with a turn that runs anyway, after its
         // own messages.
         let mut along = Vec::new();
@@ -829,8 +830,15 @@ impl Manager {
                 heads.extend(body.lines().filter_map(event_head));
             }
             text.push_str(&format!("{heading} (message {id}):\n{body}\n\n"));
+            if author == Author::Owner {
+                said.push_str(&body);
+                said.push('\n');
+            }
             ids.push(id);
             taken.push((id, author, body, wakes));
+        }
+        if !said.is_empty() {
+            text.push_str(&self.memory_matching(&said));
         }
         // ^ Events that go along must not take the owner's answer: a fresh turn of 2284 with
         // two events answered only the events (docs/design/manager-reliability.md "A").
@@ -2210,6 +2218,12 @@ impl Manager {
                 self.say(&d.notice(false));
             }
         }
+    }
+
+    /// The records of the project's memory that match an owner message (`notes::matching`).
+    fn memory_matching(&self, said: &str) -> String {
+        super::repo::memory_store(&self.dir.project_id, &self.project, &self.main)
+            .map_or_else(|_| String::new(), |store| notes::matching(store, said))
     }
 
     /// End the conversation; the next turn starts a fresh one with a short handover.

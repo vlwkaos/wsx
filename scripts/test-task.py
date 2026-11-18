@@ -2778,6 +2778,16 @@ def part_core(created=None):
     reply_to(attached['id'])
     matched = turn_with('Did you restart Claude.app yesterday?')['message']
     assert 'Notes that match' not in matched and 'context.md:10: - #7' not in matched, matched
+    # ^ A rule of the project's memory whose word the owner's message holds is attached (the top 5 of the
+    # one search of `wsx memory search`, over the records of the kinds rule and fact); a message that
+    # shares no word with a record gets nothing.
+    cli('memory', 'add', '--kind', 'rule', '--slug', 'quokka-gate', '--text-file', '-', '--source', 'msg:1',
+        '--verified-by', 'owner:1', stdin='The quokkaprotocol gate stays closed on Fridays.\n')
+    reply_to(js('task', 'say', 'quokkaprotocol gate, when does it open?')['id'])
+    block = turn_with('quokkaprotocol gate, when does it open?')['message'].split('Memory records that match this message')[1].split('\n\n')[0]
+    assert '- rule quokka-gate: The quokkaprotocol gate stays closed on Fridays.' in block and block.count('\n- ') <= 5, block
+    reply_to(js('task', 'say', 'GLOBETROTTER plain')['id'])
+    assert 'Memory records that match' not in turn_with('GLOBETROTTER plain')['message']
     assert re.search(r'NOT SHOWN: context\.md lines [0-9, -]+ of 60 .*Read /\S+/notes/context\.md for them, or find them with `wsx task search`\.', matched), matched
     # ^ Memo lines: one line of at most 240 characters, no 60-line cap, and past 32 KiB the
     # oldest go to context-archive.md, which the fresh conversation is told about.
