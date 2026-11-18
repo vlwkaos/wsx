@@ -318,7 +318,7 @@ pub fn reply_threads(log: &[ManagerEntry], to: &[u64]) -> Vec<String> {
 
 /// The key of the thread the task of To check item `item` belongs to.
 pub fn of_item(project_id: &str, item: &str) -> Option<String> {
-    let task = super::checks::read(project_id)
+    let task = checks::read(project_id)
         .ok()?
         .into_iter()
         .find(|found| found.id == item)?
@@ -328,7 +328,7 @@ pub fn of_item(project_id: &str, item: &str) -> Option<String> {
 
 /// The key of the thread task `task` belongs to, none for a task of the trunk.
 pub fn of_task(project_id: &str, task: u32) -> Option<String> {
-    super::store::TaskDir::open(project_id, task)
+    TaskDir::open(project_id, task)
         .ok()?
         .read_record()
         .ok()?
