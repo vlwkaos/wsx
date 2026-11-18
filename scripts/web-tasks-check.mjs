@@ -1129,7 +1129,8 @@ for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
   if (!atOnce.open || atOnce.loading || !atOnce.story) await fail(`a need's sheet did not show its content at once at ${width} px: ${JSON.stringify(atOnce)}`);
   await shot(`need-open-${width}`, ".composer-send");
   await closeSheet("a need's sheet", chat);
-  await shot(`list-you-${width}`, ".composer-send");
+  for (const scheme of ["dark", "light"]) { await inScheme(scheme); await shot(`list-you-${width}-${scheme}`, ".composer-send"); }
+  await inScheme("dark");
   // ^ #3's land is a pending approval: its sheet offers Approve and Deny, not a Land beside them (`owner_actions`).
   await openReservoir();
   await evaluate(`${rowOf("#3")}.querySelector('.row-open').click()`);
@@ -1139,7 +1140,8 @@ for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
   if ((await evaluate("fetch('api/tasks/' + location.hash.split('/')[2] + '/t/3').then((r) => r.json()).then((task) => task.actions)")).includes("land")) await fail("the API offers Land beside a pending land approval");
   await closeSheet("#3's sheet", chat);
   await openReservoir("tasks");
-  await shot(`list-tasks-${width}`, ".composer-send");
+  for (const scheme of ["dark", "light"]) { await inScheme(scheme); await shot(`list-tasks-${width}-${scheme}`, ".composer-send"); }
+  await inScheme("dark");
   await openReservoir();
 }
 // ^ In the wide layout (900 px) the three pills carry their words after the count, so the field keeps a quarter of the row at least (170 of 680 px at 1280 px).
@@ -3794,7 +3796,15 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   await until(`document.querySelector('.story-next')?.textContent.endsWith('Waited for by #${behind}.')`, `#${scenario}'s sheet does not say who waits for it`, 10);
   const chain = await evaluate("[...document.querySelectorAll('.task-sheet .task-chain .chain-row')].map((row) => row.querySelector('.task-number').textContent.trim() + (row.hasAttribute('aria-current') ? '*' : ''))");
   if (chain.join() !== `#${scenario}*,#${behind}`) await fail(`the Chain of #${scenario} reads ${JSON.stringify(chain)}, not itself then #${behind}`);
-  await shot("task-waited-for-by", ".composer-send");
+  // ^ The Chain with its numbers after the titles, at both phone and wide size, in both schemes.
+  const chainSize = size;
+  for (const next of [[390, 844, 2], [1280, 800, 1]]) {
+    await resize(next);
+    await until("document.querySelectorAll('.task-sheet .task-chain .chain-row').length === 2", `the Chain is not in the sheet at ${next[0]} px`, 10);
+    for (const scheme of ["dark", "light"]) { await inScheme(scheme); await shot(`task-chain-${scheme}`, ".composer-send"); }
+    await inScheme("dark");
+  }
+  await resize(chainSize);
   await open(behind);
   await until(`/Then it waits for #${scenario} to land\\. Its checks fail on main until #${scenario} lands\\./.test(document.querySelector('.story-next')?.textContent ?? '')`, `#${behind}'s sheet does not say why it waits`, 10);
   const waitsOn = await evaluate("(() => { const term = [...document.querySelectorAll('.task-sheet .task-flow dt')].find((node) => node.textContent === 'Waits on'); return term?.nextElementSibling?.textContent.replace(/\\s+/g, ' ').trim() ?? ''; })()");
