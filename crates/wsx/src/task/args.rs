@@ -507,6 +507,18 @@ pub enum ThreadCmd {
     },
     /// Merge a thread into another open one: its rows and tasks read as the other's
     Merge { from: String, into: String },
+    /// Put tasks and open questions of this chat in a thread. A task's open children, its
+    /// approvals and its To check items go with it
+    Move {
+        slug: String,
+        /// Task numbers
+        tasks: Vec<String>,
+        /// A reply id of an open question; repeat for several
+        #[arg(long = "ask", value_name = "REPLY")]
+        asks: Vec<u64>,
+    },
+    /// The open tasks and owner items of this chat that are in no thread
+    Unplaced,
 }
 
 #[derive(Subcommand)]
@@ -588,7 +600,7 @@ impl TaskCmd {
             | Self::Project { .. } => &[Deploy],
             Self::Checkin { .. } => &[Routine],
             Self::Thread {
-                action: ThreadCmd::List,
+                action: ThreadCmd::List | ThreadCmd::Unplaced,
             } => &[Read],
             Self::Thread { .. } => &[Thread],
             Self::Routine { action, .. } => match action {

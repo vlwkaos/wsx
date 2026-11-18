@@ -2,7 +2,7 @@
 
 use crate::task::args::ThreadCmd;
 use crate::task::{actor, print_json, project_entry};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::json;
 use wsx_core::task::store::{self, ManagerDir};
 use wsx_core::task::{chats, now_unix_ms, thread};
@@ -20,6 +20,7 @@ pub(crate) fn thread(action: ThreadCmd, project: Option<&str>, json: bool) -> Re
     let dir = chat_of(project)?;
     let message = match action {
         ThreadCmd::List => return list(&dir, json),
+        ThreadCmd::Unplaced => return unplaced(&dir, json),
         ThreadCmd::Open { title } => format!("thread {} opened", thread::open(&dir, &title)?),
         ThreadCmd::Close { slug, why } => {
             format!(
@@ -30,6 +31,21 @@ pub(crate) fn thread(action: ThreadCmd, project: Option<&str>, json: bool) -> Re
         ThreadCmd::Merge { from, into } => {
             thread::merge(&dir, &from, &into)?;
             format!("thread {from} merged into {into}")
+        }
+        ThreadCmd::Move { slug, tasks, asks } => {
+            let tasks = tasks
+                .iter()
+                .map(|task| store::parse_task_number(task))
+                .collect::<Result<Vec<u32>>>()?;
+            if tasks.is_empty() && asks.is_empty() {
+                bail!("name a task or --ask <reply id> to move");
+            }
+            let slug = thread::place(&dir, &slug, &tasks, &asks, now_unix_ms())?;
+            format!(
+                "{} task(s) and {} question(s) in thread {slug}",
+                tasks.len(),
+                asks.len()
+            )
         }
     };
     if json {
@@ -64,6 +80,25 @@ fn list(dir: &ManagerDir, json: bool) -> Result<()> {
             (None, false) => "closed".into(),
         };
         println!("{}  \"{}\"  {state}", found.slug, found.title);
+    }
+    Ok(())
+}
+
+/// The open work of the chat that is in no thread, as the placing turn lists it.
+fn unplaced(dir: &ManagerDir, json: bool) -> Result<()> {
+    let found = thread::unplaced(dir, now_unix_ms())?;
+    if json {
+        return print_json(&json!({
+            "chat": dir.name(),
+            "tasks": found.tasks.iter().map(|(task, title)| json!({ "task": task, "title": title })).collect::<Vec<_>>(),
+            "asks": found.asks.iter().map(|(id, quote)| json!({ "id": id, "quote": quote })).collect::<Vec<_>>(),
+            "approvals": found.approvals.iter().map(|(id, task, label)| json!({ "id": id, "task": task, "label": label })).collect::<Vec<_>>(),
+            "checks": found.checks.iter().map(|(id, task, check)| json!({ "id": id, "task": task, "check": check })).collect::<Vec<_>>(),
+        }));
+    }
+    match found.is_empty() {
+        true => println!("nothing open is outside a thread in chat {}", dir.name()),
+        false => println!("{}", found.text()),
     }
     Ok(())
 }

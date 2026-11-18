@@ -799,6 +799,10 @@ pub enum HostRequest {
         title: Option<String>,
     },
     Stop,
+    /// Put the task in thread `thread` (a key, `<chat>/<slug>`): `wsx task thread move`.
+    Thread {
+        thread: String,
+    },
     /// Land the ready revision. `tried`: the owner passed its trial, so its Human Verify
     /// items are not added to "To check".
     Land {

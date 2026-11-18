@@ -8873,7 +8873,7 @@ def part_host(created=None):
     # by its quote or its window, a task joins with --thread and passes its thread to its child
     # (--into) and to the task that waits for it (--after). No model tags anything.
     mark('42')
-    home = 'demo'
+    chat42 = 'demo'
     listing = lambda: js('task', 'thread', 'list')
     threads = lambda: {t['thread']: t for t in listing()['threads']}
     assert threads() == {}, threads()
@@ -8884,7 +8884,7 @@ def part_host(created=None):
     for n in range(5):
         cli('task', 'thread', 'open', 'Spare %d' % n)
     assert listing()['open'] == 7, listing()
-    opens = [e for e in chat_entries(home) if e['kind'] == 'thread_open']
+    opens = [e for e in chat_entries(chat42) if e['kind'] == 'thread_open']
     assert [e['open'] for e in opens] == list(range(1, 8)) and opens[0]['thread'] == billing, opens
     for n in range(5):
         cli('task', 'thread', 'close', 'spare-%d' % n, '--why', 'spare')
@@ -8894,20 +8894,20 @@ def part_host(created=None):
     assert show(trunk_task)['record'].get('thread') is None and len(threads()) == 7, show(trunk_task)['record']
     gate42 = tmp / 'gate42'
     parent42 = js('task', 'new', '--thread', billing, 'WAIT %s WORK p42.txt' % gate42)['id']
-    key = '%s/%s' % (home, billing)
+    key = '%s/%s' % (chat42, billing)
     assert show(parent42)['record']['thread'] == key, show(parent42)['record']
     err = cli('task', 'new', '--thread', 'no-such', 'NOOP x', ok=False).stderr
     assert 'no-such' in err and billing in err and speed in err, err
     # ^ --into and --after inherit the thread; a different --thread is refused and makes no task.
     child42 = js('task', 'new', '--into', parent42, 'WORK c42.txt')['id']
-    waits42 = js('task', 'new', '--after', parent42, 'WORK w42.txt')['id']
+    waits42 = js('task', 'new', '--after', parent42, '--because', 'needs', 'WORK w42.txt')['id']
     assert show(child42)['record']['thread'] == key and show(waits42)['record']['thread'] == key
     made = len(js('task', 'list')['tasks'])
     clash = cli('task', 'new', '--into', parent42, '--thread', speed, 'NOOP y', ok=False).stderr
     assert 'joins %s' % key in clash and len(js('task', 'list')['tasks']) == made, clash
     # ^ A message is tagged by its window (`say --thread`) or the message it quotes, else it is in
     # the trunk. The first message is slow, so the next ones come in one turn.
-    row = lambda i: next(e for e in chat_entries(home) if e.get('id') == i)
+    row = lambda i: next(e for e in chat_entries(chat42) if e.get('id') == i)
     slow = js('task', 'say', '--thread', billing, 'SLOW marmot billing')['id']
     lynx = js('task', 'say', '--thread', speed, 'STATUS lynx speed')['id']
     otter = js('task', 'say', '> message %d\n\nSTATUS otter quoted' % slow)['id']
@@ -8915,7 +8915,7 @@ def part_host(created=None):
     assert row(slow)['thread'] == billing and row(lynx)['thread'] == speed, (row(slow), row(lynx))
     assert row(otter)['thread'] == billing and row(stoat).get('thread') is None, (row(otter), row(stoat))
     # ^ One reply to messages of two threads carries both.
-    both = wait(lambda: next((e for e in chat_entries(home) if e['kind'] == 'reply' and lynx in e['to'] and otter in e['to']), None),
+    both = wait(lambda: next((e for e in chat_entries(chat42) if e['kind'] == 'reply' and lynx in e['to'] and otter in e['to']), None),
                 'one reply to a message of each thread', 90)
     assert sorted(both['threads']) == [billing, speed], both
     # ^ Search by thread: a line of the thread is found, a line of another or of the trunk is not.
@@ -8939,10 +8939,10 @@ def part_host(created=None):
     # ^ A close is refused while a question of the thread waits for the owner, and allowed after.
     cli('task', 'thread', 'open', 'Open question')
     asked = js('task', 'say', '--thread', 'open-question', 'ASK which one')['id']
-    asking = chat_reply(home, asked)
+    asking = chat_reply(chat42, asked)
     assert asking.get('asks') and asking['threads'] == ['open-question'], asking
     assert 'open question' in cli('task', 'thread', 'close', 'open-question', ok=False).stderr
-    chat_reply(home, js('task', 'say', '> message %d\n\nthis one' % asking['id'])['id'])
+    chat_reply(chat42, js('task', 'say', '> message %d\n\nthis one' % asking['id'])['id'])
     cli('task', 'thread', 'close', 'open-question')
     assert not threads()['open-question']['open']
     # ^ A merged thread reads as the one it went into: its search, its new tasks. The same thread
@@ -8961,8 +8961,53 @@ def part_host(created=None):
     assert not threads()[billing]['open']
     reopened = js('task', 'say', '--thread', billing, 'STATUS reopen')['id']
     assert threads()[billing]['open'] and row(reopened)['thread'] == billing, threads()[billing]
-    chat_reply(home, reopened)
+    chat_reply(chat42, reopened)
     for task in (trunk_task, parent42, child42, waits42, merged_task):
+        js('task', 'close', task, '--discard')
+
+    # 43. Open work from before threads (docs/tasks.md "Threads", docs/design/chat-system.md "Migration"):
+    # `thread unplaced` lists what is open and in no thread, `thread move` places tasks and open
+    # questions, and a chat that has no `threads-placed` mark gets one turn that lists its open work
+    # for its manager to place. A chat made now has the mark from the start.
+    mark('43')
+    gate43 = tmp / 'gate43'
+    old_task = js('task', 'new', 'WAIT %s WORK p43.txt' % gate43)['id']
+    ask43 = js('task', 'say', 'ASK pick one')['id']
+    asked43 = chat_reply(chat42, ask43)
+    unplaced = lambda: js('task', 'thread', 'unplaced')
+    assert old_task in [t['task'] for t in unplaced()['tasks']] and asked43['id'] in [a['id'] for a in unplaced()['asks']], unplaced()
+    cli('task', 'thread', 'open', 'Placed by hand')
+    assert 'not an open question' in cli('task', 'thread', 'move', 'placed-by-hand', '--ask', '999999', ok=False).stderr
+    assert 'not a task of chat' in cli('task', 'thread', 'move', 'placed-by-hand', str(old_task + 999), ok=False).stderr
+    cli('task', 'thread', 'move', 'placed-by-hand', str(old_task), '--ask', str(asked43['id']))
+    assert show(old_task)['record']['thread'] == 'demo/placed-by-hand', show(old_task)['record']
+    assert old_task not in [t['task'] for t in unplaced()['tasks']] and not unplaced()['asks'], unplaced()
+    # ^ The question reads as the thread's now: that thread stays open until it is answered.
+    assert 'open question' in cli('task', 'thread', 'close', 'placed-by-hand', ok=False).stderr
+    # ^ A chat from before: its work is open and its mark is gone. Its host restarts on the next task
+    # event and asks its manager once; the fake manager opens a thread for each task and for the questions.
+    cli('task', 'chat', 'new', 'old', '--goal', str(m2_goal), '-p', 'demo', '--json')
+    assert (chats_dir / 'old' / 'threads-placed').exists()
+    made_old = js('task', 'say', '--to', 'old', 'RUN wsx task new "WAIT %s WORK q43.txt" -p demo --json' % gate43)
+    chat_reply('old', made_old['id'])
+    old_work = max(t['id'] for t in js('task', 'list')['tasks'])
+    assert show(old_work)['record']['created_by'] == 'chat:old' and show(old_work)['record'].get('thread') is None
+    chat_reply('old', js('task', 'say', '--to', 'old', 'ASK which one')['id'])
+    wait(lambda: not chat_host('old'), 'the host of the old chat leaves', 90)
+    (chats_dir / 'old' / 'threads-placed').unlink()
+    gate43.write_text('go')
+    placing = wait(lambda: next((e for e in chat_entries('old') if e['kind'] == 'message' and 'Place the open work below once.' in e['text']), None),
+                   'the placing turn of the old chat', 90)
+    assert placing['text'].count('#%d ' % old_work) == 1 and 'wsx task thread move' in placing['text'], placing
+    wait(lambda: show(old_work)['record'].get('thread', '').startswith('old/'), lambda: 'the manager placed #%d: %s' % (old_work, show(old_work)['record']), 60)
+    old_log = chat_entries('old')
+    assert [e['thread'] for e in old_log if e['kind'] == 'thread_open'] == ['subject-%d' % old_work, 'open-questions'], old_log
+    assert any(e['kind'] == 'thread_moved' for e in old_log), old_log
+    # ^ Once: the mark is back, and a second start asks nothing.
+    assert (chats_dir / 'old' / 'threads-placed').exists()
+    assert len([e for e in chat_entries('old') if e['kind'] == 'message' and 'Place the open work below once.' in e['text']]) == 1
+    js('task', 'chat', 'close', 'old', '-p', 'demo')
+    for task in (old_task, old_work):
         js('task', 'close', task, '--discard')
     return created
 

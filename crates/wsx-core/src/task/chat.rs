@@ -176,6 +176,7 @@ fn in_chat(entry: &ManagerEntry) -> bool {
             | ManagerEvent::ThreadOpen { .. }
             | ManagerEvent::ThreadClosed { .. }
             | ManagerEvent::ThreadMerged { .. }
+            | ManagerEvent::ThreadMoved { .. }
     )
 }
 
@@ -325,6 +326,11 @@ pub fn open_asks(
                 }
             }
             ManagerEvent::Answered { id } => open.retain(|ask| ask.id != *id),
+            ManagerEvent::ThreadMoved { ids, thread } => {
+                for ask in open.iter_mut().filter(|ask| ids.contains(&ask.id)) {
+                    ask.threads = vec![thread.clone()];
+                }
+            }
             _ => {}
         }
     }
@@ -363,6 +369,7 @@ pub fn asking(dir: &ManagerDir, now: u64) -> Result<Vec<OpenAsk>> {
         let tail = &line[line.len().saturating_sub(256)..];
         contains_bytes(head, b"\"answered\"")
             || contains_bytes(head, b"\"delivered\"")
+            || contains_bytes(head, b"\"thread_moved\"")
             || (contains_bytes(head, b"\"message\"") && contains_bytes(head, b"\"owner\""))
             || (contains_bytes(head, b"\"reply\"")
                 && contains_bytes(tail, b"\"asks\"")

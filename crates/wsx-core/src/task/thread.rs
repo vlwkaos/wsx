@@ -5,9 +5,12 @@
 //! the key `<chat>/<slug>`, since chat names are unique on the machine and those live in the
 //! project. ref: docs/tasks.md "Threads", docs/design/chat-system.md
 use super::chat::{asking, OpenAsk};
-use super::manager::{ManagerEntry, ManagerEvent};
-use super::store::{contains_bytes, ManagerDir, FIRST_READ_BYTES};
-use super::view::checked_title;
+use super::chats::{approvals_of, checks_of, Viewer};
+use super::checks::{self, CheckState};
+use super::manager::{pending_approvals, ApprovalLine, ManagerEntry, ManagerEvent};
+use super::store::{self, contains_bytes, ManagerDir, TaskDir, FIRST_READ_BYTES};
+use super::view::{checked_title, clip, project_tasks, readable_title};
+use super::{call_task_host, HostRequest};
 use anyhow::{bail, Result};
 use std::collections::BTreeMap;
 
@@ -384,4 +387,230 @@ impl Filter {
                 .is_some_and(|slug| self.threads.resolve(slug) == self.slug)
         })
     }
+}
+
+/// The file whose presence says the open work of the chat was offered for placing once.
+const PLACED_FILE: &str = "threads-placed";
+
+/// The open work of a chat that is in no thread: what the one placing turn and `thread unplaced`
+/// list. An approval and a To check item follow their task.
+#[derive(Debug, Clone, Default)]
+pub struct Unplaced {
+    /// Open root tasks of the chat: number and title.
+    pub tasks: Vec<(u32, String)>,
+    /// Open questions: reply id and the line a quote of it carries.
+    pub asks: Vec<(u64, String)>,
+    /// Pending approvals: id, task (none: it has no task and stays in the trunk) and label.
+    pub approvals: Vec<(String, Option<u32>, String)>,
+    /// Open To check items: id, task and check.
+    pub checks: Vec<(String, u32, String)>,
+}
+
+impl Unplaced {
+    pub fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+            && self.asks.is_empty()
+            && self.approvals.is_empty()
+            && self.checks.is_empty()
+    }
+
+    /// The most entries of one list in `text`; the rest is `wsx task thread unplaced`.
+    const SHOWN: usize = 30;
+
+    /// The one instruction of the placing turn, the same for every adapter: the ids of the open
+    /// work, and the two commands that place it.
+    pub fn text(&self) -> String {
+        let mut lines = vec![
+            "Threads are new in this chat: a thread is one subject with its tasks and its open \
+             questions. Place the open work below once."
+                .to_string(),
+        ];
+        let mut list = |label: &str, items: Vec<String>| {
+            if items.is_empty() {
+                return;
+            }
+            let more = items.len().saturating_sub(Self::SHOWN);
+            let mut line = format!("{label}: {}", items[..items.len() - more].join("; "));
+            if more > 0 {
+                line.push_str(&format!("; and {more} more (`wsx task thread unplaced`)"));
+            }
+            lines.push(line);
+        };
+        list(
+            "Open tasks",
+            self.tasks
+                .iter()
+                .map(|(task, title)| format!("#{task} {title}"))
+                .collect(),
+        );
+        list(
+            "Open questions of the owner (reply id)",
+            self.asks
+                .iter()
+                .map(|(id, quote)| format!("{id} {quote}"))
+                .collect(),
+        );
+        list(
+            "Approvals waiting",
+            self.approvals
+                .iter()
+                .map(|(id, task, label)| match task {
+                    Some(task) => format!("{id} {label} (moves with #{task})"),
+                    None => format!("{id} {label} (no task: stays in the trunk)"),
+                })
+                .collect(),
+        );
+        list(
+            "To check",
+            self.checks
+                .iter()
+                .map(|(id, task, check)| format!("{id} {check} (moves with #{task})"))
+                .collect(),
+        );
+        lines.push(
+            "For each current subject run `wsx task thread open \"<subject>\"` (a few words; \
+             one thread may hold several tasks and questions), then `wsx task thread move <slug> \
+             <task>...` and `--ask <reply id>...`. An approval or To check item moves with its \
+             task, which may be landed. Leave work that is closed or landed, with nothing open, \
+             in the trunk. Then reply with exactly `-`."
+                .to_string(),
+        );
+        lines.join("\n")
+    }
+}
+
+/// The open work of `dir`'s chat that is in no thread. Closed and landed work with nothing
+/// open is not listed.
+pub fn unplaced(dir: &ManagerDir, now: u64) -> Result<Unplaced> {
+    let viewer = Viewer::new(&dir.project_id, Some(&dir.chat));
+    let tasks = project_tasks(&dir.project_id)?;
+    let in_thread = |task: u32| {
+        tasks.iter().any(|(_, record)| {
+            record
+                .as_ref()
+                .is_ok_and(|r| r.id == task && r.thread.is_some())
+        })
+    };
+    let mut found = Unplaced::default();
+    for (task_dir, record) in &tasks {
+        let Ok(record) = record else { continue };
+        if record.state.is_open()
+            && record.parent.is_none()
+            && record.thread.is_none()
+            && viewer.owns(record.created_by.chat())
+        {
+            let title = readable_title(task_dir, record).unwrap_or_default();
+            found.tasks.push((record.id, clip(&title, 70)));
+        }
+    }
+    for ask in asking(dir, now)?
+        .into_iter()
+        .filter(|ask| ask.threads.is_empty())
+    {
+        found.asks.push((ask.id, clip(&ask.quote, 70)));
+    }
+    let lines = approvals_of(store::read_approvals(&dir.project_id)?, &viewer);
+    for line in pending_approvals(&lines) {
+        if let ApprovalLine::Request { id, task, .. } = line {
+            if !task.is_some_and(in_thread) {
+                found
+                    .approvals
+                    .push((id.clone(), *task, super::owner::approval_label(line)));
+            }
+        }
+    }
+    for item in checks_of(&dir.project_id, checks::read(&dir.project_id)?, &viewer) {
+        if item.state == CheckState::Open && !in_thread(item.task) {
+            found
+                .checks
+                .push((item.id, item.task, clip(&item.check, 70)));
+        }
+    }
+    Ok(found)
+}
+
+/// Place work in thread `slug`: tasks (with their open children in no thread) and open questions
+/// (reply ids). Everything is checked before anything is written. A task of another chat, a
+/// task that is not there and a reply that is no open question are refused.
+pub fn place(
+    dir: &ManagerDir,
+    slug: &str,
+    task_ids: &[u32],
+    asks: &[u64],
+    now: u64,
+) -> Result<String> {
+    let viewer = Viewer::new(&dir.project_id, Some(&dir.chat));
+    let open = asking(dir, now)?;
+    if let Some(id) = asks
+        .iter()
+        .find(|id| !open.iter().any(|ask| ask.id == **id))
+    {
+        bail!("reply {id} is not an open question");
+    }
+    let all = project_tasks(&dir.project_id)?;
+    let mut moving: Vec<u32> = Vec::new();
+    for id in task_ids {
+        let owned = all.iter().any(|(_, record)| {
+            record
+                .as_ref()
+                .is_ok_and(|r| r.id == *id && viewer.owns(r.created_by.chat()))
+        });
+        if !owned {
+            bail!("task #{id} is not a task of chat {}", dir.chat);
+        }
+        moving.push(*id);
+    }
+    // ^ A child joins the thread of its parent (`new --into`): the open ones in no thread move too.
+    while let Some(child) = all.iter().find_map(|(_, record)| {
+        let record = record.as_ref().ok()?;
+        (record.state.is_open()
+            && record.thread.is_none()
+            && !moving.contains(&record.id)
+            && record.parent.is_some_and(|parent| moving.contains(&parent)))
+        .then_some(record.id)
+    }) {
+        moving.push(child);
+    }
+    let thread = join(dir, slug)?;
+    let key = key(&dir.chat, &thread);
+    for id in &moving {
+        let task_dir = TaskDir::open(&dir.project_id, *id)?;
+        match call_task_host(
+            &task_dir,
+            &HostRequest::Thread {
+                thread: key.clone(),
+            },
+            std::time::Duration::from_secs(15),
+        ) {
+            Ok(response) if response.ok => {}
+            Ok(response) => bail!("task #{id} refused: {}", response.message),
+            // ^ A task at rest has no host to ask; its record has no other writer.
+            Err(error) => {
+                let mut record = task_dir.read_record()?;
+                if record.state.is_open() {
+                    return Err(error);
+                }
+                record.thread = Some(key.clone());
+                task_dir.write_record(&record)?;
+            }
+        }
+    }
+    if !asks.is_empty() {
+        dir.append(ManagerEvent::ThreadMoved {
+            ids: asks.to_vec(),
+            thread: thread.clone(),
+        })?;
+    }
+    Ok(thread)
+}
+
+/// Whether the chat's open work was not yet offered for placing.
+pub fn placing_due(dir: &ManagerDir) -> bool {
+    !dir.path.join(PLACED_FILE).exists()
+}
+
+/// Record that the open work was offered, so it is once.
+pub fn placing_done(dir: &ManagerDir) -> Result<()> {
+    std::fs::write(dir.path.join(PLACED_FILE), b"1\n")?;
+    Ok(())
 }

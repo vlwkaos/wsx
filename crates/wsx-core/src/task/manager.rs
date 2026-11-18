@@ -236,6 +236,9 @@ pub enum ManagerEvent {
         into: String,
         open: u32,
     },
+    /// Open questions (reply ids) placed in `thread` after they were asked: the log keeps the
+    /// replies as written, and `open_asks` reads their thread from this.
+    ThreadMoved { ids: Vec<u64>, thread: String },
 }
 
 /// One event as the chat shows it, written where the event is made: `#3 done`,
