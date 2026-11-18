@@ -396,7 +396,7 @@ def manager_turn(text, project, page):
     if 'Place the open work below once.' in text:
         # ^ The placing turn of a chat from before threads (docs/tasks.md "Threads"): one thread for
         # each open task and one for the open questions, as the instruction says.
-        listed = {line.split(':', 1)[0]: line.split(':', 1)[1] for line in text.splitlines()
+        listed = {line.split(':', 1)[0]: line.split(':', 1)[1].strip() for line in text.splitlines()
                   if line.startswith(('Open tasks:', 'Open questions of the owner'))}
         wsx = lambda *args: subprocess.run(['wsx', 'task', *args, '-p', project], capture_output=True, text=True, check=True).stdout
         for number in re.findall(r'#(\d+) ', listed.get('Open tasks', '')):
