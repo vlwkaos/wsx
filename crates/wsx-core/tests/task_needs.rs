@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use std::fs;
 use wsx_core::task::chains::{Band, Chains};
 use wsx_core::task::needs::{self, NeedKind, Needs, Stage};
+use wsx_core::task::stall;
 use wsx_core::task::store::{TaskDir, RECORD_FILE};
 use wsx_core::task::view;
 
@@ -187,6 +188,22 @@ fn one_rule_decides_the_stage_the_counts_the_push_and_the_band() {
             let band = chains.place(*id).unwrap().band;
             assert_eq!(band == Band::You, kind.is_some(), "{name}: band {band:?}");
         }
+    }
+    // ^ A ready task whose result asks the owner waits on the owner: the 4 h reminder (one push,
+    // then one a day) reaches it as it reaches a task that waits for an answer.
+    for (name, _, _, _, _, _) in cases
+        .iter()
+        .filter(|case| case.0.starts_with("ready, the result"))
+    {
+        let id = ids[cases.iter().position(|case| case.0 == *name).unwrap()];
+        let (dir, record) = tasks.iter().find(|(dir, _)| dir.id == id).unwrap();
+        let reminder = stall::owner_wait(dir, record.as_ref().unwrap(), 10 * 24 * 3_600_000)
+            .unwrap_or_else(|| panic!("{name}: no reminder"));
+        assert!(
+            reminder.words.starts_with("waits on you for 9 d"),
+            "{}",
+            reminder.words
+        );
     }
     let counted = Needs::read(PROJECT, false).unwrap();
     assert_eq!(

@@ -1,7 +1,7 @@
 //! What a project needs from the owner: the one rule behind the web's Home row and the TUI's
 //! Workspace tree marks. ref: docs/tasks.md "Landing", "To check", "TUI"
 use super::{
-    chats, checks,
+    chat, chats, checks,
     manager::{pending_approvals, waiting_approvals},
     status::{self, Holder},
     store::{self, TaskDir},
@@ -148,8 +148,8 @@ impl Needs {
 }
 
 /// What an open chat has for the owner, as the Running, Needs you and To check pills count it,
-/// by the one ownership rule (`chats::owner`): the tasks the chat made, its own approvals and the
-/// To check items of its tasks. ref: docs/web-client-tasks.md "Home"
+/// by the one ownership rule (`chats::owner`): the tasks the chat made, its own approvals and open
+/// questions, and the To check items of its tasks. ref: docs/web-client-tasks.md "Home"
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChatCounts {
@@ -165,7 +165,8 @@ pub struct ChatCounts {
 pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCounts> {
     let open = chats::open_names();
     let home = store::home_chat(project_id).unwrap_or_default();
-    let mut counts: HashMap<String, ChatCounts> = chats::open_chats(project_id)
+    let dirs = chats::open_chats(project_id);
+    let mut counts: HashMap<String, ChatCounts> = dirs
         .iter()
         .map(|dir| (dir.chat.clone(), ChatCounts::default()))
         .collect();
@@ -186,13 +187,16 @@ pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCou
     }
     let approvals = store::read_approvals(project_id).unwrap_or_default();
     let items = checks::open_items(project_id).unwrap_or_default();
-    for name in counts.keys().cloned().collect::<Vec<_>>() {
-        let viewer = chats::Viewer::named(&name, open.clone(), &home);
+    let now = super::now_unix_ms();
+    for dir in &dirs {
+        let viewer = chats::Viewer::named(&dir.chat, open.clone(), &home);
         let own = chats::approvals_of(approvals.clone(), &viewer);
-        let Some(entry) = counts.get_mut(&name) else {
+        let Some(entry) = counts.get_mut(&dir.chat) else {
             continue;
         };
-        entry.needs += pending_approvals(&own).len();
+        // ^ An open question of the chat is an item for the owner too, as its own pill counts it.
+        entry.needs +=
+            pending_approvals(&own).len() + chat::asking(dir, now).map_or(0, |a| a.len());
         entry.running += waiting_approvals(&own).len();
         entry.open += waiting_approvals(&own).len();
         entry.check = chats::checks_of(project_id, items.clone(), &viewer).len();

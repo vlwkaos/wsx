@@ -4905,7 +4905,11 @@ merge_seconds = 3
                         still = [ask for ask in still if ask[0] != entry['id']]
                 return still
             expected = open_questions()
-            overview_asks = steady(owner, 'GET', '/api/tasks/%d' % ids['plans'])[1]['asks']
+            plans_view = steady(owner, 'GET', '/api/tasks/%d' % ids['plans'])[1]
+            overview_asks = plans_view['asks']
+            # ^ The Home row counts the chat's open questions as its own pill does (`needs::chat_counts`).
+            home_counts = next(chat for chat in plans_view['chats'] if chat['home'])['counts']
+            assert home_counts == plans_view['counts'] and home_counts['needs'] >= len(overview_asks) > 0, (home_counts, plans_view['counts'])
             assert [(ask['id'], ask['quote']) for ask in overview_asks] == expected and expected, (overview_asks, expected)
             assert {ask[1] for ask in expected} == set(questions[:2] + spares[:2]), expected
             assert plans_chat['asks'] == [ask[0] for ask in expected], plans_chat['asks']
