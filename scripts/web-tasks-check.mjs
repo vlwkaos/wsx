@@ -2705,12 +2705,15 @@ await until("!!document.querySelector('.composer .icon-button[aria-label=\"Attac
 // ^ The reply to plans is older than the newest 60 rows the chat keeps at its end: the reader
 // goes up and shows earlier rows until it is there (docs/web-client-chat.md "Long chats").
 const replyToPlans = "[...document.querySelectorAll('.log [data-talk] .fold-count')].some((node) => node.textContent === 'Talked to plans')";
-for (let n = 0; n < 20 && !(await evaluate(replyToPlans)) && await count(".log-earlier"); n++) {
-  await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = 0; log.dispatchEvent(new Event('scroll')); })()");
-  await pause(200);
-  await click(".log-earlier");
-  await pause(300);
-}
+const showTalk = async () => {
+  for (let n = 0; n < 20 && !(await evaluate(replyToPlans)) && await count(".log-earlier"); n++) {
+    await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = 0; log.dispatchEvent(new Event('scroll')); })()");
+    await pause(200);
+    await click(".log-earlier");
+    await pause(300);
+  }
+};
+await showTalk();
 // ^ What plans' manager and this chat said to each other is one muted "Talked to plans" row, closed: the words show on a tap, under the writer's name.
 const peers = await evaluate("[...document.querySelectorAll('.log [data-talk]')].map((node) => ({ tag: node.querySelector('.fold-count').textContent, open: node.querySelector('.fold-toggle').getAttribute('aria-expanded'), words: node.querySelectorAll('.reply-open').length }))");
 if (!peers.some(({ tag, open, words }) => tag === "Talked to plans" && open === "false" && words === 0)) await fail(`the managers' messages read ${JSON.stringify(peers)}`);
@@ -2735,6 +2738,8 @@ for (const scheme of ["dark", "light"]) {
   if (colors.some((color) => !color) || new Set(colors).size !== colors.length) await fail(`the speakers' colors in the ${scheme} scheme: ${JSON.stringify(colors)}`);
   const sides = await sideBorders();
   if (sides) await fail(`${sides} bubbles have a side border or a tinted edge in the ${scheme} scheme`);
+  await showTalk();
+  // ^ The latest-rows window above dropped the older "Talked to" row: load it again.
   await evaluate("document.querySelector('.log [data-talk]').scrollIntoView({ block: 'center' })");
   await shot(`speakers-${scheme}`);
   // ^ The owner's bubbles beside the manager's, with no tint on their right edge.
