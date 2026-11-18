@@ -9,6 +9,7 @@ use super::record::{Record, Status, EXCERPT_CHARS};
 use super::start;
 use super::store::{Error, Store};
 use crate::process::{run_bounded, Bound, Options, Stderr};
+use crate::task::thread;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -71,6 +72,9 @@ pub struct Query {
     pub limit: usize,
     pub include_inactive: bool,
     pub kind: Option<KindFilter>,
+    /// Only the records and transcript lines of this thread. A backend plug-in is not asked: it
+    /// does not know threads.
+    pub thread: Option<thread::Filter>,
 }
 
 /// What a backend declares in `status` (`search` key); the built-in has neither.
@@ -138,6 +142,10 @@ impl Backend for Builtin {
                 Some(r) => {
                     if (!query.include_inactive && r.status != Status::Active)
                         || wanted.is_some_and(|k| k != r.kind.as_str())
+                        || query
+                            .thread
+                            .as_ref()
+                            .is_some_and(|only| !only.matches(r.thread.as_slice()))
                     {
                         continue;
                     }
@@ -145,9 +153,14 @@ impl Backend for Builtin {
                 }
                 None => {
                     let (doc, target) = (&docs[at - records.len()], target.as_ref());
-                    let (Some(target), true) =
-                        (target, wanted.is_none_or(|k| k == doc.kind.as_str()))
-                    else {
+                    let (Some(target), true) = (
+                        target,
+                        wanted.is_none_or(|k| k == doc.kind.as_str())
+                            && query
+                                .thread
+                                .as_ref()
+                                .is_none_or(|only| only.matches(&doc.thread)),
+                    ) else {
                         continue;
                     };
                     (transcript_hit(store, target, doc, score), doc.at, None)
@@ -361,7 +374,7 @@ pub fn search(stores: &[Store], backend: Option<&Command>, query: &Query) -> Res
     };
     for store in stores {
         let mut found = Builtin.search(store, query)?;
-        if let Some(backend) = backend {
+        if let Some(backend) = backend.filter(|_| query.thread.is_none()) {
             match backend.search(store, query) {
                 Ok(more) => found.extend(more),
                 Err(error) => answer.notices.push(format!(
@@ -404,6 +417,7 @@ pub fn recall(
         limit: RECALL_POOL,
         include_inactive: false,
         kind: None,
+        thread: None,
     };
     let mut answer = search(stores, backend, &query)?;
     answer.hits.truncate(RECALL_KEEP);

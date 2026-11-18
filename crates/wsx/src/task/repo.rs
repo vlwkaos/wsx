@@ -1625,6 +1625,7 @@ fn say_chat(
                 text,
                 Some(author),
                 short,
+                None,
             )
         });
     sent.is_ok_and(|response| response.ok)

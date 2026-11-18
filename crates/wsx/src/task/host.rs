@@ -4497,6 +4497,7 @@ impl Host {
                     text.clone(),
                     Some(Author::Events),
                     vec![Short::plain(&text)],
+                    None,
                 )?;
                 anyhow::ensure!(sent.ok, "{}", sent.message);
                 Ok(())

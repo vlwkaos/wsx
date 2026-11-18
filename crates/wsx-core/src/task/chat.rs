@@ -173,6 +173,9 @@ fn in_chat(entry: &ManagerEntry) -> bool {
             | ManagerEvent::Agent { .. }
             | ManagerEvent::Ping { .. }
             | ManagerEvent::Answered { .. }
+            | ManagerEvent::ThreadOpen { .. }
+            | ManagerEvent::ThreadClosed { .. }
+            | ManagerEvent::ThreadMerged { .. }
     )
 }
 
@@ -266,6 +269,8 @@ pub struct OpenAsk {
     pub unix_ms: u64,
     /// The line a quote of it carries (`quote_of`).
     pub quote: String,
+    /// The threads of the reply that asks (`ManagerEvent::Reply::threads`).
+    pub threads: Vec<String>,
 }
 
 /// The replies that ask the owner (`asks`) and are not answered, oldest first. An owner
@@ -286,13 +291,20 @@ pub fn open_asks(
     for entry in log {
         match &entry.event {
             ManagerEvent::Delivered { .. } => turn_from = Some(entry.unix_ms),
-            ManagerEvent::Reply { id, text, asks, .. } => {
+            ManagerEvent::Reply {
+                id,
+                text,
+                asks,
+                threads,
+                ..
+            } => {
                 let from = turn_from.take();
                 if *asks && !asked_in_turn(approvals, chat, from, entry.unix_ms) {
                     open.push(OpenAsk {
                         id: *id,
                         unix_ms: entry.unix_ms,
                         quote: quote_of(text),
+                        threads: threads.clone(),
                     });
                 }
             }

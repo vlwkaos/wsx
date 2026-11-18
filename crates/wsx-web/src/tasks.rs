@@ -181,6 +181,12 @@ fn build_overview(
 ) -> Value {
     let tasks = view::project_tasks(&scope.store).unwrap_or_default();
     let records: Vec<&TaskRecord> = tasks.iter().filter_map(|(_, r)| r.as_ref().ok()).collect();
+    let thread_of = |task: u32| {
+        records
+            .iter()
+            .find(|record| record.id == task)
+            .and_then(|record| record.thread.clone())
+    };
     let now = task::now_unix_ms();
     let mut needs: Vec<(u8, u64, Value)> = Vec::new();
     let mut listed: Vec<(usize, u64, Value)> = Vec::new();
@@ -225,6 +231,7 @@ fn build_overview(
                 "id": record.id, "title": title, "state": record.state, "stage": needs::stage(dir, record, land_auto).name(),
                 "revision": record.revision, "updated_unix_ms": record.updated_unix_ms,
                 "waiting": record.waiting,
+                "thread": record.thread,
                 "status": status,
                 "flow": flow,
                 "agent": record.state.is_open().then(|| view::task_agent(record)),
@@ -234,6 +241,7 @@ fn build_overview(
             json!({
                 "kind": kind, "task": record.id, "title": title, "state": record.state, "status": status,
                 "flow": flow, "revision": record.revision, "unix_ms": record.updated_unix_ms,
+                "thread": record.thread,
             })
         };
         if needs::stage(dir, record, land_auto) == Stage::Working {
@@ -250,7 +258,9 @@ fn build_overview(
         needs.push((rank, record.updated_unix_ms, row));
     }
     for line in pending {
-        if let Some(item) = approval_item(line, |task| titles.get(&task).cloned()) {
+        if let Some(item) = approval_item(line, |task| {
+            Some((titles.get(&task)?.clone(), thread_of(task)))
+        }) {
             let unix_ms = item["unix_ms"].as_u64().unwrap_or_default();
             needs.push((APPROVAL_RANK, unix_ms, item));
         }
@@ -284,7 +294,7 @@ fn build_overview(
     let open_checks: Vec<Value> = check_items
         .iter()
         .filter(|item| item.state == checks::CheckState::Open)
-        .map(|item| json!({ "id": item.id, "task": item.task, "check": item.check, "pass_if": item.pass_if }))
+        .map(|item| json!({ "id": item.id, "task": item.task, "check": item.check, "pass_if": item.pass_if, "thread": thread_of(item.task) }))
         .collect();
     // ^ The newest message the chat counts as new: a reply that is not quiet or a To check
     // item. The home row marks it until this device read the chat that far
@@ -639,8 +649,12 @@ fn to_check_rows(dir: &TaskDir, items: &[checks::CheckItem], task: u32) -> Value
 }
 
 /// A task's pending approvals; a request carries its label.
-/// A pending request as the page lists it among the needs, with its task's title.
-fn approval_item(line: &ApprovalLine, title: impl Fn(u32) -> Option<String>) -> Option<Value> {
+/// A pending request as the page lists it among the needs, with its task's title and thread
+/// (`task_of`).
+fn approval_item(
+    line: &ApprovalLine,
+    task_of: impl Fn(u32) -> Option<(String, Option<String>)>,
+) -> Option<Value> {
     let ApprovalLine::Request {
         id,
         action,
@@ -655,12 +669,15 @@ fn approval_item(line: &ApprovalLine, title: impl Fn(u32) -> Option<String>) -> 
     else {
         return None;
     };
+    let found = task.and_then(task_of);
     Some(json!({
         "kind": "approval", "approval": id, "action": owner::action_name(*action),
         "label": owner::approval_label(line),
         "task": task, "revision": revision, "commit": commit,
         "path": path, "url": url,
-        "title": task.and_then(title), "unix_ms": unix_ms,
+        "title": found.as_ref().map(|(title, _)| title),
+        "thread": found.as_ref().and_then(|(_, thread)| thread.as_ref()),
+        "unix_ms": unix_ms,
     }))
 }
 
@@ -838,9 +855,9 @@ pub fn chat(
             .into_iter()
             .filter_map(|line| {
                 approval_item(line, |id| {
-                    open_task(scope, id)
-                        .ok()
-                        .and_then(|dir| view::readable_title(&dir, &dir.read_record().ok()?))
+                    let dir = open_task(scope, id).ok()?;
+                    let record = dir.read_record().ok()?;
+                    Some((view::readable_title(&dir, &record)?, record.thread))
                 })
             })
             .collect::<Vec<_>>(),
@@ -1179,6 +1196,7 @@ pub fn checks(scope: &Scope, chat: Option<&str>) -> Outcome<Value> {
         .map(|(_, item)| {
             let mut row = json!(item);
             let dir = open_task(scope, item.task).ok();
+            row["thread"] = json!(dir.as_ref().and_then(|dir| dir.read_record().ok()?.thread));
             let title = dir
                 .as_ref()
                 .and_then(|dir| view::readable_title(dir, &dir.read_record().ok()?));
@@ -1344,8 +1362,14 @@ fn launcher<'a>(
 }
 
 /// Give the manager, or the open chat `chat`, an owner message, starting it when it does not
-/// run.
-pub fn say(app: &App, scope: &Scope, chat: Option<&str>, text: &str) -> Outcome<Value> {
+/// run. `thread`: the thread whose window the owner writes in.
+pub fn say(
+    app: &App,
+    scope: &Scope,
+    chat: Option<&str>,
+    thread: Option<&str>,
+    text: &str,
+) -> Outcome<Value> {
     let text = message(text, "the message")?;
     let wsx = std::env::current_exe().map_err(|error| internal(error.into()))?;
     let launch = launcher(app, scope);
@@ -1358,6 +1382,7 @@ pub fn say(app: &App, scope: &Scope, chat: Option<&str>, text: &str) -> Outcome<
         text,
         None,
         Vec::new(),
+        thread.map(str::to_string),
     )
     .map_err(|error| Fault::new(502, "manager_unavailable", format!("{error:#}")))?;
     if !response.ok {

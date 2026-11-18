@@ -7,11 +7,11 @@ use super::index::{self, day_ms};
 use super::record::{Kind, Record, Status};
 use super::store::{usage, Error, NewRecord, Patch, Store, MAX_KEYWORD_BYTES};
 use crate::task::chat::{read_chat, Window};
-use crate::task::chats;
 use crate::task::manager::{Author, ManagerEvent};
 use crate::task::store::{read_bounded_if_exists, write_note, ManagerDir, TaskDir};
 use crate::task::text::day_of;
 use crate::task::view::clip;
+use crate::task::{chats, thread};
 use crate::task::{Actor, LogEvent, TaskRecord, TaskState};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -422,6 +422,7 @@ fn old_record(slug: String, kind: Kind, text: String, source: String, updated: u
         keywords: Vec::new(),
         paths: Vec::new(),
         words: None,
+        thread: None,
         decided: None,
         extra: Default::default(),
     }
@@ -785,6 +786,15 @@ pub fn capture(
             keywords: Vec::new(),
             paths: if landed { paths.to_vec() } else { Vec::new() },
             words: None,
+            // ^ The memo of a thread's task is found by `--thread`.
+            thread: project
+                .is_none()
+                .then(|| {
+                    store
+                        .project_ids()
+                        .and_then(|(id, _)| thread::of_task(id, task))
+                })
+                .flatten(),
         },
         None,
     )
@@ -826,6 +836,7 @@ pub fn add_episode(
             keywords: Vec::new(),
             paths: Vec::new(),
             words: None,
+            thread: None,
         },
         None,
     )

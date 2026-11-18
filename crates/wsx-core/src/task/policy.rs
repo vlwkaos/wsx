@@ -71,10 +71,12 @@ pub enum Capability {
     Remember,
     /// Write a `rule` record, which needs the owner's word (`owner:<id>`).
     Decide,
+    /// `thread open|close|merge`: the owner's subjects inside a chat. A worker has none.
+    Thread,
 }
 
 /// Every capability, in bit order.
-pub const ALL: [Capability; 18] = [
+pub const ALL: [Capability; 19] = [
     Capability::Read,
     Capability::Notify,
     Capability::Answer,
@@ -93,6 +95,7 @@ pub const ALL: [Capability; 18] = [
     Capability::Recall,
     Capability::Remember,
     Capability::Decide,
+    Capability::Thread,
 ];
 
 /// What the strict profile takes from an untrusted agent: it reads memory and writes none.

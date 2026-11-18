@@ -20,7 +20,7 @@ use wsx_core::task::owner::{self};
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::store::{self, TaskDir};
 use wsx_core::task::MAX_MESSAGE_BYTES;
-use wsx_core::task::{search, text};
+use wsx_core::task::{search, text, thread};
 
 pub(crate) fn ensure_manager(project: Option<&str>) -> Result<(bool, ManagerDir)> {
     let (name, main) = project_entry(project)?;
@@ -43,6 +43,7 @@ pub(crate) fn say_command(
     to: Option<&str>,
     text: PromptSource,
     (from_chat, reply): (bool, bool),
+    thread: Option<String>,
     json: bool,
 ) -> Result<()> {
     if reply && !from_chat {
@@ -91,6 +92,7 @@ pub(crate) fn say_command(
         text,
         from,
         Vec::new(),
+        thread,
     )?;
     // ^ A chat's message always answers in JSON: its host logs `sent` from
     // the `text` (broker.rs). ref: docs/tasks.md "Managers talk"
@@ -177,7 +179,7 @@ pub(crate) fn search(
     words: &str,
     task: Option<&str>,
     all: bool,
-    limit: Option<usize>,
+    (limit, in_thread): (Option<usize>, Option<&str>),
     reindex: bool,
     json: bool,
 ) -> Result<()> {
@@ -207,6 +209,13 @@ pub(crate) fn search(
             }]
         }
     };
+    let in_thread = match in_thread {
+        Some(spec) => {
+            let (name, main) = project_entry(project)?;
+            Some(thread::Filter::new(&store::project_id(&name, &main), spec)?)
+        }
+        None => None,
+    };
     let started = Instant::now();
     let found = search::search(
         &targets,
@@ -215,6 +224,7 @@ pub(crate) fn search(
         limit.unwrap_or(SEARCH_HITS),
         reindex,
         only,
+        in_thread.as_ref(),
     )?;
     if json {
         let mut value = serde_json::to_value(&found)?;
@@ -327,6 +337,7 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
                     text,
                     Some(Author::Events),
                     vec![short],
+                    None,
                 )?;
             }
             let message = format!("chat {name} is open; `wsx task say --to {name}` talks to it");

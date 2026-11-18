@@ -1442,6 +1442,9 @@ struct SayInput {
     /// To this open chat instead of the manager.
     #[serde(default)]
     chat: Option<String>,
+    /// The thread of the chat whose window the text is written in.
+    #[serde(default)]
+    thread: Option<String>,
     /// The chat message the text answers (a Reply); wsx-core writes its quote.
     #[serde(default)]
     quote_id: Option<u64>,
@@ -1496,6 +1499,7 @@ async fn tasks_say(
             &app,
             &crate::tasks::scope(&app, project)?,
             input.chat.as_deref(),
+            input.thread.as_deref(),
             &text,
         )
         .map(Json)

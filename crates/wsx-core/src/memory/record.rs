@@ -94,6 +94,10 @@ pub struct Record {
     /// wsx extension, a `rule`'s: the owner's own words, which a view shows in place of `text`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<String>,
+    /// wsx extension: the thread (`<chat>/<slug>`) the record is about; none is the trunk.
+    /// `search --thread` finds it. ref: docs/tasks.md "Threads"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
     /// Fields of another writer that this one does not know; kept on every rewrite.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

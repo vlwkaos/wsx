@@ -3,6 +3,7 @@
 use super::record::{duplicate, fold, Folded, Kind, Line, Record, Status, MAX_TEXT_BYTES};
 use crate::task::checks::{self, CheckState};
 use crate::task::store::{self as task_store, ManagerDir, TaskDir};
+use crate::task::thread;
 use crate::task::{now_unix_ms, TaskState};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -130,6 +131,8 @@ pub struct NewRecord {
     pub paths: Vec<String>,
     /// A rule's: the owner's words (the caller has checked them against the message).
     pub words: Option<String>,
+    /// The thread (`<chat>/<slug>`) the record is about.
+    pub thread: Option<String>,
 }
 
 #[derive(Default)]
@@ -347,6 +350,13 @@ impl Store {
         if new.words.is_some() && new.kind != Kind::Rule {
             return usage("the owner's words belong to a rule");
         }
+        if new
+            .thread
+            .as_deref()
+            .is_some_and(|key| thread::split_key(key).is_none())
+        {
+            return usage("the thread is <chat>/<slug>");
+        }
         if matches!(new.title.as_deref(), Some(t) if t.contains('\n')) {
             return usage("the title is one line");
         }
@@ -387,6 +397,7 @@ impl Store {
             keywords,
             paths,
             words: new.words,
+            thread: new.thread,
             decided: (new.kind == Kind::Rule).then_some(now),
             extra: Default::default(),
         };

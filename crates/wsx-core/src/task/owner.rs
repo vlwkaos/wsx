@@ -134,7 +134,7 @@ pub fn ensure_repo_with(
 
 /// Give the manager, or the open chat `chat`, a message, starting it first when needed.
 /// `from` is another manager or chat; none is the owner. `short`: an events message's lines
-/// as the chat shows them.
+/// as the chat shows them; `thread`: the thread of the window the owner writes in.
 #[allow(clippy::too_many_arguments)]
 pub fn say(
     name: &str,
@@ -145,11 +145,17 @@ pub fn say(
     text: String,
     from: Option<super::manager::Author>,
     short: Vec<super::manager::Short>,
+    thread: Option<String>,
 ) -> Result<ManagerResponse> {
     let (_, dir) = ensure_manager(name, main, wsx, chat, launch)?;
     call_socket(
         &dir.socket_path(),
-        &ManagerRequest::Say { text, from, short },
+        &ManagerRequest::Say {
+            text,
+            from,
+            short,
+            thread,
+        },
         HOST_TIMEOUT,
     )
 }
@@ -178,6 +184,7 @@ pub fn close_chat(
         text,
         Some(super::manager::Author::Events),
         vec![short],
+        None,
     )
     .map(drop)
     .context("the chat is closed, but its hand-back did not reach the home chat")

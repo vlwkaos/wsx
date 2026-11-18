@@ -620,6 +620,7 @@ impl ManagerChat {
                         text.clone(),
                         None,
                         Vec::new(),
+                        None,
                     )
                 });
             match said {

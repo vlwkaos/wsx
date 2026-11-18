@@ -139,12 +139,18 @@ pub enum ManagerEvent {
         /// the message by it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         check: Option<String>,
+        /// The thread of the chat the message belongs to (`thread::tag`); none is the trunk.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thread: Option<String>,
     },
     /// These messages went to the agent in one turn.
     Delivered { ids: Vec<u64> },
     Reply {
         id: u64,
         to: Vec<u64>,
+        /// The threads of the messages it answers (`thread::reply_threads`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        threads: Vec<String>,
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TurnUsage>,
@@ -211,6 +217,25 @@ pub enum ManagerEvent {
     /// The owner dismissed the question of reply `id` (`wsx task dismiss`): it asks no more.
     /// No turn reads it. ref: docs/tasks.md "Manager"
     Answered { id: u64 },
+    /// A thread opened (`wsx task thread open`, or a message in a closed thread); `open` is how
+    /// many threads of the chat are open after it. ref: docs/tasks.md "Threads"
+    ThreadOpen {
+        thread: String,
+        title: String,
+        open: u32,
+    },
+    /// A thread closed by hand, with the reason.
+    ThreadClosed {
+        thread: String,
+        why: String,
+        open: u32,
+    },
+    /// `thread` merged into `into`: readers map one to the other, no row is rewritten.
+    ThreadMerged {
+        thread: String,
+        into: String,
+        open: u32,
+    },
 }
 
 /// One event as the chat shows it, written where the event is made: `#3 done`,
@@ -863,6 +888,10 @@ pub enum ManagerRequest {
         /// The chat's short form of an events message (`ManagerEvent::Message::short`).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         short: Vec<Short>,
+        /// The thread of the window the owner wrote in (`wsx task say --thread`); none is the
+        /// trunk, or the thread of a quote or a To check item (`thread::tag`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thread: Option<String>,
     },
     /// wsx writes to the owner with no manager turn: `event` as a delivered events message and
     /// `text` as the reply to it, with no usage. Refused while a turn runs: a reply after that
