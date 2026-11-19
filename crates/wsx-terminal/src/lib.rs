@@ -190,7 +190,6 @@ impl Emulator {
 }
 
 struct Process {
-    master: Mutex<Box<dyn MasterPty + Send>>,
     killer: Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>,
     process_group: Arc<std::sync::atomic::AtomicI32>,
 }
@@ -210,6 +209,9 @@ struct ReaderControl {
 
 struct Shared {
     emulator: Mutex<Emulator>,
+    /// The PTY master. The reader that sees the program end closes it (`release_pty`), so a
+    /// session that ended holds no kernel PTY (`kern.tty.ptmx_max`) until it is closed.
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     error: Arc<Mutex<Option<String>>>,
     revision: AtomicU64,
@@ -294,6 +296,7 @@ impl TerminalRuntime {
         let (reader, reader_wake) = reader_control()?;
         let shared = Arc::new(Shared {
             emulator: Mutex::new(emulator),
+            master: Mutex::new(Some(pair.master)),
             writer,
             error,
             revision: AtomicU64::new(1),
@@ -319,7 +322,6 @@ impl TerminalRuntime {
             terminal_id,
             shared,
             process: Some(Process {
-                master: Mutex::new(pair.master),
                 killer: Mutex::new(Some(killer)),
                 process_group: process_group_owner,
             }),
@@ -343,7 +345,9 @@ impl TerminalRuntime {
         if root_group <= 1 {
             return false;
         }
-        let foreground_group = lock(&process.master).process_group_leader();
+        let foreground_group = lock(&self.shared.master)
+            .as_ref()
+            .and_then(|master| master.process_group_leader());
         foreground_group.is_some_and(|group| group > 1 && group != root_group)
     }
 
@@ -372,7 +376,7 @@ impl TerminalRuntime {
                 .last_io
                 .store(wsx_core::task::now_unix_ms(), Ordering::Release);
         }
-        if let Some(process) = self.process.as_ref().filter(|_| !bytes.is_empty()) {
+        if self.process.is_some() && !bytes.is_empty() {
             if self.exited() {
                 return Err(TerminalError::Runtime("terminal process exited".into()));
             }
@@ -384,7 +388,10 @@ impl TerminalRuntime {
                     "PTY closed",
                 )));
             }
-            let master = lock(&process.master);
+            let master = lock(&self.shared.master);
+            let Some(master) = master.as_ref() else {
+                return Err(TerminalError::Runtime("terminal process exited".into()));
+            };
             return write_master_until(master.as_ref(), bytes, deadline).map_err(TerminalError::Io);
         }
         let _ = deadline;
@@ -416,11 +423,9 @@ impl TerminalRuntime {
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<(), TerminalError> {
         validate_dimensions(rows, cols)?;
-        let process = self
-            .process
+        lock(&self.shared.master)
             .as_ref()
-            .ok_or_else(|| TerminalError::Runtime("terminal has no PTY".into()))?;
-        lock(&process.master)
+            .ok_or_else(|| TerminalError::Runtime("terminal has no PTY".into()))?
             .resize(PtySize {
                 rows,
                 cols,
@@ -472,24 +477,7 @@ impl TerminalRuntime {
         if self.shared.terminating.swap(true, Ordering::AcqRel) {
             return;
         }
-        {
-            let mut writer = lock(&self.shared.writer);
-            // ^ portable-pty's writer writes an end-of-file byte when it is dropped. A program
-            // that stopped reading its input would hold that write, and wsxd with it, for ever.
-            if let Some(fd) = self
-                .process
-                .as_ref()
-                .and_then(|process| lock(&process.master).as_raw_fd())
-            {
-                unsafe {
-                    let flags = libc::fcntl(fd, libc::F_GETFL);
-                    if flags >= 0 {
-                        libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-                    }
-                }
-            }
-            writer.take();
-        }
+        close_writer(&self.shared);
         if let Some(process) = &self.process {
             terminate_group(take_process_group(&process.process_group));
             if let Some(killer) = lock(&process.killer).as_mut() {
@@ -511,6 +499,7 @@ impl TerminalRuntime {
             selection_clock: Instant::now(),
             shared: Arc::new(Shared {
                 emulator: Mutex::new(emulator),
+                master: Mutex::new(None),
                 writer,
                 error,
                 revision: AtomicU64::new(1),
@@ -533,6 +522,9 @@ impl Drop for TerminalRuntime {
             }
             if let Some(process) = self.process.take() {
                 std::mem::forget(process);
+            }
+            if let Some(master) = lock(&self.shared.master).take() {
+                std::mem::forget(master);
             }
             return;
         }
@@ -619,6 +611,7 @@ fn spawn_reader_fd(
             let fd = reader.as_raw_fd();
             let wake_fd = wake.as_raw_fd();
             let mut buffer = [0_u8; 16 * 1024];
+            let mut ended = false;
             loop {
                 {
                     let mut state = lock(&shared.reader.state);
@@ -676,6 +669,7 @@ fn spawn_reader_fd(
                     continue;
                 }
                 if count == 0 {
+                    ended = true;
                     break;
                 }
                 let error = io::Error::last_os_error();
@@ -687,12 +681,16 @@ fn spawn_reader_fd(
                     continue;
                 }
                 if error.raw_os_error() == Some(libc::EIO) {
+                    ended = true;
                     break;
                 }
                 set_error(&shared.error, format!("PTY reader failed: {error}"));
                 break;
             }
             mark_exited(&shared);
+            if ended {
+                release_pty(&shared);
+            }
         })
         .map(|_| ())
         .map_err(TerminalError::Io)
@@ -817,6 +815,33 @@ fn set_error(slot: &Mutex<Option<String>>, message: String) {
         *slot = Some(message);
     }
 }
+/// Closes the writer. It is dropped first, with the master non-blocking: portable-pty's writer
+/// writes an end-of-file byte when it is dropped, and a program that stopped reading its input
+/// would hold that write, and wsxd with it, for ever.
+fn close_writer(shared: &Shared) {
+    let mut writer = lock(&shared.writer);
+    if let Some(fd) = lock(&shared.master)
+        .as_ref()
+        .and_then(|master| master.as_raw_fd())
+    {
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags >= 0 {
+                libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+        }
+    }
+    writer.take();
+}
+
+/// Gives the PTY back to the kernel once the program has ended: reader EOF or EIO means every
+/// slave is closed and the last output is read. A session that ended keeps its screen but not
+/// its master and writer; the machine has `kern.tty.ptmx_max` of them (macOS 511).
+fn release_pty(shared: &Shared) {
+    close_writer(shared);
+    lock(&shared.master).take();
+}
+
 fn mark_exited(shared: &Shared) {
     let selection_changed = {
         let mut emulator = lock(&shared.emulator);

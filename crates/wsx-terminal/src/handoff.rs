@@ -147,13 +147,11 @@ impl TerminalRuntime {
     }
 
     pub fn duplicate_handoff_fd(&self) -> Result<RawFd, TerminalError> {
-        let process = self
-            .process
-            .as_ref()
-            .ok_or_else(|| TerminalError::Runtime("terminal has no PTY".into()))?;
-        let master = lock(&process.master);
+        let master = lock(&self.shared.master);
         duplicate_fd(
             master
+                .as_ref()
+                .ok_or_else(|| TerminalError::Runtime("terminal has no PTY".into()))?
                 .as_raw_fd()
                 .ok_or_else(|| TerminalError::Runtime("PTY has no file descriptor".into()))?,
         )
@@ -247,6 +245,7 @@ impl TerminalRuntime {
         }
         let shared = Arc::new(Shared {
             emulator: Mutex::new(emulator),
+            master: Mutex::new(Some(master)),
             writer,
             error,
             revision: AtomicU64::new(state.revision.max(1)),
@@ -264,7 +263,6 @@ impl TerminalRuntime {
             terminal_id: state.terminal_id,
             shared,
             process: Some(Process {
-                master: Mutex::new(master),
                 killer: Mutex::new(None),
                 process_group: Arc::new(std::sync::atomic::AtomicI32::new(state.process_group)),
             }),
@@ -290,6 +288,7 @@ impl TerminalRuntime {
             terminal_id: state.terminal_id,
             shared: Arc::new(Shared {
                 emulator: Mutex::new(emulator),
+                master: Mutex::new(None),
                 writer,
                 error,
                 revision: AtomicU64::new(state.revision.max(1)),

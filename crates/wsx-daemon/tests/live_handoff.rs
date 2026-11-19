@@ -1055,6 +1055,162 @@ fn an_exited_pane_hands_off_as_its_last_screen() {
 
 // docs/daemon-live-upgrade.md "A failed handoff": a target that exits before it takes the
 // handoff ends the wait at once; the daemon keeps serving and keeps the step and the error.
+/// The process that serves `socket`, named by the kernel as the client's `peer_pid` does.
+#[cfg(target_os = "macos")]
+fn serving_pid(socket: &Path) -> libc::pid_t {
+    use std::os::fd::AsRawFd;
+    let stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    let mut pid: libc::pid_t = 0;
+    let mut length = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // ^ The kernel writes at most `length` bytes into this pid_t.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&mut pid as *mut libc::pid_t).cast(),
+            &mut length,
+        )
+    };
+    assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
+    pid
+}
+
+#[cfg(not(target_os = "macos"))]
+fn serving_pid(socket: &Path) -> libc::pid_t {
+    use std::os::fd::AsRawFd;
+    let stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // ^ The kernel writes at most `length` bytes into this ucred.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(),
+            &mut length,
+        )
+    };
+    assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
+    credentials.pid
+}
+
+/// How many descriptors of `pid` are open on the PTY multiplexer: one per master, plus the
+/// duplicates its reader and writer hold.
+fn ptmx_fds(pid: libc::pid_t) -> usize {
+    #[cfg(target_os = "linux")]
+    {
+        fs::read_dir(format!("/proc/{pid}/fd"))
+            .unwrap()
+            .filter_map(|entry| fs::read_link(entry.ok()?.path()).ok())
+            .filter(|target| target == Path::new("/dev/ptmx"))
+            .count()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let listed = Command::new("lsof")
+            .args(["-n", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&listed.stdout)
+            .lines()
+            .filter(|line| line.ends_with(" /dev/ptmx"))
+            .count()
+    }
+}
+
+fn wait_for_ptmx_fds(socket: &Path, what: &str, done: impl Fn(usize) -> bool) -> usize {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let count = ptmx_fds(serving_pid(socket));
+        if done(count) {
+            return count;
+        }
+        assert!(Instant::now() < deadline, "{what}: {count} ptmx fds");
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+// ^ The machine has `kern.tty.ptmx_max` masters (macOS 511) for every process. A session whose
+// program ended, or that was closed, must not keep its master, and a handoff must not add any.
+#[test]
+fn ended_and_closed_sessions_give_their_pty_back_also_through_a_handoff() {
+    const ENDED: usize = 6;
+    const LIVE: usize = 3;
+    // ^ Master, the reader's duplicate and the writer: three descriptors a live pane holds.
+    const PER_PANE: usize = 3;
+    let mut fixture = Fixture::new();
+    let binary = fixture.wsxd();
+    let client = start(&mut fixture, &binary);
+    let mut commands = Vec::new();
+    for index in 0..ENDED {
+        commands.push((format!("ended-{index}"), "printf 'bye\\n'".to_string()));
+    }
+    for index in 0..LIVE {
+        commands.push((
+            format!("live-{index}"),
+            "while IFS= read -r line; do printf '%s\\n' \"$line\"; done".to_string(),
+        ));
+    }
+    let listed = commands
+        .iter()
+        .map(|(label, command)| (label.as_str(), command.as_str()))
+        .collect::<Vec<_>>();
+    let panes = sessions(&client, "ptys", &listed);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !panes[..ENDED]
+        .iter()
+        .all(|pane| pane_exited(&client, *pane))
+    {
+        assert!(Instant::now() < deadline, "an ended pane did not exit");
+        thread::sleep(Duration::from_millis(50));
+    }
+    let held = wait_for_ptmx_fds(&fixture.socket, "ended sessions kept their PTY", |count| {
+        count <= LIVE * PER_PANE
+    });
+    assert!(held > 0, "the live panes hold no PTY");
+
+    let old_epoch = lifecycle(&client).epoch;
+    let next = fixture.root.join("bin/next-wsxd");
+    fs::copy(&binary, &next).unwrap();
+    let identity = binary_identity(&next).unwrap();
+    client.call(&prepare_handoff(identity, next, true)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !matches!(
+        client.call(&Request::LifecycleStatus),
+        Ok(Response::Lifecycle(status)) if status.epoch != old_epoch
+    ) {
+        assert!(Instant::now() < deadline, "the handoff did not finish");
+        thread::sleep(Duration::from_millis(100));
+    }
+    wait_for_ptmx_fds(&fixture.socket, "the handoff added PTYs", |count| {
+        (1..=LIVE * PER_PANE).contains(&count)
+    });
+
+    for pane in &panes[ENDED..] {
+        let Response::Snapshot(snapshot) = client.call(&Request::Snapshot).unwrap() else {
+            panic!("no snapshot");
+        };
+        let session = snapshot
+            .sessions
+            .iter()
+            .find(|session| session.primary_pane == *pane)
+            .unwrap();
+        client
+            .call(&Request::SessionClose {
+                session_id: session.id,
+                expected_revision: session.revision,
+            })
+            .unwrap();
+    }
+    wait_for_ptmx_fds(&fixture.socket, "closed sessions kept their PTY", |count| {
+        count == 0
+    });
+    client.shutdown().unwrap();
+    wait_for_socket_removal(&fixture.socket);
+}
+
 #[test]
 fn a_failed_handoff_keeps_its_reason() {
     use std::os::unix::fs::PermissionsExt;
