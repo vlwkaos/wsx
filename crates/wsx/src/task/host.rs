@@ -2511,7 +2511,8 @@ impl Host {
     /// joins `disk_wait` like a turn held for disk. True when it waits.
     /// ref: docs/design/scheduler.md
     fn wait_for_load(&mut self, what: DiskWait) -> bool {
-        if self.disk_slot.is_some() {
+        // ^ A fixture (`WSX_SCENARIO_SLOTS`) starts its turns at once: its tests read the first wait.
+        if self.disk_slot.is_some() || !slot::ruled() {
             return false;
         }
         let want = Want::new(Lane::Turns, self.urgency().0);

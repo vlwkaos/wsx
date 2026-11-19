@@ -68,22 +68,22 @@ impl Lane {
         }
     }
 
-    /// The machine rules (load, memory, disk, PTYs) apply unless the owner fixed the width
-    /// (`WSX_SCENARIO_SLOTS`, which every fixture sets): then each lane is first come, first served.
-    fn ruled() -> bool {
-        std::env::var_os("WSX_SCENARIO_SLOTS").is_none()
-    }
-
     /// PTYs a run of the lane needs free: a check's, or the larger scenario round's until the
     /// command says (`Want::command`).
     fn ptys(self) -> u64 {
         match self {
-            _ if !Lane::ruled() => 0,
+            _ if !ruled() => 0,
             Lane::Checks => schedule::CHECK_PTYS,
             Lane::Scenarios => schedule::run_ptys(""),
             Lane::Turns => 0,
         }
     }
+}
+
+/// Whether the machine rules (load, memory, disk, PTYs, turn gate) apply: they do unless the owner fixed
+/// the width (`WSX_SCENARIO_SLOTS`, which every fixture sets); then each lane is first come, first served.
+pub fn ruled() -> bool {
+    std::env::var_os("WSX_SCENARIO_SLOTS").is_none()
 }
 
 /// A run's place in a lane.
@@ -180,7 +180,7 @@ pub fn admit(ticket: &Ticket, want: &Want, label: &str, waited: Duration) -> Res
                 waited,
                 scenarios: matches!(lane, Lane::Scenarios),
                 ptys: want.ptys,
-                paced: matches!(lane, Lane::Scenarios | Lane::Turns) && Lane::ruled(),
+                paced: matches!(lane, Lane::Scenarios | Lane::Turns) && ruled(),
                 max: lane.max(),
                 min_free_mb: want.min_free_mb,
             },
