@@ -141,12 +141,13 @@ export function CheckRow({ project, item: listed, revision, onChanged, onReply, 
 
 // Every open item of the project in its sheet, oldest first, with All passed in the top bar.
 // `item`: the item a reservoir row opened, scrolled to and marked once the list is in.
-export function ChecksPage({ project, item = null, onClose, onReply, grip }) {
+export function ChecksPage({ project, item = null, room = null, scope = null, onClose, onReply, grip }) {
   const store = useStore();
   // ^ The overview counts the open items; a change anywhere reads the list again.
   const count = store.tasks[project]?.to_check;
-  const [list, failure, read] = useSheetRead(`api/tasks/${project}/checks`, { again: [count] });
-  const items = list?.open ?? null;
+  // ^ Over a chat's window, its own items; over a thread's, that thread's (the window's counts, tasks.js `Manager`).
+  const [list, failure, read] = useSheetRead(`api/tasks/${project}/checks${room ? `?chat=${encodeURIComponent(room)}` : ""}`, { again: [count] });
+  const items = list?.open && (scope ? scope(list.open) : list.open);
   const [busy, setBusy] = useState(false);
   const [passFailure, setPassFailure] = useState("");
   const scroll = useRef();
@@ -171,7 +172,9 @@ export function ChecksPage({ project, item = null, onClose, onReply, grip }) {
     setBusy(true);
     setPassFailure("");
     try {
-      await api(`api/tasks/${project}/checks/all/pass`, { method: "POST", json: {} });
+      // ^ All passed passes what the sheet lists: the project's call only when the sheet lists them all.
+      if (room || scope) for (const each of items) await api(`api/tasks/${project}/checks/${each.id}/pass`, { method: "POST", json: {} });
+      else await api(`api/tasks/${project}/checks/all/pass`, { method: "POST", json: {} });
       loadTasks(project);
       await read();
     } catch (error) {

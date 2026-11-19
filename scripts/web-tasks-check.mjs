@@ -458,7 +458,7 @@ const bubbles = () => evaluate(`[...document.querySelectorAll('.log .bubble')].m
 await resize([390, 844, 2]);
 await pair(cdp, siteUrl, code);
 const homeOf = (id) => evaluate(`fetch('api/tasks/${id}').then((r) => r.json()).then((view) => view.home_chat)`);
-// ^ A project's chat is at #/c/<home chat>; its sheets and lists stay under #/p/<id> (docs/web-client.md "Routes").
+// ^ A project's chat is at #/c/<home chat> and its sheets at the end of that route; its sessions and files stay under #/p/<id> (docs/web-client-tasks.md "Routes"). The older #/p/<id>/<sheet> links open too.
 const repoBase = `#/p/${project}`;
 const chat = `#/c/${await homeOf(project)}`;
 const page = (n) => `#/p/${project}/t/${n}`;
@@ -1635,7 +1635,7 @@ phase("The Overview button in the chat header (icon only), and Sett");
     const overview = await evaluate(`(() => { const node = document.querySelector('.manager a.icon-button[href$="/page"]'); return node && { label: node.getAttribute('aria-label'), title: node.title, icon: !!node.querySelector('svg.icon'), words: node.textContent.trim() }; })()`);
     if (!overview || overview.label !== "Overview" || overview.title !== "Overview" || !overview.icon || overview.words) await fail(`the Overview button is ${JSON.stringify(overview)}`);
     await click('.manager a.icon-button[href$="/page"]');
-    await until(`location.hash === '#/p/${project}/page' && !!document.querySelector('dialog.task-sheet[open] .project-overview h1')`, "a tap on the Overview button did not open the overview");
+    await until(`location.hash === '${chat}/page' && !!document.querySelector('dialog.task-sheet[open] .project-overview h1')`, "a tap on the Overview button did not open the overview");
     await closeSheet("the overview sheet", chat);
   } finally {
   }
@@ -1880,7 +1880,7 @@ await pause(200);
 const top0 = await logTop();
 await openReservoir();
 await evaluate(`${rowOf("#2")}.querySelector('.row-open').click()`);
-await until(`location.hash === '#/p/${project}/t/2' && !!document.querySelector('dialog.task-sheet[open] .story')`, "a reservoir row did not open the task sheet");
+await until(`location.hash === '${chat}/task/2' && !!document.querySelector('dialog.task-sheet[open] .story')`, "a reservoir row did not open the task sheet");
 // ^ The sheet's agent: the detail's `agent` field and its words beside the health.
 const sheetAgent = await evaluate(`fetch('api/tasks/${project}/t/2').then((r) => r.json()).then((view) => view.agent)`);
 if (!sheetAgent?.model || sheetAgent.fallback !== false) await fail(`the task detail's agent is ${JSON.stringify(sheetAgent)}`);
@@ -1895,14 +1895,14 @@ await closeSheet("the sheet a row opened", chat);
 await closeReservoir();
 if (await logTop() !== top0) await fail(`closing the sheet moved the chat from ${top0} to ${await logTop()}`);
 await evaluate("[...document.querySelectorAll('.log .task-chip')].find((chip) => chip.textContent.trim() === '#2').click()");
-await until(`location.hash === '#/p/${project}/t/2' && !!document.querySelector('dialog.task-sheet[open] .story')`, "a chip did not open the task sheet");
+await until(`location.hash === '${chat}/task/2' && !!document.querySelector('dialog.task-sheet[open] .story')`, "a chip did not open the task sheet");
 if (await logTop() !== top0) await fail(`a chip moved the chat from ${top0} to ${await logTop()}`);
 await closeSheet("the sheet a chip opened");
 await click(".jump");
 await until(atEnd, "Jump to latest did not return to the end");
 await typeInto(".composer-field", "a draft that stays");
 await evaluate("[...document.querySelectorAll('.log .task-chip')].find((chip) => chip.textContent.trim() === '#2').click()");
-await until(`location.hash === '#/p/${project}/t/2' && !!document.querySelector('dialog.task-sheet[open] .story')`, "a chip did not open the task sheet");
+await until(`location.hash === '${chat}/task/2' && !!document.querySelector('dialog.task-sheet[open] .story')`, "a chip did not open the task sheet");
 await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
 const sheetBox = await evaluate("(() => { const r = document.querySelector('dialog.task-sheet').getBoundingClientRect(); return { top: Math.round(r.top), height: Math.round(r.height) }; })()");
 if (Math.abs(sheetBox.height - 844 * 0.85) > 2 || Math.abs(sheetBox.top - 844 * 0.15) > 2) await fail(`the sheet is not 85% high: ${JSON.stringify(sheetBox)}`);
@@ -3036,10 +3036,10 @@ if (!(JSON.parse(await where()).scroll[0] > 0)) await fail("Home does not scroll
 await sameBack("a project's chat", opens(`a.home-row[href="${chat}"]`, "!!document.querySelector('.composer-field')", "the chat"), topBack);
 await go(chat);
 await until("!!document.querySelector('.composer-field')", "the chat did not open");
-const sheetOpen = (part) => `!!document.querySelector('dialog.task-sheet[open]') && location.hash.startsWith(${JSON.stringify(repoBase + part)})`;
-await sameBack("the overview", opens(`.manager > .bar a[href="${repoBase}/page"]`, sheetOpen("/page"), "the overview"), sheetBack);
-await sameBack("the task sheet", opens(`.log a.task-chip[href^="${repoBase}/t/"]`, sheetOpen("/t/"), "the task sheet"), sheetBack);
-await sameBack("the usage sheet", fromMenu(`a[href="${repoBase}/usage"]`, sheetOpen("/usage"), "the usage sheet"), sheetBack);
+const sheetOpen = (part) => `!!document.querySelector('dialog.task-sheet[open]') && location.hash.startsWith(${JSON.stringify(chat + part)})`;
+await sameBack("the overview", opens(`.manager > .bar a[href="${chat}/page"]`, sheetOpen("/page"), "the overview"), sheetBack);
+await sameBack("the task sheet", opens(`.log a.task-chip[href^="${chat}/task/"]`, sheetOpen("/task/"), "the task sheet"), sheetBack);
+await sameBack("the usage sheet", fromMenu(`a[href="${chat}/usage"]`, sheetOpen("/usage"), "the usage sheet"), sheetBack);
 await sameBack("the project's sessions", fromMenu(`a[href="${repoBase}/sessions"]`, "!!document.querySelector('#main .worktree')", "the project's sessions"), topBack);
 await go("#/sessions");
 await until("[...document.querySelectorAll('a[href*=\"#/s/\"]')].some((node) => node.textContent.includes('old chat'))", "the inbox does not list old chat");
@@ -3469,7 +3469,7 @@ phase("Progress: the top of an open task's sheet at 390x844, for ea");
   };
   const open = async (task) => {
     await go(`#/p/${plansArg}/t/${task}`);
-    await until(`location.hash.endsWith('/t/${task}') && !!document.querySelector('dialog.task-sheet[open] .story')`, `plans #${task}'s sheet did not open`);
+    await until(`location.hash.endsWith('/task/${task}') && !!document.querySelector('dialog.task-sheet[open] .story')`, `plans #${task}'s sheet did not open`);
   };
   const top = () => evaluate(`({ health: document.querySelector('.progress-health')?.textContent ?? '', age: document.querySelector('.progress-age')?.textContent ?? '',
     steps: [...document.querySelectorAll('.progress-steps li')].map((node) => (node.dataset.done != null ? '+' : node.getAttribute('aria-current') ? '>' : '') + node.textContent.trim()).join(' '),
@@ -4303,7 +4303,7 @@ phase("A task mention of another project (docs/web-client-tasks.md ");
   await until(`location.hash === '${chat}' && [...document.querySelectorAll('.log .bubble')].some((node) => node.textContent.includes(${JSON.stringify(plansMark)}))`, "Back did not return to ui's chat from plans'", 100);
   // ^ A tap moves to plans' chat with #1's sheet over it; Back returns to ui's chat.
   await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).querySelector('a.task-chip').click()`);
-  await until(`location.hash === '#/p/${plansArg}/t/1' && !!document.querySelector('dialog.task-sheet[open]')`, "plans #1 did not open from ui's chat", 60);
+  await until(`location.hash.endsWith('/task/1') && !!document.querySelector('dialog.task-sheet[open]')`, "plans #1 did not open from ui's chat", 60);
   // ^ The sheet shows "#1" until the task's detail is read; plans' #1 is the one that mentions "jump between projects".
   await until("/jump between projects/.test(document.querySelector('dialog.task-sheet[open]')?.textContent ?? '')", "the sheet is not plans' #1", 100);
   await evaluate("history.back()");
@@ -4311,7 +4311,7 @@ phase("A task mention of another project (docs/web-client-tasks.md ");
   // ^ The own project's bare #1 opens ui's #1.
   await until(`[...document.querySelectorAll('.log .bubble')].some((node) => node.textContent.includes(${JSON.stringify(plansMark)}))`, "ui's chat did not come back", 60);
   await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).querySelectorAll('a.task-chip')[1].click()`);
-  await until(`location.hash === '#/p/${project}/t/1' && !!document.querySelector('dialog.task-sheet[open]')`, "ui #1 did not open from a bare #1", 60);
+  await until(`location.hash.endsWith('/task/1') && !!document.querySelector('dialog.task-sheet[open]')`, "ui #1 did not open from a bare #1", 60);
   await closeSheet("ui #1", chat);
   // ^ plans is not granted (taken out of the live store): its manager's bare #1 is text, no link.
   await evaluate(`(async () => { const { state, update } = await ${pageModule("store.js")}; globalThis.mentionKept = state.projects;

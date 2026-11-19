@@ -4,7 +4,7 @@
 // task_view), the rest beside it.
 import { api, openEvents, pageId, QUIET_MS } from "./api.js";
 import { html, Icon, render, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
-import { can, chatHash, events, leaveFor, noteBuild, parseRoute, replaceRoute, restorePlace, shownTabs, shows, stackUnder, state, tabs, trackHistory, update, useRoute, useStore } from "./store.js";
+import { can, chatHash, events, leaveFor, noteBuild, parseRoute, replaceRoute, restorePlace, shownTabs, shows, sheetSuffix, stackUnder, state, tabs, trackHistory, update, useRoute, useStore } from "./store.js";
 import { Home } from "./home.js";
 import { applyBar, applyScheme, applyTabs, Notices, toast } from "./ui.js";
 import { Pair, takePairCode } from "./pair.js";
@@ -112,13 +112,13 @@ const Tabs = ({ current, rail }) => {
 function Screen({ route }) {
   if (route.screen === "session") return html`<${Session} key=${route.id} id=${route.id} tab=${route.tab} />`;
   if (route.screen === "files") return html`<${Files} key=${`${route.id}:${route.file ?? ""}`} project=${route.id} file=${route.file} />`;
-  // ^ The chat and the chat with a task's sheet are one Manager, so opening and closing the
-  // sheet keeps the conversation, its scroll and the composer's draft.
-  if (route.screen === "project" || route.screen === "task") {
-    return can("task_view") ? html`<${Manager} key=${route.id} project=${route.id} sheet=${route.sheet ?? null} task=${route.task ?? null} item=${route.item ?? null} />` : route.sheet === "panels" ? html`<${PanelsScreen} key=${route.id} project=${route.id} />` : html`<${Project} key=${route.id} id=${route.id} />`;
+  if (route.screen === "project" && !can("task_view")) return route.sheet === "panels" ? html`<${PanelsScreen} key=${route.id} project=${route.id} />` : html`<${Project} key=${route.id} id=${route.id} />`;
+  // ^ One Manager is the chat window: a project's chat or another one, whatever thread it is at and whatever
+  // sheet is over it, so opening a sheet or a thread keeps the strip, the composer and its draft
+  // (docs/web-client-tasks.md "Routes"). The project's own route and its sheets are the home chat's.
+  if ((route.screen === "project" || route.screen === "chat") && can("task_view") && route.id != null) {
+    return html`<${Manager} key=${`${route.id}/${route.room ?? ""}`} project=${route.id} chat=${route.room} thread=${route.thread} sheet=${route.sheet} task=${route.task} item=${route.item} />`;
   }
-  // ^ A project's home chat is its manager: the same Manager as its sheets, so a sheet keeps the conversation.
-  if (route.screen === "chat" && can("task_view") && route.id != null) return html`<${Manager} key=${route.room || route.thread ? [route.id, route.room, route.thread].join("/") : route.id} project=${route.id} chat=${route.room} thread=${route.thread} />`;
   if (route.screen === "sessions") return html`<${ProjectSessions} key=${route.id} id=${route.id} />`;
   if (route.screen === "settings") return html`<${Settings} sub=${route.sub} />`;
   if (route.screen === "projects") return html`<${Projects} />`;
@@ -135,7 +135,7 @@ function App() {
   // ^ An old bookmark, #/p/<id>/c/<chat> or the project's #/p/<id>, is replaced by its chat's own route.
   useEffect(() => {
     const home = route.screen === "project" && can("task_view") ? state.tasks[route.id]?.home_chat : null;
-    const to = route.old ? chatHash(route.chat) : home ? chatHash(home) : null;
+    const to = route.old ? chatHash(route.chat) : home ? chatHash(home) + sheetSuffix(route) : null;
     if (to) leaveFor(to);
   });
   // ^ A link to #/machine keeps the bar on a device without the tab (no right to read panels), so the way out stays.
@@ -144,7 +144,7 @@ function App() {
     const titles = { home: can("task_view") ? "Home" : "Inbox", inbox: can("task_view") ? "Sessions" : "Inbox",
       projects: "Projects", machine: "Machine", settings: "Settings", files: "Files" };
     const session = route.screen === "session" && state.sessions.find((candidate) => candidate.id === route.id);
-    const project = ["project", "sessions", "task", "chat"].includes(route.screen) && state.projects.find((candidate) => candidate.id === route.id);
+    const project = ["project", "sessions", "chat"].includes(route.screen) && state.projects.find((candidate) => candidate.id === route.id);
     document.title = `${session ? session.label : project ? project.name : titles[route.screen] ?? "Session"} - ${state.site.name}`;
   });
   useLayoutEffect(restorePlace);
@@ -159,8 +159,8 @@ function App() {
   // The rail keeps the list the main area was reached from. With task_view a session or the
   // files keep the list they were opened from, and a project's chat has home.
   let list;
-  if (!can("task_view")) list = ["projects", "project", "files", "sessions", "task", "chat"].includes(route.screen) ? "projects" : "inbox";
-  else if (["home", "project", "task", "chat", "projects", "sessions"].includes(route.screen)) list = "home";
+  if (!can("task_view")) list = ["projects", "project", "files", "sessions", "chat"].includes(route.screen) ? "projects" : "inbox";
+  else if (["home", "project", "chat", "projects", "sessions"].includes(route.screen)) list = "home";
   else if (route.screen === "inbox") list = "inbox";
   else list = lastList.current;
   lastList.current = list;
@@ -191,7 +191,7 @@ let shown, streamUp = false;
 function tellPresence(force) {
   if (!streamUp || !can("task_view") || !can("push")) return;
   const route = parseRoute(location.hash);
-  const project = document.visibilityState === "visible" && (["project", "sessions", "task", "files"].includes(route.screen) || (route.screen === "chat" && !route.room)) ? route.id ?? null : null;
+  const project = document.visibilityState === "visible" && (["project", "sessions", "files"].includes(route.screen) || (route.screen === "chat" && !route.room)) ? route.id ?? null : null;
   if (project === shown && !force) return;
   shown = project;
   api("api/presence", { method: "POST", json: { page: pageId, project } }).catch(() => { shown = undefined; });
@@ -281,7 +281,7 @@ function start(session) {
   addEventListener("online", back);
   document.addEventListener("visibilitychange", back);
   const opened = parseRoute(location.hash);
-  if (opened.screen === "task" && can("task_view")) stackUnder(`#/p/${opened.id}`);
+  if (opened.screen === "project" && opened.sheet && can("task_view")) stackUnder(`#/p/${opened.id}`);
   addEventListener("hashchange", () => tellPresence(false));
   document.addEventListener("visibilitychange", () => tellPresence(false));
   // ^ index.html's "Loading…" placeholder is not Preact's: a first render adopts an

@@ -6,6 +6,7 @@
 // A row that can be quoted is a child of the log with `data-quote`, its first line as the
 // server cuts it (wsx-core `quote_of`, sent as `quote`).
 import { html, Icon, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
+import { sheetHash } from "./store.js";
 import { toast } from "./ui.js";
 import { commits, speedAt, swipes, track } from "./swipe.js";
 
@@ -50,7 +51,7 @@ export function Quote({ quote, id = null, check = null, project = null }) {
       ? rows?.find((other) => other.dataset.id === String(check ?? id))
       : rows?.filter((other) => other.dataset.quote === quote && (other.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING)).at(-1);
     if (!target && check != null) {
-      location.hash = `#/p/${project}/checks/${check}`;
+      location.hash = sheetHash(project, "checks", check);
       return;
     }
     if (!target && id != null) {

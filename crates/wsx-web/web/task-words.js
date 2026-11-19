@@ -2,7 +2,7 @@
 // and status of a task in words and tone, the `#n` chip, and `withChips` (docs/web-client-tasks.md).
 // ^ Imports nothing from tasks.js, so the screens that show a task need not import the manager.
 import { html, useEffect, useRef, useState } from "./lib.js";
-import { state, useStore } from "./store.js";
+import { sheetHash, state, useStore } from "./store.js";
 
 // Motion only where the user allows it (the no-preference block of app.css); under reduce,
 // nothing moves and nothing waits for an animation to end.
@@ -29,7 +29,7 @@ const STAGES = {
   working: ["working", "working"], needs_you: ["needs you", "attention"], done: ["done", "muted"], closed: ["closed", "muted"],
 };
 export const taskStage = (task) => STAGES[task?.stage] ?? [task?.stage ?? "", "muted"];
-export const taskLink = (project, task) => `#/p/${project}/t/${task}`;
+export const taskLink = (project, task) => sheetHash(project, "task", task);
 
 // ^ A task whose worker's turn runs: nothing else holds it (the server's `status.waits_on`,
 // wsx-core `status::waits_on`, holder `host`). Its dot pulses; a ready task, a plan, a paused
@@ -112,7 +112,7 @@ export function withChips(project, source = null) {
         } else if (bare) {
           nodes.push(bareOwner == null ? word : chip(bareOwner, bare));
         } else {
-          nodes.push(html`<a class="page-link" href=${`#/p/${project}/page`}>${word}</a>`);
+          nodes.push(html`<a class="page-link" href=${sheetHash(project, "page")}>${word}</a>`);
         }
       }
       nodes.push(text.slice(from));

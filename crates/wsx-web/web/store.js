@@ -167,14 +167,13 @@ export const shownTabs = (list = tabs()) => {
 };
 
 // Routes: #/ (home: the projects with task_view, else the inbox), #/sessions (the inbox),
-// #/projects, #/machine, #/settings[/ui|usage], #/s/<id>/chat|terminal, #/p/<id> (the manager with task_view, else the
-// sessions), #/p/<id>/sessions, #/p/<id>/files, #/p/<id>/t/<task> (the manager with the task's sheet),
-// #/p/<id>/page (the manager with the project overview's sheet, `sheet: "overview"`), #/p/<id>/checks[/<item>] (with the To check list, at the item),
-// #/p/<id>/usage (with the project's token use and cost), #/p/<id>/panels (with its panels),
-// #/p/<id>/media (with the media archive),
-// #/c/<chat>[/t/<thread>] (a chat, a project's home chat or another one, docs/tasks.md "Chats", at one of its threads,
-// docs/design/chat-system.md). The older
-// #/p/<id>/c/<chat> reads as the same chat with `old`, and App replaces it.
+// #/projects, #/machine, #/settings[/ui|usage], #/s/<id>/chat|terminal, #/p/<id> (the project's chat with task_view, else the
+// sessions), #/p/<id>/sessions, #/p/<id>/files,
+// #/c/<chat>[/t/<thread>][/<sheet>] (a chat, a project's home chat or another one, docs/tasks.md "Chats", at one of its
+// threads, docs/design/chat-system.md, with a sheet over it: `task/<n>`, `page` (the project overview, `sheet: "overview"`),
+// `checks[/<item>]`, `usage`, `panels`, `media`; a sheet is the end of its window's route, docs/web-client-tasks.md "Routes").
+// The older #/p/<id>/<sheet> (`t/<n>` for a task) and #/p/<id>/c/<chat> read as the project's chat or the chat, and App
+// replaces them by the window's route.
 export const chatHash = (chat) => `#/c/${encodeURIComponent(chat)}`;
 // The project that runs chat `name` and its `room` (none for the project's home chat, which is
 // its manager), from the task overviews: none until they are read, or when no project has it.
@@ -185,14 +184,32 @@ export function chatPlace(name) {
   }
   return {};
 }
+// ^ The sheets over a chat: the route name `page` is the overview's (its API and event keep it).
+const SHEET_NAMES = { __proto__: null, task: "task", page: "overview", checks: "checks", usage: "usage", panels: "panels", media: "media" };
+const sheetOf = (name, arg) => {
+  const sheet = SHEET_NAMES[name];
+  if (sheet === "task") return Number(arg) ? { sheet, task: Number(arg) } : {};
+  return sheet ? { sheet, item: sheet === "checks" && /^c\d+$/.test(arg ?? "") ? arg : null } : {};
+};
+// The end of a route that has a sheet: `/checks/c3`, `/task/7`, `/page`.
+export const sheetSuffix = ({ sheet, task, item }) => sheet ? `/${sheet === "overview" ? "page" : sheet}${task != null ? `/${task}` : item ? `/${item}` : ""}` : "";
+// ^ A sheet's link: the open window's route and the sheet, so the chat and its thread stay under it. Outside
+// a chat of this project it is the older `#/p/<project>/<sheet>`, which App replaces by the project's chat.
+export function sheetHash(project, sheet, arg = null) {
+  const [, first, chat, third, fourth] = location.hash.split("/");
+  const here = first === "c" && chatPlace(decodeURIComponent(chat)).id === project;
+  const at = here ? `#/c/${chat}${third === "t" && fourth ? `/t/${fourth}` : ""}` : `#/p/${project}`;
+  return `${at}/${!here && sheet === "task" ? "t" : sheet}${arg != null ? `/${arg}` : ""}`;
+}
 export function parseRoute(hash) {
-  const [, first = "", second, third, fourth] = hash.split("/");
+  const [, first = "", second, third, fourth, fifth, sixth] = hash.split("/");
   if (first === "s" && Number(second)) return { screen: "session", id: Number(second), tab: third === "terminal" ? "terminal" : "chat" };
-  if (first === "p" && Number(second) && third === "t" && Number(fourth)) return { screen: "task", id: Number(second), sheet: "task", task: Number(fourth) };
-  // ^ The sheets over the manager's chat: the route name `page` is the overview's (its API and event keep it).
-  const sheet = { __proto__: null, page: "overview", checks: "checks", usage: "usage", panels: "panels", media: "media" }[third];
-  if (first === "p" && Number(second) && sheet) return { screen: "task", id: Number(second), sheet, item: sheet === "checks" && /^c\d+$/.test(fourth ?? "") ? fourth : null };
-  if (first === "c" && second) return { screen: "chat", chat: decodeURIComponent(second), ...chatPlace(decodeURIComponent(second)), thread: third === "t" && fourth ? decodeURIComponent(fourth) : null };
+  const old = sheetOf(third === "t" ? "task" : third, fourth);
+  if (first === "p" && Number(second) && old.sheet) return { screen: "project", id: Number(second), ...old };
+  if (first === "c" && second) {
+    const chat = decodeURIComponent(second), thread = third === "t" && fourth ? decodeURIComponent(fourth) : null;
+    return { screen: "chat", chat, ...chatPlace(chat), thread, ...(thread ? sheetOf(fifth, sixth) : sheetOf(third, fourth)) };
+  }
   if (first === "p" && Number(second) && third === "c" && fourth) return { screen: "chat", chat: decodeURIComponent(fourth), ...chatPlace(decodeURIComponent(fourth)), old: true };
   if (first === "p" && Number(second)) {
     // ^ `#/p/<project>/files/<path>` opens that file (a manager's message about a routine links it).

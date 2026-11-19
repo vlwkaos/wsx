@@ -220,7 +220,9 @@ export function useFollowEnd(name, ready) {
   const top = useRef(0);
   const full = useRef(0);
   const [away, setAway] = useState(false);
-  const [opened] = useState(() => readMap(READ_KEY)[name] ?? null);
+  // ^ The place the log shows: its read mark and where the reader left it. A new `name` (a chat's
+  // other thread, whose rows came in) is a first opening of that place: the old one is kept first.
+  const entered = useRef({ name: null, opened: null });
   const placed = useRef(false);
   // ^ The row the reader left, held where they left it until they scroll: the rows above it
   // may still grow (a diagram draws) after the log opens, while the log is too short to
@@ -229,7 +231,7 @@ export function useFollowEnd(name, ready) {
   // ^ The observers keep the first render's functions: they read the props through refs.
   const loaded = useRef(ready);
   loaded.current = ready;
-  const read = useRef(opened?.read ?? null);
+  const read = useRef(null);
   const [unread, setUnread] = useState(0);
   // ^ Layout positions, not getBoundingClientRect: a row's entry animation moves it with a
   // transform, which must not count as a move. `.log` is positioned, so offsetTop is in the log.
@@ -247,7 +249,7 @@ export function useFollowEnd(name, ready) {
       const before = read.current;
       for (const row of rows) if (row.offsetTop + row.offsetHeight <= bottom) read.current = Math.max(read.current ?? 0, Number(row.dataset.at));
       // ^ Kept at once, so a list beside the chat (the rail's home) sees it read.
-      if (read.current !== before) keepRead(name, { ...readMap(READ_KEY)[name], read: read.current });
+      if (read.current !== before) keepRead(entered.current.name, { ...readMap(READ_KEY)[entered.current.name], read: read.current });
     }
     setUnread(rows.filter((row) => Number(row.dataset.at) > read.current).length);
   };
@@ -274,8 +276,16 @@ export function useFollowEnd(name, ready) {
     const element = node.current;
     if (!placed.current || !element) return;
     const named = !atEnd.current && [...element.children].find((child) => child.dataset.key && child.offsetTop >= element.scrollTop);
-    keepRead(name, { read: read.current, place: named ? { key: named.dataset.key, offset: named.offsetTop - element.scrollTop } : null });
+    keepRead(entered.current.name, { read: read.current, place: named ? { key: named.dataset.key, offset: named.offsetTop - element.scrollTop } : null });
   };
+  if (entered.current.name !== name) {
+    keep();
+    entered.current = { name, opened: readMap(READ_KEY)[name] ?? null };
+    read.current = entered.current.opened?.read ?? null;
+    placed.current = false;
+    restore.current = null;
+    atEnd.current = true;
+  }
   // The first placement, once the first read is in.
   const open = () => {
     const element = node.current;
@@ -283,7 +293,7 @@ export function useFollowEnd(name, ready) {
     // ^ A chat opened for the first time on this device has nothing unread.
     if (read.current == null) read.current = Math.max(0, ...incoming().map((row) => Number(row.dataset.at)));
     const fresh = element.querySelector(":scope > .log-new");
-    const place = opened?.place;
+    const place = entered.current.opened?.place;
     const left = place && [...element.children].find((row) => row.dataset.key === place.key);
     if (fresh) element.scrollTop = fresh.offsetTop - parseFloat(getComputedStyle(element).paddingTop);
     else if (left) {
@@ -415,7 +425,7 @@ export function useFollowEnd(name, ready) {
       keep();
     };
   }, []);
-  return { log, node, away, unread, since: opened?.read ?? null, scrolled, toEnd, reveal };
+  return { log, node, away, unread, since: entered.current.opened?.read ?? null, scrolled, toEnd, reveal };
 }
 
 // Motion that script drives (a list that reorders, a view that leaves) reads the same tokens

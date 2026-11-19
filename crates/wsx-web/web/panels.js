@@ -5,7 +5,7 @@
 // is done and when the panel's `refresh` is due.
 import { api } from "./api.js";
 import { html, Icon, Loading, useEffect, useNow, useState } from "./lib.js";
-import { can, goBack, shows, state, useStore } from "./store.js";
+import { can, goBack, sheetHash, shows, state, useStore } from "./store.js";
 import { SheetPage, useSheetRead } from "./ui.js";
 
 // `base`: a project's panels, or the machine card (api/machine).
@@ -23,7 +23,7 @@ export function PanelsButton({ project }) {
     api(url(projectPanels(project))).then((value) => setNames(value.panels ?? []), () => {});
   }, [project]);
   if (!names.length) return null;
-  return html`<a class="icon-button" href=${`#/p/${project}/panels`} aria-label="Panels" title="Panels"><${Icon} name="panel" /></a>`;
+  return html`<a class="icon-button" href=${sheetHash(project, "panels")} aria-label="Panels" title="Panels"><${Icon} name="panel" /></a>`;
 }
 
 // 8.5, 16: one decimal, none when whole.
