@@ -40,3 +40,11 @@ Sweep, owner state (3 buttons), 23 widths 320-430 px: before 0 clipped, after 0 
 ## Files
 
 `build.py` makes the pages from `../chat-system/build.py`'s helpers (run from its source, not copied). `before.css` is app.css at fe0a7c25. `capture.mjs` shoots `sheet-<state>-<dark|light>-<390|1280>.png` (before left, after right) and measures. `CHROME_BIN=<chrome --no-sandbox> node capture.mjs`.
+
+## The real sheet (real.mjs)
+
+`CHROME_BIN=<chrome --no-sandbox> node real.mjs [--rev <commit>] [--shots]` runs the product's own task.js, story.js, app.css and theme tokens in
+headless Chrome, with only the answer of `api/tasks/<project>/t/<n>` canned (four states). It measures clipped buttons, the first line under the
+header, sideways scroll and an opened-scrolled sheet at 390 and 1280 px in both schemes, and every phone width 320 to 430 px for two states.
+Result at 32709399 (before) and at HEAD (after): 0 problems on both. The owner's two cuts (header over the first line, Land cut to "and") do not
+reproduce in Chrome with the old code either, so they need the owner's phone. `--shots` writes `real-<state>-<scheme>-<width>.png`.

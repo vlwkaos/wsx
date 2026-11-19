@@ -1218,7 +1218,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .progress { display: flex; flex-direction: column; gap: var(--space-2); }
 .story-state { margin: 0; }
 .story-state .mark { display: inline-block; margin-inline-end: var(--space-2); vertical-align: middle; }
-.story-state .progress-age { margin: 0; }
+.story-state .progress-age { margin: 0; white-space: nowrap; }
 .story-ask { margin: 0; }
 .progress-health { font-weight: var(--font-weight-strong); }
 .progress-model { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-sm); color: var(--color-muted); }
