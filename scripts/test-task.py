@@ -2554,8 +2554,9 @@ def part_core(created=None):
     # ^ An event names the host's checks before the worker's own words.
     assert '#%d ready r1: NOOP; checks 1 of 1 passed; worker says (unchecked): did: NOOP' % first in merged[0]['text'], merged
     # ^ A turn takes every waiting message of one author: an earlier events message may share it.
+    # ^ The events wait for the 25 s LONG turn to end.
     delivered = wait(lambda: (lambda ids: ids if any(merged[0]['id'] in batch for batch in ids) else None)(
-        [e['ids'] for e in manager_entries() if e['kind'] == 'delivered']), 'merged events delivered')
+        [e['ids'] for e in manager_entries() if e['kind'] == 'delivered']), 'merged events delivered', 60)
     batch = lambda message_id: next(n for n, ids in enumerate(delivered) if message_id in ids)
     assert delivered[batch(waiting['id'])] == [waiting['id']] and batch(waiting['id']) < batch(merged[0]['id']), (
         delivered, waiting['id'], merged[0]['id'],
