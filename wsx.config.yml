@@ -11,9 +11,6 @@ tasks:
   env:
     CARGO_INCREMENTAL: "0"
   minFreeGb: 3
-  # ^ A worker turn starts through the same scheduler as a scenario run: it waits while the load is
-  # over the start limit, in order of urgency (docs/design/scheduler.md). Off, a turn starts at once.
-  gateTurns: true
   # ^ Fast checks after each result and each land. The slow end-to-end scripts are the
   # scenarios below, run by the worker whose change touches their area.
   checks:
@@ -37,7 +34,7 @@ tasks:
   # another task waits for first). A run goes to GitHub Actions only when this Mac cannot run it
   # (free disk under `minFreeGb` after the cleanup, or a tool is missing), or when an urgent run
   # would wait here longer than a CI round. The task's status says why. A run also waits while
-  # the Mac has fewer free PTYs than a round needs (`schedule::RUN_PTYS`).
+  # the Mac has fewer free PTYs than a round needs (`schedule::run_ptys`).
   # ref: docs/design/scheduler.md, docs/tasks.md "Scenarios"
   scenarios:
     task: python3 -B scripts/scenario.py task

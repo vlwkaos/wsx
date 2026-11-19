@@ -32,9 +32,21 @@ const WIDEN_LOAD: f64 = 1.5;
 const SETTLE: Duration = Duration::from_secs(90);
 const RUN_RAM_MB: u64 = 3 * 1024;
 const RUN_DISK_MB: u64 = 3 * 1024;
-/// PTYs a run needs free before it starts (docs/design/scheduler.md "Measured"): the Mac has
-/// `kern.tty.ptmx_max` of them for every process, and a run that finds none fails with `failed to openpty`.
-pub const RUN_PTYS: u64 = 60;
+// ^ PTYs a run adds at its peak (docs/design/scheduler.md "Measured"): the Mac has `kern.tty.ptmx_max`
+// of them for every process, and a run that finds none fails with `failed to openpty`.
+/// A task's checks (nextest).
+pub const CHECK_PTYS: u64 = 60;
+const TASK_ROUND_PTYS: u64 = 222;
+const WEB_ROUND_PTYS: u64 = 274;
+
+/// The PTYs a scenario command needs free to start: its round's peak. A command that is not
+/// `scenario.py task` takes the larger round's.
+pub fn run_ptys(command: &str) -> u64 {
+    match scenario_of(command) {
+        "task" => TASK_ROUND_PTYS,
+        _ => WEB_ROUND_PTYS,
+    }
+}
 
 /// The order of the runs that wait: a land's checks, a task others wait for, a task the owner
 /// asked for, the rest. The queue sorts tickets by it, then by arrival.
@@ -230,10 +242,12 @@ pub fn decide(run: &Run, lane: &Lane) -> Verdict {
     let cores_f = cores as f64;
     let busy = lane.holders + lane.ahead;
     // ^ No wait ends it: a run that starts without a PTY fails with `failed to openpty`.
-    if let Some(free) = free_ptys.filter(|free| *free < lane.ptys) {
+    // ^ The pool must hold the peak of every run in the lane and of this one: a run that just
+    // started has not opened its PTYs yet.
+    let need = lane.ptys * (lane.holders as u64 + 1);
+    if let Some(free) = free_ptys.filter(|free| *free < need) {
         return Verdict::Wait(Some(format!(
-            "waiting for PTYs: {free} free, a round needs ~{}",
-            lane.ptys
+            "waiting for PTYs: {free} free, a round needs ~{need}"
         )));
     }
     if !lane.paced && lane.ahead == 0 {
@@ -369,14 +383,14 @@ mod tests {
                 cores: 10,
                 free_ram_mb: Some(16 * 1024),
                 free_disk_mb: Some(40 * 1024),
-                free_ptys: Some(300),
+                free_ptys: Some(10_000),
             },
             holders,
             newest: Some(Duration::from_secs(600)),
             ahead,
             waited: Duration::ZERO,
             scenarios: true,
-            ptys: RUN_PTYS,
+            ptys: TASK_ROUND_PTYS,
             paced: true,
             max: 3,
             min_free_mb: 3 * 1024,
@@ -431,21 +445,25 @@ mod tests {
     }
 
     #[test]
-    fn a_run_waits_for_the_ptys_it_needs() {
+    fn a_run_waits_for_the_ptys_its_round_needs() {
         let normal = run(false, 15 * 60_000);
         let mut few = lane(0, 0, 1.0);
-        few.machine.free_ptys = Some(RUN_PTYS - 1);
+        few.machine.free_ptys = Some(TASK_ROUND_PTYS - 1);
         assert_eq!(
             decide(&normal, &few),
             Verdict::Wait(Some(format!(
-                "waiting for PTYs: {} free, a round needs ~{RUN_PTYS}",
-                RUN_PTYS - 1
+                "waiting for PTYs: {} free, a round needs ~{TASK_ROUND_PTYS}",
+                TASK_ROUND_PTYS - 1
             )))
         );
-        // The pool counts for a run beside another, for an unpaced lane, and for an urgent run.
-        let mut beside = lane(1, 0, 1.0);
-        beside.machine.free_ptys = Some(0);
-        assert!(matches!(decide(&normal, &beside), Verdict::Wait(Some(_))));
+        // The measured rounds (222 and 274 PTYs) in a 511 pool with the live wsxd's ~144: one
+        // round starts, and a second never starts beside it.
+        let mut pool = lane(0, 0, 1.0);
+        pool.machine.free_ptys = Some(511 - 144);
+        assert_eq!(decide(&normal, &pool), Verdict::Go);
+        pool.holders = 1;
+        assert!(matches!(decide(&normal, &pool), Verdict::Wait(Some(_))));
+        // The pool counts for an unpaced lane and for an urgent run too.
         few.paced = false;
         assert!(matches!(decide(&normal, &few), Verdict::Wait(Some(_))));
         let mut urgent = lane(2, 2, 18.0);
@@ -461,6 +479,8 @@ mod tests {
         off.machine.free_ptys = Some(0);
         off.ptys = 0;
         assert_eq!(decide(&normal, &off), Verdict::Go);
+        assert_eq!(run_ptys("python3 -B scripts/scenario.py task"), 222);
+        assert_eq!(run_ptys("python3 -B scripts/scenario.py web"), 274);
     }
 
     #[test]

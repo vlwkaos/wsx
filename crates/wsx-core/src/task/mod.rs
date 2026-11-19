@@ -105,7 +105,7 @@ pub enum WaitOn {
     /// ref: docs/tasks.md "By hand"
     Hand,
     /// The Mac's load: a worker turn waits in the turn queue until the load per core is under
-    /// `schedule::START_LOAD` (only with `tasks.gateTurns`); the host starts it by itself.
+    /// `schedule::START_LOAD` ; the host starts it by itself.
     /// ref: docs/design/scheduler.md
     Load,
     /// The machine's check slot: a `checking` task, or a worker's `check-run`, waits for the

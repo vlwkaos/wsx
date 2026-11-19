@@ -32,7 +32,7 @@ pub enum Lane {
     Checks,
     /// A worker's `check-run` that names a scenario, and `wsx task hold`.
     Scenarios,
-    /// The start of a worker turn, once `tasks.gateTurns` is on: one at a time, `schedule::SETTLE`
+    /// The start of a worker turn, one at a time, `schedule::SETTLE`
     /// apart, while the load allows.
     Turns,
 }
@@ -74,11 +74,14 @@ impl Lane {
         std::env::var_os("WSX_SCENARIO_SLOTS").is_none()
     }
 
-    /// PTYs a run of the lane needs free (`schedule::RUN_PTYS`).
+    /// PTYs a run of the lane needs free: a check's, or the larger scenario round's until the
+    /// command says (`Want::command`).
     fn ptys(self) -> u64 {
         match self {
-            Lane::Checks | Lane::Scenarios if Lane::ruled() => schedule::RUN_PTYS,
-            _ => 0,
+            _ if !Lane::ruled() => 0,
+            Lane::Checks => schedule::CHECK_PTYS,
+            Lane::Scenarios => schedule::run_ptys(""),
+            Lane::Turns => 0,
         }
     }
 }
@@ -93,6 +96,8 @@ pub struct Want {
     pub typical_ms: u64,
     /// `tasks.minFreeGb` in MiB, which a second run leaves free.
     pub min_free_mb: u64,
+    /// PTYs the run needs free (`schedule::run_ptys`); 0 when the owner fixed the width.
+    pub ptys: u64,
 }
 
 impl Want {
@@ -103,7 +108,16 @@ impl Want {
             urgent: None,
             typical_ms: 0,
             min_free_mb: 0,
+            ptys: lane.ptys(),
         }
+    }
+
+    /// The run's command, which sets the PTYs its round needs.
+    pub fn command(mut self, command: &str) -> Want {
+        if self.ptys > 0 && matches!(self.lane, Lane::Scenarios) {
+            self.ptys = schedule::run_ptys(command);
+        }
+        self
     }
 }
 
@@ -165,7 +179,7 @@ pub fn admit(ticket: &Ticket, want: &Want, label: &str, waited: Duration) -> Res
                 ahead: held.ahead,
                 waited,
                 scenarios: matches!(lane, Lane::Scenarios),
-                ptys: lane.ptys(),
+                ptys: want.ptys,
                 paced: matches!(lane, Lane::Scenarios | Lane::Turns) && Lane::ruled(),
                 max: lane.max(),
                 min_free_mb: want.min_free_mb,
@@ -183,7 +197,7 @@ pub fn run(argv: &[String]) -> anyhow::Result<i32> {
         argv.join(" ").chars().take(120).collect::<String>(),
         std::process::id()
     );
-    let want = Want::new(Lane::Scenarios, Priority::Normal);
+    let want = Want::new(Lane::Scenarios, Priority::Normal).command(&argv.join(" "));
     let _held = take(&want, &label, |reason| println!("{reason}"))?;
     let status = std::process::Command::new(&argv[0])
         .args(&argv[1..])

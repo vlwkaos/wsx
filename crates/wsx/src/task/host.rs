@@ -2505,13 +2505,13 @@ impl Host {
         true
     }
 
-    /// With `tasks.gateTurns`, a turn starts only when the scheduler lets it (the load, in the
+    /// A turn starts only when the scheduler lets it (the load, in the
     /// order of `schedule::urgency`), one at a time `disk_settle()` apart so the next sees the
     /// load this one adds. The turn waits in the `turn` queue and resumes by itself; its text
     /// joins `disk_wait` like a turn held for disk. True when it waits.
     /// ref: docs/design/scheduler.md
     fn wait_for_load(&mut self, what: DiskWait) -> bool {
-        if !self.settings().gate_turns || self.disk_slot.is_some() {
+        if self.disk_slot.is_some() {
             return false;
         }
         let want = Want::new(Lane::Turns, self.urgency().0);
@@ -3286,10 +3286,10 @@ impl Host {
             return Want::new(Lane::Checks, Priority::Normal);
         }
         let (priority, urgent) = self.urgency();
-        let mut want = Want::new(Lane::Scenarios, priority);
+        let command = to_run.first().map_or("", |(_, command)| command.as_str());
+        let mut want = Want::new(Lane::Scenarios, priority).command(command);
         if urgent.is_some() {
             // ^ Only an urgent run can go to CI, so only it needs the estimate.
-            let command = to_run.first().map_or("", |(_, command)| command);
             want.typical_ms = schedule::typical_ms(&self.record.project_id, command);
         }
         want.urgent = urgent;
