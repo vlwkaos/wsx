@@ -9,15 +9,16 @@ Dark is the page default; a light page sets data-scheme="light" on <html>, as th
 import html
 import pathlib
 import re
+import subprocess
 
 HERE = pathlib.Path(__file__).parent
 TOML = HERE / "../../../crates/wsx-web/web/themes/default/theme.toml"
 
 
-def tokens():
+def tokens(text=None):
     """The default theme's [tokens] and [tokens_dark] as theme.rs writes them."""
     block, found = None, {"tokens": [], "tokens_dark": []}
-    for line in TOML.read_text().splitlines():
+    for line in (text or TOML.read_text()).splitlines():
         if line.startswith("["):
             block = line.strip("[]")
         elif block in found and re.match(r"^[a-z0-9-]+ = ", line):
@@ -41,6 +42,7 @@ PATH = {
     "pass": "M4.5 10.5l3.5 3.5 7-8",
     "send": "M10 16V4.5M5 9l5-5 5 5",
     "up": "M5 12.5l5-5 5 5",
+    "routines": "M10 4.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11ZM10 7v3.5l2.3 1.4",
     "attach": "M14.5 9.5 9 15a3 3 0 0 1-4.2-4.2l6-6a2 2 0 0 1 2.8 2.8l-5.7 5.7a1 1 0 0 1-1.4-1.4L11 7.4",
 }
 e = html.escape
@@ -139,14 +141,21 @@ def sheet(active):
             '<ul class="thread-opts">%s</ul><button class="thread-opt thread-opt-new" type="button">%s<span class="thread-opt-name">New thread</span></button></div>' % (rows, icon("plus")))
 
 
-def composer(token=None, you=2, tasks=3, threads="", real=False, box=""):
+def pills(you, tasks, routines, bar=False):
+    """The pills of tasks.js `Pills`: an icon, the count, the label (shown by CSS only where it fits). bar: a device that cannot act."""
+    one = ('<button class="pill" type="button" data-kind="%s"%s aria-label="%s">%s<span class="pill-count">%s</span><span class="pill-label" aria-hidden="true">%s</span></button>')
+    out = "".join(one % (kind, ' data-tone="attention"' if kind == "you" else "", "%s %s" % (n, label.lower()), icon(glyph), n, label)
+                  for kind, glyph, n, label in (("you", "unchecked", you, "For you"), ("tasks", "play", tasks, "Tasks"), ("routines", "routines", routines, "Routines")) if n)
+    return '<div class="pills%s" role="group" aria-label="For you, tasks, routines">%s</div>' % (" pill-bar" if bar else "", out)
+
+
+def composer(token=None, you=2, tasks=3, threads="", real=False, box="", routines=0):
     """The composer DOM of tasks.js. real: the paperclip and the placeholder the client has; box: a desktop variant (composer.css rules in mock.css)."""
-    pills = ('<div class="pills" role="group"><button class="pill" type="button" data-kind="you" data-tone="attention">%s<span class="pill-count">%d</span><span class="pill-label">For you</span></button>'
-             '<button class="pill" type="button" data-kind="tasks">%s<span class="pill-count">%d</span><span class="pill-label">Tasks</span></button></div>' % (icon("unchecked"), you, icon("play"), tasks))
+    group = pills(you, tasks, routines)
     hint = "Message \u00b7 # task @ project / skill" if real else ("Message in " + token if token else "Message")
     return ('<div class="composer"%s><div class="composer-row"><button class="icon-button" type="button" aria-label="%s">%s</button>%s%s<div class="composer-input"><textarea class="composer-field" rows="1" aria-label="Message" placeholder="%s"></textarea></div>'
             '<button class="button button-primary composer-send" type="button" aria-label="Send"><span class="send-mark">%s</span><span class="send-text">Send</span></button></div></div>'
-            % (' data-box="%s"' % box if box else "", "Attach files" if real else "Attach", icon("attach" if real else "plus"), pills, threads, hint, icon("send")))
+            % (' data-box="%s"' % box if box else "", "Attach files" if real else "Attach", icon("attach" if real else "plus"), group, threads, hint, icon("send")))
 
 
 def tasks_in(rows):
@@ -240,13 +249,13 @@ def tasks_list(after):
             % (icon("back"), " inline" if after else "", rows))
 
 
-def page(file, body, light, label, extra=""):
+def page(file, body, light, label, extra="", before=False):
     scheme = ' data-scheme="light"' if light else ""
     (HERE / file).write_text(
         '<!doctype html>\n<html lang="en"%s><head><meta charset="utf-8"><title>%s</title><meta name="viewport" content="width=device-width, initial-scale=1">'
-        '<link rel="stylesheet" href="../../../crates/wsx-web/web/app.css"><link rel="stylesheet" href="theme.css"><link rel="stylesheet" href="mock.css">%s</head>'
+        '<link rel="stylesheet" href="%s"><link rel="stylesheet" href="%s"><link rel="stylesheet" href="mock.css">%s</head>'
         '<body data-theme="default"><div id="app"><div class="app"><main class="screen">%s</main></div></div>'
-        '<script>if (innerWidth >= 900) { document.querySelector(".app").setAttribute("data-wide", ""); document.querySelectorAll(".tabbar").forEach((n) => n.remove()) }</script></body></html>\n' % (scheme, label, extra, body))
+        '<script>if (innerWidth >= 900) { document.querySelector(".app").setAttribute("data-wide", ""); document.querySelectorAll(".tabbar").forEach((n) => n.remove()) }</script></body></html>\n' % (scheme, label, "before.css" if before else "../../../crates/wsx-web/web/app.css", "theme-before.css" if before else "theme.css", extra, body))
 
 
 PAGES = {
@@ -269,24 +278,36 @@ for light in (False, True):
         page("%s-%s.html" % (name, "light" if light else "dark"), body, light, label)
 
 
-# ---- Task 519: round corners and the composer without a band, before and after, side by side ----
-# before = the real app.css; after = the same plus round.css, which is the build's CSS change written as overrides:
-#   1. the three radius tokens retuned, the Home menu (tab bar: pill 2 x sheet, tab = sheet = 16 px) is the family's size;
-#   2. the ad-hoc radii (half of key, a fraction of space, half-round bar ends) go to a token;
-#   3. the composer rules of a phone (`.app:not([data-wide])`) lose that condition: one rule on every width, copied here from app.css.
-APP = (HERE / "../../../crates/wsx-web/web/app.css").read_text()
-APP_NOCOMMENT = re.sub(r"/\*.*?\*/", "", APP, flags=re.S)
-PHONE_COMPOSER = [
-    re.sub(r"\.app:not\(\[data-wide\]\) ?", ".app ", m.group(0)).replace("padding: var(--space-1) var(--space-4);", "padding: var(--space-1) var(--column-inset, var(--space-4));")
-    for m in re.finditer(r"[^{}]*\.app:not\(\[data-wide\]\)[^{}]*\{[^{}]*\}", APP_NOCOMMENT)
-    if re.search(r"composer|send-mark|send-text", m.group(0).split("{")[0])]
-(HERE / "round.css").write_text(
-    "/* Task 519, after: the build's CSS as overrides of app.css (see build.py). */\n"
-    ":root { --radius-key: 12px; --radius-control: 16px; --radius-sheet: 16px; }\n"
-    ".markdown :not(pre) > code, .state-chip, .task-chip, .markdown .task-chip { border-radius: var(--radius-key); }\n"
-    ".usage-legend i, .usage-parts dt i { border-radius: var(--radius-key); }\n"
-    "/* the composer: one rule on every width */\n" + "\n".join(" ".join(r.split()) for r in PHONE_COMPOSER) + "\n")
-print("composer rules made one:", len(PHONE_COMPOSER))
+# ---- Task 519: round corners, the composer without a band and smaller pills, before and after, side by side ----
+# before = app.css and theme.toml of main at BEFORE (git show); after = the real app.css and theme.toml of this branch (the corners and the
+# one-card composer are built) plus round.css, the pills: smaller, icon and count, a label only where the row has room, never a bar of their own.
+BEFORE = "0cec218a"
+ROOT = HERE / "../../../"
+for name, path in (("before.css", "crates/wsx-web/web/app.css"), ("theme-before.toml", "crates/wsx-web/web/themes/default/theme.toml")):
+    (HERE / name).write_text(subprocess.run(["git", "show", "%s:%s" % (BEFORE, path)], cwd=ROOT, check=True, capture_output=True, text=True).stdout)
+old = tokens((HERE / "theme-before.toml").read_text())
+(HERE / "theme-before.css").write_text(
+    ':root{color-scheme:light;%s}\n:root:not([data-scheme="light"]),[data-scheme="dark"]{color-scheme:dark;%s}\n' % (";".join(old["tokens"]), ";".join(old["tokens_dark"])))
+(HERE / "theme-before.toml").unlink()
+(HERE / "round.css").write_text("""/* Task 519, after: the pills (build.py). Smaller, an icon and its count; the words only where the composer has room for them;
+   the group never wraps to a line of its own. Two rows in a narrow composer (the field, then attach, pills and Send share the second),
+   one row from 34rem of composer width (attach, the field, the pills, Send), so a wide window keeps the height of a bar. The thresholds are the composer's
+   own width, not the device's. */
+.composer { container: composer / inline-size; }
+.pill { --pill-height: calc(var(--size-key) - var(--space-3)); padding: 0 var(--space-2); font-size: var(--font-size-sm); }
+.pill .icon { width: calc(var(--space-4) * 0.875); height: calc(var(--space-4) * 0.875); }
+.pills { flex: 1 1 0; margin-right: var(--space-1); overflow: hidden; }
+.pill-label, .app[data-wide] .pills:not(.pill-bar) .pill-label { display: none; }
+@container composer (min-width: 34rem) {
+  .app .composer-row { flex-wrap: nowrap; }
+  .app .composer-input { order: 0; flex: 1 1 0; margin-bottom: 0; }
+  .app .composer-row:has(.pills) .composer-input { margin-bottom: 0; }
+  .pills { flex: 0 0 auto; margin-right: var(--space-2); }
+}
+@container composer (min-width: 40rem) { .pills .pill-label, .app[data-wide] .pills:not(.pill-bar) .pill-label { display: inline; } }
+/* a device that cannot act: the pills are in the header, beside Find */
+.bar-tools .pills { margin: 0; flex: 0 0 auto; overflow: visible; }
+""")
 
 TABS = {"Home": "M3 9.5 10 4l7 5.5V16H3Z", "Tasks": PATH["play"], "Projects": "M3 5h5l2 2h7v8H3Z", "Settings": "M4 6h12M4 10h12M4 14h12"}
 
@@ -300,14 +321,14 @@ def tabbar():
     return '<nav class="tabbar" aria-label="Screens"><div class="tabbar-pill">%s</div></nav>' % "".join(tab(n, n == "Home") for n in TABS)
 
 
-def chat_plain(menu=False):
+def chat_plain(menu=False, counts=(3, 5, 2)):
     body = (bubble("out", "What is left before the 0.43 release?", time="14:01")
             + bubble("in", "Two things: the changelog (#97, working) and your check of #96. Nothing else blocks the tag.", "manager", "14:02")
             + note('<span class="chip">#94</span> landed \u00b7 2 of 2 checks')
             + bubble("out", "Start #99 after #97 lands, and tell me when the tag is ready.", time="14:05")
             + bubble("in", "Done: #99 waits for #97. I will write here when the tag is ready. See `wsx task show 99`.", "manager", "14:05"))
     return '<div class="page manager">%s<div class="chat"><div class="scroll chat-body">%s</div>%s</div></div>' % (
-        bar("wsx", "", menu=menu, items=("Rename chat", "Close chat")), body, composer(you=3, real=True))
+        bar("wsx", "", menu=menu, items=("Rename chat", "Close chat")), body, composer(you=counts[0], tasks=counts[1], routines=counts[2], real=True))
 
 
 def grouped_tasks():
@@ -329,7 +350,19 @@ def new_chat_sheet():
             '<div class="actions sheet-actions"><button class="button" type="button">Cancel</button><button class="button button-primary" type="submit">Create</button></div></form></dialog>')
 
 
-ROUND = {"home": (home() + tabbar(), "Home and its menu"), "chat": (chat_plain(), "A chat with the composer"),
+def viewer(after):
+    """A device that cannot act (no composer). Today: the pills in a bar of their own at the foot. After: in the header beside Find."""
+    body = (bubble("out", "What is left before the 0.43 release?", time="14:01")
+            + bubble("in", "Two things: the changelog (#97, working) and your check of #96. Nothing else blocks the tag.", "manager", "14:02")
+            + note('<span class="chip">#94</span> landed \u00b7 2 of 2 checks'))
+    head = bar("wsx", "", items=("Rename chat", "Close chat"))
+    if after:
+        head = head.replace('<div class="bar-tools">', '<div class="bar-tools">' + pills(3, 5, 2), 1)
+    return '<div class="page manager">%s<div class="chat"><div class="scroll chat-body">%s</div>%s</div></div>' % (
+        head, body, "" if after else pills(3, 5, 2, bar=True))
+
+
+ROUND = {"chat-big": (chat_plain(counts=("99+", "99+", "99+")), "A chat at 320 px, counts of 99+"), "viewer": (viewer(False), "A device that cannot act", viewer(True)), "home": (home() + tabbar(), "Home and its menu"), "chat": (chat_plain(), "A chat with the composer"),
          "chat-menu": (chat_plain(menu=True), "A chat, the more menu open"), "tasks": (grouped_tasks(), "The Tasks page"),
          "sheet": (new_chat_sheet(), "Home, the New chat sheet")}
 WRAP = ('<!doctype html>\n<html lang="en"%s><head><meta charset="utf-8"><title>%s</title><style>body{margin:0;background:#888;font:600 14px system-ui;color:#fff}'
@@ -337,8 +370,8 @@ WRAP = ('<!doctype html>\n<html lang="en"%s><head><meta charset="utf-8"><title>%
         '<body><div class="pair"><div>Before (app.css today)<iframe src="x-%s-before-%s.html"></iframe></div><div>After (round corners, one composer)<iframe src="x-%s-after-%s.html"></iframe></div></div></body></html>\n')
 for light in (False, True):
     tag = "light" if light else "dark"
-    for name, (body, label) in ROUND.items():
-        page("x-%s-before-%s.html" % (name, tag), body, light, label + ", before")
-        page("x-%s-after-%s.html" % (name, tag), body, light, label + ", after", '<link rel="stylesheet" href="round.css">')
-        for width, height in ((390, 844), (1280, 800)):
+    for name, (body, label, *later) in ROUND.items():
+        page("x-%s-before-%s.html" % (name, tag), body, light, label + ", before", before=True)
+        page("x-%s-after-%s.html" % (name, tag), later[0] if later else body, light, label + ", after", '<link rel="stylesheet" href="round.css">')
+        for width, height in (((320, 740),) if name == "chat-big" else ((390, 844), (1280, 800))):
             (HERE / ("round-%s-%s-%d.html" % (name, tag, width))).write_text(WRAP % (' data-scheme="light"' if light else "", label, width, height, name, tag, name, tag))
