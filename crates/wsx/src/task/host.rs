@@ -3319,7 +3319,8 @@ impl Host {
         );
     }
 
-    /// Run `checks` in a thread, holding a machine check slot (`Place::Slot`) unless it is `Free`; each check's timeout counts from the slot. The checks of a run in the scenarios lane
+    /// Run `checks` in a thread, holding a machine check slot (`Place::Slot`) unless it is `Free`;
+    /// each check's timeout counts from the slot. The checks of a run in the scenarios lane
     /// run at once (a scenario starts its own parts); others run one after another. Check `n`'s
     /// whole output goes to `<kind>-<n>.log` in the task folder. ref: docs/tasks.md "Checks, revisions and report"
     fn spawn_checks(
@@ -3384,13 +3385,13 @@ impl Host {
             if let Some(why) = &ci {
                 on_ci(why);
             }
-            let on = ci.is_some();
-            let mut went_ci = on;
+            let mut went_ci = ci.is_some();
+            let from_start = went_ci;
             let mut results: Vec<CheckResult> = match together {
                 true => std::thread::scope(|scope| {
                     let started: Vec<_> = checks
                         .iter()
-                        .map(|check| scope.spawn(move || run(check, on)))
+                        .map(|check| scope.spawn(move || run(check, from_start)))
                         .collect();
                     started
                         .into_iter()
