@@ -3738,7 +3738,7 @@ for (const wide of [false, true]) {
   if (await count(".reservoir")) await fail("another chat shows the manager's reservoir");
   if ((await text(".bar-label"))[0] !== "billing") await fail(`the chat's title is ${await text(".bar-label")}, not its name`);
   // ^ The chat shows its own model, as the manager's chat shows the manager's (billing opened with --agent haiku-chat).
-  if (!/^haiku\b/.test((await text(".bar-model"))[0] ?? "")) await fail(`the chat's bar shows the model ${JSON.stringify(await text(".bar-model"))}, not haiku`);
+  if (!/^haiku\b/.test((await text(".bar-model"))[0] ?? "")) await fail(`the chat's bar shows the model ${JSON.stringify(await text(".bar-model"))}, not haiku (bar: ${JSON.stringify(await text(".bar-title"))}, served agent: ${JSON.stringify(await evaluate(`fetch('api/tasks/${project}/chat?chat=billing').then((r) => r.json()).then((data) => data.manager.agent ?? null)`))})`);
   // ^ The chat holds its own log: none of the project's resolutions ("#5 was closed") is in it.
   // ^ A fold of another chat's words ("Talked to ui", data-talk) is no event line.
   const events = await evaluate(`[...document.querySelectorAll('.log .status-line, .log .fold')].filter((node) => !node.matches('[data-talk]')).map((node) => node.textContent)`);
