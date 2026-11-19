@@ -757,18 +757,29 @@ while time.monotonic() < deadline:
             break
     time.sleep(0.1)
 assert listener_port is not None, "listener process did not publish its port"
-if listener_attributed_record is None and listener_port is not None:
-    # ^ On a miss, say what lsof and ps show now, so the log tells a scan that failed (wsxd logs
-    # that line) from a scan that ran and did not attribute the port.
-    def shown(command):
-        try:
-            return subprocess.run(command, capture_output=True, text=True, timeout=30).stdout
-        except (OSError, subprocess.SubprocessError) as error:
-            return f"{command[0]} failed: {error}"
+# ^ The log of a failed deploy has no other trace of the scan: print what wsxd's two scan commands cost
+# here and, on a miss, what they show for the listener, so a scan that failed or ran over its limit
+# reads differently from one that ran and did not attribute the port.
+def timed(command):
+    started = time.monotonic()
+    try:
+        out = subprocess.run(command, capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError) as error:
+        out = f"{command[0]} failed: {error}"
+    return out, int((time.monotonic() - started) * 1000)
 
-    lsof_text = shown(["lsof", "-nP", f"-iTCP:{listener_port}", "-sTCP:LISTEN", "-Fpgn"])
-    ps_text = shown(["ps", "-axo", "pid=,pgid=,tty=,command="])
-    print("listener miss: lsof", lsof_text.split(), "ps", [
+
+lsof_text, lsof_ms = timed(["lsof", "-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-Fpgn"])
+ps_text, ps_ms = timed(["ps", "-axo", "pid=,pgid=,tty="])
+print(f"listener scan commands: lsof {lsof_ms} ms, ps {ps_ms} ms; attributed: {listener_attributed_record is not None}")
+if listener_attributed_record is None and listener_port is not None:
+    mine, last = [], []
+    for row in lsof_text.split():
+        last = last[-1:] + [row] if row[0] == "g" else [row] if row[0] == "p" else last
+        if row[0] == "n" and row.endswith(f":{listener_port}"):
+            mine.append(last + [row])
+    ps_text = timed(["ps", "-axo", "pid=,pgid=,tty=,command="])[0]
+    print("listener miss: lsof", mine, "ps", [
         line.strip() for line in ps_text.splitlines()
         if "wsx-listener" in line or "descendant-listener" in line or "failed" in line
     ])
