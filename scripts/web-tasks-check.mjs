@@ -3687,11 +3687,11 @@ phase("Progress: the top of an open task's sheet at 390x844, for ea");
   fs.writeFileSync(config, before);
   wsx("task", "close", disk, "--discard");
 
-  // Finished: the outcome leads and no progress view shows.
+  // Finished: the outcome is the state line and no steps or now line show; More holds the rest of the status sentence.
   await open(disk);
   await until("document.querySelector('.task-sheet .progress-health')?.textContent === 'Closed'", "a closed task's top row has no stage");
-  const closed = await top();
-  if (closed.health || await count(".task-sheet .progress") || closed.next !== show(disk).status.sentence) await fail(`a finished task's top reads ${JSON.stringify(closed)}`);
+  const closed = await top(), closedStatus = show(disk).status;
+  if (closed.health !== "Closed" || closed.steps || closed.now || closed.next !== closedStatus.sentence.slice(closedStatus.label.length).replace(/^[:. ]+/, "")) await fail(`a finished task's top reads ${JSON.stringify(closed)}`);
   await shot("progress-finished");
   await go(chat);
 }
