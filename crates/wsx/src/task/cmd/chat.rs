@@ -408,8 +408,7 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
             let Some(path) = goal else {
                 owner_only("chat goal")?;
                 let (project, main) = project_entry(project)?;
-                chat_of_repo(&name, &store::project_id(&project, &main))?;
-                let goal = chats::goal(&chats::open_chat(&name)?);
+                let goal = chats::goal(&chat_of_repo(&name, &store::project_id(&project, &main))?);
                 if json {
                     return print_json(&json!({ "chat": name, "goal": goal }));
                 }
@@ -495,10 +494,10 @@ fn lifecycle(
 }
 
 /// The open chat `name`, which must run in the repo `project_id`.
-fn chat_of_repo(name: &str, project_id: &str) -> Result<()> {
-    match chats::open_chat(name)?.project_id == project_id {
-        true => Ok(()),
-        false => bail!("chat {name} runs in another project"),
+fn chat_of_repo(name: &str, project_id: &str) -> Result<ManagerDir> {
+    match chats::open_chat(name)? {
+        dir if dir.project_id == project_id => Ok(dir),
+        _ => bail!("chat {name} runs in another project"),
     }
 }
 
