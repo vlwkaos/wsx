@@ -107,9 +107,10 @@ fn has_fail_word(line: &str) -> bool {
         .any(|word| word == "FAIL" || word == "FAILED")
 }
 
-/// The last line of a failed result's own output that tells its cause, clipped, as printed and
-/// with digits as `0`: a `FAIL`/`FAILED`/`AssertionError` line, else an `error` line that is no
-/// generic summary.
+/// The line of a failed result's own output that tells its cause, clipped, as printed and with
+/// digits as `0`: the first `FAILED section` line of a scenario run that is no `(after section ...
+/// failed)` consequence (else the first of them), else the last `FAIL`/`FAILED`/`AssertionError`
+/// line, else the last `error` line that is no generic summary.
 fn failure_line(result: &CheckResult) -> Option<(String, String)> {
     if result.exit == Some(0) || result.timed_out || result.output.contains(NO_SPACE) {
         return None;
@@ -118,11 +119,18 @@ fn failure_line(result: &CheckResult) -> Option<(String, String)> {
 }
 
 fn line_of(output: &str) -> Option<(String, String)> {
-    let lines = || output.lines().rev().map(str::trim);
-    let line = lines()
-        .find(|line| has_fail_word(line) || line.contains("AssertionError"))
+    let lines = || output.lines().map(str::trim);
+    let sections = || lines().filter(|line| section_line(line).is_some());
+    let line = sections()
+        .find(|line| !line.contains("(after section "))
+        .or_else(|| sections().next())
         .or_else(|| {
-            lines().find(|line| {
+            lines()
+                .rev()
+                .find(|line| has_fail_word(line) || line.contains("AssertionError"))
+        })
+        .or_else(|| {
+            lines().rev().find(|line| {
                 let lower = line.to_lowercase();
                 lower.contains("error") && !GENERIC.iter().any(|g| lower.contains(g))
             })
@@ -330,6 +338,37 @@ mod tests {
         assert!(shown_b.ends_with("design lint found 1 errors"), "{shown_b}");
         // two parts are two places
         assert_ne!(key(&b), key(&b.replace("[tasks]", "[chat]")));
+    }
+
+    const THEN: &str = "[chat] FAILED section web_journey agent push: a session that blocked while wsxd di… at test-web-client.py:3450: AssertionError: FAIL: a later consequence";
+
+    #[test]
+    fn the_first_section_failure_is_the_cause() {
+        let a = "[chat] FAILED section web_journey agent push: endpoint allowlist, VAPID verified at test-web-client.py:3092: AssertionError: FAIL: console errors: exception: TypeError: Cannot read properties of undefined (reading 'dimensions')";
+        let b = "[chat] FAILED section web_journey agent push: endpoint allowlist, VAPID verified at test-web-client.py:3270: AssertionError: FAIL: a slide did not show Remove at the edge";
+        let (out_a, out_b) = (format!("noise\n{a}\n{THEN}\n"), format!("{b}\n{THEN}\n"));
+        assert_ne!(key(&out_a), key(&out_b));
+        assert!(line_of(&out_a).unwrap().0.contains("'dimensions'"));
+        assert!(line_of(&out_b)
+            .unwrap()
+            .0
+            .contains("a slide did not show Remove"));
+    }
+
+    #[test]
+    fn an_after_line_is_a_cause_only_when_alone() {
+        let after =
+            "FAILED section b at x.py:7: AssertionError: FAIL: late (after section a failed)";
+        let first = "FAILED section a at x.py:3: AssertionError: FAIL: root";
+        assert!(line_of(&format!("{first}\n{after}"))
+            .unwrap()
+            .0
+            .contains("root"));
+        assert!(line_of(&format!("{after}\n{first}"))
+            .unwrap()
+            .0
+            .contains("root"));
+        assert!(line_of(after).unwrap().0.contains("late"));
     }
 
     #[test]
