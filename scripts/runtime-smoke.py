@@ -757,6 +757,21 @@ while time.monotonic() < deadline:
             break
     time.sleep(0.1)
 assert listener_port is not None, "listener process did not publish its port"
+if listener_attributed_record is None and listener_port is not None:
+    # ^ On a miss, say what lsof and ps show now, so the log tells a scan that failed (wsxd logs
+    # that line) from a scan that ran and did not attribute the port.
+    def shown(command):
+        try:
+            return subprocess.run(command, capture_output=True, text=True, timeout=30).stdout
+        except (OSError, subprocess.SubprocessError) as error:
+            return f"{command[0]} failed: {error}"
+
+    lsof_text = shown(["lsof", "-nP", f"-iTCP:{listener_port}", "-sTCP:LISTEN", "-Fpgn"])
+    ps_text = shown(["ps", "-axo", "pid=,pgid=,tty=,command="])
+    print("listener miss: lsof", lsof_text.split(), "ps", [
+        line.strip() for line in ps_text.splitlines()
+        if "wsx-listener" in line or "descendant-listener" in line or "failed" in line
+    ])
 assert listener_attributed_record is not None, listener_snapshot
 assert call("session_close", {
     "session_id": listener_session_id,
