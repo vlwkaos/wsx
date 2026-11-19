@@ -7,9 +7,9 @@ Owner message 5524: the sheet of task 530 (ready) is "bad". Rules that stand: no
 | # | What the owner sees | Cause |
 |---|---|---|
 | 1 | Goal line reads "Goal." | `tasks.rs:730-745` `goal()` strips only a `Goal:` lead (`:` required). The prompt began `Goal.`, so the lead stays and `view.rs:279` `first_sentence` ends at the dot: "Goal.". `story.js:163-168` `goalOf` hides the goal only when it prefixes the title, so it shows. A prompt's first sentence is not a goal; the title is already written for the owner. |
-| 2 | First status line half hidden under the header | Not reproduced. In the mock (real app.css, scrollTop 0) the first line starts 13 px under the header foot on every page (`measure.json`, `covered` false on all 32 pages). The screenshot's line is about 26 px higher, so the sheet was scrolled by about that much. No code scrolls `.scroll` on open (`tasks.js:682-718`, `task.js` have no scroll call). Unproven: a small scroll gesture on the phone. |
+| 2 | First status line half hidden under the header | Not a layout fault. In WebKit 26 at the phone's size (below) the old sheet starts its first line 12 px under the header foot and `.scroll` is at scrollTop 0 in all four states (`real-webkit.mjs`). In the screenshot the first line sits about 26 css px higher than that, so the sheet was scrolled by about that much; a scrolled list always cuts its first line under the header. Nothing in `tasks.js:682-718` or `task.js` scrolls `.scroll` on open. |
 | 3 | The state is said twice | `story.js:145` shows `status.label` (green). `story.js:230,243` shows `status.sentence` again, and `status.rs:791-805` `words()` builds that sentence as label + " for 23 min" + facts + next. |
-| 4 | Land cut to "and" | `story.js:243` puts the sentence (`app.css:1179`, basis 180 px) and the actions (`app.css:1030`: `.task-next` flex 0 1 auto, min-width 0, `overflow-wrap: anywhere`) on one row. The buttons inherit `anywhere`, so a button's min-content is one letter and it can shrink under its word. Not reproduced in headless Chrome: 0 clipped buttons at 23 widths 320-430 px; at 410 px and wider the buttons sit beside the text unclipped. The phone's font metrics put the row just at the limit. |
+| 4 | Land cut to "and" | Not a layout fault: the owner's red stroke crosses the "L" (it also crosses "R" of Ready, "plan", "Lands into", "the"). In WebKit at 402 x 874 the old sheet shows Land whole, 0 clipped buttons at every width 340-430 px. What the screenshot does show is the row of `story.js:243`: the sentence (`app.css:1179`, basis 180 px) beside the actions (`app.css:1030`), which starts at 402 px width (ready) and 419 px (owner) and squeezes the sentence into a 165 px column of six lines. That row is gone in the new sheet. |
 | 5 | The worker's text fills the middle | `story.js:223-241` shows the summary's first paragraph whenever `summaryIsCurrent` (ready). A worker puts its question to the owner in that paragraph, so More only hides later paragraphs. |
 
 ## After (sheet.css, tokens only)
@@ -46,5 +46,22 @@ Sweep, owner state (3 buttons), 23 widths 320-430 px: before 0 clipped, after 0 
 `CHROME_BIN=<chrome --no-sandbox> node real.mjs [--rev <commit>] [--shots]` runs the product's own task.js, story.js, app.css and theme tokens in
 headless Chrome, with only the answer of `api/tasks/<project>/t/<n>` canned (four states). It measures clipped buttons, the first line under the
 header, sideways scroll and an opened-scrolled sheet at 390 and 1280 px in both schemes, and every phone width 320 to 430 px for two states.
-Result at 32709399 (before) and at HEAD (after): 0 problems on both. The owner's two cuts (header over the first line, Land cut to "and") do not
-reproduce in Chrome with the old code either, so they need the owner's phone. `--shots` writes `real-<state>-<scheme>-<width>.png`.
+Chrome result at 32709399 (before) and at HEAD (after): 0 clipped buttons, 0 covered first lines, 0 opened scrolled on both. `--shots` writes `real-<state>-<scheme>-<width>.png` (`real-before-...` with `--rev`).
+
+## The owner's phone in WebKit (real-webkit.mjs, pair-webkit.mjs)
+
+The screenshot is 920 x 2000 px: ratio 0.4600 = 402 x 874 css px (iPhone 16/17 Pro, DPR 3; 393 x 852 would be 0.4613), in the home-screen app
+(`assets.rs:196` `"display": "standalone"`, `viewport-fit=cover`). `real-webkit.mjs` runs the product files in Playwright's WebKit 26.0 (a scratch copy of
+playwright-core 1.55.0 in git-ignored `.work/pw`, not a repo dependency) with that viewport and DPR, `iPhone 15` device flags, and the top inset 62 and
+bottom inset 34 put where app.css reads `env(safe-area-inset-*)` (WebKit has none). `--stale` sets `--viewport-height` 812 px and `--viewport-top` 62 px, the
+state `main.js:43-52` `followViewport` leaves while the composer has the focus: with it the sheet starts at 184 px, as in the screenshot (without it 131 px).
+`--sweep` measures every width 340-430 px. `pair-webkit.mjs` joins the before and after shots into `pair-<state>.png`.
+
+| Old sheet, WebKit 402 x 874 | Result |
+|---|---|
+| First line against the header foot | 12 px below it in all four states, scrollTop 0 |
+| Clipped buttons, 340-430 px, ready and owner | 0 of 182 pages |
+| Sentence beside the buttons | ready from 402 px, owner from 419 px (the screenshot's layout) |
+
+After (the new sheet): the same measure gives 0 clipped, 0 covered at 402 x 874 with and without `--stale`, and the first line starts 21 px under the header foot.
+Not reproduced: the screenshot's sheet scrolled by 26 px, and its title cut at "Home bo…" (6 px less room in its bar than here).
