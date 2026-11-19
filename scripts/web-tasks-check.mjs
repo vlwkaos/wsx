@@ -2445,11 +2445,11 @@ async function readAndReply(where) {
     if (!chip) await fail(`${where}: the chat shows no task chip to tap`);
     if (chip.hit !== chip.href) await fail(`${where}: the task chip is not what is under the point ${JSON.stringify(chip)}`);
     await touch(chip, 0, 60);
-    const opened = await evaluate(`(async () => { for (let attempt = 0; attempt < 40 && !/\\/t\\/\\d+/.test(location.hash); attempt++) await new Promise((resolve) => setTimeout(resolve, 50));
+    const opened = await evaluate(`(async () => { for (let attempt = 0; attempt < 40 && !/\\/task\\/\\d+/.test(location.hash); attempt++) await new Promise((resolve) => setTimeout(resolve, 50));
       return { hash: location.hash, menu: !!document.querySelector('.reply-menu') }; })()`);
-    if (!/\/t\/\d+/.test(opened.hash) || opened.menu) await fail(`${where}: a tap on a task chip at ${JSON.stringify(chip)} left ${JSON.stringify(opened)}`);
+    if (!/\/task\/\d+/.test(opened.hash) || opened.menu) await fail(`${where}: a tap on a task chip at ${JSON.stringify(chip)} left ${JSON.stringify(opened)}`);
     await evaluate("history.back()");
-    await until("!/\\/t\\/\\d+/.test(location.hash)", `${where}: Back did not leave the task`);
+    await until("!/\\/task\\/\\d+/.test(location.hash)", `${where}: Back did not leave the task`);
     // ^ The chip was scrolled to the middle: back at the end, as the next screens expect (their capture shows no jump button over a diagram).
     await toLatest(where);
   }
@@ -4274,14 +4274,14 @@ phase("A task mention of another project (docs/web-client-tasks.md ");
   }
   const own = await chipsIn(plansMark);
   if (own.chips.length !== 2 || own.chips[0].href !== `#/p/${plansArg}/t/1` || !/^plans #1$/.test(own.chips[0].text)
-    || own.chips[1].href !== `#/p/${project}/t/1` || own.chips[1].text !== "#1") await fail(`ui's own reply reads ${JSON.stringify(own)}`);
+    || own.chips[1].href !== `${chat}/task/1` || own.chips[1].text !== "#1") await fail(`ui's own reply reads ${JSON.stringify(own)}`);
   const theirs = await chipsIn(peerWords);
   if (theirs.chips.length !== 1 || theirs.chips[0].href !== `#/p/${plansArg}/t/1` || !/^plans #1$/.test(theirs.chips[0].text)) await fail(`plans' message reads ${JSON.stringify(theirs)}`);
   // ^ The billing chat's bare #1 is ui's #1, and its name over the message is plain text, no link.
   const ours = await chipsIn(fromBilling);
   const billingName = await evaluate(`(() => { const bubble = ${findSaid(fromBilling)};
     return bubble && { link: !!bubble.querySelector('a.bubble-author'), name: bubble.querySelector('.bubble-author')?.textContent.trim() ?? null }; })()`);
-  if (ours.chips.length !== 1 || ours.chips[0].href !== `#/p/${project}/t/1` || ours.chips[0].text !== "#1" || billingName?.link !== false) {
+  if (ours.chips.length !== 1 || ours.chips[0].href !== `${chat}/task/1` || ours.chips[0].text !== "#1" || billingName?.link !== false) {
     await fail(`the billing chat's message reads ${JSON.stringify({ ours, billingName })}`);
   }
   await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).scrollIntoView({ block: 'center' })`);
