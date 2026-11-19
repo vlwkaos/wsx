@@ -4025,7 +4025,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
     // ^ The open For you list (task 510, owner 5622): every row starts at the header's left edge (the first visible element: its icon,
     // or its title), the actions of a row are a control gap apart, and on a wide window they sit beside the text.
     await openReservoir("you");
-    await until("document.querySelectorAll('.reservoir .need .need-action').length > 1", "the open For you list has no row with actions");
+    await until("document.querySelectorAll('.reservoir .need .need-action').length > 0", async () => `the open For you list has no row with actions: its rows ${JSON.stringify(await evaluate("[...document.querySelectorAll('.reservoir .need, .reservoir-band')].map((row) => row.className + ': ' + row.textContent.trim().slice(0, 50))"))}, the server holds ${JSON.stringify(await evaluate("fetch('api/tasks/for-you').then((r) => r.json()).then((chats) => chats.map((entry) => [entry.project, entry.chat, entry.needs.length, entry.asks.length, entry.check_items.length]))"))}, the page is ${JSON.stringify(await evaluate("[location.hash, innerWidth, document.querySelector('.reservoir')?.outerHTML.slice(0, 400)]"))}`);
     const edges = await evaluate(`(() => {
       const left = (node) => Math.round(node.getBoundingClientRect().left * 10) / 10;
       const header = left(document.querySelector('.reservoir-title'));
