@@ -2569,7 +2569,7 @@ await until("!!document.querySelector('.home-rows > .row:has(.home-row)')", "Hom
 await go(page(4));
 await until("!!document.querySelector('.task-next button[aria-label^=\"Answer #4\"]')", "#4's sheet has no Answer");
 await click(".task-next button[aria-label^=\"Answer #4\"]");
-await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "the sheet's Answer did not go to the chat");
+await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, async () => `the sheet's Answer did not go to the chat: ${await evaluate("JSON.stringify({ hash: location.hash, dialogs: document.querySelectorAll('dialog').length, open: document.querySelectorAll('dialog[open]').length, bubbles: document.querySelectorAll('.log .bubble').length, composer: !!document.querySelector('.composer-field'), depth: history.state })")}`);
 await composerHas("see the logs #4 ", "the sheet's Answer did not add #4 after the draft");
 await shot("answer-from-sheet", ".composer-send");
 await typeInto(".composer-field", `see the logs #4\nRUN wsx task add 4 "WORK answered4.txt" -p ui --json`);
