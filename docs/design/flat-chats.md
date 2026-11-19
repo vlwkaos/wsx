@@ -1,6 +1,6 @@
 # Flat chats: audit and plan (task 539)
 
-Status: audit and plan only, 2026-11-19, no product edit. Owner wsx 5670: go simple, remove derived and sub-chat things and everything thread-like, truly flat. A new purpose gets its own chat. `wsx` and `wsx-ui` run as two chats and talk by `say --to`. Owner 5668 kept one thing: manager-to-manager talk is already muted; nothing new is built for it. This replaces the Slack-style design (dropped, nothing of it is kept). Counts: `python3 -I docs/design/flat-chats-count.py` (read-only, totals only, this machine) and a read-only scan of the code at `ef9ec899`; every step re-counts with `rg -c thread` before it deletes.
+Status: audit and plan only, 2026-11-19, no product edit. Owner wsx 5670: go simple, remove derived and sub-chat things and everything thread-like, truly flat. A new purpose gets its own chat. `wsx` and `wsx-ui` run as two chats and talk by `say --to`. Owner 5668 kept one thing: manager-to-manager talk is already muted; nothing new is built for it. This replaces the Slack-style design (dropped, nothing of it is kept). Counts: `python3 -I docs/design/flat-chats-count.py` (read-only, totals only, this machine) and a read-only scan of the code at `ef9ec899`; the file:line starts were checked against the code with `rg` (they begin at the item's doc comment, within 4 lines). Every step re-counts with `rg -c thread` before it deletes.
 
 ## 1. For the owner: one screen
 
