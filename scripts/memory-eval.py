@@ -1128,8 +1128,11 @@ def ask_model(model, system, prompt):
         return done.stdout.strip(), 0.0, time.time() - t
     done = sh(['claude', '-p', '--model', model, '--output-format', 'json', '--setting-sources', 'project,local', '--tools', '',
                '--system-prompt', system, prompt], cwd=tempfile.gettempdir())
-    res = json.loads(done.stdout)
-    return res['result'], res.get('total_cost_usd') or 0.0, time.time() - t
+    try:
+        res = json.loads(done.stdout)
+        return res['result'], res.get('total_cost_usd') or 0.0, time.time() - t
+    except (ValueError, KeyError) as e:
+        raise RuntimeError(f'claude: {e}: {(done.stdout or done.stderr)[-200:]}')
 
 
 def note_call(args, ident, model, system, prompt, canned=''):
@@ -1519,7 +1522,7 @@ def notes_report(tasks, seq):
     for f in sorted(NOTES.glob('curate-*.json')):
         j = json.loads(f.read_text())
         if not j['got']:
-            print(f'| {f.stem[8:]} | {len(allr)} | answer not JSON | | | | | {j["secs"]} | {j["usd"]:.3f} |')
+            print(f'| {f.stem[7:]} | {len(allr)} | answer not JSON | | | | | {j["secs"]} | {j["usd"]:.3f} |')
             continue
         retire, merges, _ = j['got']
         members = {x for p in pairs for x in p}
@@ -1528,8 +1531,8 @@ def notes_report(tasks, seq):
         bad_retire = [s for s in retire if s not in stale and s not in members]
         bad_merge = [m for m in merges if frozenset(m) not in pairs]
         n = len(retire) + len(merges)
-        harm[f.stem[8:]] = (len(found) / len(dups) if dups else 0, (len(bad_retire) + len(bad_merge)) / max(1, n), len(ok_retire) / max(1, len(stale)))
-        print(f'| {f.stem[8:]} | {len(allr)} | {len(ok_retire)} | {len(found)} | {len(bad_retire)} | {len(bad_merge)} | {n} | {j["secs"]} | {j["usd"]:.3f} |')
+        harm[f.stem[7:]] = (len(found) / len(dups) if dups else 0, (len(bad_retire) + len(bad_merge)) / max(1, n), len(ok_retire) / max(1, len(stale)))
+        print(f'| {f.stem[7:]} | {len(allr)} | {len(ok_retire)} | {len(found)} | {len(bad_retire)} | {len(bad_merge)} | {n} | {j["secs"]} | {j["usd"]:.3f} |')
     ctl = rows.get('control', {}).get('end') or 0.0
     ok = {a: r for a, r in rows.items() if a[0] in 'AB' and r['end'] is not None and r['end'] >= ctl + 0.10 and r['miss'] <= 0.05 and r['reject'] <= 0.20}
     print(f'\nControl (frozen seed) right at the end {ctl:.2f}. Eligible (end >= control + 0.10, names missing <= 5%, rejects <= 20%): {sorted(ok) or "none"}.')
