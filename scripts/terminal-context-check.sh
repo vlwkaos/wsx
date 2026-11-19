@@ -11,8 +11,8 @@ older=$( { [ -n "$cellar" ] && ls "$cellar" 2>/dev/null || true; } | grep -Fvx "
   | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
 if [ -n "$older" ] && [ -x "$cellar/$older/bin/wsx" ] && [ -x "$cellar/$older/bin/wsxd" ]; then
   echo "upgrade leg: from the installed release $older"
-  exec python3 -B scripts/check-slot.py python3 -B scripts/test-terminal-context.py \
+  exec target/debug/wsx task slot python3 -B scripts/test-terminal-context.py \
     --released-wsx "$cellar/$older/bin/wsx" --released-daemon "$cellar/$older/bin/wsxd"
 fi
 echo "upgrade leg skipped: no older wsx release is installed under Homebrew (${cellar:-no brew})"
-exec python3 -B scripts/check-slot.py python3 -B scripts/test-terminal-context.py
+exec target/debug/wsx task slot python3 -B scripts/test-terminal-context.py

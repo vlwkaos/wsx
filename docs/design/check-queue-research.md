@@ -62,7 +62,7 @@ No source found in this run gives a measured number for a shared `CARGO_TARGET_D
 | 4 | Nightly run of all scenarios on main, failures start a fix task | E6 | Lets rank 3 be strict; no wait on the critical path | small (a routine) | Low |
 | 5 | Split `web` into parts, each a scenario with its own paths | Local: `web` holds 63% of wait time | Multiplies rank 3 | medium | Medium: parts share setup; the total time can grow |
 | 6 | Rerun a failed scenario part once, then record it as flaky | E1, E2, E4 | Fewer false blocks; local data shows only 5 of 38 failures mention timeouts, so the gain is small now | small | Medium: a rerun hides real races |
-| 7 | N general slots (N > 1) | E1 against it | Short waits for all | tiny | High: 11-03 failures at load 13 happened with 1 slot already |
+| 7 | N general slots (N > 1) | E1 against it | Short waits for all | tiny | High: 11-03 failures at load 13 happened with 1 slot already. Replaced by a load-gated width for scenario runs: docs/design/scheduler.md |
 | 8 | sccache or a shared target dir | E8; no measurement found | Unknown, likely small for workspace crates | medium | Medium: lock waits, disk |
 
 Next step: confirm E1, E2, E3 and E6 numbers on their pages before the owner decides on rank 1.

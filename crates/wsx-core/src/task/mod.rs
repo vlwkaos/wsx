@@ -22,6 +22,7 @@ pub mod owner;
 pub mod policy;
 pub mod replace;
 pub mod report;
+pub mod schedule;
 pub mod session_news;
 pub mod stall;
 pub mod status;

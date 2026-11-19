@@ -3,7 +3,7 @@
 //! ref: docs/tasks.md "Batch land"
 
 use super::host::run_check;
-use super::slot::{self, Lane, Priority};
+use super::slot::{self, Lane, Priority, Want};
 use anyhow::{bail, Context, Result};
 use std::collections::VecDeque;
 use std::path::Path;
@@ -132,7 +132,7 @@ fn checks_pass(scratch: &Path, first: &TaskRecord, stacked: &[(TaskDir, String)]
     let batch = ids(&dirs);
     let label = format!("{} batch {batch}", first.project);
     let queued = Instant::now();
-    let _slot = slot::take(Lane::Checks, Priority::Land, &label, |reason| {
+    let _slot = slot::take(&Want::new(Lane::Checks, Priority::Land), &label, |reason| {
         println!("{reason}")
     });
     let queued_ms = queued.elapsed().as_millis() as u64;

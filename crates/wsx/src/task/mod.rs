@@ -193,6 +193,7 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
         TaskCmd::ManagerHost { project_id, chat } => manager::run_old(&project_id, chat.as_deref()),
         TaskCmd::ChatHost { chat } => manager::run(&chat),
         TaskCmd::RepoHost { project_id } => repo::run(&project_id),
+        TaskCmd::Slot { command } => std::process::exit(slot::run(&command)?),
         TaskCmd::BoundaryProfile { untrusted } => boundary_profile(project, untrusted),
         TaskCmd::Host { project_id, task } => {
             host::run(&project_id, store::parse_task_number(&task)?)

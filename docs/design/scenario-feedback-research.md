@@ -116,7 +116,7 @@ Timers not yet given a test setting: TURN_QUIET, quietMinutes, SIGN_IN_RETRY, re
 
 | Cause | Change |
 |---|---|
-| Waiting for a macOS slot (5 for the whole account) | Task checks run on this Mac only. `task` and `web` are a counted lane (`WSX_SCENARIO_SLOTS`, default 2) and a check-run's scenarios run at once. GitHub runs the task scenario only for pushes to main and tags. |
+| Waiting for a macOS slot (5 for the whole account) | Task checks run on this Mac only. `task` and `web` are a counted lane (its width follows load, RAM and disk, at most 3; `WSX_SCENARIO_SLOTS` lowers it; docs/design/scheduler.md) and a check-run's scenarios run at once. GitHub runs the task scenario only for pushes to main and tags. |
 | Parts one after another | `scripts/scenario.py` starts the parts (task: core, worker, host, memory; web: chat, tasks) as separate processes, each with its own work dir, ports and sockets. |
 | Chat host linger 20 s | `WSX_TEST_CHAT_LINGER_SECS` (the scenario sets 5). |
 | Check-in minute | scenario setting 35 s to 14 s (it must outlast the linger). |

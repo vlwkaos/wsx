@@ -11,7 +11,7 @@ use super::agent::{
 use super::broker;
 use super::hosting;
 use super::limit;
-use super::slot::{self, Lane, Priority};
+use super::slot::{self, Lane, Priority, Taken, Want};
 use super::trial;
 use super::RECORDED_BY_HOST;
 use anyhow::{bail, Context, Result};
@@ -27,6 +27,7 @@ use wsx_core::model::workspace::WorkflowStep;
 use wsx_core::runtime;
 use wsx_core::task::manager::asks_owner;
 use wsx_core::task::replace::{Binary, HANDOFF_FILE};
+use wsx_core::task::schedule;
 use wsx_core::task::status::{self, STOPPED_BY_REQUEST};
 use wsx_core::task::view::{checked_files, checked_title, short_commit};
 use wsx_core::task::{
@@ -3141,12 +3142,21 @@ impl Host {
             let _ = reply.send(check_run_response(&picked, &stored, &BTreeMap::new()));
             return;
         }
+        // ^ Scenarios only: with the disk low after the cleanup this Mac cannot run them, so they go
+        // to CI. A plain check has no CI to go to and is refused.
+        let scenarios_only = to_run.iter().all(|(index, _)| *index >= checks);
+        let mut place = None;
         if let Some((free_mb, min_gb)) = self.low_disk() {
-            let _ = reply.send(broker::refused(format!(
-                "not run, disk space is low: {}",
-                disk_full(free_mb, min_gb)
+            let full = disk_full(free_mb, min_gb);
+            if !scenarios_only {
+                let _ = reply.send(broker::refused(format!(
+                    "not run, disk space is low: {full}"
+                )));
+                return;
+            }
+            place = Some(Place::Ci(format!(
+                "this Mac has {full}, after cleaning idle copies"
             )));
-            return;
         }
         let limit = Duration::from_secs(self.record.check_timeout_secs) * to_run.len() as u32;
         let mark = CheckRunMark {
@@ -3175,19 +3185,18 @@ impl Host {
         });
         // ^ A run of checks that only format or compile is light: it takes no slot. One that
         // names a scenario takes the scenarios lane, else the checks lane.
-        let lane = match to_run.iter().any(|(index, _)| *index >= checks) {
-            true => Lane::Scenarios,
-            false => Lane::Checks,
-        };
-        let priority =
-            (!to_run.iter().all(|(_, command)| light(command))).then_some((lane, Priority::Normal));
+        let place =
+            place.unwrap_or_else(|| match to_run.iter().all(|(_, command)| light(command)) {
+                true => Place::Free,
+                false => Place::Slot(self.want(&to_run, checks)),
+            });
         // ^ A run without a slot starts now; one with a slot when it takes it (`check_slot`).
-        if priority.is_none() {
+        if matches!(place, Place::Free) {
             self.start_check_run_clock();
         }
         let events = self.events.clone();
         let kept = (tree, stored, to_run.clone());
-        self.spawn_checks(priority, "check-run", to_run, move |results| {
+        self.spawn_checks(place, "check-run", to_run, move |results| {
             let _ = events.send(check_run_event(
                 &picked,
                 kept,
@@ -3195,6 +3204,31 @@ impl Host {
                 results,
             ));
         });
+    }
+
+    /// The place of a worker's run in its lane: a scenario's in the scenarios lane, by the task's
+    /// urgency (`schedule::urgency`); plain checks in the checks lane.
+    fn want(&self, to_run: &[(usize, String)], checks: usize) -> Want {
+        if !to_run.iter().any(|(index, _)| *index >= checks) {
+            return Want::new(Lane::Checks, Priority::Normal);
+        }
+        let records: Vec<_> = wsx_core::task::view::project_tasks(&self.record.project_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, record)| record.ok())
+            .collect();
+        let waiters = status::waiters(&records, self.record.id);
+        let (priority, urgent) = schedule::urgency(&self.record, &waiters);
+        let mut want = Want::new(Lane::Scenarios, priority);
+        if urgent.is_some() {
+            // ^ Only an urgent run can go to CI, so only it needs the estimate.
+            let command = to_run.first().map_or("", |(_, command)| command);
+            want.typical_ms = schedule::typical_ms(&self.record.project_id, command);
+        }
+        want.urgent = urgent;
+        want.min_free_mb = load_task_config(&self.record.project_path)
+            .map_or(0, |settings| settings.min_free_gb * 1024);
+        want
     }
 
     /// A check that ran on this clean tree with the same command gives the same answer: the
@@ -3261,8 +3295,8 @@ impl Host {
         let epoch = self.checks_epoch;
         self.gate = Some((head(&self.record.working_copy), false));
         let priority = match self.after_rebase {
-            Some(AfterRebase::Land { .. }) => (Lane::Checks, Priority::Land),
-            _ => (Lane::Checks, Priority::Normal),
+            Some(AfterRebase::Land { .. }) => Priority::Land,
+            _ => Priority::Normal,
         };
         let events = self.events.clone();
         let checks: Vec<(usize, String)> = self.record.checks.iter().cloned().enumerate().collect();
@@ -3274,19 +3308,23 @@ impl Host {
             return;
         }
         let indexes: Vec<usize> = to_run.iter().map(|(index, _)| *index).collect();
-        self.spawn_checks(Some(priority), "check", to_run, move |results| {
-            stored.extend(indexes.into_iter().zip(results));
-            let _ = events.send(Event::ChecksDone(epoch, stored.into_values().collect()));
-        });
+        self.spawn_checks(
+            Place::Slot(Want::new(Lane::Checks, priority)),
+            "check",
+            to_run,
+            move |results| {
+                stored.extend(indexes.into_iter().zip(results));
+                let _ = events.send(Event::ChecksDone(epoch, stored.into_values().collect()));
+            },
+        );
     }
 
-    /// Run `checks` in a thread, holding a machine check slot (lane and priority) unless `priority` is
-    /// `None`; each check's timeout counts from the slot. The checks of a run in the scenarios lane
+    /// Run `checks` in a thread, holding a machine check slot (`Place::Slot`) unless it is `Free`; each check's timeout counts from the slot. The checks of a run in the scenarios lane
     /// run at once (a scenario starts its own parts); others run one after another. Check `n`'s
     /// whole output goes to `<kind>-<n>.log` in the task folder. ref: docs/tasks.md "Checks, revisions and report"
     fn spawn_checks(
         &self,
-        priority: Option<(Lane, Priority)>,
+        place: Place,
         kind: &str,
         checks: Vec<(usize, String)>,
         done: impl FnOnce(Vec<CheckResult>) + Send + 'static,
@@ -3301,28 +3339,58 @@ impl Host {
             .into_iter()
             .map(|(index, command)| (command, self.dir.file(&format!("{kind}-{}.log", index + 1))))
             .collect::<Vec<_>>();
-        let together = matches!(priority, Some((Lane::Scenarios, _)));
+        let together = match &place {
+            Place::Slot(want) => matches!(want.lane, Lane::Scenarios),
+            Place::Ci(_) => true,
+            Place::Free => false,
+        };
         std::thread::spawn(move || {
             let queued = std::time::Instant::now();
-            let _slot = priority.and_then(|(lane, priority)| {
-                let taken = slot::take(lane, priority, &label, |reason| {
-                    let _ = events.send(Event::CheckQueued(reason));
-                });
-                let error = taken.as_ref().err().map(ToString::to_string);
-                let _ = events.send(Event::CheckSlot(error));
-                taken.ok()
-            });
+            let (mut held, mut ci) = (None, None);
+            match place {
+                Place::Free => {}
+                Place::Ci(why) => ci = Some(why),
+                Place::Slot(want) => {
+                    let taken = slot::take(&want, &label, |reason| {
+                        let _ = events.send(Event::CheckQueued(reason));
+                    });
+                    let error = taken.as_ref().err().map(ToString::to_string);
+                    match taken {
+                        Ok(Taken::Ci(why)) => ci = Some(why),
+                        taken => {
+                            let _ = events.send(Event::CheckSlot(error));
+                            held = taken.ok();
+                        }
+                    }
+                }
+            }
             // ^ The wait is the run's: each of its results carries it.
             let queued_ms = queued.elapsed().as_millis() as u64;
-            let run = |(command, log): &(String, PathBuf)| {
+            // ^ On CI the project's own scenario command takes the run to GitHub (`WSX_SCENARIO_ON`);
+            // a CI round takes longer than a check's timeout.
+            let run = |(command, log): &(String, PathBuf), on_ci: bool| {
+                let mut env = env.clone();
+                let mut timeout = timeout;
+                if on_ci {
+                    env.insert("WSX_SCENARIO_ON".into(), "ci".into());
+                    timeout = timeout.max(schedule::CI_TIMEOUT);
+                }
                 let ran = run_check(&working_copy, command, &env, timeout, log);
                 CheckResult { queued_ms, ..ran }
             };
-            let results = match together {
+            let on_ci = |why: &str| {
+                let _ = events.send(Event::CheckQueued(format!("{}{why}", schedule::ON_CI)));
+            };
+            if let Some(why) = &ci {
+                on_ci(why);
+            }
+            let on = ci.is_some();
+            let mut went_ci = on;
+            let mut results: Vec<CheckResult> = match together {
                 true => std::thread::scope(|scope| {
                     let started: Vec<_> = checks
                         .iter()
-                        .map(|check| scope.spawn(|| run(check)))
+                        .map(|check| scope.spawn(move || run(check, on)))
                         .collect();
                     started
                         .into_iter()
@@ -3333,8 +3401,32 @@ impl Host {
                         })
                         .collect()
                 }),
-                false => checks.iter().map(run).collect(),
+                false => checks.iter().map(|check| run(check, false)).collect(),
             };
+            // ^ A scenario that says this Mac cannot run it (a tool is missing) ends at once; its
+            // slot goes back and the run goes to CI with that line as the reason.
+            if held.is_some() && ci.is_none() {
+                let missing: Vec<usize> = (0..results.len())
+                    .filter(|n| results[*n].exit == Some(schedule::CANNOT_RUN_HERE))
+                    .collect();
+                if !missing.is_empty() {
+                    held = None;
+                    for n in missing {
+                        let why = results[n]
+                            .output
+                            .lines()
+                            .last()
+                            .unwrap_or("a tool is missing");
+                        on_ci(why.trim());
+                        results[n] = run(&checks[n], true);
+                    }
+                    went_ci = true;
+                }
+            }
+            drop(held);
+            if went_ci {
+                let _ = events.send(Event::CheckSlot(None));
+            }
             build::prune(&working_copy, born);
             done(results);
         });
@@ -3412,7 +3504,10 @@ impl Host {
             ));
         }
         if self.record.waits_on(WaitOn::CheckSlot) {
-            self.say("took the check slot");
+            self.say(match self.record.waiting.as_ref() {
+                Some(w) if w.reason.starts_with(schedule::ON_CI) => "the CI run ended",
+                _ => "took the check slot",
+            });
             self.move_to(self.record.state, None);
         }
         // ^ The checks after a result never run beside a check-run: this slot is the run's.
@@ -4365,6 +4460,13 @@ fn disk_full(free_mb: u64, min_gb: u64) -> String {
         "{:.1} GB free of the {min_gb} GB a task needs",
         free_mb as f64 / 1024.0
     )
+}
+
+/// Where a run of checks goes: no slot, a slot of this Mac's lane, or GitHub CI (the reason).
+enum Place {
+    Free,
+    Slot(Want),
+    Ci(String),
 }
 
 /// What a land or a trial does after the checks of its rebased revision pass.

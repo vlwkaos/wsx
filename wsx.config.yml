@@ -29,12 +29,15 @@ tasks:
   # `scenarioPaths` name a path the task's commits changed; a changed path that no scenario and no
   # `scenarioFree` glob names runs every one with paths. A scenario without paths runs only when a
   # worker names it. Each builds the binaries it runs first.
-  # They run on this machine only (the `scenarios` slot lane, a few at once); scripts/scenario.py
-  # starts each part as its own process. GitHub Actions runs them for main and release tags
-  # (docs/tasks.md "Scenarios").
+  # `task` and `web` run on this Mac first (scripts/scenario.py, one process for each part). The
+  # lane's width follows the load, free RAM and free disk, and runs start in order of urgency (a run
+  # another task waits for first). A run goes to GitHub Actions only when this Mac cannot run it
+  # (free disk under `minFreeGb` after the cleanup, or a tool is missing), or when an urgent run
+  # would wait here longer than a CI round. The task's status says why.
+  # ref: docs/design/scheduler.md, docs/tasks.md "Scenarios"
   scenarios:
-    task: cargo build -p wsx -p wsx-daemon && python3 -B scripts/scenario.py task
-    web: cargo build -p wsx -p wsx-daemon && python3 -B scripts/scenario.py web
+    task: python3 -B scripts/scenario.py task
+    web: python3 -B scripts/scenario.py web
     smoke: cargo build -p wsx -p wsx-daemon && python3 -B scripts/runtime-smoke.py
     boundary: cargo build -p wsx -p wsx-daemon && python3 -B scripts/test-manager-boundary.py
     memory: cargo build -p wsx && python3 -B scripts/test-memory.py "target/debug/wsx memory"

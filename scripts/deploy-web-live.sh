@@ -27,11 +27,11 @@ trap 'code=$?; [ $code -eq 0 ] || echo "deploy failed at step: $step (exit $code
 # ^ The deploy gate is the PTY and stream smoke test and the live handoff scenario only, so a land
 # reaches the live site in minutes. The task and web end-to-end scripts are `tasks.scenarios`: the worker whose change
 # touches their area runs them by name (wsx.config.yml `workflow.build`).
-# ^ The smoke test holds the host-wide scenario test slot that a task scenario takes (scripts/check-slot.py).
+# ^ The smoke test holds the host-wide scenario test slot that a task scenario takes (`wsx task slot`).
 step "debug build"
 cargo build --locked -p wsx -p wsx-daemon
 step "runtime-smoke.py"
-python3 -B scripts/check-slot.py python3 -B scripts/runtime-smoke.py
+target/debug/wsx task slot python3 -B scripts/runtime-smoke.py
 # ^ The live handoff from the newest installed release; it runs in the same slot, so a regression
 # surfaces after the land that caused it, not at the next release (scripts/terminal-context-check.sh).
 step "test-terminal-context.py"

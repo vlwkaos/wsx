@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
-"""Run one end-to-end scenario on this machine: `scenario.py task|web [--part <part>]`.
+"""Run one end-to-end scenario: `scenario.py task|web [--part <part>]`. ref: docs/tasks.md "Scenarios"
 
-Build the binaries first (`cargo build -p wsx -p wsx-daemon`). Each part is its own process in its
+Where it runs. The task host chooses (docs/design/scheduler.md): with `WSX_SCENARIO_ON=ci` the
+scenario goes to GitHub CI (`ci-scenario.py`); else it runs here. A Mac that lacks a tool the
+scenario needs exits 69 (EX_UNAVAILABLE; 75 stays the temporary failure) (`cannot run here: ...`), and the host sends the run to CI. `--matrix
+<name> [<part>]` prints ci.yml's job matrix, so this file is the one list of parts.
+
+Here it builds the binaries (`cargo build -p wsx -p wsx-daemon`), then each part is its own process in its
 own process group: every part keeps its own work folder (`.work/<name><pid>`), a TMPDIR for its
 sockets and ephemeral ports (127.0.0.1:0), so the parts run at once and share nothing. Every line a
 part prints comes out with its name in front. The run ends 1 when a part failed, and then lists
 each `FAILED section` and `SKIPPED section` line again. ref: docs/tasks.md "Scenarios"
 """
+import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -34,6 +41,10 @@ SCENARIOS = {
         'tasks': ['test-web-client.py', '--browser', '--part', 'tasks'],
     },
 }
+# ^ What a scenario needs besides Python; `scripts/web-cdp.mjs` looks for the same Chrome.
+NEEDS = {'task': ['cargo', 'git'], 'web': ['cargo', 'git', 'node']}
+CHROME = ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/google-chrome', '/usr/bin/chromium']
+CANNOT_RUN_HERE = 69
 MARKS = ('FAILED section', 'SKIPPED section', 'SECTIONS:')
 LOCK = threading.Lock()
 
@@ -65,16 +76,36 @@ def stop(processes):
                 pass
 
 
+def missing_tools(name):
+    missing = [tool for tool in NEEDS[name] if not shutil.which(tool)]
+    if name == 'web' and not any(os.path.exists(path) for path in [os.environ.get('CHROME_BIN', '')] + CHROME):
+        missing.append('Chrome')
+    return missing
+
+
 def main():
     args = sys.argv[1:]
+    if args[:1] == ['--matrix'] and args[1:2] and args[1] in SCENARIOS and len(args) in (2, 3):
+        parts = [name for name in SCENARIOS[args[1]] if args[2:] in ([], [name])]
+        print(json.dumps({'include': [{'name': args[1], 'part': part} for part in parts]}))
+        return
     if not args or args[0] not in SCENARIOS or len(args) not in (1, 3) or args[1:2] not in ([], ['--part']):
         sys.exit('usage: scenario.py %s [--part <part>]' % '|'.join(SCENARIOS))
+    if os.environ.get('WSX_SCENARIO_ON') == 'ci':
+        os.execv(sys.executable, [sys.executable, '-B', str(SCRIPTS / 'ci-scenario.py'), *args])
+    lacking = missing_tools(args[0])
+    if lacking:
+        print('cannot run here: %s missing' % ', '.join(lacking), flush=True)
+        sys.exit(CANNOT_RUN_HERE)
     parts = SCENARIOS[args[0]]
     wanted = args[2] if len(args) == 3 else os.environ.get('WSX_SCENARIO_PART') or None
     if wanted and wanted not in parts:
         sys.exit('no part %r in %s: %s' % (wanted, args[0], ', '.join(parts)))
     chosen = {name: argv for name, argv in parts.items() if wanted in (None, name)}
     env = {key: value for key, value in os.environ.items() if key != 'WSX_SCENARIO_PART'}
+    build = subprocess.run(['cargo', 'build', '-p', 'wsx', '-p', 'wsx-daemon'], cwd=ROOT, env=env)
+    if build.returncode:
+        sys.exit(build.returncode)
     processes, readers, output = {}, [], {}
     started = time.monotonic()
     signal.signal(signal.SIGTERM, lambda *_: (stop(list(processes.values())), os._exit(143)))

@@ -695,6 +695,17 @@ fn held(reason: &str, now_ms: u64) -> Status {
 /// A run that waits for the machine's check slot, in its lane, since its `check_queued`.
 fn slot(dir: &TaskDir, record: &TaskRecord, reason: &str, entered: u64, now_ms: u64) -> Status {
     let since = slot_since(dir, entered);
+    // ^ A run the scheduler sent to GitHub CI: the reason says why (`schedule::decide`).
+    if let Some(why) = reason.strip_prefix(super::schedule::ON_CI) {
+        return words(
+            "ci_scenario",
+            "Running its scenario tests on CI",
+            Some(since),
+            why,
+            "GitHub CI answers in about 25 minutes.",
+            now_ms,
+        );
+    }
     let scenarios = queue(reason).is_some_and(|queue| queue.what.contains("scenario"));
     let (kind, label, run, next) = match scenarios {
         true => (
@@ -731,7 +742,7 @@ fn slot_since(dir: &TaskDir, entered: u64) -> u64 {
     .unwrap_or(entered)
 }
 
-/// A queue reason as "#233 runs its checks now, 2 more tasks ahead"; any other reason as is.
+/// A queue reason as "#233 runs its checks now, 2 more tasks ahead; <note>"; any other reason as is.
 fn queue_words(record: &TaskRecord, reason: &str, holder_does: &str) -> String {
     let Some(queue) = queue(reason) else {
         return reason.to_string();
@@ -739,13 +750,19 @@ fn queue_words(record: &TaskRecord, reason: &str, holder_does: &str) -> String {
     let holder = match task_label(queue.holder) {
         Some((project, id)) if project == record.project => format!("#{id} {holder_does}"),
         Some((project, id)) => format!("{project} #{id} {holder_does}"),
-        // ^ `scripts/check-slot.py` names its command and pid.
+        _ if queue.holder.is_empty() => String::new(),
+        // ^ `wsx task hold` names its command and pid.
         None => format!("{} runs now", queue.holder),
     };
-    match queue.ahead {
-        0 => holder,
-        1 => format!("{holder}, 1 more task ahead"),
-        n => format!("{holder}, {n} more tasks ahead"),
+    let ahead = match queue.ahead {
+        0 => String::new(),
+        1 => ", 1 more task ahead".into(),
+        n => format!(", {n} more tasks ahead"),
+    };
+    match queue.note {
+        Some(note) if holder.is_empty() => note.to_string(),
+        Some(note) => format!("{holder}{ahead}; {note}"),
+        None => format!("{holder}{ahead}"),
     }
 }
 
@@ -796,12 +813,21 @@ fn words(
 /// "queued for the check slot behind demo t3 and 2 more".
 pub(crate) struct Queue<'a> {
     pub what: &'a str,
+    /// The holders' labels; empty when no run holds a slot (the Mac's load holds this one).
     pub holder: &'a str,
     pub ahead: u32,
+    /// Why it waits beyond the queue: urgency, the load.
+    pub note: Option<&'a str>,
 }
 
+/// `queued for <slot>[ behind <holders>[ and <n> more]][; <note>]` (`slot.rs`).
 pub(crate) fn queue(reason: &str) -> Option<Queue<'_>> {
-    let (what, holder) = reason.strip_prefix("queued for ")?.split_once(" behind ")?;
+    let rest = reason.strip_prefix("queued for ")?;
+    let (rest, note) = match rest.split_once("; ") {
+        Some((rest, note)) => (rest, Some(note)),
+        None => (rest, None),
+    };
+    let (what, holder) = rest.split_once(" behind ").unwrap_or((rest, ""));
     let more = holder
         .rsplit_once(" and ")
         .and_then(|(holder, more)| Some((holder, more.strip_suffix(" more")?.parse().ok()?)));
@@ -810,6 +836,7 @@ pub(crate) fn queue(reason: &str) -> Option<Queue<'_>> {
         what,
         holder,
         ahead,
+        note,
     })
 }
 

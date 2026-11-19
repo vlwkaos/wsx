@@ -5661,6 +5661,25 @@ def part_deploy(created=None):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
     for n in (holds, waits, plain):
         js('task', 'close', n, '--discard')
+    # 32v2. The disk is low when a scenario-only check-run starts (docs/design/scheduler.md): this
+    # Mac cannot run it, so it goes to CI (WSX_SCENARIO_ON=ci on the unchanged command) and the
+    # status says why. The task works on the disk while the cap is normal; the cap rises before
+    # the run starts.
+    mark('32v2')
+    low_open, low_gate, low_log = base / 'low-open', base / 'low-gate', base / 'low.log'
+    configure(LAND_CONFIG + '  scenarios:\n    lowdisk: "echo on=[$WSX_SCENARIO_ON] >> %s; %s"\n' % (low_log, gate_cmd(low_gate)), 'a scenario on a full disk')
+    low = js('task', 'new', 'WAIT %s CHECKRUN_LATE lowdisk WORK low.txt' % low_open)['id']
+    wait_state(low, 'working')
+    configure(LAND_CONFIG.replace('minFreeGb: 0', 'minFreeGb: 100000') + '  scenarios:\n    lowdisk: "echo on=[$WSX_SCENARIO_ON] >> %s; %s"\n' % (low_log, gate_cmd(low_gate)), 'a full disk')
+    low_open.touch()
+    on_ci = wait(lambda: (show(low)['record'].get('waiting') or {}).get('reason', '').startswith('went to CI: ') and show(low)['record']['waiting']['reason'], 'the run went to CI', 60)
+    assert ' GB free of the 100000 GB' in on_ci, on_ci
+    assert show(low)['status']['label'] == 'Running its scenario tests on CI', show(low)['status']
+    wait(lambda: low_log.exists() and low_log.read_text() == 'on=[ci]\n', 'the command saw WSX_SCENARIO_ON=ci', 30)
+    configure(LAND_CONFIG, 'the disk is back')
+    low_gate.touch()
+    wait_state(low, 'ready', 'failed')
+    js('task', 'close', low, '--discard')
     # 32u. A result that comes while the checks of an earlier one run (Claude's own turn for a
     # background notice) is answered by those checks: one result, one run, one revision.
     mark('32u')

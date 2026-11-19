@@ -2,7 +2,7 @@ name: CI
 
 "on":
   push:
-    branches: [main]
+    branches: [main, 'wsx-scenario/**']
     tags-ignore: ['**']
   pull_request:
   # ^ release.yml runs these tests on the v* tag before it builds or publishes.
@@ -21,6 +21,7 @@ env:
 jobs:
   test:
     name: ${{ matrix.os }}
+    if: ${{ !startsWith(github.ref_name, 'wsx-scenario/') }}
     strategy:
       fail-fast: false
       matrix:
@@ -84,17 +85,48 @@ jobs:
       - name: Run the memory contract test
         run: python3 -B scripts/test-memory.py "target/debug/wsx memory"
 
-  # ^ The task scenario (scripts/test-task.py) on a push or pull request that changes the task code,
-  # and always on a tag (release.yml calls this workflow). A worker's `check-run task` runs it on the
-  # owner's Mac (scripts/scenario.py). Its parts (test-task.py --part) run as one job each, at once;
-  # the run passes when all pass. Seatbelt (section 23, part worker) needs macOS.
-  # ref: docs/tasks.md "Verify", "Scenarios"
-  task-scenario:
-    name: task scenario (${{ matrix.part }})
+  # ^ The scenarios (`task`, `web`; parts in scripts/scenario.py) on a push to a `wsx-scenario/<name>/
+  # <commit>[--<part>]` branch: scripts/ci-scenario.py pushes it when the task host finds the owner's
+  # Mac cannot run the scenario (docs/design/scheduler.md). `scenario-parts` reads the name and part
+  # from the ref and asks scripts/scenario.py for the matrix, so that file stays the one list of parts.
+  # A push to main or a pull request or a tag runs the `task` parts when the task code changed.
+  # ref: docs/tasks.md "Scenarios"
+  scenario-parts:
+    name: scenario parts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.parts.outputs.matrix }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: List the parts
+        id: parts
+        env:
+          REF: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if [[ "$REF" == wsx-scenario/* ]]; then
+            spec=${REF#wsx-scenario/}
+            name=${spec%%/*}
+            rest=${spec#*/}
+            part=''
+            [[ "$rest" == *--* ]] && part=${rest##*--}
+          else
+            name=task
+            part=''
+          fi
+          echo "matrix=$(python3 -B scripts/scenario.py --matrix "$name" $part)" >> "$GITHUB_OUTPUT"
+
+  scenario:
+    name: ${{ matrix.name }} scenario (${{ matrix.part }})
+    needs: scenario-parts
     strategy:
       fail-fast: false
-      matrix:
-        part: [core, worker, host]
+      matrix: ${{ fromJson(needs.scenario-parts.outputs.matrix) }}
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -108,12 +140,13 @@ jobs:
         id: changed
         env:
           REF_TYPE: ${{ github.ref_type }}
+          REF: ${{ github.ref_name }}
           BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
           AFTER: ${{ github.sha }}
         shell: bash
         run: |
           paths='crates/wsx/src/task crates/wsx-core/src/task crates/wsx-core/src/memory crates/wsx/src/cli/memory.rs scripts/test-task.py scripts/test-memory.py scripts/fake-memory-backend.py'
-          if [ "$REF_TYPE" = tag ] || [ -z "$BEFORE" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+          if [ "$REF_TYPE" = tag ] || [[ "$REF" == wsx-scenario/* ]] || [ -z "$BEFORE" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
             run=true
           elif git diff --quiet "$BEFORE" "$AFTER" -- $paths; then
             run=false
@@ -155,15 +188,9 @@ jobs:
           shared-key: scenario-build
           save-if: false
 
-      - name: Run the task scenario
+      - name: Run the scenario part
         if: steps.changed.outputs.run == 'true'
-        run: cargo build --locked -p wsx -p wsx-daemon && python3 -B scripts/test-task.py --part ${{ matrix.part }}
-
-      # ^ The memory contract test (scripts/test-memory.py) is part of `core`, so a worker's
-      # `check-run task` and every later memory step prove the contract; the `ci` job runs it too.
-      - name: Run the memory contract test
-        if: steps.changed.outputs.run == 'true' && matrix.part == 'core'
-        run: python3 -B scripts/test-memory.py "target/debug/wsx memory"
+        run: python3 -B scripts/scenario.py ${{ matrix.name }} --part ${{ matrix.part }}
 
       - name: Pack the captures
         if: always() && steps.changed.outputs.run == 'true'
@@ -173,7 +200,7 @@ jobs:
         if: always() && steps.changed.outputs.run == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: scenario-files-${{ matrix.part }}
+          name: scenario-files-${{ matrix.name }}-${{ matrix.part }}
           path: files.tar
           if-no-files-found: ignore
           retention-days: 1

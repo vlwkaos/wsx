@@ -340,6 +340,13 @@ pub enum TaskCmd {
     LandBatch { tasks: Vec<String> },
     #[command(hide = true)]
     Host { project_id: String, task: String },
+    /// Runs a command in the machine's scenario lane, as a task's scenario does: the deploy's
+    /// smoke test and the release's live handoff wait here for the Mac's load (docs/design/scheduler.md).
+    #[command(hide = true)]
+    Slot {
+        #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
     /// Prints the manager's Seatbelt profile; scripts/test-manager-boundary.py starts a second
     /// sandbox with it.
     #[command(hide = true)]
@@ -621,6 +628,7 @@ impl TaskCmd {
             | Self::LandBatch { .. }
             | Self::Host { .. }
             | Self::BoundaryProfile { .. }
+            | Self::Slot { .. }
             | Self::ChatHost { .. }
             | Self::RepoHost { .. }
             | Self::ManagerHost { .. } => &[Approve],
