@@ -492,9 +492,8 @@ async function chats() {
   const typeInto = (text) => evaluate(`(() => { const field = document.querySelector('.composer-field'); field.value = ${JSON.stringify(text)};
     field.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   const shellState = () => evaluate(`(() => { const composer = document.querySelector('.composer');
-    const box = document.querySelector('.app[data-wide]') ? composer : composer.querySelector('.composer-row');
     return { shell: composer.hasAttribute('data-shell'), send: composer.querySelector('.send-text').textContent,
-      off: composer.querySelector('.composer-send').disabled, fill: getComputedStyle(box).backgroundColor }; })()`);
+      off: composer.querySelector('.composer-send').disabled, fill: getComputedStyle(composer.querySelector('.composer-row')).backgroundColor }; })()`);
   const plain = await shellState();
   await typeInto("!");
   await until("document.querySelector('.composer').hasAttribute('data-shell')", "a ! did not mark the composer");
@@ -518,9 +517,9 @@ async function chats() {
       height: document.querySelector('.composer .button').getBoundingClientRect().height, control: document.querySelector('.composer-field').getBoundingClientRect().height,
       radius: [getComputedStyle(document.querySelector('.composer .button')).borderRadius, getComputedStyle(document.querySelector('.message-user')).borderRadius],
       chars: Math.round((log.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)) / parseFloat(getComputedStyle(document.documentElement).fontSize || 16)) }; })()`);
-  // On a phone Send sits inside the composer card, one border and one space-1 from its edge.
+  // Send sits inside the composer card on every width, one border and one space-1 from its edge.
   if (column.steps !== column.left || column.user !== column.right || column.queued !== column.left
-    || (phone() ? column.right - column.send < 0 || column.right - column.send > 6 : column.send !== column.right)
+    || column.right - column.send < 0 || column.right - column.send > 6
     || column.height !== 44 || column.radius[0] !== column.radius[1] || column.field < column.left) {
     await fail(`the chat is not one column, or the send button is not a 44 px control: ${JSON.stringify(column)}`);
   }
@@ -532,22 +531,23 @@ async function chats() {
   if (workingGap < 63.5) await fail(`the working row is ${workingGap} px from the end of the log`);
   await shot("chat-working", ".composer .button-primary");
 
-  // A phone gives the text field its own line, then attach and Send; a wide window has one line.
+  // The text field has its own line, then attach and Send, on every width.
   const composer = async () => evaluate(`(() => { const box = (selector) => document.querySelector(selector).getBoundingClientRect();
     const row = box('.composer-row'), field = box('.composer-field'), send = box('.composer .button'), attach = box('.composer-row > .icon-button');
     return { row: row.width, field: field.width, below: Math.round(send.top - field.bottom), circleBelow: Math.round(box('.send-mark').top - field.bottom), line: Math.abs((attach.top + attach.bottom) / 2 - (send.top + send.bottom) / 2),
       attach: [attach.width, attach.height], send: [send.width, send.height],
-      height: Math.round(box('.composer').height), round: getComputedStyle(document.querySelector('.send-mark')).borderRadius,
+      height: Math.round(box('.composer').height), band: (() => { const style = getComputedStyle(document.querySelector('.composer')); return style.backgroundColor !== 'rgba(0, 0, 0, 0)' || parseFloat(style.borderTopWidth) > 0; })(),
+      round: getComputedStyle(document.querySelector('.send-mark')).borderRadius,
       // The card's inner insets: the field's text, the paperclip, and the circle's right and bottom gaps.
       ...(() => { const edge = parseFloat(getComputedStyle(document.querySelector('.composer-row')).borderLeftWidth), mark = box('.send-mark'), clip = box('.composer-row > .icon-button svg');
         const text = field.left + parseFloat(getComputedStyle(document.querySelector('.composer-field')).paddingLeft);
         return { insets: [text - row.left, clip.left - row.left, field.top - row.top, row.right - mark.right, row.bottom - mark.bottom].map((gap) => Math.round(gap - edge)) }; })() }; })()`);
   const layout = await composer();
-  // On a phone the row is the composer card: one 8 px inset on every side (the field's text,
-  // the paperclip, the circle's right and bottom gaps), and every hit area is 44 by 44.
-  if (phone() ? layout.insets.some((gap) => gap !== 8) || layout.circleBelow < 0 || layout.line > 1
-      || Math.min(...layout.attach, ...layout.send) < 44 || layout.round !== "50%"
-    : layout.below >= 0) {
+  // The row is the composer card on every width: one 8 px inset on every side (the field's text,
+  // the paperclip, the circle's right and bottom gaps), every hit area is 44 by 44, and no band is drawn
+  // behind it (the composer's own box has no fill and no top border).
+  if (layout.insets.some((gap) => gap !== 8) || layout.circleBelow < 0 || layout.line > 1
+      || Math.min(...layout.attach, ...layout.send) < 44 || layout.round !== "50%" || layout.band) {
     await fail(`the composer layout is wrong at ${size[0]} px: ${JSON.stringify(layout)}`);
   }
   if (size === SIZES[1]) {

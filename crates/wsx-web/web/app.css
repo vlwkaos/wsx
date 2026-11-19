@@ -356,7 +356,7 @@ html[data-bar="bottom"] .more-menu { top: auto; bottom: 100%; }
 .markdown img { display: block; max-width: 100%; border-radius: var(--radius-key); }
 .markdown .image-alt { color: var(--color-muted); font-style: italic; }
 .markdown code { font-family: var(--font-terminal); font-size: var(--font-size-sm); }
-.markdown :not(pre) > code { padding: 0 var(--space-1); border-radius: calc(var(--radius-key) / 2); background: var(--color-surface); }
+.markdown :not(pre) > code { padding: 0 var(--space-1); border-radius: var(--radius-key); background: var(--color-surface); }
 .code-block { border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control); background: var(--color-surface); overflow: hidden; }
 .code-head {
   min-height: var(--size-key); padding: 0 var(--space-3); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
@@ -605,8 +605,8 @@ div.steps .steps-summary { cursor: default; }
 .queued[data-failed] .queued-text { color: var(--color-text); }
 .queued-reason { flex: 1 0 100%; margin: 0; color: var(--color-danger); overflow-wrap: anywhere; }
 /* A delivered message the conversation does not show yet: its note on a line of its own. */
-/* Opaque, with a hairline on top, so the end of the conversation is visible. */
-.composer, .attention { flex: 0 0 auto; padding: var(--space-3) var(--column-inset); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
+/* Opaque, with a hairline on top, so the end of the conversation is visible. The composer is the rounded card below instead, on no band. */
+.attention { flex: 0 0 auto; padding: var(--space-3) var(--column-inset); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
 .composer-row { display: flex; align-items: flex-end; gap: var(--space-1); }
 /* The `/` list: one row per command, the name in the terminal font, the active row raised.
    Its notes are muted single lines at the end of the same box, not between it and the field. */
@@ -637,35 +637,35 @@ div.steps .steps-summary { cursor: default; }
 .composer-row > .icon-button:first-child { margin-left: calc(-1 * var(--space-3)); }
 .composer .button { height: var(--size-control); }
 .send-mark { display: none; }
-/* A phone, like the owner's reference (the Claude iOS app): one rounded card inset by the
-   gutter, with the one-line field on top and a short row inside it, attach at the left and a
-   round Send at the right. The row draws 36 px; each control's hit area is 44 by 44. A wide
-   window keeps one bar with a text Send.
+/* One rounded card on every width, like the owner's reference (the Claude iOS app) and the Home tab bar, on no band: inset by
+   the column, with the one-line field on top and a short row inside it, attach at the left and a
+   round Send at the right. The row draws 36 px; each control's hit area is 44 by 44.
+   ^ `.app` ahead of each selector keeps these ahead of the plain rules further down the file.
    One inner inset (space-2) on every side: the field's text, the paperclip, and the circle's
    right and bottom gaps. Each hit area reaches past the inset into the padding. */
-.app:not([data-wide]) .composer { padding: var(--space-1) var(--space-4); background: none; border-top: 0; }
-.app:not([data-wide]) .composer-row {
+.app .composer { flex: 0 0 auto; padding: var(--space-1) var(--column-inset); }
+.app .composer-row {
   flex-wrap: wrap; align-items: center; row-gap: 0; padding: var(--space-2);
   background: var(--color-surface); border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-sheet);
 }
-.app:not([data-wide]) .composer:focus-within .composer-row { border-color: var(--color-accent); }
+.app .composer:focus-within .composer-row { border-color: var(--color-accent); }
 /* A `!` line runs in Claude's shell mode: the input box takes the shell colour, as Claude's own does. */
-.app:not([data-wide]) .composer[data-shell] .composer-row { border-color: var(--color-attention); background: var(--shell-tint); }
-.app:not([data-wide]) .composer-input { order: -1; flex-basis: 100%; }
+.app .composer[data-shell] .composer-row { border-color: var(--color-attention); background: var(--shell-tint); }
+.app .composer-input { order: -1; flex-basis: 100%; }
 /* ^ Pills under the field: a gap between them (a composer without pills stays compact). */
-.app:not([data-wide]) .composer-row:has(.pills) .composer-input { margin-bottom: var(--space-1); }
-.app:not([data-wide]) .composer-field, .app:not([data-wide]) .composer-mirror { min-height: 0; padding: 0; }
-.app:not([data-wide]) .composer-row > .icon-button,
-.app:not([data-wide]) .composer .composer-send { height: var(--size-control); margin-block: calc((var(--size-key) - var(--size-control)) / 2); }
-.app:not([data-wide]) .composer .composer-send {
+.app .composer-row:has(.pills) .composer-input { margin-bottom: var(--space-1); }
+.app .composer-field, .app .composer-mirror { min-height: 0; padding: 0; }
+.app .composer-row > .icon-button,
+.app .composer .composer-send { height: var(--size-control); margin-block: calc((var(--size-key) - var(--size-control)) / 2); }
+.app .composer .composer-send {
   margin-left: auto; margin-right: calc((var(--size-key) - var(--size-control)) / 2); width: var(--size-control); min-height: 0; padding: 0;
   display: inline-flex; align-items: center; justify-content: center; background: none;
 }
-.app:not([data-wide]) .send-mark {
+.app .send-mark {
   width: var(--size-key); height: var(--size-key); display: inline-flex; align-items: center; justify-content: center;
   border-radius: 50%; background: var(--color-accent); color: var(--color-accent-text);
 }
-.app:not([data-wide]) .send-text { display: none; }
+.app .send-text { display: none; }
 /* The `/` list on a phone: the name and its source, then the description on one muted line.
    With the keyboard up, or on a short screen, it keeps to 3.5 rows so the conversation shows. */
 .app:not([data-wide]) .slash { max-height: calc(var(--size-control) * 5.5); }
@@ -739,10 +739,8 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
   flex: 1; min-width: 0; min-height: var(--size-control); padding: var(--space-3) var(--space-2);
   border: 0; background: none; resize: none; line-height: var(--line-height); outline: none;
 }
-.composer:focus-within { border-top-color: var(--color-accent); }
 .composer[data-shell] {
   --shell-tint: color-mix(in srgb, var(--color-attention) 14%, var(--color-surface));
-  border-top-color: var(--color-attention); background: var(--shell-tint);
 }
 .composer[data-shell] .composer-field { caret-color: var(--color-attention); }
 .chips { list-style: none; margin: 0; padding: 0 var(--space-2) var(--space-1); display: flex; flex-wrap: wrap; gap: var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted); }
@@ -827,7 +825,7 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 .reply-tokens { margin: 0; padding-inline: var(--space-1); font-size: var(--font-size-sm); }
 .token { display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-1); margin-right: var(--space-2); }
 .state-chip {
-  padding: 0 var(--space-1); border: var(--border-width) solid var(--color-hairline); border-radius: calc(var(--radius-key) / 2);
+  padding: 0 var(--space-1); border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-key);
   background: var(--color-raised); color: var(--color-muted); font-size: var(--font-size-sm); font-weight: var(--font-weight-medium);
 }
 /* More keeps its 44 px hit area without making its line taller. */
@@ -964,7 +962,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .task-sheet .task-page { flex: 1; min-height: 0; }
 .app[data-wide] .task-sheet {
   inset: 0 0 0 auto; margin: 0; width: min(100%, calc(var(--size-rail) * 2)); height: 100%;
-  border-top: 0; border-left: var(--border-width) solid var(--color-hairline); border-radius: 0;
+  border-top: 0; border-left: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-sheet) 0 0 var(--radius-sheet);
 }
 .app[data-wide] .task-sheet-top { display: none; }
 /* A sheet of a short list (To check) is as high as its rows, up to 85%, on the visible bottom. */
@@ -999,7 +997,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
    unless its items align by baseline (https://www.w3.org/TR/css-flexbox-1/#flex-baselines). */
 .task-chip, .markdown .task-chip {
   display: inline-flex; align-items: baseline; gap: var(--space-1); padding: 0 var(--space-1);
-  border-radius: calc(var(--radius-key) / 2); background: var(--color-surface); text-decoration: none; vertical-align: baseline;
+  border-radius: var(--radius-key); background: var(--color-surface); text-decoration: none; vertical-align: baseline;
   font-variant-numeric: tabular-nums; font-weight: var(--font-weight-medium);
 }
 .task-chip > .mark { align-self: center; }
@@ -1108,7 +1106,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .usage-meter-used { text-align: right; font-weight: var(--font-weight-medium); font-variant-numeric: tabular-nums; }
 .usage-meter[data-tone="attention"] .usage-meter-used { color: var(--color-attention); }
 .usage-meter[data-tone="danger"] .usage-meter-used { color: var(--color-danger); }
-.usage-meter-track { grid-column: 1 / -1; display: block; height: var(--space-2); border-radius: var(--space-1); background: var(--color-raised); overflow: hidden; }
+.usage-meter-track { grid-column: 1 / -1; display: block; height: var(--space-2); border-radius: var(--radius-key); background: var(--color-raised); overflow: hidden; }
 .usage-meter-track i { display: block; height: 100%; background: var(--color-accent); }
 .usage-meter[data-tone="attention"] i { background: var(--color-attention); }
 .usage-meter[data-tone="danger"] i { background: var(--color-danger); }
@@ -1120,18 +1118,15 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .usage-as-of { padding-inline: 0; color: var(--color-muted); }
 .usage-legend { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); margin: 0 0 var(--space-3); padding: 0; list-style: none; color: var(--color-muted); font-size: var(--font-size-sm); }
 .usage-legend li, .usage-parts dt { display: flex; align-items: center; gap: var(--space-1); }
-.usage-legend i, .usage-parts dt i { width: var(--space-3); height: var(--space-3); border-radius: calc(var(--space-1) / 2); flex: none; }
+.usage-legend i, .usage-parts dt i { width: var(--space-3); height: var(--space-3); border-radius: var(--radius-key); flex: none; }
 .usage-days { margin: 0 0 var(--space-4); padding: 0; list-style: none; }
 .usage-day { display: grid; grid-template-columns: calc(var(--space-4) * 4) minmax(0, 1fr) calc(var(--space-4) * 4.5); align-items: center; gap: var(--space-2); width: 100%; min-height: var(--size-control); padding: 0; border: 0; background: none; color: var(--color-text); font: inherit; text-align: left; cursor: pointer; }
 .usage-day:disabled { color: var(--color-faint); cursor: default; opacity: 1; }
 .usage-date { color: var(--color-muted); white-space: nowrap; }
 .usage-day:disabled .usage-date { color: inherit; }
 .usage-track { display: block; min-width: 0; }
-.usage-bar { display: flex; gap: calc(var(--space-1) / 2); height: var(--space-3); min-width: calc(var(--space-1) / 2); }
+.usage-bar { display: flex; gap: calc(var(--space-1) / 2); height: var(--space-3); min-width: calc(var(--space-1) / 2); overflow: hidden; border-radius: var(--radius-key); }
 .usage-bar i { flex: 1 1 0; min-width: var(--border-width); }
-.usage-bar i:first-child { border-radius: var(--space-1) 0 0 var(--space-1); }
-.usage-bar i:last-child { border-radius: 0 var(--space-1) var(--space-1) 0; }
-.usage-bar i:only-child { border-radius: var(--space-1); }
 .usage-day:not(:disabled) .usage-cost { font-weight: var(--font-weight-medium); }
 .usage-cost { text-align: right; font-variant-numeric: tabular-nums; }
 .usage-parts { display: grid; grid-template-columns: repeat(auto-fit, minmax(calc(var(--space-4) * 9), 1fr)); gap: var(--space-1) var(--space-4); margin: 0 0 var(--space-3); padding-left: calc(calc(var(--space-4) * 4) + var(--space-2)); font-size: var(--font-size-sm); }

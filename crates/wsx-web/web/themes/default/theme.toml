@@ -92,8 +92,8 @@ size-key = "36px"
 size-rail = "300px"
 size-prose = "72ch"
 # Radius and border
-radius-control = "10px"
-radius-key = "8px"
+radius-control = "16px"
+radius-key = "12px"
 radius-sheet = "16px"
 border-width = "1px"
 # Motion
