@@ -862,7 +862,7 @@ fn denial_text(denial: &Value) -> String {
 }
 
 fn key_argument(input: &Value) -> Option<String> {
-    ["command", "file_path", "path", "pattern", "url"]
+    ["command", "file_path", "path", "pattern", "url", "skill"]
         .iter()
         .find_map(|key| input.get(key)?.as_str().map(str::to_string))
 }

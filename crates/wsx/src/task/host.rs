@@ -2441,8 +2441,8 @@ impl Host {
                 ));
             }
         }
-        // ^ The area briefs: one rule, in the core. No fact records: the paid
-        // evaluation found they gave no gain. ref: docs/memory.md "Start set"
+        // ^ The area briefs and the rules that meet the files: one rule, in the core. No fact
+        // records: the paid evaluation found they gave no gain. ref: docs/memory.md "Start set"
         let areas = load_project_config(&self.record.project_path).memory_areas;
         if let Ok(store) = Store::project(
             &self.record.project_id,

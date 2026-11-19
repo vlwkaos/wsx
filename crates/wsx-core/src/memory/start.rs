@@ -1,12 +1,14 @@
 //! The start set: what the first prompt of a worker holds from the memory: the area briefs of
-//! the project config. No fact records: the paid evaluation found
+//! the project config, then the active rules whose `paths` meet its files (the owner's
+//! decisions: few, so no stale check). No fact records: the paid evaluation found
 //! they gave no gain (docs/design/memory-eval.md); `wsx memory recall` and `search` find them on
-//! demand. Nothing is cut silently: what does not fit the budget is named, with the file that
-//! holds it. This module also holds the one rule that says a fact is stale (search marks it).
+//! demand. Nothing is cut silently: what does not fit the budget is named, with the file or
+//! slug that holds it. This module also holds the one rule that says a fact is stale (search marks it).
 //! ref: docs/memory.md "Start set", docs/design/memory-system.md "Who gets what"
 
 use super::manage::clip_to;
-use super::record::{Kind, Record};
+use super::manage::decided;
+use super::record::{Kind, Record, Status};
 use super::store::{foreign_task, registered, Store};
 use crate::git::{git_cmd, output_with_timeout_limit};
 use crate::task::view::meet;
@@ -78,6 +80,8 @@ fn stale_of(store: &Store, r: &Record) -> Option<bool> {
 struct Piece {
     name: String,
     text: String,
+    /// A brief may be cut to its head; a rule is shown whole or named, as half a rule misleads.
+    cuttable: bool,
 }
 
 /// The start block of a task, within `budget` bytes; empty when there is nothing for it.
@@ -90,6 +94,7 @@ pub fn block(store: &Store, start: &Start, budget: usize) -> String {
             pieces.push(area(store.root(), glob, file));
         }
     }
+    pieces.extend(rules(store, start.files));
     let mut room = budget.saturating_sub(RESERVE);
     let mut out = Vec::new();
     let mut left = Vec::new();
@@ -113,6 +118,9 @@ fn fit(piece: &Piece, room: usize) -> Option<String> {
     if piece.text.len() < room {
         return Some(piece.text.clone());
     }
+    if !piece.cuttable {
+        return None;
+    }
     let note = format!(
         "\n[cut: {} bytes of {name}; read {name}]",
         piece.text.len(),
@@ -133,7 +141,53 @@ fn area(root: &Path, glob: &str, file: &str) -> Piece {
     Piece {
         name: file.into(),
         text,
+        cuttable: true,
     }
+}
+
+/// The active rules whose `paths` meet one of `files`, newest decision first, one piece each.
+/// A rule with no `paths` joins no block: `--paths '**'` says it is for every task.
+fn rules(store: &Store, files: &[String]) -> Vec<Piece> {
+    if files.is_empty() {
+        return Vec::new();
+    }
+    let mut found = match store.records() {
+        Ok(records) => records,
+        Err(why) => {
+            return vec![Piece {
+                name: "rules".into(),
+                text: format!("Rules could not be read: {why}"),
+                cuttable: false,
+            }]
+        }
+    };
+    found.retain(|r| {
+        r.kind == Kind::Rule
+            && r.status == Status::Active
+            && r.paths
+                .iter()
+                .any(|glob| files.iter().any(|f| meet(glob, f)))
+    });
+    found.sort_by(|a, b| decided(b).cmp(&decided(a)).then(a.slug.cmp(&b.slug)));
+    found
+        .into_iter()
+        .map(|r| {
+            let said = r
+                .words
+                .as_deref()
+                .map_or(String::new(), |w| format!(", the owner's words: \"{w}\""));
+            Piece {
+                text: format!(
+                    "Rule {} (paths {}){said}\n{}",
+                    r.slug,
+                    r.paths.join(", "),
+                    r.text.trim_end()
+                ),
+                name: r.slug,
+                cuttable: false,
+            }
+        })
+        .collect()
 }
 
 fn read_brief(root: &Path, file: &str) -> Result<String, String> {

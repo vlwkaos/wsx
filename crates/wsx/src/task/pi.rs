@@ -522,7 +522,7 @@ fn refusal(error: &str) -> Option<UsageLimit> {
 }
 
 fn key_argument(input: &Value) -> Option<String> {
-    ["command", "path", "file_path", "pattern", "url"]
+    ["command", "path", "file_path", "pattern", "url", "skill"]
         .iter()
         .find_map(|key| input.get(key)?.as_str().map(str::to_string))
 }

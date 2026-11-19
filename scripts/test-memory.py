@@ -454,6 +454,46 @@ def start_part(pid, project):
     open(os.path.join(project, 'wsx.config.yml'), 'w').write('memory:\n  areas:\n' + ''.join(f'    "big/{n}/**": briefs/{n}\n' for n in briefs))
     text = start('big/big1.md/x', 'big/big2.md/x', 'big/big3.md/x')
     check(len(text) <= 4096 and '[cut: ' in text and 'Not shown, over the 4096-byte start budget: briefs/big3.md.' in text, text[-600:])
+    # ^ Rules: those whose paths meet the files join the block after the area brief, newest first;
+    # a rule with no paths, a superseded rule, a fact and a rule for other files do not.
+    open(os.path.join(project, 'wsx.config.yml'), 'w').write('memory:\n  areas:\n    "src/**": briefs/api.md\n')
+
+    chat_log = os.path.join(ENV['XDG_STATE_HOME'], 'wsx', 'tasks', 'chats', 'proj', 'log.jsonl')
+    said = {1: 'Keep src small', 2: 'Never sort in src', 3: 'Use tabs in src', 4: 'Docs are short', 5: 'Say it plainly', 6: 'Sort in src by name',
+            7: 'Name things plainly', 8: 'Big rule'}
+    with open(chat_log, 'a') as f:
+        for n, words in said.items():
+            f.write(json.dumps({'unix_ms': 1000 + n, 'kind': 'message', 'id': 100 + n, 'from': 'owner', 'text': words + ', please.'}) + '\n')
+
+    def rule(slug, words, msg, *extra, text=None):
+        msg += 100
+        code, out, err = run('add', '--kind', 'rule', '--slug', slug, '--text-file', '-', '--source', 'msg:%d' % msg, '--verified-by', 'owner:%d' % msg,
+                   '--words', words, *extra, text=text or words + '.', scope=pid)
+        check(code == 0 or slug == 'no-paths', f'rule {slug}: {code} {err}')
+        return code, out, err
+    check(rule('src-old', 'Keep src small', 1, '--paths', 'src/*')[0] == 0, 'rule src-old')
+    check(rule('src-gone', 'Never sort in src', 2, '--paths', 'src/**')[0] == 0, 'rule src-gone')
+    time.sleep(1.1)
+    check(rule('src-new', 'Use tabs in src', 3, '--paths', 'src/a.rs,docs/z.md')[0] == 0, 'rule src-new')
+    check(rule('docs-only', 'Docs are short', 4, '--paths', 'docs/**')[0] == 0, 'rule docs-only')
+    code, out, err = rule('no-paths', 'Say it plainly', 5)
+    check(code == 0 and "no --paths: no worker's first prompt holds it" in err, (code, err))
+    check(ok('add', '--kind', 'rule', '--slug', 'src-gone2', '--text-file', '-', '--source', 'msg:106', '--verified-by', 'owner:106',
+             '--words', 'Sort in src by name', '--paths', 'src/**', '--supersedes', 'src-gone', text='Sort in src by name.', scope=pid)['slug'] == 'src-gone2', 'supersede')
+    text = start('src/a.rs')
+    check(text.startswith('Area brief briefs/api.md') and text.index('Rule src-gone2') < text.index('Rule src-new') < text.index('Rule src-old'), text)
+    check('(paths src/a.rs, docs/z.md), the owner\'s words: "Use tabs in src"\nUse tabs in src.' in text, text)
+    check(not any(w in text for w in ('docs-only', 'no-paths', 'Rule src-gone ', 'a-fact')), text)
+    docs = start('docs/z.md')
+    check('Rule docs-only' in docs and 'Rule src-new' in docs and 'Area brief' not in docs and 'src-old' not in docs, docs)
+    check(start('lib/x.rs') == '', 'no rule and no area meets lib/x.rs')
+    check(rule('every-task', 'Name things plainly', 7, '--paths', '**')[0] == 0, 'rule every-task')
+    check('Rule every-task' in start('lib/x.rs') and 'no-paths' not in start('lib/x.rs'), start('lib/x.rs'))
+    # ^ A rule that does not fit the budget is named, not cut.
+    open(os.path.join(project, 'wsx.config.yml'), 'w').write('memory:\n  areas:\n    "big/big1.md/**": briefs/big1.md\n')
+    check(rule('big-rule', 'Big rule', 8, '--paths', 'big/**', text='rule ' * 240)[0] == 0, 'rule big-rule')
+    text = start('big/big1.md/x')
+    check(len(text) <= 4096 and 'Not shown, over the 4096-byte start budget: big-rule.' in text and 'Rule big-rule' not in text and 'Rule every-task' in text, text[-600:])
     for bad in ('../x', '/etc/passwd', ':(top)x', '-literal'):
         exits(2, 'add', '--kind', 'episode', '--slug', 'bad', '--text-file', '-', '--source', 'task:1', f'--paths={bad}', text='x', scope=pid)
     # ^ A task that has not landed is an episode with no commit or paths, whatever the call gives.

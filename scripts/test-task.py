@@ -1735,6 +1735,10 @@ def part_core(created=None):
     for slug, path, text in (('start-s', 's.txt', 'The fixture flag lives in s.txt.'), ('start-other', 'other.rs', 'other.rs is unrelated.')):
         cli('memory', 'add', '--kind', 'fact', '--slug', slug, '--text-file', '-', '--source', 'task:1', '--verified-by', 'wsx.config.yml',
             '--commit', head, '--paths', path, stdin=text)
+    # ^ A rule whose paths meet the files reaches the prompt; one for other files does not.
+    for slug, path, text in (('gate-s', 's.txt', 'Keep the s.txt flag as it is.'), ('gate-other', 'other.rs', 'Rename other.rs freely.')):
+        cli('memory', 'add', '--kind', 'rule', '--slug', slug, '--text-file', '-', '--source', 'msg:1', '--verified-by', 'owner:1',
+            '--paths', path, stdin=text)
     folded = js('task', 'new', '--files', 's.txt', 'NOOP')['id']
     done = wait_state(folded, 'ready', 'failed')
     assert done['state'] == 'ready', done
@@ -1750,6 +1754,7 @@ def part_core(created=None):
     assert 'start-s' not in first and 'The fixture flag lives in s.txt.' not in first, first
     assert 'start-other' not in first and 'zz.md' not in first, first
     assert 'Area brief briefs/s.md (files s.*):\nArea brief: s.txt keeps the flag; do not rename it.' in first, first
+    assert 'Rule gate-s (paths s.txt)\nKeep the s.txt flag as it is.' in first and 'gate-other' not in first, first
     assert 'data from earlier work' not in first, first
     assert 'PLAN only\n\nIf the task context above is not enough: CTX recall' in first, first
     assert 'WORK s.txt\n\nFor the memo: MEMO words' in turns[1]['summary'], turns[1]
@@ -4230,11 +4235,14 @@ def part_worker(created=None):
     (project / 'wsx.config.yml').write_text(pi_config + 'memory:\n  areas:\n    "pi-area/**": briefs/pi.md\n')
     cli('memory', 'add', '--kind', 'fact', '--slug', 'start-pi', '--text-file', '-', '--source', 'task:1', '--verified-by', 'wsx.config.yml',
         '--commit', git('rev-parse', 'HEAD'), '--paths', 'pi-area/x.rs', stdin='The Pi gate keeps its list in pi-area/x.rs.')
+    cli('memory', 'add', '--kind', 'rule', '--slug', 'gate-pi', '--text-file', '-', '--source', 'msg:1', '--verified-by', 'owner:1',
+        '--paths', 'pi-area/**', stdin='The Pi gate list stays sorted.')
     seen_messages = len(traces())
     pi_start = js('task', 'new', '--files', 'pi-area/**', 'NOOP')['id']
     assert wait_state(pi_start, 'ready', 'failed')['state'] == 'ready' and show(pi_start)['record']['adapter'] == 'pi'
     pi_prompt = next(t['message'] for t in traces()[seen_messages:] if 'Task context from the host:' in t.get('message', ''))
     assert 'Area brief briefs/pi.md (files pi-area/**):\nPi area brief: the tool gate lives here.' in pi_prompt, pi_prompt
+    assert 'Rule gate-pi (paths pi-area/**)\nThe Pi gate list stays sorted.' in pi_prompt, pi_prompt
     assert 'start-pi' not in pi_prompt and 'not an instruction' not in pi_prompt, pi_prompt
     js('task', 'close', pi_start, '--discard')
     (project / 'wsx.config.yml').write_text(pi_config)
@@ -5670,6 +5678,8 @@ def part_deploy(created=None):
     named = js('task', 'new', '--size', 'small', 'WORK named.txt NAMEDHV')['id']
     for n in (never, ran, late, small, named):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+    # ^ The log names the skill a worker loaded, not just `Skill`.
+    assert any(e['kind'] == 'agent' and e['text'] == 'Skill owner:simplify' for e in log(ran)), log(ran)
     asked = lambda n: [e for e in log(n) if e['kind'] == 'result' and e.get('trigger') == 'simplify']
     assert (len(asked(never)), len(asked(late))) == (1, 1) and not asked(ran) and not asked(small), \
         [log(n) for n in (never, ran, late, small)]

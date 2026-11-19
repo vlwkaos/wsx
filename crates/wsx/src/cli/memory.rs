@@ -93,6 +93,12 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
                 supersedes.as_deref(),
             )?;
             notice_drift(&added.drift);
+            if added.record.kind == wsx_core::memory::Kind::Rule && added.record.paths.is_empty() {
+                eprintln!(
+                    "wsx: memory: rule {} has no --paths: no worker's first prompt holds it (--paths '**' is for every task)",
+                    added.record.slug
+                );
+            }
             let verb = if added.written {
                 "added"
             } else {

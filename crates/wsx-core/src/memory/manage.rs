@@ -124,7 +124,7 @@ fn rule_line(r: &Record) -> String {
 }
 
 /// When the record counts from: a rule's decision, else its last write.
-fn decided(r: &Record) -> u64 {
+pub(super) fn decided(r: &Record) -> u64 {
     r.decided.unwrap_or(r.updated)
 }
 

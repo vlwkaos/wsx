@@ -926,8 +926,9 @@ pub enum MemoryCmd {
         /// A comma list; searched with the text
         #[arg(long, value_delimiter = ',')]
         keywords: Vec<String>,
-        /// A comma list of the paths or globs the record is about; a task whose --files meet
-        /// one gets the record in its first prompt
+        /// A comma list of the paths or globs the record is about. A rule whose paths meet a
+        /// task's --files is in that task's first prompt (`--paths '**'`: every task; a rule
+        /// with no paths is in none); a fact is marked stale by them
         #[arg(long, value_delimiter = ',')]
         paths: Vec<String>,
         /// A rule's: the owner's words, which must stand in the message of --source msg:<id>
@@ -977,7 +978,7 @@ pub enum MemoryCmd {
         #[arg(long, value_delimiter = ',')]
         paths: Vec<String>,
     },
-    /// Print the start block a worker with these files gets in its first prompt
+    /// Print the start block a worker with these files gets in its first prompt: the area briefs, then the rules
     #[command(hide = true)]
     Start {
         /// A comma list of the task's --files globs
