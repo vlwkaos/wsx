@@ -10,12 +10,11 @@ use anyhow::Result;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
-/// Who has the ball at the head of a chain: the owner, a worker or CI, or nobody who acts now.
-/// The bands are in this order.
+/// Who has the ball at the head of a chain: a worker or CI, or nobody who acts now. A chain that
+/// waits for the owner is `Waiting`. The bands are in this order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Band {
-    You,
     Moving,
     Waiting,
 }
@@ -115,12 +114,14 @@ impl Chains {
         };
         let band_of = |id: u32| {
             let (dir, record) = all[&id];
-            if needs::stage(dir, record, land_auto).need().is_some() {
-                return Band::You;
-            }
-            match status::waits_on(dir, record, land_auto).map(|on| on.kind) {
-                Some(Holder::Task | Holder::Manager | Holder::Queue) => Band::Waiting,
-                _ => Band::Moving,
+            let held = matches!(
+                status::waits_on(dir, record, land_auto).map(|on| on.kind),
+                Some(Holder::Task | Holder::Manager | Holder::Queue)
+            );
+            // ^ A chain that waits for the owner is Waiting: the For you list holds what waits for the owner.
+            match held || needs::stage(dir, record, land_auto).need().is_some() {
+                true => Band::Waiting,
+                false => Band::Moving,
             }
         };
         // ^ A task that waits alone in the check queue: no task waits for it or nests under it.

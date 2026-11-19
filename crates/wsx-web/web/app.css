@@ -894,7 +894,9 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 .need-action[data-tone="danger"] { color: var(--color-danger); }
 /* The bands of the Tasks list: who has the ball (the server's `place.band`). */
 .reservoir-band { list-style: none; display: flex; align-items: center; min-height: var(--size-key); padding-inline: var(--column-inset, var(--space-4)); font-size: var(--font-size-label); font-weight: var(--font-weight-strong); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-muted); }
-.reservoir-band[data-band="you"] { color: var(--color-attention); }
+.reservoir-band[data-band="chat"] { color: var(--color-attention); }
+/* The For you page: the list is the screen's own, not pinned over a composer. */
+.reservoir.foryou { max-height: none; border-top: 0; }
 .reservoir-band[data-band="moving"] { color: var(--color-working); }
 /* A chain is one card; a task that waits for another sits under it behind a rail. */
 .reservoir .need[data-group] { margin-inline: var(--space-2); background: var(--color-raised); }

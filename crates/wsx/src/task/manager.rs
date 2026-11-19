@@ -166,8 +166,6 @@ struct Manager {
     policy: broker::SharedPolicy,
     /// When the agent last failed to start a turn; the next try waits `START_RETRY`.
     start_failed: Option<Instant>,
-    /// The approval lines there were after the last reply: a request after them is new.
-    asks_seen: usize,
     /// A chat host that is closed or idle: it leaves.
     leaving: bool,
     /// Like `overview_asked`, for the request to write an answer that sat in thinking.
@@ -279,7 +277,6 @@ pub fn run(chat: &str) -> Result<()> {
         owed: Owed::default(),
         policy: broker::SharedPolicy::default(),
         start_failed: None,
-        asks_seen: store::read_approvals(&project_id).map_or(0, |lines| lines.len()),
         leaving: false,
         thought_asked: false,
         overview_asked: false,
@@ -475,7 +472,7 @@ impl Manager {
                     _ => None,
                 };
                 if refusal.is_none() {
-                    self.post(event, text, level, None);
+                    self.post(event, text, level);
                 }
                 ManagerResponse {
                     ok: refusal.is_none(),
@@ -499,13 +496,7 @@ impl Manager {
     /// Write to the owner with no turn: a delivered events message, so that no restart hands it
     /// to the agent, and the reply to it, which the web pushes like the manager's own. The reply
     /// has no usage and is marked `post`, which the chats read.
-    fn post(
-        &mut self,
-        event: String,
-        text: String,
-        level: Option<Level>,
-        approval: Option<String>,
-    ) {
+    fn post(&mut self, event: String, text: String, level: Option<Level>) {
         let id = self.next_id();
         self.log(ManagerEvent::Message {
             id,
@@ -530,7 +521,6 @@ impl Manager {
             level,
             post: true,
             quote: None,
-            approval,
         });
     }
 
@@ -557,7 +547,7 @@ impl Manager {
             )
         });
         let text = format!("{}.{retry} {open}", reason.trim_end_matches('.'));
-        self.post("turn failed".into(), text, Some(Level::Bad), None);
+        self.post("turn failed".into(), text, Some(Level::Bad));
     }
 
     /// Re-queue messages logged but never delivered, and those delivered to a turn that got no
@@ -749,7 +739,6 @@ impl Manager {
             level: None,
             post: true,
             quote: None,
-            approval: None,
         });
         self.last_activity = Instant::now();
         id
@@ -1473,7 +1462,6 @@ impl Manager {
                     level: None,
                     post: false,
                     quote,
-                    approval: None,
                 });
                 self.state.provisional_to = answered;
                 self.state.provisional = true;
@@ -2062,46 +2050,14 @@ impl Manager {
             level: None,
             post: false,
             quote,
-            approval: None,
         });
         if context > self.rotate_limit() {
             self.rotate(context, None);
         }
         self.report(runtime::AgentState::Done);
-        self.post_asks();
         self.check_overview();
         self.check_views();
         self.check_thought(in_thinking);
-    }
-
-    /// The ask line of each approval this host's agent asked of the owner in the turn, so the
-    /// reply needs no words for it. ref: docs/tasks.md "Approvals"
-    fn post_asks(&mut self) {
-        let lines = self.approval_lines();
-        let asked: Vec<(String, String)> = lines
-            .iter()
-            .skip(self.asks_seen)
-            .filter(|line| match line {
-                ApprovalLine::Request { said, chat, .. } => {
-                    said.is_none() && chat.as_deref() == Some(self.dir.name())
-                }
-                ApprovalLine::Decision { .. } => false,
-            })
-            .map(|line| {
-                let ask = format!("{} ({})", owner::approval_label(line), line.id());
-                (ask, line.id().to_string())
-            })
-            .collect();
-        self.asks_seen = lines.len();
-        // ^ The request owns its push item; the line only shows the ask in the chat.
-        for (ask, id) in asked {
-            self.post(
-                format!("asked the owner: {ask}"),
-                format!("Asked you: {ask}."),
-                None,
-                Some(id),
-            );
-        }
     }
 
     /// A turn whose words are far less than its thinking gets one follow-up, and no second one

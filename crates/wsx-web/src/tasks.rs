@@ -10,6 +10,7 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::{
+    cell::OnceCell,
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::Arc,
@@ -25,7 +26,7 @@ use wsx_core::task::{
         activity, decided_request, pending_approvals, waiting_approvals, ApprovalLine, Author,
         ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse,
     },
-    needs::{self, ChatCounts, Stage, APPROVAL_RANK},
+    needs::{self, ChatCounts, Stage, YouSource, APPROVAL_RANK},
     owner, stall, status,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
     thread, view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
@@ -142,6 +143,17 @@ pub fn chat_overview(app: &App, scope: &Scope, chat: Option<&str>) -> Outcome<Va
 /// The overview as chat `chat` shows it (`None`: the home chat): the tasks, needs, To check
 /// items and counts of what that chat owns (`chats::Viewer`), the rest of the body the same.
 pub fn overview_of(app: &App, scope: &Scope, chat: Option<&str>) -> Value {
+    overview_in(app, scope, chat, &OnceCell::new())
+}
+
+/// `overview_of` with the project's For you items (`needs::for_you`) read at most once for a
+/// call that builds several overviews (`shared`).
+fn overview_in(
+    app: &App,
+    scope: &Scope,
+    chat: Option<&str>,
+    shared: &OnceCell<Vec<needs::YouItem>>,
+) -> Value {
     let settings = load_task_config(&scope.path).ok();
     // ^ The stamp comes before the build: a file that changes during it makes the next call build again.
     let viewer = task::chats::Viewer::new(&scope.store, chat);
@@ -163,11 +175,23 @@ pub fn overview_of(app: &App, scope: &Scope, chat: Option<&str>) -> Value {
         .filter(|(kept, at, _)| *kept == key && at.elapsed() < OVERVIEW_TTL)
         .map(|(_, _, body)| body.clone());
     let mut body = cached.unwrap_or_else(|| {
-        let body = build_overview(scope, settings.as_ref(), &viewer);
+        let land_auto = settings.as_ref().is_some_and(|settings| settings.land_auto);
+        let you = shared.get_or_init(|| needs::for_you(&scope.store, land_auto));
+        let mut body = build_overview(scope, settings.as_ref(), &viewer, you);
+        // ^ The home chat's overview carries the rows of Home: one per open chat (`chat_contacts`).
+        if chat.is_none() {
+            body["chats"] = json!(chat_contacts(app, scope, settings.as_ref(), &body, shared));
+        }
         locked(&app.overviews).insert(kept_as, (key, Instant::now(), body.clone()));
         body
     });
     body["busy"] = json!(manager_busy(viewer_dir(scope, chat).as_ref()));
+    // ^ Each row's `busy` is read on each call too, as the overview's.
+    for row in body["chats"].as_array_mut().into_iter().flatten() {
+        let name = row["name"].as_str().unwrap_or_default().to_string();
+        let dir = viewer_dir(scope, (row["home"] != true).then_some(name.as_str()));
+        row["busy"] = json!(manager_busy(dir.as_ref()));
+    }
     // ^ The routine pill's counts (docs/web-client-tasks.md "Home"): the scheduler's, not a store
     // file's, so they are read on each call and not kept with the body.
     body["routines"] = json!(ledger::routine_counts(&scope.path));
@@ -178,7 +202,13 @@ fn build_overview(
     scope: &Scope,
     settings: Option<&wsx_core::model::workspace::TaskConfig>,
     viewer: &task::chats::Viewer,
+    you: &[needs::YouItem],
 ) -> Value {
+    // ^ What waits for the owner in this chat is its For you items; the rows below add the web's fields.
+    let mine: Vec<&needs::YouItem> = you
+        .iter()
+        .filter(|item| item.chat == viewer.name())
+        .collect();
     let tasks = view::project_tasks(&scope.store).unwrap_or_default();
     let records: Vec<&TaskRecord> = tasks.iter().filter_map(|(_, r)| r.as_ref().ok()).collect();
     let thread_of = |task: u32| {
@@ -245,21 +275,26 @@ fn build_overview(
                 "thread": record.thread,
             })
         };
-        let kind = match stage {
-            Stage::Working => {
-                working += 1;
-                continue;
-            }
-            Stage::NeedsYou(kind) => kind,
-            Stage::Done | Stage::Closed => continue,
+        if stage == Stage::Working {
+            working += 1;
+            continue;
+        }
+        let Some(need) = mine
+            .iter()
+            .find(|item| item.source == YouSource::Task(record.id))
+        else {
+            continue;
         };
-        let (rank, mut row) = (kind.rank(), item(kind.name()));
+        let (rank, mut row) = (need.rank, item(need.kind));
         if let Some(waiting) = &record.waiting {
             row["waiting"] = json!(waiting);
         }
         needs.push((rank, record.updated_unix_ms, row));
     }
-    for line in pending {
+    for line in pending.into_iter().filter(|line| {
+        mine.iter()
+            .any(|item| item.source == YouSource::Approval(line.id().to_string()))
+    }) {
         if let Some(item) = approval_item(line, |task| {
             Some((titles.get(&task)?.clone(), thread_of(task)))
         }) {
@@ -282,10 +317,13 @@ fn build_overview(
     let last_reply = newest_news(&tail);
     // ^ The open questions: the home row shows the chat's "Asks you" while one is open, the
     // reservoir lists them (docs/web-client-tasks.md "Home").
-    let asks = manager_dir
-        .as_ref()
-        .and_then(|dir| task::chat::asking(dir, now).ok())
-        .unwrap_or_default();
+    let asks: Vec<&task::chat::OpenAsk> = mine
+        .iter()
+        .filter_map(|item| match &item.source {
+            YouSource::Ask(ask) => Some(ask),
+            _ => None,
+        })
+        .collect();
     let check_items = task::chats::checks_of(
         &scope.store,
         checks::read(&scope.store).unwrap_or_default(),
@@ -295,7 +333,7 @@ fn build_overview(
     // opens the sheet at the item (docs/web-client-tasks.md "Project screen").
     let open_checks: Vec<Value> = check_items
         .iter()
-        .filter(|item| item.state == checks::CheckState::Open)
+        .filter(|item| mine.iter().any(|you| you.source == YouSource::Check(item.id.clone())))
         .map(|item| json!({ "id": item.id, "task": item.task, "check": item.check, "pass_if": item.pass_if, "thread": thread_of(item.task) }))
         .collect();
     // ^ The newest message the chat counts as new: a reply that is not quiet or a To check
@@ -328,8 +366,8 @@ fn build_overview(
     let counts = ChatCounts {
         running: working + waiting_approvals(&approvals).len(),
         open: open_tasks + waiting_approvals(&approvals).len(),
-        needs: needs.len() + asks.len(),
-        check: open_checks.len(),
+        needs: mine.iter().filter(|item| item.kind != "check").count(),
+        check: mine.iter().filter(|item| item.kind == "check").count(),
         asks: asks.len(),
     };
     json!({
@@ -364,7 +402,6 @@ fn build_overview(
         // ^ The project's home chat, whose route is the project's manager, and its open chats, the
         // home chat among them: the rows of Home (docs/web-client-tasks.md "Home").
         "home_chat": home_name(scope),
-        "chats": chat_contacts(scope, land_auto),
         // ^ The agent the New chat sheet's Default runs on.
         "default_agent": settings.map(view::default_agent),
         "asks": asks,
@@ -896,15 +933,36 @@ fn news_value((unix_ms, text): (u64, String)) -> Value {
 }
 
 /// The open chats as Home rows, the home chat too: the row `chats::open_rows` builds (name, the
-/// first line of the goal, `last_unix_ms`, `listed`, `home`, the pill `counts`) with `last_reply`
-/// (the first line of the last reply) and `news` (as a project's: `{unix_ms, text}` of the newest
-/// reply that is news, or `null`) (docs/web-client-tasks.md "Home").
-fn chat_contacts(scope: &Scope, land_auto: bool) -> Vec<Value> {
+/// first line of the goal, `last_unix_ms`, `listed`, `home`, the pill `counts`) with the same
+/// web fields for every chat, read from that chat's own overview (`home_body` is the home chat's):
+/// `news` (`{unix_ms, text}` of the newest reply or To check item that is news, or `null`),
+/// `asks` (its open questions), `first` (its most urgent need), `busy` (a turn runs now; read on
+/// each call) and `last_reply` (the first line of the last reply) (docs/web-client-tasks.md "Home").
+fn chat_contacts(
+    app: &App,
+    scope: &Scope,
+    settings: Option<&wsx_core::model::workspace::TaskConfig>,
+    home_body: &Value,
+    you: &OnceCell<Vec<needs::YouItem>>,
+) -> Vec<Value> {
+    let land_auto = settings.is_some_and(|settings| settings.land_auto);
     let mut rows: Vec<Value> = task::chats::open_rows(&scope.store, land_auto)
         .into_iter()
         .map(|(dir, mut row)| {
+            let own = match row["home"] == true {
+                true => home_body.clone(),
+                false => overview_in(app, scope, Some(dir.name()), you),
+            };
+            row["news"] = own["news"].clone();
+            row["asks"] = json!(own["asks"].as_array().map_or(0, Vec::len));
+            row["first"] = own["needs"].get(0).cloned().unwrap_or(Value::Null);
+            row["busy"] = json!(false);
+            // ^ The name that types while `busy`: the project's manager name, else the chat's own.
+            row["manager"] = match row["home"] == true {
+                true => home_body["manager"].clone(),
+                false => row["shown"].clone(),
+            };
             let tail = dir.read_tail(MANAGER_TAIL_BYTES).unwrap_or_default();
-            row["news"] = json!(newest_news(&tail).map(news_value));
             row["last_reply"] = tail
                 .into_iter()
                 .rev()
@@ -931,7 +989,8 @@ fn chat_contacts(scope: &Scope, land_auto: bool) -> Vec<Value> {
             "name": home_name(scope),
             "goal": "", "last_reply": null, "news": null, "home": true, "listed": true,
             "last_unix_ms": 0, "counts": needs::ChatCounts::default(),
-            "shown": scope.name, "projects": [scope.name],
+            "shown": scope.name, "projects": [scope.name], "busy": false, "asks": 0, "first": null,
+            "manager": home_body["manager"],
         }));
     }
     rows
@@ -1134,12 +1193,18 @@ pub fn mentions(app: &App, scope: &Scope, chat: Option<&str>) -> Outcome<Value> 
     let chats: Vec<Value> = scopes(&chat::snapshot(&app.client)?, &app.site.access)
         .iter()
         .flat_map(|other| {
-            chat_contacts(other, false)
+            // ^ Only the names: not `chat_contacts`, which reads every chat's overview.
+            let mut rows: Vec<(Value, Value)> = task::chats::open_rows(&other.store, false)
                 .into_iter()
-                .filter(|row| row["listed"] == true)
-                .map(
-                    |row| json!({ "id": row["name"], "name": row["shown"], "project": other.name }),
-                )
+                .filter(|(_, row)| row["listed"] == true)
+                .map(|(_, row)| (row["name"].clone(), row["shown"].clone()))
+                .collect();
+            if !rows.iter().any(|(name, _)| *name == json!(home_name(other))) {
+                rows.push((json!(home_name(other)), json!(other.name)));
+            }
+            rows.into_iter().map(move |(name, shown)| {
+                json!({ "id": name, "name": shown, "project": other.name })
+            })
         })
         .filter(|row| row["id"] != json!(current))
         .collect();
@@ -1635,7 +1700,6 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
                 text,
                 post,
                 level,
-                approval,
                 ..
             } = &entry.event
             else {
@@ -1658,8 +1722,6 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
                             },
                         ));
                     }
-                    // ^ The ask line: its approval request is the push item (`Key::Approval`).
-                    (true, None) if approval.is_some() => {}
                     (true, None) => watch
                         .pending
                         .add((scope.project, Key::Wrote(text.clone(), url.clone()))),
@@ -2035,4 +2097,37 @@ pub fn overviews(app: &App) -> Outcome<Value> {
         .iter()
         .map(|scope| overview(app, scope))
         .collect::<Vec<_>>()))
+}
+
+/// What waits for the owner in every open chat of every granted project, one entry per chat that
+/// has anything: the chat's own `needs`, `asks` and `check_items` as its overview has them, so the
+/// For you list of Home holds the rows of each chat's For you pill and its count is the sum of
+/// the chats' `counts` (docs/web-client-tasks.md "Home").
+pub fn for_you(app: &App) -> Outcome<Value> {
+    let snapshot = chat::snapshot(&app.client)?;
+    let mut chats = Vec::new();
+    for scope in scopes(&snapshot, &app.site.access) {
+        let home = overview(app, &scope);
+        for row in home["chats"].as_array().into_iter().flatten() {
+            let waits = ["needs", "check"]
+                .iter()
+                .any(|kind| row["counts"][kind].as_u64().unwrap_or_default() > 0);
+            // ^ A chat that runs in several projects is one entry, under its first.
+            let own =
+                row["home"] == true || row["projects"][0].as_str() == Some(scope.name.as_str());
+            let Some(name) = row["name"].as_str().filter(|_| waits && own) else {
+                continue;
+            };
+            let body = if row["home"] == true {
+                home.clone()
+            } else {
+                overview_of(app, &scope, Some(name))
+            };
+            chats.push(json!({
+                "project": scope.project, "chat": name, "shown": row["shown"], "home": row["home"],
+                "needs": body["needs"], "asks": body["asks"], "check_items": body["check_items"],
+            }));
+        }
+    }
+    Ok(json!(chats))
 }

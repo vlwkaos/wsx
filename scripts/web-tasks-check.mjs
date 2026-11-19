@@ -489,7 +489,7 @@ async function motion() {
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     // The manager of ui runs a turn: typing dots on its row. ^ Only ui's row: another fixture
     // manager may run a real turn at the same time.
-    update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], busy: true } } });
+    update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], chats: state.tasks[ui].chats.map((chat) => chat.home ? { ...chat, busy: true } : chat) } } });
     await frames();
     const typing = document.querySelectorAll('.home-rows > .row:has(.home-row)[data-key="' + ui + '"] .row-typing .typing-dot').length;
     toast('Saved the page');
@@ -523,7 +523,7 @@ async function motion() {
   const typingOn = () => evaluate(`(async () => {
     const { state, update } = await ${pageModule("store.js")};
     const ui = state.projects.find((project) => project.name === 'ui').id;
-    update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], busy: true } } });
+    update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], chats: state.tasks[ui].chats.map((chat) => chat.home ? { ...chat, busy: true } : chat) } } });
     await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
   })()`);
   // ^ A read in between can undo it again (CI run 43549626080: no dots): one of 3 tries must show them.
@@ -622,7 +622,6 @@ async function homeTimers() {
 async function homeUnread() {
   const pageModule = (name) => `import(new URL(${JSON.stringify(name)}, [...document.scripts].find((script) => script.type === 'module').src))`;
   const result = await evaluate(`(async () => {
-    ${lastAt}
     const { state, update } = await ${pageModule("store.js")};
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     const by = (name) => state.projects.find((project) => project.name === name);
@@ -631,7 +630,8 @@ async function homeUnread() {
     const T = Date.now() + 2e7;
     // ^ calm has a message nobody read here; gone and quiet are read, and gone is newer by activity.
     localStorage.setItem('wsx-read', JSON.stringify(Object.fromEntries([calm, gone, quiet].map((project) => ['project-' + project.id, { read: T - 1000, place: null }]))));
-    const overview = (project, { last_unix_ms: last, ...extra }) => ({ ...(last === undefined ? state.tasks[project.id] : lastAt(state.tasks[project.id], last)), ...extra });
+    // ^ Home reads each chat's own row: news and the newest time are staged on the home chat's row.
+    const overview = (project, extra) => ({ ...state.tasks[project.id], chats: state.tasks[project.id].chats.map((chat) => chat.home ? { ...chat, ...extra } : chat) });
     const names = () => [...document.querySelectorAll('.home-rows > .row:has(.home-row)')].map((row) => row.querySelector('.row-label').textContent).filter((name) => ['calm', 'gone', 'quiet'].includes(name));
     const marked = (project) => document.querySelector('.home-rows > .row:has(.home-row)[data-key="' + project.id + '"]').hasAttribute('data-news');
     update({ tasks: { ...state.tasks,
@@ -1029,7 +1029,8 @@ await openReservoir();
 if ((await rows()).length !== 8 || (await rows()).some((row) => row[3] !== "")) await fail(`a device without task_act has actions in the For you list: ${JSON.stringify(await rows())}`);
 await shot("pills-view-only", ".pill-bar");
 await openReservoir("tasks");
-if ((await rows()).map((row) => row[0]).join() !== "#1,#2,#3,#4,#6") await fail(`a device without task_act sees the Tasks rows ${JSON.stringify(await rows())}`);
+// ^ The tasks that wait for the owner are the For you list's: the Tasks list has the row "N wait for you", then #6.
+if ((await rows()).map((row) => row[0]).join() !== ",#6") await fail(`a device without task_act sees the Tasks rows ${JSON.stringify(await rows())}`);
 await click(".pill[aria-pressed=true]");
 await until("!document.querySelector('.reservoir')", "a tap on the open pill did not close the list of a device without task_act");
 await withCapabilities(capabilities);
@@ -1101,10 +1102,16 @@ if (listedRows[0][2] !== "Waiting for your answer" || listedRows[2][1] !== "Appr
 await click(".pill[data-kind=tasks]");
 await until("!!document.querySelector('.reservoir-list[aria-label=Tasks]') && !document.querySelector('.reservoir-list[aria-label=\"For you\"]')", "a tap on Tasks did not switch the list");
 if ((await pressed()) !== "tasks" || (await count(".reservoir-list")) !== 1) await fail(`after a tap on Tasks ${await pressed()} is pressed`);
-// ^ Every open task, in the ledger's order (wsx-core `task::chains`), the number in its own column, under its band.
+// ^ The Tasks list has no For you band: the tasks that wait for the owner are the For you list's, and one muted row
+// "N wait for you" (the pill's count) opens it. The task that moves stays under Moving (owner 5237, 5281).
 const taskRows = await rows();
-if (taskRows.map((row) => row[0]).join() !== "#1,#2,#3,#4,#6" || !/^keep a worker busy WAIT /.test(taskRows[4][1])) await fail(`the Tasks rows are ${JSON.stringify(taskRows)}`);
-if ((await evaluate("[...document.querySelectorAll('.reservoir-band')].map((band) => band.dataset.band).join()")) !== "you,moving") await fail("the Tasks bands are not For you and Moving");
+const pillYou = Number(await evaluate("document.querySelector('.pill[data-kind=you]').getAttribute('aria-label').match(/\\d+/)[0]"));
+if (taskRows.map((row) => row[0]).join() !== ",#6" || taskRows[0][1] !== `${pillYou} wait for you` || !/^keep a worker busy WAIT /.test(taskRows[1][1])) await fail(`the Tasks rows are ${JSON.stringify(taskRows)}`);
+if ((await evaluate("[...document.querySelectorAll('.reservoir-band')].map((band) => band.dataset.band).join()")) !== "moving") await fail("the Tasks bands are not only Moving: a For you band is back");
+await evaluate("document.querySelector('.reservoir-list .need[data-key=wait-for-you] .row-open').click()");
+await until("!!document.querySelector('.reservoir-list[aria-label=\"For you\"]') && !document.querySelector('.reservoir-list[aria-label=Tasks]')", "the row \"N wait for you\" did not open the For you list");
+await click(".pill[data-kind=tasks]");
+await until("!!document.querySelector('.reservoir-list[aria-label=Tasks]')", "a tap on Tasks did not switch back");
 await click(".pill[data-kind=you]");
 await until("!!document.querySelector('.reservoir-list[aria-label=\"For you\"]') && !document.querySelector('.reservoir-list[aria-label=Tasks]')", "a tap on For you did not switch the list");
 // ^ A row's actions are in a line of their own under its words, at 390 px.
@@ -1124,12 +1131,12 @@ if (!sizes.length || sizes.some((size) => size !== closedSize)) await fail(`the 
 // and a task's chip first (docs/web-client-tasks.md "Project screen").
 const listLook = async (kind) => {
   await openReservoir(kind);
-  await until(`!!document.querySelector('.reservoir-list[aria-label="${LISTS[kind]}"] .need .row-title > *')`, `the first row of ${LISTS[kind]} has no title`);
+  await until(`!!document.querySelector('.reservoir-list[aria-label="${LISTS[kind]}"] .need:not([data-key=wait-for-you]) .row-title > *')`, `the first row of ${LISTS[kind]} has no title`);
   // ^ The row of the list just opened, not of the one that was open before.
-  return evaluate(`(() => { const row = document.querySelector('.reservoir-list[aria-label="${LISTS[kind]}"] .need'), part = (selector) => getComputedStyle(row.querySelector(selector)), link = getComputedStyle(row.querySelector('.row-link'));
+  return evaluate(`(() => { const row = document.querySelector('.reservoir-list[aria-label="${LISTS[kind]}"] .need:not([data-key=wait-for-you])'), part = (selector) => getComputedStyle(row.querySelector(selector)), link = getComputedStyle(row.querySelector('.row-link'));
     return { label: [part('.row-label').fontSize, part('.row-label').fontWeight, part('.row-label').color].join(), context: [part('.row-context').fontSize, part('.row-context').color].join(),
       chip: part('.task-number, .row-icon').fontSize, row: [link.paddingTop, link.paddingBottom, link.minHeight, link.columnGap, link.fontSize].join(), number: ${NUMBER},
-      // ^ No number column: the title (or the icon before it) starts at the row's left text edge, and the number follows the title.
+      // ^ The Tasks list's first task row is the moving one (#6): the For you tasks are in the For you list. No number column: the title (or the icon before it) starts at the row's left text edge, and the number follows the title.
       lead: (() => { const main = row.querySelector('.row-link').firstElementChild, style = getComputedStyle(main), edge = main.getBoundingClientRect().left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
         return Math.abs(row.querySelector('.row-title').firstElementChild.getBoundingClientRect().left - edge) < 1 && (row.dataset.nest || Math.abs(main.getBoundingClientRect().left - (row.querySelector('.row-link').getBoundingClientRect().left + parseFloat(link.paddingLeft))) < 1); })(),
       after: (() => { const number = row.querySelector('.task-number'); return !number || (number.previousElementSibling.className === 'row-label' && number.getBoundingClientRect().left >= number.previousElementSibling.getBoundingClientRect().right - 0.5); })() }; })()`);
@@ -1137,7 +1144,7 @@ const listLook = async (kind) => {
 const looks = { tasks: await listLook("tasks"), you: await listLook("you") };
 const same = (field) => new Set(Object.values(looks).map((look) => look[field])).size === 1;
 if (!["label", "context", "chip", "row"].every(same)) await fail(`the lists do not share one row type: ${JSON.stringify(looks)}`);
-if (looks.tasks.number !== "#1" || !looks.tasks.after || !looks.tasks.lead || !looks.you.lead || !looks.you.after) await fail(`a row's title does not start at its left text edge with the number after it: ${JSON.stringify(looks)}`);
+if (!/^#\d+$/.test(looks.tasks.number) || !looks.tasks.after || !looks.tasks.lead || !looks.you.lead || !looks.you.after) await fail(`a row's title does not start at its left text edge with the number after it: ${JSON.stringify(looks)}`);
 if (looks.tasks.chip !== closedSize) await fail(`the number is ${looks.tasks.chip}, not ${closedSize}`);
 await openReservoir();
 // ^ The open list reads its tasks ahead: a row's sheet shows its content in the frame it opens,
@@ -1249,7 +1256,7 @@ await inStore(`const ov = state.tasks[${project}], base = ov.tasks.find((task) =
   update({ tasks: { ...state.tasks, [${project}]: { ...ov, needs: [], to_check: 16, check_items: Array.from({ length: 16 }, (_, n) => ({ id: 'c' + (90 + n), task: 7, check: 'check ' + n + ' with words long enough to be cut at the end of its line', pass_if: 'it passes' })), tasks: [base, { ...base, id: 91, title: 'a second running task' }], counts: { running: 2 + ov.waiting.length, open: 2 + ov.waiting.length, needs: ov.asks.length, check: 16 } } } })`);
 await resize([390, 844, 2]);
 await openReservoir("tasks");
-await until("document.querySelectorAll('.reservoir-list[aria-label=Tasks] .need').length === 2", "the Tasks list does not show two tasks");
+await until("document.querySelectorAll('.reservoir-list[aria-label=Tasks] .need:not([data-key=wait-for-you])').length === 2", "the Tasks list does not show two tasks");
 await noEmptyBlock("two running tasks at 390x844");
 await shot("reservoir-two-running", ".composer-send");
 await openReservoir("you");
@@ -1261,7 +1268,9 @@ for (const [width, height, scale] of [[390, 844, 2], [390, 560, 2], [900, 700, 1
   await resize([width, height, scale]);
   await openReservoir("tasks");
   // ^ The list holds every open task (`flow.place`): the project's own and the six runners.
-  const shownTasks = beforeRunners.tasks.filter((task) => task.flow?.place).length + 6;
+  const waitsForYou = new Set(beforeRunners.needs.filter((item) => item.kind !== "approval").map((item) => item.task));
+  const shownTasks = beforeRunners.tasks.filter((task) => task.flow?.place && !waitsForYou.has(task.id)).length + 6;
+  // ^ A task that waits for the owner is in the For you list, not here.
   await until(`document.querySelectorAll('.reservoir-list[aria-label=Tasks] .need[data-key^="run-"]').length === ${shownTasks}`, `the Tasks list does not show ${shownTasks} tasks at ${width} px`);
   const cut = await evaluate(`(() => {
     const box = (node) => node.getBoundingClientRect(), scroller = (node) => /auto|scroll/.test(getComputedStyle(node).overflowY);
@@ -3805,6 +3814,14 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await until(`!!(${billing})`, "a message did not bring the dismissed chat back", 30);
   await shot(`home-dismiss-back`);
   await untilApi(`fetch('api/tasks/${project}/chat?chat=billing').then((r) => r.json()).then((data) => data.rows.length >= ${rows} + 2)`, "the chat did not answer the message", 10);
+  // ^ An unread reply in another chat marks its row as the home chat's reply marks the project's
+  // (the same accent mark, the reply's first line in the status line, "unread" in the label): one rule
+  // for every chat, the server's `news` against what this device read (docs/web-client.md "Notifications").
+  await until(`!!(${billing})?.querySelector('.news-mark') && ${billing}.hasAttribute('data-news') && (${billing}.querySelector('.row-context[data-news]')?.textContent.trim().length ?? 0) > 0`, "the chat's reply did not mark its row unread as the home chat's reply marks the project's", 300);
+  const chatMark = await evaluate(`(() => { const mark = getComputedStyle(${billing}.querySelector('.news-mark')).backgroundColor;
+    const probe = document.createElement('span'); probe.style.color = 'var(--color-accent)'; document.body.append(probe); const accent = getComputedStyle(probe).color; probe.remove();
+    return { mark, accent, label: ${billing}.querySelector('.chat-row')?.getAttribute('aria-label') ?? '' }; })()`);
+  if (chatMark.mark !== chatMark.accent || !/unread/.test(chatMark.label)) await fail(`the chat's unread mark is not the home chat's accent mark: ${JSON.stringify(chatMark)}`);
   await go("#/c/billing");
   await until("!!document.querySelector('.log .bubble[data-side=in]')", "the chat did not open after its message");
   await go("#/");
@@ -3927,18 +3944,80 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   const repo = JSON.parse(fs.readFileSync(path.join(state, path.dirname(found), "chat.json"))).repos[0];
   const approvals = path.join(state, path.dirname(path.dirname(path.dirname(found))), repo, "approvals.jsonl");
   const line = (entry) => fs.appendFileSync(approvals, `${JSON.stringify(entry)}\n`);
-  const chatCount = "(document.querySelector('.home-rows .chat-row .tray[data-kind=you] .tray-count')?.textContent ?? '')";
+  // ^ billing's row, by its name: other chats' rows may count their own items. A chat's count is every item that waits in it
+  // (wsx-core needs::chat_counts), so the check compares with the count before the approval, not with none.
+  const billingRow = `[...document.querySelectorAll('.home-rows .chat-row')].find((row) => row.getAttribute('aria-label').startsWith('Chat billing of'))`;
+  const chatCount = `Number(${billingRow}?.querySelector('.tray[data-kind=you] .tray-count')?.textContent || 0)`;
   const firstCount = `(document.querySelector('.home-rows .row[data-key="${project}"] .tray[data-kind=you] .tray-count')?.textContent ?? '')`;
   await resize([390, 844, 2]);
   await go("#/");
-  await until(`!!document.querySelector('.home-rows .chat-row') && ${chatCount} === ''`, "the chat's row shows a count before it has an approval");
+  await until(`!!(${billingRow})`, "Home lists no row for billing");
+  const own = await evaluate(chatCount);
   const before = await evaluate(firstCount);
   line({ kind: "request", id: "a9001", action: "push", chat: "billing", unix_ms: Date.now() });
-  await until(`${chatCount} === '1'`, "the chat's row shows no pending approval of its own", 30);
+  await until(`${chatCount} === ${own + 1}`, "the chat's row shows no pending approval of its own", 30);
   if ((await evaluate(firstCount)) !== before) await fail("a chat's approval counted on the first chat's row");
   await shot("chats-home-approval");
+  // ^ A chat that is not the home chat shows the same state on Home (task 510, owner 5329): the row of billing is
+  // built as the home chat's is, so its manager's turn shows the typing dots, with its name, the same as the home row's.
+  {
+    await resize([390, 844, 2]);
+    await go("#/");
+    await until("!!document.querySelector('.home-rows .chat-row')", "Home lists no chat row for the working chat");
+    const pageStore = `import(new URL("store.js", [...document.scripts].find((script) => script.type === 'module').src))`;
+    // ^ Staged on the page's store: every home chat and billing run a turn (the server side is the tasks event's rows, test-web-client.py).
+    const working = (busy) => evaluate(`(async () => {
+      const { state, update } = await ${pageStore};
+      update({ tasks: Object.fromEntries(Object.entries(state.tasks).map(([id, tasks]) => [id, { ...tasks, chats: (tasks.chats ?? []).map((chat) => ({ ...chat, busy: ${busy} && (chat.home || chat.name === 'billing') })) }])) });
+    })()`);
+    const typing = () => evaluate(`({ home: document.querySelectorAll('.home-rows .home-row .row-typing .typing-dot').length > 0,
+      chats: [...document.querySelectorAll('.home-rows .chat-row')].filter((link) => link.querySelector('.row-typing')).map((link) => link.getAttribute('aria-label').split(' of ')[0]) })`);
+    await working(true);
+    await until(`!!document.querySelector('.home-rows .chat-row .row-typing .typing-dot')`, "a working chat's Home row shows no typing dots");
+    const dots = await typing();
+    if (!dots.home || dots.chats.join() !== "Chat billing") await fail(`the working rows on Home are ${JSON.stringify(dots)}: the home chat and billing should both type`);
+    for (const scheme of ["light", "dark"]) { await inScheme(scheme); await shot(`home-working-chat-${scheme}`); }
+    await inScheme("dark");
+    await working(false);
+    await until("!document.querySelector('.home-rows .row-typing')", "the typing dots stayed after the turns ended");
+  }
+  // ^ One For you list (docs/web-client-tasks.md "Home"): the row on top of Home counts what waits in every chat, and
+  // the list it opens holds exactly those items by chat: the first chat's questions, approvals and checks, and billing's approval.
+  const youRow = '.home-rows [data-key="for-you"]';
+  await until(`!!document.querySelector('${youRow}')`, "Home has no For you row while chats wait for the owner", 30);
+  const homeWords = await evaluate(`document.querySelector('${youRow} .row-context').textContent`);
+  const [, homeItems, homeChats] = /^(\d+) items? in (\d+) chats?: \d+ (?:questions?|approvals?|checks?|stopped)/.exec(homeWords) ?? [];
+  if (!homeItems || Number(homeChats) < 2) await fail(`Home's For you row reads ${JSON.stringify(homeWords)}`);
+  const served = await evaluate("fetch('api/tasks/for-you').then((r) => r.json())");
+  const entryItems = (entry) => entry.needs.length + entry.asks.length + entry.check_items.length;
+  if (served.reduce((sum, entry) => sum + entryItems(entry), 0) !== Number(homeItems) || served.length !== Number(homeChats)) await fail(`the For you row says ${homeWords} but the list holds ${JSON.stringify(served.map((entry) => [entry.chat, entryItems(entry)]))}`);
+  // ^ The same set as the server's chat counts (wsx-core needs::chat_counts): no second rule.
+  const counted = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((data) => data.chats.map((row) => [row.name, row.counts.needs + row.counts.check]))`);
+  for (const entry of served.filter((entry) => entry.project === project)) {
+    if (counted.find((row) => row[0] === entry.chat)?.[1] !== entryItems(entry)) await fail(`the chat ${entry.chat} lists ${entryItems(entry)} items but its counts say ${JSON.stringify(counted)}`);
+  }
+  for (const next of [[390, 844, 2], [1280, 800, 1]]) {
+    await resize(next);
+    await go("#/");
+    await until(`!!document.querySelector('${youRow}')`, "Home lost its For you row after a resize");
+    for (const scheme of ["light", "dark"]) { await inScheme(scheme); await shot(`for-you-home-${scheme}`); }
+    await click(`${youRow} a`);
+    await until("!!document.querySelector('.reservoir-list[aria-label=\"For you\"] .need')", "the For you row opened no list");
+    const listed = await evaluate("({ items: document.querySelectorAll('.reservoir-list[aria-label=\"For you\"] .need').length, chats: document.querySelectorAll('.reservoir-list[aria-label=\"For you\"] .reservoir-band').length })");
+    if (listed.items !== Number(homeItems) || listed.chats !== Number(homeChats)) await fail(`the For you list has ${JSON.stringify(listed)}, Home's row said ${homeWords}`);
+    for (const scheme of ["light", "dark"]) { await inScheme(scheme); await shot(`for-you-list-${scheme}`); }
+    await go(chat);
+    await until("!!document.querySelector('.composer-field')", "the first chat did not open for its Tasks list");
+    await until("!!document.querySelector('.pill[data-kind=you]')", "the chat's For you pill is not drawn yet", 30);
+    // ^ The pill follows the chat's overview, read after the page opens: wait for it before reading its count.
+    await openReservoir("tasks");
+    if ((await evaluate("document.querySelector('.reservoir-list .need .row-label')?.textContent")) !== `${await evaluate("document.querySelector('.pill[data-kind=you]').getAttribute('aria-label').match(/\\d+/)[0]")} wait for you`) await fail("the Tasks list has no row \"N wait for you\" first");
+    for (const scheme of ["light", "dark"]) { await inScheme(scheme); await shot(`tasks-wait-row-${scheme}`, ".composer-send"); }
+    await inScheme("dark");
+  }
+  await resize([390, 844, 2]);
   line({ kind: "decision", id: "a9001", approved: false, outcome: "dropped; the check is done", unix_ms: Date.now() });
-  await until(`${chatCount} === ''`, "the chat's row kept a decided approval", 30);
+  await until(`${chatCount} === ${own}`, "the chat's row kept a decided approval", 30);
 }
 
 // New chat (docs/web-client-tasks.md "Home"): the + on Home opens a sheet with the projects, then a

@@ -43,7 +43,11 @@ export const rowLine = (task) => ({
   glyph: ["host", "check"].includes(task.status?.waits_on?.kind) ? "play" : "pause",
   text: [task.status?.label, task.flow?.phrase, agentWords(task.agent)].filter(Boolean).join(" · "),
 });
-export const BANDS = { you: "For you", moving: "Moving", waiting: "Waiting" };
+// ^ The Tasks list's bands: who has the ball. What waits for the owner is the For you list's, not a band.
+export const BANDS = { moving: "Moving", waiting: "Waiting" };
+// What waits for the owner in an overview (or a chat's entry of the For you list), in the server's
+// order: its needs, then its open questions as items of kind `ask` (docs/web-client-tasks.md "Project screen").
+export const needing = (body) => [...(body?.needs ?? []), ...(body?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote, thread: ask.threads?.[0] }))];
 // The open tasks in `task`'s group, in the list's order: upstream, itself, downstream.
 export const chainOf = (tasks, task) => {
   const root = task?.flow?.place?.root;
@@ -122,7 +126,7 @@ export function withChips(project, source = null) {
   return chipWords.get(key);
 }
 
-export const KIND_TONE = { waiting: "attention", failed: "danger", approval: "attention", land: "accent", ask: "accent" };
+export const KIND_TONE = { waiting: "attention", failed: "danger", blocked: "attention", approval: "attention", land: "accent", ask: "accent" };
 // One open item in words, as the owner would read it: "#4 Waiting for your answer · after #2",
 // "Approve land #3"; a task's `flow` phrase follows its label (wsx-core `view::flow`). The words are the server's `status` (wsx-core task::status, docs/tasks.md "Status").
 export const needWords = (item) => item.kind === "approval" || item.kind === "ask" ? item.label

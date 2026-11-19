@@ -4,7 +4,7 @@
 // go straight to wsx.
 import { api } from "./api.js";
 import { clock, html, Icon, keepIn, plural, readMap, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
-import { can, goBack, leaveFor, sheetHash, shows, state, touch, useEventLoad, useStore } from "./store.js";
+import { can, goBack, leaveFor, sheetHash, shows, state, touch, update, useEventLoad, useStore } from "./store.js";
 import { Back, confirmDialog, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, useDraft, useListKeys, useRecent, withNewLine } from "./chat.js";
 import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, TalkLine, Typing } from "./bubbles.js";
@@ -20,7 +20,7 @@ import { present, shownTrays, TRAYS, trayCounts, trayWords } from "./trays.js";
 import { PanelsButton, PanelsPage } from "./panels.js";
 import { inThread, NewThread, ThreadMore, ThreadStrip, ThreadWaits, threadHash } from "./threads.js";
 import { loadTasks, act } from "./task-api.js";
-import { agentWords, BANDS, calm, KIND_TONE, LEAVE_MS, rowLine, taskLink, taskStage, TaskTitle, withChips } from "./task-words.js";
+import { agentWords, BANDS, calm, KIND_TONE, LEAVE_MS, needing, rowLine, taskLink, taskStage, TaskTitle, withChips } from "./task-words.js";
 
 // A count that ticks: it is a new element when it changes, which plays its entry.
 const Tick = ({ value }) => html`<span class="tick" key=${value}>${value}</span>`;
@@ -50,7 +50,7 @@ const sameFields = (a, b) => {
   return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
 };
 
-const itemKey = (item) => item.kind === "approval" ? item.approval : item.kind === "ask" ? `ask-${item.id}` : `${item.kind}-${item.task}`;
+export const itemKey = (item) => item.kind === "approval" ? item.approval : item.kind === "ask" ? `ask-${item.id}` : `${item.kind}-${item.task}`;
 
 // Outcomes of actions, by `<project>/<item>`, kept across the cards' re-renders.
 const pending = new Map();
@@ -118,7 +118,7 @@ function useRowAction(key, id, index, onActing, onFailed) {
 // manager, which relays to the worker (docs/web-client-tasks.md "Project screen"). An open
 // question has Reply (`onReply` quotes it in the composer) and Dismiss; its label and "Asks you"
 // are one button that takes the chat to the reply (`onShow` with its message id).
-function NeedRow({ project, item, index, onActing, onFailed, onMention, onReply, onShow, leaving }) {
+export function NeedRow({ project, item, index, onActing, onFailed, onMention, onReply, onShow, leaving }) {
   const [status, doAct, refresh] = useRowAction(`${project}/${itemKey(item)}`, itemKey(item), index, onActing, onFailed);
   const acting = can("task_act");
   const overview = useStore().tasks[project];
@@ -178,7 +178,7 @@ const TaskRow = ({ project, task, leaving, group }) => {
 // An open To check item: its check, what passes it, and Reply, Fail and Pass as the sheet has them
 // (checks.js `CheckRow`): Pass and Fail close the item and the row leaves; Reply quotes it in the
 // composer, where the sent words close it as replied. The text opens the sheet at the item (Try).
-function CheckingRow({ project, item, index, onActing, onFailed, onReply, leaving }) {
+export function CheckingRow({ project, item, index, onActing, onFailed, onReply, leaving }) {
   const [status, run] = useRowAction(`${project}/check-${item.id}`, item.id, index, onActing, onFailed);
   const button = (...args) => rowButton(status.busy, ...args);
   const decide = (decision) => run(() => decideCheck(project, item.id, decision));
@@ -235,7 +235,7 @@ function RoutineRow({ project, row, now, onList, onShow }) {
 // server's order, then the To check items, each with its actions), Tasks (every open task in
 // its chain, under the band of the chain's head) or Routines. Done tasks are in none of them. A cleared row leaves and the focus moves to the next row's action,
 // or to the composer after the last one. Only a question's label moves the chat, to its reply.
-function Reservoir({ project, open, items, tasks, waiting, checks, routines, onRoutines, look, onLooked, onMention, onReply, onShow, onClose }) {
+function Reservoir({ project, open, items, tasks, waiting, checks, routines, onRoutines, look, onLooked, onMention, onReply, onShow, onClose, onOpenList }) {
   const node = useRef();
   // ^ A focus inside the list would fall to the body when the list goes: it goes to the open pill.
   const close = () => {
@@ -244,7 +244,9 @@ function Reservoir({ project, open, items, tasks, waiting, checks, routines, onR
   };
   // ^ The row whose action runs: a `tasks` event may remove it long before the answer comes.
   const cleared = useRef(null);
-  const openTasks = tasks.filter((task) => task.flow?.place);
+  // ^ A task that waits for the owner is in For you (`items`), not in this list: one row says how many wait.
+  const openTasks = tasks.filter((task) => task.flow?.place && !items.some((item) => item.task === task.id && item.kind !== "approval"));
+  const forYou = items.length + checks.length;
   const keys = [...items.map(itemKey), ...checks.map((item) => item.id)];
   const needRows = useLeaving(items, itemKey);
   const runRows = useLeaving(openTasks, (task) => `run-${task.id}`);
@@ -307,6 +309,7 @@ function Reservoir({ project, open, items, tasks, waiting, checks, routines, onR
           <div class="reservoir-scroll">
             ${open === "tasks" ? html`
               <ul class="reservoir-list" aria-label="Tasks">
+                ${forYou > 0 && html`<${ListRow} rowKey="wait-for-you" icon="unchecked" tone="attention" label=${`${forYou} wait for you`} context="Open For you" onOpen=${() => onOpenList("you")} openLabel=${`${forYou} wait for you: open For you`} />`}
                 ${runRows.map(({ item, key, leaving }, at) => {
                   const [place, before, after] = [item.flow.place, runRows[at - 1]?.item.flow.place, runRows[at + 1]?.item.flow.place];
                   const group = before?.card === place.card ? (after?.card === place.card ? "mid" : "last") : after?.card === place.card ? "first" : null;
@@ -953,8 +956,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   const scoped = (list) => thread ? list.filter((thing) => inThread(thread, thing)) : list;
   const rowThread = rowsIn ? listed.find((found) => found.slug === rowsIn) ?? { slug: rowsIn, slugs: [rowsIn] } : null;
   const scopedRows = (list) => rowThread ? list.filter((thing) => inThread(rowThread, thing)) : list;
-  const asking = (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote, thread: ask.threads?.[0] }));
-  const needing = scoped([...(overview?.needs ?? []), ...asking]);
+  const waitingForYou = scoped(needing(overview));
   const [routineList, setRoutineList] = useRoutines(id, !room && chatIn, chat?.rows?.at(-1)?.key);
   const counts = trayCounts(thread ? { counts: current?.counts } : overview, routineList?.counts);
   const chatName = room ?? overview?.home_chat;
@@ -964,6 +966,12 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   const [tray, toggleTray, setTray] = useTray(counts);
   const [look, setLook] = useState(null);
   const showNeed = (approval) => { setTray("you"); setLook(approval); };
+  // ^ The For you page sent the owner here for one item: its list opens at it.
+  useEffect(() => {
+    if (!store.look || store.look.project !== id || (store.look.room ?? null) !== (room ?? null)) return;
+    showNeed(store.look.key);
+    update({ look: null });
+  }, [store.look, id, room]);
 
   if (!project) {
     return html`
@@ -1078,7 +1086,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
           <ul class="queue" aria-label=${`Messages waiting for ${room ?? "the manager"}`}>
             ${waiting.map((row) => html`<li key=${row.key} class="queued" data-key=${row.key}><span class="queued-text">${row.text || `${row.attachments?.length ?? 0} files`}</span></li>`)}
           </ul>`}
-        <${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${scoped(overview?.tasks ?? [])} waiting=${scoped(overview?.waiting ?? [])} checks=${scoped(overview?.check_items ?? [])} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${replyTo} onShow=${goToReply} />
+        <${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${waitingForYou} tasks=${scoped(overview?.tasks ?? [])} waiting=${scoped(overview?.waiting ?? [])} checks=${scoped(overview?.check_items ?? [])} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${replyTo} onShow=${goToReply} />
         ${low && header}
         ${strip}
         ${!can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}

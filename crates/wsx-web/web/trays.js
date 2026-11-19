@@ -2,7 +2,8 @@
 // tone. The composer shows them as pills that open lists (tasks.js `Pills`), Home as icons beside
 // a row's name (`TrayIcons`): one definition, so the two agree (docs/web-client-tasks.md
 // "Project screen", "Home").
-import { html, Icon } from "./lib.js";
+import { html, Icon, plural } from "./lib.js";
+import { needing } from "./task-words.js";
 import { routineCounts, routineWords } from "./routines.js";
 
 // A count of 0 has no pill, except Routines, which shows while there is any routine (its count is
@@ -34,4 +35,29 @@ export function TrayIcons({ counts }) {
           <${Icon} name=${tray.icon} /><span class="tray-count" key=${tray.count(counts)}>${tray.count(counts)}</span>
         </span>`)}
     </span>`;
+}
+
+// The For you list of Home: what waits for the owner in every chat (`api/tasks/for-you`, one entry
+// for each chat that has anything: its `needs`, `asks` and `check_items`). A task, an approval and a
+// question each count as one item, a To check item too; the row's words sort them by what the owner does:
+// questions (a question, a task that waits for the owner's word), approvals (an approval, a task to
+// land), checks (a To check item) and stopped tasks (failed or blocked).
+const WORD = { ask: ["question", "questions"], waiting: ["question", "questions"], approval: ["approval", "approvals"], land: ["approval", "approvals"],
+  failed: ["stopped", "stopped"], blocked: ["stopped", "stopped"] };
+const CHECK = ["check", "checks"];
+export const forYouItems = (chat) => [...needing(chat), ...(chat.check_items ?? []).map((item) => ({ ...item, kind: "check" }))];
+export function forYouWords(chats) {
+  const kinds = new Map();
+  let total = 0;
+  for (const chat of chats) {
+    for (const item of forYouItems(chat)) {
+      const [one, many] = item.kind === "check" ? CHECK : WORD[item.kind];
+      const at = kinds.get(one) ?? { one, many, count: 0 };
+      at.count += 1;
+      kinds.set(one, at);
+      total += 1;
+    }
+  }
+  const parts = [...kinds.values()].map(({ one, many, count }) => (count === 1 ? `1 ${one}` : `${count} ${many}`));
+  return { total, words: `${plural(total, "item")} in ${plural(chats.length, "chat")}${parts.length ? `: ${parts.join(", ")}` : ""}` };
 }

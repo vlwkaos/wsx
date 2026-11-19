@@ -163,6 +163,8 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         "preview": settings.preview.is_some(),
         // ^ Open "To check" items: a release waits for them (docs/tasks.md "To check").
         "to_check": checks::open_items(&project_id).map_or(0, |items| items.len()),
+        // ^ Everything that waits for the owner in the project's chats (the TUI's For you list).
+        "for_you": super::needs::for_you(&project_id, settings.land_auto),
         // ^ Spend today and in 7 days, workers and manager apart (docs/tasks.md "Usage").
         "usage": usage::project(&project_id, now),
         "main": main_checkout,

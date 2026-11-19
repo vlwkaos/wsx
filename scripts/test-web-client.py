@@ -4227,7 +4227,7 @@ merge_seconds = 3
         ledger_open = js('task', 'ledger', '-p', 'demo')['open']
         assert [row['id'] for row in overview['tasks']][:len(ledger_open)] == [row['id'] for row in ledger_open], overview['tasks']
         assert {row['id']: row['flow']['place'] for row in overview['tasks'] if row['id'] in (1, 2, 3)} == {row['id']: row['flow']['place'] for row in ledger_open}, overview['tasks']
-        assert all(row['flow']['place']['band'] == 'you' and row['flow']['place']['depth'] == 0 for row in ledger_open), ledger_open
+        assert all(row['flow']['place']['band'] == 'waiting' and row['flow']['place']['depth'] == 0 for row in ledger_open), ledger_open
         # ^ A task without --title is named by the first sentence of its worker's summary.
         assert next(row for row in overview['tasks'] if row['id'] == 2)['title'] == 'did: WORK a.txt HV'
         # ^ No Adopted list reads the task branches any more.
@@ -4526,6 +4526,20 @@ merge_seconds = 3
         assert status == 200, body
         watcher.expect('tasks', lambda data: data['project'] == demo and data['busy'], timeout=20)
         watcher.expect('tasks', lambda data: data['project'] == demo and not data['busy'], timeout=20)
+        # ^ One row for every chat (task 510, owner 5329): a chat that is not the home chat shows `busy` on
+        # Home as the home chat does, and each row says what its own overview says (news, first need, open questions).
+        row_of = lambda data, name: next(c for c in data['chats'] if c['name'] == name)
+        status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'SLOW STATUS', 'chat': 'notes'})
+        assert status == 200, body
+        watcher.expect('tasks', lambda data: data['project'] == demo and row_of(data, 'notes')['busy'] and not row_of(data, 'demo')['busy'], timeout=20)
+        watcher.expect('tasks', lambda data: data['project'] == demo and not row_of(data, 'notes')['busy'], timeout=20)
+        def rows_equal_overviews():
+            for row in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['chats']:
+                own = steady(owner, 'GET', '/api/tasks/%d%s' % (demo, '' if row['home'] else '?chat=' + row['name']))[1]
+                if row['news'] != own['news'] or row['first'] != (own['needs'] or [None])[0] or row['asks'] != len(own['asks']) or row['manager'] != (own['manager'] if row['home'] else row['shown']):
+                    return False
+            return True
+        wait(rows_equal_overviews, 'a chat row does not say what its overview says')
         # The manager chat takes the same attachment line and shows the file as an attachment.
         tools = compact_tools('pdftotext')
         if tools['pdftotext']:

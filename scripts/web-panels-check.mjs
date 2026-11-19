@@ -63,7 +63,11 @@ await evaluate("[...document.querySelectorAll('.panel-tabs [role=tab]')].find((t
 await until("/^Failed \\(exit 2\\), updated \\d+ (s|min) ago, on open$/.test(document.querySelector('.panel-state[data-failed] .panel-state-text')?.textContent ?? '') && /broken/.test(document.querySelector('.panel-output')?.textContent ?? '')", "the failing panel shows no exit code and output");
 await capture("390x844-panel-failed");
 // A json panel: a card per section, a bar per gauge, a level as colour plus its word.
-const tab = (name) => evaluate(`[...document.querySelectorAll('.panel-tabs [role=tab]')].find((tab) => tab.textContent === ${JSON.stringify(name)}).click()`);
+// ^ A layout swap (viewport 390 to 1280) mounts the page again: the tabs of the old mount can satisfy an earlier wait, so wait for this tab itself.
+const tab = async (name) => {
+  await until(`[...document.querySelectorAll('.panel-tabs [role=tab]')].some((tab) => tab.textContent === ${JSON.stringify(name)})`, `no panel tab ${name}`);
+  return evaluate(`[...document.querySelectorAll('.panel-tabs [role=tab]')].find((tab) => tab.textContent === ${JSON.stringify(name)}).click()`);
+};
 await tab("gauges");
 await until("document.querySelectorAll('.panel-doc .panel-card').length === 2", "the json panel shows no card per section");
 const doc = await evaluate(`(() => {

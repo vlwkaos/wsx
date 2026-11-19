@@ -3,9 +3,9 @@
 import { ago, html, Icon, Loading, READ_EVENT, unreadNews, useEffect, useFlip, useNow, useRef, useState } from "./lib.js";
 import { api } from "./api.js";
 import { can, chatHash, parseRoute, useStore } from "./store.js";
-import { loadTasks } from "./task-api.js";
+import { loadTasks, useForYou } from "./task-api.js";
 import { agentWords, needTone, needWords } from "./task-words.js";
-import { shownTrays, TrayIcons, trayCounts, trayWords } from "./trays.js";
+import { forYouWords, shownTrays, TrayIcons, trayCounts, trayWords } from "./trays.js";
 import { Dots } from "./bubbles.js";
 import { toast } from "./ui.js";
 import { slide } from "./swipe.js";
@@ -13,8 +13,8 @@ import { AddProject } from "./projects.js";
 
 // The listed chats (`listed`: wsx-core `chats_home::listed`, the owner's Dismiss and a new
 // message decide it) with needs first, by their most urgent kind and then their oldest need of
-// that kind (a project's home chat carries the project's `needs`, each with its kind's `rank`;
-// another chat with only a count of needs comes after those); then those with a message this
+// that kind (a chat's `first` is its most urgent need, with its kind's `rank`; a chat with only a
+// count of needs, a question, comes after those); then those with a message this
 // device has not read, newest first; then the rest by their newest message (`last_unix_ms`).
 // `viewing` is the chat this device shows, `{project, room}`: read at once.
 function homeOrder(projects, tasks, viewing) {
@@ -26,8 +26,9 @@ function homeOrder(projects, tasks, viewing) {
       if (chat.listed === false || (chat.name !== overview.home_chat && chat.projects?.[0] !== project.name)) continue;
       const home = chat.name === overview.home_chat;
       const watched = viewing?.project === project.id && (viewing.room ?? overview.home_chat) === chat.name;
-      const news = watched ? null : unreadNews(home ? `project-${project.id}` : `project-${project.id}-c-${chat.name}`, home ? overview.news : chat.news);
-      const first = home ? overview.needs?.[0] ?? null : null;
+      // ^ One rule for every chat: its own row says what is new, what it needs and whether it works.
+      const news = watched ? null : unreadNews(home ? `project-${project.id}` : `project-${project.id}-c-${chat.name}`, chat.news);
+      const first = chat.first ?? null;
       const rank = first ? first.rank : chat.counts?.needs > 0 ? Infinity : null;
       rows.push({ project, overview, chat, home, first, rank, news, last: chat.last_unix_ms || 0 });
     }
@@ -42,17 +43,15 @@ function homeOrder(projects, tasks, viewing) {
   });
 }
 
-// The row's one status line: the most urgent need, else what only the owner can check, else the
-// manager's last reply, else whether there is any task. Agent sessions are not the project's
-// news: their states show in the Sessions list.
-function statusLine({ overview, first }) {
-  if (first) return { text: needWords(first), tone: needTone(first) };
+// The row's one status line, the same for every chat: the unread message, else the most urgent
+// need, else what only the owner can check, else the last reply, else the goal, else whether the
+// chat has any task. Agent sessions are not the chat's news: their states show in the Sessions list.
+function statusLine({ chat, news }) {
+  if (news) return { text: news.text.split("\n")[0] };
+  if (chat.first) return { text: needWords(chat.first), tone: needTone(chat.first) };
   // ^ What only the owner can check waits for them, before a release (docs/tasks.md "To check").
-  if (overview?.to_check) return { text: `${overview.to_check} to check` };
-  if (overview?.last_reply) return { text: overview.last_reply };
-  // ^ Until its tasks are read, a project's row claims nothing about them.
-  if (!overview) return { text: "Loading…", loading: true };
-  return { text: overview.tasks.length ? "Nothing needs you" : "No tasks yet" };
+  if (chat.counts?.check) return { text: `${chat.counts.check} to check` };
+  return { text: chat.last_reply || chat.goal || (chat.counts?.open ? "Nothing needs you" : "No tasks yet") };
 }
 
 // What a Home row says: line 1 the name, the tray icons (trays.js: Running, Needs you, To check,
@@ -77,25 +76,43 @@ function RowText({ name, projects, asks, counts, last, now, line, news, typing }
     </span>`;
 }
 
-// A chat's row: two lines for the project's home chat (`.home-row`, keyed by its project: its name is
-// the project's, then the project's statusLine), three for any other (`.chat-row`): its shown name, the
-// projects it runs in, then its unread reply, else its last reply, else its goal. A slide to the left shows Dismiss.
+// A chat's row, built from the chat's own row of the server (`overview.chats`), the same for every
+// chat: its state (typing, unread, asks, counts) and its status line. Only the name differs: the
+// project's home chat has two lines (`.home-row`, keyed by its project, named by it); any other has
+// three (`.chat-row`): its shown name, the projects it runs in, then the status line. A slide to the left shows Dismiss.
 function ChatRow({ row, current, now, onDismiss }) {
   const { project, overview, chat, home, news } = row;
-  const counts = trayCounts(home ? overview : chat);
+  // ^ The routines are the project's, so only its home chat's row shows their tray.
+  const counts = trayCounts(chat, home ? overview.routines : undefined);
   const projects = chat.projects.join(", ");
-  const text = news?.text.split("\n")[0] ?? (home ? null : chat.last_reply || chat.goal || "No messages yet");
-  const line = home && !news ? statusLine(row) : { text };
+  const line = statusLine(row);
   const slidable = can("task_act");
   return html`
     <li class=${slidable ? "row row-slide" : "row"} ...${slidable ? slide : null} data-key=${home ? project.id : `${project.id}/c/${chat.name}`} data-news=${news ? "" : null}>
       <a class=${home ? "row-link home-row" : "row-link chat-row"} href=${chatHash(chat.name)} aria-current=${current ? "page" : null}
         aria-label=${home ? null : [`Chat ${chat.shown} of ${projects}`, news && "unread", ...shownTrays(counts).map((tray) => trayWords(tray, counts))].filter(Boolean).join(", ")}>
-        <${RowText} name=${home ? project.name : chat.shown} projects=${home ? null : projects} asks=${home && Boolean(overview.asks?.length)} counts=${counts}
-          last=${row.last} now=${now} line=${line} news=${Boolean(news)} typing=${home && overview.busy ? overview.manager : null} />
+        <${RowText} name=${home ? project.name : chat.shown} projects=${home ? null : projects} asks=${chat.asks > 0} counts=${counts}
+          last=${row.last} now=${now} line=${line} news=${Boolean(news)} typing=${chat.busy ? chat.manager : null} />
       </a>
       ${slidable && html`<button class="row-remove" data-quiet type="button" onClick=${() => onDismiss(row)}
         aria-label=${`Dismiss chat ${chat.shown}`} title="Dismiss"><${Icon} name="fail" /></button>`}
+    </li>`;
+}
+
+// The row on top of Home: everything that waits for the owner in every chat, as one count and the
+// words of its kinds; it opens the For you list (foryou.js). Not shown at 0 or before the list is read.
+function ForYouRow({ chats }) {
+  const { total, words } = forYouWords(chats);
+  if (!total) return null;
+  const counts = trayCounts({ counts: { running: 0, open: 0, needs: total, check: 0 } });
+  return html`
+    <li class="row" data-key="for-you">
+      <a class="row-link chat-row" href="#/for-you" aria-label=${`For you, ${words}`}>
+        <span class="row-main">
+          <span class="row-head"><span class="row-work"><span class="row-label">For you</span></span><${TrayIcons} counts=${counts} /></span>
+          <span class="row-context">${words}</span>
+        </span>
+      </a>
     </li>`;
 }
 
@@ -193,6 +210,7 @@ function NewChat({ projects, tasks, project, manage, onAdd, onClose }) {
 
 export function Home({ rail }) {
   const store = useStore();
+  const forYou = useForYou();
   // ^ The chat keeps what it read as it goes, and as it closes, which is after this list drew.
   const [, renew] = useState(0);
   useEffect(() => {
@@ -233,9 +251,10 @@ export function Home({ rail }) {
   else {
     const viewing = rail && open != null && document.visibilityState === "visible" ? { project: open, room: inChat } : null;
     const rows = homeOrder(store.projects, store.tasks, viewing);
-    if (rows.length) {
+    if (rows.length || forYou?.length) {
       body = html`
         <ul class="rows home-rows" aria-label="Chats" ref=${list}>
+          ${forYou && html`<${ForYouRow} chats=${forYou} />`}
           ${rows.map((row) => html`<${ChatRow} key=${`${row.project.id}/${row.chat.name}`} row=${row} now=${now} onDismiss=${dismiss}
             current=${rail && open === row.project.id && (inChat ?? row.overview.home_chat) === row.chat.name} />`)}
         </ul>`;

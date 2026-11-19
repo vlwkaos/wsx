@@ -1,7 +1,8 @@
 // Reading the task overviews and running a fixed action on a task or an open item, shared by the
 // manager chat, the sheets and main.js (docs/web-client-tasks.md "Project screen").
 import { api } from "./api.js";
-import { state, update } from "./store.js";
+import { state, update, useStore } from "./store.js";
+import { useEffect } from "./lib.js";
 import { toast } from "./ui.js";
 
 // Every granted project's overview, or one project's. `missing` reads one project only when
@@ -25,6 +26,24 @@ export async function loadTasks(project, { missing = false } = {}) {
       update({ tasks: { ...state.tasks, [project]: overview } });
     }
   } catch { /* the next tasks event brings it */ }
+}
+
+// What waits for the owner in every chat (`api/tasks/for-you`), kept in `state.forYou` (null until
+// read). A later read replaces an earlier one that comes late.
+let forYouRead = 0;
+export async function loadForYou() {
+  const read = ++forYouRead;
+  try {
+    const chats = await api("api/tasks/for-you");
+    if (read === forYouRead) update({ forYou: chats });
+  } catch { /* the next tasks event brings it */ }
+}
+
+// The For you list, read again whenever a task overview changes (a tasks event renews `state.tasks`).
+export function useForYou() {
+  const store = useStore();
+  useEffect(() => { loadForYou(); }, [store.tasks]);
+  return store.forYou;
 }
 
 // Actions whose outcome the chat already shows ("Approved land #3", the worker's "#3 · done").

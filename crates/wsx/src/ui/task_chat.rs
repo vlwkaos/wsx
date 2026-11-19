@@ -543,6 +543,13 @@ pub fn chat_lines(
                 Style::default().fg(theme::TEXT_SUBTLE),
             ));
         }
+        // ^ The approvals this reply asked and nobody decided, by the ids the items list names.
+        if !row.approvals.is_empty() {
+            heading.push(Span::styled(
+                format!("  Needs you: {}", row.approvals.join(", ")),
+                Style::default().fg(theme::BLOCKED),
+            ));
+        }
         heading.push(Span::styled(
             format!("  {}", clock(row.unix_ms)),
             Style::default().fg(theme::TEXT_SUBTLE),

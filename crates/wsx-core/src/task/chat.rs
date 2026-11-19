@@ -762,6 +762,8 @@ pub fn chat_rows(
     waiting: &[u64],
     names: &Names,
 ) -> Vec<ChatRow> {
+    let entries = without_ask_lines(entries);
+    let entries = entries.as_slice();
     // ^ wsx's recap request is not shown; the answer to it is tagged (docs/tasks.md "Recap").
     let recaps: HashSet<u64> = entries
         .iter()
@@ -860,6 +862,37 @@ pub fn chat_rows(
     }
     rows.extend(queued);
     rows
+}
+
+/// What a host before the tag wrote after a turn that asked the owner: an events message
+/// "asked the owner: Approve push (a3)" and a post reply to it, "Asked you: ...". An approval shows
+/// once, as the tag of the manager's reply (`chat_rows`), so such a pair has no row; the old logs keep it.
+const OLD_ASK_LINE: &str = "asked the owner: ";
+
+fn without_ask_lines<'a>(entries: &[&'a ManagerEntry]) -> Vec<&'a ManagerEntry> {
+    let old: HashSet<u64> = entries
+        .iter()
+        .filter_map(|entry| match &entry.event {
+            ManagerEvent::Message {
+                from: Author::Events,
+                id,
+                text,
+                ..
+            } if text.starts_with(OLD_ASK_LINE) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    entries
+        .iter()
+        .copied()
+        .filter(|entry| match &entry.event {
+            ManagerEvent::Message { id, .. } => !old.contains(id),
+            ManagerEvent::Reply { to, post: true, .. } => {
+                to.is_empty() || !to.iter().all(|id| old.contains(id))
+            }
+            _ => true,
+        })
+        .collect()
 }
 
 /// The window `shown` of `log` in the order its rows show: a new conversation's divider goes

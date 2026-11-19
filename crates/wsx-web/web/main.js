@@ -6,6 +6,7 @@ import { api, openEvents, pageId, QUIET_MS } from "./api.js";
 import { html, Icon, render, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
 import { can, chatHash, events, leaveFor, noteBuild, parseRoute, replaceRoute, restorePlace, shownTabs, shows, sheetSuffix, stackUnder, state, tabs, trackHistory, update, useRoute, useStore } from "./store.js";
 import { Home } from "./home.js";
+import { ForYou } from "./foryou.js";
 import { applyBar, applyScheme, applyTabs, Notices, toast } from "./ui.js";
 import { Pair, takePairCode } from "./pair.js";
 import { Inbox } from "./inbox.js";
@@ -122,6 +123,7 @@ function Screen({ route }) {
   if (route.screen === "sessions") return html`<${ProjectSessions} key=${route.id} id=${route.id} />`;
   if (route.screen === "settings") return html`<${Settings} sub=${route.sub} />`;
   if (route.screen === "projects") return html`<${Projects} />`;
+  if (route.screen === "foryou" && can("task_view")) return html`<${ForYou} />`;
   if (route.screen === "machine") return html`<${MachineScreen} />`;
   if (route.screen === "inbox" || !can("task_view")) return html`<${Inbox} />`;
   return html`<${Home} />`;
@@ -141,7 +143,7 @@ function App() {
   // ^ A link to #/machine keeps the bar on a device without the tab (no right to read panels), so the way out stays.
   const top = tabs().some(([name]) => name === route.screen) || route.screen === "machine" || (route.screen === "inbox" && !can("task_view"));
   useEffect(() => {
-    const titles = { home: can("task_view") ? "Home" : "Inbox", inbox: can("task_view") ? "Sessions" : "Inbox",
+    const titles = { home: can("task_view") ? "Home" : "Inbox", foryou: "For you", inbox: can("task_view") ? "Sessions" : "Inbox",
       projects: "Projects", machine: "Machine", settings: "Settings", files: "Files" };
     const session = route.screen === "session" && state.sessions.find((candidate) => candidate.id === route.id);
     const project = ["project", "sessions", "chat"].includes(route.screen) && state.projects.find((candidate) => candidate.id === route.id);
@@ -160,7 +162,7 @@ function App() {
   // files keep the list they were opened from, and a project's chat has home.
   let list;
   if (!can("task_view")) list = ["projects", "project", "files", "sessions", "chat"].includes(route.screen) ? "projects" : "inbox";
-  else if (["home", "project", "chat", "projects", "sessions"].includes(route.screen)) list = "home";
+  else if (["home", "foryou", "project", "chat", "projects", "sessions"].includes(route.screen)) list = "home";
   else if (route.screen === "inbox") list = "inbox";
   else list = lastList.current;
   lastList.current = list;

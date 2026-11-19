@@ -2232,8 +2232,8 @@ try:
     wait_for(lambda: "All projects" in remove_tui.text(), "t opened no Tasks view for keep-me", seconds=60)
     wait_for(lambda: re.search(r"#2\s+ready\s+Waiting for #1 to land · its checks fail", remove_tui.text()),
              lambda: f"the Tasks view row did not give the reason of the wait:\n{remove_tui.text()}", seconds=60)
-    # ^ The list is in chain order: #1 (working) first, #2 under it; `j` selects #2.
-    remove_tui.send(b"j\r")
+    # ^ The first row is "N wait for you" (the manager chat's open questions above are For you items); then the chain order: #1 (working), #2 under it. `jj` selects #2.
+    remove_tui.send(b"jj\r")
     # ^ A narrow detail wraps the sentence: the words are read with their line breaks as one space.
     wait_for(lambda: "Its checks fail" in " ".join(remove_tui.text().split())
              and re.search(r"Waits on\s+#1 to land, its checks fail", remove_tui.text()) and re.search(r"Goes\s+into main", remove_tui.text())

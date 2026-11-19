@@ -89,6 +89,7 @@ pub fn router(app: Shared) -> Router {
             .route("/api/chat/{session}/queue/{id}/steer", post(queue_steer))
             .route("/api/tasks", get(tasks_all))
             .route("/api/tasks/usage", get(tasks_usage))
+            .route("/api/tasks/for-you", get(tasks_for_you))
             .route("/api/tasks/agents", get(tasks_agents))
             .route("/api/tasks/{project}/chats", post(tasks_chat_new))
             .route(
@@ -1161,6 +1162,11 @@ async fn with_scope_long<T: Send + 'static>(
 async fn tasks_all(State(app): State<Shared>, Paired(_): Paired) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
     blocking(|| crate::tasks::overviews(&app).map(Json))
+}
+
+async fn tasks_for_you(State(app): State<Shared>, Paired(_): Paired) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, false)?;
+    blocking(|| crate::tasks::for_you(&app).map(Json))
 }
 
 async fn tasks_agents(State(app): State<Shared>, Paired(_): Paired) -> Outcome<Json<Value>> {

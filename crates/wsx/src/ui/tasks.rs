@@ -375,12 +375,13 @@ fn task_lines(
     let mut lines = Vec::new();
     let mut selected_line = None;
     for (index, row) in rows.iter().enumerate() {
-        if index == 0 || rows[index - 1].section != row.section {
+        let heading = row.section.heading();
+        if (index == 0 || rows[index - 1].section != row.section) && !heading.is_empty() {
             if index > 0 {
                 lines.push(Line::raw(""));
             }
             lines.push(Line::styled(
-                row.section.heading(),
+                heading,
                 Style::default().fg(theme::TEXT_SUBTLE).bold(),
             ));
         }
@@ -389,7 +390,7 @@ fn task_lines(
             .get(index + 1)
             .is_none_or(|next| next.root != row.root || next.section != row.section);
         let tree = match (row.section, row.depth) {
-            (Section::You | Section::Moving | Section::Waiting, 1..) => format!(
+            (Section::Moving | Section::Waiting, 1..) => format!(
                 "{}{} ",
                 "  ".repeat(usize::from(row.depth) - 1),
                 if last { "└" } else { "├" }
@@ -410,14 +411,17 @@ fn task_lines(
                 &format!("{tree}{}", row.title),
                 title_width.saturating_sub(1 + marks_width),
             ),
-            Style::default().fg(theme::TEXT),
+            Style::default().fg(match row.section {
+                Section::Entry => theme::TEXT_MUTED,
+                _ => theme::TEXT,
+            }),
         )];
         spans.extend(marks);
         spans.push(Span::raw(" "));
         if number_width > 0 {
             // ^ A chat has no number: its column stays empty.
-            let number = match row.section {
-                Section::Chats => String::new(),
+            let number = match (row.section, row.id) {
+                (Section::Chats | Section::Entry, _) | (_, 0) => String::new(),
                 _ => format!("#{}", row.id),
             };
             spans.push(Span::styled(

@@ -191,6 +191,86 @@ impl ChatCounts {
     }
 }
 
+/// One thing that waits for the owner in a chat: the For you list's item, in the TUI, in
+/// `ChatCounts` and in the web's overview, which adds its row fields to the `source` of each item
+/// and builds no list of its own. `kind` is a task's `NeedKind::name`, or `approval`, `ask` or
+/// `check`; `task` the task it is about.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct YouItem {
+    pub chat: String,
+    pub kind: &'static str,
+    pub rank: u8,
+    pub task: Option<u32>,
+    pub label: String,
+    #[serde(skip)]
+    pub source: YouSource,
+}
+
+/// What an item is made of: the task, the request (its id), the open question or the To check
+/// item (its id).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum YouSource {
+    Task(u32),
+    Approval(String),
+    Ask(chat::OpenAsk),
+    Check(String),
+}
+
+/// Everything that waits for the owner in the project's open chats, by the one ownership rule
+/// (`chats::owner`): the tasks the chat made that need the owner, its own pending approvals, its
+/// open questions and the To check items of its tasks. Tasks first (by `rank`), then the rest.
+pub fn for_you(project_id: &str, land_auto: bool) -> Vec<YouItem> {
+    let open = chats::open_names();
+    let home = store::home_chat(project_id).unwrap_or_default();
+    let mut items = Vec::new();
+    for (dir, record) in view::project_tasks(project_id).unwrap_or_default() {
+        let Ok(record) = record else { continue };
+        let Some(kind) = stage(&dir, &record, land_auto).need() else {
+            continue;
+        };
+        let title = view::readable_title(&dir, &record).unwrap_or_default();
+        items.push(YouItem {
+            chat: chats::owner(record.created_by.chat(), &open, &home).to_string(),
+            kind: kind.name(),
+            rank: kind.rank(),
+            task: Some(record.id),
+            label: format!("#{} {title}", record.id),
+            source: YouSource::Task(record.id),
+        });
+    }
+    let approvals = store::read_approvals(project_id).unwrap_or_default();
+    let checked = checks::open_items(project_id).unwrap_or_default();
+    let now = super::now_unix_ms();
+    for dir in chats::open_chats(project_id) {
+        let viewer = chats::Viewer::named(&dir.chat, open.clone(), &home);
+        let own = chats::approvals_of(approvals.clone(), &viewer);
+        let mut push = |kind, rank, task, label, source| {
+            items.push(YouItem {
+                chat: dir.chat.clone(),
+                kind,
+                rank,
+                task,
+                label,
+                source,
+            });
+        };
+        for line in pending_approvals(&own) {
+            let label = super::owner::approval_label(line);
+            let source = YouSource::Approval(line.id().to_string());
+            push("approval", APPROVAL_RANK, None, label, source);
+        }
+        for ask in chat::asking(&dir, now).unwrap_or_default() {
+            push("ask", 0, None, ask.quote.clone(), YouSource::Ask(ask));
+        }
+        for item in chats::checks_of(project_id, checked.clone(), &viewer) {
+            let source = YouSource::Check(item.id);
+            push("check", 4, Some(item.task), item.check, source);
+        }
+    }
+    items.sort_by_key(|item| (item.rank, item.kind == "check"));
+    items
+}
+
 /// The counts of every open chat of the project, by name.
 pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCounts> {
     tally(

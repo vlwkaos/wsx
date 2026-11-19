@@ -186,7 +186,11 @@ fn one_rule_decides_the_stage_the_counts_the_push_and_the_band() {
         }
         if record.state.is_open() {
             let band = chains.place(*id).unwrap().band;
-            assert_eq!(band == Band::You, kind.is_some(), "{name}: band {band:?}");
+            // ^ A chain that waits for the owner is Waiting: the For you list holds it.
+            assert!(
+                kind.is_none() || band == Band::Waiting,
+                "{name}: band {band:?}"
+            );
         }
     }
     // ^ A ready task whose result asks the owner waits on the owner: the 4 h reminder (one push,

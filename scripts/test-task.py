@@ -2020,12 +2020,13 @@ def part_core(created=None):
         return b''
     # ^ The list opens on its first row, in the ledger's chain order: `j` or `k` moves to the row of the task to open.
     at = [r['id'] for r in js('task', 'ledger')['open']]
+    you_items = js('task', 'ledger')['for_you']  # ^ before the screens: the gate opens in them and the working task joins For you
 
     def walk(start, end):
         return (b'j' if end > start else b'k') * abs(at.index(end) - at.index(start))
     shots = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
-        (r'(?s)(For you|Moving|Waiting).*#%d .*Recent' % d3, b'j' * at.index(asking) + b'\r'),
+        (r'(?s)\d+ wait for you.*#%d .*Recent' % d3, b'j' * (at.index(asking) + 1) + b'\r'),  # ^ the first row is "N wait for you"
         (r'Next +Waiting for your answer', b'\x1b'),
         (r'\(enter\)detail', walk(asking, failing) + b'\r'),
         (r'Checks', b'\x1b'),
@@ -2039,7 +2040,10 @@ def part_core(created=None):
     assert sorted(ledger_order) == sorted((asking, failing, x1, d1)), ledger_order
     order = [listed.index(row(listed, n)) for n in ledger_order + [memo_task]]
     assert order == sorted(order) and order[-1] > listed.index('Recent'), listed
-    assert re.search(r'(?m)^ *For you *$', listed) and re.search(r'(?m)^ *Moving *$', listed), listed
+    # ^ The For you band is one row "N wait for you" (the For you list, ledger `for_you`); the waiting ones sit under Waiting.
+    assert {asking, failing} <= {item['task'] for item in you_items if item['kind'] not in ('approval', 'ask', 'check')}, you_items
+    assert re.search(r'(?m)^ *%d wait for you *$' % len(you_items), listed) and not re.search(r'(?m)^ *For you *$', listed), listed
+    assert re.search(r'(?m)^ *Moving *$', listed) and re.search(r'(?m)^ *Waiting *$', listed), listed
     # ^ The row's label and the detail's sentence are wsx-core's status words, as `show` has them.
     assert re.search(r'NEEDS WebSearch NOOP +#%d +waiting +Waiting for your answer' % asking, row(listed, asking)), listed
     assert re.search(r'#%d +failed' % failing, row(listed, failing)), listed
@@ -2056,6 +2060,9 @@ def part_core(created=None):
     assert 'ping' not in checked, checked
     assert 'TASKS' not in shots[-1], shots[-1]
     narrow = tui_screens(wsx, env, project, [(r'WORKSPACE', b't'), (r'Recent', b'')], cols=40)[1]
+    # ^ Enter on "N wait for you" opens the For you list (its items by chat); Esc goes back to the tasks.
+    opened = tui_screens(wsx, env, project, [(r'WORKSPACE', b't'), (r'\d+ wait for you', b'\r'), (r'(?m)^ *For you *$', b'\x1b'), (r'(?m)^ *Waiting *$', b'')])  # ^ the gate opened in the screens before: no task moves now
+    assert re.search(r'#%d .* waiting' % asking, opened[2]) and re.search(r'#%d .* failed' % failing, opened[2]) and 'wait for you' not in opened[2], opened[2]
     for title, word in (('NEEDS WebSearch', 'waiting'), ('WORK broken.txt', 'failed'), ('WORK memo.txt', 'closed')):
         assert re.search(r'^ %s.* %s$' % (re.escape(title), word), narrow, re.M), narrow
     assert not re.search(r'#\d', re.split(r'For you|Moving|Waiting', narrow, 1)[1]), narrow
@@ -2095,11 +2102,10 @@ def part_core(created=None):
         footer = re.search(r'(?m)^ TASKS .*$', hinted[1]).group(0)
         assert bool(re.search(r'\(a\)gent +\(u\)sage', footer)) == (cols == 120), footer
         assert re.search(r'(?m)^ MANAGER +\(i\)message +\(/\)find +\(S\)hell +Esc: back +\(j/k\)scroll ', hinted[2]), hinted[2]
-    # ^ Open tasks of earlier steps sort above a working one (task_list.rs `rows`): move to
-    # its row, and its detail shows it is the one.
-    rank = {'waiting': 0, 'failed': 1, 'ready': 2, 'checking': 3}
-    ordered = sorted(js('task', 'ledger')['open'], key=lambda task: rank.get(task['state'], 4))
-    to_row = b'j' * [task['id'] for task in ordered].index(sh) + b'\r'
+    # ^ The rows follow the ledger's open order (Moving chains, then Waiting ones; task_list.rs
+    # `rows`), after the "N wait for you" row while the ledger's `for_you` has items.
+    ledger_now = js('task', 'ledger')
+    to_row = b'j' * ([task['id'] for task in ledger_now['open']].index(sh) + bool(ledger_now['for_you'])) + b'\r'
     shown_task = r'WAIT .*#%d\b' % sh
     tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
@@ -2185,7 +2191,8 @@ def part_core(created=None):
     ask = js('task', 'new', 'NEEDS WebSearch NOOP')['id']
     wait_state(ask, 'waiting')
     # ^ The list opens on its first row, in the ledger's chain order: `j` moves down to the row of `n`, read when asked.
-    rows_to = lambda n: b'j' * [task['id'] for task in js('task', 'ledger')['open']].index(n) + b'\r'
+    # ^ The Tasks list's first row is "N wait for you" while the ledger's `for_you` has items.
+    rows_to = lambda n: b'j' * ([task['id'] for task in js('task', 'ledger')['open']].index(n) + bool(js('task', 'ledger')['for_you'])) + b'\r'
     ready_footer = r'(?m)^ TASK +\(j/k\)scroll +\(S\)hell +\(L\)and +\(H\)and +Esc: back'
     seen = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
@@ -2449,8 +2456,8 @@ def part_core(created=None):
     ledger = json.loads(raw)
     assert len(raw.encode()) <= 16 * 1024 and ledger['open_omitted'] == 0
     assert ledger['to_check'] == 0 and ledger['auto_land'] is False and 'verification' not in ledger['open'][0]
-    # ^ Both wait for the owner (band `you`), none holds another: the older first.
-    assert [(row['id'], row['state'], row['flow']['place']['band']) for row in ledger['open']] == [(ready_task, 'ready', 'you'), (blocked_task, 'waiting', 'you')]
+    # ^ Both wait for the owner (band `waiting`), none holds another: the older first.
+    assert [(row['id'], row['state'], row['flow']['place']['band']) for row in ledger['open']] == [(ready_task, 'ready', 'waiting'), (blocked_task, 'waiting', 'waiting')]
     assert ledger['open'][1]['waiting']['on'] == 'owner', ledger['open'][1]
     assert ledger['open'][0]['summary'] == 'did: WORK l.txt could not run the browser test' and ledger['open'][0]['human_verify'] == 0
     checked = ledger['open'][0]['checks']
@@ -3566,16 +3573,9 @@ def part_worker(created=None):
 
     denied, _ = ask_push('')
     assert [(p['id'], p['action'], p['commit']) for p in js('task', 'ledger')['approvals']] == [(denied, 'push', tip)]
-    # ^ The host posts the ask line itself (docs/tasks.md "Approvals"): the reply needs no words for it.
-    # It records the request's id (`approval`), so the web pushes the request alone.
-    asked = wait(lambda: events_with('asked the owner: Approve push', '(%s)' % denied), 'the ask line')
-    assert any(e['kind'] == 'reply' and asked[0]['id'] in e['to'] and e['text'].startswith('Asked you: Approve push')
-               and e['text'].endswith('(%s).' % denied)
-               and e.get('approval') == denied for e in chat()), asked
-    # ^ The chats read the log's rows (`wsx task chat` prints the rows the web and the TUI show): the ask shows once,
-    # as the reply in the owner's words; the event line stays in the log for the manager.
-    shown = cli('task', 'chat').stdout
-    assert shown.count('Approve push') == shown.count('Asked you: Approve push') == 1 and 'asked the owner' not in shown, shown
+    # ^ The ask shows once, as the tag of the manager's reply (`chat_rows`, docs/tasks.md "Approvals"): the host posts no ask line.
+    assert js('task', 'chat')['approvals'] == [denied]
+    assert not events_with('asked the owner') and not [e for e in chat() if e['kind'] == 'reply' and e['text'].startswith('Asked you')], chat()
     js('task', 'deny', denied)
     wait(lambda: events_with('approval %s (push) denied' % denied), 'the push deny event')
     assert origin_tip() == before
@@ -6604,7 +6604,7 @@ def part_host(created=None):
     assert shape(chain_y1) == {'root': heads[1], 'under': heads[1], 'depth': 1, 'holds': 0}, places[chain_y1]
     assert shape(first) == {'root': parent, 'under': parent, 'depth': 1, 'holds': 0} and places[first]['place']['sibling'] == {'at': 1, 'of': 2}, places[first]
     assert places[heads[0]]['phrase'] == 'frees #%d +1 later' % chain_x1 and places[heads[1]]['phrase'] == 'frees #%d' % chain_y1, (places[heads[0]], places[heads[1]])
-    assert len({places[n]['place']['band'] for n in chain_x}) == 1 and places[heads[0]]['place']['band'] == 'you', places[heads[0]]
+    assert len({places[n]['place']['band'] for n in chain_x}) == 1 and places[heads[0]]['place']['band'] == 'waiting', places[heads[0]]
     for n in (chain_x2, chain_x1, chain_y1, *heads):
         js('task', 'close', n, '--discard')
     assert [o['id'] for o in rows[first]['overlaps']] == [second] and rows[parent]['overlaps'] == [], rows
@@ -6785,7 +6785,8 @@ def part_host(created=None):
     assert [e['id'] for e in js('task', 'chat', '--chat', 'billing')['entries'] if e['kind'] == 'message'][-1] == back['id']
     # The TUI's Tasks view lists the open chats under Open; Enter opens a chat as `m`
     # opens the manager's (docs/tasks.md "TUI"), without the manager's items.
-    below = len(js('task', 'list')['tasks'])
+    # ^ The Tasks list's first row is "N wait for you" while the ledger's `for_you` has items.
+    below = len(js('task', 'list')['tasks']) + bool(js('task', 'ledger')['for_you'])
     # ^ The manager says something in the chat: a third speaker next to the owner and the chat.
     with (chats_dir / 'billing/log.jsonl').open('a') as chat_log:
         chat_log.write(json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': 9000001,
@@ -6990,7 +6991,8 @@ def part_host(created=None):
     stamp = time.localtime(day['day_ms'] / 1000)
     label = r'^ %s +%d ' % (time.strftime('%a', stamp), stamp.tm_mday)
     # ^ The TUI lists the ledger's open tasks in the ledger's order (wsx-core `task::chains`).
-    to_held = b'j' * [task['id'] for task in ledger['open']].index(held) + b'\r'
+    # ^ The Tasks list's first row is "N wait for you" while the ledger's `for_you` has items.
+    to_held = b'j' * ([task['id'] for task in ledger['open']].index(held) + bool(ledger['for_you'])) + b'\r'
     pinged = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
         (r'(?s)■ build.*\(u\)sage', b'u'),

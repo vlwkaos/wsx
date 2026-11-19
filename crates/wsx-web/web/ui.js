@@ -141,7 +141,7 @@ export function Back({ fallback }) {
   const route = parseRoute(target);
   const project = state.projects.find((candidate) => candidate.id === route.id)?.name ?? "project";
   const names = {
-    home: "home", inbox: can("task_view") ? "all sessions" : "inbox", projects: "projects", settings: "settings", project, files: `files of ${project}`,
+    home: "home", foryou: "for you", inbox: can("task_view") ? "all sessions" : "inbox", projects: "projects", settings: "settings", project, files: `files of ${project}`,
     sessions: `sessions of ${project}`, chat: route.task != null ? `task #${route.task}` : `chat ${route.chat}`,
     session: state.sessions.find((candidate) => candidate.id === route.id)?.label ?? "session",
   };

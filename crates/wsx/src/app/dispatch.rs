@@ -201,6 +201,10 @@ impl App {
                 (Action::NavigateDown, true) => list.scroll = list.scroll.saturating_add(1),
                 (Action::NavigateUp, true) => list.scroll = list.scroll.saturating_sub(1),
                 (Action::InputEscape | Action::Quit | Action::Select, true) => list.detail = None,
+                // ^ Esc in the For you list goes back to the tasks, as the web's Back.
+                (Action::InputEscape | Action::Quit | Action::Tasks, false) if list.you => {
+                    list.set_you(false)
+                }
                 (Action::InputEscape | Action::Quit | Action::Tasks, false) => {
                     self.mode = Mode::Workspace
                 }

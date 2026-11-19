@@ -91,6 +91,9 @@ pub struct TaskRow {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
+    /// The one muted row "N wait for you" that opens the For you list; it has no heading.
+    Entry,
+    /// The For you list's rows (`rows_you`).
     You,
     Moving,
     Waiting,
@@ -101,6 +104,7 @@ pub enum Section {
 impl Section {
     pub fn heading(self) -> &'static str {
         match self {
+            Self::Entry => "",
             Self::You => "For you",
             Self::Moving => "Moving",
             Self::Waiting => "Waiting",
@@ -134,6 +138,8 @@ pub struct TaskList {
     pub new_chat: Option<crate::task_new_chat::NewChat>,
     /// The project's overview, opened with `o` over the list or the chat.
     pub overview: Option<Overview>,
+    /// The For you list shows instead of the tasks (`Enter` on the "N wait for you" row).
+    pub you: bool,
     /// The `?` popup over the list, the detail or the chat.
     pub help: Option<crate::ui::help::HelpView>,
     /// A land or a hand of the task shown, waiting for `y` (the action's name in `owner_actions`).
@@ -173,6 +179,7 @@ impl TaskList {
             chat: None,
             new_chat: None,
             overview: None,
+            you: false,
             help: None,
             confirm: None,
             close_chat: None,
@@ -389,8 +396,23 @@ impl TaskList {
                 let thread = self.selected_thread().map(str::to_string);
                 self.open_chat(Some(chat.to_string()), thread);
             }
+            (None, Some(row)) if row.section == Section::Entry => self.set_you(true),
+            // ^ A For you item opens its place: a task's detail, else the chat that holds it.
+            (None, Some(row)) if row.section == Section::You && row.id == 0 => {
+                let chat = row.chat.clone();
+                self.open_chat(Some(chat), None);
+            }
             (None, Some(row)) if row.section != Section::Chats => self.open_detail(),
             _ => {}
+        }
+    }
+
+    /// Show the For you list (`on`) or the tasks again; the rows read the ledger again.
+    pub fn set_you(&mut self, on: bool) {
+        self.you = on;
+        self.selected = 0;
+        if let Some(ledger) = &self.ledger {
+            self.rows = if on { rows_you(ledger) } else { rows(ledger) };
         }
     }
 
@@ -471,7 +493,11 @@ impl TaskList {
                     .rows
                     .get(self.selected)
                     .map(|row| (row.id, row.chat.clone()));
-                self.rows = rows(&ledger);
+                self.rows = if self.you {
+                    rows_you(&ledger)
+                } else {
+                    rows(&ledger)
+                };
                 // ^ The selection and the detail follow their task, not its position.
                 self.selected = selected
                     .and_then(|(id, chat)| {
@@ -746,17 +772,33 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         root: 0,
         depth: 0,
     });
-    open.iter()
-        .map(|task| {
+    // ^ The For you list is one row here: "N wait for you" opens it. A task that needs the owner
+    // stays in its chain under Waiting (the chain rows keep their place), as the ledger lists it.
+    let you = list("for_you");
+    let entry = (!you.is_empty()).then(|| TaskRow {
+        id: 0,
+        title: format!("{} wait for you", you.len()),
+        chat: String::new(),
+        thread: String::new(),
+        state: String::new(),
+        status: String::new(),
+        counts: Default::default(),
+        section: Section::Entry,
+        home: false,
+        root: 0,
+        depth: 0,
+    });
+    entry
+        .into_iter()
+        .chain(open.iter().map(|task| {
             row(
                 task,
                 match task["flow"]["place"]["band"].as_str() {
-                    Some("you") => Section::You,
                     Some("waiting") => Section::Waiting,
                     _ => Section::Moving,
                 },
             )
-        })
+        }))
         .chain(
             listed
                 .into_iter()
@@ -787,6 +829,36 @@ fn thread_rows(chat: &Value) -> impl Iterator<Item = TaskRow> + '_ {
             root: 0,
             depth: 0,
         })
+}
+
+/// The For you list (`ledger.for_you`, wsx-core `needs::for_you`): the items that wait for the
+/// owner across the open chats, by chat; a task item keeps its number, the rest open their chat.
+pub fn rows_you(ledger: &Value) -> Vec<TaskRow> {
+    let mut items = ledger["for_you"].as_array().cloned().unwrap_or_default();
+    items.sort_by_key(|item| item["chat"].as_str().unwrap_or_default().to_string());
+    items
+        .iter()
+        .map(|item| {
+            let kind = item["kind"].as_str().unwrap_or_default();
+            let task = matches!(kind, "approval" | "ask" | "check")
+                .then_some(0)
+                .or(item["task"].as_u64())
+                .unwrap_or_default();
+            TaskRow {
+                id: task,
+                title: item["label"].as_str().unwrap_or_default().to_string(),
+                chat: item["chat"].as_str().unwrap_or_default().to_string(),
+                thread: String::new(),
+                state: kind.to_string(),
+                status: item["chat"].as_str().unwrap_or_default().to_string(),
+                counts: Default::default(),
+                section: Section::You,
+                home: false,
+                root: 0,
+                depth: 0,
+            }
+        })
+        .collect()
 }
 
 /// The open tasks of `id`'s chain, in the list's order (the rows with its head's number).

@@ -18,6 +18,10 @@ export const state = {
   build: null,
   // Each granted project's task overview by project id, with task_view (docs/web-client-tasks.md).
   tasks: {},
+  // What waits for the owner in every chat, `api/tasks/for-you` (task-api.js `useForYou`); null until read.
+  forYou: null,
+  // The item of a chat's For you list that the chat opens at, `{project, key}`, set by the For you page and cleared when the chat has shown it.
+  look: null,
   // This device's notification switches and muted sessions (api/push), once read.
   push: null,
   // Where the header bar sits on this device: "top" or "bottom" (ui.js, settings.js).
@@ -224,6 +228,7 @@ export function parseRoute(hash) {
   }
   if (first === "settings") return { screen: first, sub: second };
   if (first === "projects" || first === "machine") return { screen: first };
+  if (first === "for-you") return { screen: "foryou" };
   if (first === "sessions") return { screen: "inbox" };
   return { screen: "home" };
 }
