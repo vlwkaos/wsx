@@ -757,7 +757,7 @@ while time.monotonic() < deadline:
             break
     time.sleep(0.1)
 assert listener_port is not None, "listener process did not publish its port"
-# ^ The log of a failed deploy has no other trace of the scan: print what wsxd's two scan commands cost
+# ^ The log of a failed deploy has no other trace of the scan: print what wsxd's lsof costs
 # here and, on a miss, what they show for the listener, so a scan that failed or ran over its limit
 # reads differently from one that ran and did not attribute the port.
 def timed(command):
@@ -770,9 +770,8 @@ def timed(command):
 
 
 lsof_text, lsof_ms = timed(["lsof", "-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-Fpgn"])
-ps_ms = timed(["ps", "-o", "pid=,pgid=,tty=", "-p", str(os.getpid())])[1]
 ps_all_ms = timed(["ps", "-axo", "pid=,pgid=,tty="])[1]
-print(f"listener scan commands: lsof {lsof_ms} ms, ps by pid {ps_ms} ms (wsxd), ps -ax {ps_all_ms} ms; attributed: {listener_attributed_record is not None}")
+print(f"listener scan commands: lsof {lsof_ms} ms (ps -ax {ps_all_ms} ms, which wsxd no longer runs); attributed: {listener_attributed_record is not None}")
 if listener_attributed_record is None and listener_port is not None:
     mine, last = [], []
     for row in lsof_text.split():

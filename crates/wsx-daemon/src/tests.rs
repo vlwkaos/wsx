@@ -4578,6 +4578,60 @@ fn listener_scan_finds_current_process_group_port_when_lsof_is_available() {
     }));
 }
 
+fn terminals(rows: &[(libc::pid_t, libc::pid_t, &str)]) -> HashMap<libc::pid_t, ProcessTerminal> {
+    rows.iter()
+        .map(|(pid, group, tty)| {
+            (
+                *pid,
+                ProcessTerminal {
+                    group: *group,
+                    tty: tty.to_string(),
+                },
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn terminal_scan_reads_group_and_tty_of_a_session_leader_on_a_pty() {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::process::CommandExt;
+    let (mut master, mut slave) = (0, 0);
+    // SAFETY: openpty fills two descriptors; null name, termios and window size are allowed.
+    let opened = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(opened, 0);
+    // SAFETY: both descriptors are fresh and owned here.
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+    let mut command = Command::new("sleep");
+    command.arg("30").stdin(slave);
+    // SAFETY: setsid and ioctl are async-signal-safe and touch only the child.
+    unsafe {
+        command.pre_exec(|| {
+            libc::setsid();
+            libc::ioctl(0, libc::TIOCSCTTY as _, 0);
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().unwrap();
+    let pid = child.id() as libc::pid_t;
+    let found = scan_process_terminals([pid, 1_000_000_000]);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    drop(master);
+    let terminal = found.get(&pid).expect("the leader has a terminal");
+    assert_eq!(terminal.group, pid);
+    assert!(!terminal.tty.is_empty() && terminal.tty != "0");
+    assert_eq!(found.len(), 1);
+}
+
 #[test]
 fn lsof_parser_groups_and_deduplicates_tcp_listeners() {
     let listeners = parse_lsof_ports(
@@ -4610,7 +4664,7 @@ fn listener_attribution_accepts_descendant_groups_on_a_unique_pane_tty() {
         group: 99,
         ports: vec![5173, 8081, 5173],
     }];
-    let terminals = parse_process_terminals("100 42 ttys007\n101 99 ttys007\n");
+    let terminals = terminals(&[(100, 42, "7"), (101, 99, "7")]);
 
     let attributed = attribute_listening_ports(&process_groups, &listeners, &terminals);
 
@@ -4634,8 +4688,7 @@ fn listener_attribution_rejects_ambiguous_or_missing_ttys_but_keeps_exact_groups
             ports: vec![9000],
         },
     ];
-    let terminals =
-        parse_process_terminals("100 42 ttys007\n103 43 ttys007\n101 99 ttys007\n104 100 ??\n");
+    let terminals = terminals(&[(100, 42, "7"), (103, 43, "7"), (101, 99, "7")]);
 
     let attributed = attribute_listening_ports(&process_groups, &listeners, &terminals);
 

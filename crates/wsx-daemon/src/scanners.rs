@@ -35,7 +35,7 @@ pub(crate) fn scan_runtimes_current(
 }
 
 // ^ A foreground group is cheap kernel PTY metadata. Keep its live indicator
-// independent of the two-second lsof/ps listener scan and never infer provider identity.
+// independent of the two-second lsof listener scan and never infer provider identity.
 pub(crate) fn spawn_foreground_scanner(daemon: &Arc<Daemon>) -> thread::JoinHandle<()> {
     let daemon = Arc::clone(daemon);
     thread::spawn(move || loop {
@@ -79,26 +79,20 @@ pub(crate) fn spawn_port_scanner(daemon: &Arc<Daemon>) -> thread::JoinHandle<()>
                 runtime.process_group_id().map(|group| (*pane_id, group))
             })
             .collect::<HashMap<_, _>>();
-        // ^ Both commands must finish: with the `ps` tty map missing, a listener that
-        // left its pane's process group is missed and the scan would erase its port.
-        // `ps` names only the pane leaders and the listeners: `ps -ax` took 5.6 s on a
-        // host at load 50, `lsof` 136 ms (task 528).
+        // ^ `lsof` must finish: a scan that failed keeps the last result instead of erasing
+        // ports. The terminals come from the kernel, not `ps`: `ps -ax` took 4.6 s to 5.6 s on a
+        // loaded host and `ps -p` with one pid took 11 ms; a pane set needs many (task 528).
         let detected = if process_groups.is_empty() {
             Some(HashMap::new())
         } else {
             scan_listening_ports()
-                .and_then(|listeners| {
+                .map(|listeners| {
                     let wanted = process_groups
                         .values()
                         .copied()
-                        .chain(listeners.iter().map(|listener| listener.pid))
-                        .collect::<HashSet<_>>();
-                    let terminals = scan_process_terminals(&wanted)?;
-                    Ok(attribute_listening_ports(
-                        &process_groups,
-                        &listeners,
-                        &terminals,
-                    ))
+                        .chain(listeners.iter().map(|listener| listener.pid));
+                    let terminals = scan_process_terminals(wanted);
+                    attribute_listening_ports(&process_groups, &listeners, &terminals)
                 })
                 .map_err(|reason| {
                     // One line for a run of failed scans, not one every two seconds.
@@ -164,35 +158,6 @@ pub(crate) fn apply_port_scan(
 pub(crate) fn scan_listening_ports() -> Result<Vec<ListenerProcess>, String> {
     let mut command = Command::new("lsof");
     command.args(["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-Fpgn"]);
-    let bytes = bounded_command_output("lsof", command, true)?;
-    Ok(parse_lsof_ports(&String::from_utf8_lossy(&bytes)))
-}
-
-/// The group and tty of each of `pids`. `ps` exits 1 when none of them lives (a listener that
-/// ended since `lsof`); its other failures still fail the scan.
-pub(crate) fn scan_process_terminals(
-    pids: &HashSet<libc::pid_t>,
-) -> Result<HashMap<libc::pid_t, ProcessTerminal>, String> {
-    if pids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let list = pids
-        .iter()
-        .map(|pid| pid.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let mut command = Command::new("ps");
-    command.args(["-o", "pid=,pgid=,tty=", "-p", &list]);
-    let bytes = bounded_command_output("ps", command, true)?;
-    Ok(parse_process_terminals(&String::from_utf8_lossy(&bytes)))
-}
-
-/// A scan command's output, or why there is none. `lsof` exits 1 when nothing listens.
-pub(crate) fn bounded_command_output(
-    name: &str,
-    mut command: Command,
-    accept_code_one: bool,
-) -> Result<Vec<u8>, String> {
     let options = process::Options {
         timeout: PORT_SCAN_TIMEOUT,
         stdout: process::Bound::Limit(MAX_PORT_SCAN_BYTES as usize),
@@ -200,18 +165,59 @@ pub(crate) fn bounded_command_output(
         reap: true,
     };
     let run =
-        process::run_bounded(&mut command, &options).map_err(|error| format!("{name}: {error}"))?;
+        process::run_bounded(&mut command, &options).map_err(|error| format!("lsof: {error}"))?;
     if run.timed_out {
-        return Err(format!(
-            "{name} took over {} ms",
-            options.timeout.as_millis()
-        ));
+        return Err(format!("lsof took over {} ms", options.timeout.as_millis()));
     }
-    if run.status.success() || (accept_code_one && run.status.code() == Some(1)) {
-        Ok(run.stdout)
+    // `lsof` exits 1 when nothing listens.
+    if run.status.success() || run.status.code() == Some(1) {
+        Ok(parse_lsof_ports(&String::from_utf8_lossy(&run.stdout)))
     } else {
-        Err(format!("{name} exited with {}", run.status))
+        Err(format!("lsof exited with {}", run.status))
     }
+}
+
+/// The group and controlling terminal of each of `pids` that lives and has one.
+pub(crate) fn scan_process_terminals(
+    pids: impl IntoIterator<Item = libc::pid_t>,
+) -> HashMap<libc::pid_t, ProcessTerminal> {
+    pids.into_iter()
+        .filter_map(|pid| Some((pid, process_terminal(pid)?)))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn process_terminal(pid: libc::pid_t) -> Option<ProcessTerminal> {
+    // SAFETY: a zeroed proc_bsdinfo is valid, and proc_pidinfo writes at most its size.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    // e_tdev is NODEV (-1) without a controlling terminal.
+    (read == size && info.e_tdev != u32::MAX).then(|| ProcessTerminal {
+        group: info.pbi_pgid as libc::pid_t,
+        tty: info.e_tdev.to_string(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn process_terminal(pid: libc::pid_t) -> Option<ProcessTerminal> {
+    // ^ /proc/<pid>/stat: "pid (comm) state ppid pgrp session tty_nr ...", comm may hold ")".
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let mut fields = stat[stat.rfind(')')? + 1..].split_whitespace().skip(2);
+    let group = fields.next()?.parse().ok()?;
+    let tty = fields.nth(1)?;
+    (tty != "0").then(|| ProcessTerminal {
+        group,
+        tty: tty.to_string(),
+    })
 }
 
 pub(crate) fn parse_lsof_ports(output: &str) -> Vec<ListenerProcess> {
@@ -261,31 +267,6 @@ pub(crate) fn parse_lsof_ports(output: &str) -> Vec<ListenerProcess> {
         .collect::<Vec<_>>();
     listeners.sort_by_key(|listener| listener.pid);
     listeners
-}
-
-pub(crate) fn parse_process_terminals(output: &str) -> HashMap<libc::pid_t, ProcessTerminal> {
-    let mut processes = HashMap::new();
-    for line in output.lines() {
-        let mut fields = line.split_whitespace();
-        let (Some(pid), Some(group), Some(tty), None) = (
-            fields.next().and_then(|value| value.parse().ok()),
-            fields.next().and_then(|value| value.parse().ok()),
-            fields.next(),
-            fields.next(),
-        ) else {
-            continue;
-        };
-        if !matches!(tty, "?" | "??" | "-") {
-            processes.insert(
-                pid,
-                ProcessTerminal {
-                    group,
-                    tty: tty.to_string(),
-                },
-            );
-        }
-    }
-    processes
 }
 
 pub(crate) fn attribute_listening_ports(
