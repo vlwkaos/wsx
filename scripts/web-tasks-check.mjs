@@ -4789,6 +4789,9 @@ let threadBlock = null;
       await inScheme(scheme);
       await shot(`thread-chat-${width}-${scheme}`, ".composer-send");
     }
+    // ^ The composer is one card on no band: the thread strip paints nothing, the card is narrower than the window and the whole box is in it, 8 px (--space-2) above the foot.
+    const card = await evaluate(`(() => { const box = document.querySelector('.manager .composer').getBoundingClientRect();       return { footGap: Math.round(innerHeight - box.bottom), narrower: box.width < innerWidth, bandless: getComputedStyle(document.querySelector('.threads')).backgroundColor === 'rgba(0, 0, 0, 0)' }; })()`);
+    if (card.footGap < 8 || !card.narrower || !card.bandless) await fail(`the composer card at ${width}: ${JSON.stringify(card)}`);
     await click(".threads .thread-chip:nth-child(2)");
     await until("/Fee table/.test(document.querySelector('.bar-label')?.textContent ?? '') && document.querySelectorAll('.log .bubble').length > 0", "the thread's window did not show");
     for (const scheme of ["dark", "light"]) {

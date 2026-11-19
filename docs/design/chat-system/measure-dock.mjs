@@ -5,6 +5,7 @@
 //   4. no band: the dock and the thread strip have no background and no top border (the strip of task 518 had a surface band on a wide window);
 //   5. the whole box is in the window: its bottom is at least 8 px (--space-2) above the window's foot.
 // The last page is the 526 mockup with its row menu open (open-list.css lets the list overflow): the baseline that failed (2 is false there).
+// The product page is measured by the web check (scripts/web-tasks-check.mjs, "The composer is one card on no band": foot gap, no band, card narrower than the window, at 390 and 1280): a page needs the task fixture and the host's Chrome.
 // Usage: CHROME_BIN=<chrome with --no-sandbox> node measure-dock.mjs   (the pages are made by build.py)
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
