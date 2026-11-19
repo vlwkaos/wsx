@@ -7936,7 +7936,7 @@ def part_agents(created=None):
     s3m_turn = lc_turn(manager_log.parent)
     assert s3m_turn['ended']['reason'].startswith('no output for') and s3m_turn['quiet_ms'] == TURN_QUIET * 1000, s3m_turn
     open_words = {0: 'No task is open.', 1: '1 open task: '}.get(open_tasks, '%d open tasks: ' % open_tasks)
-    s3_alerts = lc_alerts(s3_say['id'])
+    s3_alerts = wait(lambda: lc_alerts(s3_say['id']), lambda: 'the manager alert %r' % manager_entries()[-6:], 20)
     assert len(s3_alerts) == 1 and s3_alerts[0]['text'].startswith('no output for') and 'It tries again at' in s3_alerts[0]['text'] \
         and open_words in s3_alerts[0]['text'], s3_alerts
     turn_quiet.unlink()
