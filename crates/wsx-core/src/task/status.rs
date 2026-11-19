@@ -53,19 +53,23 @@ impl Status {
     pub fn rest(&self) -> String {
         let tail = self.sentence[self.head_len..].trim_start_matches([':', '.']);
         // ^ A question to the owner is shown on its own line, so the rest starts after it.
-        let tail = match self.kind {
-            "owner" => tail
-                .trim_start()
+        let tail = if self.asks() {
+            tail.trim_start()
                 .strip_prefix(self.facts.as_str())
-                .unwrap_or(tail),
-            _ => tail,
+                .unwrap_or(tail)
+        } else {
+            tail
         };
         upper_first(tail.trim_start_matches('.').trim_start())
     }
 
-    /// The question a task that waits for the owner's answer asks (`rest` leaves it out).
+    /// The question a task that waits for the owner's answer, or for an approval, asks (`rest` leaves it out).
     pub fn ask(&self) -> Option<String> {
-        (self.kind == "owner" && !self.facts.is_empty()).then(|| upper_first(&self.facts))
+        (self.asks() && !self.facts.is_empty()).then(|| upper_first(&self.facts))
+    }
+
+    fn asks(&self) -> bool {
+        matches!(self.kind, "owner" | "approval")
     }
 }
 
