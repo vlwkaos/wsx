@@ -62,3 +62,6 @@ Source: the host's check-run on head 259a89ed (`check-run-8.log`, `check-run-9.l
 - Not measured: two tasks' rounds at once at width 1 against a wider lane. Load stayed over 1.5 per core on
   this Mac all through the task, so the rule kept the lane at width 1 and a wider lane never ran here.
   The failure counts at width 1 against width 2 or 3 are open.
+- The Mac has 511 PTYs (`sysctl kern.tty.ptmx_max`). While other tasks' fixtures held nearly all of them
+  (`ls /dev | rg -c '^ttys'` gave 476 to 515), every PTY test of this task failed with `failed to openpty`.
+  The scheduler does not count PTYs; a rerun after they are free passes.
