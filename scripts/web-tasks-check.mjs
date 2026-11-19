@@ -4324,7 +4324,7 @@ phase("A task mention of another project (docs/web-client-tasks.md ");
   await evaluate(`(async () => { const { state, update } = await ${pageModule("store.js")}; globalThis.mentionKept = state.projects;
     update({ projects: state.projects.filter((other) => other.name !== 'plans') }); })()`);
   await until(`(() => { const bubble = ${findSaid(peerWords)};
-    return bubble && !bubble.querySelector('a.task-chip, a.bubble-author') && bubble.textContent.includes('#1 waits for you'); })()`, "an ungranted sender's bare #1 or name is not plain text", 60);
+    return bubble && !bubble.querySelector('a.task-chip, a.bubble-author') && bubble.textContent.includes('#1 waits for you'); })()`, async () => `an ungranted sender's bare #1 or name is not plain text: ${await evaluate(`JSON.stringify({ hash: location.hash, bubbles: document.querySelectorAll('.log .bubble').length, said: !!${findSaid(peerWords)}, links: !!${findSaid(peerWords)}?.querySelector('a.task-chip, a.bubble-author'), page: document.querySelector('.page')?.className, dialogs: document.querySelectorAll('dialog[open]').length })`)}`, 60);
   await evaluate(`(async () => { const { update } = await ${pageModule("store.js")}; update({ projects: globalThis.mentionKept }); })()`);
 }
 
