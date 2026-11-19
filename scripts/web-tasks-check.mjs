@@ -2475,7 +2475,7 @@ phase("The task sheet of #2: how it does, one sentence of what chan");
 // report (Changes, Evidence, To check, Left open) in one Report fold, then History. No verdict,
 // no Asked, no revision number. Land, then its item is live under To check, outside the folds.
 await go(page(2));
-await until("document.querySelectorAll('dialog.task-sheet[open] .task-fold').length >= 1", "the task sheet did not show the folded report");
+await until("document.querySelectorAll('dialog.task-sheet[open] .task-section.task-fold').length >= 1", "the task sheet did not show the folded report");
 let told = await story();
 if (told.steps || told.summary !== "did: WORK a.txt HV" || !/^Checks 1 of 1 passed\. Land it to put it on main\.$/.test(told.next)) await fail(`the top of a ready task reads ${JSON.stringify(told)}`);
 if (await sheetState() !== "Ready, waiting for you to land it") await fail(`a ready task's state reads ${await sheetState()}`);
@@ -2535,10 +2535,10 @@ await until("document.querySelector('.story-fold[open] .story-summary')?.checkVi
 console.log(`task sheet above the fold at 390x844: ${glance.lines} lines, state and actions in view, More closed`);
 await shot("task-sheet-summary", ".composer-send");
 // Evidence opens to the checks and what the worker showed.
-await evaluate("document.querySelector('.task-fold > .fold-head').click()");
-await until("/test ! -e broken\\.txt/.test(document.querySelector('.task-fold[open]')?.textContent ?? '') && /the fixture ran/.test(document.querySelector('.task-fold[open]').textContent)", "Evidence did not open to the checks and the worker's evidence");
+await evaluate("document.querySelector('.task-section.task-fold > .fold-head').click()");
+await until("/test ! -e broken\\.txt/.test(document.querySelector('.task-section.task-fold[open]')?.textContent ?? '') && /the fixture ran/.test(document.querySelector('.task-section.task-fold[open]').textContent)", "Evidence did not open to the checks and the worker's evidence");
 await shot("task-sheet-open");
-await evaluate("document.querySelector('.task-fold > .fold-head').click()");
+await evaluate("document.querySelector('.task-section.task-fold > .fold-head').click()");
 await clickNext("Land");
 await until("(document.querySelector('.task-sheet .progress-health')?.textContent ?? '') === 'Landed'", "#2 did not land", 300);
 told = await story();
