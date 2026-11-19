@@ -640,7 +640,7 @@ After `tasks.manager.recapMinutes` (default `0`, off, at most 1440, a fraction a
 
 ## Memo
 
-Proposed redesign of the memo, the notes and the search as one memory system: [design/memory-system.md](design/memory-system.md).
+The memo, the notes and the search are one memory system: [design/memory-system.md](design/memory-system.md). The layers a reader gets (project map, area model, records, raw) are planned in [design/memory-layers.md](design/memory-layers.md).
 
 Durable project knowledge moves from workers to the manager, kept small:
 
