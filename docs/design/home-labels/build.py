@@ -36,7 +36,6 @@ PATH = {
     "play": "M7 4.5v11l8.5-5.5z",
     "unchecked": "M10 3 18 17H2ZM10 8.5v3.5M10 14.5h.01",
     "plus": "M10 4.5v11M4.5 10h11",
-    "fail": "M5.5 5.5l9 9M14.5 5.5l-9 9",
     "pass": "M4.5 10.5l3.5 3.5 7-8",
     "down": "M5 7.5l5 5 5-5",
     "right": "M7.5 5l5 5-5 5",
@@ -73,7 +72,7 @@ GROUPS = ["Work", "Clients", "Personal"]
 MENU_CHAT = "wsx"
 
 
-def chat_row(chat, labels=False, name_tail=""):
+def chat_row(chat, labels=False):
     name, projects, line, news, time, play, you, tags, _ = chat
     mark = '<span class="news-mark" role="img" aria-label="New message"></span>' if news else ""
     tail = '<span class="row-labels">%s</span>' % "".join("<span>%s</span>" % e(t) for t in tags) if labels else ""
@@ -81,9 +80,8 @@ def chat_row(chat, labels=False, name_tail=""):
         '<li class="row row-slide"><a class="row-link chat-row" href="#"><span class="row-main"><span class="row-head">'
         '<span class="row-work">%s<span class="row-label">%s</span>%s</span>%s<span class="time">%s</span></span>'
         '<span class="row-projects">%s</span><span class="row-context"%s>%s</span></span></a>'
-        '<button class="row-remove" data-quiet type="button" aria-label="Dismiss chat" title="Dismiss">%s</button>'
         '<button class="row-more" type="button" aria-label="More" aria-haspopup="menu"><span aria-hidden="true">⋯</span></button></li>'
-        % (mark, e(name), tail, trays(play, you), time, e(projects), " data-news" if news else "", e(line), icon("fail")))
+        % (mark, e(name), tail, trays(play, you), time, e(projects), " data-news" if news else "", e(line)))
 
 
 def for_you_row():
@@ -110,13 +108,13 @@ def home_a(active="All"):
             % (top(), chips(active), for_you_row(), "".join(chat_row(c, labels=True) for c in shown)))
 
 
-def tick(on, radio=False):
-    return '<span class="pick-tick%s">%s</span>' % (" radio" if radio else "", icon("pass") if on else "")
+def tick(on):
+    return '<span class="pick-tick">%s</span>' % (icon("pass") if on else "")
 
 
 def sheet(title, options, field, radio):
     rows = "".join('<li><button class="pick-opt" type="button" role="%s" aria-checked="%s">%s<span>%s</span></button></li>'
-                   % ("menuitemradio" if radio else "menuitemcheckbox", "true" if on else "false", tick(on, radio), e(n)) for n, on in options)
+                   % ("menuitemradio" if radio else "menuitemcheckbox", "true" if on else "false", tick(on), e(n)) for n, on in options)
     return ('<div class="scrim"></div><div class="pick-sheet" role="dialog" aria-label="%s"><div class="pick-top"><span class="sheet-grip"></span></div>'
             '<div class="pick-title">%s</div><ul class="pick-opts">%s</ul>'
             '<form class="pick-new"><input class="input" type="text" placeholder="%s" aria-label="%s"><button class="button button-primary" type="button">Add</button></form></div>'
