@@ -6864,7 +6864,7 @@ def part_host(created=None):
     assert (results()[2]['step'], results()[2]['trigger']) == ('build', 'rotation'), results()[2]
     sent = [t for t in traces() if 'message' in t and t.get('manager') is False]
     handoff_asked = [t for t in sent if 'was idle past this task' in t['message']]
-    fresh = [t for t in sent if 'handoff notes:\nNOTES from the fixture' in t['message'] and t['message'].endswith('NOOP')]
+    fresh = [t for t in sent if 'handoff notes:\nNOTES from the fixture' in t['message'] and 'NOOP' in t['message'].split('handoff notes:')[0]]
     assert len(handoff_asked) == 1 and fresh and handoff_asked[0]['session'] != fresh[-1]['session'], [t['message'][:80] for t in sent[-3:]]
     # ^ The usage report reads the logged fields, not its replay of the steps.
     report = subprocess.run([sys.executable, '-B', str(ROOT / 'scripts' / 'usage-report.py'),
