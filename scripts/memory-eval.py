@@ -987,8 +987,9 @@ def cmd_live(args):
 # ---- area notes: who writes the L2 models, and on which model (docs/design/memory-layers.md "Who writes the notes") ----
 
 NOTES = WORK / 'notes'
+WINDOW = {481, 486, 492, 495, 493, 497, 498, 502, 482, 499, 501, 500, 508, 511, 491, 509, 512, 513, 496, 514, 516, 507, 504, 506, 503, 505, 515, 519, 525, 526}  # ^ the 30 lands the seed was written for; later lands do not move it
 LANDS, BATCH, POINTS = 30, 5, (10, 20, 30)  # ^ the last 30 landed tasks; B's scribe works on 5 lands at a time
-NOTE_MAX, MAP_MAX, DIFF_MAX = 3072, 1536, 24 * 1024
+NOTE_MAX, MAP_MAX, DIFF_MAX, RETRIES = 3072, 1536, 24 * 1024, 1
 LOCAL_ID = os.environ.get('LOCAL_MODEL_ID', 'lfm3-1.7b')
 # area: (globs, docs the seed reads). The 13 areas of the doc's "First cut"; a glob is a path or a folder.
 NOTE_AREAS = {
@@ -1152,7 +1153,7 @@ def cites(body, c):
     names = {m.split('::')[-1] for m in re.findall(r'`((?:\w+::)+\w+)`', body)} | set(re.findall(r'`(\w+)\(\)`', body))
     t = tree(c)
     gone = [p for p in paths if not any(f == p or f.endswith('/' + p) for f in t)] + [n for n in names if not has_word(c, n)]
-    return len(paths) + len(names), len(gone)
+    return len(paths) + len(names), gone
 
 
 def problems(body):
@@ -1163,9 +1164,9 @@ def problems(body):
 
 
 def lands():
-    """The last LANDS landed tasks of the real store in land order, with the commit each left on main and the commit before."""
+    """The WINDOW landed tasks of the real store in land order, with the commit each left on main and the commit before."""
     tasks = real_tasks()
-    rows = sorted((t.landed_ms, n) for n, t in tasks.items() if t.landed_ms and t.landed_commit and n != 527)[-LANDS:]
+    rows = sorted((t.landed_ms, n) for n, t in tasks.items() if n in WINDOW and t.landed_ms and t.landed_commit)
     seq = [tasks[n] for _, n in rows]
     seed = git('rev-parse', seq[0].landed_commit + '^').strip()
     return tasks, seq, [seed] + [t.landed_commit for t in seq]
@@ -1291,20 +1292,30 @@ def write_pass(arm, notes, k, lo, seq, commits, scribe, args):
         prompt = (f'Area {name}, globs {", ".join(globs)}.\nCurrent note (verified {v[:8]}):\n{notes[name]["body"]}\n\nChanges {v[:8]}..{c_k[:8]} in its files:\n{diff}\n\n'
                   f'Memos of the tasks that landed:\n{memos}\n\nActive records of the area:\n{area_records(globs, records_at(seq[k - 1].landed_ms), 2048)}\n{extra}\n'
                   f'Change only what the changes changed; keep the form. If nothing the note says changes, answer exactly UNCHANGED. {NOTE_FORM}')
-        row = {'k': k, 'area': name}
-        try:
-            body, usd, secs = note_call(args, f'{arm}-{k}-{name}', model, NOTE_SYSTEM, prompt, notes[name]['body'])
-        except RuntimeError as e:
-            body, usd, secs, row['why'] = '', 0.0, 0.0, str(e)[:200]
-        body = unwrap(body)
-        row.update(usd=usd, secs=round(secs, 1))
+        row = {'k': k, 'area': name, 'usd': 0.0, 'secs': 0.0, 'tries': 0}
+        ask, body = prompt, ''
+        for _ in range(1 + RETRIES):  # ^ a rejected note is sent back once with its failures named, as the live writer would
+            try:
+                body, usd, secs = note_call(args, f'{arm}-{k}-{name}', model, NOTE_SYSTEM, ask, notes[name]['body'])
+            except RuntimeError as e:
+                body, usd, secs, row['why'] = '', 0.0, 0.0, str(e)[:200]
+            body = unwrap(body)
+            row['usd'] += usd
+            row['secs'] = round(row['secs'] + secs, 1)
+            row['tries'] += 1
+            bad, gone = (problems(body), []) if body else (['no answer'], [])
+            if body and body != 'UNCHANGED':
+                row['cited'], gone = cites(body, c_k)
+                row['missing'] = len(gone)
+                bad += ['cites'] if gone else []
+            if body == 'UNCHANGED' or not bad:
+                break
+            ask = (f'{prompt}\n\nYour answer was rejected ({", ".join(bad)}): it is {len(body.encode())} bytes, the limit is {NOTE_MAX}; '
+                   f'these cited names or paths do not exist at the commit: {", ".join(gone) or "none"}. Answer again with the whole note: cut words, not sections. {NOTE_FORM}')
         if body == 'UNCHANGED':
             row['status'] = 'unchanged'
             cand[name]['verified'] = c_k
         else:
-            bad = problems(body) if body else ['no answer']
-            row['cited'], row['missing'] = cites(body, c_k) if body else (0, 0)
-            bad += ['cites'] if row['missing'] else []
             row['status'], row['why'] = ('rejected', ','.join(bad)) if bad else ('written', '')
             if not bad:
                 cand[name] = {'body': body, 'verified': c_k}
@@ -1329,7 +1340,7 @@ def stale_areas(notes, c):
 def run_chain(arm, seq, commits, args):
     """Replay the lands for one arm (A-sonnet, B-haiku ...): a snapshot after each pass, a row per call in calls.jsonl."""
     design = arm.split('-')[0]
-    if snap_at(arm, LANDS):
+    if (snap_at(arm, LANDS) or {}).get('k') == LANDS:
         return
     (NOTES / arm).mkdir(parents=True, exist_ok=True)
     notes, scribe, rows = snap_at('control', 0)['areas'], '', []

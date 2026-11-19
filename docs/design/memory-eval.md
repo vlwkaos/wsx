@@ -1,6 +1,6 @@
 # Memory evaluation (step 6)
 
-Status: baseline half, offline retrieval and the paid memory half measured on 2026-11-11 ("Baseline", "Offline retrieval", "Paid replay"); verdicts: **plan arm harms** (by the fixed rule, within noise), cheap-recall arm kept by the rule but unproven, manager rotation not worth it. The manager replay stopped at the cap ("Manager rotation"). Alternative design: "Alternative design". Question: does memory make a wsx task better and cheaper? Owner decisions: the vault stays in dotfiles `memory.py`; plain Claude chats get no start-up memory load unless this shows a measured gain; step 8 waits for the verdict.
+Status: baseline half, offline retrieval and the paid memory half measured on 2026-11-11 ("Baseline", "Offline retrieval", "Paid replay"); verdicts: **plan arm harms** (by the fixed rule, within noise), cheap-recall arm kept by the rule but unproven, manager rotation not worth it. The manager replay stopped at the cap ("Manager rotation"). Area-notes writer: B with Haiku picked by simulation ("Area-notes writer"). Alternative design: "Alternative design". Question: does memory make a wsx task better and cheaper? Owner decisions: the vault stays in dotfiles `memory.py`; plain Claude chats get no start-up memory load unless this shows a measured gain; step 8 waits for the verdict.
 
 ## Method
 
@@ -327,13 +327,37 @@ Decision (#393): a worker's start block carries no fact records. `memory::start`
 
 1. Done: steps 4 and 5 landed in `wsx/t380`; the paid arms ran on it (above).
 2. `live --cutoff-task 380` again after #380 lands.
-3. The owner decides step 8 and whether to build the correction records of "Alternative design". A new start-set rule needs a new split and a new replay (the paid replay is spent: $39.07 of $40).
+3. Area notes (#527): the plan-step replay with the notes (`notes plan`) and the local model arms are not run; about $14 and projk up.
+4. The owner decides step 8 and whether to build the correction records of "Alternative design". A new start-set rule needs a new split and a new replay (the paid replay is spent: $39.07 of $40).
+
+## Area-notes writer (#527, 2026-11-19)
+
+Question: who writes the L2 area notes of [memory-layers.md](memory-layers.md), and on which model? **A**: one call per land (`fold_memo`). **B**: a scribe that works on 5 lands at a time, adds the owner rules new since its last pass and its own 2 KiB log, runs one curation call, and goes live only if 8 gate questions do not score lower. Models: Sonnet, Haiku, the local model.
+
+`python3 -B scripts/memory-eval.py notes seed|write|score|curate|plan|report`. Same cap, same `spend.jsonl`; the real store, chats and config are only read. The window is the 30 lands in `WINDOW` (#481 to #526) and the seed is a Sonnet write of the 13 areas at the commit before #481 ($1.22, 35.9 KiB); every arm starts from it. The checks before a write are step 4 of memory-layers.md. The questions (24 from the history, 8 gate, 4 for the map) and the pick rule were committed before any paid call. Scores come from a Sonnet that answers from all 13 notes at once and a blind Sonnet judge (0 to 2; "right" is 2). The control is the frozen seed; "regen" is a Sonnet rewrite from scratch at the last commit.
+
+| Arm | $ per land | s added to a land | Refused after retry | Missing cited names | Right at land 10 / 20 / 30 | Map: right of 4 | Gate stops |
+|---|---|---|---|---|---|---|---|
+| A-haiku | 0.030 | 125 | 73% | 0.3% | 0.12 / 0.12 / 0.12 | 4 | 0 |
+| B-haiku | 0.026 | 0 | 57% | 0.1% | 0.17 / 0.12 / 0.12 | 4 | 1 |
+| B-sonnet | 0.193 | 0 | 60% | 0.0% | 0.12 / 0.17 / 0.17 | 4 | 2 |
+| control (seed) | 0 | 0 | | | 0.12 / 0.12 / 0.12 | | |
+| regen (Sonnet) | | | | | 0.08 at 30 | | |
+| A-sonnet, first run without retry | 0.456 | 107 | 98% | 2.9% | 0.12 / 0.12 / 0.12 | 4 | 0 |
+
+- **First run, no retry.** All four arms were refused on 92 to 98% of calls: size (over 3 KiB) and cites. The notes stayed the seed, so the scores equal the control. The retry (send back once, failures named) is the second run; its first form dropped the labels, so the prompt now repeats the note form. A-sonnet was not run again with the retry: it cost $13.68 in the first run, about $25 with retries (est.).
+- **Nothing beats the control.** 0.17 against 0.12 is one question of 24. The control scored three times gave 0.12 each time. Even regen scores 0.08, so the questions measure facts of single tasks that 3 KiB cannot carry: the eligibility rule (end score at least control + 0.10) found no arm. The pick is by cost, wait and the gate.
+- **A waits, B does not.** A's added seconds are the serial calls of a land. B adds none, but its notes lag: 4.4 (B-haiku) and 5.3 (B-sonnet) of 13 areas are stale at a land on average, against 3.0 for A-haiku.
+- **Curation (same for both models).** 88 records, 13 stale facts, 15 duplicates (Sonnet paraphrases). Haiku and Sonnet each found all 15 duplicates and 4 of the 13 stale, with 0 wrong merges and 0 wrong retirements ($0.004 and $0.074 per pass). The model sees a ✓ or ✗ for each path; a scribe with tools would see more.
+- **Not measured.** The local model: `http://127.0.0.1:8090/health: Connection refused` (projk is down), so its arms did not run; the Pi call path was checked only up to the connection error. The plan-step replay with the notes in the start block (`notes plan`) did not run: $34.72 of $40 was spent (about $3.3 of it on a retry prompt that dropped the labels, and a window that moved when #524 and #526 landed). The replay needs about $14.
+
+Pick: **B with Haiku**. Details in memory-layers.md.
 
 ## Manager rotation (memory instead of a long conversation)
 
 Question (owner): if the manager starts a fresh conversation at a much smaller context (150k or 60k instead of 400k) and gets old context back through `wsx memory recall`, does the answer hold, and how much does manager spend fall? The thread feature is not built; memory is the way back.
 
-`python3 -B scripts/memory-eval.py mpick|mproject|mrun|mjudge|mreport`. Same cap of $40 and the same `spend.jsonl` as above.
+The commands `mpick|mproject|mrun|mjudge|mreport` (about 355 lines) were deleted in #527 to pay for `notes`; the results below stay. Same cap of $40 and the same `spend.jsonl` as above.
 
 ### Data now (free; the 7 days of `manager/log.jsonl` up to the last reply, 740 replies)
 

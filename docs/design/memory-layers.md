@@ -1,6 +1,6 @@
 # Memory layers: one resolution per reader, kept by wsx
 
-Status: plan, accepted 2026-11-19 (task 525); no step is built yet. `(est.)` marks a number I did not measure.
+Status: plan, accepted 2026-11-19 (task 525); the writer was picked by simulation (task 527, 2026-11-19); no step is built yet. `(est.)` marks a number I did not measure.
 Owner words: "abstracted mental-model notes made in advance; memory resolution kept in separate layers; if the manager cannot, wsx does it" (wsx 5457); "check code, history and memory before acting" (5455); "reorganize the internals, delete what that makes unneeded, update the mental model" (5461).
 
 **Problem.** A manager guessed why the scenario slot is one. [check-queue-research.md](check-queue-research.md) already said why. Nothing pointed it there: `context.md` was cut ("NOT SHOWN lines 13-119 of 127"), `docs/design` has 67 files and no index, and `wsx.config.yml` sets no `memory.areas`.
@@ -12,7 +12,7 @@ Owner words: "abstracted mental-model notes made in advance; memory resolution k
 | | What | Writer, when | Stale when | Budget | Read by, at |
 |---|---|---|---|---|---|
 | L3 map | One screen: each area, its globs, the owner function of each concern, links to its model and docs | wsx, after a land that adds or removes a path an area covers; the owner may edit | an area's globs match no file, or a changed path matches no area | 1.5 KiB | Manager: its first message, always. Worker: not shown |
-| L2 area model | One per area: how it works, lifecycle (mermaid), owner function per concern, invariants, the owner's rules for it, links to design and research docs that hold the why | wsx, after a land whose diff meets the area's globs | `git diff --quiet <verified> HEAD -- <globs>` fails (`start::stale_of`, the rule facts use) | 3 KiB | Worker: start block, by `--files`. Manager: the message that hits the area (words or paths), up to 2 |
+| L2 area model | One per area: how it works, lifecycle (mermaid), owner function per concern, invariants, the owner's rules for it, links to design and research docs that hold the why | wsx's scribe, every 5 lands whose diffs meet the area's globs | `git diff --quiet <verified> HEAD -- <globs>` fails (`start::stale_of`, the rule facts use) | 3 KiB | Worker: start block, by `--files`. Manager: the message that hits the area (words or paths), up to 2 |
 | L1 records | `rule`, `fact`, `episode` ([memory.md](../memory.md)) | Owner, worker memo, capture | as today | per search | `wsx memory search` / `recall`, on demand |
 | L0 raw | Transcripts, logs, code, git | nobody | never | none | `wsx task search`, `rg`, `git log`, on demand |
 
@@ -24,7 +24,7 @@ flowchart TD
   L1 --> L2[L2 area model]
   L2 --> L3[L3 project map]
   land[land of a task] -->|fold_memo| L1
-  land -->|diff meets an area's globs| R[refresh: one bounded model call]
+  land -->|every 5 lands, diff meets an area's globs| R[scribe: Haiku call per area, checks, gate]
   R -->|writes, verified = landed commit| L2
   R -->|area added or removed| L3
   L3 -->|first message| M[manager]
@@ -37,10 +37,21 @@ flowchart TD
 ## How wsx keeps L2 and L3
 
 1. **Where they live.** `<memory store>/areas/<area>.md` (L2) and `map.md` (L3), written only by wsx, with the drift rule of `decisions.md` (a hand edit is kept as `.drift` and said once). A file in the repo would need a land for each refresh, and wsx cannot write main's ref. The header holds `globs:` and `verified: <commit>`. `memory.areas` of `wsx.config.yml` stays for a project that keeps its briefs in the repo (studio-app); `memory::start` reads both through one function.
-2. **When.** `fold_memo` already runs at each land and close. After it stores the records, one pass takes the paths of the landed diff and picks every area whose globs they meet. An area already fresh at that commit is skipped. A refresh in flight for the area is not repeated: the next land catches up, because the diff is taken from `verified`, not from the last land.
-3. **How.** One bounded call of a cheap model (`wsx_core::process::run_bounded`, Sonnet by default, `tasks.areas.model` to change), with: the current model, `git diff <verified>..<landed> -- <globs>` cut at 24 KiB, the task's memo and result, and the area's active records. The prompt: change only what the diff changed, keep the headings, 3 KiB at most, cite the owner function and the doc. No manager turn runs for it.
-4. **Checks before it writes.** At most 3 KiB; the headings kept; the mermaid fence closed; each `docs/` link and each cited function exists. A model that fails any of them leaves the old file, which stays marked stale with its `verified` commit, and one line goes to the manager's progress. Stale is shown, never hidden: the start block and the manager read "stale since <commit>" and the current diff is one `git diff` away.
-5. **Cost (est., not measured).** About 11k tokens in, 1.2k out per area: $0.035 at Sonnet's $2 and $10 per M (the rates of memory-system.md's `recall` estimate). A land that meets 2 areas is $0.07, under 2% of the ~$4 mean landed task ($4.07, memory-eval.md "Task level"). The gain threshold of that file is $0.15 per landed task. Step 4 measures the real number on 5 lands.
+2. **Who and when: a scribe, in the background, on Haiku.** A land costs no extra wait. `fold_memo` stores the records as today, then queues the land. After 5 lands (`BATCH`) the scribe runs: for each area whose globs the batch's diffs meet it makes one bounded call (`wsx_core::process::run_bounded`, Haiku, `tasks.areas.model` to change). A land never waits for it, and a refresh in flight is not repeated: the diff is taken from `verified`, not from the last land. The scribe also gets the owner rules new since its last pass and its own log (2 KiB, a file the owner can open), and runs one curation call over the records the batch touched: merge duplicates, retire facts whose paths are gone. Rules and episodes are never retired.
+3. **Input of a call.** The current model, `git diff <verified>..<landed> -- <globs>` cut at 24 KiB, the memos of the tasks that landed, the area's active records. Prompt: change only what the diff changed, keep the form, 3 KiB at most, cite only what you were shown.
+4. **Checks, one retry, a gate.** At most 3 KiB; the labels `**Owners.** **Invariants.** **Why.**`; the mermaid fence closed; each cited path and `name()` exists at the commit. A note that fails is sent back once with the failures named; if it fails again the old file stays, marked stale with its `verified` commit, and one line goes to the manager's progress. A batch goes live only if 8 fixed questions score no lower than before; else the whole batch is kept back. Stale is shown, never hidden.
+5. **Why this and not the others** (simulation of the last 30 lands, [memory-eval.md](memory-eval.md) "Area-notes writer"):
+
+| Writer | $ per land | Wait added to a land | Notes refused after one retry | Score at the end (24 questions, control 0.12) |
+|---|---|---|---|---|
+| A, refresh at each land, Haiku | 0.030 | 125 s | 73% | 0.12 |
+| A, Sonnet (one try, no retry) | 0.456 | 107 s | 98% | 0.12 |
+| **B, scribe in batches, Haiku** | **0.026** | **0 s** | 57% | 0.12 |
+| B, scribe in batches, Sonnet | 0.193 | 0 s | 60% | 0.17 |
+| Local model (LFM3 via Pi) | not run: the server on 127.0.0.1:8090 was down | | | |
+
+   The pick rule fixed before the runs found no eligible arm: no writer beat the frozen seed by 0.10, because the 24 questions are mostly facts of single tasks that a 3 KiB note cannot hold (the Sonnet rewrite from scratch scores 0.08). So the pick is by cost and wait, with the gate as the guard: B with Haiku is the cheapest, adds nothing to a land and cannot lower the score. Sonnet costs 7 times more for one question more. Both curation models found all 15 duplicates and 4 of 13 stale facts with no wrong merge or retirement.
+   The limit that binds is the size: all 139 refusals after the retry name "size" (10 also a missing cited name, 1 an open fence), because the seed notes are 2.2 to 3.1 KiB already. Step 2 raises the cap or trims the seed first; neither is measured.
 6. **No `distill`.** The old plan's `wsx memory distill` (a 60k-token transcript read, never built) is not built: the diff and the memo are the input, and they are cheaper and checkable.
 
 ## How a request reaches its layer
@@ -52,7 +63,7 @@ flowchart TD
 | Worker start | The L2 models whose globs meet `--files`, then #520's rules whose paths meet them. No fact records: the paid evaluation (memory-eval.md, #392) found none gave a gain and likely harm | `memory/start.rs` |
 | Any agent, any time | `wsx memory search`, `recall`, `wsx task search`, `rg`, `git log` | CLI |
 
-Limit: the eval kept hand-written briefs. An auto-written L2 is not measured; step 6 measures it before anything is deleted.
+Limit: the eval kept hand-written briefs. The scribe's notes were scored on questions only; the replay of plan steps with them was not run (budget), so step 6 measures it before anything is deleted.
 
 ## What it replaces
 
@@ -113,7 +124,7 @@ Each result states lines added and removed (`git diff --shortstat`) and what it 
 | # | Step | Proof | Added / removed (est.) |
 |---|---|---|---|
 | 1 | The area file (header, store folder, drift), `memory::start` reads it and `memory.areas`; `wsx memory area list/show`; seed the 13 areas with the sample above. Check each glob | `scripts/test-memory.py`: `wsx memory start --files crates/wsx/src/task/slot.rs` shows the model; a later commit marks it stale | +250 / 0 |
-| 2 | The refresh pass in `fold_memo`: pick areas, call, check, write, stale on failure. A fake model command in tests | `scripts/test-task.py`: a land that touches `slot.rs` makes the model fresh at that commit; a failing fake leaves the old file stale, with the line in progress | +300 / 0 |
+| 2 | The scribe in `fold_memo`'s wake: queue a land, every 5 lands pick areas, call Haiku, check, retry once, gate, write, stale on failure; the size cap decided; the curation call. A fake model command in tests | `scripts/test-task.py`: 5 lands that touch `slot.rs` make the model fresh at the last commit; a failing fake leaves the old file stale, with the line in progress | +300 / 0 |
 | 3 | L3 and the hit models in `preamble` and `matching` | `scripts/test-task.py` fake-manager first prompt holds L3 and, for a message naming `slot.rs`, the check-scheduling model. Bytes before and after | +120 / 0 |
 | 4 | Measure the real cost: 5 lands, real Sonnet call | ledger rows against $0.035 and the $0.15 threshold | 0 |
 | 5 | Delete the `context.md` split, archive and ceiling; the index check for `docs/design`; edit the 44 `context` asserts of `test-task.py` | scenario `task`, `memory`; the test output no longer names `context.md` | +60 / -350 |
@@ -125,5 +136,5 @@ Steps 1 to 3 only add: the owner words ask for removal, so step 5 carries the de
 
 Manager, for the owner (wsx 5458), 2026-11-19:
 1. L2 and L3 live in the memory store, not in repo files: the repo is public (no personal paths) and the store already has stale-by-commit.
-2. The writer may cost $0.10 to $0.25 per land against ~$4 per landed task. Step 4 measures the first 5 lands and the real number replaces the estimate above.
+2. The writer is the scribe on Haiku: $0.026 per land measured in the simulation of #527 (against ~$4 per landed task; Sonnet $0.193), nothing added to a land. Step 4 measures the first 5 real lands.
 3. `context.md` memo lines leave the manager's first message only in step 5, after step 6 shows the answer reaches the manager.
