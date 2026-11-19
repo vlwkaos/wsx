@@ -4774,8 +4774,8 @@ let threadBlock = null;
   await click(".composer-send");
   await until(`document.querySelectorAll('.log .bubble').length > 0 && [...document.querySelectorAll('.log .bubble')].some((bubble) => bubble.textContent.includes('In the thread: fee setup'))`, "the message written in the thread is not in its window");
   await click(".threads .thread-chip:first-child");
-  await until("document.querySelector('.threads [aria-current=true] .thread-name')?.textContent === 'Chat' && document.querySelectorAll('.log .bubble').length > 0", "the Chat chip did not show the chat");
-  if (await shown("In the thread: fee setup")) await fail("the chat shows a message written in a thread");
+  // ^ One window rereads in place: the chip is current at once, the rows follow with their read.
+  await until("document.querySelector('.threads [aria-current=true] .thread-name')?.textContent === 'Chat' && document.querySelectorAll('.log .bubble').length > 0 && ![...document.querySelectorAll('.log .bubble')].some((bubble) => bubble.textContent.includes('In the thread: fee setup'))", "the chat shows a message written in a thread, or no chat");
   // ^ A question in the thread: its chip has the count, the chat one line for it, and it is listed first.
   if (await sayIn("ASK which fee line goes first", { thread: "fee-table" }) !== 200) await fail("the question for the thread was not taken");
   await until("!!document.querySelector('.threads .thread-ask') && !!document.querySelector('.thread-waits')", "the thread that waits has no count and no line in the chat");
