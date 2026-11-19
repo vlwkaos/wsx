@@ -6,8 +6,7 @@
 //! slug that holds it. This module also holds the one rule that says a fact is stale (search marks it).
 //! ref: docs/memory.md "Start set", docs/design/memory-system.md "Who gets what"
 
-use super::manage::clip_to;
-use super::manage::decided;
+use super::manage::{clip_to, decided};
 use super::record::{Kind, Record, Status};
 use super::store::{foreign_task, registered, Store};
 use crate::git::{git_cmd, output_with_timeout_limit};
