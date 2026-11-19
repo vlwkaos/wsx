@@ -166,7 +166,9 @@ fn running(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
     let waiting = record.waiting.as_ref();
     let hosted = match record.state {
         TaskState::Working | TaskState::Checking => true,
-        TaskState::Waiting => waiting.is_some_and(|w| matches!(w.on, WaitOn::Disk | WaitOn::Limit)),
+        TaskState::Waiting => {
+            waiting.is_some_and(|w| matches!(w.on, WaitOn::Disk | WaitOn::Limit | WaitOn::Load))
+        }
         _ => false,
     };
     if !hosted {

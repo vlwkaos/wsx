@@ -103,6 +103,7 @@ pub fn waits_on(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Option<W
                 }
             }
             (_, Some(WaitOn::Disk)) => on(Holder::Disk),
+            (_, Some(WaitOn::Load)) => on(Holder::Queue),
             (_, Some(WaitOn::Limit)) => on(Holder::Limit),
             (_, Some(WaitOn::Hand | WaitOn::LandStopped | WaitOn::Asks)) => on(Holder::Owner),
             (_, Some(WaitOn::Plan | WaitOn::Paused)) => after.unwrap_or(on(Holder::Manager)),
@@ -537,6 +538,14 @@ fn waiting_on(
             Some(entered),
             &queue_words(record, &waiting.reason, "goes on first"),
             "It goes on by itself once there is space.",
+            now_ms,
+        ),
+        WaitOn::Load => words(
+            "load",
+            "Waiting for the Mac's load to fall",
+            Some(entered),
+            &queue_words(record, &waiting.reason, "goes on first"),
+            "Its turn starts by itself once the load allows.",
             now_ms,
         ),
         // ^ No elapsed time: it reads as the time left. The reason names the window and the

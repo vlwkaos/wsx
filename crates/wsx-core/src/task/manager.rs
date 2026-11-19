@@ -370,7 +370,7 @@ pub fn state_wakes(dir: &TaskDir, record: &TaskRecord) -> bool {
                     .waiting
                     .as_ref()
                     .is_some_and(|waiting| match waiting.on {
-                        WaitOn::Limit | WaitOn::Disk => true,
+                        WaitOn::Limit | WaitOn::Disk | WaitOn::Load => true,
                         WaitOn::Owner => {
                             waiting.reason == STOPPED_BY_REQUEST
                                 && !answered_after_stop(dir, record)

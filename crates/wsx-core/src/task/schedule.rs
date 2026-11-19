@@ -32,6 +32,9 @@ const WIDEN_LOAD: f64 = 1.5;
 const SETTLE: Duration = Duration::from_secs(90);
 const RUN_RAM_MB: u64 = 3 * 1024;
 const RUN_DISK_MB: u64 = 3 * 1024;
+/// PTYs a run needs free before it starts (docs/design/scheduler.md "Measured"): the Mac has
+/// `kern.tty.ptmx_max` of them for every process, and a run that finds none fails with `failed to openpty`.
+pub const RUN_PTYS: u64 = 60;
 
 /// The order of the runs that wait: a land's checks, a task others wait for, a task the owner
 /// asked for, the rest. The queue sorts tickets by it, then by arrival.
@@ -66,6 +69,8 @@ pub struct Machine {
     pub cores: usize,
     pub free_ram_mb: Option<u64>,
     pub free_disk_mb: Option<u64>,
+    /// `kern.tty.ptmx_max` minus the PTYs in use.
+    pub free_ptys: Option<u64>,
 }
 
 /// The Mac's load, free memory and free disk (on the volume of `disk`) now.
@@ -85,7 +90,49 @@ pub fn sample(disk: &Path) -> Machine {
         cores: std::thread::available_parallelism().map_or(1, usize::from),
         free_ram_mb: free_ram_mb(),
         free_disk_mb: super::store::free_mb(disk),
+        free_ptys: free_ptys(),
     }
+}
+
+/// The PTYs left in the Mac's pool: the pool's size minus the slave devices that exist (one per
+/// PTY in use; `/dev/ttysNNN` on macOS, `/dev/pts/N` on Linux).
+fn free_ptys() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    let (max, dir, prefix) = {
+        let mut max: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>();
+        // SAFETY: `max` and `len` are the int and its size the sysctl writes.
+        let status = unsafe {
+            libc::sysctlbyname(
+                c"kern.tty.ptmx_max".as_ptr(),
+                (&mut max as *mut libc::c_int).cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        (
+            u64::try_from(max).ok().filter(|_| status == 0)?,
+            "/dev",
+            "ttys",
+        )
+    };
+    #[cfg(not(target_os = "macos"))]
+    let (max, dir, prefix) = {
+        let max = std::fs::read_to_string("/proc/sys/kernel/pty/max").ok()?;
+        (max.trim().parse::<u64>().ok()?, "/dev/pts", "")
+    };
+    let used = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            name.to_str()
+                .and_then(|name| name.strip_prefix(prefix))
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .count() as u64;
+    Some(max.saturating_sub(used))
 }
 
 #[cfg(target_os = "macos")]
@@ -139,6 +186,8 @@ pub struct Lane {
     pub ahead: usize,
     pub waited: Duration,
     pub scenarios: bool,
+    /// PTYs a run of the lane needs free; 0 when the machine rules are off for it.
+    pub ptys: u64,
     /// The load, memory and disk rule sets the width. Off, the lane is first come, first served with
     /// its `max` slots: the checks lane, and a scenarios lane whose width the owner fixed
     /// (`WSX_SCENARIO_SLOTS`, which every fixture sets).
@@ -176,9 +225,17 @@ pub fn decide(run: &Run, lane: &Lane) -> Verdict {
         cores,
         free_ram_mb,
         free_disk_mb,
+        free_ptys,
     } = lane.machine;
     let cores_f = cores as f64;
     let busy = lane.holders + lane.ahead;
+    // ^ No wait ends it: a run that starts without a PTY fails with `failed to openpty`.
+    if let Some(free) = free_ptys.filter(|free| *free < lane.ptys) {
+        return Verdict::Wait(Some(format!(
+            "waiting for PTYs: {free} free, a round needs ~{}",
+            lane.ptys
+        )));
+    }
     if !lane.paced && lane.ahead == 0 {
         return Verdict::Go;
     }
@@ -243,6 +300,64 @@ pub fn typical_ms(project_id: &str, command: &str) -> u64 {
         .unwrap_or(LOCAL_ROUND_MS)
 }
 
+/// What the recorded scenario runs say of each part at each lane width: `(part, width, runs,
+/// failed runs)`, in that order. A run counts when its `check_run` record has a width and its
+/// output ends with scenario.py's summary line (`== task scenario: core passed 653 s, ... ==`).
+pub fn widths(project_id: &str) -> Vec<(String, u32, usize, usize)> {
+    let mut rows: std::collections::BTreeMap<(String, u32), (usize, usize)> = Default::default();
+    for (dir, _) in project_tasks(project_id).unwrap_or_default() {
+        for entry in dir.read_log().unwrap_or_default() {
+            let LogEvent::CheckRun { results } = entry.event else {
+                continue;
+            };
+            for result in results.iter().filter(|r| r.width > 0 && !r.stored) {
+                for (part, failed) in summary_parts(&result.output) {
+                    let row = rows
+                        .entry((
+                            format!("{} {part}", scenario_of(&result.command)),
+                            result.width,
+                        ))
+                        .or_default();
+                    row.0 += 1;
+                    row.1 += usize::from(failed);
+                }
+            }
+        }
+    }
+    rows.into_iter()
+        .map(|((part, width), (runs, failed))| (part, width, runs, failed))
+        .collect()
+}
+
+/// The scenario a command runs: the word after `scenario.py`, else the command.
+fn scenario_of(command: &str) -> &str {
+    let mut words = command
+        .split_whitespace()
+        .skip_while(|w| !w.ends_with("scenario.py"));
+    words.nth(1).unwrap_or(command)
+}
+
+/// The parts of the last summary line of a scenario run: `(name, failed)`.
+fn summary_parts(output: &str) -> Vec<(&str, bool)> {
+    output
+        .lines()
+        .rev()
+        .find_map(|line| {
+            let list = line.trim().strip_prefix("== ")?.strip_suffix(" ==")?;
+            Some(list.split_once(" scenario: ")?.1)
+        })
+        .map(|list| {
+            list.split(", ")
+                .filter_map(|part| {
+                    let mut words = part.split_whitespace();
+                    let (name, state) = (words.next()?, words.next()?);
+                    matches!(state, "passed" | "failed").then_some((name, state == "failed"))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,12 +369,14 @@ mod tests {
                 cores: 10,
                 free_ram_mb: Some(16 * 1024),
                 free_disk_mb: Some(40 * 1024),
+                free_ptys: Some(300),
             },
             holders,
             newest: Some(Duration::from_secs(600)),
             ahead,
             waited: Duration::ZERO,
             scenarios: true,
+            ptys: RUN_PTYS,
             paced: true,
             max: 3,
             min_free_mb: 3 * 1024,
@@ -300,6 +417,50 @@ mod tests {
         let mut fixed = lane(0, 0, 90.0);
         fixed.paced = false;
         assert_eq!(decide(&normal, &fixed), Verdict::Go);
+    }
+
+    #[test]
+    fn a_summary_line_gives_each_part_and_whether_it_failed() {
+        let output = "[core] ok\n== task scenario: core passed 653 s, worker failed 100 s, 653 s ==\nFAILED section 3";
+        assert_eq!(
+            summary_parts(output),
+            vec![("core", false), ("worker", true)]
+        );
+        assert_eq!(scenario_of("python3 -B scripts/scenario.py web"), "web");
+        assert!(summary_parts("no summary").is_empty());
+    }
+
+    #[test]
+    fn a_run_waits_for_the_ptys_it_needs() {
+        let normal = run(false, 15 * 60_000);
+        let mut few = lane(0, 0, 1.0);
+        few.machine.free_ptys = Some(RUN_PTYS - 1);
+        assert_eq!(
+            decide(&normal, &few),
+            Verdict::Wait(Some(format!(
+                "waiting for PTYs: {} free, a round needs ~{RUN_PTYS}",
+                RUN_PTYS - 1
+            )))
+        );
+        // The pool counts for a run beside another, for an unpaced lane, and for an urgent run.
+        let mut beside = lane(1, 0, 1.0);
+        beside.machine.free_ptys = Some(0);
+        assert!(matches!(decide(&normal, &beside), Verdict::Wait(Some(_))));
+        few.paced = false;
+        assert!(matches!(decide(&normal, &few), Verdict::Wait(Some(_))));
+        let mut urgent = lane(2, 2, 18.0);
+        urgent.machine.free_ptys = Some(0);
+        assert!(matches!(
+            decide(&run(true, 15 * 60_000), &urgent),
+            Verdict::Wait(Some(_))
+        ));
+        // A pool that is not known, or a lane with the rule off, does not hold a run.
+        few.machine.free_ptys = None;
+        assert_eq!(decide(&normal, &few), Verdict::Go);
+        let mut off = lane(0, 0, 1.0);
+        off.machine.free_ptys = Some(0);
+        off.ptys = 0;
+        assert_eq!(decide(&normal, &off), Verdict::Go);
     }
 
     #[test]

@@ -32,6 +32,9 @@ pub enum Lane {
     Checks,
     /// A worker's `check-run` that names a scenario, and `wsx task hold`.
     Scenarios,
+    /// The start of a worker turn, once `tasks.gateTurns` is on: one at a time, `schedule::SETTLE`
+    /// apart, while the load allows.
+    Turns,
 }
 
 impl Lane {
@@ -39,13 +42,14 @@ impl Lane {
         match self {
             Lane::Checks => "check-slot",
             Lane::Scenarios => "scenario-slot",
+            Lane::Turns => "turn-slot",
         }
     }
 
     /// The most runs of the lane at once; `WSX_SCENARIO_SLOTS` lowers it (a fixture sets 1).
     fn max(self) -> usize {
         match self {
-            Lane::Checks => 1,
+            Lane::Checks | Lane::Turns => 1,
             Lane::Scenarios => std::env::var("WSX_SCENARIO_SLOTS")
                 .ok()
                 .and_then(|n| n.parse().ok())
@@ -60,6 +64,21 @@ impl Lane {
         match self {
             Lane::Checks => "the check slot",
             Lane::Scenarios => "the scenario test slot",
+            Lane::Turns => "the turn slot",
+        }
+    }
+
+    /// The machine rules (load, memory, disk, PTYs) apply unless the owner fixed the width
+    /// (`WSX_SCENARIO_SLOTS`, which every fixture sets): then each lane is first come, first served.
+    fn ruled() -> bool {
+        std::env::var_os("WSX_SCENARIO_SLOTS").is_none()
+    }
+
+    /// PTYs a run of the lane needs free (`schedule::RUN_PTYS`).
+    fn ptys(self) -> u64 {
+        match self {
+            Lane::Checks | Lane::Scenarios if Lane::ruled() => schedule::RUN_PTYS,
+            _ => 0,
         }
     }
 }
@@ -95,7 +114,12 @@ pub enum Taken {
 }
 
 /// The held slot; dropping it frees the slot.
-pub struct Slot(#[allow(dead_code)] File);
+pub struct Slot {
+    #[allow(dead_code)]
+    file: File,
+    /// The runs that held the lane when it was taken, itself included.
+    pub width: u32,
+}
 
 fn try_lock(file: &File) -> bool {
     // SAFETY: the descriptor is open for the life of `file`.
@@ -108,30 +132,9 @@ pub fn take(want: &Want, label: &str, mut queued: impl FnMut(String)) -> io::Res
     let lane = want.lane;
     let ticket = Ticket::join(lane.queue(), lane.what(), lane.max(), want.priority)?;
     let joined = Instant::now();
-    let run = Run {
-        urgent: want.urgent.clone(),
-        typical_ms: want.typical_ms,
-    };
-    let machine_at = store::state_dir();
     let mut said = String::new();
     loop {
-        let decided = ticket.try_take_by(label, |held| {
-            schedule::decide(
-                &run,
-                &schedule::Lane {
-                    machine: schedule::sample(&machine_at),
-                    holders: held.holders,
-                    newest: held.newest,
-                    ahead: held.ahead,
-                    waited: joined.elapsed(),
-                    scenarios: matches!(lane, Lane::Scenarios),
-                    paced: matches!(lane, Lane::Scenarios)
-                        && std::env::var_os("WSX_SCENARIO_SLOTS").is_none(),
-                    max: lane.max(),
-                    min_free_mb: want.min_free_mb,
-                },
-            )
-        });
+        let decided = admit(&ticket, want, label, joined.elapsed());
         match decided {
             Ok(taken) => return Ok(taken),
             Err(reason) if reason != said => {
@@ -142,6 +145,33 @@ pub fn take(want: &Want, label: &str, mut queued: impl FnMut(String)) -> io::Res
         }
         std::thread::sleep(POLL);
     }
+}
+
+/// Ask the lane's rule (`schedule::decide`) whether `ticket`'s run starts now: the slot or the order
+/// for CI, else the reason it waits. `waited` is how long the run has waited.
+pub fn admit(ticket: &Ticket, want: &Want, label: &str, waited: Duration) -> Result<Taken, String> {
+    let lane = want.lane;
+    let run = Run {
+        urgent: want.urgent.clone(),
+        typical_ms: want.typical_ms,
+    };
+    ticket.try_take_by(label, |held| {
+        schedule::decide(
+            &run,
+            &schedule::Lane {
+                machine: schedule::sample(&store::state_dir()),
+                holders: held.holders,
+                newest: held.newest,
+                ahead: held.ahead,
+                waited,
+                scenarios: matches!(lane, Lane::Scenarios),
+                ptys: lane.ptys(),
+                paced: matches!(lane, Lane::Scenarios | Lane::Turns) && Lane::ruled(),
+                max: lane.max(),
+                min_free_mb: want.min_free_mb,
+            },
+        )
+    })
 }
 
 /// `wsx task slot <command>`: run `command` once the scenarios lane lets it start, and give back its
@@ -277,7 +307,10 @@ impl Ticket {
                     let _ = holder
                         .set_len(0)
                         .and_then(|()| holder.write_all(label.as_bytes()));
-                    return Ok(Taken::Slot(Slot(holder)));
+                    return Ok(Taken::Slot(Slot {
+                        file: holder,
+                        width: held.len() as u32 + 1,
+                    }));
                 }
                 None
             }

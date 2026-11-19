@@ -125,6 +125,9 @@ pub struct TaskConfig {
     /// Free disk a task needs before an agent turn or its checks; below it the task waits
     /// (docs/tasks.md "Checks, revisions and report").
     pub min_free_gb: u64,
+    /// `tasks.gateTurns`: a worker turn starts only when the scheduler allows (load per core,
+    /// order by urgency; docs/design/scheduler.md). Off: a turn starts at once.
+    pub gate_turns: bool,
     /// `tasks.captureBudgetMb`: the most a project's kept To check captures may take; over it the
     /// manager host removes the oldest decided ones (docs/tasks.md "To check").
     pub capture_budget_mb: u64,
@@ -282,6 +285,7 @@ impl Default for TaskConfig {
             env: Default::default(),
             check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
             min_free_gb: 5,
+            gate_turns: false,
             capture_budget_mb: DEFAULT_CAPTURE_BUDGET_MB,
             land_approve: false,
             land_auto: true,

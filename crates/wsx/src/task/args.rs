@@ -187,6 +187,9 @@ pub enum TaskCmd {
     },
     /// Print the bounded project state a manager reads first (JSON, at most 16 KiB)
     Ledger,
+    /// Scenario runs by part and lane width: runs and failures, from the task records
+    /// (docs/design/scheduler.md)
+    Widths,
     /// Show the last deployed and released commits and how far each is behind
     Deployed,
     #[command(hide = true)]
@@ -584,6 +587,7 @@ impl TaskCmd {
             | Self::Why { .. }
             | Self::Review { .. }
             | Self::Ledger
+            | Self::Widths
             | Self::Deployed
             | Self::Chat { action: None, .. }
             | Self::Search { .. }

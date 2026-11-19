@@ -12,7 +12,9 @@ go to the slow external CI only when there is nothing else.
 ```mermaid
 flowchart TD
   A[run wants the scenarios lane] --> S[sample: load per core, free RAM, free disk]
-  S --> D{decide}
+  S --> P{free PTYs under RUN_PTYS?}
+  P -->|yes| W
+  P -->|no| D{decide}
   D -->|first run: load under 2.5/core, or waited 15 min| G[Go: take the slot, run here]
   D -->|beside others: load under 1.5/core, RAM and disk for one more, newest run 90 s old| G
   D -->|none of these| W[Wait: ticket in the queue, reason says why]
@@ -34,7 +36,10 @@ ends. Both end when the run answers.
 |---|---|
 | Sample: 1-minute load per core (`getloadavg`), free RAM (macOS `host_statistics64`, Linux `/proc/meminfo`), free disk of the working copy's volume | `schedule::sample` |
 | Width: at most `MAX_SCENARIO_RUNS` (3); `WSX_SCENARIO_SLOTS` lowers it. A first run needs load under `START_LOAD` 2.5/core, or has waited `LOAD_WAIT` 15 min. Each extra run needs load under `WIDEN_LOAD` 1.5/core, `RUN_RAM_MB` and `RUN_DISK_MB` (3 GiB each) free, and the newest run older than `SETTLE` 90 s (the load average lags) | `schedule::decide` |
+| PTYs: free = `kern.tty.ptmx_max` (macOS) or `/proc/sys/kernel/pty/max` minus the slave devices that exist (`/dev/ttysNNN`, `/dev/pts/N`). A run of the checks or scenarios lane starts only with `RUN_PTYS` free, else it waits with `waiting for PTYs: <free> free, a round needs ~<n>`; no wait time lifts it, because a run that starts without a PTY fails with `failed to openpty`. Off with `WSX_SCENARIO_SLOTS` (fixtures) | `schedule::decide`, `Lane::ptys` |
 | Order: `Land` (a land's checks), `Urgent` (another open task waits for this one through `after`), `Asked` (the owner made the task), `Normal`; then arrival. A ticket's priority is fixed when it joins | `schedule::urgency`, `slot::ticket_name` |
+| Turns: with `tasks.gateTurns` a worker turn takes a place in the `turn-slot` queue (one slot) before it starts. It starts under `START_LOAD` per core, or after `LOAD_WAIT`; the slot stays held 60 s (`disk_settle`) so the next turn sees the load this one adds. It waits as `waiting.on: load` and resumes by itself; its text rides `disk_wait`, as a turn held for disk does | `host.rs` `wait_for_load`, `slot::admit` |
+| History: a scenario run's `check_run` result has `width` (runs in its lane at its start); `wsx task widths` prints runs and failed runs per part and width, from the summary line of `scripts/scenario.py` | `schedule::widths` |
 | CI: only an urgent run, and only when its estimated local wait (rounds ahead times the median recorded `ms` of that command, else 15 min) is longer than a CI round (25 min, p50 of 40 runs) | `schedule::decide` |
 | CI: any scenario-only run when free disk is under `tasks.minFreeGb` after the cleanup (`build::reclaim`); a run with plain checks is refused as before | `host.rs` `start_check_run` |
 | CI: the scenario exits 69 (`cannot run here: ...`: cargo, git, node or Chrome missing) | `scripts/scenario.py`, `host.rs` `spawn_checks` |
@@ -45,7 +50,9 @@ The status and the log say why: `queued for the scenario slot behind <holder>; <
 
 ## Not done
 
-- The scheduler does not delay an agent turn under load: the host cannot throttle a turn that runs.
+- A turn that runs cannot be throttled: the gate holds only the start of a turn. Load comes from what the
+  agent builds during a turn, so the gate lowers the number of turns that start at once, not their size.
+  `tasks.gateTurns` is on for this project; it is off by default, so fixtures start turns at once.
 - The constants are first guesses. At 10 cores and 24 GiB with agents building, load sits near 18, so the
   lane stays at width 1 until load drops; `docs/design/check-queue-research.md` rank 7 (N slots) was
   rejected because timed tests fail under load, so the width follows load, not a fixed N.

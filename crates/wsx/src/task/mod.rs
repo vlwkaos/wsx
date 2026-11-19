@@ -134,6 +134,7 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
         TaskCmd::Project { action } => self::project(action, project, json),
         TaskCmd::Thread { action } => thread(action, project, json),
         TaskCmd::Ledger => ledger::ledger(project),
+        TaskCmd::Widths => ledger::widths(project),
         TaskCmd::Routine {
             mut action,
             owner_said,

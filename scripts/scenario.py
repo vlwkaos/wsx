@@ -76,6 +76,15 @@ def stop(processes):
                 pass
 
 
+def ptys_in_use():
+    """The PTYs in use on this machine: one slave device each (`/dev/ttysNNN`, Linux `/dev/pts/N`)."""
+    base, prefix = ('/dev/pts', '') if sys.platform.startswith('linux') else ('/dev', 'ttys')
+    try:
+        return sum(1 for name in os.listdir(base) if name.startswith(prefix) and name[len(prefix):].isdigit())
+    except OSError:
+        return 0
+
+
 def missing_tools(name):
     missing = [tool for tool in NEEDS[name] if not shutil.which(tool)]
     if name == 'web' and not any(os.path.exists(path) for path in [os.environ.get('CHROME_BIN', '')] + CHROME):
@@ -120,8 +129,10 @@ def main():
         reader.start()
         readers.append(reader)
     ended = {}
+    ptys = peak = ptys_in_use()
     try:
         while len(ended) < len(processes):
+            peak = max(peak, ptys_in_use())
             for name, process in processes.items():
                 if name not in ended and process.poll() is not None:
                     ended[name] = time.monotonic() - started
@@ -137,6 +148,9 @@ def main():
     print('== %s scenario: %s, %d s ==' % (
         args[0], ', '.join('%s %s %d s' % (name, 'failed' if name in failed else 'passed', ended[name]) for name in processes),
         time.monotonic() - started), flush=True)
+    # ^ The machine's PTYs in use, others' runs included, so the rise is an upper bound of this run's
+    # (docs/design/scheduler.md "Measured").
+    print('PTYS in use: %d at start, peak %d' % (ptys, peak), flush=True)
     for name in failed:
         marked = [line for line in output[name] if any(mark in line for mark in MARKS)]
         for line in marked or output[name][-30:]:

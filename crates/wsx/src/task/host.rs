@@ -85,7 +85,8 @@ enum Event {
     CheckSlot(Option<String>),
 }
 
-/// What waits for free disk, resumed once `tasks.minFreeGb` is free again.
+/// What waits for free disk, resumed once `tasks.minFreeGb` is free again; a turn held for the
+/// load (`wait_for_load`) rides the same wait.
 enum DiskWait {
     Turn(String),
     Checks,
@@ -274,6 +275,8 @@ struct Host {
     /// resume, with when it took it: held for `disk_settle()` or until its turn or checks end.
     disk_queue: Option<slot::Ticket>,
     disk_slot: Option<(slot::Slot, Instant)>,
+    /// When the turn held in the turn queue (`wait_for_load`) began to wait.
+    load_since: Option<Instant>,
     limit_wait: Option<LimitWait>,
     /// Usage limits in a row, for the backoff when no reset time is known.
     limit_attempt: u32,
@@ -385,6 +388,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         disk_wait: None,
         disk_queue: None,
         disk_slot: None,
+        load_since: None,
         limit_wait: None,
         limit_attempt: 0,
         limit_queue: None,
@@ -1634,7 +1638,9 @@ impl Host {
             self.say("the wsx binary was replaced: the host restarts with it");
             return Ok(());
         }
-        if self.wait_for_disk(DiskWait::Turn(text.to_string())) {
+        if self.wait_for_disk(DiskWait::Turn(text.to_string()))
+            || self.wait_for_load(DiskWait::Turn(text.to_string()))
+        {
             return Ok(());
         }
         // ^ Going home: a fallback whose conversation answered writes its handoff notes first
@@ -2499,6 +2505,44 @@ impl Host {
         true
     }
 
+    /// With `tasks.gateTurns`, a turn starts only when the scheduler lets it (the load, in the
+    /// order of `schedule::urgency`), one at a time `disk_settle()` apart so the next sees the
+    /// load this one adds. The turn waits in the `turn` queue and resumes by itself; its text
+    /// joins `disk_wait` like a turn held for disk. True when it waits.
+    /// ref: docs/design/scheduler.md
+    fn wait_for_load(&mut self, what: DiskWait) -> bool {
+        if !self.settings().gate_turns || self.disk_slot.is_some() {
+            return false;
+        }
+        let want = Want::new(Lane::Turns, self.urgency().0);
+        let ticket = match slot::Ticket::join("turn-slot", "the turn slot", 1, want.priority) {
+            Ok(ticket) => ticket,
+            Err(error) => {
+                self.say(&format!("cannot join the turn queue: {error}"));
+                return false;
+            }
+        };
+        match slot::admit(&ticket, &want, &self.slot_label(), Duration::ZERO) {
+            Ok(Taken::Slot(taken)) => {
+                self.disk_slot = Some((taken, Instant::now()));
+                false
+            }
+            Ok(Taken::Ci(reason)) | Err(reason) => {
+                self.disk_queue = Some(ticket);
+                self.load_since = Some(Instant::now());
+                self.disk_wait = Some(what);
+                self.say(&format!("waiting for the load: {reason}"));
+                self.wait(WaitOn::Load, reason);
+                true
+            }
+        }
+    }
+
+    /// "<project> t<id>", how a queue names this task's holder.
+    fn slot_label(&self) -> String {
+        format!("{} t{}", self.record.project, self.record.id)
+    }
+
     /// Resume once there is space. Tasks resume one at a time, oldest wait first, each
     /// `disk_settle()` after the one before: resumed at once, they would fill the disk again.
     /// ref: docs/tasks.md "Checks, revisions and report"
@@ -2507,19 +2551,38 @@ impl Host {
             return;
         }
         if let Some(queue) = &self.disk_queue {
-            let label = format!("{} t{}", self.record.project, self.record.id);
-            match queue.try_take(&label) {
+            let label = self.slot_label();
+            let taken = match self.record.waiting.as_ref().map(|waiting| waiting.on) {
+                Some(WaitOn::Load) => {
+                    let waited = self
+                        .load_since
+                        .map_or(Duration::ZERO, |since| since.elapsed());
+                    match slot::admit(
+                        queue,
+                        &Want::new(Lane::Turns, self.urgency().0),
+                        &label,
+                        waited,
+                    ) {
+                        Ok(Taken::Slot(slot)) => Ok(slot),
+                        Ok(Taken::Ci(reason)) | Err(reason) => Err(reason),
+                    }
+                }
+                _ => queue.try_take(&label),
+            };
+            match taken {
                 Ok(taken) => self.disk_slot = Some((taken, Instant::now())),
                 Err(reason) => {
                     if self.record.waiting.as_ref().map(|w| &w.reason) != Some(&reason) {
                         self.say(&reason);
-                        self.wait(WaitOn::Disk, reason);
+                        let on = self.record.waiting.as_ref().map_or(WaitOn::Disk, |w| w.on);
+                        self.wait(on, reason);
                     }
                     return;
                 }
             }
         }
         self.disk_queue = None;
+        self.load_since = None;
         let Some(what) = self.disk_wait.take() else {
             return;
         };
@@ -3208,17 +3271,21 @@ impl Host {
 
     /// The place of a worker's run in its lane: a scenario's in the scenarios lane, by the task's
     /// urgency (`schedule::urgency`); plain checks in the checks lane.
-    fn want(&self, to_run: &[(usize, String)], checks: usize) -> Want {
-        if !to_run.iter().any(|(index, _)| *index >= checks) {
-            return Want::new(Lane::Checks, Priority::Normal);
-        }
+    /// How urgent this task's next heavy run is, and who waits for it (`schedule::urgency`).
+    fn urgency(&self) -> (Priority, Option<String>) {
         let records: Vec<_> = wsx_core::task::view::project_tasks(&self.record.project_id)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|(_, record)| record.ok())
             .collect();
-        let waiters = status::waiters(&records, self.record.id);
-        let (priority, urgent) = schedule::urgency(&self.record, &waiters);
+        schedule::urgency(&self.record, &status::waiters(&records, self.record.id))
+    }
+
+    fn want(&self, to_run: &[(usize, String)], checks: usize) -> Want {
+        if !to_run.iter().any(|(index, _)| *index >= checks) {
+            return Want::new(Lane::Checks, Priority::Normal);
+        }
+        let (priority, urgent) = self.urgency();
         let mut want = Want::new(Lane::Scenarios, priority);
         if urgent.is_some() {
             // ^ Only an urgent run can go to CI, so only it needs the estimate.
@@ -3347,7 +3414,7 @@ impl Host {
         };
         std::thread::spawn(move || {
             let queued = std::time::Instant::now();
-            let (mut held, mut ci) = (None, None);
+            let (mut held, mut ci, mut width) = (None, None, 0);
             match place {
                 Place::Free => {}
                 Place::Ci(why) => ci = Some(why),
@@ -3360,6 +3427,10 @@ impl Host {
                         Ok(Taken::Ci(why)) => ci = Some(why),
                         taken => {
                             let _ = events.send(Event::CheckSlot(error));
+                            width = match &taken {
+                                Ok(Taken::Slot(slot)) => slot.width,
+                                _ => 0,
+                            };
                             held = taken.ok();
                         }
                     }
@@ -3377,7 +3448,11 @@ impl Host {
                     timeout = timeout.max(schedule::CI_TIMEOUT);
                 }
                 let ran = run_check(&working_copy, command, &env, timeout, log);
-                CheckResult { queued_ms, ..ran }
+                CheckResult {
+                    queued_ms,
+                    width: if on_ci { 0 } else { width },
+                    ..ran
+                }
             };
             let on_ci = |why: &str| {
                 let _ = events.send(Event::CheckQueued(format!("{}{why}", schedule::ON_CI)));
@@ -4668,6 +4743,7 @@ pub(super) fn run_check(
         output: joined([log_tail(log).unwrap_or_default(), said]),
         ms: started.elapsed().as_millis() as u64,
         queued_ms: 0,
+        width: 0,
         stored: false,
     }
 }

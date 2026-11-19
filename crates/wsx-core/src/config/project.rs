@@ -156,6 +156,8 @@ struct TasksFile {
     check_timeout_seconds: Option<u64>,
     #[serde(rename = "minFreeGb", skip_serializing_if = "Option::is_none")]
     min_free_gb: Option<u64>,
+    #[serde(rename = "gateTurns", skip_serializing_if = "Option::is_none")]
+    gate_turns: Option<bool>,
     #[serde(rename = "captureBudgetMb", skip_serializing_if = "Option::is_none")]
     capture_budget_mb: Option<u64>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -641,6 +643,7 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
         config.min_free_gb = gb;
     }
+    config.gate_turns = file.gate_turns.unwrap_or(false);
     if let Some(mb) = file.capture_budget_mb {
         if !(1..=MAX_CAPTURE_BUDGET_MB).contains(&mb) {
             return Err(format!(

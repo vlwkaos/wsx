@@ -104,6 +104,10 @@ pub enum WaitOn {
     /// The owner works in the working copy; nothing runs until `handback`.
     /// ref: docs/tasks.md "By hand"
     Hand,
+    /// The Mac's load: a worker turn waits in the turn queue until the load per core is under
+    /// `schedule::START_LOAD` (only with `tasks.gateTurns`); the host starts it by itself.
+    /// ref: docs/design/scheduler.md
+    Load,
     /// The machine's check slot: a `checking` task, or a worker's `check-run`, waits for the
     /// check runs ahead of it. ref: docs/tasks.md "Checks, revisions and report"
     CheckSlot,
@@ -131,6 +135,7 @@ impl WaitOn {
         match self {
             Self::Owner => "owner",
             Self::Disk => "disk",
+            Self::Load => "load",
             Self::Plan => "plan",
             Self::Hand => "hand",
             Self::CheckSlot => "check_slot",
@@ -393,6 +398,10 @@ pub struct CheckResult {
     /// How long its run waited for the check slot before it, in ms.
     #[serde(default)]
     pub queued_ms: u64,
+    /// The runs that held the scenarios lane when this one started, itself included: the width
+    /// it ran at (`wsx task widths`). 0 for a run that held no slot of this Mac.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub width: u32,
     /// The result came from an earlier run on the same tree; `ms` is that run's.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stored: bool,
