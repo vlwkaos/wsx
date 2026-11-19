@@ -318,7 +318,8 @@ async function inbox() {
     await touch("touchEnd");
     const slide = "(() => { const row = document.querySelector('.scroll .row-slide'); return { left: row.scrollLeft, same: row === window.wsxSlid, top: Math.round(row.getBoundingClientRect().top), page: document.querySelector('.scroll').scrollTop, seen: window.wsxSeen, width: innerWidth, scale: visualViewport.scale }; })()";
     await until(`${slide}.left > 0`, async () => `a slide did not move the row (from ${JSON.stringify(start)}: ${JSON.stringify(await evaluate(slide))})`);
-    await pause(400);
+    // ^ The row settles with a smooth scroll (swipe.js `settle`): a loaded page reads it half way (26 of 52 px) after a fixed pause, so the box is read once it is at the edge or after 4 s.
+    for (let attempt = 0; attempt < 40 && (await removeBox()).right !== size[0]; attempt++) await pause(100);
     const open = await removeBox();
     if (open.right !== size[0] || open.height < 44 || !open.filled || !/^Remove session /.test(open.name)) await fail(`a slide did not show Remove at the edge: ${JSON.stringify(open)}`);
     await shot("inbox-remove");
