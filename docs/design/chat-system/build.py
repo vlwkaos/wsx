@@ -474,16 +474,18 @@ def open_rows(kind, after, menu=False):
             + band("Waiting", "waiting") + task("Release tag 0.43", 100, "pause", "after #97"))
 
 
-def open_page(kind, after, menu=False):
+def reservoir_html(kind, after, menu=False):
     label = {"foryou": "For you", "tasks": "Tasks", "routines": "Routines"}[kind]
-    count = {"foryou": 7, "tasks": 6, "routines": 6}[kind]
+    return ('<section class="reservoir" aria-label="%s"><div class="reservoir-reveal"><div class="reservoir-body" id="reservoir-list"><div class="reservoir-head"><span class="reservoir-title">%s</span>'
+            '<button class="icon-button reservoir-close" type="button" aria-label="Close %s" title="Close %s">%s</button></div><div class="reservoir-scroll"><ul class="reservoir-list" aria-label="%s">%s</ul></div></div></div></section>'
+            % (label, label, label, label, '<svg class="icon" viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 4v12M5 11l5 5 5-5" /></svg>', label, open_rows(kind, after, menu)))
+
+
+def open_page(kind, after, menu=False):
     comp = composer(you=7, tasks=6, routines=6, real=True).replace('data-kind="%s"' % {"foryou": "you"}.get(kind, kind), 'data-kind="%s" aria-pressed="true"' % {"foryou": "you"}.get(kind, kind), 1)
     body = (bubble("out", "What is left before the 0.43 release?", time="14:01")
             + bubble("in", "Two things: the changelog (#97, working) and your check of #96. Nothing else blocks the tag.", "manager", "14:02"))
-    res = ('<section class="reservoir" aria-label="%s"><div class="reservoir-reveal"><div class="reservoir-body" id="reservoir-list"><div class="reservoir-head"><span class="reservoir-title">%s</span>'
-           '<button class="icon-button reservoir-close" type="button" aria-label="Close %s" title="Close %s">%s</button></div><div class="reservoir-scroll"><ul class="reservoir-list" aria-label="%s">%s</ul></div></div></div></section>'
-           % (label, label, label, label, '<svg class="icon" viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 4v12M5 11l5 5 5-5" /></svg>', label, open_rows(kind, after, menu)))
-    return '<div class="page manager">%s<div class="chat"><div class="scroll chat-body">%s</div>%s%s</div></div>' % (bar("wsx", ""), body, res, comp)
+    return '<div class="page manager">%s<div class="chat"><div class="scroll chat-body">%s</div>%s%s</div></div>' % (bar("wsx", ""), body, reservoir_html(kind, after, menu), comp)
 
 
 OPEN = {"foryou": "For you", "foryou-menu": "For you, the more menu of a To check row open", "tasks": "Tasks", "routines": "Routines"}
@@ -500,3 +502,94 @@ for light in (False, True):
         for width, height in ((390, 844), (1280, 800)):
             (HERE / ("open-list-%s-%s-%d.html" % (name, tag, width))).write_text(
                 OPEN_WRAP % (' data-scheme="light"' if light else "", label, width, height, name, tag, name, tag))
+
+
+# ---- Task 530: the chat box's container floats like the Home bottom menu, before and after, side by side ----
+# before = app.css of main at the start of this task (git show, frozen as dock-before.css); after = the real app.css plus dock.css.
+# The owner (msg 5512): the box must not turn transparent; its container (.composer) should be like the Home bottom menu (.tabbar + .tabbar-pill).
+DOCK_BEFORE = "ea0120a9"
+(HERE / "dock-before.css").write_text(subprocess.run(["git", "show", "%s:crates/wsx-web/web/app.css" % DOCK_BEFORE], cwd=ROOT, check=True, capture_output=True, text=True).stdout)
+(HERE / "dock.css").write_text("""/* Task 530, after: the chat box's container floats like the Home bottom menu (build.py). Same pieces as .tabbar and .tabbar-pill (app.css):
+   .dock is the overlay (transparent, no pointer, over the foot of the chat); .composer is the card (the pill's surface, border, corner and shadow, so
+   nothing draws through it). The box inside rests on --color-raised, as the current tab does in the pill. The conversation scrolls behind the gap
+   around the card; the page script sets --dock-space (the dock's height) and the log and the open list pad their end by it, so the last message and
+   the last row rest above the card. A build maps .chat-body (the mock's log) to .log. Tokens only. */
+.chat { position: relative; }
+.chat-body { padding-bottom: calc(var(--space-4) + var(--dock-space, 0px)); }
+.chat > .reservoir { padding-bottom: var(--dock-space, 0px); }
+.dock {
+  position: absolute; z-index: 1; left: 0; right: 0; bottom: 0; pointer-events: none; display: flex; flex-direction: column; gap: var(--space-1);
+  padding: var(--space-1) var(--column-inset) calc(var(--space-2) + env(safe-area-inset-bottom));
+}
+.app .dock .composer {
+  pointer-events: auto; padding: var(--space-1); min-width: 0;
+  border: var(--border-width) solid var(--color-hairline); border-radius: calc(var(--radius-sheet) * 2); background: var(--color-surface);
+  box-shadow: 0 var(--space-1) var(--space-4) color-mix(in srgb, var(--color-overlay) 40%, transparent);
+}
+.app .dock .composer-row { background: var(--color-raised); border-color: transparent; border-radius: calc(var(--radius-sheet) * 2 - var(--space-1)); }
+.app .dock .composer:focus-within .composer-row { border-color: var(--color-accent); }
+/* A: the strip is the first row inside the card. B: the strip floats above it, its chips on the card's surface, the gaps take no pointer. */
+.app .dock .composer > .threads, .app[data-wide] .dock .composer > .threads { padding: var(--space-1) var(--space-2) var(--space-2); min-height: var(--size-key); background: none; border: 0; }
+.app .dock > .threads, .app[data-wide] .dock > .threads { padding: 0 var(--space-1); background: none; border: 0; pointer-events: none; }
+.dock > .threads > * { pointer-events: auto; }
+.dock > .threads .thread-chip { background: var(--color-surface); }
+""")
+
+TALK = (bubble("out", "What is left before the 0.43 release?", time="14:01")
+        + bubble("in", "Two things: the changelog (#97, working) and your check of #96. Nothing else blocks the tag.", "manager", "14:02")
+        + note('<span class="chip">#94</span> landed \u00b7 2 of 2 checks')
+        + bubble("out", "Start #99 after #97 lands, and tell me when the tag is ready.", time="14:05")
+        + bubble("in", "Done: #99 waits for #97. I will write here when the tag is ready.", "manager", "14:05")
+        + bubble("out", "Does #96 block the tag?", time="14:08")
+        + bubble("in", "No. Only the changelog does. You can check #96 after the tag.", "manager", "14:08")
+        + bubble("out", "Good. Write when #97 lands.", time="14:09")
+        + bubble("in", "I will. #97 is on its last check.", "manager", "14:09"))
+DOCK_SCRIPT = ('<script>addEventListener("load", () => { const chat = document.querySelector(".chat"), dock = chat.querySelector(".dock"), log = chat.querySelector(".chat-body");'
+               'const space = () => chat.style.setProperty("--dock-space", dock.offsetHeight + "px"); if (dock) { space(); new ResizeObserver(space).observe(dock) }'
+               'setTimeout(() => { log.scrollTop = log.scrollHeight - log.clientHeight - %d }, 100) })</script>')
+
+
+def dock_chat(after, strip_at=None, listing=False, up=0):
+    """after False: today's DOM (strip and composer in the flow). After: the strip inside or above the card, in .dock. up: how far the log is scrolled up from its end (px)."""
+    comp = composer(you=7 if listing else 3, tasks=6 if listing else 5, routines=6 if listing else 2, real=True)
+    if listing:
+        comp = comp.replace('data-kind="you"', 'data-kind="you" aria-pressed="true"', 1)
+    if not after:
+        foot = (reservoir_html("foryou", False) if listing else "") + (strip("Chat") if strip_at else "") + comp
+    else:
+        if strip_at == "inside":
+            comp = comp.replace('<div class="composer">', '<div class="composer">' + strip("Chat"), 1)
+        foot = (reservoir_html("foryou", False) if listing else "") + '<div class="dock">%s%s</div>' % (strip("Chat") if strip_at == "above" else "", comp)
+    return '<div class="page manager">%s<div class="chat"><div class="scroll chat-body">%s</div>%s</div></div>%s' % (bar("wsx", ""), TALK, foot, DOCK_SCRIPT % up)
+
+
+def dock_file(file, body, light, label, after):
+    page(file, body, light, label)
+    text = (HERE / file).read_text()
+    mock = '<link rel="stylesheet" href="mock.css">'
+    app = '<link rel="stylesheet" href="../../../crates/wsx-web/web/app.css">'
+    text = text.replace(mock, "", 1).replace(app, mock + (app if after else '<link rel="stylesheet" href="dock-before.css">') + ('<link rel="stylesheet" href="dock.css">' if after else ""), 1)
+    (HERE / file).write_text(text)
+
+
+# the pages: name -> (label, panes of (title, file part, after, strip), list open)
+BEFORE_T = "Before (app.css today)"
+DOCK = {
+    "chat": ("A chat, the box and its container", [(BEFORE_T, "before", False, None), ("After (floats; text scrolled a little)", "after", True, None)], False),
+    "foryou": ("A chat with the For you list open", [(BEFORE_T, "before", False, None), ("After (the last row rests above the card)", "after", True, None)], True),
+    "strip": ("A chat with the thread strip", [(BEFORE_T, "before", False, "Chat"), ("After A: strip inside the card", "inside", True, "inside"), ("After B: strip above the card", "above", True, "above")], False),
+}
+PANE = '<div>%s<iframe src="x-dock-%s-%s-%s.html"></iframe></div>'
+DOCK_WRAP = ('<!doctype html>\n<html lang="en"%s><head><meta charset="utf-8"><title>%s</title><style>body{margin:0;background:#888;font:600 14px system-ui;color:#fff}'
+             '.pair{display:flex;gap:20px;padding:10px}.pair div{display:flex;flex-direction:column;gap:6px;max-width:%dpx}iframe{border:0;width:%dpx;height:%dpx;background:#000}</style></head>'
+             '<body><div class="pair">%s</div></body></html>\n')
+for light in (False, True):
+    tag = "light" if light else "dark"
+    for name, (label, panes, listing) in DOCK.items():
+        for title, part, after, strip_at in panes:
+            dock_file("x-dock-%s-%s-%s.html" % (name, part, tag), dock_chat(after, strip_at, listing, up=70 if after else 0), light, "%s, %s" % (label, part), after)
+            if name == "strip":  # measured only: the same variants with the For you list open
+                dock_file("x-dock-strip-list-%s-%s.html" % (part, tag), dock_chat(after, strip_at, True), light, "%s, list open, %s" % (label, part), after)
+        for width, height in ((390, 844), (1280, 800)):
+            cells = "".join(PANE % (title, name, part, tag) for title, part, *_ in panes)
+            (HERE / ("dock-%s-%s-%d.html" % (name, tag, width))).write_text(DOCK_WRAP % (' data-scheme="light"' if light else "", label, width, width, height, cells))
