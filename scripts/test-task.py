@@ -7197,12 +7197,12 @@ def part_agents(created=None):
     assert json.loads(pi_limit.read_text())['since_ms'] == since, pi_limit.read_text()
     js('task', 'close', moved, '--discard')
     limit_file.unlink()
-    # ^ A close event names the task by its title (`PIERROR <file>`): both must be in the log before 37b, or a Pi turn there takes one along.
-    for closed in (away, moved):
-        wait(lambda: any(e['kind'] == 'message' and e.get('text', '').startswith('#%s closed' % closed) for e in manager_entries()), 'the close event of #%s' % closed, 60)
     for name in ('pi-fake.json', 'pi-paid.json', 'pi-other.json'):
         (agents / name).unlink(missing_ok=True)
     configure(CONFIG, 'no fallback')
+    # ^ A close event names the task by its title (`PIERROR <file>`), and the host writes it late: a Pi turn in 37b
+    # that takes it along refuses for that file. A turn on the own agent here takes the events that are in the log.
+    reply_to(js('task', 'say', 'STATUS drain the close events')['id'])
 
     # 37b. A failed sign-in moves the manager and a worker to the first usable fallback at once, and
     # both go home on the first success once the record on the account ends (docs/tasks.md "Agents").
