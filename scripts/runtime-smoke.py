@@ -770,8 +770,9 @@ def timed(command):
 
 
 lsof_text, lsof_ms = timed(["lsof", "-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-Fpgn"])
-ps_text, ps_ms = timed(["ps", "-axo", "pid=,pgid=,tty="])
-print(f"listener scan commands: lsof {lsof_ms} ms, ps {ps_ms} ms; attributed: {listener_attributed_record is not None}")
+ps_ms = timed(["ps", "-o", "pid=,pgid=,tty=", "-p", str(os.getpid())])[1]
+ps_all_ms = timed(["ps", "-axo", "pid=,pgid=,tty="])[1]
+print(f"listener scan commands: lsof {lsof_ms} ms, ps by pid {ps_ms} ms (wsxd), ps -ax {ps_all_ms} ms; attributed: {listener_attributed_record is not None}")
 if listener_attributed_record is None and listener_port is not None:
     mine, last = [], []
     for row in lsof_text.split():

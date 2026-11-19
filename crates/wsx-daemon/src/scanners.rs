@@ -81,12 +81,19 @@ pub(crate) fn spawn_port_scanner(daemon: &Arc<Daemon>) -> thread::JoinHandle<()>
             .collect::<HashMap<_, _>>();
         // ^ Both commands must finish: with the `ps` tty map missing, a listener that
         // left its pane's process group is missed and the scan would erase its port.
+        // `ps` names only the pane leaders and the listeners: `ps -ax` took 5.6 s on a
+        // host at load 50, `lsof` 136 ms (task 528).
         let detected = if process_groups.is_empty() {
             Some(HashMap::new())
         } else {
             scan_listening_ports()
                 .and_then(|listeners| {
-                    let terminals = scan_process_terminals()?;
+                    let wanted = process_groups
+                        .values()
+                        .copied()
+                        .chain(listeners.iter().map(|listener| listener.pid))
+                        .collect::<HashSet<_>>();
+                    let terminals = scan_process_terminals(&wanted)?;
                     Ok(attribute_listening_ports(
                         &process_groups,
                         &listeners,
@@ -161,10 +168,22 @@ pub(crate) fn scan_listening_ports() -> Result<Vec<ListenerProcess>, String> {
     Ok(parse_lsof_ports(&String::from_utf8_lossy(&bytes)))
 }
 
-pub(crate) fn scan_process_terminals() -> Result<HashMap<libc::pid_t, ProcessTerminal>, String> {
+/// The group and tty of each of `pids`. `ps` exits 1 when none of them lives (a listener that
+/// ended since `lsof`); its other failures still fail the scan.
+pub(crate) fn scan_process_terminals(
+    pids: &HashSet<libc::pid_t>,
+) -> Result<HashMap<libc::pid_t, ProcessTerminal>, String> {
+    if pids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let list = pids
+        .iter()
+        .map(|pid| pid.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     let mut command = Command::new("ps");
-    command.args(["-axo", "pid=,pgid=,tty="]);
-    let bytes = bounded_command_output("ps", command, false)?;
+    command.args(["-o", "pid=,pgid=,tty=", "-p", &list]);
+    let bytes = bounded_command_output("ps", command, true)?;
     Ok(parse_process_terminals(&String::from_utf8_lossy(&bytes)))
 }
 
