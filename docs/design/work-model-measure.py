@@ -8,17 +8,21 @@ ref: docs/design/work-model.md (the numbers and what they decide)
 --tasks keeps only the named tasks: the two arms of the experiment in work-model.md run it once each.
 
 Read-only. Prints totals only, never a message's text. Reads tasks/<project-id>/<n>/{task.json,log.jsonl},
-tasks/<project-id>/checks.jsonl, tasks/chats/<name>/log.jsonl and the daemon's state.json; `git worktree list`
-and `git log` in each project unless --no-git.
+tasks/<project-id>/{checks.jsonl,home.json}, tasks/chats/<name>/{log.jsonl,chat.json} and the daemon's
+state.json; `git log` and `git status` in each project and worktree unless --no-git.
 
 How it reads the records:
-- A task log's `message` has no author. An add is classed by the manager turn that contains its time (a chat
-  log's `delivered` to `reply`), and the turn by what started it: `owner`, another chat (`peer`), or `events`.
-  `outside` is an add in no manager turn: the owner's own add, or a turn the log does not hold.
+- A task log's `message` has no author. An add is classed by the turn of the task's own chat (the project's
+  home chat when the task names none) that contains its time (a chat log's `delivered` to `reply`), and the
+  turn by what started it: `owner`, another chat (`peer`), or `events`. The manager wrote every such add.
+  `outside` is an add in no turn of that chat: the owner's own add, another chat's add, or a turn the log
+  does not hold.
 - First result = the task's first `revision`. An add after it from an owner turn or outside is `owner add`
   (a correction or a follow-up: the records cannot tell which); from an event turn it is `sent back`.
 - A successor of landed task A is a task of the same project created within 72 h of A's land that names
-  `#A` in its prompt and shares a changed path or a `--files` glob with it.
+  `#A` in its prompt and shares a changed path or a `--files` glob with it. The 14-day line drops the 72 h.
+- Two chats are of different projects when their `chat.json` `repos` share none. The chat lines count every
+  project, also under --project. A `sent` reply names no message: it answers the newest ask still open.
 - Repeated text = 5-word runs of a prompt that the same chat already wrote to a worker, or that the owner
   wrote in that chat, in the 14 days before. A lower bound: the owner writes Korean, prompts are English.
 """
@@ -33,25 +37,25 @@ SINCE = int(D.datetime.strptime(arg('--since', '2000-01-01'), '%Y-%m-%d').astime
 ONLY = arg('--project', None)
 NAMED = set(filter(None, arg('--tasks', '').split(',')))
 GIT = '--no-git' not in ARGS
-H, DAY = 3600_000, 86_400_000
+H, DAY, INF = 3600_000, 86_400_000, 1 << 62
+OWNER = ('owner', 'outside')  # ^ the add classes counted as the owner's
 
 def events(path):  # ^ a torn or foreign line is skipped, as in task-time-cost-measure.py
     out = []
-    for name in (path.replace('log.jsonl', 'log.1.jsonl'), path):
-        if name != path and name == path or not os.path.exists(name):
-            continue
-        for line in open(name, errors='replace'):
-            try:
-                out.append(json.loads(line))
-            except ValueError:
-                pass
+    for name in dict.fromkeys((path.replace('log.jsonl', 'log.1.jsonl'), path)):  # ^ the rolled log first
+        if os.path.exists(name):
+            for line in open(name, errors='replace'):
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    pass
     return out
 def med(xs):
     xs = [x for x in xs if x is not None]
     return statistics.median(xs) if xs else float('nan')
-def p90(xs):
+def q(xs, f=.9):
     xs = sorted(x for x in xs if x is not None)
-    return xs[int(len(xs) * .9)] if xs else float('nan')
+    return xs[min(len(xs) - 1, int(len(xs) * f))] if xs else float('nan')
 def pct(a, b):
     return f'{100 * a / b:.0f}%' if b else '-'
 def runs(text, n=5):
@@ -90,24 +94,25 @@ for path in glob.glob(os.path.join(TASKS, 'chats', '*', 'log.jsonl')):
             turns.append((start[0], e['unix_ms'], chat, start[1], start[2])); start = None
         elif k == 'sent':
             sent.append((e['unix_ms'], chat, str(e.get('to', '')).split(':')[-1], bool(e.get('reply'))))
-turns.sort()
-STARTS = [t[0] for t in turns]
-def turn_at(ms, chat):
-    hit = None
-    for t in turns[max(0, bisect.bisect_right(STARTS, ms + 2000) - 60):bisect.bisect_right(STARTS, ms + 2000)]:
-        if t[0] - 2000 <= ms <= t[1] + 5000:
-            if t[2] == chat:
-                return t
-            hit = hit or t
-    return hit
+by_chat = C.defaultdict(list)
+for turn in sorted(turns):
+    by_chat[turn[2]].append(turn)
+STARTS = {chat: [t[0] for t in ts] for chat, ts in by_chat.items()}
+def turn_at(ms, chat):  # ^ a chat's turns are serial: only the last one started by then can hold ms
+    i = bisect.bisect_right(STARTS.get(chat, []), ms + 2000)
+    return by_chat[chat][i - 1] if i and ms <= by_chat[chat][i - 1][1] + 5000 else None
 
 # --- tasks
-tasks, by_key, chat_home = [], {}, {}
-for path in glob.glob(os.path.join(TASKS, '*', 'home.json')):
+tasks, by_key, chat_repos, home_chat = [], {}, {}, {}
+for path in glob.glob(os.path.join(TASKS, 'chats', '*', 'chat.json')) + glob.glob(os.path.join(TASKS, '*', 'home.json')):
     try:
-        chat_home[json.load(open(path))['chat']] = path.split(os.sep)[-2]
+        rec, name = json.load(open(path)), path.split(os.sep)[-2]
+        if path.endswith('chat.json'): chat_repos[name] = set(rec.get('repos') or [])
+        else: home_chat[name] = rec['chat']
     except (ValueError, KeyError):
         pass
+foreign = lambda chat, pid: chat in chat_repos and pid not in chat_repos[chat]  # ^ a chat that does not hold the project
+apart = lambda a, b: not chat_repos.get(a, set()) & chat_repos.get(b, set())    # ^ two chats that share no project
 for path in sorted(glob.glob(os.path.join(TASKS, '*', '[0-9]*', 'task.json'))):
     try:
         rec = json.load(open(path))
@@ -120,7 +125,8 @@ for path in sorted(glob.glob(os.path.join(TASKS, '*', '[0-9]*', 'task.json'))):
              by=by or 'none', small=bool(rec.get('small')), parent=rec.get('parent'), state=rec['state'], path=rec.get('working_copy'),
              main=rec.get('project_path'), created=rec['created_unix_ms'], paths=set(rec.get('paths') or []), files=rec.get('files') or [],
              adapter=rec.get('adapter'), revs=[], adds=[], results=[], landed=None, closed=None, discarded=False, prompt='',
-             rotated=0, conflicts=0, holds=[], hand=0, trial=0, asks=0, cost=0)
+             holds=[], n=C.Counter(), cost=0)
+    talks = t['chat'] or home_chat.get(t['pid'])
     for e in events(os.path.join(os.path.dirname(path), 'log.jsonl')):
         k, ms = e.get('kind'), e.get('unix_ms', 0)
         if k == 'revision': t['revs'].append(ms)
@@ -132,22 +138,18 @@ for path in sorted(glob.glob(os.path.join(TASKS, '*', '[0-9]*', 'task.json'))):
         elif k == 'message':
             if e.get('mode') == 'prompt': t['prompt'] = e.get('text', '')
             else:
-                turn = turn_at(ms, t['chat'])
+                turn = turn_at(ms, talks)
                 t['adds'].append((ms, turn[3] if turn else 'outside', e.get('text', ''), (ms - turn[0]) / 60000 if turn else None))
         elif k == 'landed': t['landed'] = ms
         elif k == 'closed': t['closed'], t['discarded'] = ms, bool(e.get('discarded'))
-        elif k == 'rotated': t['rotated'] += 1
-        elif k == 'conflict': t['conflicts'] += 1
         elif k == 'hold': t['holds'].append(ms)
-        elif k in ('hand', 'handback'): t['hand'] += 1
-        elif k == 'trial': t['trial'] += 1
-        elif k == 'blocked': t['asks'] += 1
-    born = turn_at(t['created'], t['chat'])
+        else: t['n'][k] += 1  # ^ read below: rotated, conflict, hand, trial, preview, blocked
+    born = turn_at(t['created'], talks)
     t['born'], t['asker'] = (born[3], born[4]) if born else ('outside', None)
     t['first'] = t['revs'][0] if t['revs'] else None
     t['pre'] = [a for a in t['adds'] if not t['first'] or a[0] < t['first']]
     t['post'] = [a for a in t['adds'] if t['first'] and a[0] >= t['first']]
-    t['owner_add'] = any(a[1] in ('owner', 'outside') for a in t['post'])
+    t['owner_add'] = any(a[1] in OWNER for a in t['post'])
     t['sent_back'] = sum(a[1] == 'events' for a in t['post'])
     t['peer_add'] = any(a[1] == 'peer' for a in t['post'])
     t['life'] = (t['landed'] - t['created']) / 60000 if t['landed'] else None
@@ -161,20 +163,24 @@ def meets(a, b):
 landed = sorted((t for t in tasks if t['landed']), key=lambda t: t['landed'])
 inside = lambda a: {p for p in a['paths'] if any(fnmatch.fnmatch(p, g) for g in a['files'])}  # ^ changed paths in its own --files
 for b in tasks:
-    b['pred'], b['open_with'], b['loose'] = None, 0, set()
+    b['pred'] = None
     named = {int(n) for n in re.findall(r'#(\d{1,4})\b', b['prompt'])}
-    near = [a for a in landed if a['pid'] == b['pid'] and a['id'] != b['id'] and 0 <= b['created'] - a['landed'] <= 72 * H]
-    day = [a for a in near if b['created'] - a['landed'] <= 24 * H and a['chat'] == b['chat']]
+    since_land = lambda a: b['created'] - a['landed']
+    far = [a for a in landed if a['pid'] == b['pid'] and a['id'] != b['id'] and 0 <= since_land(a) <= 14 * DAY]
+    near = [a for a in far if since_land(a) <= 72 * H]
+    day = [a for a in near if since_land(a) <= 24 * H and a['chat'] == b['chat']]
     hit = lambda paths: any(fnmatch.fnmatch(p, g) for g in b['files'] for p in paths)
     b['loose'] = {k for k, v in [('names', any(a['id'] in named for a in near)), ('path', any(meets(a, b) for a in near)), ('files', bool(b['files'])),
                                  ('any path, 24 h', any(hit(a['paths']) for a in day)), ('own area, 24 h', any(hit(inside(a)) for a in day)),
                                  ('own area and named, 24 h', any(hit(inside(a)) and a['id'] in named for a in day))] if v}
-    strict = [a for a in near if a['id'] in named and meets(a, b)]
+    wide = [a for a in far if a['id'] in named and meets(a, b)]
+    b['wide'] = since_land(wide[-1]) / H if wide else None
+    strict = [a for a in wide if a in near]
     if strict:
         b['pred'] = strict[-1]
         strict[-1].setdefault('succ', []).append(b)
     b['open_with'] = sum(1 for a in tasks if a is not b and a['pid'] == b['pid'] and a['chat'] == b['chat'] and a['created'] < b['created']
-                         and (a['closed'] or a['landed'] or 1 << 62) > b['created'])
+                         and (a['closed'] or a['landed'] or INF) > b['created'])
 tasks = [t for t in tasks if t['created'] >= SINCE and (not NAMED or f"{t['project']}#{t['id']}" in NAMED)]
 if not tasks:
     sys.exit('no task matches')
@@ -201,11 +207,11 @@ def span(t, lo, hi):  # ^ the worker turns between two times: dollars, model min
 def row(name, ts):
     n = len(ts)
     if not n:
-        return [name, 0] + ['-'] * 10
+        return [name, 0] + ['-'] * (len(HEAD) - 2)
     done = [t for t in ts if t['first']]
-    return [name, n, pct(sum(1 for t in ts if t['landed']), n), med([len(t['revs']) for t in ts]), p90([len(t['revs']) for t in ts]),
+    return [name, n, pct(sum(1 for t in ts if t['landed']), n), med([len(t['revs']) for t in ts]), q([len(t['revs']) for t in ts]),
             f"{sum(len(t['pre']) for t in ts) / n:.2f}", pct(sum(t['owner_add'] for t in done), len(done)),
-            pct(sum(1 for t in done if t['sent_back']), len(done)), f"{med([t['life'] for t in ts]):.0f}", f"{p90([t['life'] for t in ts]):.0f}",
+            pct(sum(1 for t in done if t['sent_back']), len(done)), f"{med([t['life'] for t in ts]):.0f}", f"{q([t['life'] for t in ts]):.0f}",
             f"{med([t['cost'] / 1e6 for t in ts]):.2f}", f"{sum(t['cost'] for t in ts) / 1e6:.0f}"]
 HEAD = ['tasks', 'n', 'landed', 'revs p50', 'p90', 'adds before 1st result', 'owner add after', 'sent back', 'min to land p50', 'p90', '$ p50', '$ sum']
 
@@ -217,16 +223,16 @@ done = [t for t in tasks if t['first']]
 print(f"adds: {sum(len(t['adds']) for t in tasks)} in all, {sum(len(t['pre']) for t in tasks)} before the first result;"
       f" after it by turn: {dict(C.Counter(a[1] for t in tasks for a in t['post']))}")
 print(f"adds before the first result by turn: {dict(C.Counter(a[1] for t in tasks for a in t['pre']))};"
-      f" owner's message to the add it caused, min p50 {med([a[3] for t in tasks for a in t['adds'] if a[1] == 'owner']):.1f} p90 {p90([a[3] for t in tasks for a in t['adds'] if a[1] == 'owner']):.1f}")
+      f" owner's message to the add it caused, min p50 {med([a[3] for t in tasks for a in t['adds'] if a[1] == 'owner']):.1f} p90 {q([a[3] for t in tasks for a in t['adds'] if a[1] == 'owner']):.1f}")
 print(f"open now: {dict(C.Counter(t['project'] for t in tasks if t['state'] not in ('landed', 'closed')))}")
 print(f"send-back rounds per task with a first result: mean {sum(t['sent_back'] for t in done) / max(len(done), 1):.2f}, tasks with 2+: {sum(1 for t in done if t['sent_back'] >= 2)}")
 
 size = lambda t: len(t['prompt'].encode())
 table('T2 prompt size and repeated text', ['tasks', 'n', 'prompt B p50', 'p90', 'adds before 1st result B p50 (when any)', 'tasks with such adds',
                                            'repeats own earlier text p50', 'p90', "repeats owner's text p50", 'p90'],
-      [[name, len(ts), med([size(t) for t in ts]), p90([size(t) for t in ts]), med([sum(len(a[2].encode()) for a in t['pre']) for t in ts if t['pre']]),
-        pct(sum(1 for t in ts if t['pre']), len(ts)), pct(med([t.get('again') for t in ts]), 1), pct(p90([t.get('again') for t in ts]), 1),
-        pct(med([t.get('owner_said') for t in ts]), 1), pct(p90([t.get('owner_said') for t in ts]), 1)]
+      [[name, len(ts), med([size(t) for t in ts]), q([size(t) for t in ts]), med([sum(len(a[2].encode()) for a in t['pre']) for t in ts if t['pre']]),
+        pct(sum(1 for t in ts if t['pre']), len(ts)), pct(med([t.get('again') for t in ts]), 1), pct(q([t.get('again') for t in ts]), 1),
+        pct(med([t.get('owner_said') for t in ts]), 1), pct(q([t.get('owner_said') for t in ts]), 1)]
        for name, ts in [('all', tasks), ('born in an owner turn', [t for t in tasks if t['born'] == 'owner']),
                         ('born in an event turn', [t for t in tasks if t['born'] == 'events']), ('successor', [t for t in tasks if t['pred']])]])
 firsts = [t['results'][0][4] for t in tasks if t['results']]
@@ -245,7 +251,7 @@ for path in glob.glob(os.path.join(TASKS, '*', 'checks.jsonl')):
 reverts = 0
 if GIT:
     for main in {t['main'] for t in tasks if t['main'] and os.path.isdir(t['main'])}:
-        out = subprocess.run(['git', '-C', main, 'log', '--oneline', '-i', '--grep=^revert', f'--since={max(SINCE, 1) // 1000}'], capture_output=True, text=True)
+        out = subprocess.run(['git', '-C', main, 'log', '--oneline', '-i', '--grep=^revert', f'--since={SINCE // 1000}'], capture_output=True, text=True)
         reverts += len(out.stdout.splitlines())
 print('\n## T3 the first result missed, or the work was redone')
 print(f"tasks with a first result {len(done)}: owner add after it {sum(t['owner_add'] for t in done)} ({pct(sum(t['owner_add'] for t in done), len(done))}),"
@@ -256,11 +262,16 @@ print(f"To check items by last state: {dict(checks)}")
 print(f"landed tasks {sum(1 for t in tasks if t['landed'])}: with a successor in 72 h {sum(1 for t in tasks if t.get('succ'))};"
       f" successors {sum(1 for t in tasks if t['pred'])} (born in: {dict(C.Counter(t['born'] for t in tasks if t['pred']))});"
       f" looser: names a task landed in 72 h {sum('names' in t['loose'] for t in tasks)}, shares a path with one {sum('path' in t['loose'] for t in tasks)}")
-print(f"new tasks with --files {sum('files' in t['loose'] for t in tasks)}; their --files meet a task of the same chat landed in the 24 h before:"
-      f" any changed path {sum('any path, 24 h' in t['loose'] for t in tasks)}, a changed path inside that task's own --files {sum('own area, 24 h' in t['loose'] for t in tasks)},"
-      f" the same and the prompt names it {sum('own area and named, 24 h' in t['loose'] for t in tasks)}")
+loose = lambda k: sum(k in t['loose'] for t in tasks)
+of_files = lambda k: f"{loose(k)} ({pct(loose(k), loose('files'))})"
+print(f"new tasks with --files {loose('files')}; their --files meet a task of the same chat landed in the 24 h before:"
+      f" any changed path {of_files('any path, 24 h')}, a changed path inside that task's own --files {of_files('own area, 24 h')},"
+      f" the same and the prompt names it {of_files('own area and named, 24 h')}")
 gap = [(t['created'] - t['pred']['landed']) / H for t in tasks if t['pred']]
-print(f"hours from a land to its successor's start: p50 {med(gap):.1f} p75 {(sorted(gap) or [float('nan')])[int(len(gap) * .75) if gap else 0]:.1f} p90 {p90(gap):.1f}; within 24 h {pct(sum(g <= 24 for g in gap), len(gap))}")
+wide = [t['wide'] for t in tasks if t['wide'] is not None]
+print(f"hours from a land to its successor's start: p50 {med(gap):.1f} p75 {q(gap, .75):.1f} p90 {q(gap):.1f}; within 24 h {pct(sum(g <= 24 for g in gap), len(gap))}")
+print(f"the same rule with 14 days in place of 72 h: {len(wide)} tasks, hours p50 {med(wide):.1f} p90 {q(wide):.1f};"
+      f" within 24 h {pct(sum(g <= 24 for g in wide), len(wide))}, within 72 h {pct(sum(g <= 72 for g in wide), len(wide))}")
 print(f"commits whose subject starts with 'revert': {reverts if GIT else 'not read'}")
 
 kinds = [('small', lambda t: t['small']), ('full', lambda t: not t['small']), ('1 revision', lambda t: len(t['revs']) == 1),
@@ -271,33 +282,37 @@ kinds = [('small', lambda t: t['small']), ('full', lambda t: not t['small']), ('
          ('2-4 open', lambda t: 2 <= t['open_with'] <= 4), ('5+ open', lambda t: t['open_with'] >= 5), ('child (--into)', lambda t: t['parent'])]
 table('T4 task kinds', HEAD, [row(name, [t for t in tasks if f(t)]) for name, f in kinds])
 table('T4b by adapter', HEAD, [row(a or 'none', [t for t in tasks if t['adapter'] == a]) for a, _ in C.Counter(t['adapter'] for t in tasks).most_common()])
-cross = [t for t in tasks if t['born'] == 'peer' and t['asker'] and chat_home.get(t['asker']) not in (None, t['pid'])]
-other = [t for t in tasks if t['chat'] and chat_home.get(t['chat']) not in (None, t['pid'])]
+cross = [t for t in tasks if t['born'] == 'peer' and foreign(t['asker'], t['pid'])]
+other = [t for t in tasks if foreign(t['chat'], t['pid'])]
 since = lambda rows: [r for r in rows if r[0] >= SINCE]
-pairs = [s for s in since(sent) if chat_home.get(s[1]) != chat_home.get(s[2])]
-waits = []
-for ms, chat, who, is_reply in since(peer_in):
-    if not is_reply:
-        back = [s[0] for s in sent if s[1] == chat and s[2] == who and s[3] and s[0] > ms]
-        waits.append((min(back) - ms) / 60000 if back else None)
+pairs = [s for s in since(sent) if apart(s[1], s[2])]
+talk, waits = C.defaultdict(list), []
+for ms, chat, who, is_reply in [r for r in since(peer_in) if not r[3]] + [s for s in sent if s[3]]:  # ^ asks received, replies sent back
+    if apart(chat, who):
+        talk[chat, who].append((ms, is_reply))
+for rows in talk.values():  # ^ a `sent` reply names no message: it answers the newest ask still open
+    asks = []
+    for ms, is_reply in sorted(rows):
+        if not is_reply: asks.append(ms)
+        elif asks: waits.append((ms - asks.pop()) / 60000)
+    waits += [None] * len(asks)
 told = [any(s[1] == t['chat'] and s[2] == t['asker'] and 0 <= s[0] - t['landed'] <= H for s in sent) for t in cross if t['landed']]
 table('T4c across projects', HEAD, [row("born in another project's manager's turn", cross), row("created by another project's chat", other)])
 print(f"messages between chats of different projects: {len(pairs)} sent, {sum(s[3] for s in pairs)} of them replies;"
-      f" asks received {len(waits)}, answered with a reply {sum(1 for w in waits if w is not None)}, min to the reply p50 {med(waits):.1f} p90 {p90(waits):.0f};"
-      f" landed tasks another project's manager asked for {len(told)}, a message went back to the asker within 1 h of the land for {sum(told)}")
+      f" asks received {len(waits)}, answered with a reply {sum(1 for w in waits if w is not None)}, min to the reply p50 {med(waits):.1f} p90 {q(waits):.0f};"
+      f" landed tasks another project's manager asked for {len(told)}, any message went to the asker within 1 h of the land for {sum(told)} (an upper bound: the message need not be about the task)")
 
 kept, fresh, any_first = C.defaultdict(list), [], []
 for t in tasks:
-    marks = t['revs'] + [1 << 62]
+    marks = t['revs'] + [INF, INF]
     for i, lo in enumerate(t['revs']):
         asks = [a for a in t['post'] if lo <= a[0] < marks[i + 1]]
-        if asks and marks[i + 1] < 1 << 62:
-            nxt = [a for a in t['post'] if marks[i + 1] <= a[0] < (marks + [1 << 62])[i + 2]]
-            kind = 'owner' if asks[0][1] in ('owner', 'outside') else 'manager' if asks[0][1] == 'events' else 'peer'
-            kept[kind].append(((marks[i + 1] - asks[0][0]) / 60000, *span(t, asks[0][0], marks[i + 1]), any(a[1] in ('owner', 'outside') for a in nxt)))
+        if asks and marks[i + 1] < INF:
+            nxt = [a for a in t['post'] if marks[i + 1] <= a[0] < marks[i + 2]]
+            kind = 'owner' if asks[0][1] in OWNER else 'manager' if asks[0][1] == 'events' else 'peer'
+            kept[kind].append(((marks[i + 1] - asks[0][0]) / 60000, *span(t, asks[0][0], marks[i + 1]), any(a[1] in OWNER for a in nxt)))
     if t['first']:
-        one = ((t['first'] - t['created']) / 60000, *span(t, t['created'], t['first']),
-               any(a[1] in ('owner', 'outside') and a[0] < (t['revs'] + [1 << 62])[1] for a in t['post']))
+        one = ((t['first'] - t['created']) / 60000, *span(t, t['created'], t['first']), any(a[1] in OWNER and a[0] < marks[1] for a in t['post']))
         (fresh if t['pred'] else any_first).append(one)
 def arm(name, xs):
     return [name, len(xs), f'{med([x[0] for x in xs]):.0f}', f'{med([x[2] for x in xs]):.1f}', f'{med([x[1] for x in xs]):.2f}', f'{med([x[3] for x in xs]):.0f}',
@@ -313,21 +328,21 @@ for t in tasks:
             g = (ms - u.get('duration_ms', 0) - prev) / 60000
             gaps['under 5 min' if g < 5 else '5-60 min' if g < 60 else '1-24 h' if g < 1440 else 'over 24 h'].append((u.get('cost_micro_usd', 0) / 1e6, u.get('context_tokens')))
 table('T5b a turn an add started, by the pause before it', ['pause', 'turns', '$ p50', '$ p90', 'context tokens p50'],
-      [[g, len(v), f'{med([x[0] for x in v]):.2f}', f'{p90([x[0] for x in v]):.2f}', f'{med([x[1] for x in v]):.0f}'] for g, v in gaps.items()])
-rot = [t for t in tasks if t['rotated']]
+      [[g, len(v), f'{med([x[0] for x in v]):.2f}', f'{q([x[0] for x in v]):.2f}', f'{med([x[1] for x in v]):.0f}'] for g, v in gaps.items()])
+rot = [t for t in tasks if t['n']['rotated']]
 peak = [max((u.get('context_tokens') or 0 for *_, u in t['results']), default=0) for t in tasks if t['results']]
-print(f"worker conversations replaced by a fresh one (`rotated`): {sum(t['rotated'] for t in tasks)} times in {len(rot)} tasks ({pct(len(rot), len(tasks))});"
+print(f"worker conversations replaced by a fresh one (`rotated`): {sum(t['n']['rotated'] for t in tasks)} times in {len(rot)} tasks ({pct(len(rot), len(tasks))});"
       f" among 4+ revision tasks {pct(sum(1 for t in rot if len(t['revs']) >= 4), sum(1 for t in tasks if len(t['revs']) >= 4))};"
-      f" peak context tokens p50 {med(peak):.0f} p90 {p90(peak):.0f}")
+      f" peak context tokens p50 {med(peak):.0f} p90 {q(peak):.0f}")
 long = [t for t in tasks if len(t['revs']) >= 4]
-print(f"4+ revision tasks with an owner add after a result: {pct(sum(t['owner_add'] for t in long if t['rotated']), sum(1 for t in long if t['rotated']))} of the rotated,"
-      f" {pct(sum(t['owner_add'] for t in long if not t['rotated']), sum(1 for t in long if not t['rotated']))} of the others")
+print(f"4+ revision tasks with an owner add after a result: {pct(sum(t['owner_add'] for t in long if t['n']['rotated']), sum(1 for t in long if t['n']['rotated']))} of the rotated,"
+      f" {pct(sum(t['owner_add'] for t in long if not t['n']['rotated']), sum(1 for t in long if not t['n']['rotated']))} of the others")
 wait = lambda ts: med([(t['landed'] - max(r[0] for r in t['results'] if r[0] <= t['landed'])) / 60000 for t in ts if t['landed'] and any(r[0] <= t['landed'] for r in t['results'])])
 print(f"last worker result to land, min p50: held {wait([t for t in tasks if t['holds']]):.0f} (n {sum(1 for t in tasks if t['holds'] and t['landed'])}),"
       f" not held {wait([t for t in tasks if not t['holds']]):.0f};"
       f" land to copy removed, min p50 {med([(t['closed'] - t['landed']) / 60000 for t in tasks if t['landed'] and t['closed']]):.1f}")
-print(f"tasks with hand {sum(1 for t in tasks if t['hand'])}, with trial {sum(1 for t in tasks if t['trial'])}, with a conflict {sum(1 for t in tasks if t['conflicts'])},"
-      f" where the worker asked (`blocked`) {sum(1 for t in tasks if t['asks'])}")
+had = lambda k: sum(1 for t in tasks if t['n'][k])
+print(f"tasks with hand {had('hand')}, with preview {had('preview')}, with trial {had('trial')}, with a conflict {had('conflict')}, where the worker asked (`blocked`) {had('blocked')}")
 
 print('\n## T6 worktrees and sessions now')
 try:
@@ -339,7 +354,7 @@ if daemon:
     name = {p['id']: p for p in daemon['projects']}
     tree = {w['id']: w for w in daemon['worktrees']}
     open_copy = {t['path'] for t in by_key.values() if t['state'] not in ('landed', 'closed')}
-    rows, now = C.defaultdict(lambda: C.Counter()), D.datetime.now().timestamp()
+    rows, now = C.defaultdict(C.Counter), D.datetime.now().timestamp()
     ages = C.defaultdict(list)
     for w in daemon['worktrees']:
         p = name[w['project_id']]
@@ -366,7 +381,7 @@ print(f"task copies removed at close: {sum(1 for t in tasks if t['closed'])}; `p
 print("""
 ## T7 what these records cannot show
 - The owner's verdict on quality. An owner add after a result is a correction or a new wish; a To check state is the nearest record of a verdict.
-- Who wrote an add. The class comes from the manager turn around it; an owner's own add and a lost turn both read `outside`.
+- Who wrote an add. The class comes from the turn of the task's chat around it; the owner's own add, another chat's add and a lost turn all read `outside`.
 - Context restated in other words or in another language. The repeated-text share counts exact 5-word runs only.
 - Why a result missed: thin prompt, a wrong decision or a weak model look the same here.
 - Work in sessions the owner opened by hand: no record but the sessions that exist now; no history of deleted worktrees before the prune notices.
