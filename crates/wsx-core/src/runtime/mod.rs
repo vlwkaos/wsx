@@ -9,6 +9,7 @@ mod domain;
 mod protocol;
 mod review;
 
+pub(crate) use client::lost_to_handoff;
 pub use client::{
     ensure_available, ensure_background_available, lifecycle_marker_path, new_client_id,
     pending_upgrade, process_identity, recover_daemon, restart_daemon, upgrade_failure,

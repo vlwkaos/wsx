@@ -1341,7 +1341,7 @@ fn restart_with_binary(client: &Client, binary: &Path) -> io::Result<DaemonResta
     }
 }
 
-fn lost_to_handoff(error: &io::Error) -> bool {
+pub(crate) fn lost_to_handoff(error: &io::Error) -> bool {
     matches!(
         error.kind(),
         io::ErrorKind::NotFound

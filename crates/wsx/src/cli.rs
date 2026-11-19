@@ -287,7 +287,12 @@ pub fn run(cmd: Command) -> Result<()> {
         Command::Daemon { subcommand } => match subcommand {
             DaemonCmd::Status { json } => cmd_runtime_status(json),
             DaemonCmd::Stop { force, json } => cmd_daemon_stop(force, json),
-            DaemonCmd::Restart { if_needed, json } => cmd_daemon_restart(if_needed, json),
+            DaemonCmd::Restart {
+                if_needed,
+                close_exited,
+                json,
+            } => cmd_daemon_restart(if_needed, close_exited, json),
+            DaemonCmd::CloseExited { json } => cmd_daemon_close_exited(json),
             DaemonCmd::Recover => cmd_daemon_recover(),
         },
         Command::Routine { subcommand } => cmd_routine(subcommand),

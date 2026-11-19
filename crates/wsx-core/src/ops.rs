@@ -956,6 +956,36 @@ pub fn halt_project_sessions(client: &Client, project: &Path) -> Result<usize> {
     Ok(sessions.len())
 }
 
+/// Closes every session whose panes have all exited and returns how many it closed. A session
+/// with a live pane stays: a conflict (it moved since the snapshot, so it may run again) is skipped.
+/// ref: docs/daemon-live-upgrade.md "Restart and stop"
+pub fn close_exited_sessions(client: &Client) -> Result<usize> {
+    let snapshot = runtime_snapshot(client)?;
+    let mut closed = 0;
+    for session in &snapshot.sessions {
+        let mut panes = snapshot
+            .panes
+            .iter()
+            .filter(|pane| pane.session_id == session.id)
+            .peekable();
+        if panes.peek().is_none() || panes.any(|pane| !pane.exited) {
+            continue;
+        }
+        let sent = match client.call(&Request::SessionClose {
+            session_id: session.id,
+            expected_revision: session.revision,
+        }) {
+            Ok(sent) => sent,
+            // ^ A deferred handoff starts by itself once the pane count is low enough, and the
+            // daemon then closes the connection: the rest is the successor's, and a run again closes it.
+            Err(error) if crate::runtime::lost_to_handoff(&error) => break,
+            Err(error) => return Err(error.into()),
+        };
+        closed += usize::from(matches!(sent, Response::Ack { .. }));
+    }
+    Ok(closed)
+}
+
 /// Restart one exited pane with its own saved command.
 /// ^ [[Session Model]] Only an exited pane is restartable, so this never interrupts live work.
 pub fn restart_session(client: &Client, pane_id: PaneId) -> Result<u64> {

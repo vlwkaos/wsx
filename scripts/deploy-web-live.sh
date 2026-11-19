@@ -64,6 +64,15 @@ echo "wsx-web restarts after the deploy is recorded; see $log"
 
 # ^ wsx-web never replaces wsxd, and a client replaces it only for a newer daemon revision, so the
 # deploy hands off itself and fails with the daemon's reason when the live wsxd stays on an older
-# build (docs/daemon-live-upgrade.md "Restart and stop"). The unset env is the web server's (switch.sh).
+# build (docs/daemon-live-upgrade.md "Restart and stop"). A wsxd from before the live-pane rule
+# refuses for its exited panes: --close-exited closes those sessions once and asks again. The unset
+# env is the web server's (switch.sh). The log shows the closed count, the pid and the ptmx fds.
 step "wsxd handoff"
-env -u XDG_STATE_HOME -u WSX_SOCKET "$live/wsx" daemon restart --if-needed
+wsxd_fds() {
+  sock=$(env -u XDG_STATE_HOME -u WSX_SOCKET "$live/wsx" daemon status | sed -n 's/^Socket: //p')
+  pid=$(lsof -a -c wsxd -U -Fpn 2>/dev/null | awk -v s="$sock" '/^p/{p=substr($0,2)} index($0,"n" s)==1 {print p; exit}')
+  echo "wsxd $1: pid ${pid:-unknown}, $([ -n "$pid" ] && lsof -p "$pid" 2>/dev/null | grep -c ptmx || echo unknown) ptmx fds"
+}
+wsxd_fds before
+env -u XDG_STATE_HOME -u WSX_SOCKET "$live/wsx" daemon restart --if-needed --close-exited
+wsxd_fds after

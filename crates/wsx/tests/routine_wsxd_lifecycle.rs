@@ -62,6 +62,45 @@ impl Install {
         }
     }
 
+    /// A git project `p` with one commit, registered in wsx's config.
+    fn git_project(&self) {
+        let install = self;
+        // ^ The config folder is `Library/Application Support/wsx` on macOS, `$XDG_CONFIG_HOME/wsx` elsewhere.
+        for folder in ["home/Library/Application Support/wsx", "home/config/wsx"] {
+            fs::create_dir_all(install.root.join(folder)).unwrap();
+            fs::write(
+                install.root.join(folder).join("config-v2.toml"),
+                format!(
+                    "resume_agents_on_restore = false\n[[projects]]\nname = \"p\"\npath = {:?}\n",
+                    install.project
+                ),
+            )
+            .unwrap();
+        }
+        for args in [
+            &["init", "-q", "."][..],
+            &[
+                "-c",
+                "user.email=a@b",
+                "-c",
+                "user.name=a",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "i",
+            ],
+        ] {
+            let git = Command::new("git")
+                .args(args)
+                .current_dir(&install.project)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .status()
+                .unwrap();
+            assert!(git.success(), "git {args:?}");
+        }
+    }
+
     fn wsx(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_wsx"))
             .args(args)
@@ -271,40 +310,7 @@ const SAVED_SESSIONS: usize = 30;
 #[test]
 fn a_restart_asked_while_wsxd_recovers_its_sessions_waits_and_answers_restarted() {
     let install = Install::new();
-    // ^ The config folder is `Library/Application Support/wsx` on macOS, `$XDG_CONFIG_HOME/wsx` elsewhere.
-    for folder in ["home/Library/Application Support/wsx", "home/config/wsx"] {
-        fs::create_dir_all(install.root.join(folder)).unwrap();
-        fs::write(
-            install.root.join(folder).join("config-v2.toml"),
-            format!(
-                "resume_agents_on_restore = false\n[[projects]]\nname = \"p\"\npath = {:?}\n",
-                install.project
-            ),
-        )
-        .unwrap();
-    }
-    for args in [
-        &["init", "-q", "."][..],
-        &[
-            "-c",
-            "user.email=a@b",
-            "-c",
-            "user.name=a",
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            "i",
-        ],
-    ] {
-        let git = Command::new("git")
-            .args(args)
-            .current_dir(&install.project)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .status()
-            .unwrap();
-        assert!(git.success(), "git {args:?}");
-    }
+    install.git_project();
     for number in 0..SAVED_SESSIONS {
         let name = format!("s{number}");
         let created = install.wsx(&[
@@ -626,4 +632,45 @@ fn a_stored_one_shot_routine_is_dropped_and_no_new_one_is_taken() {
     );
     let after: Value = serde_json::from_str(&cleaned).unwrap();
     assert!(after["revision"].as_u64().unwrap() > revision);
+}
+
+#[test]
+fn close_exited_closes_only_sessions_without_a_live_pane() {
+    let install = Install::new();
+    install.git_project();
+    // ^ A command typed into the shell: `exit 0` ends its pane, `sleep` keeps it.
+    for (name, command) in [
+        ("gone1", "exit 0"),
+        ("gone2", "exit 0"),
+        ("kept", "sleep 600"),
+    ] {
+        let created = install.wsx(&[
+            "session",
+            "create",
+            "--name",
+            name,
+            "--command",
+            command,
+            "--project",
+            "p",
+            "--json",
+        ]);
+        assert!(created.status.success(), "{created:?}");
+    }
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut closed = 0;
+    while closed < 2 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(200));
+        let answer = install.wsx(&["daemon", "close-exited", "--json"]);
+        let answer: Value = serde_json::from_slice(&answer.stdout).unwrap_or_default();
+        closed += answer["closed"].as_u64().unwrap_or(0);
+    }
+    assert_eq!(closed, 2, "the exited sessions");
+    let listed = install.wsx(&["session", "list", "--json"]);
+    let listed: Value = serde_json::from_slice(&listed.stdout).unwrap_or_default();
+    let rows = listed.as_array().unwrap();
+    assert!(
+        rows.len() == 1 && rows[0]["display_name"] == "kept",
+        "{listed}"
+    );
 }

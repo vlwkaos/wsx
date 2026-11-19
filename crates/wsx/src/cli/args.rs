@@ -193,6 +193,7 @@ impl Command {
                 DaemonCmd::Status { json: true }
                     | DaemonCmd::Stop { json: true, .. }
                     | DaemonCmd::Restart { json: true, .. }
+                    | DaemonCmd::CloseExited { json: true }
             ),
             Command::Routine { subcommand } => subcommand.json(),
             Command::Task { common, subcommand } => common.json || subcommand.prints_json(),
@@ -492,6 +493,14 @@ pub enum DaemonCmd {
         /// Do nothing when wsxd is the installed build; fail with the reason when it cannot be replaced
         #[arg(long)]
         if_needed: bool,
+        /// With --if-needed: when a wsxd from before the live-pane rule refuses for too many panes, close its exited sessions once and ask again
+        #[arg(long, requires = "if_needed")]
+        close_exited: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Close the sessions whose panes have all exited; a session with a live pane stays
+    CloseExited {
         #[arg(long)]
         json: bool,
     },
