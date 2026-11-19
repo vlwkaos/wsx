@@ -812,7 +812,6 @@ def manager_up(created):
         """The first manager turn whose message holds `text`."""
         return next((t for t in traces() if t.get('manager') and text in str(t.get('message', ''))), None)
 
-    running = js('task', 'new', 'SLOW SLOW SLOW WORK r.txt')['id']
     # ^ A `page.md` that is no unwritten overview is old data: refused, naming v0.43.0, and not moved. The
     # unwritten one holds nothing: the manager writes a fresh overview.md with the same text, never reads or moves it.
     old_page = state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md'
@@ -822,6 +821,8 @@ def manager_up(created):
     assert 'from before chats' in refused and 'v0.43.0' in refused and 'page.md' in refused, refused
     assert 'migrated' in old_page.read_text()
     old_page.write_text(unwritten)
+    # ^ The new task wakes the home chat's host, which writes overview.md: the refusal above needs none, so it goes first.
+    running = js('task', 'new', 'SLOW SLOW SLOW WORK r.txt')['id']
     asked = js('task', 'say', 'STATUS')
     assert asked['ok'] and asked['id'] == 1, asked
     asked_reply = reply_to(asked['id'])
@@ -7179,6 +7180,8 @@ def part_agents(created=None):
     away_switch = next(e for e in log(away) if e['kind'] == 'agent_switch')
     assert away_switch['to'].startswith('claude ') and away_switch['reason'].startswith('back on claude: was refused: 400'), away_switch
     js('task', 'close', away, '--discard')
+    # ^ The close event names the task by its title (`PIERROR <file>`): it must be in the log before 37b, or a Pi turn there takes it along.
+    wait(lambda: any(e['kind'] == 'message' and e.get('text', '').startswith('#%s closed' % away) for e in manager_entries()), 'the close event of the refused task', 60)
     # ^ A rate limit has no reset time and is backed off. Backoffs in a row on the account add up
     # from the first: past maxWaitMinutes the worker moves on to the next fallback.
     configure(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi, fake-pi2]\n    maxWaitMinutes: 60\n'),
