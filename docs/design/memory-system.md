@@ -1,6 +1,6 @@
 # Memory system: one design
 
-Status: built (steps 1-7 of the first plan; `distill` was never built; the area refresh of [memory-layers.md](memory-layers.md) replaces it). Owner's frame (2026-11-11): storing, retrieving and managing are three tasks; an index is a tool of retrieval; one system replaces mixed mechanisms; caps are not the main tool. The layers a reader gets, and how wsx keeps them, are in [memory-layers.md](memory-layers.md). The start-block evidence is in [memory-eval.md](memory-eval.md).
+Status: built (steps 1-7 of the first plan; `distill` was never built; the area scribe of [memory-layers.md](memory-layers.md) replaces it). Owner's frame (2026-11-11): storing, retrieving and managing are three tasks; an index is a tool of retrieval; one system replaces mixed mechanisms; caps are not the main tool. The layers a reader gets, and how wsx keeps them, are in [memory-layers.md](memory-layers.md). The start-block evidence is in [memory-eval.md](memory-eval.md).
 
 **Answer.** One record contract, `memory` (`wsx memory ...`), that wsx, workers, roles and the owner's skills all call. Two programs implement it, each scope has exactly one store: wsx's built-in store for projects and `default`, dotfiles' `memory.py` for the vault markdown. The built-in lexical index (today's `task search`) is wsx's default backend; `ir` plugs in behind the same hit format. Always-loaded core: the active owner rules and the facts that match the task's files. All else is recalled on need.
 

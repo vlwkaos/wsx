@@ -984,7 +984,7 @@ def cmd_live(args):
     print('\nConfounded: the groups are different tasks with different work. Use as support only.')
 
 
-# ---- area notes: who writes the L2 models, and on which model (docs/design/memory-layers.md "Who writes the notes") ----
+# ---- area notes: who writes the L2 models, and on which model (docs/design/memory-layers.md "How wsx keeps L2 and L3") ----
 
 NOTES = WORK / 'notes'
 WINDOW = {481, 486, 492, 495, 493, 497, 498, 502, 482, 499, 501, 500, 508, 511, 491, 509, 512, 513, 496, 514, 516, 507, 504, 506, 503, 505, 515, 519, 525, 526}  # ^ the 30 lands the seed was written for; later lands do not move it
