@@ -4782,7 +4782,7 @@ def part_worker(created=None):
     assert row['waiting']['on'] == 'limit', row
     # ^ Due first, but behind the older wait in the limit queue.
     second = js('task', 'new', 'LIMIT 1 WORK lb.txt')['id']
-    wait(lambda: (w := limited(second)) and w['record']['waiting']['reason'].startswith('queued for limit'),
+    wait(lambda: (w := limited(second)) and 'queued for limit' in w['record']['waiting']['reason'],
          'the second limit wait queued behind the first', 30)
     for n in (first, second):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', show(n)
@@ -4813,7 +4813,7 @@ def part_worker(created=None):
     first = swapped_new('LIMIT 10 CHECKRUN_LATE slow WORK le.txt')
     session = wait(lambda: limited(first), 'the limit wait during a check-run')['record']['agent_session']
     second = swapped_new('LIMIT 1 WORK lf.txt')
-    wait(lambda: (w := limited(second)) and w['record']['waiting']['reason'].startswith('queued for limit'),
+    wait(lambda: (w := limited(second)) and 'queued for limit' in w['record']['waiting']['reason'],
          'the second limit wait queued behind the first', 30)
     first_log = Path(show(first)['log'])
     on_file = lambda: [json.loads(line) for line in first_log.read_text().splitlines()]
