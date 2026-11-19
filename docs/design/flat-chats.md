@@ -8,7 +8,7 @@ Status: audit and plan only, 2026-11-19, no product edit. Owner wsx 5670: go sim
 |---|---|---|
 | A chat | its rows, minus rows inside an open thread (`Scope::Trunk`) | every row of the chat, in time order |
 | Thread | strip, `#/c/<chat>/t/<slug>`, `wsx task thread`, `--thread`, a placing turn, thread counts | gone |
-| Derived chat | `chat.json` `from`, row "Opened from chat X" | gone; `chat new` stays, it only records no origin |
+| Derived chat | `chat.json` `from`, row "Opened from chat X" | gone; `chat new` stays and records no origin |
 | For you, needs, chat rows, `say --to` | work | work, unchanged |
 
 Size: about 3,000 lines out, about 30 in (a fixture of an old log). **No migration**: old rows show as they are, the `thread` field is ignored on read and never written (§3). 7 steps, each one deletion, reverted alone (§4). Order: server and docs first, web and TUI after #534 and #510 land.
