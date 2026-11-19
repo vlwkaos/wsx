@@ -4001,10 +4001,16 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
     await go("#/");
     await until(`!!document.querySelector('${youRow}')`, "Home lost its For you row after a resize");
     for (const scheme of ["light", "dark"]) { await inScheme(scheme); await shot(`for-you-home-${scheme}`); }
+    const [, nowItems, nowChats] = /^(\d+) items? in (\d+) chats?/.exec(await evaluate(`document.querySelector('${youRow} .row-context').textContent`)) ?? [];
+    // ^ Home's row and the list read the same store.forYou: compare what Home says now with the list it opens, not with the first read.
     await click(`${youRow} a`);
     await until("!!document.querySelector('.reservoir-list[aria-label=\"For you\"] .need')", "the For you row opened no list");
     const listed = await evaluate("({ items: document.querySelectorAll('.reservoir-list[aria-label=\"For you\"] .need').length, chats: document.querySelectorAll('.reservoir-list[aria-label=\"For you\"] .reservoir-band').length })");
-    if (listed.items !== Number(homeItems) || listed.chats !== Number(homeChats)) await fail(`the For you list has ${JSON.stringify(listed)}, Home's row said ${homeWords}`);
+    if (listed.items !== Number(nowItems) || listed.chats !== Number(nowChats)) {
+      const bands = await evaluate("[...document.querySelectorAll('.reservoir-list[aria-label=\"For you\"] .reservoir-band, .reservoir-list[aria-label=\"For you\"] .need')].map((row) => row.textContent.trim().slice(0, 60))");
+      const again = await evaluate("fetch('api/tasks/for-you').then((r) => r.json()).then((chats) => chats.map((entry) => [entry.project, entry.chat, entry.needs.length, entry.asks.length, entry.check_items.length]))");
+      await fail(`the For you list has ${JSON.stringify(listed)}, Home's row said ${nowItems} items in ${nowChats} chats at ${next.join("x")}; list rows ${JSON.stringify(bands)}; server ${JSON.stringify(again)}`);
+    }
     for (const scheme of ["light", "dark"]) { await inScheme(scheme); await shot(`for-you-list-${scheme}`); }
     await go(chat);
     await until("!!document.querySelector('.composer-field')", "the first chat did not open for its Tasks list");
