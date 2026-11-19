@@ -125,7 +125,7 @@ def run(wsx, wsxd, claude, model, work, owned):
         reply = next((e for e in cli('task', 'chat')['entries']
                       if e['kind'] == 'reply' and asked['id'] in e['to']), None)
         time.sleep(1)
-    assert reply, 'no reply in 10 minutes'
+    assert reply, 'no reply in 10 minutes\n' + no_reply_detail(stream, state)
     page = next(state.glob('wsx/tasks/*/overview.md'))
     notes = next(state.glob('wsx/tasks/chats/*/notes'))
     events = [json.loads(line) for line in stream.read_text().splitlines() if line.startswith('{')]
@@ -156,6 +156,28 @@ def run(wsx, wsxd, claude, model, work, owned):
         refusal = (library / ('kill-%s.txt' % name)).read_text()
         assert 'not permitted' in refusal, (name, refusal)
     assert outside.poll() is None and sibling.poll() is None, 'the manager ended a process of another sandbox'
+
+
+def no_reply_detail(stream, state):
+    """What the agent said last (its `result` event) and the manager log's last lines."""
+    text = stream.read_text(errors='replace') if stream.exists() else ''
+    results = []
+    for line in text.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get('type') == 'result':
+            results.append(event)
+    if results:
+        last = results[-1]
+        said = 'last result: subtype=%s is_error=%s %s' % (
+            last.get('subtype'), last.get('is_error'), json.dumps(last.get('result', last))[:600])
+    else:
+        said = 'last result: none, the agent wrote ' + ('no result event' if text.strip() else 'nothing')
+    logs = sorted(state.glob('wsx/tasks/chats/*/log.jsonl'))
+    tail = logs[-1].read_text(errors='replace').splitlines()[-8:] if logs else []
+    return said + '\nmanager log, last lines:\n' + '\n'.join(line[:300] for line in tail)
 
 
 def message(home, copy, library, secret_copy, project, outside, sibling, own_kill, origin):
