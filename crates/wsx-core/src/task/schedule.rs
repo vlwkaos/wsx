@@ -253,6 +253,10 @@ pub fn load_waited(since: &mut Option<Instant>, lane_free: bool) -> Duration {
 /// less than `SETTLE` ago may still open a round's worth, so each of them counts one. A need above the
 /// pool never comes free, so it waits for the lane instead, or starts when the lane is empty.
 fn pty_wait(lane: &Lane, free: Option<u64>, total: Option<u64>) -> Option<String> {
+    // ^ `lane.ptys` 0 is the rule off for the lane (the turn lane, fixtures): holders add nothing.
+    if lane.ptys == 0 {
+        return None;
+    }
     let (free, total) = (free?, total.unwrap_or(u64::MAX));
     let need = lane.ptys + lane.fresh as u64 * WEB_ROUND_PTYS;
     match (free >= need, need > total) {
@@ -584,6 +588,9 @@ mod tests {
         let mut off = lane(0, 0, 1.0);
         off.machine.free_ptys = Some(0);
         off.ptys = 0;
+        off.holders = 1;
+        off.fresh = 1;
+        off.paced = false;
         assert_eq!(decide(&normal, &off), Verdict::Go);
         assert_eq!(run_ptys("python3 -B scripts/scenario.py task"), 222);
         assert_eq!(run_ptys("python3 -B scripts/scenario.py web"), 274);
