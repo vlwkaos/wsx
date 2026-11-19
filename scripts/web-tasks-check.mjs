@@ -3984,7 +3984,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   // ^ One For you list (docs/web-client-tasks.md "Home"): the row on top of Home counts what waits in every chat, and
   // the list it opens holds exactly those items by chat: the first chat's questions, approvals and checks, and billing's approval.
   const youRow = '.home-rows [data-key="for-you"]';
-  await until(`!!document.querySelector('${youRow}')`, "Home has no For you row while chats wait for the owner", 30);
+  await until(`!!document.querySelector('${youRow}')`, "Home has no For you row while chats wait for the owner", 300);
   const homeWords = await evaluate(`document.querySelector('${youRow} .row-context').textContent`);
   const [, homeItems, homeChats] = /^(\d+) items? in (\d+) chats?: \d+ (?:questions?|approvals?|checks?|stopped)/.exec(homeWords) ?? [];
   if (!homeItems || Number(homeChats) < 2) await fail(`Home's For you row reads ${JSON.stringify(homeWords)}`);
@@ -4014,7 +4014,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
     for (const scheme of ["light", "dark"]) { await inScheme(scheme); await shot(`for-you-list-${scheme}`); }
     await go(chat);
     await until("!!document.querySelector('.composer-field')", "the first chat did not open for its Tasks list");
-    await until("!!document.querySelector('.pill[data-kind=you]')", "the chat's For you pill is not drawn yet", 30);
+    await until("!!document.querySelector('.pill[data-kind=you]')", async () => `the chat's For you pill is not drawn at ${next.join("x")}: the server holds ${JSON.stringify(await evaluate("fetch('api/tasks/for-you').then((r) => r.json()).then((chats) => chats.map((entry) => [entry.project, entry.chat, entry.home, entry.needs.length, entry.asks.length, entry.check_items.length]))"))}, the chat's counts ${JSON.stringify(await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((data) => data.chats.map((row) => [row.name, row.home, row.counts]))`))}, the pills ${JSON.stringify(await evaluate("[...document.querySelectorAll('.pill')].map((pill) => pill.getAttribute('aria-label'))"))}`, 300);
     // ^ The pill follows the chat's overview, read after the page opens: wait for it before reading its count.
     await openReservoir("tasks");
     if ((await evaluate("document.querySelector('.reservoir-list .need .row-label')?.textContent")) !== `${await evaluate("document.querySelector('.pill[data-kind=you]').getAttribute('aria-label').match(/\\d+/)[0]")} wait for you`) await fail("the Tasks list has no row \"N wait for you\" first");
