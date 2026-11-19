@@ -3577,10 +3577,10 @@ phase("Progress: the top of an open task's sheet at 390x844, for ea");
   fs.appendFileSync(path.join(captures, "stuck-signal.txt"), `${JSON.stringify({ working: workingSignal, stuck: stuckSignal })}\n`);
   await shot("progress-stuck", ".composer-send");
 
-  // Ready: every step is done, and neither age nor sentence shows.
+  // Ready: no steps row (it shows while the task works); the age is how long the state has lasted.
   fs.writeFileSync(release, "go");
   await stateIs(working, "ready");
-  await shows(working, "ready", { health: "Ready, waiting for you to land it", steps: "+plan +build +review", age: "", now: "" });
+  await shows(working, "ready", { health: "Ready, waiting for you to land it", steps: "", age: /^(now|\d+[mhd] ago)$/, now: "" });
   // ^ The sheet clears its timer in an effect after the render: wait for it, do not read once.
   await until("[...window.__timers.values()].filter((delay) => delay === 30000).length === 0", "a ready task's sheet still has an age timer");
 
