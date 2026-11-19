@@ -1964,7 +1964,7 @@ await keyboard(420);
 await pause(300);
 const fit = await evaluate(`(() => { const box = (selector) => document.querySelector(selector).getBoundingClientRect();
   return { list: Math.round(box('.slash').height), row: Math.round(box('.slash-option').height),
-    composer: Math.round(box('.composer').bottom), visible: Math.round(visualViewport.offsetTop + visualViewport.height),
+    composer: Math.round(box('.composer').bottom + parseFloat(getComputedStyle(document.querySelector('.composer')).marginBottom)), visible: Math.round(visualViewport.offsetTop + visualViewport.height),
     reservoir: document.querySelector('.reservoir')?.getBoundingClientRect().height ?? 0 }; })()`);
 if (fit.list > fit.row * 3.5 + 2 || Math.abs(fit.composer - fit.visible) > 1 || fit.reservoir) await fail(`the picker does not fit above the keyboard: ${JSON.stringify(fit)}`);
 await shot("picker-keyboard", ".composer-send");
