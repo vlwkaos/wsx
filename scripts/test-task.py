@@ -6944,7 +6944,7 @@ def part_host(created=None):
     assert 'purpose for this chat' not in last_instructions('purpose') and not (chats_dir / 'purpose/goal.md').exists()
     assert last_instructions('purpose').startswith('You are purpose, a chat of the project demo.\n\n')
     # ^ The home chat has none by default: no preamble; with one, its instructions open with it.
-    assert 'purpose for this chat' not in last_instructions('demo') and not last_instructions('demo').startswith('You are')
+    assert 'purpose for this chat' not in last_instructions('demo') and last_instructions('demo').startswith('You are the manager of the wsx project')
     js('task', 'chat', 'goal', 'demo', '--goal', first_goal)
     reply_to(js('task', 'say', 'HOME TURN')['id'])
     assert last_instructions('demo').startswith("The owner's purpose for this chat:\nKeep the invoices exact.\n\n"), last_instructions('demo')[:200]
