@@ -147,7 +147,7 @@ export function ChecksPage({ project, item = null, room = null, scope = null, on
   const count = store.tasks[project]?.to_check;
   // ^ Over a chat's window, its own items; over a thread's, that thread's (the window's counts, tasks.js `Manager`).
   const [list, failure, read] = useSheetRead(`api/tasks/${project}/checks${room ? `?chat=${encodeURIComponent(room)}` : ""}`, { again: [count] });
-  const items = list?.open && (scope ? scope(list.open) : list.open);
+  const items = list?.open ? (scope ? scope(list.open) : list.open) : null;
   const [busy, setBusy] = useState(false);
   const [passFailure, setPassFailure] = useState("");
   const scroll = useRef();
