@@ -2539,9 +2539,10 @@ def part_core(created=None):
     assert row['next_run_unix_ms'] > time.time() * 1000, row
     assert (row['last']['status'], row['last']['exit']) == ('failed', 3) and row['last']['duration_ms'] >= 0, row
     assert re.search(r'sched \[1\]', tui_text(wsx, env, project, r'sched \[1\]'))
-    # ^ The close events of the tasks above may still run a turn: SLOW must start its own.
-    manager_settled('the manager idle before SLOW')
-    busy = js('task', 'say', 'SLOW')
+    # ^ The close events of the tasks above may still run a turn: LONG must start its own.
+    # ^ LONG, not SLOW: two tasks reach ready in more than 3 s when the whole scenario's parts load the machine.
+    manager_settled('the manager idle before LONG')
+    busy = js('task', 'say', 'LONG')
     first = js('task', 'new', 'NOOP')['id']
     second = js('task', 'new', 'NOOP')['id']
     for n in (first, second):
@@ -2579,7 +2580,7 @@ def part_core(created=None):
     assert switches[-2:] == ['fake-events', 'fake-manager'], switches
     # ^ One thought in two owner messages: the second comes while the first's turn runs and goes into
     # it at the turn's next tool call, so one reply answers both (docs/tasks.md "Manager", Messages
-    # during a turn). The turn above (SLOW) had no tool call after its message: that one waited.
+    # during a turn). The turn above (LONG) had no tool call after its message: that one waited.
     manager_settled('the manager idle before MSTEER')
     part_one = js('task', 'say', 'MSTEER part one')
     wait(lambda: turn_with('MSTEER part one'), 'the MSTEER turn')
