@@ -4659,6 +4659,11 @@ phase("Media a message names (docs/web-client-chat.md Markdown, doc");
       square: media ? Math.abs(media.getBoundingClientRect().width - media.getBoundingClientRect().height) <= 1 : null, inside: box.width > 60 }; })`);
   for (const wide of [false, true]) {
     await resize(wide ? [1280, 800, 1] : [390, 844, 2]);
+    await evaluate(`(() => { window.wsxJumps = []; const note = (what) => { const log = document.querySelector('.log'); window.wsxJumps.push(JSON.stringify({ what, t: Math.round(performance.now()), w: innerWidth,
+      top: log && Math.round(log.scrollTop), height: log?.scrollHeight, client: log?.clientHeight, short: log && Math.round(log.scrollHeight - log.scrollTop - log.clientHeight), jump: !!document.querySelector('.jump'),
+      imgs: [...document.querySelectorAll('.log .attachments img')].map((image) => image.complete + ':' + image.getBoundingClientRect().height) })); };
+      new MutationObserver((changes) => { for (const change of changes) for (const node of [...change.addedNodes, ...change.removedNodes]) if (node.nodeType === 1 && (node.matches?.('.jump') || node.querySelector?.('.jump'))) note(change.addedNodes.length ? 'jump in' : 'jump out'); }).observe(document.body, { childList: true, subtree: true });
+      document.addEventListener('scroll', () => note('scroll'), true); window.wsxNote = note; })()`);
     await go(`#/p/${plansArg}/media`);
     await until(`${tiles}.length >= 13`, "the Media sheet did not list the fixtures", 60);
     await until(`[...document.querySelectorAll('.media-tile img')].every((image) => image.complete)`, "a media picture did not load", 60);
@@ -4679,6 +4684,8 @@ phase("Media a message names (docs/web-client-chat.md Markdown, doc");
     if (all.filter((tile) => !tile.gap).some((tile) => !tile.square)) await fail(`a media tile is not square at ${size[0]} px: ${JSON.stringify(all)}`);
     const columns = await evaluate(`new Set([...${tiles}].map((tile) => Math.round(tile.getBoundingClientRect().left))).size`);
     if (wide ? columns < 3 : columns !== 2) await fail(`the grid has ${columns} columns at ${size[0]} px`);
+    await evaluate("window.wsxNote('shot')");
+    console.log(`[media-jump] ${wide ? "wide" : "narrow"}: ${(await evaluate("window.wsxJumps.slice(-40)")).join("\n  ")}`);
     await shot(wide ? "media-sheet-wide" : "media-sheet");
     // ^ Filters: Videos keeps only videos, Images none, the task keeps the three captures.
     const chip = (name) => evaluate(`[...document.querySelectorAll('.media-chip')].find((button) => button.textContent === ${JSON.stringify(name)}).click()`);
