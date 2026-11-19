@@ -43,6 +43,8 @@ PATH = {
     "send": "M10 16V4.5M5 9l5-5 5 5",
     "up": "M5 12.5l5-5 5 5",
     "routines": "M10 4.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11ZM10 7v3.5l2.3 1.4",
+    "reply": "M8.5 5.5 4 10l4.5 4.5M4.5 10H12a4 4 0 0 1 4 4v1",
+    "bolt": "M11 3.5 5.5 11h4l-1 5.5L14.5 9h-4z",
     "attach": "M14.5 9.5 9 15a3 3 0 0 1-4.2-4.2l6-6a2 2 0 0 1 2.8 2.8l-5.7 5.7a1 1 0 0 1-1.4-1.4L11 7.4",
 }
 e = html.escape
@@ -375,3 +377,126 @@ for light in (False, True):
         page("x-%s-after-%s.html" % (name, tag), later[0] if later else body, light, label + ", after", '<link rel="stylesheet" href="round.css">')
         for width, height in (((320, 740),) if name == "chat-big" else ((390, 844), (1280, 800))):
             (HERE / ("round-%s-%s-%d.html" % (name, tag, width))).write_text(WRAP % (' data-scheme="light"' if light else "", label, width, height, name, tag, name, tag))
+
+
+# ---- Task 526: the open For you, Tasks and Routines lists, before and after, side by side ----
+# before = app.css of the commit just before this task (git show, frozen as open-before.css, so a later build does not turn it into the after);
+# after = the same plus open-list.css: the row's actions beside the title, on the row's own line.
+OPEN_BEFORE = "b94b748c"
+(HERE / "open-before.css").write_text(subprocess.run(["git", "show", "%s:crates/wsx-web/web/app.css" % OPEN_BEFORE], cwd=ROOT, check=True, capture_output=True, text=True).stdout)
+(HERE / "open-list.css").write_text("""/* Task 526, after: the open list's rows (build.py). The actions sit on the row's own line, after the text; the text keeps the
+   width left and wraps. An action is drawn 32 px high and takes 44 px by hit area (the box is 44 px and the drawn chip is a ::before
+   inside it), so two neighbours never overlap. A phone shows the icon only (the word is the button's aria-label and title); a wide
+   window shows icon and word. Three or more actions: the main one (the last) stays, the others are in the row's more menu. */
+.reservoir .row-link, .reservoir .row-link:has(> .row-open) { display: flex; align-items: center; gap: var(--space-2); }
+.reservoir .row-link > .row-main, .reservoir .row-link > .row-open { flex: 1 1 0; }
+.reservoir .row-actions { flex: 0 0 auto; flex-wrap: nowrap; gap: 0; margin-block: calc(-1 * var(--space-1)); margin-right: calc(-1 * var(--space-2)); }
+.app .reservoir .row-actions .need-action.button.button {
+  --chip: calc((var(--size-control) - var(--size-key) + var(--space-1)) / 2);
+  position: relative; isolation: isolate; width: var(--size-control); min-width: var(--size-control); height: var(--size-control); min-height: var(--size-control); padding: 0; background: none;
+}
+.app .reservoir .row-actions .need-action.button.button::before { content: ""; position: absolute; z-index: -1; inset: var(--chip); border-radius: var(--radius-key); background: var(--color-raised); }
+.need-word { display: none; }
+.app[data-wide] .reservoir .row-actions .need-action.button.button:has(> .need-word) { width: auto; padding: 0 var(--space-3); }
+.app[data-wide] .reservoir .row-actions .need-action.button.button:has(> .need-word)::before { inset-inline: 0; }
+.app[data-wide] .reservoir .need-word { display: inline; }
+.reservoir .row-more { position: relative; }
+.reservoir .row-more .need-action { font-size: var(--font-size-title); color: var(--color-muted); }
+.reservoir .row-more .more-menu { z-index: 3; font-size: var(--font-size-md); }
+.reservoir .row-more .more-menu button { gap: var(--space-2); }
+.reservoir .row-more .more-menu .icon { width: var(--space-4); height: var(--space-4); }
+/* The menu is a popover in the build (top layer, set outside .chat, whose size container would hold a fixed menu); it is not cut by the list's scroll. */
+.reservoir:has(.more-menu) :is(.reservoir-reveal, .reservoir-scroll) { overflow: visible; }
+""")
+
+# name, icon, tone; the last is the main action
+ASK = [("Reply", "reply", ""), ("Dismiss", "fail", "")]
+APPROVAL = [("Deny", "fail", "danger"), ("Approve", "pass", "accent")]
+CHECK = [("Reply", "reply", ""), ("Fail", "fail", "danger"), ("Pass", "pass", "accent")]
+
+
+def act_button(word, glyph, tone, after, name):
+    label = "%s: %s" % (word, name)
+    return ('<button class="button need-action" type="button" title="%s" aria-label="%s"%s>%s%s</button>'
+            % (e(word), e(label), ' data-tone="%s"' % tone if tone else "", icon(glyph), '<span class="need-word">%s</span>' % word if after else word))
+
+
+def acts(actions, after, name, menu=False):
+    if after and len(actions) > 2:
+        rest = "".join('<button type="button" role="menuitem">%s%s</button>' % (icon(g), w) for w, g, t in actions[:-1])
+        more = ('<div class="more row-more"><button class="button need-action" type="button" title="More" aria-label="More: %s" aria-haspopup="menu" aria-expanded="%s"><span aria-hidden="true">⋯</span></button>%s</div>'
+                % (e(name), "true" if menu else "false", '<div class="more-menu" role="menu">%s</div>' % rest if menu else ""))
+        return more + act_button(*actions[-1], after, name)
+    return "".join(act_button(w, g, t, after, name) for w, g, t in actions)
+
+
+def need(title, context, actions=(), after=False, number=None, glyph=None, tone="attention", main="a", menu=False, ctx_glyph=None, ctx_tone=""):
+    if number:
+        head = '<span class="row-title"><span class="row-label">%s</span><span class="task-number">#%d</span></span>' % (e(title), number)
+    else:
+        head = '<span class="row-title"><span class="row-icon" data-tone="%s">%s</span><span class="row-label">%s</span></span>' % (tone, icon(glyph), e(title))
+    lines = "".join('<span class="row-context">%s%s</span>' % ('<span class="row-glyph" data-tone="%s">%s</span>' % (ctx_tone, icon(ctx_glyph)) if ctx_glyph else "", e(c))
+                    for c in ([context] if isinstance(context, str) else context))
+    body = head + lines
+    opener = ('<a class="row-main row-open" href="#">%s</a>' % body if main == "a"
+              else '<button class="row-main row-open" type="button" aria-label="Show">%s</button>' % body if main == "button" else '<span class="row-main">%s</span>' % body)
+    out = '<span class="row-actions">%s</span>' % acts(actions, after, title, menu) if actions else ""
+    return '<li class="need"><div class="row-link">%s%s</div></li>' % (opener, out)
+
+
+def open_rows(kind, after, menu=False):
+    if kind == "foryou":
+        return (need("Which fee line goes first, setup or monthly?", "Asks you", ASK, after, glyph="reply", main="button")
+                + need("Push wsx/t97 to origin", "Changelog for 0.43", APPROVAL, after, glyph="unchecked")
+                + need("Pause rule: 2 s or 3 s?", "Asks you", ASK, after, glyph="reply", main="button")
+                + need("The invoice page shows the three fee lines", "Passes if setup, monthly and total are each on their own line", CHECK, after, number=96, menu=menu)
+                + need("The shell profile loads without an error", "Passes if a new terminal prints no error", CHECK, after, number=12)
+                + need("Merge wsx/t99 into main", "Release tag 0.43", APPROVAL, after, glyph="unchecked")
+                + need("The tag script prints the version", "Passes if it prints 0.43.0", CHECK, after, number=99))
+    if kind == "routines":
+        def routine(name, ctx1, ctx2, tone, on, opener):
+            buttons = "".join('<button class="button icon-button need-action" type="button" title="%s" aria-label="%s: %s">%s</button>' % (t, t, name, icon(g))
+                              for t, g in (("Turn off" if on else "Turn on", "pause" if on else "play"), ("Run now", "bolt")))
+            row = need(name, [ctx1, ctx2], (), after, glyph="routines", tone=tone, main=opener)
+            return row.replace("</div></li>", '<span class="row-actions">%s</span></div></li>' % buttons)
+        return (routine("Nightly changelog", "Every day at 02:00 · On", "Last run: 3 h ago, posted to the chat", "accent", True, "button")
+                + routine("Stale worktrees sweep", "Every hour · On", "Last run: 20 min ago, found 2 stale worktrees", "attention", True, "button")
+                + routine("Weekly usage report", "Mondays at 09:00 · On", "Last run: 5 days ago, failed: no network", "danger", True, "button")
+                + routine("Docs link check", "Sundays at 22:00 · Off", "Last run: 12 days ago", "", False, "span")
+                + routine("Dependency audit", "1st of the month at 08:00 · On", "Last run: 9 days ago, nothing to report", "accent", True, "button")
+                + routine("Backup of the notes", "Every day at 23:30 · On", "Last run: 14 h ago, posted to the chat", "accent", True, "button"))
+    def task(title, number, glyph, line, tone="", group=""):
+        return ('<li class="need"%s><div class="row-link"><a class="row-main row-open" href="#"><span class="row-title"><span class="row-label">%s</span><span class="task-number">#%d</span></span>'
+                '<span class="row-context"><span class="row-glyph" data-tone="%s">%s</span>%s</span></a></div></li>' % (' data-group="%s"' % group if group else "", e(title), number, tone, icon(glyph), e(line)))
+    return (band("For you") + task("The invoice page shows the three fee lines", 96, "unchecked", "waits for your check", group="first") + task("Sync the shell profile", 12, "fail", "failed · 1 of 2 checks", group="last")
+            + band("Moving", "moving") + task("Fee table: round to whole cents", 98, "play", "working · build 2/3", "working") + task("Changelog for 0.43", 97, "play", "CI check-run 12 min", "working")
+            + task("Tag script prints the version", 99, "play", "working · tests 1/2", "working")
+            + band("Waiting", "waiting") + task("Release tag 0.43", 100, "pause", "after #97"))
+
+
+def open_page(kind, after, menu=False):
+    label = {"foryou": "For you", "tasks": "Tasks", "routines": "Routines"}[kind]
+    count = {"foryou": 7, "tasks": 6, "routines": 6}[kind]
+    comp = composer(you=7, tasks=6, routines=6, real=True).replace('data-kind="%s"' % {"foryou": "you"}.get(kind, kind), 'data-kind="%s" aria-pressed="true"' % {"foryou": "you"}.get(kind, kind), 1)
+    body = (bubble("out", "What is left before the 0.43 release?", time="14:01")
+            + bubble("in", "Two things: the changelog (#97, working) and your check of #96. Nothing else blocks the tag.", "manager", "14:02"))
+    res = ('<section class="reservoir" aria-label="%s"><div class="reservoir-reveal"><div class="reservoir-body" id="reservoir-list"><div class="reservoir-head"><span class="reservoir-title">%s</span>'
+           '<button class="icon-button reservoir-close" type="button" aria-label="Close %s" title="Close %s">%s</button></div><div class="reservoir-scroll"><ul class="reservoir-list" aria-label="%s">%s</ul></div></div></div></section>'
+           % (label, label, label, label, '<svg class="icon" viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 4v12M5 11l5 5 5-5" /></svg>', label, open_rows(kind, after, menu)))
+    return '<div class="page manager">%s<div class="chat"><div class="scroll chat-body">%s</div>%s%s</div></div>' % (bar("wsx", ""), body, res, comp)
+
+
+OPEN = {"foryou": "For you", "foryou-menu": "For you, the more menu of a To check row open", "tasks": "Tasks", "routines": "Routines"}
+OPEN_WRAP = WRAP.replace("After (round corners, one composer)", "After (actions on the row's own line)").replace("x-%s-before-%s.html", "x-open-list-%s-before-%s.html").replace("x-%s-after-%s.html", "x-open-list-%s-after-%s.html")
+for light in (False, True):
+    tag = "light" if light else "dark"
+    for name, label in OPEN.items():
+        kind = name.split("-")[0]
+        menu = name.endswith("menu")
+        page("x-open-list-%s-before-%s.html" % (name, tag), open_page(kind, False, menu), light, label + ", before", before=True)
+        (HERE / ("x-open-list-%s-before-%s.html" % (name, tag))).write_text(
+            (HERE / ("x-open-list-%s-before-%s.html" % (name, tag))).read_text().replace('href="before.css"', 'href="open-before.css"').replace("theme-before.css", "theme.css"))
+        page("x-open-list-%s-after-%s.html" % (name, tag), open_page(kind, True, menu), light, label + ", after", '<link rel="stylesheet" href="open-list.css">')
+        for width, height in ((390, 844), (1280, 800)):
+            (HERE / ("open-list-%s-%s-%d.html" % (name, tag, width))).write_text(
+                OPEN_WRAP % (' data-scheme="light"' if light else "", label, width, height, name, tag, name, tag))

@@ -1,0 +1,23 @@
+/* Task 526, after: the open list's rows (build.py). The actions sit on the row's own line, after the text; the text keeps the
+   width left and wraps. An action is drawn 32 px high and takes 44 px by hit area (the box is 44 px and the drawn chip is a ::before
+   inside it), so two neighbours never overlap. A phone shows the icon only (the word is the button's aria-label and title); a wide
+   window shows icon and word. Three or more actions: the main one (the last) stays, the others are in the row's more menu. */
+.reservoir .row-link, .reservoir .row-link:has(> .row-open) { display: flex; align-items: center; gap: var(--space-2); }
+.reservoir .row-link > .row-main, .reservoir .row-link > .row-open { flex: 1 1 0; }
+.reservoir .row-actions { flex: 0 0 auto; flex-wrap: nowrap; gap: 0; margin-block: calc(-1 * var(--space-1)); margin-right: calc(-1 * var(--space-2)); }
+.app .reservoir .row-actions .need-action.button.button {
+  --chip: calc((var(--size-control) - var(--size-key) + var(--space-1)) / 2);
+  position: relative; isolation: isolate; width: var(--size-control); min-width: var(--size-control); height: var(--size-control); min-height: var(--size-control); padding: 0; background: none;
+}
+.app .reservoir .row-actions .need-action.button.button::before { content: ""; position: absolute; z-index: -1; inset: var(--chip); border-radius: var(--radius-key); background: var(--color-raised); }
+.need-word { display: none; }
+.app[data-wide] .reservoir .row-actions .need-action.button.button:has(> .need-word) { width: auto; padding: 0 var(--space-3); }
+.app[data-wide] .reservoir .row-actions .need-action.button.button:has(> .need-word)::before { inset-inline: 0; }
+.app[data-wide] .reservoir .need-word { display: inline; }
+.reservoir .row-more { position: relative; }
+.reservoir .row-more .need-action { font-size: var(--font-size-title); color: var(--color-muted); }
+.reservoir .row-more .more-menu { z-index: 3; font-size: var(--font-size-md); }
+.reservoir .row-more .more-menu button { gap: var(--space-2); }
+.reservoir .row-more .more-menu .icon { width: var(--space-4); height: var(--space-4); }
+/* The menu is a popover in the build (top layer, set outside .chat, whose size container would hold a fixed menu); it is not cut by the list's scroll. */
+.reservoir:has(.more-menu) :is(.reservoir-reveal, .reservoir-scroll) { overflow: visible; }

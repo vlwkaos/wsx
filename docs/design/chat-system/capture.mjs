@@ -8,15 +8,15 @@ import { launch } from "../../../scripts/web-cdp.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const only = process.argv[2] ?? "";
-// round-* (task 519) are before/after pairs of iframes onto the x-* pages; the x-* pages are not shot alone.
-const pages = fs.readdirSync(here).filter((name) => (/-(light|dark)\.html$/.test(name) || /^round-.*-(320|390|1280)\.html$/.test(name)) && !name.startsWith("x-") && name.startsWith(only)).sort();
+// round-* (task 519) and open-list-* (task 526) are before/after pairs of iframes onto the x-* pages; the x-* pages are not shot alone.
+const pages = fs.readdirSync(here).filter((name) => (/-(light|dark)\.html$/.test(name) || /^(round|open-list)-.*-(320|390|1280)\.html$/.test(name)) && !name.startsWith("x-") && name.startsWith(only)).sort();
 const page = await launch({ captures: here, prefix: "", timeoutSeconds: 240 });
 for (const file of pages) {
   const name = file.replace(/\.html$/, "");
-  const pair = /^round-.*-(320|390|1280)$/.exec(name);
+  const pair = /^(round|open-list)-.*-(320|390|1280)$/.exec(name);
   if (pair) {
-    const wide = pair[1] === "1280";
-    const small = pair[1] === "320";
+    const wide = pair[2] === "1280";
+    const small = pair[2] === "320";
     await page.viewport(wide ? 2610 : small ? 690 : 830, wide ? 850 : small ? 820 : 920, wide ? 1 : 2);
     await page.send("Page.navigate", { url: pathToFileURL(path.join(here, file)).href });
     await page.until("document.readyState === 'complete'", `${file} loads`, 10);
