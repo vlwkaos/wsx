@@ -1145,13 +1145,13 @@ for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
   await inScheme("dark");
   await openReservoir();
 }
-// ^ In the wide layout (900 px) the three pills carry their words after the count, so the field keeps a quarter of the row at least (170 of 680 px at 1280 px).
+// ^ In the wide layout (900 px) the three pills carry their words after the count. The composer is one card on every width (task 519): the field has its line, the pills sit under it, and the field keeps a quarter of the row at least.
 await resize([1280, 800, 1]);
 await until("document.querySelectorAll('.pill').length === 3", "the pills are not in the wide chat");
 const wide = await evaluate(`(() => ({ labels: [...document.querySelectorAll('.pill')].map((node) => getComputedStyle(node.querySelector('.pill-label')).display === 'none' ? '' : node.querySelector('.pill-label').textContent.trim()).join('|'),
   names: [...document.querySelectorAll('.pill')].map((node) => node.getAttribute('aria-label')).join('|'),
-  gap: document.querySelector('.composer-input').getBoundingClientRect().left - [...document.querySelectorAll('.pill')].at(-1).getBoundingClientRect().right, icon: parseFloat(getComputedStyle(document.querySelector('.pill .icon')).width), field: document.querySelector('.composer-input').getBoundingClientRect().width, row: document.querySelector('.composer-row').getBoundingClientRect().width }))()`);
-if (wide.labels !== "For you|Tasks|Routines" || wide.names !== "8 for you|5 tasks|2 routines" || wide.field < wide.row / 4 || wide.gap < 8 || wide.icon > 16) await fail(`the wide pills read ${JSON.stringify(wide)}`);
+  gap: [...document.querySelectorAll('.pill')][0].getBoundingClientRect().top - document.querySelector('.composer-input').getBoundingClientRect().bottom, icon: parseFloat(getComputedStyle(document.querySelector('.pill .icon')).width), field: document.querySelector('.composer-input').getBoundingClientRect().width, row: document.querySelector('.composer-row').getBoundingClientRect().width }))()`);
+if (wide.labels !== "For you|Tasks|Routines" || wide.names !== "8 for you|5 tasks|2 routines" || wide.field < wide.row / 4 || wide.gap < 0 || wide.icon > 16) await fail(`the wide pills read ${JSON.stringify(wide)}`);
 await shot("pills-wide", ".composer-send");
 await resize([390, 844, 2]);
 await openReservoir();
