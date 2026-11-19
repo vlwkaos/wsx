@@ -61,4 +61,4 @@ The command writes one JSON payload to stdout:
 
 WSX selects one eligible sidecar by descending priority and stable plugin ID. It owns width, truncation, semantic colors, PTY dimensions, cursor and mouse coordinates, and all input. Plugin output is size-, row-, text-, timeout-, and schema-bounded. Invalid output fails closed and does not replace the last valid view.
 
-Client plugins (a web view and a per-project store beside the sidecar) are designed in [design/client-plugins.md](design/client-plugins.md); not built yet.
+Client plugins (a web view, a per-project store and declared project commands beside the sidecar) are designed in [design/client-plugins.md](design/client-plugins.md); not built yet.

@@ -1,0 +1,44 @@
+/* Client plugin mockups (task 543): the rules a build would add to app.css. Tokens only. */
+
+/* The sheet's body: the plugin's frame, then the host's result card outside it. */
+.plugin { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.plugin > .scroll, .plugin-wide > .scroll { padding: 0 var(--space-4) var(--space-4); }
+.plugin-wide { flex: 1; min-height: 0; display: grid; grid-template-columns: calc(var(--size-rail) * 0.88) 1fr; }
+.plugin-wide .plugin-list { overflow-y: auto; border-right: var(--border-width) solid var(--color-hairline); }
+.plugin-list .group-head { padding-inline: var(--space-4); }
+.plugin-list .rows { padding-bottom: var(--space-2); }
+.plugin-list .actions { padding-block: var(--space-2); }
+.plugin > .scroll > .plugin-list { margin-inline: calc(-1 * var(--space-4)); }
+.word { flex: none; font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); }
+
+/* The detail: title, one muted line, a table, the steps. */
+.plugin-detail { display: flex; flex-direction: column; gap: var(--space-3); padding-top: var(--space-3); }
+.plugin-title { display: flex; align-items: baseline; gap: var(--space-2); font-size: var(--font-size-md); font-weight: var(--font-weight-strong); }
+.plugin-back { display: inline-flex; align-items: center; gap: var(--space-1); align-self: flex-start; margin-block: calc(-1 * var(--space-3)) calc(-1 * var(--space-2)); }
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.step { display: flex; align-items: center; gap: var(--space-3); min-height: var(--size-control); padding-block: var(--space-1); }
+.step + .step { border-top: var(--border-width) solid var(--color-hairline); }
+.step-text { flex: 1; min-width: 0; }
+.step-field { display: flex; align-items: center; gap: var(--space-2); }
+.step-field .input { flex: 1; min-width: 0; }
+
+/* The result card: wsx's own chrome under the frame; the frame cannot draw or click it. */
+.run-card {
+  flex: none; display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-1) var(--space-4) var(--space-4);
+  border-top: var(--border-width) solid var(--color-hairline); background: var(--color-surface);
+}
+.run-head { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.run-cmd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--font-size-sm); }
+.run-head .icon-button { margin-right: calc(-1 * var(--space-3)); }
+.run-age { margin-left: auto; flex: none; font-size: var(--font-size-sm); }
+.run-card .code-block pre { margin: 0; max-height: calc(var(--line-height) * 12em); font-family: var(--font-mono); font-size: var(--font-size-sm); }
+
+/* A modal dialog is in the top layer in the client; the static page stacks the same. */
+.scrim { position: fixed; inset: 0; background: var(--color-overlay); }
+.scrim-top { z-index: 2; }
+.dlg { position: fixed; inset: 0; margin: auto; height: fit-content; z-index: 3; }
+.dlg .code-block pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--font-size-sm); padding: var(--space-3); }
+.dlg .muted { margin-top: var(--space-2); }
+
+/* Behind the sheet: the chat with its usual inset. */
+.chat-body { padding: var(--space-3) var(--space-4); }
