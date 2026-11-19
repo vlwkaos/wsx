@@ -461,7 +461,7 @@ const homeOf = (id) => evaluate(`fetch('api/tasks/${id}').then((r) => r.json()).
 // ^ A project's chat is at #/c/<home chat> and its sheets at the end of that route; its sessions and files stay under #/p/<id> (docs/web-client-tasks.md "Routes"). The older #/p/<id>/<sheet> links open too.
 const repoBase = `#/p/${project}`;
 const chat = `#/c/${await homeOf(project)}`;
-const page = (n) => `#/p/${project}/t/${n}`;
+const page = (n) => `${chat}/task/${n}`;
 
 // The tabs: each one link in the bar, inside the first screen. Home lists the projects.
 const TABS = "Home,Sessions,Settings";
@@ -1859,7 +1859,7 @@ const runs = async (where, selector) => {
   const seen = await dotRuns(selector);
   if (!seen.found || !seen.states.length || seen.states.some((state) => state !== "running") || seen.moved < 0.5) await fail(`the typing dots stand still ${where}: ${JSON.stringify(seen)}`);
 };
-await go(`#/p/${project}/t/2`);
+await go(page(2));
 await until("!!document.querySelector('dialog.task-sheet[open]')", "the task sheet did not open over the long turn");
 await stand();
 await evaluate("history.back()");
@@ -4000,6 +4000,10 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   const menuItems = () => evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].map((item) => item.textContent.trim())");
   await go(`#/p/${project}`);
   await until(`location.hash === '${chat}'`, "the old route #/p/<id> did not redirect to the home chat");
+  await go(`#/p/${project}/t/2`);
+  await until(`location.hash === '${page(2)}'`, "the old route #/p/<id>/t/<n> did not redirect to the sheet over the home chat");
+  await go(`#/p/${project}`);
+  await until(`location.hash === '${chat}'`, "the sheet's old route left the home chat");
   await until("!!document.querySelector('.bar .more-button')", "the manager chat has no ⋯ menu");
   await click(".bar .more-button");
   if ((await menuItems()).includes("Close chat")) await fail(`the first chat offers ${await menuItems()}`);
@@ -4210,7 +4214,7 @@ if (reviewed.running || reviewed.needs) await fail(`the review-waiting row is ${
 {
   const id = Number((await evaluate(`[...document.querySelectorAll('.reservoir-list[aria-label=Tasks] .need')].find((row) => /waiting for the manager's review/.test(row.textContent)).querySelector('.task-number').textContent.match(/#\\d+/)[0]`)).replace("#", ""));
   const rowWords = (await rows()).find((row) => row[0] === `#${id}`)[2];
-  await go(`#/p/${project}/t/${id}`);
+  await go(page(id));
   await until("!!document.querySelector('dialog.task-sheet[open] .story-next')", "the review-waiting sheet did not open");
   const sheetWords = await story();
   const json = await evaluate(`fetch('api/tasks/${project}/t/${id}').then((r) => r.json()).then((view) => view.status)`);
