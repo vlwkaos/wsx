@@ -394,7 +394,7 @@ function withMention(text, n) {
   return [text, /\s/.test(text[end]) ? end + 1 : end];
 }
 
-function ManagerComposer({ project, room, thread, busy: thinking, reply, onReply, onSent, field, pills, strip }) {
+function ManagerComposer({ project, room, thread, busy: thinking, reply, onReply, onSent, field, pills }) {
   const store = useStore();
   // ^ Another chat's draft is its own.
   const draft = [project, room, thread?.slug].filter(Boolean).join("/");
@@ -477,7 +477,6 @@ function ManagerComposer({ project, room, thread, busy: thinking, reply, onReply
   };
   return html`
     <div class="composer">
-      ${strip}
       <${FileChips} files=${files} onInline=${inline} onRemove=${remove} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
       <${QuoteChip} quote=${reply?.line} onRemove=${() => onReply(null)} />
@@ -1081,8 +1080,9 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
           </ul>`}
         <${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${scoped(overview?.tasks ?? [])} waiting=${scoped(overview?.waiting ?? [])} checks=${scoped(overview?.check_items ?? [])} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${replyTo} onShow=${goToReply} />
         ${low && header}
-        ${!can("task_act") && html`${strip}<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
-        ${can("task_act") && html`<${ManagerComposer} project=${id} room=${room} thread=${thread} busy=${typing} field=${field} reply=${reply} onReply=${setReply} strip=${strip}
+        ${strip}
+        ${!can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
+        ${can("task_act") && html`<${ManagerComposer} project=${id} room=${room} thread=${thread} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
           pills=${html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} />`}
           onSent=${(message) => { toEnd(); setSent({ ...message, thread: threadSlug }); back(); }} />`}
       </div>

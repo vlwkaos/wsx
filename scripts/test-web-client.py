@@ -4641,9 +4641,7 @@ merge_seconds = 3
         assert [skill['name'] for skill in mentions['skills']] == owner_skills, mentions
         assert mentions['skills'][0]['description'] == 'Fixture skill for the manager', mentions['skills'][0]
         assert 'BODY-SECRET' not in json.dumps(mentions) and mentions['truncated'] is False, mentions
-        by_name = {item['name']: item for item in mentions['projects']}
-        assert 'plans' not in by_name and by_name['demo']['manager'] is None and 'ui' in by_name, mentions['projects']
-        assert not args.browser or by_name['ui']['manager'] == 'Atlas', mentions['projects']
+        assert 'projects' not in mentions and 'plans' not in {c['id'] for c in mentions['chats']} and any(c['project'] == 'ui' for c in mentions['chats']), mentions['chats']
         assert steady(owner, 'GET', '/api/tasks/%d/mentions' % 999999)[0] == 404
         since = steady(owner, 'GET', '/api/tasks/%d/since?after=1' % demo)[1]
         assert since['tasks']['landed'] == [2, 3] and since['tasks']['started'] == [1, 2, 3, 4, 5] and since['replies'] >= 3, since
