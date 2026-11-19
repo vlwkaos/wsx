@@ -1086,7 +1086,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
           <ul class="queue" aria-label=${`Messages waiting for ${room ?? "the manager"}`}>
             ${waiting.map((row) => html`<li key=${row.key} class="queued" data-key=${row.key}><span class="queued-text">${row.text || `${row.attachments?.length ?? 0} files`}</span></li>`)}
           </ul>`}
-        <${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${waitingForYou} tasks=${scoped(overview?.tasks ?? [])} waiting=${scoped(overview?.waiting ?? [])} checks=${scoped(overview?.check_items ?? [])} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${replyTo} onShow=${goToReply} />
+        <${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${waitingForYou} tasks=${scoped(overview?.tasks ?? [])} waiting=${scoped(overview?.waiting ?? [])} checks=${scoped(overview?.check_items ?? [])} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${replyTo} onShow=${goToReply} onOpenList=${setTray} />
         ${low && header}
         ${strip}
         ${!can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
