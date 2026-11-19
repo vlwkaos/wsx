@@ -125,6 +125,8 @@ pub fn take(want: &Want, label: &str, mut queued: impl FnMut(String)) -> io::Res
                     ahead: held.ahead,
                     waited: joined.elapsed(),
                     scenarios: matches!(lane, Lane::Scenarios),
+                    paced: matches!(lane, Lane::Scenarios)
+                        && std::env::var_os("WSX_SCENARIO_SLOTS").is_none(),
                     max: lane.max(),
                     min_free_mb: want.min_free_mb,
                 },

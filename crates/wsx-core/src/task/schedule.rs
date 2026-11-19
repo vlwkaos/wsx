@@ -139,6 +139,10 @@ pub struct Lane {
     pub ahead: usize,
     pub waited: Duration,
     pub scenarios: bool,
+    /// The load, memory and disk rule sets the width. Off, the lane is first come, first served with
+    /// its `max` slots: the checks lane, and a scenarios lane whose width the owner fixed
+    /// (`WSX_SCENARIO_SLOTS`, which every fixture sets).
+    pub paced: bool,
     /// The slots the lane has.
     pub max: usize,
     /// `tasks.minFreeGb` in MiB: a run beside another leaves it free.
@@ -175,7 +179,10 @@ pub fn decide(run: &Run, lane: &Lane) -> Verdict {
     } = lane.machine;
     let cores_f = cores as f64;
     let busy = lane.holders + lane.ahead;
-    if lane.ahead == 0 && lane.holders == 0 {
+    if !lane.paced && lane.ahead == 0 {
+        return Verdict::Go;
+    }
+    if lane.paced && lane.ahead == 0 && lane.holders == 0 {
         return match load1 < START_LOAD * cores_f || lane.waited >= LOAD_WAIT {
             true => Verdict::Go,
             false => Verdict::Wait(Some(format!(
@@ -184,7 +191,7 @@ pub fn decide(run: &Run, lane: &Lane) -> Verdict {
             ))),
         };
     }
-    if lane.ahead == 0 && lane.holders < lane.max && lane.scenarios {
+    if lane.paced && lane.ahead == 0 && lane.holders < lane.max {
         let settled = lane.newest.is_none_or(|age| age >= SETTLE);
         let roomy = free_ram_mb.is_none_or(|free| free >= RUN_RAM_MB)
             && free_disk_mb.is_none_or(|free| free >= lane.min_free_mb + RUN_DISK_MB);
@@ -253,6 +260,7 @@ mod tests {
             ahead,
             waited: Duration::ZERO,
             scenarios: true,
+            paced: true,
             max: 3,
             min_free_mb: 3 * 1024,
         }
@@ -288,6 +296,10 @@ mod tests {
         assert_eq!(decide(&normal, &fresh), Verdict::Wait(None));
         // The lane's slots are a ceiling.
         assert_eq!(decide(&normal, &lane(3, 0, 1.0)), Verdict::Wait(None));
+        // A lane that is not paced starts at once, whatever the load.
+        let mut fixed = lane(0, 0, 90.0);
+        fixed.paced = false;
+        assert_eq!(decide(&normal, &fixed), Verdict::Go);
     }
 
     #[test]
@@ -311,6 +323,7 @@ mod tests {
         // A plain checks lane never goes to CI.
         let mut checks = lane(1, 3, 18.0);
         checks.scenarios = false;
+        checks.paced = false;
         assert_eq!(
             decide(&run(true, 15 * 60_000), &checks),
             Verdict::Wait(None)
