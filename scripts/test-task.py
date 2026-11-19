@@ -1005,7 +1005,7 @@ def manager_up(created):
                  'Continue a `paused` task.', 'Never touch a task on `hand`', '`wsx task checkin`',
                  'read-only git', 'The owner\'s skills are not listed: read `%s/<name>/SKILL.md`' % (plugin / 'skills'), 'Skills: other, scribe. ', 'check rather than guess', '`wsx memory add --kind rule`',
                  '/chats/demo/notes/decisions.md', '/chats/demo/notes/context.md', 'update a section in place',
-                 '--from-chat --reply', "do not answer 'Chat <name> replies'", "'@<project>'",
+                 '--from-chat --reply', "do not answer 'Chat <name> replies'", "'@<chat>'", '`wsx task say --to <chat> --from-chat`',
                  '`new --skills` lends a worker the ones its task needs'):
         assert rule in launch['instructions'], rule
     # ^ No instruction names a brief or a goal file: only the owner's `chat new` takes one (docs/tasks.md "Chats").

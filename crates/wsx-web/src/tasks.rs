@@ -363,7 +363,7 @@ fn build_overview(
         "news": news,
         // ^ The project's home chat, whose route is the project's manager, and its open chats, the
         // home chat among them: the rows of Home (docs/web-client-tasks.md "Home").
-        "home_chat": store::home_chat(&scope.store).unwrap_or_else(|| task::chats::home_name(&scope.store)),
+        "home_chat": home_name(scope),
         "chats": chat_contacts(scope, land_auto),
         // ^ The agent the New chat sheet's Default runs on.
         "default_agent": settings.map(view::default_agent),
@@ -928,7 +928,7 @@ fn chat_contacts(scope: &Scope, land_auto: bool) -> Vec<Value> {
     if !rows.iter().any(|row| row["home"] == true) {
         // ^ No folder to read: named by its project.
         rows.push(json!({
-            "name": store::home_chat(&scope.store).unwrap_or_else(|| task::chats::home_name(&scope.store)),
+            "name": home_name(scope),
             "goal": "", "last_reply": null, "news": null, "home": true, "listed": true,
             "last_unix_ms": 0, "counts": needs::ChatCounts::default(),
             "shown": scope.name, "projects": [scope.name],
@@ -1124,25 +1124,35 @@ pub fn since(scope: &Scope, after: u64) -> Value {
     json!({ "after": after, "tasks": found, "replies": replies })
 }
 
-/// What the manager composer lists: the owner's skills (`/`) and the other projects (`@`)
-/// with their manager's name when one is set. ref: docs/web-client-tasks.md "Project screen"
-pub fn mentions(app: &App, scope: &Scope) -> Outcome<Value> {
+/// What the manager composer lists: the owner's skills (`/`) and the open chats of every granted
+/// project (`@`) but the one the owner writes in (`chat`, else this project's home chat), each as
+/// `{id, name, project}`: `id` is what `wsx task say --to` takes, `name` the shown name. The
+/// rows are the Home list's (`chat_contacts`). ref: docs/web-client-tasks.md "Project screen"
+pub fn mentions(app: &App, scope: &Scope, chat: Option<&str>) -> Outcome<Value> {
     let skills = crate::commands::owner_skills(&scope.path);
-    let projects: Vec<Value> = scopes(&chat::snapshot(&app.client)?, &app.site.access)
-        .into_iter()
-        .filter(|other| other.project != scope.project)
-        .map(|other| {
-            let manager = load_task_config(&other.path)
-                .unwrap_or_default()
-                .manager_name;
-            json!({ "id": other.project, "name": other.name, "manager": manager })
+    let current = chat.map_or_else(|| home_name(scope), str::to_string);
+    let chats: Vec<Value> = scopes(&chat::snapshot(&app.client)?, &app.site.access)
+        .iter()
+        .flat_map(|other| {
+            chat_contacts(other, false)
+                .into_iter()
+                .filter(|row| row["listed"] == true)
+                .map(
+                    |row| json!({ "id": row["name"], "name": row["shown"], "project": other.name }),
+                )
         })
+        .filter(|row| row["id"] != json!(current))
         .collect();
     Ok(json!({
         "skills": skills.commands,
         "truncated": skills.truncated,
-        "projects": projects,
+        "chats": chats,
     }))
+}
+
+/// The name of the project's home chat, the folder's or the one it would have.
+fn home_name(scope: &Scope) -> String {
+    store::home_chat(&scope.store).unwrap_or_else(|| task::chats::home_name(&scope.store))
 }
 
 fn message(text: &str, what: &str) -> Outcome<String> {

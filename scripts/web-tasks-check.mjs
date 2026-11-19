@@ -900,10 +900,11 @@ await typeInto(".composer-field", "see src/fix");
 await pause(300);
 if (await count(".slash")) await fail("a / inside a word opens the skill list");
 await typeInto(".composer-field", "Ask @pla");
-await until(`!!${optionNamed("@plans")}`, "the @ list does not show the second project", 30);
-await shot("mentions-projects", ".composer-send");
-await evaluate(`${optionNamed("@plans")}.click()`);
-if ((await evaluate("document.querySelector('.composer-field').value")) !== "Ask @plans ") await fail(`a picked project reads ${await evaluate("document.querySelector('.composer-field').value")}`);
+await until(`!!${optionNamed("plans")}`, "the @ list does not show the other project's chat", 30);
+if ((await evaluate("document.querySelector('#slash-list').getAttribute('aria-label')")) !== "Chats" || !(await evaluate(`${optionNamed("plans")}.querySelector('.slash-source').textContent === 'plans'`))) await fail("the @ list is not the chats with their project");
+await shot("mentions-chats", ".composer-send");
+await evaluate(`${optionNamed("plans")}.click()`);
+if ((await evaluate("document.querySelector('.composer-field').value")) !== "Ask @plans ") await fail(`a picked chat reads ${await evaluate("document.querySelector('.composer-field').value")}`);
 await typeInto(".composer-field", "");
 await until("!document.querySelector('.slash')", "the list stayed over an empty field");
 
@@ -4856,7 +4857,12 @@ let threadBlock = null;
         await shot(`probe-${tag}-chat-${width}-${scheme}`, ".composer-send");
       }
       await inScheme("dark");
-      // ^ Thread taps with a typed draft: Chat, the thread, Chat, the thread, then Back.
+      // ^ `@` lists the chats (their shown name and project), not the projects.
+    await typeInto(".composer-field", "@");
+    await until("!!document.querySelector('#slash-list .slash-option')", "probe: `@` did not open its list", 30);
+    console.log(`PROBE ${tag} ${width} at-list ${JSON.stringify(await evaluate("({ label: document.querySelector('#slash-list').getAttribute('aria-label'), options: [...document.querySelectorAll('.slash-option')].map((node) => node.textContent) })"))}`);
+    await typeInto(".composer-field", "");
+    // ^ Thread taps with a typed draft: Chat, the thread, Chat, the thread, then Back.
       await typeInto(".composer-field", "a draft kept over the taps");
       await start();
       const base = `${homeChat}/t/fee-table`;

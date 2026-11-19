@@ -1408,9 +1408,13 @@ async fn tasks_mentions(
     State(app): State<Shared>,
     Paired(_): Paired,
     UrlPath(project): UrlPath<u64>,
+    Query(query): Query<ChatQuery>,
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, true)?;
-    with_scope(&app, project, |scope| crate::tasks::mentions(&app, scope)).map(Json)
+    with_scope(&app, project, |scope| {
+        crate::tasks::mentions(&app, scope, query.chat.as_deref())
+    })
+    .map(Json)
 }
 
 async fn tasks_brief(

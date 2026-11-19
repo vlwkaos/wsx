@@ -335,7 +335,7 @@ function Reservoir({ project, open, items, tasks, waiting, checks, routines, onR
 // Unsent manager messages by project, kept on this device.
 const DRAFTS_KEY = "wsx-manager-drafts";
 
-// While the word at the caret starts with `#` (a task), `@` (another project) or, as the whole
+// While the word at the caret starts with `#` (a task), `@` (another chat) or, as the whole
 // text so far, `/` (one of the owner's skills): what it names so far.
 function wordQuery(text, caret) {
   const before = text.slice(0, caret);
@@ -347,24 +347,25 @@ const within = (names, query, pick) => {
   return [...starts, ...names.filter((item) => !starts.includes(item) && pick(item).toLowerCase().includes(query))].slice(0, 50);
 };
 
-// The owner's skills and the other projects, read once per project while the page is open.
+// The owner's skills and the other chats, read once per chat while the page is open.
 const mentionLists = new Map();
-function loadMentions(project) {
-  if (!mentionLists.has(project)) {
-    mentionLists.set(project, api(`api/tasks/${project}/mentions`).catch((failure) => {
-      mentionLists.delete(project);
+function loadMentions(project, room) {
+  const key = `${project}/${room ?? ""}`;
+  if (!mentionLists.has(key)) {
+    mentionLists.set(key, api(`api/tasks/${project}/mentions`, { query: room && { chat: room } }).catch((failure) => {
+      mentionLists.delete(key);
       throw failure;
     }));
   }
-  return mentionLists.get(project);
+  return mentionLists.get(key);
 }
 
-const LIST_LABELS = { "#": "Tasks", "@": "Projects", "/": "Skills" };
+const LIST_LABELS = { "#": "Tasks", "@": "Chats", "/": "Skills" };
 const emptyNote = (mark, tasks, mentions, failed, retry) => mark === "#" ? (tasks.length ? "No task matches that." : "This project has no task yet.")
   : failed ? html`<span class="slash-failed" role="alert">${failed}</span>
     <button class="link-action" type="button" onPointerDown=${(event) => event.preventDefault()} onClick=${retry}>Retry</button>`
   : !mentions ? "Loading…"
-  : mark === "@" ? (mentions.projects.length ? "No project matches that." : "There is no other project.")
+  : mark === "@" ? (mentions.chats.length ? "No chat matches that." : "There is no other chat.")
   : (mentions.skills.length ? "No skill matches that." : "You have no skills to lend the manager.");
 
 // The `#` picker's tasks: the title first, the number after it. A task done or closed more than
@@ -416,15 +417,15 @@ function ManagerComposer({ project, room, thread, busy: thinking, reply, onReply
     if (mark !== "/" && mark !== "@") return undefined;
     let current = true;
     setFailed("");
-    loadMentions(project).then((value) => { if (current) setMentions(value); }, (failure) => { if (current) setFailed(failure.message); });
+    loadMentions(project, room).then((value) => { if (current) setMentions(value); }, (failure) => { if (current) setFailed(failure.message); });
     return () => { current = false; };
   }, [project, mark === "/" || mark === "@", attempt]);
   // ^ `#` lists tasks, `@` the other projects, `/` the owner's skills the manager can use. A
   // skill is asked for in words: the manager is headless and takes no slash command.
   const options = !typed ? null
     : mark === "#" ? taskOptions(tasks, typed.query)
-    : mark === "@" ? within(mentions?.projects ?? [], typed.query, (other) => other.name)
-      .map((other) => ({ key: other.id, name: `@${other.name}`, description: other.manager ?? "", source: "project", insert: `@${other.name} ` }))
+    : mark === "@" ? within(mentions?.chats ?? [], typed.query, (other) => `${other.id} ${other.name}`)
+      .map((other) => ({ key: other.id, name: other.name, number: `@${other.id}`, source: other.project, insert: `@${other.id} ` }))
     : within(mentions?.skills ?? [], typed.query, (skill) => skill.name)
       .map((skill) => ({ key: skill.name, name: `/${skill.name}`, description: skill.description, source: "skill", insert: typed.start ? `owner:${skill.name} ` : `Use owner:${skill.name}: ` }));
   const listOpen = Boolean(options);
@@ -488,7 +489,7 @@ function ManagerComposer({ project, room, thread, busy: thinking, reply, onReply
         ${pills}
         <div class="composer-input">
           <textarea class="composer-field" ref=${field} rows="1" aria-label=${`Message to ${room ?? "the manager"}${thread ? ` in ${thread.title}` : ""}`}
-            placeholder="Message · # task @ project / skill" role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
+            placeholder="Message · # task @ chat / skill" role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
             aria-controls=${listOpen ? "slash-list" : null} aria-activedescendant=${listOpen && options.length ? `slash-${active}` : null}
             onInput=${changed} onKeyDown=${keydown} onPaste=${pasteFiles(upload)} onKeyUp=${() => setCaret(field.current.selectionStart)}
             onClick=${() => setCaret(field.current.selectionStart)} onFocus=${isolate} onBlur=${release}></textarea>

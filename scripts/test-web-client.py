@@ -4467,6 +4467,14 @@ merge_seconds = 3
         assert status == 200 and body['chat'] == 'made', (status, body)
         contacts = overview_chats(2)
         assert [(c['name'], c['goal']) for c in contacts] == [('made', 'Made by the page.'), ('notes', 'Keep the notes.')], contacts
+        # ^ `@` lists the open chats of every granted project but the one written in: id (what `say --to` takes), shown name, project.
+        status, body = steady(owner, 'GET', '/api/tasks/%d/mentions?chat=notes' % demo)
+        listed_chats = {c['id']: c for c in body['chats']}
+        assert status == 200 and 'projects' not in body and 'notes' not in listed_chats, body
+        assert listed_chats['made'] == {'id': 'made', 'name': 'made', 'project': 'demo'}, body['chats']
+        assert any(c['project'] != 'demo' for c in body['chats']), body['chats']
+        status, body = steady(owner, 'GET', '/api/tasks/%d/mentions' % demo)
+        assert status == 200 and {'made', 'notes'} <= {c['id'] for c in body['chats']} and 'demo' not in {c['id'] for c in body['chats']}, body['chats']
         status, body = steady(owner, 'POST', '/api/tasks/%d/chats' % demo, {'name': 'made'})
         assert status == 400 and 'already open' in json.dumps(body), (status, body)
         status, body = steady(owner, 'GET', '/api/tasks/agents')

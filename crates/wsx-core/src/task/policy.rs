@@ -222,7 +222,7 @@ impl Role {
         match self.info().reach {
             [] => "Stay in your own project.".into(),
             reach => format!(
-                "`-p <project>` runs {} in another project, not its deploys, releases or pushes. Consult its manager ('@<project>') with `wsx task say -p <project> --from-chat`.",
+                "`-p <project>` runs {} in another project, not its deploys, releases or pushes. An owner's '@<chat>' means: consult that chat's manager with `wsx task say --to <chat> --from-chat`.",
                 reach.join(", ")
             ),
         }
