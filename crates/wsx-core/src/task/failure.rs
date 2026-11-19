@@ -128,7 +128,7 @@ fn line_of(output: &str) -> Option<(String, String)> {
             })
         })?;
     Some(match section_line(line) {
-        Some((label, place, error)) => {
+        Some((part, label, place, error)) => {
             let error: String = error.chars().take(LINE_CHARS).collect();
             let cut: String = label.chars().take(LABEL_CHARS).collect();
             let shown_label = if cut.len() < label.len() {
@@ -137,8 +137,8 @@ fn line_of(output: &str) -> Option<(String, String)> {
                 cut.clone()
             };
             (
-                format!("FAILED section {shown_label} at {place}: {error}"),
-                zeros(&format!("{cut} | {error}")),
+                format!("{part}FAILED section {shown_label} at {place}: {error}"),
+                zeros(&format!("{part}{cut} | {error}")),
             )
         }
         None => {
@@ -162,10 +162,17 @@ fn zeros(s: &str) -> String {
     out
 }
 
-/// A `FAILED section <label> at <file>:<n>[ (in <fn>, <file>:<n>)]: <error>` line of
-/// scripts/sections.py as (label, where, error). The label is the section's first sentence and
-/// can be long: the cause is the error.
-fn section_line(line: &str) -> Option<(&str, &str, &str)> {
+/// A `[<part>] FAILED section <label> at <file>:<n>[ (in <fn>, <file>:<n>)]: <error>` line of
+/// scripts/sections.py as (part prefix, label, where, error). The `[<part>] ` prefix that
+/// scripts/scenario.py adds is kept, empty when absent: two parts are two places. The label is the
+/// section's first sentence and can be long: the cause is the error.
+fn section_line(line: &str) -> Option<(&str, &str, &str, &str)> {
+    let part = line
+        .strip_prefix('[')
+        .and_then(|rest| rest.find("] "))
+        .filter(|i| !line[1..=*i].contains(char::is_whitespace))
+        .map_or(0, |i| i + 3);
+    let (part, line) = line.split_at(part);
     let rest = line.strip_prefix("FAILED section ")?;
     rest.match_indices(" at ").find_map(|(i, mark)| {
         let after = &rest[i + mark.len()..];
@@ -186,7 +193,7 @@ fn section_line(line: &str) -> Option<(&str, &str, &str)> {
         } else {
             return None;
         };
-        Some((&rest[..i], &after[..end], &after[end + 2..]))
+        Some((part, &rest[..i], &after[..end], &after[end + 2..]))
     })
 }
 
@@ -305,6 +312,24 @@ mod tests {
         let a = format!("{LABEL} at test-web-client.py:4919: AssertionError: FAIL: 390 px: the reply was not sent with its quote; page says: ui");
         let b = format!("{LABEL} at test-web-client.py:4950 (in reply, helpers.py:12): AssertionError: FAIL: 1280 px: the reply was not sent with its quote; page says: ui");
         assert_eq!(key(&a), key(&b));
+    }
+
+    #[test]
+    fn part_prefixed_lines_keep_their_own_error() {
+        let label = "task_journey post levels: a warn or bad `wsx task post` from a LaunchAgent-like environment (the row and the For you list)";
+        let a = format!("[tasks] FAILED section {label} at test-web-client.py:5027: AssertionError: FAIL: the row \"N wait for you\" did not open the For you list");
+        let b = format!("[tasks] FAILED section {label} at test-web-client.py:5013: AssertionError: FAIL: design lint found 1 errors");
+        assert_ne!(key(&a), key(&b));
+        let (shown_a, _) = line_of(&a).unwrap();
+        let (shown_b, _) = line_of(&b).unwrap();
+        assert!(shown_a.starts_with("[tasks] FAILED section "), "{shown_a}");
+        assert!(
+            shown_a.ends_with("did not open the For you list"),
+            "{shown_a}"
+        );
+        assert!(shown_b.ends_with("design lint found 1 errors"), "{shown_b}");
+        // two parts are two places
+        assert_ne!(key(&b), key(&b.replace("[tasks]", "[chat]")));
     }
 
     #[test]
