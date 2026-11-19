@@ -61,3 +61,9 @@ nohup sh -c 'i=0; while [ -d "$1" ] && [ $i -lt 120 ]; do sleep 1; i=$((i+1)); d
   date; echo "copy gone after ${i}s"; pm2 restart wsx-web; echo "pm2 exit $?"' \
   restart "$copy" >"$log" 2>&1 </dev/null &
 echo "wsx-web restarts after the deploy is recorded; see $log"
+
+# ^ wsx-web never replaces wsxd, and a client replaces it only for a newer daemon revision, so the
+# deploy hands off itself and fails with the daemon's reason when the live wsxd stays on an older
+# build (docs/daemon-live-upgrade.md "Restart and stop"). The unset env is the web server's (switch.sh).
+step "wsxd handoff"
+env -u XDG_STATE_HOME -u WSX_SOCKET "$live/wsx" daemon restart --if-needed

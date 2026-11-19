@@ -101,9 +101,17 @@ pub(super) fn cmd_daemon_stop(force: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn cmd_daemon_restart(json: bool) -> Result<()> {
-    let outcome = runtime::restart_daemon()?;
+// ^ `wsx daemon restart --if-needed` waits this long for another TUI to quit.
+const TUI_WAIT: Duration = Duration::from_secs(60);
+
+pub(super) fn cmd_daemon_restart(if_needed: bool, json: bool) -> Result<()> {
+    let outcome = runtime::restart_daemon(if_needed.then_some(TUI_WAIT))?;
     let (state, live_runtimes, message) = match &outcome {
+        runtime::DaemonRestart::Current => (
+            "current",
+            0,
+            format!("wsxd is the installed build ({})", runtime::WSX_VERSION),
+        ),
         runtime::DaemonRestart::NotRunning => (
             "not_running",
             0,
@@ -124,8 +132,9 @@ pub(super) fn cmd_daemon_restart(json: bool) -> Result<()> {
             "deferred",
             *live_runtimes,
             format!(
-                "wsxd restart is waiting. {} Sessions keep running. The restart then continues by itself.",
-                crate::app::replacement_wait_reason(blockers)
+                "wsxd restart is waiting. {} {}",
+                crate::app::replacement_wait_reason(blockers),
+                deferred_tail(blockers, *live_runtimes)
             ),
         ),
         runtime::DaemonRestart::Unsupported { daemon_version } => (
@@ -142,13 +151,34 @@ pub(super) fn cmd_daemon_restart(json: bool) -> Result<()> {
             serde_json::json!({"state": state, "live_runtimes": live_runtimes, "message": message})
         );
     }
-    if matches!(outcome, runtime::DaemonRestart::Unsupported { .. }) {
+    if matches!(outcome, runtime::DaemonRestart::Unsupported { .. })
+        || (if_needed && matches!(outcome, runtime::DaemonRestart::Deferred { .. }))
+    {
         bail!(message);
     }
     if !json {
         println!("{message}");
     }
     Ok(())
+}
+
+// ^ A handoff carries at most MAX_HANDOFF_PANES running panes; a wsxd older than that rule counts
+// every pane, exited ones too. Name the counts, because that refusal never goes on by itself.
+fn deferred_tail(blockers: &[runtime::ReplacementBlocker], running: usize) -> String {
+    if blockers.contains(&runtime::ReplacementBlocker::HandoffUnavailable) {
+        if let Ok(runtime::Response::Snapshot(snapshot)) =
+            runtime::Client::local().call(&runtime::Request::Snapshot)
+        {
+            let limit = runtime::MAX_HANDOFF_PANES;
+            if snapshot.panes.len() > limit {
+                return format!(
+                    "wsxd holds {} panes ({running} running); a handoff carries at most {limit} running panes. Sessions keep running. Delete sessions below the limit, then restart again.",
+                    snapshot.panes.len()
+                );
+            }
+        }
+    }
+    "Sessions keep running. The restart then continues by itself.".into()
 }
 
 pub(super) fn cmd_daemon_recover() -> Result<()> {

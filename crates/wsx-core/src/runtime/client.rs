@@ -83,6 +83,8 @@ pub enum Availability {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonRestart {
     NotRunning,
+    /// `if_needed` only: the running daemon is already the installed build; nothing was asked.
+    Current,
     Restarted {
         live_runtimes: usize,
     },
@@ -1281,8 +1283,45 @@ pub fn pending_upgrade() -> io::Result<Option<PendingUpgrade>> {
 
 /// Hand the running daemon off into the installed wsxd, also when it is the same build.
 /// Sessions keep their PTYs. This never stops a daemon. See docs/daemon-live-upgrade.md.
-pub fn restart_daemon() -> io::Result<DaemonRestart> {
-    restart_with_binary(&Client::local(), &daemon_binary())
+/// Hand off into the installed wsxd. `if_needed` is the deploy's question, "is the live wsxd the
+/// installed build?" (docs/daemon-live-upgrade.md "Restart and stop"): a build that matches
+/// answers `Current`, and a deferral for another TUI alone is waited for up to `wait`.
+pub fn restart_daemon(if_needed: Option<Duration>) -> io::Result<DaemonRestart> {
+    let (client, binary) = (Client::local(), daemon_binary());
+    let Some(wait) = if_needed else {
+        return restart_with_binary(&client, &binary);
+    };
+    let installed = binary_identity(&binary)?;
+    let is_installed =
+        || lifecycle_status(&client).is_ok_and(|status| status.binary_id == installed);
+    if is_installed() {
+        return Ok(DaemonRestart::Current);
+    }
+    let outcome = restart_with_binary(&client, &binary)?;
+    let DaemonRestart::Deferred {
+        live_runtimes,
+        blockers,
+    } = &outcome
+    else {
+        return Ok(outcome);
+    };
+    // ^ Only a TUI that quits clears by itself; any other blocker is a refusal.
+    if blockers
+        .iter()
+        .any(|blocker| *blocker != super::domain::ReplacementBlocker::OtherTui)
+    {
+        return Ok(outcome);
+    }
+    let deadline = Instant::now() + wait;
+    while Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(500));
+        if is_installed() {
+            return Ok(DaemonRestart::Restarted {
+                live_runtimes: *live_runtimes,
+            });
+        }
+    }
+    Ok(outcome)
 }
 
 fn restart_with_binary(client: &Client, binary: &Path) -> io::Result<DaemonRestart> {

@@ -192,7 +192,7 @@ impl Command {
                 subcommand,
                 DaemonCmd::Status { json: true }
                     | DaemonCmd::Stop { json: true, .. }
-                    | DaemonCmd::Restart { json: true }
+                    | DaemonCmd::Restart { json: true, .. }
             ),
             Command::Routine { subcommand } => subcommand.json(),
             Command::Task { common, subcommand } => common.json || subcommand.prints_json(),
@@ -489,6 +489,9 @@ pub enum DaemonCmd {
     },
     /// Replace wsxd with the installed build; sessions, shells and agents keep running
     Restart {
+        /// Do nothing when wsxd is the installed build; fail with the reason when it cannot be replaced
+        #[arg(long)]
+        if_needed: bool,
         #[arg(long)]
         json: bool,
     },
