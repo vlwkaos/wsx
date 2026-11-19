@@ -449,6 +449,9 @@ async function chipsOnLine(where, chips, near) {
 // ^ An open task's word is at the top of the sheet; a finished task's stage is in its top row.
 const sheetState = () => evaluate("document.querySelector('.task-sheet :is(.progress-health, .bar-state)')?.textContent ?? ''");
 const atEnd = "(() => { const log = document.querySelector('.log'); return log.scrollHeight - log.scrollTop - log.clientHeight < 2; })()";
+// ^ The log's own numbers for a failure message: `short` is its distance from the end, `jump` the button's words (null: none).
+const endState = () => evaluate(`(() => { const log = document.querySelector('.log'); return JSON.stringify({ top: Math.round(log.scrollTop), height: log.scrollHeight, client: log.clientHeight,
+  short: Math.round(log.scrollHeight - log.scrollTop - log.clientHeight), jump: document.querySelector('.jump')?.textContent.trim() ?? null, rows: log.children.length, earlier: !!log.querySelector('.log-earlier') }); })()`);
 const bubbles = () => evaluate(`[...document.querySelectorAll('.log .bubble')].map((node) => ({ side: node.dataset.side, first: node.hasAttribute('data-first'),
   last: node.hasAttribute('data-last'), author: node.querySelector('.bubble-author')?.textContent ?? '', tag: node.querySelector('.bubble-tag')?.textContent ?? '', text: node.querySelector('.bubble-box').textContent.trim().replace(/\\s+/g, ' ') }))`);
 
@@ -1293,11 +1296,16 @@ for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
   await resize([width, height, scale]);
   await until("!!document.querySelector('.log > [data-quote]')", `no message to press at ${width} px`);
   const at = { x: Math.round(width / 3), y: Math.round(height / 3) };
-  await evaluate(`(document.querySelector('.log > [data-quote] .bubble-body p') ?? document.querySelector('.log > [data-quote]'))
-    .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: ${at.x}, clientY: ${at.y}, button: 2 }))`);
-  await until("!!document.querySelector('.reply-menu')", `a press on a manager message opened no reply menu at ${width}x${height}`);
-  await pause(100);
-  const placed = await evaluate(`(() => { const box = document.querySelector('.reply-menu').getBoundingClientRect(); return { left: box.left, top: box.top, width: box.width, height: box.height }; })()`);
+  // ^ Any scroll closes the menu by design (reply.js): a late settle of the log can come between the press and the read, so the press is repeated.
+  let placed = null;
+  for (let attempt = 0; attempt < 5 && !placed; attempt++) {
+    await evaluate(`(document.querySelector('.log > [data-quote] .bubble-body p') ?? document.querySelector('.log > [data-quote]'))
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: ${at.x}, clientY: ${at.y}, button: 2 }))`);
+    await until("!!document.querySelector('.reply-menu')", `a press on a manager message opened no reply menu at ${width}x${height}`);
+    await pause(100);
+    placed = await evaluate(`(() => { const box = document.querySelector('.reply-menu')?.getBoundingClientRect(); return box && { left: box.left, top: box.top, width: box.width, height: box.height }; })()`);
+  }
+  if (!placed) await fail(`the reply menu closed again and again at ${width}x${height}`);
   const want = { left: Math.min(at.x, width - placed.width), top: Math.min(at.y, height - placed.height) };
   if (Math.abs(placed.left - want.left) > 1 || Math.abs(placed.top - want.top) > 1) await fail(`the reply menu is at ${Math.round(placed.left)},${Math.round(placed.top)} not ${want.left},${want.top} at ${width}x${height}`);
   await shot(`reply-menu-manager-${width}`);
@@ -1984,10 +1992,22 @@ async function diagramReply() {
   await evaluate("Promise.all([...document.querySelectorAll('.log .diagram img')].map((image) => image.decode()))");
   await pause(300);
 }
+// ^ The button may draw after the first click and a new row moves the end: each try clicks again. A failure names the calling line and the log's numbers: a log short of its end with no button is the app's own 80 px rule, not a button that did nothing.
 const toLatest = async (where) => {
-  // ^ The button may draw after the first click and a new row moves the end: each try clicks again.
-  await until(`(document.querySelector('.jump')?.click(), ${atEnd})`, `${where}: Jump to latest did not return to the end`);
+  const call = new Error().stack.split("\n")[2]?.trim() ?? "";
+  await until(`(document.querySelector('.jump')?.click(), ${atEnd})`, async () => `${where}: Jump to latest did not return to the end (${call}): ${await endState()}`);
 };
+// Jump to latest from the top of the log, again and again (the chat of 95 rows after "Show earlier" too): each round must reach the end and hold it, with the button gone.
+async function jumpRounds(where, rounds = 5) {
+  for (let round = 1; round <= rounds; round++) {
+    await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = 0; log.dispatchEvent(new Event('scroll')); })()");
+    await until("!!document.querySelector('.jump')", async () => `${where}, round ${round}: no Jump to latest at the top of the log: ${await endState()}`);
+    if (await count(".log-earlier")) { await click(".log-earlier"); await pause(300); }
+    await toLatest(`${where}, round ${round}`);
+    await pause(500);
+    if (!(await evaluate(atEnd)) || await count(".jump")) await fail(`${where}, round ${round}: the end was not held after Jump to latest: ${await endState()}`);
+  }
+}
 // The probe is the first bubble wholly in view; its distance from the screen's top must not change.
 const probe = "document.querySelector('[data-follow-probe]').getBoundingClientRect().top";
 const markProbe = `(() => { const top = document.querySelector('.log').getBoundingClientRect().top;
@@ -2159,6 +2179,7 @@ async function followEnd(where) {
   }
   fs.appendFileSync(path.join(captures, "follow-end.txt"), `steady scroll, ${where}: ${moves.join("; ") || "no move"}\n`);
   if (moves.length) await fail(`${where}: the chat moved without the reader: ${moves.join("; ")}`);
+  await jumpRounds(where);
 }
 await followEnd("390 px");
 
@@ -2978,6 +2999,11 @@ const where = () => evaluate("JSON.stringify({ hash: location.hash, length: hist
 const topBack = "#main > .page > .bar > a.icon-button";
 const sheetBack = "dialog.task-sheet[open] .bar button[aria-label='Back to the chat']";
 async function sameBack(name, open, back) {
+  // ^ A chat left within 80 px of its end is at its end for the page (it keeps no place, lib.js `keep`) and opens at the end: the reader goes to the exact end first, so the scroll compared is a place the page keeps.
+  if (await count(".log")) {
+    await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = log.scrollHeight; })()");
+    await until(atEnd, async () => `${name}: the chat did not go to its end before Back: ${await endState()}`);
+  }
   await pause(400);
   const before = await where();
   // ^ The screen left stays as a forward entry, so history.length is compared between the two
@@ -4099,6 +4125,7 @@ await pause(300);
 const shifted = (await rowAt(reading.key)) - reading.down;
 if (Math.abs(shifted) > 2) await fail(`Show earlier moved the row in view by ${shifted} px`);
 await toLatest("390 px");
+await jumpRounds("390 px, long chat");
 phase("The manager quotes an earlier message by id (docs/tasks.md M");
 // --- The manager quotes an earlier message by id (docs/tasks.md "Manager"): its reply shows the
 // quote as one line over its words, and a tap goes to the quoted message.

@@ -251,6 +251,12 @@ export function useFollowEnd(name, ready) {
     }
     setUnread(rows.filter((row) => Number(row.dataset.at) > read.current).length);
   };
+  // ^ The one reading of "at the end" (within 80 px), after the reader's scroll or a placement.
+  const readEnd = () => {
+    const element = node.current;
+    atEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+    setAway(!atEnd.current);
+  };
   const mark = () => {
     const element = node.current;
     // ^ Not the row cut by the top edge: when that row grows inside (its diagram draws), what
@@ -285,8 +291,7 @@ export function useFollowEnd(name, ready) {
       element.scrollTop = left.offsetTop - place.offset;
     }
     else element.scrollTop = element.scrollHeight;
-    atEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
-    setAway(!atEnd.current);
+    readEnd();
     mark();
   };
   const settle = () => {
@@ -342,8 +347,7 @@ export function useFollowEnd(name, ready) {
     // ^ Only the reader scrolling up leaves the end. The event of the log's own pin can come
     // after a row grew again (a diagram drew), before the resize observer pins once more.
     if (atEnd.current && element.scrollTop >= top.current - 1) return settle();
-    atEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
-    setAway(!atEnd.current);
+    readEnd();
     mark();
   };
   const log = useCallback((element) => {
@@ -386,11 +390,16 @@ export function useFollowEnd(name, ready) {
     if (!element || !row) return;
     restore.current = null;
     row.scrollIntoView({ block: "center" });
-    atEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
-    setAway(!atEnd.current);
+    readEnd();
     mark();
   };
   useLayoutEffect(settle);
+  // ^ A tap on a quote (reply.js) shows its message through `reveal`, not by a scroll of its own.
+  useEffect(() => {
+    const show = (event) => { if (node.current?.contains(event.detail)) reveal(event.detail); };
+    addEventListener("quote-show", show);
+    return () => removeEventListener("quote-show", show);
+  }, []);
   // ^ Kept when the chat closes or the page goes to the background (a phone may drop it then);
   // a page that shows again counts what is on screen as read.
   useEffect(() => {

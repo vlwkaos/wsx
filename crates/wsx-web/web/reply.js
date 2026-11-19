@@ -5,7 +5,7 @@
 // the message's id (`quoted_id`, sent as `> message <id>`) opens the chat there when it is not.
 // A row that can be quoted is a child of the log with `data-quote`, its first line as the
 // server cuts it (wsx-core `quote_of`, sent as `quote`).
-import { html, Icon, motion, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
+import { html, Icon, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
 import { toast } from "./ui.js";
 import { commits, speedAt, swipes, track } from "./swipe.js";
 
@@ -61,7 +61,8 @@ export function Quote({ quote, id = null, check = null, project = null }) {
       toast("That message is no longer in the conversation shown here.");
       return;
     }
-    target.scrollIntoView({ block: "center", behavior: motion() ? "smooth" : "auto" });
+    // ^ The log owns its scroll (`useFollowEnd`, lib.js `reveal`): it moves there and leaves the end in the same task.
+    dispatchEvent(new CustomEvent("quote-show", { detail: target }));
     markFound(target);
   };
   return html`<button class="quote" type="button" aria-label=${`Go to the quoted message: ${quote}`} onClick=${go}>${quote}</button>`;
