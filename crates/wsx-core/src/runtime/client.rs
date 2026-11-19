@@ -1283,7 +1283,7 @@ pub fn pending_upgrade() -> io::Result<Option<PendingUpgrade>> {
 
 /// Hand the running daemon off into the installed wsxd, also when it is the same build.
 /// Sessions keep their PTYs. This never stops a daemon. See docs/daemon-live-upgrade.md.
-/// Hand off into the installed wsxd. `if_needed` is the deploy's question, "is the live wsxd the
+/// `if_needed` is the deploy's question, "is the live wsxd the
 /// installed build?" (docs/daemon-live-upgrade.md "Restart and stop"): a build that matches
 /// answers `Current`, and a deferral for another TUI alone is waited for up to `wait`.
 pub fn restart_daemon(if_needed: Option<Duration>) -> io::Result<DaemonRestart> {
