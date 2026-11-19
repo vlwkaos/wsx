@@ -1,6 +1,6 @@
 # Memory layers: one resolution per reader, kept by wsx
 
-Status: plan, 2026-11-19 (task 525), for the owner to accept before any build. `(est.)` marks a number I did not measure.
+Status: plan, accepted 2026-11-19 (task 525); no step is built yet. `(est.)` marks a number I did not measure.
 Owner words: "abstracted mental-model notes made in advance; memory resolution kept in separate layers; if the manager cannot, wsx does it" (wsx 5457); "check code, history and memory before acting" (5455); "reorganize the internals, delete what that makes unneeded, update the mental model" (5461).
 
 **Problem.** A manager guessed why the scenario slot is one. [check-queue-research.md](check-queue-research.md) already said why. Nothing pointed it there: `context.md` was cut ("NOT SHOWN lines 13-119 of 127"), `docs/design` has 67 files and no index, and `wsx.config.yml` sets no `memory.areas`.
@@ -40,7 +40,7 @@ flowchart TD
 2. **When.** `fold_memo` already runs at each land and close. After it stores the records, one pass takes the paths of the landed diff and picks every area whose globs they meet. An area already fresh at that commit is skipped. A refresh in flight for the area is not repeated: the next land catches up, because the diff is taken from `verified`, not from the last land.
 3. **How.** One bounded call of a cheap model (`wsx_core::process::run_bounded`, Sonnet by default, `tasks.areas.model` to change), with: the current model, `git diff <verified>..<landed> -- <globs>` cut at 24 KiB, the task's memo and result, and the area's active records. The prompt: change only what the diff changed, keep the headings, 3 KiB at most, cite the owner function and the doc. No manager turn runs for it.
 4. **Checks before it writes.** At most 3 KiB; the headings kept; the mermaid fence closed; each `docs/` link and each cited function exists. A model that fails any of them leaves the old file, which stays marked stale with its `verified` commit, and one line goes to the manager's progress. Stale is shown, never hidden: the start block and the manager read "stale since <commit>" and the current diff is one `git diff` away.
-5. **Cost (est., not measured).** About 11k tokens in, 1.2k out per area: $0.035 at Sonnet's $2 and $10 per M (the rates of memory-system.md's `recall` estimate). A land that meets 2 areas is $0.07, under 2% of the ~$4 mean landed task ($4.07, memory-eval.md:102). The gain threshold of that file is $0.15 per landed task. Step 4 measures the real number on 5 lands.
+5. **Cost (est., not measured).** About 11k tokens in, 1.2k out per area: $0.035 at Sonnet's $2 and $10 per M (the rates of memory-system.md's `recall` estimate). A land that meets 2 areas is $0.07, under 2% of the ~$4 mean landed task ($4.07, memory-eval.md "Task level"). The gain threshold of that file is $0.15 per landed task. Step 4 measures the real number on 5 lands.
 6. **No `distill`.** The old plan's `wsx memory distill` (a 60k-token transcript read, never built) is not built: the diff and the memo are the input, and they are cheaper and checkable.
 
 ## How a request reaches its layer
@@ -121,8 +121,9 @@ Each result states lines added and removed (`git diff --shortstat`) and what it 
 
 Steps 1 to 3 only add: the owner words ask for removal, so step 5 carries the deletion and waits for steps 4 and 6 to show the layers work. Cost to build: about 5 tasks at ~$4 (est., $20), plus $3 for step 6.
 
-## For the owner
+## Decided
 
-1. L2 and L3 in the memory store, not repo files. Agree? The other choice puts a refresh into every land.
-2. About $0.035 per area refreshed, Sonnet, no manager turn. Agree? Step 4 measures it.
-3. Step 5 deletes `context.md` memo lines from the manager's first message. Agree, once step 6 shows the answer reaches the manager?
+Manager, for the owner (wsx 5458), 2026-11-19:
+1. L2 and L3 live in the memory store, not in repo files: the repo is public (no personal paths) and the store already has stale-by-commit.
+2. The writer may cost $0.10 to $0.25 per land against ~$4 per landed task. Step 4 measures the first 5 lands and the real number replaces the estimate above.
+3. `context.md` memo lines leave the manager's first message only in step 5, after step 6 shows the answer reaches the manager.
