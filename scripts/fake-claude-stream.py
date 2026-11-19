@@ -380,6 +380,18 @@ def manager_turn(text, project, page):
         time.sleep(3)
     if 'LONG' in text.split():
         time.sleep(25)
+    if 'MSTEER' in text.split():
+        # ^ One tool call after a pause, as Claude runs one: the host hands the owner's next message
+        # to the turn at that call (docs/tasks.md "Manager", Messages during a turn), and the reply says what came.
+        time.sleep(3)
+        tool_use('msteer-tool', 'true')
+        tool_result('msteer-tool', 'ok', False)
+        ready, _, _ = select.select([sys.stdin.buffer], [], [], 5.0)
+        if not ready:
+            return 'MSTEER got nothing'
+        steer = json.loads(sys.stdin.buffer.readline())['message']['content']
+        trace({'steer_in_turn': steer})
+        return 'MSTEER got: ' + steer
     if 'HANG' in text.split() and not os.path.exists(TRACE + '.hung'):
         open(TRACE + '.hung', 'w').close()
         time.sleep(600)

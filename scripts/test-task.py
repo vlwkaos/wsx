@@ -2545,7 +2545,7 @@ def part_core(created=None):
     for n in (first, second):
         wait_state(n, 'ready', 'failed')
     waiting = js('task', 'say', 'STATUS')
-    assert waiting['busy'] and 'queued' in waiting['message'], waiting
+    assert waiting['busy'] and 'next turn' in waiting['message'], waiting
     merged = wait(lambda: events_with('#%d ready r1' % first, '#%d ready r1' % second), 'merged events')
     assert len(merged) == 1, merged
     # ^ An event names the host's checks before the worker's own words.
@@ -2575,6 +2575,18 @@ def part_core(created=None):
     assert owner_turn['model'] == 'fake-manager' and owner_turn['session'] == event_turn['session'], owner_turn
     switches = [t['set_model'] for t in traces() if 'set_model' in t and t['session'] == event_turn['session']]
     assert switches[-2:] == ['fake-events', 'fake-manager'], switches
+    # ^ One thought in two owner messages: the second comes while the first's turn runs and goes into
+    # it at the turn's next tool call, so one reply answers both (docs/tasks.md "Manager", Messages
+    # during a turn). The turn above (SLOW) had no tool call after its message: that one waited.
+    manager_settled('the manager idle before MSTEER')
+    part_one = js('task', 'say', 'MSTEER part one')
+    wait(lambda: turn_with('MSTEER part one'), 'the MSTEER turn')
+    part_two = js('task', 'say', 'part two')
+    joined = reply_to(part_two['id'])
+    assert sorted(joined['to']) == [part_one['id'], part_two['id']] and 'part two' in joined['text'], joined
+    deliveries = [e['ids'] for e in manager_entries() if e['kind'] == 'delivered' and part_two['id'] in e['ids']]
+    assert deliveries == [[part_two['id']]], deliveries
+    assert len([e for e in chat() if e['kind'] == 'reply' and part_one['id'] in e['to']]) == 1, chat()[-6:]
     # A decided item's capture files stay however old it is; only the project's byte budget
     # (`tasks.captureBudgetMb`) removes them, skipped and failed items before passed ones, oldest
     # first, never an open item's (docs/tasks.md "To check"). Staged: the video item skipped 8

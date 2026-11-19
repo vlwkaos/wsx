@@ -454,7 +454,7 @@ impl Manager {
                     busy,
                     binary: None,
                     message: if busy {
-                        "queued until the manager's turn ends".into()
+                        "the manager's running turn takes it, or its next turn".into()
                     } else {
                         "sent to the manager".into()
                     },
@@ -968,11 +968,8 @@ impl Manager {
         }
         if let Err(error) = self.send_turn(text.trim_end(), events_only) {
             self.say(&format!("cannot start the manager agent: {error:#}"));
-            // ^ The messages go back to the front, in order, for the retry: they are not
-            // logged as delivered. One `stopped` entry for a run of failures.
-            for item in taken.into_iter().rev() {
-                self.queue.push_front(item);
-            }
+            // ^ Not logged as delivered. One `stopped` entry for a run of failures.
+            self.put_back(taken);
             if self.start_failed.replace(Instant::now()).is_none() {
                 self.log(ManagerEvent::Stopped {
                     reason: format!("cannot start the manager agent: {error:#}"),
@@ -981,9 +978,6 @@ impl Manager {
             return;
         }
         self.start_failed = None;
-        for (_, author, ..) in &taken {
-            self.owe(author);
-        }
         // ^ A sign-in hold logged no pause, so it logs no resume: the chat reads a `limit`
         // without a time as the end of a hold (`waiting_ids`), and each retry would say it.
         if held
@@ -992,9 +986,7 @@ impl Manager {
         {
             self.log(ManagerEvent::Limit { until: None });
         }
-        if !ids.is_empty() {
-            self.log(ManagerEvent::Delivered { ids: ids.clone() });
-        }
+        self.delivered(&taken, &ids);
         let mut turn = held.map(|hold| hold.ids).unwrap_or_default();
         turn.extend(ids);
         self.turn = Some(turn);
@@ -1002,6 +994,56 @@ impl Manager {
         // choice stays with the events.
         self.turn_events = events_only && !for_owner;
         self.report(runtime::AgentState::Working);
+    }
+
+    /// What a turn or a steer took reached the agent: a peer's message is owed one answer, and
+    /// the log marks the ids delivered.
+    fn delivered(&mut self, taken: &[(u64, Author, String, bool)], ids: &[u64]) {
+        for (_, author, ..) in taken {
+            self.owe(author);
+        }
+        if !ids.is_empty() {
+            self.log(ManagerEvent::Delivered { ids: ids.to_vec() });
+        }
+    }
+
+    /// The messages go back to the front, in order, for the next try.
+    fn put_back(&mut self, taken: Vec<(u64, Author, String, bool)>) {
+        for item in taken.into_iter().rev() {
+            self.queue.push_front(item);
+        }
+    }
+
+    /// The owner's messages that came during a turn go into it at its next tool call, so one
+    /// thought written as several messages gets one reply. Not while the agent writes its last
+    /// text (a steer then runs a second turn), in a turn of only events, or in a stand-in's call:
+    /// those messages wait for the next turn. ref: docs/tasks.md "Manager" (Messages during a turn)
+    fn steer_waiting(&mut self) {
+        let owner_waits = self
+            .queue
+            .front()
+            .is_some_and(|(_, author, ..)| *author == Author::Owner);
+        if !owner_waits || self.turn.is_none() || self.turn_events || self.stand_in.is_some() {
+            return;
+        }
+        let Batch {
+            ids, text, taken, ..
+        } = self.take_batch();
+        let sent = match self.agent.as_mut() {
+            Some(agent) => agent.send(text.trim_end()),
+            None => Err(anyhow::anyhow!("the manager agent is not running")),
+        };
+        if let Err(error) = sent {
+            // ^ The next turn takes them; the agent's own end is reported by its stream.
+            self.say(&format!(
+                "cannot hand a message to the running turn: {error:#}"
+            ));
+            return self.put_back(taken);
+        }
+        self.delivered(&taken, &ids);
+        if let Some(turn) = &mut self.turn {
+            turn.extend(ids);
+        }
     }
 
     /// The model of a turn: `eventModel` for one with only events while no ready task the
@@ -1863,12 +1905,15 @@ impl Manager {
             {
                 self.say(&text)
             }
-            Some(AgentLine::Progress { text, .. }) => {
+            Some(AgentLine::Progress { text, said }) => {
                 if let Some(turn) = &mut self.turn_record {
                     turn.output(&self.dir.path);
                 }
                 self.say(&text);
                 self.log(ManagerEvent::Agent { text });
+                if !said {
+                    self.steer_waiting();
+                }
             }
             Some(AgentLine::Result(result)) => self.on_result(*result),
             None => {
