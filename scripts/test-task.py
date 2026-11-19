@@ -7197,12 +7197,12 @@ def part_agents(created=None):
     assert json.loads(pi_limit.read_text())['since_ms'] == since, pi_limit.read_text()
     js('task', 'close', moved, '--discard')
     limit_file.unlink()
-    for name in ('pi-fake.json', 'pi-paid.json', 'pi-other.json'):
-        (agents / name).unlink(missing_ok=True)
     configure(CONFIG, 'no fallback')
     # ^ A close event names the task by its title (`PIERROR <file>`), and the host writes it late: a Pi turn in 37b
     # that takes it along refuses for that file. A turn on the own agent here takes the events that are in the log.
     reply_to(js('task', 'say', 'STATUS drain the close events')['id'])
+    for name in ('pi-fake.json', 'pi-paid.json', 'pi-other.json'):
+        (agents / name).unlink(missing_ok=True)
 
     # 37b. A failed sign-in moves the manager and a worker to the first usable fallback at once, and
     # both go home on the first success once the record on the account ends (docs/tasks.md "Agents").
@@ -7227,9 +7227,10 @@ def part_agents(created=None):
             tail = [{k: (str(v)[:160]) for k, v in e.items() if k in ('kind', 'reason', 'text', 'to', 'tokens')}
                     for e in manager_entries()[-14:]]
             records = {f.name: f.read_text()[:200] for f in agents.iterdir() if f.suffix == '.json'}
-            raise RuntimeError('%s; log %s; state %s; records %s; env %s' % (
+            pierror = [(t.get('session'), str(t['message'])[-700:]) for t in traces() if t.get('adapter') == 'pi' and 'PIERROR' in str(t.get('message', ''))]
+            raise RuntimeError('%s; log %s; state %s; records %s; env %s; turns with PIERROR %s' % (
                 error, tail, {k: manager_state().get(k) for k in ('agent', 'limit')}, records,
-                os.environ.get('WSX_TEST_SIGN_IN_RETRY_SECS'))) from None
+                os.environ.get('WSX_TEST_SIGN_IN_RETRY_SECS'), pierror[-2:])) from None
     si_away = js('task', 'say', 'AUTHFAIL %s STATUS away' % si_signed_in)
     assert si_reply(si_away)['text'].startswith('pi answers: '), chat()[-3:]
     assert manager_state()['agent']['name'] == 'fake-pi', manager_state()
