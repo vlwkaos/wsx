@@ -7,6 +7,7 @@
   report   per-task tables, fidelity, noise, verdict inputs  -> stdout (markdown)
   live     before/after comparison from the real logs (confounded: different tasks)
   offline  free score of the start set on every landed task, from the logs and the git history (no model call)
+  notes    who writes the L2 area notes (design A or B, Sonnet, Haiku, local): replay of the last 30 lands, questions, curation
   recall-cheap  (internal) the shim's `wsx memory recall` with a cheap model
 
 Arms: baseline (what a worker had at the task's start), memory (+ start set, `wsx memory` and a store
@@ -20,6 +21,7 @@ start block no longer carries them; the offline variants below keep scoring the 
 import argparse
 import collections
 import concurrent.futures as cf
+import functools
 import hashlib
 import importlib.util
 import json
@@ -34,6 +36,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -144,26 +147,30 @@ def area_of(files):
 
 # ---- pick ------------------------------------------------------------------------------------
 
+def pickable(n, t):
+    """The area of a task a plan replay can use (the rules of "Method": Tasks), else None."""
+    if n < FIRST_TASK or t.landed_ms is None or not t.revision() or t.rec.get('adapter') != 'claude':
+        return None
+    plan = t.plan
+    if not plan or not (plan.get('usage') or {}).get('cost_micro_usd') or not t.steps or t.steps[0]['name'] != 'plan':
+        return None
+    if not (t.result.get('memo') or t.result.get('summary')) or not t.prompt:
+        return None
+    # ^ Audits have no cause; a plan over $1.50 is an outlier (a blocked or rotated plan) that would eat the $40.
+    if (t.rec.get('title') or '').startswith('Audit') or plan['usage']['cost_micro_usd'] > 1_500_000:
+        return None
+    files = t.landed_files()
+    if not files or any('memory' in f for f in files) or re.search(r'docs/memory|wsx memory|memory-system|memory::', t.prompt):
+        return None
+    return area_of(files)
+
+
 def cmd_pick(args):
     tasks = real_tasks()
     pool = collections.defaultdict(list)
     for n, t in sorted(tasks.items()):
-        if n < FIRST_TASK or t.landed_ms is None or not t.revision() or t.rec.get('adapter') != 'claude':
-            continue
-        plan = t.plan
-        if not plan or not (plan.get('usage') or {}).get('cost_micro_usd') or not t.steps or t.steps[0]['name'] != 'plan':
-            continue
-        if not (t.result.get('memo') or t.result.get('summary')) or not t.prompt:
-            continue
-        # ^ Audits have no cause; a plan over $1.50 is an outlier (a blocked or rotated plan) that would eat the $40.
-        if (t.rec.get('title') or '').startswith('Audit') or plan['usage']['cost_micro_usd'] > 1_500_000:
-            continue
-        files = t.landed_files()
-        if not files or any('memory' in f for f in files):
-            continue
-        if re.search(r'docs/memory|wsx memory|memory-system|memory::', t.prompt):
-            continue
-        pool[area_of(files)].append(n)
+        if (area := pickable(n, t)):
+            pool[area].append(n)
     if args.tasks:  # ^ the picks of the doc's table, when the store has grown since the seed drew them (the pool changes with every landed task)
         picks = sorted((n, area_of(tasks[n].landed_files())) for n in args.tasks)
         return write_picks(tasks, picks, pool)
@@ -581,11 +588,14 @@ def one_run(task, tasks, arm, rep, args):
         sh(['git', '-C', str(ROOT), 'worktree', 'add', '--detach', str(wc), task.rec['base']], check=True)
         wc = wc.resolve()
         ctx, pid = build_state(task, tasks, home, wc)
-        block = host_context(task, tasks, ctx if arm == 'baseline' else '')  # ^ the memory arms' host has no context.md lines: the start set replaces them
+        plain = arm == 'baseline' or arm.startswith('notes-')  # ^ the notes arms are the baseline plus the L2 models of the task's files
+        block = host_context(task, tasks, ctx if plain else '')  # ^ the memory arms' host has no context.md lines: the start set replaces them
         info = {'task': task.n, 'arm': arm, 'rep': rep, 'logged_cost': task.plan['usage']['cost_micro_usd'] / 1e6,
                 'logged_calls': task.plan['usage'].get('calls'), 'model': task.rec.get('model')}
         brief = ''
-        if arm != 'baseline':
+        if arm.startswith('notes-'):
+            block = (block + '\n' + notes_block(task, arm[6:])).strip()
+        elif arm != 'baseline':
             start, records, size = memory_cut(task, tasks, home, args, pid)
             block = (block + '\n' + start).strip()
             leak_check(task, tasks, home, pid)
@@ -597,7 +607,7 @@ def one_run(task, tasks, arm, rep, args):
         text = '\n\n'.join(x for x in [task.prompt, block, f'Step 1 of {len(task.steps)}, {step["name"]}: {step["prompt"]}\n{PLAN_END}'] if x)
         if args.dry_run:
             text += '\nMEMORY'  # ^ the fake runs `wsx memory ...` through the shim and traces each answer
-        bin_dir = shim(run, home, arm, args, pid)
+        bin_dir = shim(run, home, 'baseline' if plain else arm, args, pid)
         env = clean_env(XDG_STATE_HOME=str(home), XDG_CONFIG_HOME=str(home / 'config'),
                         PATH=f'{bin_dir}:{os.environ["PATH"]}', CARGO_INCREMENTAL='0',
                         FAKE_CLAUDE_TRACE=str(run / 'fake.trace'))
@@ -640,7 +650,7 @@ def one_run(task, tasks, arm, rep, args):
 
 
 def cmd_run(args):
-    if args.arm != 'baseline':
+    if args.arm in ('memory', 'memory-cheap'):
         memory_gate(args)
     picks = json.loads((WORK / 'picks.json').read_text())
     if args.dry_run:
@@ -668,12 +678,9 @@ def cmd_recall_cheap(args):
     prompt = (f'A coding agent asks its project memory: {question}\n\nSearch hits (JSON):\n{hits[:12000]}\n\n'
               'Return the at most 5 hits that help answer the question, best first, as lines "- <slug>: <why it helps, max 20 words>". '
               'Nothing else. If none helps, return "none".')
-    done = sh(['claude', '-p', '--model', CHEAP_MODEL, '--output-format', 'json', '--setting-sources', 'project,local',
-               '--tools', '', '--system-prompt', 'You pick records for a coding agent.', prompt], cwd=tempfile.gettempdir())
     try:
-        res = json.loads(done.stdout)
-        print(res['result'])
-        cost = res.get('total_cost_usd') or 0
+        text, cost, _ = ask_model(CHEAP_MODEL, 'You pick records for a coding agent.', prompt)
+        print(text)
     except Exception:
         print('none')
         cost = 0
@@ -712,11 +719,8 @@ Answer JSON only: {{"cause": 0|1|2, "why": "<one sentence>", "traps": [{{"messag
 def ask_judge(prompt, args):
     if args.dry_run:
         return {'traps': [], 'cause': 1, 'score': 1, 'lost': [], 'wrong': [], 'why': 'dry run'}, 0.0
-    done = sh(['claude', '-p', '--model', JUDGE_MODEL, '--output-format', 'json', '--setting-sources', 'project,local',
-               '--tools', '', '--system-prompt', 'You are a strict, terse evaluator. Answer JSON only.', prompt], cwd=tempfile.gettempdir())
-    res = json.loads(done.stdout)
-    m = re.search(r'\{.*\}', res['result'], re.S)
-    return json.loads(m.group(0)), res.get('total_cost_usd') or 0.0
+    text, usd, _ = ask_model(JUDGE_MODEL, 'You are a strict, terse evaluator. Answer JSON only.', prompt)
+    return json.loads(re.search(r'\{.*\}', text, re.S).group(0)), usd
 
 
 def cmd_judge(args):
@@ -980,359 +984,569 @@ def cmd_live(args):
     print('\nConfounded: the groups are different tasks with different work. Use as support only.')
 
 
-# ---- manager: does a small rotation limit hold quality, and what does it save? --------------------
-# Method and verdict rule: docs/design/memory-eval.md "Manager rotation".
+# ---- area notes: who writes the L2 models, and on which model (docs/design/memory-layers.md "Who writes the notes") ----
 
-MANAGER_LOG = HOME_CHAT / 'log.jsonl'
-# ^ Opus 5.5, API-equivalent dollars per token (docs/design/manager-efficiency.md): the logged cost of a reply is
-# exactly in*4 + out*20 + cache_read*0.2 + cache_write*8 per million.
-PRICE = {'in': 4e-6, 'out': 20e-6, 'read': 0.2e-6, 'write': 8e-6}
-ARMS = {'cut150': (150_000, True), 'cut60': (60_000, True), 'lean60': (60_000, False)}  # (rotation limit, start notes)
-NOTE_CHARS_PER_TOKEN = 3.5
-TURN_TEXT_CLIP = 1500
-
-
-class At:
-    """The moment a replayed manager turn starts: what build_state needs of a task."""
-    def __init__(self, t0, tasks):
-        self.t0 = t0
-        self.n = max([n for n, o in tasks.items() if o.t0 < t0] or [0]) + 1
-        self.rec = {'project_path': next(iter(tasks.values())).rec['project_path'], 'files': [], 'title': ''}
-
-
-def manager_turns():
-    """Every manager reply of the log with its messages, the commands it ran and whether the conversation was
-    rotated just before it (a `rotated` line after the previous reply: tokens 0 is the idle rotation)."""
-    log = [json.loads(x) for x in MANAGER_LOG.read_text().splitlines()]
-    msgs = {e['id']: e for e in log if e['kind'] == 'message'}
-    turns, cmds, rot = [], [], None
-    for e in log:
-        if e['kind'] == 'agent' and not e.get('said'):
-            cmds.append(e['text'])
-        elif e['kind'] == 'rotated':
-            rot = e['tokens']
-        elif e['kind'] == 'reply':
-            turns.append({'ms': e['unix_ms'], 'id': e['id'], 'msgs': [msgs[i] for i in e['to'] if i in msgs], 'reply': e['text'],
-                          'cmds': cmds, 'usage': e.get('usage'), 'rotated': rot})
-            cmds, rot = [], None
-    return turns
-
-
-def week(turns):
-    last = turns[-1]['ms']
-    return [i for i, t in enumerate(turns) if t['ms'] >= last - 7 * 86400 * 1000 and t['usage']]
-
-
-def turn_cost(u):
-    return u['input_tokens'] * PRICE['in'] + u['output_tokens'] * PRICE['out'] + u['cache_read_tokens'] * PRICE['read'] + u['cache_creation_tokens'] * PRICE['write']
-
-
-def conv_stats(turns, idx):
-    """Growth of the context per turn and the size of a fresh conversation's first reply, from the log."""
-    growth, starts = [], []
-    for a, b in zip(idx, idx[1:]):
-        if b != a + 1:
-            continue
-        if turns[b]['rotated'] is not None:
-            starts.append(turns[b]['usage']['context_tokens'])
-        elif 0 < (d := turns[b]['usage']['context_tokens'] - turns[a]['usage']['context_tokens']) < 60_000:
-            growth.append(d)
-    return statistics.median(growth), statistics.median(starts)
-
-
-def project(turns, idx, limit, start, recall_uses=0.0):
-    """Manager dollars of the week if the conversation rotated at `limit` tokens and a fresh one starts at `start` tokens.
-    The reads of a reply scale with the context it ran in; new tokens (cache writes), output and calls stay as logged.
-    A rotation costs a cold write of `start` tokens. (est.) Size rotations of the log are replaced, idle ones kept."""
-    g = conv_stats(turns, idx)[0]
-    total, rotations, ctx, fresh = 0.0, 0, 0, True
-    for k, i in enumerate(idx):
-        t, u = turns[i], turns[i]['usage']
-        idle = t['rotated'] == 0
-        real_size_rotation = t['rotated'] is not None and t['rotated'] != 0
-        if limit is None:  # ^ the log as it was
-            total += turn_cost(u)
-            continue
-        if fresh or idle or ctx + g >= limit:
-            ctx, rotations = start, rotations + 1
-            cold = start * PRICE['write']
-        else:
-            ctx += min(max(u['context_tokens'] - turns[idx[k - 1]]['usage']['context_tokens'], 0), 60_000) if not real_size_rotation else g
-            cold = 0.0
-        write = u['cache_creation_tokens']
-        if real_size_rotation or t['rotated'] == 0:
-            write = max(write - max(u['context_tokens'] - g, 0), 0)  # ^ the log's cold start is replaced by the simulated one
-        reads = u['cache_read_tokens'] * ctx / max(u['context_tokens'], 1)
-        extra = recall_uses * (ctx * PRICE['read'] + 600 * PRICE['write'])
-        total += u['input_tokens'] * PRICE['in'] + u['output_tokens'] * PRICE['out'] + reads * PRICE['read'] + write * PRICE['write'] + cold + extra
-        fresh = ctx >= limit
-    return total, rotations
+NOTES = WORK / 'notes'
+LANDS, BATCH, POINTS = 30, 5, (10, 20, 30)  # ^ the last 30 landed tasks; B's scribe works on 5 lands at a time
+NOTE_MAX, MAP_MAX, DIFF_MAX = 3072, 1536, 24 * 1024
+LOCAL_ID = os.environ.get('LOCAL_MODEL_ID', 'lfm3-1.7b')
+# area: (globs, docs the seed reads). The 13 areas of the doc's "First cut"; a glob is a path or a folder.
+NOTE_AREAS = {
+    'task-host': (['crates/wsx/src/task/host.rs', 'crates/wsx/src/task/repo.rs', 'crates/wsx/src/task/manager.rs'], ['docs/tasks.md']),
+    'check-scheduling': (['crates/wsx/src/task/slot.rs', 'crates/wsx/src/task/checks.rs', 'scripts/ci-scenario.py'],
+                         ['docs/design/check-queue-research.md', 'docs/design/verification-lanes.md']),
+    'task-views': (['crates/wsx-core/src/task/status.rs', 'crates/wsx-core/src/task/view.rs'], ['docs/design/task-views.md']),
+    'memory': (['crates/wsx-core/src/memory/'], ['docs/memory.md', 'docs/design/memory-system.md']),
+    'chats': (['crates/wsx-core/src/task/chat.rs', 'crates/wsx-core/src/task/chats.rs', 'crates/wsx-core/src/task/chats_home.rs',
+               'crates/wsx-core/src/task/policy.rs'], ['docs/design/chat-system.md']),
+    'daemon': (['crates/wsx-daemon/'], ['docs/daemon-discovery.md']),
+    'terminal': (['crates/wsx-terminal/'], ['docs/terminal-raw-stream.md']),
+    'tui': (['crates/wsx/src/app.rs', 'crates/wsx/src/app/', 'crates/wsx/src/ui/'], ['docs/design/tui-parity.md']),
+    'cli': (['crates/wsx/src/cli.rs', 'crates/wsx/src/cli/'], ['docs/cli.md']),
+    'web-server': (['crates/wsx-web/src/'], ['docs/web-client.md']),
+    'web-client': (['crates/wsx-web/web/'], ['docs/web-client.md']),
+    'scenarios-ci': (['scripts/', '.github/workflows/ci.yml'], ['docs/design/scenario-flakes.md']),
+    'deploy-release': (['scripts/deploy-web-live.sh', 'scripts/release.sh', '.github/workflows/release.yml'], ['docs/web-deploy.md']),
+}
+# (kind, question, gold, strings one of which a right answer cites). Picked on 2026-11-19 before any writer ran, from
+# docs/design and the memos of the window. "window" answers are made by lands #490 to #525; "stable" answers predate them.
+QUESTIONS = [
+    ('stable', 'Why does the check queue have one scenario slot?', 'The timed scenarios share a 10-core, 24 GiB machine with the agents\' cargo builds and Chrome; resource limits cause about 46% of flaky tests (E1), so the one slot serializes them.', ['check-queue-research']),
+    ('stable', 'Which function builds the start block a worker reads, and in which crate?', 'wsx_core::memory::start (`block`) in wsx-core, src/memory/start.rs.', ['memory::start', 'start.rs']),
+    ('stable', 'Why does the start block of a worker carry no fact records?', 'The paid replay (#392) found no gain and likely harm: plan cost +11.2% and 6 more trap hits; only area briefs and role rules stay.', ['memory-eval']),
+    ('stable', 'What are the three kinds of memory record and what is each for?', 'rule = the owner\'s decision, fact = verified about the code, episode = what a task did or learned.', ['memory.md']),
+    ('stable', 'What happens to a check-queue ticket whose lock is free, and why?', 'It belongs to a dead waiter and is removed, so a killed host never blocks the queue.', ['slot.rs', 'slot::take', 'slot']),
+    ('stable', 'Which module owns every task status label and sentence?', 'wsx-core task::status (status.rs).', ['task::status', 'status.rs']),
+    ('stable', 'How does wsx stop a task agent\'s whole process tree, and what marks the children?', 'AgentProcess stops the whole tree; children carry the WSX_AGENT_TREE mark in their environment.', ['WSX_AGENT_TREE', 'AgentProcess']),
+    ('stable', 'Where does the daemon save its state, and what keeps a slow save from blocking it?', 'The state saver writes off the state lock; a SAVE_TICKET makes later saves wait for the one in flight.', ['SAVE_TICKET', 'save_state']),
+    ('stable', 'Which file holds the wire protocol version and DAEMON_REVISION?', 'crates/wsx-core/src/runtime/protocol.rs.', ['protocol.rs']),
+    ('stable', 'What does the local model fallback end in, and how is it served?', 'LFM3-1.7B through projk\'s llama-server on 127.0.0.1:8090, run by the Pi adapter; floor.rs is the stand-in.', ['local-model', 'floor.rs', 'lfm3']),
+    ('stable', 'What does a `ci:` scenario do when the local scenario slot is busy?', 'It runs on GitHub Actions: CI is the overflow, `scripts/ci-scenario.py`.', ['ci-scenario', 'verification-lanes']),
+    ('stable', 'What does fold_memo do at a land?', 'It stores the finished task\'s memo as a memory record (a landed fact keeps its commit and paths) and then rewrites the manager notes from the records.', ['fold_memo', 'repo.rs']),
+    ('window', 'Why does the web scenario run its tasks part on macOS while its chat part runs on Linux?', 'A task agent needs the Seatbelt boundary (boundary.rs), which only macOS has; the runner is picked by the runs-on expression, not a matrix include.', ['boundary.rs', 'Seatbelt']),
+    ('window', 'What does `run_ci` do when the scenario slot frees before a CI job starts?', 'It returns Err(Slot); run_ci_watched polls slot::take_free every 2 s, so the check moves to the local slot.', ['run_ci_watched', 'take_free']),
+    ('window', 'Which function builds the compare key of a shared failure, and what is its shape?', '`failure::line_of`: `<label[..60]> | <error[..160]>` with digits as 0, for a `FAILED section` line.', ['line_of']),
+    ('window', 'How does a running host pick up an updated agent binary?', 'AgentProcess records the resolved program file (size, mtime) at spawn; send_to_agent and send_turn check Agent::replaced() and restart through the normal resume path.', ['replaced']),
+    ('window', 'Who owns a chat\'s reach and skill lending, and why can a prompt not promise what wsx refuses?', '`task::policy` (reach_line, reach_refusal, lend_line, lend_refusal); the broker checks and the prompt text both read it.', ['task::policy', 'policy.rs', 'reach_line']),
+    ('window', 'Does the repo service sync local main with origin by itself?', 'No. The hourly pass of #481 was removed in #509; `wsx task sync` (copy::sync) is the only path, run by the manager when the owner asks.', ['task sync', 'copy::sync']),
+    ('window', 'Why did the WSX_AGENT_TREE scan alone leak processes on macOS 26, and what fixed it?', 'KERN_PROCARGS2 gives no environment for Apple system binaries; wsx_core::process::Tree adds descendants by parent pid and start time.', ['process::Tree', 'Tree']),
+    ('window', 'How does task::store::open_if_exists decide a file is missing?', 'From the open\'s own io error (NotFound, or ELOOP on a dangling link); never re-stat after a failed open, as the host\'s atomic rename can create it between the two looks.', ['open_if_exists']),
+    ('window', 'Which file holds the one swipe rule for chat messages and Home rows, and when does a swipe start?', 'crates/wsx-web/web/swipe.js; it starts at 10 px, not steeper than 45 degrees.', ['swipe.js']),
+    ('window', 'What are the radius tokens of the web client?', 'control 16, key 12 and sheet 16 px, with the Home tab bar as reference.', ['--radius', 'radius']),
+    ('window', 'What is the key of a thread, and where is it stored?', '`<chat>/<slug>` in TaskRecord.thread, memory Record.thread and Doc.thread (wsx-core task/thread.rs); chat log rows hold the bare slug.', ['thread.rs', '<chat>/<slug>']),
+    ('window', 'What must start a host under a fixed session label do first, and with which function?', 'Close the exited session first with `close_left_session` (via close_session_where in wsx-core task/mod.rs), because wsxd keeps an exited session and adds -2 to a used label.', ['close_left_session']),
+]
+GATE_QUESTIONS = [  # ^ eight others, for B's gate only; never scored as results
+    ('stable', 'Which process owns the sessions and PTYs?', 'wsxd (crates/wsx-daemon).', ['wsxd', 'wsx-daemon']),
+    ('stable', 'Where is the browser code of the web client and how is it served?', 'crates/wsx-web/web, embedded as written in the `wsx web serve` binary.', ['wsx-web/web']),
+    ('stable', 'Which crate is the published library?', 'wsx-core.', ['wsx-core']),
+    ('stable', 'Which TUI library draws the interface?', 'ratatui (crates/wsx).', ['ratatui']),
+    ('stable', 'What does a task\'s log.jsonl hold?', 'The task\'s event log in the task store, one JSON event per line.', ['log.jsonl']),
+    ('stable', 'What does `wsx task check-run` do?', 'It runs checks or scenarios by number or name on the task host, outside the worker\'s boundary.', ['check-run']),
+    ('stable', 'Who writes the memory records after a land?', 'fold_memo in the task host (repo.rs).', ['fold_memo']),
+    ('stable', 'Which crate holds the PTY runtime and the Ghostty terminal state?', 'wsx-terminal (libghostty-vt), owned by wsxd.', ['wsx-terminal']),
+]
+MAP_QUESTIONS = [('crates/wsx/src/task/slot.rs', 'check-scheduling'), ('crates/wsx-web/web/swipe.js', 'web-client'),
+                 ('crates/wsx-core/src/memory/start.rs', 'memory'), ('crates/wsx-terminal/src/lib.rs', 'terminal')]
+NOTE_SYSTEM = 'You keep one area note of a code project: the mental model a worker reads before it opens the code.'
+NOTE_FORM = ('The note is plain markdown, 3 KiB at most: one short paragraph on how the area works; one ```mermaid flowchart of its lifecycle, '
+             'fence closed; then the labels **Owners.** (the owner function or type of each concern, in backticks, as `module::name`), '
+             '**Invariants.**, **Why.** (the decisions and the docs/ paths that hold the reasons) and **Owner\'s rules.** (the slugs of the '
+             'records that apply, or none). Cite only paths and functions you were shown. Answer with the note only.')
+ANSWER_PROMPT = 'Area notes of a code project:\n\n{notes}\n\nAnswer each question from the notes only, in two sentences at most, naming the doc or function that holds the answer. If the notes do not say, answer "not in the notes".\n{items}\nAnswer JSON only: [{{"n": <number>, "answer": "<text>"}}]'
+JUDGE_NOTE = 'You score answers to questions about a code project. For each: gold is the true answer. Score 2 = the answer has the core facts of gold, 1 = part of them, 0 = wrong or "not in the notes".\n{items}\nAnswer JSON only: [{{"n": <number>, "score": 0|1|2}}]'
+CURATE_PROMPT = ('You curate the records of a project memory. Each line: slug | kind | paths with ✓ (exists now) or ✗ (gone) | text. Retire a record only when it is a fact that '
+                 'is no longer true or no longer about anything (its files are gone). Never retire a rule or an episode (an episode is history). Merge two records only when they say the same '
+                 'thing: keep one, drop the other. When unsure, do nothing.\n{lines}\nAnswer JSON only: {{"retire": [{{"slug": "...", "why": "..."}}], '
+                 '"merge": [{{"keep": "...", "drop": "..."}}], "log": "<one line: what you did>"}}')
 
 
-def cmd_mproject(args):
-    turns = manager_turns()
-    idx = week(turns)
-    g, s_now = conv_stats(turns, idx)
-    notes = sum(len(p.read_text()) for p in [HOME_CHAT / 'notes' / 'decisions.md', HOME_CHAT / 'notes' / 'context.md'] if p.exists())
-    s_lean = s_now - notes / NOTE_CHARS_PER_TOKEN + 1000  # ^ (est.) no notes in the start, a start set of about 1k tokens instead
-    logged = sum(turn_cost(turns[i]['usage']) for i in idx)
-    real = sum(turns[i]['usage']['cost_micro_usd'] for i in idx) / 1e6
-    runs = list(WORK.glob('manager-runs/*/*.json'))
-    uses = [json.loads(f.read_text())['memory_uses'] for f in runs] if runs else []
-    ru = statistics.mean(uses) if uses else args.recall_uses
-    print(f'Week: {len(idx)} replies, ${real:.2f} logged (price model ${logged:.2f}), context median {statistics.median(turns[i]["usage"]["context_tokens"] for i in idx):.0f}, '
-          f'growth {g:.0f} tokens per turn, fresh start {s_now:.0f} tokens (lean start (est.) {s_lean:.0f}), recall uses per turn {ru:.2f}'
-          f'{" (measured)" if uses else " (assumed, no replay yet)"}\n')
-    print('| rotation limit | start tokens | rotations | weekly $ | per reply $ | vs logged |\n|---|---|---|---|---|---|')
-    print(f'| as logged (size rotations at {statistics.median([t["rotated"] for t in turns if t["rotated"]]):.0f} median, idle ones) | {s_now:.0f} | {sum(turns[i]["rotated"] is not None for i in idx)} | {logged:.0f} | {logged / len(idx):.3f} | |')
-    rows = {}
-    for name, limit, start, ru_ in [('400k', 400_000, s_now, 0), ('150k + recall', 150_000, s_now, ru), ('60k + recall', 60_000, s_now, ru),
-                                    ('60k + recall, lean start (est.)', 60_000, s_lean, ru), ('100k + recall, lean start (est.)', 100_000, s_lean, ru)]:
-        cost, rot = project(turns, idx, limit, start, ru_)
-        rows[name] = cost
-        print(f'| {name} | {start:.0f} | {rot} | {cost:.0f} | {cost / len(idx):.3f} | {cost / logged - 1:+.0%} |')
-    return logged, rows
+def git(*a):
+    return sh(['git', '-C', str(ROOT), *a]).stdout
 
 
-# ---- manager: pick, run, judge, report --------------------------------------------------------
-
-ASKS = re.compile(r'earlier|before|last time|you said|again|same|that one|those|이전|아까|전에|그때|말한', re.I)
-
-
-def cmd_mpick(args):
-    turns = manager_turns()
-    idx = week(turns)
-    g, s_now = conv_stats(turns, idx)
-    k150, k60 = int((150_000 - s_now) // g), int((60_000 - s_now) // g)
-    where = {m['id']: i for i, t in enumerate(turns) for m in t['msgs']}
-    where.update({t['id']: i for i, t in enumerate(turns)})  # ^ an owner quote names a message or a reply
-    cands = []
-    for i in idx:
-        t = turns[i]
-        owner = [m for m in t['msgs'] if m['from'] == 'owner']
-        if not owner or sum(len(m['text']) for m in owner) > 1500 or 'attached image' in ' '.join(m['text'] for m in owner):
-            continue
-        dist = None
-        for m in owner:
-            q = where.get(m.get('quote'))
-            if q is not None and q < i:
-                dist = i - q
-            for ref in re.findall(r'#(\d+)', m['text']):
-                last = max((j for j in range(i) if f'#{ref}' in turns[j]['reply'] or any(f'#{ref}' in x['text'] for x in turns[j]['msgs'])), default=None)
-                if last is not None and (dist is None or i - last > dist):
-                    dist = i - last
-        if dist and dist > k60 and (ASKS.search(' '.join(m['text'] for m in owner)) or any(m.get('quote') for m in owner) or dist > k150):
-            cands.append((i, dist))
-    rng = random.Random(385)
-    far = [c for c in cands if c[1] > k150]
-    near = [c for c in cands if c[1] <= k150]
-    rng.shuffle(far), rng.shuffle(near)
-    picks = sorted(far[:8] + near[:15 - len(far[:8])])  # ^ every far one (at most 8), the rest near; few messages reach beyond 150k
-    rows = [{'turn': i, 'reply': turns[i]['id'], 'distance': d, 'beyond': 'beyond 150k window' if d > k150 else 'beyond 60k window',
-             'text': ' / '.join(m['text'][:120] for m in turns[i]['msgs'] if m['from'] == 'owner'), 'logged_cost': turns[i]['usage']['cost_micro_usd'] / 1e6,
-             'repeat': j < 3} for j, (i, d) in enumerate(picks)]
-    WORK.mkdir(parents=True, exist_ok=True)
-    (WORK / 'manager-picks.json').write_text(json.dumps({'k150': k150, 'k60': k60, 'picks': rows}, indent=1))
-    print(f'window: 150k = last {k150} turns, 60k = last {k60} turns (growth {g:.0f} tokens per turn, fresh start {s_now:.0f}); {len(cands)} candidates, {len(far)} beyond 150k')
-    for r in rows:
-        print(f'reply {r["reply"]} dist {r["distance"]:>3} ${r["logged_cost"]:.2f} {r["text"][:100]!r}')
+@functools.lru_cache(None)
+def tree(c):
+    return frozenset(git('ls-tree', '-r', '--name-only', c).split('\n'))
 
 
-def manager_shim(run, home, args, pid):
-    h = f'HOME={shlex.quote(str(home))}'
-    """`wsx` for the replayed manager: read verbs of `task` and `wsx memory recall|search|status` run on the cut state;
-    the others only record their command (the replay changes nothing)."""
-    bin_dir = run / 'bin'
-    bin_dir.mkdir()
-    real = shlex.quote(args.wsx)
-    (bin_dir / 'wsx').write_text(f'''#!/bin/sh
-unset WSX_TASK_BROKER WSX_AGENT_TREE
-export XDG_STATE_HOME={shlex.quote(str(home))} XDG_CONFIG_HOME={shlex.quote(str(home / 'config'))}
-case "$1 $2" in
-  "task ledger"|"task show"|"task search"|"task log"|"task status"|"task list") {h} exec {real} "$@" ;;
-  "memory recall") shift 2; {h} exec {real} memory recall --scope {pid} "$@" ;;
-  "memory search"|"memory status") sub=$2; shift 2; {h} exec {real} memory "$sub" --scope {pid} "$@" ;;
-  "task "*) echo "$@" >> {shlex.quote(str(run / 'commands.txt'))}; echo '{{"ok":true,"note":"replay: not run"}}'; exit 0 ;;
-esac
-echo "wsx: only wsx task and wsx memory recall|search|status run here" >&2
-exit 2
-''')
-    (bin_dir / 'wsx').chmod(0o755)
-    return bin_dir
+@functools.lru_cache(None)
+def has_word(c, word):
+    return sh(['git', '-C', str(ROOT), 'grep', '-qwF', '-e', word, c]).returncode == 0
 
 
-def handover(turns, i, k, notes):
-    """The text a fresh manager conversation starts with: the notes, the last k turns, then the new messages."""
-    out = []
-    if notes:
-        out.append('Your notes files (read at the start of this conversation):\n' + notes)
-    if k:
-        out.append(f'The last {min(k, i)} turns of the earlier conversation, oldest first:')
-        for t in turns[max(0, i - k):i]:
-            for m in t['msgs']:
-                out.append(f'{"Owner" if m["from"] == "owner" else "Events"} (message {m["id"]}): {m["text"][:TURN_TEXT_CLIP]}')
-            out += [f'You ran: {c[:200]}' for c in t['cmds'][:6]]
-            out.append(f'You: {t["reply"][:TURN_TEXT_CLIP]}')
-    out.append('The new messages (answer them):')
-    for m in turns[i]['msgs']:
-        out.append(f'{"Owner" if m["from"] == "owner" else "Events"} (message {m["id"]}): {m["text"][:3000]}')
-    return '\n\n'.join(out)
+def owned(globs, paths):
+    return [p for p in paths if any(meet(p, g) for g in globs)]
 
 
-def manager_run(pick, arm, rep, turns, tasks, args):
-    out = WORK / 'manager-runs' / arm / f'{pick["reply"]}-{rep}.json'
-    if out.exists() and not args.force:
-        return json.loads(out.read_text())
-    if spent() + 1.0 > args.cap:
-        print(f'cap {args.cap} reached ({spent():.2f}); skip {arm} reply {pick["reply"]}')
-        return None
-    limit, with_notes = ARMS[arm]
-    g_s = conv_stats(turns, week(turns))  # ^ (growth per turn, fresh start) of the log
-    i = pick['turn']
-    t0 = min(m['unix_ms'] for m in turns[i]['msgs'])
-    at = At(t0, tasks)
-    run = Path(tempfile.mkdtemp(prefix=f'm-{arm}-{pick["reply"]}-', dir=WORK / 'tmp'))
-    home, wc = run / 'state', run / 'wc'
+def jload(text):
+    m = re.search(r'[\[{].*[\]}]', text, re.S)
     try:
-        base = max((o for o in tasks.values() if o.t0 < t0), key=lambda o: o.t0).rec['base']
-        sh(['git', '-C', str(ROOT), 'worktree', 'add', '--detach', str(wc), base], check=True)
-        wc = wc.resolve()
-        _, pid = build_state(at, tasks, home, wc)
-        notes_dir = Path(usage.home_folder(str(home / 'wsx' / 'tasks' / pid))) / 'notes'
-        notes = ''
-        if with_notes:
-            notes = '\n\n'.join(f'{name}:\n{(notes_dir / name).read_text()}' for name in ('decisions.md', 'context.md') if (notes_dir / name).exists())
-        s_start = g_s[1] if with_notes else g_s[1] - len(notes_of_log(tasks, at)) / NOTE_CHARS_PER_TOKEN + 1000
-        k = max(0, int((limit - s_start) // g_s[0]))
-        rec = capture_store(at, tasks, home, args, pid)[0]
-        spec = importlib.util.spec_from_file_location('bench_manager', ROOT / 'scripts' / 'bench-manager.py')
-        bm = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(bm)
-        system = bm.instructions((ROOT / 'crates/wsx/src/task/instructions.rs').read_text(), 'wsx', str(notes_dir), str(home / 'overview.md'))
-        system += '\n\nOld conversation is not in your context. Find it with `wsx memory recall "<question>"` or `wsx memory search <words>`: the best records and past messages of this project.'
-        text = handover(turns, i, k, notes)
-        bin_dir = manager_shim(run, home, args, pid)
-        env = clean_env(XDG_STATE_HOME=str(home), XDG_CONFIG_HOME=str(home / 'config'), PATH=f'{bin_dir}:{os.environ["PATH"]}',
-                        FAKE_CLAUDE_TRACE=str(run / 'fake.trace'))
-        argv = shlex.split(args.agent) + ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
-                                          '--setting-sources', 'project,local', '--permission-mode', 'bypassPermissions', '--model', 'opus',
-                                          '--append-system-prompt', system, '--session-id', str(uuid.uuid4()), '--max-budget-usd', '3']
-        started = time.time()
-        events = agent_turn(argv, env, wc, text, RUN_SECS)
-        info = {'reply': pick['reply'], 'arm': arm, 'rep': rep, 'k_turns': k, 'handover_bytes': len(text), 'store_records': rec,
-                'wall_s': round(time.time() - started, 1), 'logged_cost': pick['logged_cost']}
-        info.update(analyse(events))
-        info['reply_text'] = '\n\n'.join(info['said']) or info['plan_text']
-        info['commands'] = (run / 'commands.txt').read_text().splitlines() if (run / 'commands.txt').exists() else []
-        info['cost_total'] = info['cost']
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(info, indent=1))
-        spend('manager', f'{arm}-{pick["reply"]}-{rep}', info['cost_total'])
-        print(f'{arm:<7}reply {pick["reply"]} r{rep} ${info["cost_total"]:.2f} (logged ${pick["logged_cost"]:.2f}) k {k} first ctx {info["ctx_first"]} calls {info["calls"]} memory uses {info["memory_uses"]} {info["wall_s"]}s', flush=True)
-        return info
-    finally:
-        sh(['git', '-C', str(ROOT), 'worktree', 'remove', '--force', str(wc)])
-        shutil.rmtree(run, ignore_errors=True)
+        return json.loads(m.group(0)) if m else None
+    except ValueError:
+        return None
 
 
-def notes_of_log(tasks, at):
-    # ^ Today's notes files, for the size of a start without them (est.).
-    return ''.join(p.read_text() for p in [HOME_CHAT / 'notes' / 'decisions.md', HOME_CHAT / 'notes' / 'context.md'] if p.exists())
+def unwrap(text):
+    text = text.strip()
+    m = re.fullmatch(r'```(?:markdown|md)?\n(.*)\n```', text, re.S)
+    return m.group(1).strip() if m else text
 
 
-def cmd_mrun(args):
-    memory_gate(args)  # ^ the paid manager arms run on the memory code of steps 4 and 5, like the memory arm
-    meta = json.loads((WORK / 'manager-picks.json').read_text())
-    picks = meta['picks'][:2] if args.dry_run else meta['picks']
-    turns = manager_turns()
+@functools.lru_cache(None)
+def local_home():
+    """A Pi folder with models.json only, the provider of docs/local-model.md (as scripts/local-model-proof.py builds it)."""
+    base = os.environ.get('LOCAL_MODEL_URL', 'http://127.0.0.1:8090').rstrip('/')
+    key = os.path.expanduser(os.environ.get('LOCAL_MODEL_KEY_FILE', '~/.local/state/local-model/api-key'))
+    home = Path(tempfile.mkdtemp(prefix='wsx-pi-notes-'))
+    (home / 'models.json').write_text(json.dumps({'providers': {'llama-wsx': {
+        'baseUrl': base + '/v1', 'api': 'openai-completions', 'apiKey': '!cat ' + key,
+        'models': [{'id': LOCAL_ID, 'name': LOCAL_ID, 'reasoning': False, 'input': ['text'], 'contextWindow': 32768, 'maxTokens': 2048,
+                    'compat': {'supportsStore': False, 'maxTokensField': 'max_tokens'}}]}}}))
+    return home, base
+
+
+def local_error():
+    """None when the local model answers, else why not (the notes stage skips its arms with this text)."""
+    base = local_home()[1]
+    try:
+        urllib.request.urlopen(base + '/health', timeout=5).read()
+        return None
+    except Exception as e:
+        return f'{base}/health: {e}'
+
+
+def ask_model(model, system, prompt):
+    """One text call: sonnet and haiku through `claude -p`, `local` through Pi (docs/design/local-model-fallback.md).
+    Returns (text, usd, seconds)."""
+    t = time.time()
+    if model == 'local':
+        done = sh(['pi', '-p', '--no-session', '--no-tools', '--thinking', 'off', '--model', 'llama-wsx/' + LOCAL_ID, '--system-prompt', system, prompt],
+                  cwd=tempfile.gettempdir(), env={**os.environ, 'PI_CODING_AGENT_DIR': str(local_home()[0]), 'PI_OFFLINE': '1'}, timeout=900)
+        if done.returncode:
+            raise RuntimeError(f'pi: {done.stderr.strip()[-300:] or done.stdout.strip()[-300:]}')
+        return done.stdout.strip(), 0.0, time.time() - t
+    done = sh(['claude', '-p', '--model', model, '--output-format', 'json', '--setting-sources', 'project,local', '--tools', '',
+               '--system-prompt', system, prompt], cwd=tempfile.gettempdir())
+    res = json.loads(done.stdout)
+    return res['result'], res.get('total_cost_usd') or 0.0, time.time() - t
+
+
+def note_call(args, ident, model, system, prompt, canned=''):
+    """ask_model with the cap and the spend log; in a dry run the canned text and no cost."""
+    if args.dry_run:
+        return canned, 0.0, 0.0
+    if spent() + 0.5 > args.cap:
+        raise SystemExit(f'cap {args.cap} reached ({spent():.2f}) at {ident}')
+    text, usd, secs = ask_model(model, system, prompt)
+    spend('notes', ident, usd)
+    return text, usd, secs
+
+
+def cites(body, c):
+    """(cited, missing): `a/b.rs` paths and `module::name` or `name()` identifiers of a note, against the tree and the code of c."""
+    paths = {m for m in re.findall(r'[\w./-]+\.(?:rs|py|js|mjs|md|toml|ya?ml|json|css|html|sh)\b', body) if '{' not in m}
+    names = {m.split('::')[-1] for m in re.findall(r'`((?:\w+::)+\w+)`', body)} | set(re.findall(r'`(\w+)\(\)`', body))
+    t = tree(c)
+    gone = [p for p in paths if not any(f == p or f.endswith('/' + p) for f in t)] + [n for n in names if not has_word(c, n)]
+    return len(paths) + len(names), len(gone)
+
+
+def problems(body):
+    bad = ['size'] if len(body.encode()) > NOTE_MAX else []
+    bad += ['label'] if not all(x in body for x in ('**Owners.**', '**Invariants.**', '**Why.**')) else []
+    bad += ['fence'] if body.count('```') % 2 or '```mermaid' not in body else []
+    return bad
+
+
+def lands():
+    """The last LANDS landed tasks of the real store in land order, with the commit each left on main and the commit before."""
     tasks = real_tasks()
-    (WORK / 'tmp').mkdir(parents=True, exist_ok=True)
-    jobs = [(p, 0) for p in picks] + [(p, 1) for p in picks if p['repeat'] and args.arm == 'cut150']
-    if args.replies:  # ^ the cap left only some runs: name them
-        jobs = [j for j in jobs if j[0]['reply'] in args.replies]
-    print(f'manager arm {args.arm}: {len(jobs)} runs, spent so far ${spent():.2f}, cap ${args.cap}', flush=True)
-    with cf.ThreadPoolExecutor(args.jobs) as pool:
-        list(pool.map(lambda j: manager_run(j[0], args.arm, j[1], turns, tasks, args), jobs))
-    print(f'spent ${spent():.2f}')
+    rows = sorted((t.landed_ms, n) for n, t in tasks.items() if t.landed_ms and t.landed_commit and n != 527)[-LANDS:]
+    seq = [tasks[n] for _, n in rows]
+    seed = git('rev-parse', seq[0].landed_commit + '^').strip()
+    return tasks, seq, [seed] + [t.landed_commit for t in seq]
 
 
-MJUDGE_PROMPT = """You compare two answers of a project manager to the same owner messages. REFERENCE is the real answer, CANDIDATE a new one made from less context. Judge only the content, not style.
-Owner messages (and events) of the turn:
-{messages}
-
-REFERENCE answer:
-{ref}
-REFERENCE commands run: {ref_cmds}
-
-CANDIDATE answer:
-{cand}
-CANDIDATE commands run: {cand_cmds}
-
-Score: 2 = the candidate answers the same question with the same facts and decisions; 1 = the same decision or answer, but facts the reference gives are missing or changed; 0 = a different answer, a wrong decision, or it misses what the owner asked.
-List "lost": each concrete fact, name, number or decision of the reference that the candidate lacks (short). List "wrong": candidate statements that contradict the reference.
-Answer JSON only: {{"score": 0|1|2, "lost": ["..."], "wrong": ["..."], "why": "<one sentence>"}}"""
+@functools.lru_cache(None)
+def record_ops():
+    return [json.loads(x) for x in (REAL / 'memory' / 'records.jsonl').read_text().splitlines() if x.strip()]
 
 
-def cmd_mjudge(args):
-    turns = manager_turns()
-    by_reply = {t['id']: t for t in turns}
-    path = WORK / 'manager-judged.json'
-    judged = json.loads(path.read_text()) if path.exists() else {}
-    for f in sorted((WORK / 'manager-runs').glob('*/*.json')):
-        r = json.loads(f.read_text())
-        rid = f'{f.parent.name}/{f.name}'
-        if rid in judged and not args.force:
+def records_at(ms):
+    state = {}
+    for r in record_ops():
+        if r.get('updated', 0) <= ms:
+            state[r['slug']] = {**state.get(r['slug'], {}), **r}
+    return [r for r in state.values() if r.get('status') == 'active' and r.get('text')]
+
+
+def area_records(globs, recs, room):
+    out, used = [], 0
+    for r in sorted(recs, key=lambda r: -r.get('updated', 0)):
+        if r['kind'] in ('rule', 'fact') and any(meet(p, g) for p in r.get('paths') or [] for g in globs):
+            line = f'- {r["slug"]} ({r["kind"]}): {r["text"][:240]}'
+            if used + len(line) > room:
+                break
+            out.append(line)
+            used += len(line)
+    return '\n'.join(out) or 'none'
+
+
+def digest(c, globs, docs):
+    """What the seed reads of an area at commit c: its docs (8 KiB each) and the definition lines of its files (30 KiB)."""
+    out = []
+    for d in docs:
+        out.append(f'### {d}\n' + git('show', f'{c}:{d}')[:8192])
+    left = 30 * 1024
+    for f in sorted(owned(globs, tree(c))):
+        if not f.endswith(('.rs', '.py', '.js', '.mjs', '.sh', '.yml')):
             continue
-        t = by_reply[r['reply']]
-        ans, usd = ask_judge(MJUDGE_PROMPT.format(
-            messages='\n'.join(f'{"Owner" if m["from"] == "owner" else "Events"}: {m["text"][:1500]}' for m in t['msgs']),
-            ref=t['reply'][:3000], ref_cmds='; '.join(c[:160] for c in t['cmds'][:12]) or 'none',
-            cand=r['reply_text'][:3000], cand_cmds='; '.join(c[:160] for c in r['commands'][:12]) or 'none'), args)
-        spend('judge', f'manager-{rid}', usd)
-        judged[rid] = {'score': ans.get('score'), 'lost': ans.get('lost', []), 'wrong': ans.get('wrong', []), 'why': ans.get('why')}
-        print(f'judged {rid}: {ans.get("score")}', flush=True)
-        path.write_text(json.dumps(judged, indent=1))
-    print(f'spent ${spent():.2f}')
+        defs = [x[:150] for x in git('show', f'{c}:{f}').splitlines() if re.match(r'\s*(pub(\([a-z]+\))? )?(async )?(fn|struct|enum|trait|impl|def|class|function|const|type)\b', x)][:40]
+        block = f'### {f}\n' + '\n'.join(defs)
+        if left < len(block):
+            break
+        left -= len(block)
+        out.append(block)
+    return '\n'.join(out)
 
 
-def cmd_mreport(args):
-    meta = json.loads((WORK / 'manager-picks.json').read_text())
-    judged = json.loads((WORK / 'manager-judged.json').read_text()) if (WORK / 'manager-judged.json').exists() else {}
-    runs = collections.defaultdict(dict)
-    for f in sorted((WORK / 'manager-runs').glob('*/*.json')):
-        r = json.loads(f.read_text())
-        r.update({f'judge_{k}': v for k, v in judged.get(f'{f.parent.name}/{f.name}', {}).items()})
-        runs[r['arm']][(r['reply'], r['rep'])] = r
-    arms = list(runs)
-    print(f'Spend so far: ${spent():.2f} of ${CAP_USD:.0f}. Windows: 150k = last {meta["k150"]} turns, 60k = last {meta["k60"]} turns.\n')
-    print('| reply | distance | $ real | ' + ' | '.join(f'$ {a} | calls | memory | k | score {a}' for a in arms) + ' |\n|' + '---|' * (3 + 5 * len(arms)))
-    for p in meta['picks']:
-        cells = []
-        for a in arms:
-            r = runs[a].get((p['reply'], 0))
-            cells.append(f'{r["cost_total"]:.2f} | {r["calls"]} | {r["memory_uses"]} | {r["k_turns"]} | {r.get("judge_score", "-")}' if r else '- | - | - | - | -')
-        print(f'| {p["reply"]} | {p["distance"]} ({p["beyond"].split()[1]}) | {p["logged_cost"]:.2f} | ' + ' | '.join(cells) + ' |')
-    print()
-    for a in arms:
-        rs = [r for (reply, rep), r in runs[a].items() if rep == 0]
-        sc = [r['judge_score'] for r in rs if r.get('judge_score') is not None]
-        if not sc:
+def seed_area(name, c, args):
+    globs, docs = NOTE_AREAS[name]
+    prompt = f'Area {name}, globs {", ".join(globs)}, commit {c[:8]}.\n{digest(c, globs, docs)}\n\nWrite the note. {NOTE_FORM}'
+    for attempt in range(2):
+        body, usd, _ = note_call(args, f'seed-{name}', 'sonnet', NOTE_SYSTEM, prompt, '**Owners.** x **Invariants.** y **Why.** z\n```mermaid\nflowchart LR\n```')
+        body = unwrap(body)
+        if not problems(body):
+            break
+        prompt += f'\n\nYour last answer failed: {", ".join(problems(body))}. Fix that.'
+    return {'body': body, 'verified': c}
+
+
+def snap_save(arm, k, until, areas):
+    (NOTES / arm).mkdir(parents=True, exist_ok=True)
+    (NOTES / arm / f'{k}.json').write_text(json.dumps({'k': k, 'until_ms': until, 'areas': areas}))
+
+
+def snap_at(arm, k=None, ms=None):
+    """The newest snapshot of a chain with k lands or fewer, or one that closed before the time ms."""
+    best = None
+    for f in (NOTES / arm).glob('[0-9]*.json'):
+        s = json.loads(f.read_text())
+        if (k is None or s['k'] <= k) and (ms is None or s['until_ms'] <= ms) and (best is None or s['k'] > best['k']):
+            best = s
+    return best
+
+
+def answer_set(areas, questions, args, ident):
+    """Sonnet answers the questions from the notes, a blind Sonnet judge scores them. Returns [(score, cited)], usd."""
+    notes = '\n\n'.join(f'## {a}\n{v["body"]}' for a, v in areas.items())
+    items = '\n'.join(f'{i + 1}. {q[1]}' for i, q in enumerate(questions))
+    text, u1, _ = note_call(args, f'answer-{ident}', JUDGE_MODEL, 'You answer from the given notes only.', ANSWER_PROMPT.format(notes=notes, items=items), '[]')
+    given = {int(x['n']): str(x['answer']) for x in jload(text) or [] if isinstance(x, dict) and 'n' in x and 'answer' in x}
+    rows = '\n'.join(f'{i + 1}. gold: {q[2]} | answer: {given.get(i + 1, "")}' for i, q in enumerate(questions))
+    text, u2, _ = note_call(args, f'judge-{ident}', JUDGE_MODEL, 'You are a strict, terse evaluator. Answer JSON only.', JUDGE_NOTE.format(items=rows), '[]')
+    got = {int(x['n']): int(x['score']) for x in jload(text) or [] if isinstance(x, dict) and 'n' in x and 'score' in x}
+    return [(got.get(i + 1, 0), any(s.lower() in given.get(i + 1, '').lower() for s in q[3])) for i, q in enumerate(questions)], u1 + u2
+
+
+def curate(model, recs, c, args, ident):
+    """One scribe curation call over records. Returns ((retire slugs, [(keep, drop)], log line) or None when the answer is not JSON, usd, seconds)."""
+    lines = []
+    for r in recs:
+        marks = ' '.join(p + (' ✓' if any(f == p or f.startswith(p.rstrip('/') + '/') for f in tree(c)) else ' ✗') for p in (r.get('paths') or [])[:4])
+        lines.append(f'{r["slug"]} | {r["kind"]} | {marks or "no paths"} | {r["text"][:260]}')
+    text, usd, secs = note_call(args, f'curate-{ident}', model, 'You curate a project memory. Answer JSON only.', CURATE_PROMPT.format(lines='\n'.join(lines)), '{}')
+    ans = jload(text)
+    if not isinstance(ans, dict):
+        return None, usd, secs
+    ok = lambda x: isinstance(x, dict)
+    return ([x.get('slug') for x in ans.get('retire') or [] if ok(x)], [(x.get('keep'), x.get('drop')) for x in ans.get('merge') or [] if ok(x)],
+            str(ans.get('log') or '')[:200]), usd, secs
+
+
+def write_pass(arm, notes, k, lo, seq, commits, scribe, args):
+    """One writer pass at land k for every area the lands since its `verified` touched. A refreshes after each land; B
+    works on BATCH lands at once, adds the new owner rules and a curation call, and keeps the notes only if the gate holds.
+    Returns the candidate notes, the call rows and (B) the new scribe log."""
+    design, model = arm.split('-')
+    c_k, rows, cand = commits[k], [], {a: dict(v) for a, v in notes.items()}
+    since = seq[lo - 2].landed_ms if lo > 1 else 0
+    new_rules = '\n'.join(f'- {r["slug"]}: {r["text"][:240]}' for r in records_at(seq[k - 1].landed_ms)
+                          if r['kind'] == 'rule' and r['updated'] > since)[:1500] if design == 'B' else ''
+    touched = []
+    for name, (globs, _) in NOTE_AREAS.items():
+        v = notes[name]['verified']
+        if not git('diff', '--name-only', v, c_k, '--', *globs).strip():
+            cand[name]['verified'] = c_k
             continue
-        print(f'`{a}`: {len(sc)} replies, score mean {statistics.mean(sc):.2f} of 2, same (2) {sum(s == 2 for s in sc)}, different (0) {sum(s == 0 for s in sc)}; '
-              f'cost median ${statistics.median(r["cost_total"] for r in rs):.2f} against real ${statistics.median(r["logged_cost"] for r in rs):.2f}; '
-              f'memory uses per reply {statistics.mean(r["memory_uses"] for r in rs):.2f}')
-    pairs = [(runs['cut150'][(p['reply'], 0)], runs['cut150'][(p['reply'], 1)]) for p in meta['picks'] if 'cut150' in runs and (p['reply'], 1) in runs['cut150'] and (p['reply'], 0) in runs['cut150']]
-    pairs = [(a, b) for a, b in pairs if a.get('judge_score') is not None and b.get('judge_score') is not None]
-    if pairs:
-        print(f'\nRerun spread (cut150, {len(pairs)} replies run twice): score {statistics.mean(abs(a["judge_score"] - b["judge_score"]) for a, b in pairs):.2f}, '
-              f'cost {statistics.mean(abs(a["cost_total"] - b["cost_total"]) / max((a["cost_total"] + b["cost_total"]) / 2, 1e-9) for a, b in pairs):.2f}')
-    print('\nLost facts (score below 2):')
-    for a in arms:
-        for (reply, rep), r in sorted(runs[a].items()):
-            if rep == 0 and r.get('judge_score') is not None and r['judge_score'] < 2:
-                print(f'- {a} reply {reply} (score {r["judge_score"]}): ' + '; '.join(r.get('judge_lost', [])[:4]))
-    print()
-    cmd_mproject(args)
+        touched.append(name)
+        diff = git('diff', v, c_k, '--', *globs)[:DIFF_MAX]
+        memos = '\n'.join(f'#{t.n} {t.rec.get("title")}: {(t.result.get("memo") or t.result.get("summary") or "")[:1000]}'
+                          for i, t in enumerate(seq, 1) if commits.index(v) < i <= k)[:3000]
+        extra = (f'\nNew owner rules since the last pass:\n{new_rules or "none"}\nYour log of earlier passes:\n{scribe or "none"}\n' if design == 'B' else '')
+        prompt = (f'Area {name}, globs {", ".join(globs)}.\nCurrent note (verified {v[:8]}):\n{notes[name]["body"]}\n\nChanges {v[:8]}..{c_k[:8]} in its files:\n{diff}\n\n'
+                  f'Memos of the tasks that landed:\n{memos}\n\nActive records of the area:\n{area_records(globs, records_at(seq[k - 1].landed_ms), 2048)}\n{extra}\n'
+                  f'Change only what the changes changed; keep the form. If nothing the note says changes, answer exactly UNCHANGED. {NOTE_FORM}')
+        row = {'k': k, 'area': name}
+        try:
+            body, usd, secs = note_call(args, f'{arm}-{k}-{name}', model, NOTE_SYSTEM, prompt, notes[name]['body'])
+        except RuntimeError as e:
+            body, usd, secs, row['why'] = '', 0.0, 0.0, str(e)[:200]
+        body = unwrap(body)
+        row.update(usd=usd, secs=round(secs, 1))
+        if body == 'UNCHANGED':
+            row['status'] = 'unchanged'
+            cand[name]['verified'] = c_k
+        else:
+            bad = problems(body) if body else ['no answer']
+            row['cited'], row['missing'] = cites(body, c_k) if body else (0, 0)
+            bad += ['cites'] if row['missing'] else []
+            row['status'], row['why'] = ('rejected', ','.join(bad)) if bad else ('written', '')
+            if not bad:
+                cand[name] = {'body': body, 'verified': c_k}
+        rows.append(row)
+    log = scribe
+    if design == 'B' and touched:
+        recs = [r for r in records_at(seq[k - 1].landed_ms) if any(meet(p, g) for a in touched for g in NOTE_AREAS[a][0] for p in r.get('paths') or [])][:60]
+        if recs:
+            try:
+                out, usd, secs = curate(model, recs, c_k, args, f'{arm}-{k}')
+                rows.append({'k': k, 'curate': True, 'usd': usd, 'secs': round(secs, 1), 'parsed': out is not None})
+                log = (scribe + '\n' + f'pass {k}: ' + (out[2] if out else 'no answer'))[-2000:]
+            except RuntimeError as e:
+                rows.append({'k': k, 'curate': True, 'usd': 0.0, 'secs': 0.0, 'parsed': False, 'why': str(e)[:200]})
+    return cand, rows, log
+
+
+def stale_areas(notes, c):
+    return sum(bool(git('diff', '--name-only', v['verified'], c, '--', *NOTE_AREAS[a][0]).strip()) for a, v in notes.items())
+
+
+def run_chain(arm, seq, commits, args):
+    """Replay the lands for one arm (A-sonnet, B-haiku ...): a snapshot after each pass, a row per call in calls.jsonl."""
+    design = arm.split('-')[0]
+    if snap_at(arm, LANDS):
+        return
+    (NOTES / arm).mkdir(parents=True, exist_ok=True)
+    notes, scribe, rows = snap_at('control', 0)['areas'], '', []
+    def gate(areas, k):
+        got, usd = answer_set(areas, GATE_QUESTIONS, args, f'gate-{arm}-{k}')
+        return sum(s for s, _ in got), usd
+    held = gate(notes, 0)[0] if design == 'B' else None
+    snap_save(arm, 0, 0, notes)
+    for k in range(1, LANDS + 1):
+        if design == 'B' and k % BATCH == 0:
+            cand, got, scribe = write_pass(arm, notes, k, k - BATCH + 1, seq, commits, scribe, args)
+            now, g_usd = gate(cand, k)
+            live = now >= held
+            got.append({'k': k, 'gate': now, 'held': held, 'live': live, 'usd': g_usd})
+            if live:
+                notes, held = cand, now
+            snap_save(arm, k, seq[k - 1].landed_ms, notes)
+            rows += got
+        elif design == 'A':
+            notes, got, _ = write_pass(arm, notes, k, k, seq, commits, '', args)
+            snap_save(arm, k, seq[k - 1].landed_ms, notes)
+            rows += got
+        rows.append({'k': k, 'stale': stale_areas(notes, commits[k])})
+    (NOTES / arm / 'calls.jsonl').write_text('\n'.join(json.dumps(r) for r in rows) + '\n')
+    print(f'{arm}: {sum(r.get("usd", 0) for r in rows):.2f} $ over {LANDS} lands', flush=True)
+
+
+def write_map(arm, args):
+    """L3: the same model writes the one-screen map from its notes. Returns the row of its checks."""
+    snap = snap_at(arm, LANDS)
+    model = arm.split('-')[1]
+    parts = '\n'.join(f'- {a} ({", ".join(NOTE_AREAS[a][0])}): {v["body"].split(chr(10))[0][:200]} {next((x for x in v["body"].splitlines() if x.startswith("**Owners.**")), "")[:240]}' for a, v in snap['areas'].items())
+    text, usd, secs = note_call(args, f'map-{arm}', model, NOTE_SYSTEM, f'Write the project map: one screen, {MAP_MAX} bytes at most. One line per area: its name, its globs, the owner function of each concern, '
+                                f'and the docs that explain it. Areas:\n{parts}\nAnswer with the map only.', 'map')
+    text = unwrap(text)
+    ans, u2 = answer_map(text, args, arm)
+    row = {'bytes': len(text.encode()), 'areas_named': sum(a in text for a in NOTE_AREAS), 'right': sum(ans), 'usd': usd + u2, 'secs': round(secs, 1)}
+    (NOTES / arm / 'map.json').write_text(json.dumps({'map': text, **row}))
+    return row
+
+
+def answer_map(text, args, ident):
+    items = '\n'.join(f'{i + 1}. Which area owns the file {p}?' for i, (p, _) in enumerate(MAP_QUESTIONS))
+    out, usd, _ = note_call(args, f'mapq-{ident}', JUDGE_MODEL, 'You answer from the map only.', f'Project map:\n{text}\n\n{items}\nAnswer JSON only: [{{"n": <number>, "area": "<name>"}}]', '[]')
+    given = {int(x['n']): str(x['area']) for x in jload(out) or [] if isinstance(x, dict) and 'n' in x and 'area' in x}
+    return [MAP_QUESTIONS[i - 1][1] in given.get(i, '') for i in range(1, len(MAP_QUESTIONS) + 1)], usd
+
+
+def dup_fixture(recs, args):
+    """15 active facts and a Sonnet paraphrase of each under a new slug, written once (seed 527): the duplicates to find."""
+    f = NOTES / 'dups.json'
+    if f.exists():
+        return json.loads(f.read_text())
+    facts = sorted((r for r in recs if r['kind'] == 'fact'), key=lambda r: r['slug'])
+    picks = random.Random(527).sample(facts, 15)
+    items = '\n'.join(f'{i + 1}. {r["text"][:260]}' for i, r in enumerate(picks))
+    text, _, _ = note_call(args, 'dups', JUDGE_MODEL, 'You reword text. Answer JSON only.', f'Reword each text with different words and the same facts.\n{items}\nAnswer JSON only: [{{"n": <number>, "text": "<reworded>"}}]', '[]')
+    words = {int(x['n']): x['text'] for x in jload(text) or [] if isinstance(x, dict) and 'n' in x and 'text' in x}
+    out = [{'orig': r['slug'], 'slug': 'dup-' + r['slug'], 'text': words[i + 1], 'paths': r.get('paths')} for i, r in enumerate(picks) if i + 1 in words]
+    f.write_text(json.dumps(out))
+    return out
+
+
+def curation_set(recs, c, args):
+    """The labelled records at c: stale facts (a path is gone), 25 whole facts, 10 rules, 10 episodes, 15 paraphrased duplicates."""
+    t = tree(c)
+    gone = lambda r: any(not any(f == p or f.startswith(p.rstrip('/') + '/') for f in t) for p in (r.get('paths') or []) if '*' not in p)
+    rng = random.Random(527)
+    pick = lambda xs, n: rng.sample(sorted(xs, key=lambda r: r['slug']), min(n, len(xs)))
+    facts = [r for r in recs if r['kind'] == 'fact' and r.get('paths')]
+    dups = dup_fixture(recs, args)
+    origs = {d['orig'] for d in dups}
+    stale = pick([r for r in facts if gone(r) and r['slug'] not in origs], 25)
+    whole = pick([r for r in facts if not gone(r) and r['slug'] not in origs], 25)
+    others = pick([r for r in recs if r['kind'] == 'rule'], 10) + pick([r for r in recs if r['kind'] == 'episode'], 10)
+    extra = [{'slug': d['slug'], 'kind': 'fact', 'text': d['text'], 'paths': d['paths']} for d in dups]
+    allr = stale + whole + others + [r for r in recs if r['slug'] in origs] + extra
+    rng.shuffle(allr)
+    return allr, {r['slug'] for r in stale}, {(d['orig'], d['slug']) for d in dups}
+
+
+def cmd_notes(args):
+    """notes seed | write | score | curate | plan | report: who writes the area notes (docs/design/memory-layers.md)."""
+    NOTES.mkdir(parents=True, exist_ok=True)
+    tasks, seq, commits = lands()
+    stage = args.stage
+    if stage == 'seed':
+        if snap_at('control', 0):
+            return print('seed exists')
+        with cf.ThreadPoolExecutor(args.jobs) as pool:
+            areas = dict(zip(NOTE_AREAS, pool.map(lambda a: seed_area(a, commits[0], args), NOTE_AREAS)))
+        snap_save('control', 0, 0, areas)
+        print(f'seed: {len(areas)} areas, {sum(len(v["body"]) for v in areas.values())} bytes, spent ${spent():.2f}')
+    elif stage == 'write':
+        err = local_error() if any(a.endswith('local') for a in args.arms) else None
+        if err:
+            print(f'local model unreachable, its arms are skipped: {err}')
+            (NOTES / 'local-error.txt').write_text(err)
+        arms = [a for a in args.arms if not (a.endswith('local') and err)]
+        with cf.ThreadPoolExecutor(len(arms) or 1) as pool:
+            list(pool.map(lambda a: run_chain(a, seq, commits, args), arms))
+        with cf.ThreadPoolExecutor(args.jobs) as pool:
+            list(pool.map(lambda a: write_map(a, args), arms))
+        if not snap_at('regen', LANDS):
+            with cf.ThreadPoolExecutor(args.jobs) as pool:
+                areas = dict(zip(NOTE_AREAS, pool.map(lambda a: seed_area(a, commits[-1], args), NOTE_AREAS)))
+            snap_save('regen', LANDS, seq[-1].landed_ms, areas)
+        print(f'spent ${spent():.2f}')
+    elif stage == 'score':
+        out = NOTES / 'scores.json'
+        done = json.loads(out.read_text()) if out.exists() else {}
+        jobs = [(arm.name, k) for arm in sorted(NOTES.iterdir()) if arm.is_dir() for k in POINTS
+                if arm.name == 'control' or (arm / f'{k}.json').exists()]
+        def one(job):
+            arm, k = job
+            key = f'{arm}@{k}'
+            if key not in done:
+                s = snap_at(arm, k)
+                done[key] = {'snap': s['k'], 'scores': answer_set(s['areas'], QUESTIONS, args, f'score-{key}')[0]}
+        with cf.ThreadPoolExecutor(args.jobs) as pool:
+            list(pool.map(one, jobs))
+        out.write_text(json.dumps(done))
+        print(f'scored {len(done)} sets, spent ${spent():.2f}')
+    elif stage == 'curate':
+        recs = records_at(seq[-1].landed_ms)
+        allr, stale, dups = curation_set(recs, commits[-1], args)
+        def one(model):
+            out = NOTES / f'curate-{model}.json'
+            if not out.exists():
+                got, usd, secs = curate(model, allr, commits[-1], args, f'set-{model}')
+                out.write_text(json.dumps({'got': got, 'usd': usd, 'secs': round(secs, 1)}))
+        err = local_error() if 'local' in args.models else None
+        with cf.ThreadPoolExecutor(3) as pool:
+            list(pool.map(one, [m for m in args.models if not (m == 'local' and err)]))
+        print(f'{len(allr)} records: {len(stale)} stale, {len(dups)} duplicates; local: {err or "ok"}')
+    elif stage == 'plan':
+        window = {t.n for t in seq}
+        picks = sorted(n for n in window if pickable(n, tasks[n]) and tasks[n].t0 > seq[0].landed_ms)
+        picks = sorted(random.Random(527).sample(picks, min(args.count, len(picks))))
+        WORK.mkdir(parents=True, exist_ok=True)
+        (WORK / 'picks.json').write_text(json.dumps([{'task': n, 'area': pickable(n, tasks[n]), 'repeat': False, 'files': len(tasks[n].landed_files()),
+                                                      'corrections': len(tasks[n].corrections()), 'logged_cost': tasks[n].plan['usage']['cost_micro_usd'] / 1e6,
+                                                      'logged_calls': tasks[n].plan['usage'].get('calls'), 'model': tasks[n].rec.get('model'), 'title': tasks[n].rec.get('title')} for n in picks]))
+        print('plan tasks', picks)
+        for arm in ['baseline'] + [f'notes-{a}' for a in args.arms]:
+            cmd_run(argparse.Namespace(arm=arm, tasks=None, agent=args.agent, wsx=args.wsx, dry_run=args.dry_run, cap=args.cap, jobs=args.jobs, force=False, keep=False))
+    else:
+        notes_report(tasks, seq)
+
+
+def notes_block(task, arm):
+    """The start block part of the notes arms: the L2 models of the task's files, from the chain's newest snapshot before the task started."""
+    s = snap_at(arm, ms=task.t0)
+    files = task.rec.get('files') or []
+    hit = [(a, v) for a, v in (s['areas'] if s else {}).items() if any(meet(f, g) for f in files for g in NOTE_AREAS[a][0])][:2]
+    return '\n\n'.join(f'Area note: {a} (verified {v["verified"][:8]})\n{v["body"]}' for a, v in hit)
+
+
+def notes_report(tasks, seq):
+    """The tables of docs/design/memory-eval.md "Area-notes writer" and the pick by the rule written there."""
+    scores = json.loads((NOTES / 'scores.json').read_text())
+    pct = lambda x: '-' if x is None else f'{x:.2f}'
+    right = lambda key: (sum(s == 2 for s, _ in scores[key]['scores']) / len(scores[key]['scores'])) if key in scores else None
+    cited = lambda key: (sum(c for _, c in scores[key]['scores']) / len(scores[key]['scores'])) if key in scores else None
+    print('| arm | right @10 / @20 / @30 | cited @30 | rejects | cited names missing | $ per land | s added to a land | stale areas per land | gate stops | map: right of 4, bytes |\n|---|---|---|---|---|---|---|---|---|---|')
+    rows, errs = {}, ''
+    for d in sorted(x for x in NOTES.iterdir() if x.is_dir()):
+        arm, f = d.name, d / 'calls.jsonl'
+        r = [json.loads(x) for x in f.read_text().splitlines()] if f.exists() else []
+        calls = [x for x in r if 'area' in x]
+        by_land = collections.defaultdict(float)
+        for x in calls:
+            by_land[x['k']] += x['secs']
+        m = json.loads((d / 'map.json').read_text()) if (d / 'map.json').exists() else {}
+        row = {'arm': arm, 'end': right(f'{arm}@30'), 'usd': sum(x.get('usd', 0) for x in r) / LANDS if r else 0.0,
+               'reject': sum(x['status'] == 'rejected' for x in calls) / max(1, len(calls)),
+               'miss': sum(x.get('missing', 0) for x in calls) / max(1, sum(x.get('cited', 0) for x in calls)),
+               'secs': med(list(by_land.values()) + [0.0] * (LANDS - len(by_land))) if arm.startswith('A') else 0.0,
+               'stale': statistics.mean([x['stale'] for x in r if 'stale' in x]) if r else None, 'gate': sum(1 for x in r if x.get('live') is False), 'curate': [x for x in r if x.get('curate')]}
+        rows[arm] = row
+        print(f'| {arm} | {" / ".join(pct(right(f"{arm}@{k}")) for k in POINTS)} | {pct(cited(f"{arm}@30"))} | {row["reject"]:.0%} | {row["miss"]:.1%} | {row["usd"]:.3f} | '
+              f'{row["secs"]:.0f} | {pct(row["stale"])} | {row["gate"]} | {m.get("right", "-")}, {m.get("bytes", "-")} |')
+    if (NOTES / 'local-error.txt').exists():
+        print(f'\nLocal model not run: {(NOTES / "local-error.txt").read_text()}')
+    recs = records_at(seq[-1].landed_ms)
+    allr, stale, dups = curation_set(recs, lands()[2][-1], argparse.Namespace(dry_run=False, cap=0))
+    pairs = {frozenset(p) for p in dups}
+    print('\n| curation model | records | found stale of ' + str(len(stale)) + ' | found duplicates of ' + str(len(dups)) + ' | wrong retire | wrong merge | actions | s | $ |\n|---|---|---|---|---|---|---|---|---|')
+    harm = {}
+    for f in sorted(NOTES.glob('curate-*.json')):
+        j = json.loads(f.read_text())
+        if not j['got']:
+            print(f'| {f.stem[8:]} | {len(allr)} | answer not JSON | | | | | {j["secs"]} | {j["usd"]:.3f} |')
+            continue
+        retire, merges, _ = j['got']
+        members = {x for p in pairs for x in p}
+        found = {frozenset(m) for m in merges if frozenset(m) in pairs} | {p for p in pairs for s in retire if s in p}
+        ok_retire = [s for s in retire if s in stale]
+        bad_retire = [s for s in retire if s not in stale and s not in members]
+        bad_merge = [m for m in merges if frozenset(m) not in pairs]
+        n = len(retire) + len(merges)
+        harm[f.stem[8:]] = (len(found) / len(dups) if dups else 0, (len(bad_retire) + len(bad_merge)) / max(1, n), len(ok_retire) / max(1, len(stale)))
+        print(f'| {f.stem[8:]} | {len(allr)} | {len(ok_retire)} | {len(found)} | {len(bad_retire)} | {len(bad_merge)} | {n} | {j["secs"]} | {j["usd"]:.3f} |')
+    ctl = rows.get('control', {}).get('end') or 0.0
+    ok = {a: r for a, r in rows.items() if a[0] in 'AB' and r['end'] is not None and r['end'] >= ctl + 0.10 and r['miss'] <= 0.05 and r['reject'] <= 0.20}
+    print(f'\nControl (frozen seed) right at the end {ctl:.2f}. Eligible (end >= control + 0.10, names missing <= 5%, rejects <= 20%): {sorted(ok) or "none"}.')
+    def best(design):
+        xs = [a for a in ok if a[0] == design]
+        top = max((ok[a]['end'] for a in xs), default=None)
+        near = [a for a in xs if top - ok[a]['end'] < 0.08]  # ^ under 2 questions of 24: a tie goes to the cheaper
+        return min(near, key=lambda a: ok[a]['usd']) if near else None
+    a, b = best('A'), best('B')
+    scribe = b and (ok[b]['end'] >= (ok[a]['end'] if a else 0) + 0.05 or (b.split('-')[1] in harm and harm[b.split('-')[1]][0] >= 0.5 and harm[b.split('-')[1]][1] <= 0.05))
+    print(f'Best A: {a}. Best B: {b}. **Pick: {b if scribe else a}** (B only if its end score is 0.05 above A, or its curation finds half the duplicates with at most 5% harm).')
+    runs = load_runs()
+    base = runs.get('baseline', {})
+    for arm in sorted(x for x in runs if x.startswith('notes-')):
+        pairs = [(base[k], v) for k, v in runs[arm].items() if k in base and v.get('cause') is not None and base[k].get('cause') is not None]
+        if pairs:
+            verdict_of(pairs, arm, 'baseline')
 
 
 # ---- offline retrieval: does the start set hold what a plan step read? (docs/design/memory-eval.md "Offline retrieval") ----
@@ -1796,7 +2010,7 @@ def main():
     pk.add_argument('--tasks', type=int, nargs='*', help='take these tasks, not the seeded draw (the doc table)')
     pk.set_defaults(fn=cmd_pick)
     r = sub.add_parser('run')
-    r.add_argument('--arm', choices=['baseline', 'memory', 'memory-cheap'], required=True)
+    r.add_argument('--arm', required=True, help='baseline, memory, memory-cheap')
     r.add_argument('--tasks', type=int, nargs='*')
     r.add_argument('--agent', default='claude', help='the agent command (a fake in the dry run)')
     r.add_argument('--wsx', default=str(ROOT / 'target/debug/wsx'))
@@ -1819,26 +2033,17 @@ def main():
     lv.add_argument('--cutoff-ms', type=int, default=0)
     lv.add_argument('--cutoff-task', type=int, default=0, help='split at the landing of this task (#384 or #380)')
     lv.set_defaults(fn=cmd_live)
-    sub.add_parser('mpick').set_defaults(fn=cmd_mpick)
-    mp = sub.add_parser('mproject')
-    mp.add_argument('--recall-uses', type=float, default=1.0, help='memory calls per reply when no replay ran')
-    mp.set_defaults(fn=cmd_mproject)
-    mr = sub.add_parser('mrun')
-    mr.add_argument('--arm', choices=list(ARMS), required=True)
-    for a, kw in (('--agent', {'default': 'claude'}), ('--wsx', {'default': str(ROOT / 'target/debug/wsx')}), ('--cap', {'type': float, 'default': CAP_USD}),
-                  ('--jobs', {'type': int, 'default': 3})):
-        mr.add_argument(a, **kw)
-    mr.add_argument('--replies', type=int, nargs='*', help='run only these replies')
-    mr.add_argument('--dry-run', action='store_true')
-    mr.add_argument('--force', action='store_true')
-    mr.set_defaults(fn=cmd_mrun)
-    mj = sub.add_parser('mjudge')
-    mj.add_argument('--dry-run', action='store_true')
-    mj.add_argument('--force', action='store_true')
-    mj.set_defaults(fn=cmd_mjudge)
-    mrep = sub.add_parser('mreport')
-    mrep.add_argument('--recall-uses', type=float, default=1.0)
-    mrep.set_defaults(fn=cmd_mreport)
+    nt = sub.add_parser('notes', help='who writes the L2 area notes: seed | write | score | curate | plan | report')
+    nt.add_argument('stage', choices=['seed', 'write', 'score', 'curate', 'plan', 'report'])
+    nt.add_argument('--arms', nargs='*', default=['A-sonnet', 'A-haiku', 'A-local', 'B-sonnet', 'B-haiku', 'B-local'])
+    nt.add_argument('--models', nargs='*', default=['sonnet', 'haiku', 'local'])
+    nt.add_argument('--count', type=int, default=8, help='plan: tasks of the window to replay')
+    nt.add_argument('--agent', default='claude')
+    nt.add_argument('--wsx', default=str(ROOT / 'target/debug/wsx'))
+    nt.add_argument('--dry-run', action='store_true')
+    nt.add_argument('--cap', type=float, default=CAP_USD)
+    nt.add_argument('--jobs', type=int, default=3)
+    nt.set_defaults(fn=cmd_notes)
     of = sub.add_parser('offline', help='free retrieval score of the start set on every landed task')
     of.add_argument('--wsx', default=str(ROOT / 'target/debug/wsx'))
     of.add_argument('--work', help='work folder (default .work/memory-eval)')
