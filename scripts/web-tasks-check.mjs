@@ -4229,7 +4229,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await until("location.hash === '#/c/qa'", "the old route #/p/<id>/c/<chat> did not redirect to #/c/<chat>");
   await until("document.querySelector('.bar-label')?.textContent === 'qa' && !!document.querySelector('.bar .more-button')", "the qa chat has no ⋯ menu");
   await click(".bar .more-button");
-  if ((await menuItems()).join() !== "PurposeNot set,Rename chat,Close chat") await fail(`the qa chat's menu is ${await menuItems()}`);
+  if ((await menuItems()).join() !== "PurposeCheck the release notes.,Rename chat,Close chat") await fail(`the qa chat's menu is ${await menuItems()}`);
   await evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].find((item) => item.textContent.trim() === 'Close chat').click()");
   await until(`!!document.querySelector('${sheet} #dialog-title')`, "Close chat asked nothing");
   const asks = await evaluate(`({ title: document.querySelector('${sheet} #dialog-title').textContent, text: document.querySelector('${sheet} p').textContent,
