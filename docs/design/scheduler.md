@@ -52,5 +52,13 @@ The status and the log say why: `queued for the scenario slot behind <holder>; <
 
 ## Measured
 
-Filled in by the proof run of task #522 (two tasks' `task` + `web` rounds at once; times and free disk
-before and after; failure counts at width 1 against the chosen width). See the task's result.
+Source: the host's check-run on head 259a89ed (`check-run-8.log`, `check-run-9.log` of task #522), 10 cores,
+24 GiB, other tasks building at the same time.
+
+- `task`: 7 parts as 7 processes at once, 653 s for the slowest (`core`); `web`: `chat` 431 s, `tasks` 675 s.
+  The `wsxd watch` samples in the web log show load 35 to 60 during the round.
+- Free disk of the working copy's volume: 16 GiB at the end (`df`); it was about 11 GiB at the start of the task.
+- Section `32v2` (disk low, scenario-only run goes to CI with `went to CI: ... GB free of the 100000 GB`) passed in part `deploy`.
+- Not measured: two tasks' rounds at once at width 1 against a wider lane. Load stayed over 1.5 per core on
+  this Mac all through the task, so the rule kept the lane at width 1 and a wider lane never ran here.
+  The failure counts at width 1 against width 2 or 3 are open.
