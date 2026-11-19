@@ -1251,7 +1251,7 @@ async function commandsAbove(label, tag) {
   await until("document.querySelectorAll('.slash-option').length === 6", `${label}: the / list did not open`);
   const seen = await evaluate(`(() => { const box = (selector) => document.querySelector(selector).getBoundingClientRect();
     return { list: Math.round(box('.slash').height), row: Math.round(box('.slash-option').height), log: Math.round(box('.log-wrap').height),
-      composer: Math.round(box('.composer').bottom), visible: Math.round(visualViewport.offsetTop + visualViewport.height), scrolled: document.scrollingElement.scrollTop,
+      composer: Math.round(box('.composer').bottom + parseFloat(getComputedStyle(document.querySelector('.composer')).marginBottom)), visible: Math.round(visualViewport.offsetTop + visualViewport.height), scrolled: document.scrollingElement.scrollTop,
       below: Math.round(box('.slash-option .slash-description').top - box('.slash-option .slash-name').bottom) }; })()`);
   if (seen.list > seen.row * 3.5 + 2 || seen.log < 60 || Math.abs(seen.composer - seen.visible) > 1 || seen.scrolled !== 0 || seen.below < 0) {
     await fail(`${label}: the / list does not fit above the keyboard: ${JSON.stringify(seen)}`);

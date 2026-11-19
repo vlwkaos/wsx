@@ -1668,12 +1668,12 @@ phase("The Overview button in the chat header (icon only), and Sett");
     await click(".more-button");
     await shot(wide ? "header-bottom-wide" : "header-bottom");
     if (!wide) {
-      // ^ The keyboard up (as iOS: only the visual viewport shrinks): the bar rides with the composer above the keyboard's top edge.
+      // ^ The keyboard up (as iOS: only the visual viewport shrinks): the bar rides with the composer above the keyboard's top edge; `end` counts the card's foot gap.
       await typeInto(".composer-field", "");
       await keyboard(420);
       await pause(300);
       const up = await evaluate(`(() => { const box = (selector) => document.querySelector(selector).getBoundingClientRect();
-        return { bar: Math.round(box('.chat > .bar').bottom), composer: Math.round(box('.composer').top), end: Math.round(box('.composer').bottom),
+        return { bar: Math.round(box('.chat > .bar').bottom), composer: Math.round(box('.composer').top), end: Math.round(box('.composer').bottom + parseFloat(getComputedStyle(document.querySelector('.composer')).marginBottom)),
           visible: Math.round(visualViewport.offsetTop + visualViewport.height), keyboard: document.body.hasAttribute('data-keyboard') }; })()`);
       if (!up.keyboard || up.bar > up.composer + 1 || Math.abs(up.end - up.visible) > 1) await fail(`the bottom bar is not above the composer on the keyboard: ${JSON.stringify(up)}`);
       await shot("header-bottom-keyboard", ".composer-send");
