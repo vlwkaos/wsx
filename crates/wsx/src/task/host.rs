@@ -23,6 +23,7 @@ use wsx_core::config::project::{load_project_config, load_task_config};
 use wsx_core::git::{git_cmd, output_with_timeout_tail};
 use wsx_core::memory::start::{self as memory_start, Start};
 use wsx_core::memory::{manage as memory_manage, Store};
+use wsx_core::model::workspace::WorkflowStep;
 use wsx_core::runtime;
 use wsx_core::task::manager::asks_owner;
 use wsx_core::task::replace::{Binary, HANDOFF_FILE};
@@ -2351,7 +2352,7 @@ impl Host {
     }
 
     /// End the conversation after its handoff notes and start `waiting` in a fresh one,
-    /// with the task's prompt, the notes and the current step.
+    /// with the task as asked, what was sent since, the notes and the step (`rotation_prompt`).
     fn rotate(&mut self, waiting: String, reason: Option<String>) {
         let tokens = self.context_tokens;
         if let Some(agent) = self.agent.take() {
@@ -2375,33 +2376,23 @@ impl Host {
                 self.dir.file(ROTATE_NOTES).display()
             ),
         };
-        let mut text = vec![format!(
-            "You continue a task whose earlier conversation reached {}k tokens of context and \
-             was closed. Its working copy and commits are as that conversation left them; see \
-             them with git status, git log and git diff. Load the project knowledge you need \
-             again (the recall or seek skill when you have it), and read only the parts of \
-             files you need.",
-            tokens / 1000
-        )];
-        if let Ok(Some(prompt)) = self.dir.prompt() {
-            text.push(format!("The task as it was asked:\n{prompt}"));
-        }
-        text.push(notes);
+        // ^ The step belongs to the turn that ends, not to the record: a message after the
+        // result is a free turn, and the record's step stays at the last one.
         let index = self.record.step as usize;
-        if let Some(step) = self.record.steps.get(index) {
-            if !waiting.contains(&step.prompt) {
-                text.push(format!(
-                    "You are in step {} of {}, {}: {}",
-                    index + 1,
-                    self.record.steps.len(),
-                    step.name,
-                    step.prompt
-                ));
-            }
-        }
-        text.push(waiting);
-        text.extend(self.pending.drain(..));
-        self.start_turn(&text.join("\n\n"), TurnTrigger::Rotation);
+        let step = matches!(self.trigger, TurnTrigger::Step | TurnTrigger::CheckRetry)
+            .then(|| self.record.steps.get(index))
+            .flatten()
+            .map(|step| (index, self.record.steps.len(), step));
+        let prompt = self.dir.prompt().ok().flatten();
+        let text = rotation_prompt(
+            tokens,
+            prompt.as_deref(),
+            step,
+            &waiting,
+            self.pending.drain(..).collect(),
+            &notes,
+        );
+        self.start_turn(&text, TurnTrigger::Rotation);
     }
 
     /// The host's task context for the first turn: the task's files, the open tasks that
@@ -4636,4 +4627,100 @@ fn check_retry_request(failed: &[&CheckResult], attempt: u32) -> String {
         ));
     }
     text
+}
+
+/// The first prompt of the conversation after a rotation. The task as asked comes first, then
+/// the turn and the messages since, then the notes: the newest instruction wins where they
+/// differ. `step` is (index, count, step) and only for a turn that was a step's.
+fn rotation_prompt(
+    tokens: u64,
+    asked: Option<&str>,
+    step: Option<(usize, usize, &WorkflowStep)>,
+    waiting: &str,
+    pending: Vec<String>,
+    notes: &str,
+) -> String {
+    let mut text = vec![format!(
+        "You continue a task whose earlier conversation reached {}k tokens of context and \
+         was closed. Its working copy and commits are as that conversation left them; see \
+         them with git status, git log and git diff. Load the project knowledge you need \
+         again (the recall or seek skill when you have it), and read only the parts of \
+         files you need.",
+        tokens / 1000
+    )];
+    if let Some(asked) = asked {
+        text.push(format!("The task as it was asked:\n{asked}"));
+    }
+    text.push(
+        "What follows came after: where it differs from the task as asked or from the notes, \
+         the newest instruction wins."
+            .into(),
+    );
+    if let Some((index, count, step)) = step.filter(|(_, _, step)| !waiting.contains(&step.prompt))
+    {
+        text.push(format!(
+            "You are in step {} of {count}, {}: {}",
+            index + 1,
+            step.name,
+            step.prompt
+        ));
+    }
+    text.push(waiting.to_string());
+    text.extend(pending);
+    text.push(notes.to_string());
+    text.join("\n\n")
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::*;
+
+    fn step() -> WorkflowStep {
+        WorkflowStep {
+            name: "review".into(),
+            prompt: "Run the simplify skill".into(),
+        }
+    }
+
+    // The studio-app #120 failure: a message after the result rotated and was told it was in the
+    // last step, so the worker reviewed work that was never built.
+    #[test]
+    fn free_turn_names_no_step_and_step_turn_does() {
+        let step = step();
+        let free = rotation_prompt(
+            210_000,
+            Some("stop after mockups"),
+            None,
+            "Build it now",
+            vec!["and add tests".into()],
+            "NOTES",
+        );
+        assert!(!free.contains("You are in step"), "{free}");
+        let at = |needle: &str| {
+            free.find(needle)
+                .unwrap_or_else(|| panic!("{needle}: {free}"))
+        };
+        assert!(at("stop after mockups") < at("Build it now"));
+        assert!(at("Build it now") < at("and add tests"));
+        assert!(at("and add tests") < at("NOTES"));
+        assert!(free.contains("newest instruction wins"));
+        let stepped = rotation_prompt(
+            210_000,
+            None,
+            Some((2, 3, &step)),
+            "continue",
+            vec![],
+            "NOTES",
+        );
+        assert!(stepped.contains("You are in step 3 of 3, review: Run the simplify skill"));
+        let started = rotation_prompt(
+            1000,
+            None,
+            Some((2, 3, &step)),
+            "Run the simplify skill",
+            vec![],
+            "N",
+        );
+        assert!(!started.contains("You are in step"), "{started}");
+    }
 }
