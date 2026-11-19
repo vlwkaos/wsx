@@ -300,7 +300,7 @@ html[data-bar="bottom"] .more-menu { top: auto; bottom: 100%; }
    centered column of the prose width. Each user of the inset is as wide as the chat; the ch unit
    is fixed once, here, by the registered type: a row, a band or a title in a smaller font
    (the open list's rows are the small size) starts at the same edge as the header and the composer. */
-@property --column-inset { syntax: "<length-percentage>"; inherits: true; initial-value: 0px; }
+@property --column-inset { syntax: "<length-percentage>"; inherits: true; initial-value: 0%; }
 :root { --column-inset: var(--space-4); }
 .chat { --column-inset: max(var(--space-4), calc((100% - var(--size-prose)) / 2)); }
 .chat, .log-wrap { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
