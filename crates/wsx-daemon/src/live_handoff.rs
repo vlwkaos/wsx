@@ -698,7 +698,8 @@ pub(crate) fn handoff_blockers(
     if state.recovery_in_progress {
         blockers.push(ReplacementBlocker::HandoffUnavailable);
     }
-    if state.runtimes.len() > handoff::MAX_HANDOFF_PANES {
+    // ^ Only a live pane needs a descriptor and a pause; an exited one goes as its screen.
+    if live_runtime_count(state) > handoff::MAX_HANDOFF_PANES {
         blockers.push(ReplacementBlocker::HandoffUnavailable);
     }
     blockers

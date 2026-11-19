@@ -253,7 +253,7 @@ fn validate_manifest(manifest: &Manifest) -> io::Result<()> {
         || manifest.expected_protocol != super::PROTOCOL_VERSION
         || manifest.expected_daemon_revision != super::DAEMON_REVISION
         || !(current_version || legacy_identity_bridge)
-        || manifest.panes.len() + manifest.exited_panes.len() > MAX_HANDOFF_PANES
+        || manifest.panes.len() > MAX_HANDOFF_PANES
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

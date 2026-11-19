@@ -95,7 +95,7 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // cannot decode a document with one (docs/panels.md "Cards").
 pub const DAEMON_REVISION: u32 = 51;
 
-/// Most panes one live handoff carries. More defer a handoff for good (`HandoffUnavailable`),
+/// Most live panes one live handoff carries (exited panes go as screens and do not count). More defer a handoff for good (`HandoffUnavailable`),
 /// so `wsx daemon restart` does not wait for it. ref: docs/daemon-live-upgrade.md "Restart and stop"
 pub const MAX_HANDOFF_PANES: usize = 64;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.

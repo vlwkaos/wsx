@@ -138,6 +138,8 @@ A pane whose program exited keeps its runtime: its last screen and its exit. It 
 
 From revision 32 the source sends an exited pane (one that has exited, or that exits while the readers pause) in the manifest's `exited_panes`: its handoff state without a PTY descriptor. It takes no part in the pause, the ownership transfer or the rollback. The successor rebuilds it with `TerminalRuntime::exited_from_handoff`: the same screen and history, no process, still exited. A successor that does not know `exited_panes` ignores the field and keeps the pane's record, which already says it exited, without a screen.
 
+Only live panes count against the 64-pane limit (`MAX_HANDOFF_PANES`): a daemon with hundreds of exited panes still hands off, bounded by the manifest size. Before the fix of task 537 they counted, so a daemon with more than 64 panes in all could never be replaced.
+
 A source daemon before revision 32 cannot do this, so its upgrade fails while it holds an exited pane. Before upgrading such a daemon, restart or close the exited panes.
 
 ## Verification

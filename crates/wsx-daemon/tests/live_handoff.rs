@@ -1136,7 +1136,8 @@ fn wait_for_ptmx_fds(socket: &Path, what: &str, done: impl Fn(usize) -> bool) ->
 // program ended, or that was closed, must not keep its master, and a handoff must not add any.
 #[test]
 fn ended_and_closed_sessions_give_their_pty_back_also_through_a_handoff() {
-    const ENDED: usize = 6;
+    // ^ More ended sessions than `MAX_HANDOFF_PANES`: they must not block the handoff.
+    const ENDED: usize = 66;
     const LIVE: usize = 3;
     // ^ Master, the reader's duplicate and the writer: three descriptors a live pane holds.
     const PER_PANE: usize = 3;
