@@ -2765,7 +2765,7 @@ await until(`document.querySelectorAll('.reservoir-list[aria-label="For you"] ${
 // capture are in the sheet before it moves, so it rises once and stays.
 await oneMotion("To check on a phone", async () => {
   await evaluate(`${rowOf("#2", CHECK_ROWS)}.querySelector('.row-open').click()`);
-  await until(`/^#\\/p\\/${project}\\/checks\\/c\\d+$/.test(location.hash) && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open at the item");
+  await until(`location.hash.startsWith(${JSON.stringify(chat + "/checks/c")}) && /c\\d+$/.test(location.hash) && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open at the item");
 });
 // ^ The scroll and the mark come a frame after the sheet shows: wait for them. An item with a
 // capture can be taller than the sheet, so it is seen when it covers part of the view.
