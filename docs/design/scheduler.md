@@ -12,7 +12,7 @@ go to the slow external CI only when there is nothing else.
 ```mermaid
 flowchart TD
   A[run wants the scenarios lane] --> S[sample: load per core, free RAM, free disk]
-  S --> P{free PTYs under a round's peak?}
+  S --> P{free PTYs under this run's need?}
   P -->|yes| W
   P -->|no| D{decide}
   D -->|first run: load under 2.5/core, or waited 15 min| G[Go: take the slot, run here]
@@ -36,7 +36,7 @@ ends. Both end when the run answers.
 |---|---|
 | Sample: 1-minute load per core (`getloadavg`), free RAM (macOS `host_statistics64`, Linux `/proc/meminfo`), free disk of the working copy's volume | `schedule::sample` |
 | Width: at most `MAX_SCENARIO_RUNS` (3); `WSX_SCENARIO_SLOTS` lowers it. A first run needs load under `START_LOAD` 2.5/core, or has waited `LOAD_WAIT` 15 min with the lane free for it (`schedule::load_waited`: time queued behind another run does not count; the deploy's smoke test, `wsx task slot`, waits like a task round and says `load N on C cores` in deploy.log). Each extra run needs load under `WIDEN_LOAD` 1.5/core, `RUN_RAM_MB` and `RUN_DISK_MB` (3 GiB each) free, and the newest run older than `SETTLE` 90 s (the load average lags) | `schedule::decide` |
-| PTYs: free = `kern.tty.ptmx_max` (macOS) or `/proc/sys/kernel/pty/max` minus the slave devices that exist (`/dev/ttysNNN`, `/dev/pts/N`). A run of the checks or scenarios lane starts only with its peak free (`schedule::run_ptys`: 222 for `scenario.py task`, 274 for `web`, `CHECK_PTYS` 60 for checks) times the runs in the lane plus itself, since a run that just started has not opened its PTYs yet; else it waits with `waiting for PTYs: <free> free, a round needs ~<n>`; no wait time lifts it, because a run that starts without a PTY fails with `failed to openpty`. Off with `WSX_SCENARIO_SLOTS` (fixtures) | `schedule::decide`, `Lane::ptys` |
+| PTYs: free = `kern.tty.ptmx_max` (macOS) or `/proc/sys/kernel/pty/max` minus the slave devices that exist (`/dev/ttysNNN`, `/dev/pts/N`). A run starts only with its own peak free (`schedule::run_ptys`: 222 `scenario.py task`, 274 `web`, 71 `runtime-smoke.py`, else `CHECK_PTYS` 60) plus 274 for each holder that took its slot under `SETTLE` ago; an older holder's PTYs are open already and missing from free. A need above the pool never comes free: the run waits for the lane (`waiting for the lane: ...`), or starts when the lane is empty. Else `waiting for PTYs: <free> free, a round needs ~<n>`; no wait time lifts it, because a run that starts without a PTY fails with `failed to openpty`. Off with `WSX_SCENARIO_SLOTS` (fixtures) | `schedule::pty_wait`, `Lane::ptys` |
 | Order: `Land` (a land's checks), `Urgent` (another open task waits for this one through `after`), `Asked` (the owner made the task), `Normal`; then arrival. A ticket's priority is fixed when it joins | `schedule::urgency`, `slot::ticket_name` |
 | Turns: a worker turn takes a place in the `turn-slot` queue (one slot) before it starts. It starts under `START_LOAD` per core, or after `LOAD_WAIT`; the slot stays held 60 s (`disk_settle`) so the next turn sees the load this one adds. It waits as `waiting.on: load` and resumes by itself; its text rides `disk_wait`, as a turn held for disk does | `host.rs` `wait_for_load`, `slot::admit` |
 | History: a scenario run's `check_run` result has `width` (runs in its lane at its start); `wsx task widths` prints runs and failed runs per part and width, from the summary line of `scripts/scenario.py` | `schedule::widths` |
@@ -74,8 +74,12 @@ Source: the host's check-run on head 259a89ed (`check-run-8.log`, `check-run-9.l
   `scripts/scenario.py` prints, in the two check-runs of this task on c42ff1c7: 114 at start, peak 336 and 114 at
   start, peak 388, so a round adds 222 and 274 PTYs. Which is which is not read from the logs (they are not readable
   from the working copy): the lines came in the order of the checks, `task` then `web`, so `task` 222 and `web` 274
-  [unverified]. With 511 in the pool and the live wsxd holding ~144, 367 are free: one round starts and a second
-  needs 444, so two rounds never run side by side (unit test `a_run_waits_for_the_ptys_its_round_needs`).
+  [unverified]. With 511 in the pool and the live wsxd holding ~144, 367 are free: one round starts; a second
+  starts when the first has settled (90 s) and 222 or 274 are still free (unit test
+  `a_run_waits_for_the_ptys_its_round_needs`).
+  `runtime-smoke.py` adds 71: `/dev/ttysNNN` count every 0.2 s while it ran (119 at start, peak 190; others'
+  runs included, so an upper bound). The deploy of ef4f396d waited 7200 s with 421 free because every holder
+  counted twice and the smoke test took a round's 274.
   The checks' 60 is the rise of `cargo nextest run --workspace` (460 to 513 in `/dev/ttysNNN` while other
   runs were on the Mac, so at most 53, rounded up). While other tasks held 476 to 515 of the 511, every PTY test
   failed with `failed to openpty`; a run now waits with `waiting for PTYs` instead.

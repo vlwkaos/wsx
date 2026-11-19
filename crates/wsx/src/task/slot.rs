@@ -74,7 +74,7 @@ impl Lane {
         match self {
             _ if !ruled() => 0,
             Lane::Checks => schedule::CHECK_PTYS,
-            Lane::Scenarios => schedule::run_ptys(""),
+            Lane::Scenarios => schedule::WEB_ROUND_PTYS,
             Lane::Turns => 0,
         }
     }
@@ -180,7 +180,7 @@ pub fn admit(
             &schedule::Lane {
                 machine: schedule::sample(&store::state_dir()),
                 holders: held.holders,
-                newest: held.newest,
+                fresh: held.fresh,
                 ahead: held.ahead,
                 waited: schedule::load_waited(load_since, held.holders + held.ahead == 0),
                 scenarios: matches!(lane, Lane::Scenarios),
@@ -214,8 +214,8 @@ pub fn run(argv: &[String]) -> anyhow::Result<i32> {
 /// The slots of a lane as a waiter sees them.
 pub struct Held {
     pub holders: usize,
-    /// How long the newest holder has held its slot.
-    pub newest: Option<Duration>,
+    /// The holders that took their slot less than `schedule::SETTLE` ago.
+    pub fresh: usize,
     pub ahead: usize,
 }
 
@@ -308,13 +308,13 @@ impl Ticket {
                 Some((fs::read_to_string(path).ok()?, at))
             })
             .collect();
-        let newest = held
+        let fresh = held
             .iter()
-            .map(|(_, at)| at.elapsed().unwrap_or_default())
-            .min();
+            .filter(|(_, at)| at.elapsed().unwrap_or_default() < schedule::SETTLE)
+            .count();
         let note = match decide(&Held {
             holders: held.len(),
-            newest,
+            fresh,
             ahead,
         }) {
             Verdict::Go => {

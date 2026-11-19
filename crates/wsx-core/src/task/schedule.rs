@@ -29,7 +29,7 @@ const LOAD_WAIT: Duration = Duration::from_secs(15 * 60);
 /// A run beside another starts under this load, with this much memory and disk free, and when the
 /// newest run is older than `SETTLE`: the load average shows a new run only after a minute.
 const WIDEN_LOAD: f64 = 1.5;
-const SETTLE: Duration = Duration::from_secs(90);
+pub const SETTLE: Duration = Duration::from_secs(90);
 const RUN_RAM_MB: u64 = 3 * 1024;
 const RUN_DISK_MB: u64 = 3 * 1024;
 // ^ PTYs a run adds at its peak (docs/design/scheduler.md "Measured"): the Mac has `kern.tty.ptmx_max`
@@ -37,14 +37,19 @@ const RUN_DISK_MB: u64 = 3 * 1024;
 /// A task's checks (nextest).
 pub const CHECK_PTYS: u64 = 60;
 const TASK_ROUND_PTYS: u64 = 222;
-const WEB_ROUND_PTYS: u64 = 274;
+/// The larger round: what a scenarios-lane run takes until its command says, and what a holder that
+/// has just started may still open.
+pub const WEB_ROUND_PTYS: u64 = 274;
+const SMOKE_PTYS: u64 = 71;
 
-/// The PTYs a scenario command needs free to start: its round's peak. A command that is not
-/// `scenario.py task` takes the larger round's.
+/// The PTYs a command of the scenarios lane needs free to start: its peak. The rounds are
+/// `scenario.py task` and `web`; `runtime-smoke.py` has its own; any other command takes a check's.
 pub fn run_ptys(command: &str) -> u64 {
     match scenario_of(command) {
         "task" => TASK_ROUND_PTYS,
-        _ => WEB_ROUND_PTYS,
+        "web" => WEB_ROUND_PTYS,
+        _ if command.contains("runtime-smoke.py") => SMOKE_PTYS,
+        _ => CHECK_PTYS,
     }
 }
 
@@ -81,8 +86,9 @@ pub struct Machine {
     pub cores: usize,
     pub free_ram_mb: Option<u64>,
     pub free_disk_mb: Option<u64>,
-    /// `kern.tty.ptmx_max` minus the PTYs in use.
+    /// `kern.tty.ptmx_max` minus the PTYs in use, and `kern.tty.ptmx_max`.
     pub free_ptys: Option<u64>,
+    pub total_ptys: Option<u64>,
 }
 
 /// The Mac's load, free memory and free disk (on the volume of `disk`) now.
@@ -97,18 +103,20 @@ pub fn sample(disk: &Path) -> Machine {
         n if n >= 1 => load[0],
         _ => 0.0,
     };
+    let (total_ptys, free_ptys) = pty_pool().unzip();
     Machine {
         load1,
         cores: std::thread::available_parallelism().map_or(1, usize::from),
         free_ram_mb: free_ram_mb(),
         free_disk_mb: super::store::free_mb(disk),
-        free_ptys: free_ptys(),
+        free_ptys,
+        total_ptys,
     }
 }
 
-/// The PTYs left in the Mac's pool: the pool's size minus the slave devices that exist (one per
-/// PTY in use; `/dev/ttysNNN` on macOS, `/dev/pts/N` on Linux).
-fn free_ptys() -> Option<u64> {
+/// The Mac's PTY pool: its size and the PTYs left, the size minus the slave devices that exist (one
+/// per PTY in use; `/dev/ttysNNN` on macOS, `/dev/pts/N` on Linux).
+fn pty_pool() -> Option<(u64, u64)> {
     #[cfg(target_os = "macos")]
     let (max, dir, prefix) = {
         let mut max: libc::c_int = 0;
@@ -144,7 +152,7 @@ fn free_ptys() -> Option<u64> {
                 .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
         })
         .count() as u64;
-    Some(max.saturating_sub(used))
+    Some((max, max.saturating_sub(used)))
 }
 
 #[cfg(target_os = "macos")]
@@ -191,9 +199,9 @@ fn free_ram_mb() -> Option<u64> {
 /// A lane of runs as it stands when a waiter asks.
 pub struct Lane {
     pub machine: Machine,
-    /// Runs that hold a slot, and how long the newest has held it.
+    /// Runs that hold a slot, and how many of them took it less than `SETTLE` ago.
     pub holders: usize,
-    pub newest: Option<Duration>,
+    pub fresh: usize,
     /// Waiters in front of this one.
     pub ahead: usize,
     /// How long the run has waited for the load with the lane free (`load_waited`).
@@ -240,6 +248,26 @@ pub fn load_waited(since: &mut Option<Instant>, lane_free: bool) -> Duration {
     since.get_or_insert_with(Instant::now).elapsed()
 }
 
+/// Why the run waits for PTYs, if it does: a run that starts without one fails with `failed to
+/// openpty`. The holders' open PTYs are already missing from `free`; a holder that took its slot
+/// less than `SETTLE` ago may still open a round's worth, so each of them counts one. A need above the
+/// pool never comes free, so it waits for the lane instead, or starts when the lane is empty.
+fn pty_wait(lane: &Lane, free: Option<u64>, total: Option<u64>) -> Option<String> {
+    let (free, total) = (free?, total.unwrap_or(u64::MAX));
+    let need = lane.ptys + lane.fresh as u64 * WEB_ROUND_PTYS;
+    match (free >= need, need > total) {
+        (true, _) => None,
+        (false, false) => Some(format!(
+            "waiting for PTYs: {free} free, a round needs ~{need}"
+        )),
+        (false, true) if lane.holders == 0 => None,
+        (false, true) => Some(format!(
+            "waiting for the lane: a round needs ~{} PTYs, the pool has {total}",
+            lane.ptys
+        )),
+    }
+}
+
 /// Whether the run starts now, waits for the lane, or goes to CI. A lane starts a first run when
 /// the load allows (a loaded Mac does not starve it: past `LOAD_WAIT` it starts), and a run beside
 /// another only when load, memory, disk and the settle time allow. Only an urgent scenario run
@@ -251,17 +279,12 @@ pub fn decide(run: &Run, lane: &Lane) -> Verdict {
         free_ram_mb,
         free_disk_mb,
         free_ptys,
+        total_ptys,
     } = lane.machine;
     let cores_f = cores as f64;
     let busy = lane.holders + lane.ahead;
-    // ^ No wait ends it: a run that starts without a PTY fails with `failed to openpty`.
-    // ^ The pool must hold the peak of every run in the lane and of this one: a run that just
-    // started has not opened its PTYs yet.
-    let need = lane.ptys * (lane.holders as u64 + 1);
-    if let Some(free) = free_ptys.filter(|free| *free < need) {
-        return Verdict::Wait(Some(format!(
-            "waiting for PTYs: {free} free, a round needs ~{need}"
-        )));
+    if let Some(note) = pty_wait(lane, free_ptys, total_ptys) {
+        return Verdict::Wait(Some(note));
     }
     if !lane.paced && lane.ahead == 0 {
         return Verdict::Go;
@@ -276,7 +299,7 @@ pub fn decide(run: &Run, lane: &Lane) -> Verdict {
         };
     }
     if lane.paced && lane.ahead == 0 && lane.holders < lane.max {
-        let settled = lane.newest.is_none_or(|age| age >= SETTLE);
+        let settled = lane.fresh == 0;
         let roomy = free_ram_mb.is_none_or(|free| free >= RUN_RAM_MB)
             && free_disk_mb.is_none_or(|free| free >= lane.min_free_mb + RUN_DISK_MB);
         if load1 < WIDEN_LOAD * cores_f && roomy && settled {
@@ -397,9 +420,10 @@ mod tests {
                 free_ram_mb: Some(16 * 1024),
                 free_disk_mb: Some(40 * 1024),
                 free_ptys: Some(10_000),
+                total_ptys: Some(511),
             },
             holders,
-            newest: Some(Duration::from_secs(600)),
+            fresh: 0,
             ahead,
             waited: Duration::ZERO,
             scenarios: true,
@@ -436,7 +460,7 @@ mod tests {
         few.machine.free_ram_mb = Some(1024);
         assert_eq!(decide(&normal, &few), Verdict::Wait(None));
         let mut fresh = lane(1, 0, 8.0);
-        fresh.newest = Some(Duration::from_secs(10));
+        fresh.fresh = 1;
         assert_eq!(decide(&normal, &fresh), Verdict::Wait(None));
         // The lane's slots are a ceiling.
         assert_eq!(decide(&normal, &lane(3, 0, 1.0)), Verdict::Wait(None));
@@ -490,13 +514,61 @@ mod tests {
                 TASK_ROUND_PTYS - 1
             )))
         );
-        // The measured rounds (222 and 274 PTYs) in a 511 pool with the live wsxd's ~144: one
-        // round starts, and a second never starts beside it.
-        let mut pool = lane(0, 0, 1.0);
-        pool.machine.free_ptys = Some(511 - 144);
-        assert_eq!(decide(&normal, &pool), Verdict::Go);
-        pool.holders = 1;
-        assert!(matches!(decide(&normal, &pool), Verdict::Wait(Some(_))));
+        // The deploy of ef4f396d: the smoke test behind an older round, 421 free. The round's PTYs
+        // are open and missing from `free`; the smoke test needs only its own peak.
+        let mut deploy = lane(1, 0, 1.0);
+        deploy.machine.free_ptys = Some(421);
+        deploy.ptys = run_ptys("python3 -B scripts/runtime-smoke.py");
+        assert_eq!(decide(&normal, &deploy), Verdict::Go);
+        // A holder that took its slot 10 s ago may still open its round: wait, with the reason.
+        let mut new = lane(1, 0, 1.0);
+        new.machine.free_ptys = Some(421);
+        new.fresh = 1;
+        assert_eq!(
+            decide(&normal, &new),
+            Verdict::Wait(Some(
+                "waiting for PTYs: 421 free, a round needs ~496".to_string()
+            ))
+        );
+        // Peak plus the holder's above the pool never comes free: it waits for the lane.
+        new.ptys = WEB_ROUND_PTYS;
+        assert_eq!(
+            decide(&normal, &new),
+            Verdict::Wait(Some(
+                "waiting for the lane: a round needs ~274 PTYs, the pool has 511".to_string()
+            ))
+        );
+        // A need that fits the pool but not the free PTYs waits for them.
+        new.ptys = CHECK_PTYS;
+        new.machine.free_ptys = Some(300);
+        assert_eq!(
+            decide(&normal, &new),
+            Verdict::Wait(Some(format!(
+                "waiting for PTYs: 300 free, a round needs ~{}",
+                CHECK_PTYS + WEB_ROUND_PTYS
+            )))
+        );
+        // A peak above the pool never comes free: it starts on an empty lane, else waits for it.
+        let mut big = lane(0, 0, 1.0);
+        big.machine.total_ptys = Some(200);
+        big.machine.free_ptys = Some(100);
+        assert_eq!(decide(&normal, &big), Verdict::Go);
+        big.holders = 1;
+        assert!(matches!(decide(&normal, &big), Verdict::Wait(Some(_))));
+        // No wait names a need above the pool, whatever the lane holds.
+        for (holders, fresh) in [(0, 0), (1, 0), (1, 1), (3, 3)] {
+            for free in [0, 100, 300, 511] {
+                let mut lane = lane(holders, 0, 1.0);
+                lane.fresh = fresh;
+                lane.machine.free_ptys = Some(free);
+                if let Verdict::Wait(Some(note)) = decide(&normal, &lane) {
+                    let need = note.rsplit_once('~').and_then(|(_, n)| {
+                        n.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+                    });
+                    assert!(need.is_none_or(|need: u64| need <= 511), "{note}");
+                }
+            }
+        }
         // The pool counts for an unpaced lane and for an urgent run too.
         few.paced = false;
         assert!(matches!(decide(&normal, &few), Verdict::Wait(Some(_))));
@@ -515,6 +587,7 @@ mod tests {
         assert_eq!(decide(&normal, &off), Verdict::Go);
         assert_eq!(run_ptys("python3 -B scripts/scenario.py task"), 222);
         assert_eq!(run_ptys("python3 -B scripts/scenario.py web"), 274);
+        assert_eq!(run_ptys("python3 -B scripts/foo.py"), CHECK_PTYS);
     }
 
     #[test]
