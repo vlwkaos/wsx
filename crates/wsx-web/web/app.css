@@ -311,6 +311,13 @@ textarea.input { padding: var(--space-2) var(--space-3); resize: vertical; }
 /* A session's model shows in the wide layout only: on a phone it cuts the state row and its label. */
 .app:not([data-wide]) .bar-state .bar-model { display: none; }
 .bar-tools { flex: 0 0 auto; display: flex; }
+/* The small button (a header action, the task sheet's actions): a size-key pill in a size-control box. The box is the
+   44 px hit area the design lint asks for; its transparent border leaves the pill 36 px high, with a gap above and below. */
+:is(.bar-tools, .task-next) .button {
+  min-height: var(--size-control); padding: 0 var(--space-3); font-size: var(--font-size-sm);
+  border: calc((var(--size-control) - var(--size-key)) / 2) solid transparent; background-clip: padding-box;
+  border-radius: calc(var(--size-control) / 2); white-space: nowrap;
+}
 [data-tone="danger"].icon-button { color: var(--color-danger); }
 /* Header: bottom (settings.js). One switch: every bar moves to the foot of its column, under the
    content and above the composer, with its rule on top. The page's own bottom inset and the
@@ -1074,16 +1081,13 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 
 /* Hook: .task-page — one task: where it stands with its one action, a brief's open questions
    and additions, the report folded, the talk, its history. */
-.task-page .scroll { padding-bottom: var(--space-4); }
-/* The actions sit on a line of their own under the state; a button keeps the width of its word and never shrinks.
-   Its hit area is the 44 px the design lint asks for; its margin lets it take the height of a size-key button (like the composer's send). */
+.task-page .scroll { padding-block: var(--space-2) var(--space-4); }
+/* ^ Every sheet page: its body starts a gap under the bar, so the first line never sits on the bar's rule. */
+/* The actions sit on a line of their own under the state; a button keeps the width of its word and never shrinks (the small
+   button, above); its margin lets its box take the layout height of the 36 px pill. */
 .task-next { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
 .task-next .actions { padding: 0; gap: var(--space-2); }
-.task-next .button {
-  flex: 0 0 auto; min-height: var(--size-control); margin-block: calc((var(--size-key) - var(--size-control)) / 2);
-  padding: 0 var(--space-3); white-space: nowrap; overflow-wrap: normal;
-  border-radius: calc(var(--size-key) / 2); font-size: var(--font-size-sm);
-}
+.task-next .button { flex: 0 0 auto; margin-block: calc((var(--size-key) - var(--size-control)) / 2); overflow-wrap: normal; }
 .task-approval { flex-basis: 100%; overflow-wrap: anywhere; }
 .project-overview { padding-top: var(--space-3); }
 .project-overview .facts-line { padding: 0 var(--space-4) var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }

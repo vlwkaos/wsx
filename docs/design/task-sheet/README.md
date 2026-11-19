@@ -65,3 +65,15 @@ state `main.js:43-52` `followViewport` leaves while the composer has the focus: 
 
 After (the new sheet): the same measure gives 0 clipped, 0 covered at 402 x 874 with and without `--stale`, and the first line starts 21 px under the header foot.
 Not reproduced: the screenshot's sheet scrolled by 26 px, and its title cut at "Home bo…" (6 px less room in its bar than here).
+
+## The shared sheet header and body (owner message 5624, the To check sheet)
+
+The screenshot is again 402 x 874. Old sheet in WebKit (`real-webkit.mjs --checks --stale --rev 40560ec2`): the header's "All passed" is a full `.button` (`app.css:220`, min-height 44, 15 px text, 16 px padding), 44 px high in a 48 px bar, 3 px left below it, and the first item's chip sits 13 px under the bar's rule. One owner for every sheet: `:is(.bar-tools, .task-next) .button` (the small button: a 36 px pill inside the 44 px hit area the lint asks for, by a transparent border and `background-clip`) and `.task-page .scroll { padding-top }` (the body of the task, To check, For you, overview, usage, panels sheets).
+
+| To check, WebKit 402 x 874 | Before | After |
+|---|---|---|
+| "All passed", pill height / text / width | 44 px / 15 px / 104 px | 36 px / 13 px / 88 px |
+| Gap below the pill in the 48 px bar | 3 px | 7 px |
+| First item's text under the bar's rule | about 13 px | about 21 px |
+
+`pair-checks.png` is before | after. The task sheet's actions now use the same small button (36 px pills, hit area 44 px).

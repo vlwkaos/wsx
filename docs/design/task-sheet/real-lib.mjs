@@ -31,15 +31,18 @@ const query = new URLSearchParams(location.search);
 const name = query.get("state");
 const answer = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const real = window.fetch.bind(window);
-window.fetch = (url, init) => /api\\/tasks\\/demo\\/t\\/\\d+/.test(String(url)) ? Promise.resolve(answer(states[name]))
+window.fetch = (url, init) => /api\\/tasks\\/demo\\/checks$/.test(String(url)) ? Promise.resolve(answer({ open: states.checks }))
+  : /api\\/tasks\\/demo\\/t\\/\\d+/.test(String(url)) ? Promise.resolve(answer(states[name]))
   : /^https?:\\/\\/[^/]+\\/api\\//.test(String(url)) ? Promise.resolve(answer({ error: { code: "none", message: "none" } }, 404)) : real(url, init);
 const { html, render } = await import("./lib.js");
 const { update } = await import("./store.js");
 const { TaskPage } = await import("./task.js");
+const { ChecksPage } = await import("./checks.js");
 update({ site: { capabilities: ["task_view", "task_act"], panels: [] }, tasks: { demo: { tasks: [], needs: [], decisions: [] } } });
 const Sheet = () => html\`<div class="app" data-wide=\${query.get("wide") ? "" : undefined}><dialog class="task-sheet" ref=\${(node) => node && !node.open && node.showModal()}>
   <div class="task-sheet-top"><span class="sheet-grip" aria-hidden="true"></span></div>
-  <\${TaskPage} project="demo" task=\${530} onClose=\${() => {}} onMention=\${() => {}} onReply=\${() => {}} /></dialog></div>\`;
+  \${name === "checks" ? html\`<\${ChecksPage} project="demo" onClose=\${() => {}} onReply=\${() => {}} />\`
+    : html\`<\${TaskPage} project="demo" task=\${530} onClose=\${() => {}} onMention=\${() => {}} onReply=\${() => {}} />\`}</dialog></div>\`;
 render(html\`<\${Sheet} />\`, document.getElementById("app"));
 } catch (error) { document.body.setAttribute("data-error", String(error.stack)); }`;
 
@@ -60,7 +63,14 @@ function stateRows() {
     sentence: `${label} for ${minutes} min${facts ? `: ${facts}` : ""}. ${next}`,
   });
   const steps = ["plan", "build", "review"];
+  // ^ The To check sheet (the owner's second screenshot, task 496's items): six open items.
+  const item = (id, task, did, check, where, pass_if) => ({ id, task, did, title: did, check, where, pass_if, state: "open", revision: 1, captures: null });
+  const checks = [
+    item("a1", 496, "Work is done and committed c0a0d7f0", "Home chat rows: shown name, muted project tag, no line-2 project prefix, a renamed chat and a chat of another project", "Home page of the web client, phone widths 375 and 390, desktop 1280", "Each chat row reads clearly. The project shows as a muted tag and is not cut off. Light and dark both look right."),
+    ...[2, 3, 4, 5, 6].map((n) => item(`a${n}`, 490 + n, `Task ${490 + n} is done`, `Check number ${n} of the list`, "The Home page", `Item ${n} reads well`)),
+  ];
   return {
+    checks,
     ready: { ...base, state: "ready", stage: "ready", actions: ["land", "hand"], result, goal: "Goal.",
       status: status("review", "Ready, waiting for the manager's review", 23, "checks 4 of 4 passed", "The manager reads the diff, then lands it or asks for changes.", "Checks 4 of 4 passed. The manager reads the diff, then lands it or asks for changes.", null),
       progress: { steps, step: 3, last_unix_ms: now - 23 * 60_000, stuck: false } },
@@ -107,14 +117,16 @@ export async function serve({ rev = null, inset = null } = {}) {
 // against the scroll box's top and the scroll offset, for the layout the owner's phone showed.
 export const measure = `(() => {
   const sheet = document.querySelector(".task-sheet"), scroll = sheet.querySelector(".scroll"), bar = sheet.querySelector(".bar");
-  const buttons = [...sheet.querySelectorAll(".task-next button, .story-act button")];
+  const buttons = [...sheet.querySelectorAll(".task-next button, .story-act button, .bar-tools button")];
   const clipped = buttons.filter((button) => button.scrollWidth > button.clientWidth).map((button) => button.textContent.trim());
-  const first = scroll.querySelector(".story").firstElementChild;
+  const first = scroll.querySelector(".story, .check-list").firstElementChild;
   const range = document.createRange();
   range.selectNodeContents(first);
   const line = range.getClientRects()[0], hit = document.elementFromPoint(line.left + line.width / 2, line.top + line.height / 2);
   const under = bar.getBoundingClientRect().bottom, box = sheet.getBoundingClientRect(), top = scroll.getBoundingClientRect().top;
   return JSON.stringify({ buttons: buttons.map((button) => button.textContent.trim()), clipped, covered: !scroll.contains(hit) || line.top < under - 0.5,
     lineTop: Math.round(line.top), barFoot: Math.round(under), scrollTop: Math.round(top), sheetTop: Math.round(box.top), sheetHeight: Math.round(box.height),
+    tools: [...sheet.querySelectorAll(".bar-tools button")].map((button) => { const box = button.getBoundingClientRect(), style = getComputedStyle(button), edge = parseFloat(style.borderTopWidth) || 0;
+      return { text: button.textContent.trim(), boxHeight: Math.round(box.height), shownHeight: Math.round(box.height - 2 * edge), shownWidth: Math.round(box.width - 2 * edge), gapBelow: Math.round(under - box.bottom + edge), size: style.fontSize }; }),
     first: first.textContent.trim().slice(0, 60), sideways: scroll.scrollWidth > scroll.clientWidth + 1, scrolled: Math.round(scroll.scrollTop) });
 })()`;

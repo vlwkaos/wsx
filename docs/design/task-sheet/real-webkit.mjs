@@ -12,6 +12,7 @@ import { STATES, here, measure, serve } from "./real-lib.mjs";
 const args = process.argv.slice(2);
 const arg = (name) => { const at = args.indexOf(name); return at < 0 ? null : args[at + 1] ?? true; };
 const { webkit, devices } = createRequire(import.meta.url)(args[0]);
+const state_names = args.includes("--checks") ? ["checks"] : STATES;
 const [phoneWidth, phoneHeight] = (arg("--phone") || "402x874").split("x").map(Number), top = Number(arg("--top") || 62);
 const rev = arg("--rev"), shots = args.includes("--shots");
 const { origin, close } = await serve({ rev, inset: { top, bottom: 34 } });
@@ -20,9 +21,9 @@ const rows = [], sweep = [];
 try {
   const context = await browser.newContext({ ...devices["iPhone 15"], viewport: { width: phoneWidth, height: phoneHeight }, screen: { width: phoneWidth, height: phoneHeight }, colorScheme: "dark" });
   const page = await context.newPage();
-  for (const state of STATES) {
+  for (const state of state_names) {
     await page.goto(`${origin}/harness.html?state=${state}`);
-    await page.waitForSelector(".task-sheet .story, [data-error]");
+    await page.waitForSelector(".task-sheet .story, .task-sheet .check-list, [data-error]");
     // ^ --stale: the state main.js followViewport leaves while the composer has the focus (typing): the visual viewport's height
     // and offset in two custom properties, which app.css reads for the sheet (.task-sheet) and the page (body).
     if (args.includes("--stale")) await page.evaluate(([height, offset]) => { document.documentElement.style.setProperty("--viewport-height", `${height}px`); document.documentElement.style.setProperty("--viewport-top", `${offset}px`); }, [phoneHeight - top, top]);
@@ -48,7 +49,7 @@ try {
     console.log(`sweep 340-430: ${sweep.length} pages, sentence beside the buttons on ${sweep.filter((row) => row.beside).map((row) => `${row.state} ${row.width}`).join(", ") || "none"}; clipped or covered: ${bad.map((row) => `${row.state} ${row.width} ${JSON.stringify(row.clipped)}`).join(", ") || "none"}`);
   }
   console.log(`${rev ? `at ${rev}` : "working copy"}: WebKit ${browser.version()}, ${`${phoneWidth}x${phoneHeight} (home-screen app: no Safari bars), top inset ${top}`} DPR ${devices["iPhone 15"].deviceScaleFactor}`);
-  for (const row of rows) console.log(`  ${row.state}: sheetTop=${row.sheetTop} sheetHeight=${row.sheetHeight} barFoot=${row.barFoot} scrollTop=${row.scrollTop} lineTop=${row.lineTop} scrolled=${row.scrolled} covered=${row.covered} buttons=${JSON.stringify(row.buttons)} clipped=${JSON.stringify(row.clipped)}`);
+  for (const row of rows) console.log(`  ${row.state}: sheetTop=${row.sheetTop} sheetHeight=${row.sheetHeight} barFoot=${row.barFoot} scrollTop=${row.scrollTop} lineTop=${row.lineTop} scrolled=${row.scrolled} covered=${row.covered} tools=${JSON.stringify(row.tools)} buttons=${JSON.stringify(row.buttons)} clipped=${JSON.stringify(row.clipped)}`);
 } finally {
   await browser.close();
   close();

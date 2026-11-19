@@ -7,7 +7,7 @@ import { STATES, here } from "./real-lib.mjs";
 const { webkit } = createRequire(import.meta.url)(process.argv[2]);
 const browser = await webkit.launch();
 const page = await browser.newPage({ viewport: { width: 1000, height: 1000 }, deviceScaleFactor: 1 });
-for (const state of STATES) {
+for (const state of [...STATES, "checks"]) {
   await page.setContent(`<body style="margin:0;background:#222;color:#fff;font:600 28px system-ui"><div style="display:flex;gap:20px;padding:16px">
     ${["before", "after"].map((side) => `<figure style="margin:0"><figcaption style="padding-bottom:8px">${side === "before" ? "Before" : "After"}: ${state}</figcaption>
     <img src="data:image/png;base64,${fs.readFileSync(`${here}/webkit-402-${side}-stale-${state}.png`).toString("base64")}" style="width:402px;display:block"></figure>`).join("")}</div></body>`);
