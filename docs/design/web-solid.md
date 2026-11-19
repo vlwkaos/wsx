@@ -9,7 +9,7 @@ Status: plan only, 2026-11-20, no product edit. Owner wsx 5554: move the whole w
 | What you see | Nothing, if the measures in §5 hold. Same pages, same behavior. The page serves more JS (see stop conditions). |
 | Why do it | Updates touch only the DOM they change. Today a whole component runs again on each change, and the code carries guards and mirrors to cope (§3). |
 | Solid 2 | Stable: `solid-js` 2.0.3, published 2026-11-19, MIT. |
-| Cost | 14 to 20 turns [estimate: 9 steps, the chat and task screens take 3 to 5 turns, each check-run can add a fix turn]. Dollars: no measured source in the repo; price the turns at the host's per-turn cost [unverified]. |
+| Cost | 14 to 20 turns [estimate: 8 steps (0 to 7), the chat and task screens take 3 to 5 turns, each check-run can add a fix turn]. Dollars: no measured source in the repo; price the turns at the host's per-turn cost [unverified]. |
 | Order | After #510, #531, #533, #534 and after flat-chats step 4 (`docs/design/flat-chats.md` §4). The port counts and ports only the client left by step 4. It ports no `threads.js`, thread route or strip. |
 | I stop and ask you if | (1) gzip JS served for the first chat paint grows by more than 60 KB; (2) the median of 5 runs of a 400-row chat render is slower than before; (3) a MutationObserver probe counts more remounts than before; (4) a check assert must change its meaning (not only a selector) to pass. |
 | Not touched | The TUI, the daemon, the wire protocol. |
@@ -83,7 +83,7 @@ flowchart TD
   S6 --> S7[7 delete Preact, htm, bridge]
 ```
 
-A Preact root and a Solid root can share a page: `render()` is per DOM node and the two runtimes share no globals. Step 0 adds a bridge that mounts a Solid component inside a Preact node and the reverse; it lives only until step 7. The shell (`main.js`) goes first in step 1, so the two runtimes meet at screen boundaries (`Screen()`), not inside a screen. A screen is never half ported.
+A Preact root and a Solid root can share a page: `render()` is per DOM node and I expect the two runtimes to share no globals [unverified; step 0 proves it with both on one page]. Step 0 adds a bridge that mounts a Solid component inside a Preact node and the reverse; it lives only until step 7. The shell (`main.js`) goes first in step 1, so the two runtimes meet at screen boundaries (`Screen()`), not inside a screen. A screen is never half ported.
 
 | Step | Files changed | Lands when |
 |---|---|---|
@@ -94,7 +94,7 @@ A Preact root and a Solid root can share a page: `render()` is per DOM node and 
 | 4 | `session.js`, `terminal.js` | `web-terminal-check.mjs` unchanged. |
 | 5 | `chat.js`, `reply.js`, `markdown.js`, `diagram.js`, `bubbles.js` | The 400-row and remount measures pass. |
 | 6 | `tasks.js`, `task.js`, `checks.js`, `inbox.js`, `home.js`, `task-words.js` | Same. |
-| 7 | delete (below), `assets.rs`, `scripts/web-browser-check.mjs:865` and `scripts/web-tasks-check.mjs:3145` (both import `preact.js` to read `options`; they move to a Solid probe) | `rg -c 'preact\|htm' crates scripts` shows only history in `CHANGELOG.md`. |
+| 7 | delete (below), `assets.rs`, `scripts/web-browser-check.mjs:865` and `scripts/web-tasks-check.mjs:3145` (both import `preact.js` to read `options`; they move to a Solid probe) | `rg -wic 'preact\|htm' crates scripts docs` lists no use; only `CHANGELOG.md` keeps history. |
 
 Each step: search `scripts/test-*.py` and `scripts/*-check.mjs` for the strings and selectors the step changes (CLAUDE rule); a check that fails because of a markup change is updated in the same step; one that fails for a behavior change is a stop (condition 4).
 
