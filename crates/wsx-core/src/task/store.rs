@@ -1708,4 +1708,48 @@ mod tests {
         assert!(open_if_exists(&real.join("below")).is_err());
         fs::remove_dir_all(&dir).unwrap();
     }
+
+    /// A store of before chats is refused, not moved. The scenario cannot test it: once the
+    /// home chat's host has written overview.md, a `page.md` is no longer old data.
+    #[test]
+    fn refuse_old_layout_by_what_the_folder_holds() {
+        let root = std::env::temp_dir().join(format!("wsx-store-old-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let fresh = |name: &str| {
+            let dir = root.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            dir
+        };
+        let written = "# demo\n\n## Goal\n\nold text\n";
+
+        let dir = fresh("page");
+        fs::write(dir.join("page.md"), written).unwrap();
+        let message = refuse_old_layout("demo", &dir).unwrap_err().to_string();
+        assert!(
+            message.contains("from before chats")
+                && message.contains("v0.43.0")
+                && message.contains("page.md"),
+            "{message}"
+        );
+
+        let dir = fresh("page-and-overview");
+        fs::write(dir.join("page.md"), written).unwrap();
+        fs::write(dir.join(OVERVIEW_FILE), "# demo\n").unwrap();
+        refuse_old_layout("demo", &dir).unwrap();
+
+        let dir = fresh("blank");
+        fs::write(dir.join("page.md"), unwritten_overview("demo")).unwrap();
+        refuse_old_layout("demo", &dir).unwrap();
+
+        for old in ["manager", "roles", "chats"] {
+            let dir = fresh(old);
+            fs::create_dir(dir.join(old)).unwrap();
+            let message = refuse_old_layout("demo", &dir).unwrap_err().to_string();
+            assert!(
+                message.contains("from before chats") && message.contains(old),
+                "{message}"
+            );
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
 }

@@ -812,16 +812,11 @@ def manager_up(created):
         """The first manager turn whose message holds `text`."""
         return next((t for t in traces() if t.get('manager') and text in str(t.get('message', ''))), None)
 
-    # ^ A `page.md` that is no unwritten overview is old data: refused, naming v0.43.0, and not moved. The
-    # unwritten one holds nothing: the manager writes a fresh overview.md with the same text, never reads or moves it.
+    # ^ An unwritten `page.md` holds nothing: the manager writes a fresh overview.md with the same text, never reads or moves
+    # it. The refusal of an old layout is tested in store.rs (`refuse_old_layout`): the home chat's host may write overview.md first.
     old_page = state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md'
     unwritten = '# demo\n\n## Goal\n\n_Not written yet._\n\n## Tasks\n\n```mermaid\ngraph LR\n  start[No tasks yet]\n```\n\n## Decisions\n\n_None yet._\n\n## Open questions\n\n_None yet._\n'
-    old_page.write_text(unwritten.replace('_Not written yet._', 'migrated'))
-    refused = cli('task', 'ledger', ok=False).stderr
-    assert 'from before chats' in refused and 'v0.43.0' in refused and 'page.md' in refused, refused
-    assert 'migrated' in old_page.read_text()
     old_page.write_text(unwritten)
-    # ^ The new task wakes the home chat's host, which writes overview.md: the refusal above needs none, so it goes first.
     running = js('task', 'new', 'SLOW SLOW SLOW WORK r.txt')['id']
     asked = js('task', 'say', 'STATUS')
     assert asked['ok'] and asked['id'] == 1, asked
