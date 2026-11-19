@@ -5977,6 +5977,8 @@ def part_host(created=None):
     assert land(wanted)['state'] == 'landed'
     wait(lambda: kinds(idle, 'after_ended'), 'the idle wait ends', 40)
     assert [x['text'] for x in log(idle) if x['kind'] == 'message' and x['mode'] == 'add'] == ['WORK ah-i2.txt'], log(idle)
+    # ^ The added turn works in the repo (git locks `packed-refs`): a close during it can find the lock held.
+    wait_state(idle, 'ready', 'failed')
     for n in (idle, asking):
         js('task', 'close', n, '--discard')
     wait_closed(wanted)
@@ -7180,8 +7182,6 @@ def part_agents(created=None):
     away_switch = next(e for e in log(away) if e['kind'] == 'agent_switch')
     assert away_switch['to'].startswith('claude ') and away_switch['reason'].startswith('back on claude: was refused: 400'), away_switch
     js('task', 'close', away, '--discard')
-    # ^ The close event names the task by its title (`PIERROR <file>`): it must be in the log before 37b, or a Pi turn there takes it along.
-    wait(lambda: any(e['kind'] == 'message' and e.get('text', '').startswith('#%s closed' % away) for e in manager_entries()), 'the close event of the refused task', 60)
     # ^ A rate limit has no reset time and is backed off. Backoffs in a row on the account add up
     # from the first: past maxWaitMinutes the worker moves on to the next fallback.
     configure(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi, fake-pi2]\n    maxWaitMinutes: 60\n'),
@@ -7197,6 +7197,9 @@ def part_agents(created=None):
     assert json.loads(pi_limit.read_text())['since_ms'] == since, pi_limit.read_text()
     js('task', 'close', moved, '--discard')
     limit_file.unlink()
+    # ^ A close event names the task by its title (`PIERROR <file>`): both must be in the log before 37b, or a Pi turn there takes one along.
+    for closed in (away, moved):
+        wait(lambda: any(e['kind'] == 'message' and e.get('text', '').startswith('#%s closed' % closed) for e in manager_entries()), 'the close event of #%s' % closed, 60)
     for name in ('pi-fake.json', 'pi-paid.json', 'pi-other.json'):
         (agents / name).unlink(missing_ok=True)
     configure(CONFIG, 'no fallback')
