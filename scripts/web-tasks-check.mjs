@@ -4652,6 +4652,10 @@ phase("Media a message names (docs/web-client-chat.md Markdown, doc");
   const owner = (id, text) => fs.appendFileSync(path.join(state, logFile), `${JSON.stringify({ unix_ms: Date.now(), kind: "message", id, from: "owner", text })}\n`);
   owner(9_500_005, `Look at this\n\n[attached files]\n${mediaDir}/${uploaded.hash}.png (up.png)`);
   owner(9_500_006, `And this\n\n[attached files]\n${mediaDir}/${"a".repeat(64)}.png (old.png)`);
+  // ^ The loop above left the chat where the video message was (scrollIntoView); a chat is kept where the reader left it (lib.js useFollowEnd `keep`), so it would open there behind the sheet with Jump to latest drawn.
+  await go(`#/p/${plansArg}`);
+  await until("!!document.querySelector('.log .bubble')", "the chat did not open before the Media sheet");
+  await toLatest("the chat before the Media sheet");
   const tiles = "document.querySelectorAll('dialog.task-sheet[open] .media-tile')";
   const sheetTiles = () => evaluate(`[...${tiles}].map((tile) => { const link = tile.querySelector('a.check-capture'); const media = tile.querySelector('img, video'); const box = tile.getBoundingClientRect();
     return { name: tile.querySelector('.media-name').textContent, facts: tile.querySelector('.media-facts').textContent, task: tile.querySelector('.task-chip')?.textContent ?? '', video: !!link?.hasAttribute('data-video'),
@@ -4659,11 +4663,6 @@ phase("Media a message names (docs/web-client-chat.md Markdown, doc");
       square: media ? Math.abs(media.getBoundingClientRect().width - media.getBoundingClientRect().height) <= 1 : null, inside: box.width > 60 }; })`);
   for (const wide of [false, true]) {
     await resize(wide ? [1280, 800, 1] : [390, 844, 2]);
-    await evaluate(`(() => { window.wsxJumps = []; const note = (what) => { const log = document.querySelector('.log'); window.wsxJumps.push(JSON.stringify({ what, t: Math.round(performance.now()), w: innerWidth,
-      top: log && Math.round(log.scrollTop), height: log?.scrollHeight, client: log?.clientHeight, short: log && Math.round(log.scrollHeight - log.scrollTop - log.clientHeight), jump: !!document.querySelector('.jump'),
-      imgs: [...document.querySelectorAll('.log .attachments img')].map((image) => image.complete + ':' + image.getBoundingClientRect().height) })); };
-      new MutationObserver((changes) => { for (const change of changes) for (const node of [...change.addedNodes, ...change.removedNodes]) if (node.nodeType === 1 && (node.matches?.('.jump') || node.querySelector?.('.jump'))) note(change.addedNodes.length ? 'jump in' : 'jump out'); }).observe(document.body, { childList: true, subtree: true });
-      document.addEventListener('scroll', () => note('scroll'), true); window.wsxNote = note; })()`);
     await go(`#/p/${plansArg}/media`);
     await until(`${tiles}.length >= 13`, "the Media sheet did not list the fixtures", 60);
     await until(`[...document.querySelectorAll('.media-tile img')].every((image) => image.complete)`, "a media picture did not load", 60);
@@ -4684,8 +4683,9 @@ phase("Media a message names (docs/web-client-chat.md Markdown, doc");
     if (all.filter((tile) => !tile.gap).some((tile) => !tile.square)) await fail(`a media tile is not square at ${size[0]} px: ${JSON.stringify(all)}`);
     const columns = await evaluate(`new Set([...${tiles}].map((tile) => Math.round(tile.getBoundingClientRect().left))).size`);
     if (wide ? columns < 3 : columns !== 2) await fail(`the grid has ${columns} columns at ${size[0]} px`);
-    await evaluate("window.wsxNote('shot')");
-    console.log(`[media-jump] ${wide ? "wide" : "narrow"}: ${(await evaluate("window.wsxJumps.slice(-40)")).join("\n  ")}`);
+    // ^ The chat behind the sheet is at its end with no Jump to latest (the lint measures a button hidden under the modal sheet as drawn over the picture): its rows come with their own read, after the sheet's.
+    await until("!!document.querySelector('.log .attachments img')", "the chat behind the Media sheet shows no picture of the owner's message", 60);
+    await until(`${atEnd} && !document.querySelector('.jump')`, async () => `the chat behind the Media sheet is not at its end at ${size[0]} px: ${await endState()}, kept ${await evaluate("localStorage.getItem('wsx-read')")}`, 60);
     await shot(wide ? "media-sheet-wide" : "media-sheet");
     // ^ Filters: Videos keeps only videos, Images none, the task keeps the three captures.
     const chip = (name) => evaluate(`[...document.querySelectorAll('.media-chip')].find((button) => button.textContent === ${JSON.stringify(name)}).click()`);
