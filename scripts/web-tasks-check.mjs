@@ -3691,7 +3691,7 @@ phase("Progress: the top of an open task's sheet at 390x844, for ea");
   await open(disk);
   await until("document.querySelector('.task-sheet .progress-health')?.textContent === 'Closed'", "a closed task's top row has no stage");
   const closed = await top(), closedStatus = show(disk).status;
-  if (closed.health !== "Closed" || closed.steps || closed.now || closed.next !== closedStatus.sentence.slice(closedStatus.label.length).replace(/^[:. ]+/, "")) await fail(`a finished task's top reads ${JSON.stringify(closed)}`);
+  if (closed.health !== "Closed" || closed.steps || closed.now || closed.next !== closedStatus.sentence.slice(closedStatus.label.length).replace(/^[:. ]+/, "").replace(/^./, (c) => c.toUpperCase())) await fail(`a finished task's top reads ${JSON.stringify(closed)}`);
   await shot("progress-finished");
   await go(chat);
 }
