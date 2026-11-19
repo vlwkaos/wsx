@@ -3,7 +3,8 @@
 
 ref: docs/design/work-model.md (the numbers and what they decide)
 
-    python3 -I docs/design/work-model-measure.py [--since 2026-11-06] [--project wsx] [--tasks wsx#540,wsx#541] [--no-git] [--state ~/.local/state/wsx]
+    python3 -I docs/design/work-model-measure.py [--since 2026-11-06] [--project wsx] [--tasks wsx#540,wsx#541] [--no-git]
+        [--sample 20] [--state ~/.local/state/wsx] [--claude ~/.claude/projects]
 
 --tasks keeps only the named tasks: the two arms of the experiment in work-model.md run it once each.
 
@@ -23,10 +24,16 @@ How it reads the records:
   `#A` in its prompt and shares a changed path or a `--files` glob with it. The 14-day line drops the 72 h.
 - Two chats are of different projects when their `chat.json` `repos` share none. The chat lines count every
   project, also under --project. A `sent` reply names no message: it answers the newest ask still open.
+- T7 and T9 read the Claude transcripts of the newest tasks (--sample for T7, five times that for T9 and for
+  "opened by a worker"): the folder under --claude named after the task's working copy, one file a conversation.
+  A file is named when a Read, an edit or a shell command of the worker holds its path; that is all "used" means.
+- T8 reads each project's memory/records.jsonl (the last line of a slug is the record). `stale` is the code's own
+  rule (memory/start.rs `stale_of`): the record has a commit and paths, and the paths changed since. A cited
+  path is "deleted" when `git log --diff-filter=D` holds it and no file ends with it now.
 - Repeated text = 5-word runs of a prompt that the same chat already wrote to a worker, or that the owner
   wrote in that chat, in the 14 days before. A lower bound: the owner writes Korean, prompts are English.
 """
-import bisect, collections as C, datetime as D, fnmatch, glob, json, os, re, statistics, subprocess, sys
+import bisect, collections as C, datetime as D, fnmatch, glob, itertools, json, os, re, statistics, subprocess, sys
 
 ARGS = sys.argv[1:]
 def arg(name, default):
@@ -37,6 +44,7 @@ SINCE = int(D.datetime.strptime(arg('--since', '2000-01-01'), '%Y-%m-%d').astime
 ONLY = arg('--project', None)
 NAMED = set(filter(None, arg('--tasks', '').split(',')))
 GIT = '--no-git' not in ARGS
+CLAUDE, SAMPLE = os.path.expanduser(arg('--claude', '~/.claude/projects')), int(arg('--sample', '20'))
 H, DAY, INF = 3600_000, 86_400_000, 1 << 62
 OWNER = ('owner', 'outside')  # ^ the add classes counted as the owner's
 
@@ -125,7 +133,7 @@ for path in sorted(glob.glob(os.path.join(TASKS, '*', '[0-9]*', 'task.json'))):
              by=by or 'none', small=bool(rec.get('small')), parent=rec.get('parent'), state=rec['state'], path=rec.get('working_copy'),
              main=rec.get('project_path'), created=rec['created_unix_ms'], paths=set(rec.get('paths') or []), files=rec.get('files') or [],
              adapter=rec.get('adapter'), revs=[], adds=[], results=[], landed=None, closed=None, discarded=False, prompt='',
-             holds=[], n=C.Counter(), cost=0)
+             holds=[], rot=[], n=C.Counter(), cost=0)
     talks = t['chat'] or home_chat.get(t['pid'])
     for e in events(os.path.join(os.path.dirname(path), 'log.jsonl')):
         k, ms = e.get('kind'), e.get('unix_ms', 0)
@@ -143,7 +151,9 @@ for path in sorted(glob.glob(os.path.join(TASKS, '*', '[0-9]*', 'task.json'))):
         elif k == 'landed': t['landed'] = ms
         elif k == 'closed': t['closed'], t['discarded'] = ms, bool(e.get('discarded'))
         elif k == 'hold': t['holds'].append(ms)
-        else: t['n'][k] += 1  # ^ read below: rotated, conflict, hand, trial, preview, blocked
+        else:
+            t['n'][k] += 1
+            if k == 'rotated': t['rot'].append((ms, e.get('tokens') or 0, e.get('reason') or 'size'))  # ^ read below: rotated, conflict, hand, trial, preview, blocked
     born = turn_at(t['created'], talks)
     t['born'], t['asker'] = (born[3], born[4]) if born else ('outside', None)
     t['first'] = t['revs'][0] if t['revs'] else None
@@ -378,12 +388,249 @@ if daemon:
     print(f"in all: worktrees {len(daemon['worktrees'])}, sessions {len(daemon['sessions'])}")
 print(f"task copies removed at close: {sum(1 for t in tasks if t['closed'])}; `pruned:` notices in chat logs: {prunes}")
 
+# --- knowledge: what a worker's context holds, what of the stored knowledge is past, what a rotation keeps
+PATHY = re.compile(r'[\w.@/-]*[\w-]\.(?:rs|md|py|mjs|js|toml|sh|css|html|yml)\b')
+nb = lambda x: len((x if isinstance(x, str) else json.dumps(x, ensure_ascii=False)).encode())
+def read(path):
+    try:
+        return open(path, errors='replace').read()
+    except OSError:
+        return ''
+def conversations(t):  # ^ the worker's Claude transcripts, oldest first; `api-request-blob` lines repeat the messages
+    out, root = [], (t['path'] or '-') + '/'
+    for name in glob.glob(os.path.join(CLAUDE, re.sub(r'[^A-Za-z0-9]', '-', root[:-1]), '*.jsonl')):
+        c = dict(at=None, parts=C.Counter(), text='', files=set(), entries=0, listed=0, used=set(), got=C.Counter(), first_got=None, named=set(), ctx=None)
+        tool = {}
+        for line in open(name, errors='replace'):
+            if '"api-request-blob"' in line:
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            k, body = e.get('type'), (e.get('message') or {}).get('content')
+            if k == 'api-request-shape' and not c['parts']['tool list']:
+                text = ''.join(b.get('text', '') for b in e['shape'].get('system') or [])
+                cut = max(text.find('You are a task worker'), 0) or len(text)
+                c['parts'].update({"Claude Code's own prompt": nb(text[:cut]), "wsx's worker rules": nb(text[cut:]), 'tool list': nb(e['shape'].get('tools') or [])})
+            elif k == 'attachment' and c['ctx'] is None:
+                a = e['attachment']
+                for f in a.get('files') or [] if a.get('type') == 'instructions' else []:
+                    path, text = f.get('path', ''), f.get('content') or ''
+                    c['files'].add(os.path.basename(path))
+                    c['parts']['MEMORY.md index' if path.endswith('MEMORY.md') else 'project CLAUDE.md' if path.startswith(root) else "owner's CLAUDE.md"] += nb(text)
+                    if path.endswith('MEMORY.md'):
+                        c['entries'] = len(re.findall(r'^- \[', text, re.M))
+                if a.get('type') != 'instructions':
+                    c['parts']['skill list' if a.get('type') == 'skill_listing' else 'other lists (agents, tools, environment)'] += nb(e.get('rendered') or '')
+                    c['listed'] = a.get('skillCount') or c['listed']
+            elif k == 'user':
+                text = body if isinstance(body, str) else ''.join(b.get('text', '') for b in body or [] if b.get('type') == 'text')
+                if text and c['at'] is None:
+                    c['at'], c['text'] = int(D.datetime.fromisoformat(e['timestamp'].replace('Z', '+00:00')).timestamp() * 1000), text
+                for b in body or [] if isinstance(body, list) else []:
+                    if b.get('type') == 'tool_result':  # ^ text only: a capture read as an image is not counted
+                        got = b.get('content') or ''
+                        c['got'][tool.get(b.get('tool_use_id'), 'other')] += nb(got if isinstance(got, str) else ''.join(x.get('text', '') for x in got))
+            elif k == 'assistant':
+                if c['ctx'] is None:
+                    u = (e.get('message') or {}).get('usage') or {}
+                    c['ctx'] = sum(u.get(x) or 0 for x in ('input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'))
+                for b in body or []:
+                    if b.get('type') == 'tool_use':
+                        tool[b.get('id')], given = b.get('name'), b.get('input') or {}
+                        if b.get('name') == 'StructuredOutput' and c['first_got'] is None:
+                            c['first_got'] = sum(c['got'].values())
+                        if b.get('name') == 'Skill':
+                            c['used'].add(given.get('skill'))
+                        c['named'] |= {f[len(root):] if f.startswith(root) else re.sub(r'^\./', '', f) for f in [given.get('file_path') or ''] + PATHY.findall(given.get('command') or '') if f}
+        if c['at'] is not None:
+            out.append(c)
+    return sorted(out, key=lambda c: c['at'])
+talks = {}
+def talk(t):
+    if (t['pid'], t['id']) not in talks:
+        talks[t['pid'], t['id']] = conversations(t)
+    return talks[t['pid'], t['id']]
+wide = list(itertools.islice((t for t in sorted(tasks, key=lambda t: -t['created']) if t['first'] and talk(t)), 5 * SAMPLE))
+sample = wide[:SAMPLE]
+def split(text):  # ^ host.rs `first_turn`: the prompt, "Task context from the host:", the step text
+    a, b = text.find('Task context from the host:'), text.find('\n\nStep ')
+    b = b if b >= 0 else len(text)
+    return text[:a if 0 <= a < b else b], text[a:b] if 0 <= a < b else '', text[b:]
+rows, shown = C.defaultdict(list), [0, 0, 0]
+for t in sample:
+    first = talk(t)[0]
+    prompt, context, step = split(first['text'])
+    for part, n in {**first['parts'], 'task prompt and adds': nb(prompt), "host's task context (start block)": nb(context), 'step text': nb(step)}.items():
+        rows[part].append(n)
+    for globs in re.findall(r'^(?:Rule|Area brief) \S+ \((?:paths|files) ([^)]*)\)', context, re.M):
+        shown[0] += 1
+        shown[1] += any(fnmatch.fnmatch(f, g.strip()) for g in globs.split(',') for f in t['paths'])
+    shown[2] += bool(re.search(r'^(?:Rule|Area brief) ', context, re.M))
+print(f'\n## T7 what a worker\'s context holds at its first model call (the newest {len(sample)} tasks with a transcript)')
+if sample:
+    total = sum(med(v) for v in rows.values())
+    table('bytes by part', ['part', 'tasks with it', 'bytes p50', 'p90', 'of the sum of p50'],
+          [[part, sum(1 for x in v if x), med(v), q(v), pct(med(v), total)] for part, v in sorted(rows.items(), key=lambda r: -med(r[1]))])
+    firsts_c = [talk(t)[0] for t in sample]
+    mem = lambda t: {f for c in talk(t) for f in c['named'] if '/memory/' in f and not re.search(rf"/(MEMORY|task-{t['id']}-[^/]*)\.md$", f)}
+    by_task = lambda f: [f(t, set().union(*(c['named'] for c in talk(t)))) for t in sample]
+    ctx = med([c['ctx'] for c in firsts_c])
+    print(f"sum of p50 {total:.0f} bytes; context tokens at the first call p50 {ctx:.0f}; at that rate ({total / ctx:.2f} bytes a token) the MEMORY.md index is about {med(rows['MEMORY.md index']) * ctx / total:.0f} tokens")
+    print(f"tool results the worker fetched before its first result, bytes p50 {med([c['first_got'] for c in firsts_c]):.0f} p90 {q([c['first_got'] for c in firsts_c]):.0f};"
+          f" in the whole first conversation p50 {med([sum(c['got'].values()) for c in firsts_c]):.0f}, by tool (sum): {dict(sum((c['got'] for c in firsts_c), C.Counter()).most_common(5))}")
+    print(f"MEMORY.md index: entries p50 {med([c['entries'] for c in firsts_c]):.0f}; tasks whose worker named a memory file not its own {sum(1 for t in sample if mem(t))} of {len(sample)},"
+          f" files named p50 {med([len(mem(t)) for t in sample]):.0f}; first calls with AGENTS.md {sum('AGENTS.md' in c['files'] for c in firsts_c)} ({nb(read(os.path.join(sample[0]['main'] or '', 'AGENTS.md')))} bytes in {sample[0]['project']}); tasks whose worker named it {sum(by_task(lambda t, n: 'AGENTS.md' in n))}")
+    print(f"skills: listed p50 {med([c['listed'] for c in firsts_c]):.0f}, called in the task p50 {med([len(set().union(*(c['used'] for c in talk(t)))) for t in sample]):.0f}")
+    print(f"start block: tasks with a rule or an area brief {shown[2]} of {len(sample)}; rules and briefs shown {shown[0]}, of them for files the task changed {shown[1]}")
+    print(f"files named by the worker in the task: p50 {med(by_task(lambda t, n: len(n))):.0f}; changed by the task p50 {med(by_task(lambda t, n: len(n & t['paths']))):.0f};"
+          f" docs/*.md named p50 {med(by_task(lambda t, n: sum(f.startswith('docs/') for f in n))):.0f}, of them changed p50 {med(by_task(lambda t, n: sum(f.startswith('docs/') for f in n & t['paths']))):.0f}")
+
+print('\n## T8 stored knowledge that is past')
+def git(main, *a):
+    return subprocess.run(['git', '-C', main, *a], capture_output=True, text=True)
+mains, trees = {t['pid']: t['main'] for t in tasks if t['main'] and os.path.isdir(t['main'])}, {}
+def tree(main):  # ^ files now, and the '/'-tails of files now and of files git deleted
+    if main not in trees:
+        now = set(git(main, 'ls-files').stdout.splitlines())
+        gone = set(git(main, 'log', '--no-renames', '--diff-filter=D', '--name-only', '--format=').stdout.splitlines()) - now
+        tails = lambda ps: {'/'.join(f.split('/')[i:]) for f in ps for i in range(f.count('/'))} | set(ps)
+        trees[main] = (now, tails(now), tails(gone), set(git(main, 'log', '--since=14.days', '--name-only', '--format=').stdout.splitlines()))
+    return trees[main]
+def cited(text, tr):  # ^ paths with a folder that a text names: (all that resolve, those git deleted)
+    found = {f.lstrip('./') for f in PATHY.findall(text) if '/' in f.strip('./')}
+    dead = sum(f not in tr[1] and f in tr[2] for f in found)
+    return sum(f in tr[1] for f in found) + dead, dead
+if not GIT:
+    print('not read: --no-git')
+else:
+    out = []
+    store = lambda pid: os.path.join(TASKS, pid, 'memory', 'records.jsonl')
+    for pid, main in sorted(mains.items(), key=lambda m: -len(read(store(m[0]))))[:5]:
+        log, tr = events(store(pid)), tree(main)
+        live = {e['slug']: e for e in log if 'slug' in e}
+        n, facts = C.Counter(), [r for r in live.values() if r.get('kind') == 'fact' and r.get('status') == 'active' and r.get('paths')]
+        n['covered'] = sum(1 for r in facts if any(o['updated'] > r['updated'] and set(r['paths']) <= set(o['paths']) for o in facts))
+        hand = [r.get('source') for r in live.values() if r['slug'].startswith('handover-')]
+        n['handovers'], n['handovers but the newest'] = len(hand), len(hand) - len(set(hand))
+        for r in live.values():
+            kind, paths = r.get('kind'), r.get('paths') or []
+            n[kind if r.get('status') == 'active' else f"{kind}, {r.get('status')}"] += 1
+            if r.get('status') != 'active':
+                n['not active, bytes'] += nb(r.get('text') or '')
+                n['successor'] += kind == 'rule' and bool(r.get('superseded_by'))
+                continue
+            n['paths'] += bool(paths)
+            n['paths gone'] += bool(paths) and not any(fnmatch.fnmatch(f, g) or f.startswith(g.rstrip('/*') + '/') for g in paths for f in tr[0])
+            if r.get('commit') and paths:
+                n['judged'] += 1
+                n['stale'] += git(main, 'diff', '--quiet', r['commit'], 'HEAD', '--', *paths).returncode != 0
+            elif kind != 'rule':
+                n['never judged'] += 1
+            task = re.match(r'rotation-(\d+)', r['slug'])
+            if task:
+                ended = by_key.get((pid, int(task.group(1))), {}).get('state') in ('landed', 'closed')
+                n['rotation notes'] += 1
+                n['rotation notes of ended tasks'] += ended
+                n['rotation notes of ended tasks, bytes'] += ended * nb(r.get('text') or '')
+        out.append([by_key[next(k for k in by_key if k[0] == pid)]['project'], len(live), len(log), n['rule'], n['rule, superseded'], n['successor'], n['fact'], n['episode'], n['not active, bytes'] // 1024,
+                    n['judged'], n['stale'], n['never judged'], n['paths'], n['paths gone'], nb(read(store(pid))) // 1024, n['rotation notes'], n['rotation notes of ended tasks'], n['rotation notes of ended tasks, bytes'] // 1024, n['handovers'], n['handovers but the newest'], len(facts), n['covered']])
+    table('memory records by project', ['project', 'records', 'log lines', 'rules', 'rules superseded', 'of them with superseded_by', 'facts', 'episodes', 'not active KB', 'with commit and paths', 'of them stale',
+                                         'facts and episodes never judged', 'active with paths', 'every path gone', 'store KB', 'rotation notes', 'of ended tasks', 'KB', 'manager handovers', 'all but the newest of a log', 'facts with paths', 'a newer fact holds all its paths'], out)
+    opened = C.defaultdict(set)
+    for t in wide:
+        opened[t['main']] |= {f for c in talk(t) for f in c['named'] if f"/memory/task-{t['id']}-" not in f}  # ^ not the memo it wrote itself
+    out = []
+    for chat in sorted(chat_repos, key=lambda c: -len(read(os.path.join(TASKS, 'chats', c, 'notes', 'context.md'))))[:5]:
+        main, notes = mains.get(next(iter(chat_repos[chat]), None)), os.path.join(TASKS, 'chats', chat, 'notes')
+        views = {f: read(os.path.join(notes, f)) for f in ('decisions.md', 'context.md', 'decisions-archive.md', 'context-archive.md')}
+        rest = [f for f in glob.glob(os.path.join(notes, '*')) if os.path.isfile(f) and os.path.basename(f) not in views]
+        old = [f for f in rest if os.path.getmtime(f) < D.datetime.now().timestamp() - 14 * 86400]
+        states = [{by_key.get((p, int(x)), {}).get('state') for p in chat_repos[chat] for x in re.findall(r'\d{2,4}', os.path.basename(f))} - {None} for f in rest]
+        out.append([chat, *(nb(v) for v in views.values()), *(cited(views['decisions.md'] + views['context.md'], tree(main)) if main else ('-', '-')),
+                    len(rest), sum(map(os.path.getsize, rest)) // 1024, len(old), sum(1 for x in states if x), sum(1 for x in states if x and x <= {'landed', 'closed'})])
+    table("manager notes by chat (the views of the records, and the chat's other note files)",
+          ['chat', 'decisions.md B', 'context.md B', 'decisions-archive.md B', 'context-archive.md B', 'paths cited in the first two', 'git deleted', 'other files', 'KB', 'not written for 14 d', 'named with a task number', 'of an ended task'], out)
+    out = []
+    for main in [m for m, _ in C.Counter(t['main'] for t in tasks if t['main'] in trees or t['main'] in mains.values()).most_common(3)]:
+        tr = tree(main)
+        folders = [('docs/', [f for f in tr[0] if re.match(r'docs/[^/]+\.md$', f)]), ('docs/design/', [f for f in tr[0] if re.match(r'docs/design/[^/]+\.md$', f)]),
+                   ('worker memory files', glob.glob(os.path.join(CLAUDE, re.sub(r'[^A-Za-z0-9]', '-', main), 'memory', '*.md')))]
+        long_ago, pid = D.datetime.now().timestamp() - 14 * 86400, next(k for k, v in mains.items() if v == main)
+        other = {f: read(os.path.join(main, f)) for f in tr[0] if re.search(r'\.(md|rs|py|mjs)$', f) and not f.startswith('vendor/')}
+        for name, files in folders:
+            texts = [read(os.path.join(main, f)) for f in files]
+            marks = [cited(text, tr) for text in texts]
+            named = [{by_key.get((pid, int(x)), {}).get('state') for x in re.findall(r'#(\d{1,4})\b', text)} for text in texts]
+            done = [bool(states) and states <= {'landed', 'closed'} for states in named]
+            alone = [not os.path.isabs(f) and not any(os.path.basename(f) in text for g, text in other.items() if g != f) for f in files]
+            quiet = sum(1 for f in files if (os.path.getmtime(f) < long_ago if os.path.isabs(f) else f not in tr[3]))
+            used = sum(1 for f in files if f in opened[main])
+            out.append([f'{os.path.basename(main)} {name}', len(files), sum(map(nb, texts)) // 1024, sum(m[0] for m in marks), sum(m[1] for m in marks), sum(1 for m in marks if m[1]),
+                        quiet, sum(done), sum(alone) if name != 'worker memory files' else '-', used,
+                        sum(1 for f, d, a in zip(files, done, alone) if d and (a or os.path.isabs(f)) and f not in opened[main])])
+    table(f'documents (opened: by a worker of the newest {len(wide)} tasks with a transcript)',
+          ['files', 'n', 'KB', 'paths cited', 'git deleted', 'files citing a deleted path', 'not changed for 14 d', 'every task it names ended', 'named by no other .md .rs .py .mjs', 'opened', 'ended, named by none and not opened'], out)
+
+print(f'\n## T9 rotation: what the fresh conversation gets (the newest {len(wide)} tasks with a transcript)')
+turns_r, firsts_w = [], [talk(t)[0] for t in wide]
+for t in wide:
+    for i, c in enumerate(talk(t)):
+        if i and 'You continue a task' in c['text'][:200]:
+            mark, last = "The earlier conversation's handoff notes:", 'What follows came after:' in c['text']
+            notes = c['text'].split(mark, 1)[1] if mark in c['text'] else ''
+            given = [a[2].strip() for a in t['adds'] if a[0] < c['at'] and a[2].strip()]
+            if not last:  # ^ before 564c9c77 the step line, the waiting message and the pending adds came after the notes
+                ends = [notes.find(x) for x in ['\n\nYou are in step '] + [a[:80] for a in given]]
+                notes = notes[:min([x for x in ends if x >= 0] + [len(notes)])]
+            lost = [a for a in given if a[:80] not in c['text']]
+            before = set().union(*(x['named'] for x in talk(t)[:i]))
+            turns_r.append(dict(prompt=nb(c['text']), notes=nb(notes), last=last, adds=len(given), lost=sum(map(nb, lost)), ctx=c['ctx'],
+                                got=c['first_got'] if c['first_got'] is not None else sum(c['got'].values()),
+                                named=len(c['named']), again=len(c['named'] & before) / len(c['named']) if c['named'] else None,
+                                kept=len(before & t['paths'] & c['named']) / len(before & t['paths']) if before & t['paths'] else None))
+col = lambda k: [r[k] for r in turns_r]
+if turns_r:
+    print(f"rotations read {len(turns_r)} in {sum(1 for t in wide if len(talk(t)) > 1)} tasks (`rotated` events in these tasks: {sum(len(t['rot']) for t in wide)})")
+    print(f"the first message of the fresh conversation: bytes p50 {med(col('prompt')):.0f} p90 {q(col('prompt')):.0f}; its handoff notes p50 {med(col('notes')):.0f} p90 {q(col('notes')):.0f},"
+          f" none in {sum(1 for r in turns_r if not r['notes'])}; where the notes end the message ({sum(col('last'))} rotations since 564c9c77) p50 {med([r['notes'] for r in turns_r if r['last']]):.0f}")
+    print(f"adds the task got before the rotation: in {sum(1 for r in turns_r if r['adds'])} rotations; with an add the fresh message does not hold: {sum(1 for r in turns_r if r['lost'])},"
+          f" bytes of those adds p50 {med([r['lost'] for r in turns_r if r['lost']]):.0f}")
+    print(f"context tokens at its first call p50 {med(col('ctx')):.0f} (a task's first conversation: {med([c['ctx'] for c in firsts_w]):.0f});"
+          f" tool results fetched before its first result, bytes p50 {med(col('got')):.0f} (first conversation: {med([c['first_got'] for c in firsts_w]):.0f})")
+    print(f"files it names: p50 {med(col('named')):.0f}, of them named before the rotation p50 {pct(med(col('again')), 1)};"
+          f" of the task's changed files the earlier conversations named, it names again p50 {pct(med(col('kept')), 1)}")
+allrot = [r for t in tasks for r in t['rot']]
+print(f"all tasks: `rotated` {len(allrot)}, by reason {dict(C.Counter('idle' if 'idle' in r[2] else r[2] if r[2] == 'size' else 'other' for r in allrot))}, context tokens at the rotation p50 {med([r[1] for r in allrot]):.0f}")
+rate, order = C.defaultdict(lambda: [0, 0, 0, set()]), C.Counter()
+for t in tasks:
+    marks = t['revs'] + [INF]
+    for i, lo in enumerate(t['revs']):
+        adds = [a for a in t['post'] if lo <= a[0] < marks[i + 1]]
+        cell = rate['1' if i == 0 else '2-3' if i < 3 else '4-6' if i < 6 else '7+', 'after a rotation' if any(r[0] < lo for r in t['rot']) else 'no rotation yet']
+        cell[0] += 1
+        cell[1] += any(a[1] in OWNER for a in adds)
+        cell[2] += any(a[1] == 'events' for a in adds)
+        cell[3].add((t['pid'], t['id']))
+    own = [a[0] for a in t['post'] if a[1] in OWNER]
+    if own and t['rot'] and len(t['revs']) >= 4:
+        order['the owner add came first' if min(own) < t['rot'][0][0] else 'the rotation came first'] += 1
+table('a result, by its place in the task and whether the conversation was replaced before it',
+      ['result number', 'conversation', 'results', 'in tasks', 'owner add before the next result', 'sent back'],
+      [[k[0], k[1], v[0], len(v[3]), pct(v[1], v[0]), pct(v[2], v[0])] for k, v in sorted(rate.items())])
+print(f"4+ revision tasks with both a rotation and an owner add after a result: {dict(order)}")
+
 print("""
-## T7 what these records cannot show
+## T10 what these records cannot show
 - The owner's verdict on quality. An owner add after a result is a correction or a new wish; a To check state is the nearest record of a verdict.
 - Who wrote an add. The class comes from the turn of the task's chat around it; the owner's own add, another chat's add and a lost turn all read `outside`.
 - Context restated in other words or in another language. The repeated-text share counts exact 5-word runs only.
 - Why a result missed: thin prompt, a wrong decision or a weak model look the same here.
 - Work in sessions the owner opened by hand: no record but the sessions that exist now; no history of deleted worktrees before the prune notices.
 - Which task another project's manager asked for: only the turn that created it links them.
-- Size of the change behind a result: closed tasks' branches are gone, so cost per output token stands in for it.""")
+- Size of the change behind a result: closed tasks' branches are gone, so cost per output token stands in for it.
+- What a worker did with a rule: CLAUDE.md, the worker rules and a start-block rule leave no trace when followed. A file is "used" when the worker named it.
+- A record that a later owner rule contradicts, unless someone marked it superseded.
+- Whether a rotation caused an owner add. T9 holds the place in the task equal; it does not hold the task's difficulty equal.
+- Pi workers: they write no Claude transcript, so T7 and T9 are Claude only.""")
