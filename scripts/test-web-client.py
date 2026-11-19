@@ -4436,7 +4436,7 @@ merge_seconds = 3
         role_chat = wait(lambda: (lambda data: data if any(manager_said(r) for r in data['rows']) else None)(
             steady(owner, 'GET', '/api/tasks/%d/chat?chat=notes' % demo)[1]), 'chat reply')
         # ^ A chat with no agent of its own shows the manager's agent.
-        assert role_chat['manager'] == {'name': 'notes', 'projects': ['demo'], 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and 'chats' not in role_chat and role_chat['running'], role_chat
+        assert role_chat['manager'] == {'name': 'notes', 'id': 'notes', 'goal': 'Keep the notes.\n', 'projects': ['demo'], 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and 'chats' not in role_chat and role_chat['running'], role_chat
         # ^ The overview is the observer's: it follows the chat's files within a poll.
         # ^ The chats besides the home chat, which is a row of Home as the others are (`home`).
         overview_chats = lambda count: wait(lambda: (lambda chats: chats if len(chats) == count and all(c['news'] for c in chats if c['name'] == 'notes') else None)(
@@ -4926,7 +4926,7 @@ merge_seconds = 3
             # "Find"): every match the whole log has, as `all=true` sent before.
             whole = steady(owner, 'GET', '/api/tasks/%d/chat?find=QUASAR' % ids['plans'])[1]
             peer = lambda chat, key: {r['name'] for r in chat['rows'] if r.get('author') == 'peer:chat:' + key}
-            assert ui_chat['manager'] == {'name': 'Atlas', 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and peer(ui_chat, 'plans') == {'plans'}, (ui_chat['manager'], peer(ui_chat, 'plans'))
+            assert ui_chat['manager'] == {'name': 'Atlas', 'id': 'ui', 'goal': '', 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and peer(ui_chat, 'plans') == {'plans'}, (ui_chat['manager'], peer(ui_chat, 'plans'))
             assert plans_chat['manager']['name'] == 'plans' and peer(whole, 'ui') == {'ui'}, (plans_chat['manager'], peer(whole, 'ui'))
             # ^ The window is 200 log entries; a ping, a recap request or a repeat shows no row.
             assert plans_chat['skipped'] > 0 and 0 < len(plans_chat['rows']) <= 200, (plans_chat['skipped'], len(plans_chat['rows']))
