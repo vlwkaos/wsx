@@ -119,7 +119,10 @@ impl Fixture {
                 "WSX_DAEMON_BIN",
                 Path::new(env!("CARGO_BIN_EXE_wsx")).with_file_name("wsxd"),
             )
-            .env("WSX_SOCKET", self.root.join("d.sock"));
+            .env("WSX_SOCKET", self.root.join("d.sock"))
+            // ^ A fixed lane width is first come, first served: the load of the Mac that runs the
+            // tests must not hold a scenario check-run (docs/design/scheduler.md).
+            .env("WSX_SCENARIO_SLOTS", "1");
         command
     }
 
