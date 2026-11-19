@@ -69,6 +69,12 @@ Source: the host's check-run on head 259a89ed (`check-run-8.log`, `check-run-9.l
 - Not measured: two tasks' rounds at once at width 1 against a wider lane. Load stayed over 1.5 per core on
   this Mac all through the task, so the rule kept the lane at width 1 and a wider lane never ran here.
   The failure counts at width 1 against width 2 or 3 are open.
-- The Mac has 511 PTYs (`sysctl kern.tty.ptmx_max`). While other tasks' fixtures held nearly all of them
-  (`ls /dev | rg -c '^ttys'` gave 476 to 515), every PTY test of this task failed with `failed to openpty`.
-  The scheduler does not count PTYs; a rerun after they are free passes.
+- PTYs: `kern.tty.ptmx_max` is 511. Source: `.work/ptysample.py` (counts `/dev/ttysNNN` each second) during
+  `cargo nextest run --workspace` (49 s): 460 at the lowest, 513 at the peak, with other tasks' runs on the Mac, so
+  the suite's own rise is at most 53. `RUN_PTYS` 60 is that bound rounded up. One `task` and one `web` round:
+  the `PTYS in use: <start>, peak <n>` line `scripts/scenario.py` prints at the end of each run (the check-run
+  logs of this task); read the rise there and replace 60 when it is larger. While other tasks held 476 to 515 of the
+  511, every PTY test failed with `failed to openpty`; a run now waits with `waiting for PTYs` instead.
+- Turn gate: not measured. The gate adds a wait only above `START_LOAD` per core, and the first turn after 60 s
+  settles; whether it lowers the load of a day with seven tasks building is open.
+- Width history: `wsx task widths` has no rows until runs that carry `width` are recorded.
