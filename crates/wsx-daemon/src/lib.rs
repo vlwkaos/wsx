@@ -36,6 +36,7 @@ use std::{
 use wsx_core::{
     config::global::GlobalConfig,
     integration::{self, claude_status, resume},
+    process,
     runtime::*,
 };
 use wsx_terminal::{validate_launch, AgentTerminalObservation, TerminalRuntime};
@@ -94,7 +95,7 @@ static NEXT_LEASE_GENERATION: AtomicU64 = AtomicU64::new(1);
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 const PORT_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 const FOREGROUND_SCAN_INTERVAL: Duration = Duration::from_millis(150);
-const PORT_SCAN_TIMEOUT: Duration = Duration::from_millis(750);
+const PORT_SCAN_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PORT_SCAN_BYTES: u64 = 256 * 1024;
 const RESUME_CLEAR_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 const RESUME_CLEAR_RETRY_INTERVAL: Duration = Duration::from_millis(10);

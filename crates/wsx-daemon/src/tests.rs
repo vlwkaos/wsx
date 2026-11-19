@@ -4582,8 +4582,7 @@ fn listener_scan_finds_current_process_group_port_when_lsof_is_available() {
 fn lsof_parser_groups_and_deduplicates_tcp_listeners() {
     let listeners = parse_lsof_ports(
         "p100\ng42\nf8\nn127.0.0.1:3000\nf9\nn*:3000\np101\ng43\nf7\nn[::1]:5173\n",
-    )
-    .unwrap();
+    );
 
     assert_eq!(
         listeners,
@@ -4611,9 +4610,9 @@ fn listener_attribution_accepts_descendant_groups_on_a_unique_pane_tty() {
         group: 99,
         ports: vec![5173, 8081, 5173],
     }];
-    let terminals = parse_process_terminals("100 42 ttys007\n101 99 ttys007\n").unwrap();
+    let terminals = parse_process_terminals("100 42 ttys007\n101 99 ttys007\n");
 
-    let attributed = attribute_listening_ports(&process_groups, &listeners, Some(&terminals));
+    let attributed = attribute_listening_ports(&process_groups, &listeners, &terminals);
 
     assert_eq!(attributed.get(&pane), Some(&vec![5173, 8081]));
 }
@@ -4636,10 +4635,9 @@ fn listener_attribution_rejects_ambiguous_or_missing_ttys_but_keeps_exact_groups
         },
     ];
     let terminals =
-        parse_process_terminals("100 42 ttys007\n103 43 ttys007\n101 99 ttys007\n104 100 ??\n")
-            .unwrap();
+        parse_process_terminals("100 42 ttys007\n103 43 ttys007\n101 99 ttys007\n104 100 ??\n");
 
-    let attributed = attribute_listening_ports(&process_groups, &listeners, Some(&terminals));
+    let attributed = attribute_listening_ports(&process_groups, &listeners, &terminals);
 
     assert_eq!(attributed.get(&first), Some(&vec![9000]));
     assert!(!attributed.contains_key(&second));
