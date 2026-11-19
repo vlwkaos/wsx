@@ -986,7 +986,7 @@ impl Manager {
         {
             self.log(ManagerEvent::Limit { until: None });
         }
-        self.delivered(&taken, &ids);
+        self.delivered(&taken);
         let mut turn = held.map(|hold| hold.ids).unwrap_or_default();
         turn.extend(ids);
         self.turn = Some(turn);
@@ -998,12 +998,13 @@ impl Manager {
 
     /// What a turn or a steer took reached the agent: a peer's message is owed one answer, and
     /// the log marks the ids delivered.
-    fn delivered(&mut self, taken: &[(u64, Author, String, bool)], ids: &[u64]) {
+    fn delivered(&mut self, taken: &[(u64, Author, String, bool)]) {
         for (_, author, ..) in taken {
             self.owe(author);
         }
-        if !ids.is_empty() {
-            self.log(ManagerEvent::Delivered { ids: ids.to_vec() });
+        if !taken.is_empty() {
+            let ids = taken.iter().map(|(id, ..)| *id).collect();
+            self.log(ManagerEvent::Delivered { ids });
         }
     }
 
@@ -1029,10 +1030,11 @@ impl Manager {
         let Batch {
             ids, text, taken, ..
         } = self.take_batch();
-        let sent = match self.agent.as_mut() {
-            Some(agent) => agent.send(text.trim_end()),
-            None => Err(anyhow::anyhow!("the manager agent is not running")),
-        };
+        let sent = self
+            .agent
+            .as_mut()
+            .context("the manager agent is not running")
+            .and_then(|agent| agent.send(text.trim_end()));
         if let Err(error) = sent {
             // ^ The next turn takes them; the agent's own end is reported by its stream.
             self.say(&format!(
@@ -1040,7 +1042,7 @@ impl Manager {
             ));
             return self.put_back(taken);
         }
-        self.delivered(&taken, &ids);
+        self.delivered(&taken);
         if let Some(turn) = &mut self.turn {
             turn.extend(ids);
         }
