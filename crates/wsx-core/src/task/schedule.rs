@@ -7,7 +7,7 @@ use super::status::Waiter;
 use super::view::project_tasks;
 use super::{Actor, LogEvent, TaskRecord};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A scenario run's reason line starts with this when it runs on GitHub CI; `task::status` words it.
 pub const ON_CI: &str = "went to CI: ";
@@ -196,6 +196,7 @@ pub struct Lane {
     pub newest: Option<Duration>,
     /// Waiters in front of this one.
     pub ahead: usize,
+    /// How long the run has waited for the load with the lane free (`load_waited`).
     pub waited: Duration,
     pub scenarios: bool,
     /// PTYs a run of the lane needs free; 0 when the machine rules are off for it.
@@ -225,6 +226,18 @@ pub enum Verdict {
     Wait(Option<String>),
     /// Run on GitHub CI: the reason.
     Ci(String),
+}
+
+/// How long a run has waited for the load: the clock runs only while the lane is free for it (no
+/// holder, none ahead), so a run that queued behind a long scenario round still waits the whole
+/// `LOAD_WAIT` for a quieter Mac once its turn comes, not none (the deploy's smoke test failed on a
+/// timed assert that way).
+pub fn load_waited(since: &mut Option<Instant>, lane_free: bool) -> Duration {
+    if !lane_free {
+        *since = None;
+        return Duration::ZERO;
+    }
+    since.get_or_insert_with(Instant::now).elapsed()
 }
 
 /// Whether the run starts now, waits for the lane, or goes to CI. A lane starts a first run when
@@ -431,6 +444,27 @@ mod tests {
         let mut fixed = lane(0, 0, 90.0);
         fixed.paced = false;
         assert_eq!(decide(&normal, &fixed), Verdict::Go);
+    }
+
+    #[test]
+    fn the_load_wait_counts_only_while_the_lane_is_free() {
+        // A deploy's smoke test (`wsx task slot python3 -B scripts/runtime-smoke.py`) behind a round.
+        let smoke = run(false, 60_000);
+        let mut since = None;
+        assert_eq!(load_waited(&mut since, false), Duration::ZERO);
+        assert!(since.is_none());
+        // The round ends; the Mac is still loaded: the smoke test waits, with the load as reason.
+        let mut free = lane(0, 0, 50.0);
+        free.waited = load_waited(&mut since, true);
+        assert!(
+            matches!(decide(&smoke, &free), Verdict::Wait(Some(note)) if note.starts_with("load 50"))
+        );
+        // A holder again (another run took the slot) resets the clock; only a full `LOAD_WAIT` of
+        // a free lane lets it start.
+        assert_eq!(load_waited(&mut since, false), Duration::ZERO);
+        assert!(since.is_none());
+        free.waited = LOAD_WAIT;
+        assert_eq!(decide(&smoke, &free), Verdict::Go);
     }
 
     #[test]

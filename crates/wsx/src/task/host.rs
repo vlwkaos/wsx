@@ -2523,14 +2523,13 @@ impl Host {
                 return false;
             }
         };
-        match slot::admit(&ticket, &want, &self.slot_label(), Duration::ZERO) {
+        match slot::admit(&ticket, &want, &self.slot_label(), &mut self.load_since) {
             Ok(Taken::Slot(taken)) => {
                 self.disk_slot = Some((taken, Instant::now()));
                 false
             }
             Ok(Taken::Ci(reason)) | Err(reason) => {
                 self.disk_queue = Some(ticket);
-                self.load_since = Some(Instant::now());
                 self.disk_wait = Some(what);
                 self.say(&format!("waiting for the load: {reason}"));
                 self.wait(WaitOn::Load, reason);
@@ -2553,17 +2552,10 @@ impl Host {
         }
         if let Some(queue) = &self.disk_queue {
             let label = self.slot_label();
+            let want = Want::new(Lane::Turns, self.urgency().0);
             let taken = match self.record.waiting.as_ref().map(|waiting| waiting.on) {
                 Some(WaitOn::Load) => {
-                    let waited = self
-                        .load_since
-                        .map_or(Duration::ZERO, |since| since.elapsed());
-                    match slot::admit(
-                        queue,
-                        &Want::new(Lane::Turns, self.urgency().0),
-                        &label,
-                        waited,
-                    ) {
+                    match slot::admit(queue, &want, &label, &mut self.load_since) {
                         Ok(Taken::Slot(slot)) => Ok(slot),
                         Ok(Taken::Ci(reason)) | Err(reason) => Err(reason),
                     }

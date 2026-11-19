@@ -145,10 +145,10 @@ fn try_lock(file: &File) -> bool {
 pub fn take(want: &Want, label: &str, mut queued: impl FnMut(String)) -> io::Result<Taken> {
     let lane = want.lane;
     let ticket = Ticket::join(lane.queue(), lane.what(), lane.max(), want.priority)?;
-    let joined = Instant::now();
+    let mut load_since = None;
     let mut said = String::new();
     loop {
-        let decided = admit(&ticket, want, label, joined.elapsed());
+        let decided = admit(&ticket, want, label, &mut load_since);
         match decided {
             Ok(taken) => return Ok(taken),
             Err(reason) if reason != said => {
@@ -162,8 +162,13 @@ pub fn take(want: &Want, label: &str, mut queued: impl FnMut(String)) -> io::Res
 }
 
 /// Ask the lane's rule (`schedule::decide`) whether `ticket`'s run starts now: the slot or the order
-/// for CI, else the reason it waits. `waited` is how long the run has waited.
-pub fn admit(ticket: &Ticket, want: &Want, label: &str, waited: Duration) -> Result<Taken, String> {
+/// for CI, else the reason it waits. `load_since` is the run's load clock (`schedule::load_waited`).
+pub fn admit(
+    ticket: &Ticket,
+    want: &Want,
+    label: &str,
+    load_since: &mut Option<Instant>,
+) -> Result<Taken, String> {
     let lane = want.lane;
     let run = Run {
         urgent: want.urgent.clone(),
@@ -177,7 +182,7 @@ pub fn admit(ticket: &Ticket, want: &Want, label: &str, waited: Duration) -> Res
                 holders: held.holders,
                 newest: held.newest,
                 ahead: held.ahead,
-                waited,
+                waited: schedule::load_waited(load_since, held.holders + held.ahead == 0),
                 scenarios: matches!(lane, Lane::Scenarios),
                 ptys: want.ptys,
                 paced: matches!(lane, Lane::Scenarios | Lane::Turns) && ruled(),
