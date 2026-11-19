@@ -134,7 +134,7 @@ async function managerWidth(where) {
 
 // The top of the task sheet as words: what changed, what to know next, and whether a step path is left.
 const story = () => evaluate(`({ summary: document.querySelector('.story-summary .markdown')?.textContent.trim() ?? '',
-  next: document.querySelector('.story-next')?.textContent.trim() ?? '', steps: document.querySelectorAll('.story-steps').length })`);
+  ask: document.querySelector('.story-ask')?.textContent.trim() ?? '', next: document.querySelector('.story-next')?.textContent.trim() ?? '', steps: document.querySelectorAll('.story-steps').length })`);
 // The muted lines, folded runs opened first (a closed one is opened, an open one stays).
 const statusLines = "(document.querySelectorAll('.log .fold-toggle[aria-expanded=\"false\"]').forEach((node) => node.click()), [...document.querySelectorAll('.status-line')])";
 // The chat route's rows of a project (wsx-core `chat_rows`): what the page renders.
@@ -2477,7 +2477,7 @@ phase("The task sheet of #2: how it does, one sentence of what chan");
 await go(page(2));
 await until("document.querySelectorAll('dialog.task-sheet[open] .task-fold').length >= 1", "the task sheet did not show the folded report");
 let told = await story();
-if (told.steps || told.summary !== "did: WORK a.txt HV" || !/^Ready, waiting for you to land it for [^:]+: checks 1 of 1 passed\. Land it to put it on main\.$/.test(told.next)) await fail(`the top of a ready task reads ${JSON.stringify(told)}`);
+if (told.steps || told.summary !== "did: WORK a.txt HV" || !/^Checks 1 of 1 passed\. Land it to put it on main\.$/.test(told.next)) await fail(`the top of a ready task reads ${JSON.stringify(told)}`);
 if (await sheetState() !== "Ready, waiting for you to land it") await fail(`a ready task's state reads ${await sheetState()}`);
 // ^ The top row reads the title first, then the number, small and muted.
 const sheetTitle = await evaluate("(() => { const title = document.querySelector('.task-sheet .bar .row-title'); return title && [title.firstElementChild.className, title.querySelector('.task-number').textContent]; })()");
@@ -2506,31 +2506,33 @@ const aboveFold = `(() => { const scroll = document.querySelector('dialog.task-s
     const range = document.createRange(); range.selectNodeContents(node);
     for (const rect of range.getClientRects()) if (rect.height && rect.bottom <= limit) tops.add(Math.round(rect.top / 4)); }
   const buttons = [...document.querySelectorAll('dialog.task-sheet[open] .task-next button')];
-  return { lines: tops.size, flow: (document.querySelector('dialog.task-sheet[open] .task-flow')?.getBoundingClientRect().bottom ?? Infinity) <= limit,
+  // ^ No button's text is cut, and the first line of the content is not under the header.
+  const first = document.querySelector('dialog.task-sheet[open] .story-state'); const point = first.getBoundingClientRect();
+  return { lines: tops.size, state: point.bottom <= limit && document.elementFromPoint(point.left + 2, point.top + point.height / 2)?.closest('.story') !== null,
+    clipped: buttons.filter((button) => button.scrollWidth > button.clientWidth).length,
     actions: buttons.length > 0 && buttons.every((button) => button.getBoundingClientRect().bottom <= limit) }; })()`;
 const glance = await evaluate(aboveFold);
-if (!glance.flow || !glance.actions) await fail(`the ready task's Flow facts or actions are below the fold at 390 px: ${JSON.stringify(glance)}`);
+if (!glance.state || !glance.actions || glance.clipped) await fail(`the ready task's state line or actions are hidden, below the fold or cut at 390 px: ${JSON.stringify(glance)}`);
 // ^ The glance in both schemes at 375, 390 and 1280 px (a resize across 900 px mounts the sheet again).
 for (const scheme of ["dark", "light"]) {
   await inScheme(scheme);
   for (const next of [[375, 812, 2], [1280, 800, 1], [390, 844, 2]]) {
     await resize(next);
-    await until("!!document.querySelector('dialog.task-sheet[open] .task-flow')", `the sheet lost its Flow facts at ${next[0]} px`);
+    await until("!!document.querySelector('dialog.task-sheet[open] .story-state')", `the sheet lost its state line at ${next[0]} px`);
+    const seen = await evaluate(aboveFold);
+    if (!seen.state || seen.clipped) await fail(`at ${next[0]} px the state line is under the header or a button is cut: ${JSON.stringify(seen)}`);
     await shot(`task-sheet-glance-${scheme}`, ".composer-send");
   }
 }
 await inScheme("dark");
 await shot("task-sheet", ".composer-send");
-// ^ The summary shows its first paragraph; More shows the rest with the decisions and goes.
+// ^ The worker's summary, with its decisions, and the Flow facts are folded behind More.
 const decided = "/Decided: fake choice \\(fixture\\)\\./.test(document.querySelector('.story').textContent)";
-if ((await evaluate(decided)) || (await count(".story .story-more")) !== 1) await fail("the sheet shows the decisions before More, or has no More");
-await click(".story .story-more");
-await until(`${decided} && !document.querySelector('.story .story-more')`, "More did not show the decisions");
-// ^ The sheet as it was before the overhaul: the whole summary and its decisions, no Flow facts.
-await evaluate("document.querySelector('dialog.task-sheet[open] .task-flow').style.display = 'none'");
-const whole = await evaluate(aboveFold);
-await evaluate("document.querySelector('dialog.task-sheet[open] .task-flow').style.display = ''");
-console.log(`task sheet above the fold at 390x844: ${glance.lines} lines with the Flow facts and actions; ${whole.lines} lines as before, whole summary and no Flow`);
+if ((await count(".story .story-fold:not([open])")) !== 1 || !(await evaluate(decided))) await fail("the sheet has no closed More with the decisions in it");
+if (await evaluate("document.querySelector('.story-summary').checkVisibility()")) await fail("the worker's summary shows before More is opened");
+await click(".story .story-fold > summary");
+await until("document.querySelector('.story-fold[open] .story-summary')?.checkVisibility()", "More did not show the summary");
+console.log(`task sheet above the fold at 390x844: ${glance.lines} lines, state and actions in view, More closed`);
 await shot("task-sheet-summary", ".composer-send");
 // Evidence opens to the checks and what the worker showed.
 await evaluate("document.querySelector('.task-fold > .fold-head').click()");
@@ -2538,10 +2540,10 @@ await until("/test ! -e broken\\.txt/.test(document.querySelector('.task-fold[op
 await shot("task-sheet-open");
 await evaluate("document.querySelector('.task-fold > .fold-head').click()");
 await clickNext("Land");
-await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '') === 'done'", "#2 did not land", 300);
+await until("(document.querySelector('.task-sheet .progress-health')?.textContent ?? '') === 'Landed'", "#2 did not land", 300);
 told = await story();
 // ^ The core's sentence (docs/tasks.md "Status"); only the web knows the deploy fact.
-if (told.next !== "Landed: on main; the last deploy does not have it yet.") await fail(`the top of a done task reads ${JSON.stringify(told)}`);
+if (told.next !== "On main; the last deploy does not have it yet.") await fail(`the top of a done task reads ${JSON.stringify(told)}`);
 await until("[...document.querySelectorAll('.task-sheet .scroll > .task-section > .task-heading')].some((node) => node.textContent === 'To check · 1 open')", "#2's item is not open under To check, outside the folds", 60);
 const offers = await evaluate("[...document.querySelectorAll('.task-sheet .scroll > .task-section .check-item .check-act')].map((node) => node.title).join()");
 if (await count(".task-sheet .progress, .task-sheet .progress-now, .task-sheet .progress-steps")) await fail("a finished task still shows the progress view, its steps or a now line");
@@ -2560,7 +2562,7 @@ await until("!!document.querySelector('.task-next button[aria-label=\"Approve di
 // ^ The story says what an action is for; its row holds the buttons alone.
 if ((await text(".task-next p")).length) await fail(`an action row repeats the story: ${await text(".task-next p")}`);
 told = await story();
-if (!/^Waiting for your approval for [^:]+: the manager asks: Approve discard #4\. It goes on when you approve or deny it\.$/.test(told.next) || await sheetState() !== "Waiting for your approval") await fail(`the top of a blocked task with an approval reads ${JSON.stringify(told)}`);
+if (told.ask !== "The manager asks: Approve discard #4" || told.next !== "It goes on when you approve or deny it." || await sheetState() !== "Waiting for your approval") await fail(`the top of a blocked task with an approval reads ${JSON.stringify(told)}`);
 // ^ No Shared files outside a conflict.
 if ((await openSections()).includes("Shared files")) await fail("a task that is not in conflict shows Shared files");
 await shot("task-blocked", ".composer-send");
@@ -2572,7 +2574,7 @@ await resize([390, 844, 2]);
 await clickNext("Deny");
 await until("!document.querySelector('.task-next button[aria-label=\"Approve discard #4\"]')", "the denied approval stayed", 300);
 told = await story();
-if (!/^Waiting for your answer for [^:]+: .+ Answer the manager; the worker goes on then\.$/.test(told.next)) await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
+if (!told.ask || told.next !== "Answer the manager; the worker goes on then.") await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
 if (await count(".task-sheet textarea, .task-message, .task-steer")) await fail("the sheet still has a message field");
 // ^ Opened from another place, with Home under it: its Answer goes to the project's chat, and the
 // draft is there.
@@ -2591,7 +2593,7 @@ await shot("answer-from-sheet", ".composer-send");
 await typeInto(".composer-field", `see the logs #4\nRUN wsx task add 4 "WORK answered4.txt" -p ui --json`);
 await click(".composer-send");
 await go(page(4));
-await until("/^Ready, waiting for you to land it for [^:]+: .+\\. Land it to put it on main\\.$/.test(document.querySelector('.story-next')?.textContent ?? '')", "#4 did not resume after the manager's add", 300);
+await until("/^.+\\. Land it to put it on main\\.$/.test(document.querySelector('.story-next')?.textContent ?? '')", "#4 did not resume after the manager's add", 300);
 await until("document.querySelectorAll('.task-talk .bubble').length === 1", "the manager's add is not in the sheet's messages", 60);
 if ((await nextButtons()).includes("Answer")) await fail("a ready task's sheet offers Answer");
 
@@ -2638,7 +2640,7 @@ await pause(3000);
 await clickNext("Hand back");
 await until("[...document.querySelectorAll('.notice')].some((node) => /^#4: /.test(node.textContent))", "Hand back of #4 showed no outcome", 60);
 await until("!document.querySelector('.notice')", "the outcome did not clear itself", 80);
-await until("/^Ready, waiting for you to land it for [^:]+: .+\\. Land it to put it on main\\.$/.test(document.querySelector('.story-next')?.textContent ?? '')", "#4 did not come back ready after Hand back", 300);
+await until("/^.+\\. Land it to put it on main\\.$/.test(document.querySelector('.story-next')?.textContent ?? '')", "#4 did not come back ready after Hand back", 300);
 await closeSheet("#4 again");
 
 phase("The manager chat attaches files as a session's chat does, an");
@@ -3296,7 +3298,7 @@ await evaluate(`${rowOf("#1")}.querySelector('.row-open').click()`);
 await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the waiting task's sheet did not open");
 await lean("the waiting sheet");
 told = await story();
-if (!/^Waiting for your answer for [^:]+: .+ Answer the manager; the worker goes on then\.$/.test(told.next)) await fail(`the top of a waiting task reads ${JSON.stringify(told)}`);
+if (!told.ask || told.next !== "Answer the manager; the worker goes on then.") await fail(`the top of a waiting task reads ${JSON.stringify(told)}`);
 await shot("waiting-sheet", ".composer-send");
 await resize([1280, 800, 1]);
 await until("!!document.querySelector('dialog.task-sheet[open] .task-next button[aria-label^=\"Answer #1\"]')", "the waiting sheet has no Answer at 1280 px");
@@ -3493,7 +3495,7 @@ phase("Progress: the top of an open task's sheet at 390x844, for ea");
   };
   const top = () => evaluate(`({ health: document.querySelector('.progress-health')?.textContent ?? '', age: document.querySelector('.progress-age')?.textContent ?? '',
     steps: [...document.querySelectorAll('.progress-steps li')].map((node) => (node.dataset.done != null ? '+' : node.getAttribute('aria-current') ? '>' : '') + node.textContent.trim()).join(' '),
-    goal: document.querySelector('.story-goal')?.textContent ?? '', now: document.querySelector('.progress-now')?.textContent ?? '', next: document.querySelector('.story-next')?.textContent ?? '',
+    now: document.querySelector('.progress-now')?.textContent ?? '', next: document.querySelector('.story-next')?.textContent ?? '',
     bar: document.querySelector('.task-sheet .bar-state')?.textContent ?? '', sheet: document.querySelector('dialog.task-sheet').innerText })`);
   const shows = async (task, state, want) => {
     await until(`document.querySelector('.progress-health')?.textContent === ${JSON.stringify(want.health)}`, `plans #${task} never read ${want.health}`, 60);
@@ -3517,20 +3519,21 @@ phase("Progress: the top of an open task's sheet at 390x844, for ea");
   const steps = `  workflow:\n    steps:\n      - { name: plan, prompt: NOOP }\n      - { name: build, prompt: "WAIT ${release}" }\n      - { name: review, prompt: NOOP }\n`;
   fs.writeFileSync(config, before.replace('"test ! -e broken.txt"', '"while test -e hold-checks.txt; do sleep 0.2; done"').replace("tasks:\n", `tasks:\n${steps}`));
 
-  // Working: step 2 of 3 is current, the age is near now, the goal is the prompt's first sentence
-  // (the title is another phrase) and the now line words the newest log line, a Bash call.
+  // Working: step 2 of 3 is current, the age is near now, the title is the only headline (no goal
+  // line from the prompt) and the now line words the newest log line, a Bash call.
   const working = taskNew("--title", "Faster parser", "Goal: NOOP make the parser faster. It must stay correct.");
   await trackTimers();
   await open(working);
-  const workingTop = { health: "Working on build (2 of 3)", steps: "+plan >build review", goal: "NOOP make the parser faster.", now: "running ls -la" };
+  const workingTop = { health: "Working on build (2 of 3)", steps: "+plan >build review", now: "running ls -la" };
   await until(`document.querySelector('.progress-now')?.textContent === 'running ls -la'`, "the sheet never shows what the worker does now", 60);
   await shows(working, "working", { ...workingTop, age: /^(now|\dm ago)$/ });
+  if (await count(".story-goal") || /make the parser faster/.test(await evaluate("document.querySelector('.story').innerText"))) await fail("the sheet shows a goal line from the prompt");
   // ^ The age is renewed by a timer of 30 s that runs only while the age shows.
   // ^ An effect's timer: waited for, not read once.
   await until("window.__timers && [...window.__timers.values()].some((delay) => delay === 30000)", "a working task's sheet has no age timer", 20);
   await shot("progress-working", ".composer-send");
   // ^ The word's color moves by a transition: measured once it has settled.
-  const signal = () => evaluate(`(async () => { const word = document.querySelector('.progress-health'); await Promise.allSettled(word.getAnimations().map((animation) => animation.finished)); const mark = document.querySelector('.progress-head .mark'), takeOver = [...document.querySelectorAll('.task-sheet button')].find((node) => node.textContent.trim() === 'Take over')?.getBoundingClientRect();
+  const signal = () => evaluate(`(async () => { const word = document.querySelector('.progress-health'); await Promise.allSettled(word.getAnimations().map((animation) => animation.finished)); const mark = document.querySelector('.story-state .mark'), takeOver = [...document.querySelectorAll('.task-sheet button')].find((node) => node.textContent.trim() === 'Take over')?.getBoundingClientRect();
     return { tone: word.dataset.tone, color: getComputedStyle(word).color, pulses: mark.dataset.running != null, takeOver: !!takeOver && takeOver.top >= 0 && takeOver.bottom <= innerHeight }; })()`);
   const workingSignal = await signal();
   if (!workingSignal.pulses || workingSignal.tone === "danger") await fail(`a working task does not read as working: ${JSON.stringify(workingSignal)}`);
@@ -3566,7 +3569,7 @@ phase("Progress: the top of an open task's sheet at 390x844, for ea");
   });
   await go(plansChat);
   await open(working);
-  await shows(working, "stuck", { ...workingTop, health: "Stuck", age: "1h ago", next: "Stuck: no output for 1 h 0 min. The manager hears of the stall and decides what to do." });
+  await shows(working, "stuck", { ...workingTop, health: "Stuck", age: "1h ago", next: "No output for 1 h 0 min. The manager hears of the stall and decides what to do." });
   // ^ A stuck task stands out from a working one: its own color, no pulse, Take over on the screen.
   const stuckSignal = await signal();
   const [red, green] = stuckSignal.color.match(/\d+/g).map(Number);
@@ -3591,7 +3594,7 @@ phase("Progress: the top of an open task's sheet at 390x844, for ea");
   const queued = taskNew("--no-steps", "WORK hold-checks.txt");
   await open(queued);
   await shows(queued, "check slot", { health: "Waiting for the check slot", steps: "", now: "",
-    next: new RegExp(`^Waiting for the check slot for [^:]+: #${holder} runs its checks now\\. Its checks start when the slot is free\\.$`) });
+    next: new RegExp(`^#${holder} runs its checks now\\. Its checks start when the slot is free\\.$`) });
   await shot("progress-check-slot", ".composer-send");
   // The run that holds the slot is Moving; the one that waits for it is Waiting, its row says "queued" and since when
   // (`status.waits_on` kind `queue`, docs/tasks.md "Where a task goes"), and the queued rows sit in one card.
@@ -3626,10 +3629,11 @@ phase("Progress: the top of an open task's sheet at 390x844, for ea");
     if (waited > 60_000) await fail(`plans #${behind} never waited for the scenario test slot: ${JSON.stringify(show(behind).status)}`);
     await pause(200);
   }
+  const slotRest = new RegExp(`^#${scenario} runs its scenario tests now\\. Its scenario tests start when the slot is free\\.$`);
   const shownStatus = show(behind).status;
   if (shownStatus.kind !== "scenario_slot" || !slotWords.test(shownStatus.sentence)) await fail(`wsx task show says ${JSON.stringify(shownStatus)}`);
   await open(behind);
-  await shows(behind, "scenario test slot", { health: shownStatus.label, steps: "", now: "", next: slotWords });
+  await shows(behind, "scenario test slot", { health: shownStatus.label, steps: "", now: "", next: slotRest });
   await shot("progress-scenario-slot", ".composer-send");
   await go(plansChat);
   await until("!document.querySelector('dialog.task-sheet')", "the scenario wait's sheet did not close");
@@ -3678,14 +3682,14 @@ phase("Progress: the top of an open task's sheet at 390x844, for ea");
   const disk = taskNew("NOOP");
   await stateIs(disk, "waiting");
   await open(disk);
-  await shows(disk, "disk space", { health: "Waiting for disk space", next: /^Waiting for disk space for [^:]+: [\d.]+ GB free of the 100000 GB a task needs\. It goes on by itself once there is space\.$/ });
+  await shows(disk, "disk space", { health: "Waiting for disk space", next: /^[\d.]+ GB free of the 100000 GB a task needs\. It goes on by itself once there is space\.$/ });
   await shot("progress-waiting", ".composer-send");
   fs.writeFileSync(config, before);
   wsx("task", "close", disk, "--discard");
 
   // Finished: the outcome leads and no progress view shows.
   await open(disk);
-  await until("document.querySelector('.task-sheet .bar-state')?.textContent === 'closed'", "a closed task's top row has no stage");
+  await until("document.querySelector('.task-sheet .progress-health')?.textContent === 'Closed'", "a closed task's top row has no stage");
   const closed = await top();
   if (closed.health || await count(".task-sheet .progress") || closed.next !== show(disk).status.sentence) await fail(`a finished task's top reads ${JSON.stringify(closed)}`);
   await shot("progress-finished");
@@ -4436,10 +4440,9 @@ if (reviewed.running || reviewed.needs) await fail(`the review-waiting row is ${
   await until("!!document.querySelector('dialog.task-sheet[open] .story-next')", "the review-waiting sheet did not open");
   const sheetWords = await story();
   const json = await evaluate(`fetch('api/tasks/${project}/t/${id}').then((r) => r.json()).then((view) => view.status)`);
-  const minutes = (text) => text.replace(/ for [^:]+:/, ":");
   if (json.kind !== "review" || json.label !== "Ready, waiting for the manager's review" || !rowWords.startsWith(json.label) || await sheetState() !== json.label
-    || minutes(sheetWords.next) !== minutes(json.sentence)
-    || !/^Ready, waiting for the manager's review for [^:]+: (checks \d+ of \d+ passed|no checks prove it)\. The manager reads the diff, then lands it or asks for changes\.$/.test(sheetWords.next)) {
+    || !json.sentence.endsWith(sheetWords.next.slice(1))
+    || !/^(Checks \d+ of \d+ passed|No checks prove it)\. The manager reads the diff, then lands it or asks for changes\.$/.test(sheetWords.next)) {
     await fail(`the review-waiting task reads ${JSON.stringify({ rowWords, sheetWords, json })}`);
   }
   await shot("review-sheet", ".composer-send");

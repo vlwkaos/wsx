@@ -121,51 +121,43 @@ function nowLine(detail, words) {
   return now.said ? words(lastSentence(now.line)) : doing(now.line);
 }
 
-// An open task at a glance: how it is doing, how long since the worker last did something, its
-// goal, workflow steps and what it does now (docs/web-client-tasks.md "Task sheet").
-function Progress({ detail, words, goal }) {
+// The state in one line: a dot, the status label and an age, with the workflow steps and what the
+// worker does now while it works (docs/web-client-tasks.md "Task sheet"). The label is the one
+// word on where the task stands; the rest of the status sentence is in More.
+function State({ detail, words }) {
   const [, setTick] = useState(0);
-  const health = [detail.status.label, statusTone(detail)];
-  const { steps, step, stuck, last_unix_ms: last } = detail.progress;
-  const ended = ["ready", "failed"].includes(detail.state);
-  // ^ The timer runs only while the age shows.
+  const { stuck, last_unix_ms: last = 0, steps = [], step = 0 } = detail.progress ?? {};
+  const ended = !detail.progress || ["ready", "failed"].includes(detail.state);
+  // ^ The timer runs only while the age of the worker's last step shows.
   const aged = !ended && last > 0;
   useEffect(() => {
     if (!aged) return undefined;
     const timer = setInterval(() => setTick((tick) => tick + 1), AGE_EVERY_MS);
     return () => clearInterval(timer);
   }, [aged]);
+  const tone = statusTone(detail);
+  const since = aged ? last : detail.status.since_unix_ms;
   // ^ Checks run after the last step's result, so every step is done by then.
-  const current = detail.state === "checking" || detail.state === "ready" ? steps.length : step;
-  const now = nowLine(detail, words);
+  const current = detail.state === "checking" ? steps.length : step;
+  const working = detail.progress && ["working", "checking"].includes(detail.state);
+  const now = working ? nowLine(detail, words) : null;
   return html`
-    <div class="progress">
-      <p class="progress-head">
-        <span class="mark" data-tone=${health[1]} data-running=${live(detail) && !stuck ? "" : null} aria-hidden="true"></span>
-        <span class="progress-health" data-tone=${health[1]}>${health[0]}</span>
-        ${agentWords(detail.agent) && html`<span class="progress-model" title="Model">${agentWords(detail.agent)}</span>`}
-        ${aged && html`<span class="progress-age">${ago(Date.now() - last)}</span>`}
-      </p>
-      ${goal}
-      ${steps.length > 0 && html`
-        <ol class="progress-steps" aria-label="Workflow steps">
-          ${steps.map((name, index) => html`
-            <li key=${name} data-done=${index < current ? "" : null} aria-current=${index === current ? "step" : null}>
-              ${index < current && html`<${Icon} name="pass" />`}${name}
-            </li>`)}
-        </ol>`}
-      ${now && html`<p class="progress-now">${now}</p>`}
-    </div>`;
+    <p class="story-state">
+      <span class="mark" data-tone=${tone} data-running=${live(detail) && !stuck ? "" : null} aria-hidden="true"></span>
+      <span class="progress-health" data-tone=${tone}>${detail.status.label}</span>
+      ${since > 0 && html` · <span class="progress-age">${ago(Date.now() - since)}</span>`}
+    </p>
+    ${detail.status.ask && html`<p class="story-ask">${words(detail.status.ask)}</p>`}
+    ${working && steps.length > 0 && html`
+      <ol class="progress-steps" aria-label="Workflow steps">
+        ${steps.map((name, index) => html`
+          <li key=${name} data-done=${index < current ? "" : null} aria-current=${index === current ? "step" : null}>
+            ${index < current && html`<${Icon} name="pass" />`}${name}
+          </li>`)}
+      </ol>`}
+    ${now && html`<p class="progress-now">${now}</p>`}`;
 }
 
-// What the task is about: the prompt's opening sentence, "Goal:" lead cut. Nothing when the title
-// (made from the prompt's first line) already says it; a `--title` is another phrase, so both show.
-function goalOf(detail) {
-  const goal = detail.goal ?? "";
-  const plain = (text) => (text ?? "").replace(/^\s*goal:\s*/i, "").replace(/…$/, "").trim().toLowerCase();
-  const [a, b] = [plain(goal), plain(detail.title)];
-  return !a || a.startsWith(b) || b.startsWith(a) ? "" : goal;
-}
 
 // The open tasks of this task's group, in the list's order: the tasks it waits for above it,
 // itself, the tasks that wait for it below; each a link with its number, title and the line
@@ -214,32 +206,30 @@ function Flow({ project, detail }) {
     <${Chain} project=${project} detail=${detail} />`;
 }
 
-// The top of the task sheet: how an open task is doing and what it does now, what it is about,
-// where it stands among the others, what changed (the summary's first paragraph; More shows the
-// rest and what the worker decided) and what the owner should know next with the task's actions
-// beside it (docs/web-client-tasks.md "Task sheet").
+// The top of the task sheet, under the title: the state in one line, the question when the task
+// asks the owner, the actions (`children`) and More with the rest: the model, where it goes, what
+// comes next and the worker's summary with its decisions (docs/web-client-tasks.md "Task sheet").
 export function TaskStory({ project, detail, words, children }) {
-  const [whole, setWhole] = useState(false);
   const summary = summaryIsCurrent(detail) ? (detail.result?.summary ?? "").trim() : "";
   const decisions = detail.result?.decisions ?? [];
-  const [lead] = summary.split(/\n\s*\n/);
-  const more = !whole && (lead.length < summary.length || decisions.length > 0);
-  const goal = goalOf(detail);
-  const goalLine = goal && html`<p class="story-goal">${words(goal)}</p>`;
-  // ^ What it waits for, why, how long and what comes next (docs/tasks.md "Status").
-  const next = detail.status.sentence;
-  const flow = html`<${Flow} project=${project} detail=${detail} />`;
-  if (!detail.progress && !goal && !summary && !next && !children && !detail.flow) return null;
+  const model = agentWords(detail.agent);
+  const rest = detail.status.rest;
   return html`
     <section class="story" aria-label="Where this task stands">
-      ${detail.progress ? html`<${Progress} detail=${detail} words=${words} goal=${goalLine} />` : goalLine}
-      ${flow}
-      ${summary && html`
-        <div class="story-summary">
-          <${Markdown} text=${more ? lead : summary} words=${words} />
-          ${!more && decisions.length ? html`<p>Decided: ${decisions.map((entry) => `${entry.choice} (${entry.reason})`).join("; ")}.</p>` : null}
-          ${more && html`<button class="link-action story-more" type="button" onClick=${() => setWhole(true)}>More</button>`}
-        </div>`}
-      ${(next || children) && html`<div class="story-act">${next && html`<p class="story-next">${next}</p>`}${children}</div>`}
+      <${State} detail=${detail} words=${words} />
+      ${children}
+      <details class="task-fold story-fold">
+        <summary class="fold-head"><${Icon} name="chevron" />More</summary>
+        <div class="story-fold-body">
+          ${model && html`<p class="progress-model" title="Model">${model}</p>`}
+          <${Flow} project=${project} detail=${detail} />
+          ${rest && html`<p class="story-next">${rest}</p>`}
+          ${summary && html`
+            <div class="story-summary">
+              <${Markdown} text=${summary} words=${words} />
+              ${decisions.length ? html`<p>Decided: ${decisions.map((entry) => `${entry.choice} (${entry.reason})`).join("; ")}.</p>` : null}
+            </div>`}
+        </div>
+      </details>
     </section>`;
 }

@@ -40,6 +40,40 @@ pub struct Status {
     /// Who the open task waits on now (`waits_on`); none for a landed or closed one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waits_on: Option<WaitsOn>,
+    /// Where the label and the time end in `sentence`, and the facts `words` put after them.
+    #[serde(skip)]
+    head_len: usize,
+    #[serde(skip)]
+    facts: String,
+}
+
+impl Status {
+    /// The sentence after the label and the time, for a page that shows the label and the age
+    /// itself: the facts, then what comes next, and the notes added after them.
+    pub fn rest(&self) -> String {
+        let tail = self.sentence[self.head_len..].trim_start_matches([':', '.']);
+        // ^ A question to the owner is shown on its own line, so the rest starts after it.
+        let tail = match self.kind {
+            "owner" => tail
+                .trim_start()
+                .strip_prefix(self.facts.as_str())
+                .unwrap_or(tail),
+            _ => tail,
+        };
+        upper_first(tail.trim_start_matches('.').trim_start())
+    }
+
+    /// The question a task that waits for the owner's answer asks (`rest` leaves it out).
+    pub fn ask(&self) -> Option<String> {
+        (self.kind == "owner" && !self.facts.is_empty()).then(|| upper_first(&self.facts))
+    }
+}
+
+fn upper_first(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or(String::new(), |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 /// Who holds an open task now: whose deed, or which resource, it waits on.
@@ -795,6 +829,7 @@ fn words(
     if let Some(since) = since {
         sentence.push_str(&format!(" for {}", span(now_ms.saturating_sub(since))));
     }
+    let head_len = sentence.len();
     let facts = clip(facts.trim(), FACT_CHARS);
     if !facts.is_empty() {
         sentence.push_str(": ");
@@ -815,6 +850,8 @@ fn words(
         wait: None,
         waited_by: Vec::new(),
         waits_on: None,
+        head_len,
+        facts,
     }
 }
 

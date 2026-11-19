@@ -6,7 +6,7 @@ import { clock, html, Icon, Loading, plural, short, useCoalescedLoad, useEffect,
 import { can, useEventLoad, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { act } from "./task-api.js";
-import { taskStage, TaskChip, TaskTitle, withChips } from "./task-words.js";
+import { TaskChip, TaskTitle, withChips } from "./task-words.js";
 import { Bubble } from "./bubbles.js";
 import { quoteSplit } from "./reply.js";
 import { SheetBar } from "./ui.js";
@@ -156,7 +156,6 @@ export function TaskPage({ project, task, onClose, onMention, onReply, grip }) {
   const top = html`
     <${SheetBar} grip=${grip} onClose=${onClose}>
       ${detail?.title ? html`<${TaskTitle} title=${detail.title} id=${task} />` : html`<span class="bar-label">#${task}</span>`}
-      ${detail && !detail.progress && html`<span class="bar-state" data-tone=${taskStage(detail)[1]}>${taskStage(detail)[0]}</span>`}
     </${SheetBar}>`;
   if (!detail) return html`<div class="page">${top}${failure ? html`<p class="error empty">${failure}</p>` : html`<${Loading} />`}</div>`;
 
@@ -166,18 +165,20 @@ export function TaskPage({ project, task, onClose, onMention, onReply, grip }) {
   const busy = Boolean(action.busy);
   const approval = (request) => ({ kind: "approval", approval: request.id, label: request.label });
   // ^ Words on every width: the sheet's actions are few, and × and ✓ mean Fail and Pass in To check.
-  const button = (label, onClick, extra = {}) => html`
-    <button class="button" type="button" disabled=${busy} onClick=${onClick} ...${extra}>${label}</button>`;
+  // ^ One filled button: the decision the owner is asked for (Pass, Approve, Answer; Land only when no Answer waits).
+  const decision = actions.includes("answer") ? "answer" : actions.includes("pass") ? "pass" : detail.approvals.length ? "approve" : "land";
+  const button = (label, onClick, { decides, ...extra } = {}) => html`
+    <button class=${decides ? "button button-primary" : "button"} type="button" disabled=${busy} onClick=${onClick} ...${extra}>${label}</button>`;
   // ^ The story above says what each action is for; the row holds the buttons alone.
   const buttons = acting ? [
     ...detail.approvals.map((request) => html`
       ${detail.approvals.length > 1 && html`<p class="task-approval">${request.label}</p>`}
       ${button("Deny", () => action.run("deny", approval(request)), { "aria-label": `Deny: ${request.label}` })}
-      ${button("Approve", () => action.run("approve", approval(request)), { "aria-label": request.label })}`),
+      ${button("Approve", () => action.run("approve", approval(request)), { "aria-label": request.label, decides: decision === "approve" })}`),
     // ^ A trial: this revision on the live site before it lands (docs/tasks.md "Hold and trial").
     // Pass lands it; a message to the worker, through the manager, fails it; End only frees the live site.
     trial && html`<p class="task-approval" role="status">${TRIAL_WORDS[trial.stage]}</p>`,
-    actions.includes("pass") && button(action.busy === "pass" ? "Landing…" : "Pass and land", () => action.run("pass")),
+    actions.includes("pass") && button(action.busy === "pass" ? "Landing…" : "Pass and land", () => action.run("pass"), { decides: decision === "pass" }),
     actions.includes("trial_end") && button(action.busy === "trial_end" ? "Ending…" : "End trial", () => action.run("trial_end")),
     // ^ The owner talks to the manager: the composer gets the mention, and the dialog closes in
     // the tap, since a modal dialog makes the composer inert and a phone raises its keyboard
@@ -185,8 +186,8 @@ export function TaskPage({ project, task, onClose, onMention, onReply, grip }) {
     actions.includes("answer") && button("Answer", (event) => {
       event.currentTarget.closest("dialog").close();
       onMention(task);
-    }, { "aria-label": `Answer #${task}: mention it to the manager` }),
-    actions.includes("land") && button(action.busy === "land" ? "Landing…" : "Land", () => action.run("land")),
+    }, { "aria-label": `Answer #${task}: mention it to the manager`, decides: decision === "answer" }),
+    actions.includes("land") && button(action.busy === "land" ? "Landing…" : "Land", () => action.run("land"), { decides: decision === "land" }),
     // ^ By hand: the owner's own session in the task's copy, with the worker's conversation.
     // ^ The tooltip says the rest (docs/web-client-tasks.md "Task sheet").
     actions.includes("hand") && button(action.busy === "hand" ? "Taking over…" : "Take over", () => action.run("hand"), { title: "Stops the worker; you continue in its session" }),

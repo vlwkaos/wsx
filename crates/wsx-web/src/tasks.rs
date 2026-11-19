@@ -610,7 +610,6 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     let now = task::now_unix_ms();
     let stuck = stall::stuck(&dir, &record, now);
     summary["progress"] = progress(&dir, &record, &log, stuck.as_deref());
-    summary["goal"] = goal(&dir);
     let settings = load_task_config(&scope.path);
     let land_auto = settings.as_ref().is_ok_and(|settings| settings.land_auto);
     summary["agent"] = view::task_agent(&record);
@@ -642,6 +641,9 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     let status = status::status(&dir, &record, &facts, now);
     summary["flow"] = view::flow(&record, &records, &status, &Chains::of(&tasks, land_auto));
     summary["status"] = json!(status);
+    // ^ The page shows the label and the age itself: the rest of the sentence goes in More.
+    summary["status"]["rest"] = json!(status.rest());
+    summary["status"]["ask"] = json!(status.ask());
     summary["hold"] = json!(record.hold);
     let trial = ledger::trial_status(
         &scope.store,
@@ -761,26 +763,6 @@ fn progress(
         "running": if record.state == TaskState::Checking { json!(record.checks) } else { Value::Null },
     })
 }
-
-/// The goal sentence of the prompt: its opening paragraph's first sentence, without a leading
-/// `Goal:`, at most 200 characters.
-fn goal(dir: &TaskDir) -> Value {
-    let prompt = dir.prompt().ok().flatten().unwrap_or_default();
-    let paragraph = prompt
-        .trim()
-        .split("\n\n")
-        .next()
-        .unwrap_or_default()
-        .replace('\n', " ");
-    let paragraph = paragraph.trim_start();
-    let paragraph = match paragraph.get(..5) {
-        Some(lead) if lead.eq_ignore_ascii_case("goal:") => paragraph[5..].trim_start(),
-        _ => paragraph,
-    };
-    let sentence = view::first_sentence(paragraph);
-    json!(Some(view::clip(&sentence, GOAL_CHARS)).filter(|text| !text.is_empty()))
-}
-const GOAL_CHARS: usize = 200;
 
 /// The messages the owner or the manager added or steered after the prompt, in order.
 fn talk(log: &[task::LogEntry]) -> Value {

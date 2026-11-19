@@ -275,7 +275,7 @@ pub fn title(dir: &TaskDir, record: &TaskRecord) -> Option<String> {
 }
 
 /// The first sentence of the first line of `text`: up to a `.`, `!` or `?` followed by a
-/// space or the end ("Did x. Then y" → "Did x."): a title, a quiet reply's fold and a task's goal.
+/// space or the end ("Did x. Then y" → "Did x."): a title and a quiet reply's fold.
 pub fn first_sentence(text: &str) -> String {
     let line = text.trim().lines().next().unwrap_or_default().trim();
     let end = line.char_indices().find(|&(index, mark)| {
