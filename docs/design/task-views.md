@@ -148,7 +148,7 @@ The owner names tasks by number ("142", "#451"), and wants the same words everyw
 | Every working dot pulses | Only the Moving header icon pulses, while something runs; static under reduced motion |
 | Home tray icons | Band headers reuse them (`unchecked`, `play`, `pause`): learned on Home |
 
-For you rows keep Reply, Fail and Pass in their own line (as A). A needs-you row names the verb (`approve push`, `answer`) and what it frees.
+For you rows keep Reply, Fail and Pass in their own line (as A) on a phone; on a wide window they sit beside the text (owner 5622). A needs-you row names the verb (`approve push`, `answer`) and what it frees.
 
 ### Task page
 

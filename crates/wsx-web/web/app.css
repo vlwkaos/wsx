@@ -297,8 +297,11 @@ html[data-bar="bottom"] .more-menu { top: auto; bottom: 100%; }
 /* Hook: .chat, .log, .message, .steps, .working, .composer, .queue — the conversation.
    One scroll container between the top row and the composer. */
 /* On a wide screen the conversation, the waiting messages and the composer share one
-   centered column of the prose width. Each user of the inset is as wide as the chat
-   and has the body font size, so the percentage and the ch unit mean the same in all. */
+   centered column of the prose width. Each user of the inset is as wide as the chat; the ch unit
+   is fixed once, here, by the registered type: a row, a band or a title in a smaller font
+   (the open list's rows are the small size) starts at the same edge as the header and the composer. */
+@property --column-inset { syntax: "<length-percentage>"; inherits: true; initial-value: 0px; }
+:root { --column-inset: var(--space-4); }
 .chat { --column-inset: max(var(--space-4), calc((100% - var(--size-prose)) / 2)); }
 .chat, .log-wrap { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 /* The conversation's width, for blocks that leave the reading column (.markdown below). */
@@ -878,7 +881,10 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 .reservoir .row-link > .row-main, .reservoir .row-link > .row-open { align-self: stretch; padding-block: var(--space-1); min-height: var(--size-key); box-sizing: border-box; }
 /* ^ The title, the reason and the relations of a task (`flow.phrase`) are the point of the row: they wrap, never a cut. */
 .reservoir .row-context, .chain-row .row-context, .reservoir .row-label, .chain-row .row-label { white-space: normal; overflow-wrap: anywhere; }
-.reservoir .row-actions { justify-content: flex-end; flex-wrap: wrap; gap: var(--space-1) var(--space-2); }
+.reservoir .row-actions { justify-content: flex-end; flex-wrap: wrap; }
+/* ^ The gap between actions is the control gap of .row-actions (space-3), at every width. */
+/* A wide window: the actions sit beside the text on the row's own line, the text keeps the width left. */
+.app[data-wide] .reservoir .row-link, .app[data-wide] .reservoir .row-link:has(> .row-open) { grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: var(--space-3); }
 .row-icon { flex: 0 0 auto; align-self: flex-start; margin-block: calc((1lh - var(--space-4)) / 2); color: var(--color-muted); }
 .row-icon .icon { display: block; width: var(--space-4); height: var(--space-4); }
 .row-icon[data-tone="attention"] { color: var(--color-attention); }

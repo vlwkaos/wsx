@@ -1114,9 +1114,11 @@ await click(".pill[data-kind=tasks]");
 await until("!!document.querySelector('.reservoir-list[aria-label=Tasks]')", "a tap on Tasks did not switch back");
 await click(".pill[data-kind=you]");
 await until("!!document.querySelector('.reservoir-list[aria-label=\"For you\"]') && !document.querySelector('.reservoir-list[aria-label=Tasks]')", "a tap on For you did not switch the list");
-// ^ A row's actions are in a line of their own under its words, at 390 px.
-const checkRoom = await evaluate(`[...document.querySelectorAll('.reservoir-list .need')].filter((row) => row.querySelector('.row-actions')).map((row) => row.querySelector('.row-main').getBoundingClientRect().bottom <= row.querySelector('.row-actions').getBoundingClientRect().top + 1)`);
-if (!checkRoom.length || checkRoom.includes(false)) await fail(`a row's actions are not under its text: ${JSON.stringify(checkRoom)}`);
+// ^ A row's actions are in a line of their own under its words on a phone, beside them on a wide window (owner 5622).
+const checkRoom = await evaluate(`(() => { const wide = document.querySelector('.app').hasAttribute('data-wide');
+  return [...document.querySelectorAll('.reservoir-list .need')].filter((row) => row.querySelector('.row-actions')).map((row) => { const [main, actions] = [row.querySelector('.row-main'), row.querySelector('.row-actions')].map((node) => node.getBoundingClientRect());
+    return wide ? actions.top < main.bottom : main.bottom <= actions.top + 1; }); })()`);
+if (!checkRoom.length || checkRoom.includes(false)) await fail(`a row's actions are not under its text on a phone, or beside it on a wide window: ${JSON.stringify(checkRoom)}`);
 await shot("pills-check-open", ".composer-send");
 await click(".pill[data-kind=you]");
 await until("!document.querySelector('.reservoir')", "a tap on the open pill did not close its list");
@@ -4019,6 +4021,28 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
     await openReservoir("tasks");
     if ((await evaluate("document.querySelector('.reservoir-list .need .row-label')?.textContent")) !== `${await evaluate("document.querySelector('.pill[data-kind=you]').getAttribute('aria-label').match(/\\d+/)[0]")} wait for you`) await fail("the Tasks list has no row \"N wait for you\" first");
     for (const scheme of ["light", "dark"]) { await inScheme(scheme); await shot(`tasks-wait-row-${scheme}`, ".composer-send"); }
+    await inScheme("dark");
+    // ^ The open For you list (task 510, owner 5622): every row starts at the header's left edge (the first visible element: its icon,
+    // or its title), the actions of a row are a control gap apart, and on a wide window they sit beside the text.
+    await openReservoir("you");
+    await until("document.querySelectorAll('.reservoir .need .need-action').length > 1", "the open For you list has no row with actions");
+    const edges = await evaluate(`(() => {
+      const left = (node) => Math.round(node.getBoundingClientRect().left * 10) / 10;
+      const header = left(document.querySelector('.reservoir-title'));
+      return { header, rows: [...document.querySelectorAll('.reservoir .need')].map((row) => {
+        const first = row.querySelector('.row-title').firstElementChild, acts = [...row.querySelectorAll('.need-action')].map((node) => node.getBoundingClientRect());
+        const wanted = parseFloat(getComputedStyle(row.querySelector('.row-actions') ?? row).columnGap) || 0;
+        const main = row.querySelector('.row-main').getBoundingClientRect();
+        return { first: left(first), gaps: acts.slice(1).map((box, at) => Math.round((box.left - acts[at].right) * 10) / 10), wanted, beside: acts.length ? acts[0].top < main.bottom : null };
+      }) };
+    })()`);
+    console.log(`For you list at ${next.join("x")}: header ${edges.header}, rows ${JSON.stringify(edges.rows)}`);
+    const off = edges.rows.filter((row) => Math.abs(row.first - edges.header) > 0.5);
+    if (off.length) await fail(`${off.length} rows of the open For you list start away from the header's left edge ${edges.header} at ${next.join("x")}: ${JSON.stringify(off.map((row) => row.first))}`);
+    const touching = edges.rows.filter((row) => row.gaps.some((gap) => gap < row.wanted - 0.5));
+    if (touching.length) await fail(`actions of the open For you list are closer than the control gap at ${next.join("x")}: ${JSON.stringify(touching.map((row) => [row.gaps, row.wanted]))}`);
+    if (next[0] >= 900 && edges.rows.some((row) => row.beside === false)) await fail("on a wide window the actions of a row sit under its text");
+    for (const scheme of ["light", "dark"]) { await inScheme(scheme); await shot(`for-you-open-${scheme}`); }
     await inScheme("dark");
   }
   await resize([390, 844, 2]);
