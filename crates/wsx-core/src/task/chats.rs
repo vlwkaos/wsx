@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 
-/// The chat's goal, besides the manager's instructions; a new goal starts a fresh conversation.
+/// The chat's purpose, in the manager's instructions (`wsx task chat goal`); a changed goal
+/// reaches the agent at its next turn. Every chat has one, the home chat too.
 pub const GOAL_FILE: &str = "goal.md";
 /// Written by `chat close`; its host leaves. The notes and the log stay.
 pub const CLOSED_FILE: &str = "closed";
@@ -258,11 +259,8 @@ pub fn goal(dir: &ManagerDir) -> String {
         .unwrap_or_default()
 }
 
-/// A goal as given: UTF-8 text, not empty, at most 8 KiB.
+/// A goal as given: UTF-8 text, at most 8 KiB; an empty goal is no purpose.
 pub fn checked_goal(goal: &str) -> Result<&str> {
-    if goal.trim().is_empty() {
-        bail!("the chat's goal is empty");
-    }
     if goal.len() > MAX_GOAL_BYTES {
         bail!("the chat's goal is larger than {MAX_GOAL_BYTES} bytes");
     }
@@ -488,7 +486,7 @@ pub fn agent(dir: &ManagerDir) -> Option<ChatAgent> {
 }
 
 /// Open the chat in the repo `project_id`: a new folder, or a closed one again with its notes.
-/// A new `goal` replaces the old; `from` is the message of a chat's agent that asked for it.
+/// A new `goal` replaces the old (`set_goal`); `from` is the message of a chat's agent that asked for it.
 pub fn create(
     project_id: &str,
     name: &str,
@@ -511,7 +509,7 @@ pub fn create(
     }
     let dir = ManagerDir::open_as(project_id, name)?;
     if let Some(goal) = goal {
-        store::write_atomic(&dir.path.join(GOAL_FILE), goal.as_bytes())?;
+        write_goal(&dir, goal)?;
     }
     let mut file = chat_file(&dir);
     file.agent = agent.map(str::to_string);
@@ -525,6 +523,26 @@ pub fn create(
     }
     chats_home::clear(&dir)?;
     Ok(dir)
+}
+
+/// Set an open chat's purpose, the home chat's too; an empty goal clears it. The chat's agent
+/// reads it at its next turn (`Manager::send_turn`).
+pub fn set_goal(name: &str, goal: &str) -> Result<()> {
+    checked_goal(goal)?;
+    write_goal(&open_chat(name)?, goal)
+}
+
+fn write_goal(dir: &ManagerDir, goal: &str) -> Result<()> {
+    let path = dir.path.join(GOAL_FILE);
+    if !goal.trim().is_empty() {
+        return store::write_atomic(&path, goal.as_bytes());
+    }
+    match std::fs::remove_file(&path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            Err(error).context("cannot clear the chat's goal")
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Close an open chat (`wsx task chat close`, the web's and the TUI's Close chat): its host sees

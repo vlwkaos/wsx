@@ -3945,7 +3945,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await inScheme("dark");
   // ^ Rename chat in the ⋯ menu, before Close chat: the sheet, then the room and Home read the new name.
   await click(".bar .more-button");
-  if ((await evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].map((item) => item.textContent.trim()).join()")) !== "Rename chat,Close chat") await fail("the chat's ⋯ menu is not Rename chat, Close chat");
+  if ((await evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].map((item) => item.textContent.trim()).join()")) !== "PurposeWork out the fee table.,Rename chat,Close chat") await fail("the chat's ⋯ menu is not Purpose, Rename chat, Close chat");
   await evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].find((item) => item.textContent.trim() === 'Rename chat').click()");
   await until("!!document.querySelector('dialog[open] input[name=title]')", "Rename chat opened no sheet");
   for (const scheme of ["dark", "light"]) { await inScheme(scheme); await shot(`rename-chat-${scheme}`); }
@@ -3953,6 +3953,36 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await evaluate(`(() => { const input = document.querySelector('dialog[open] input[name=title]'); input.value = 'Fee table 2'; input.form.requestSubmit(); })()`);
   await until("document.querySelector('.bar-label')?.textContent === 'Fee table 2' && !document.querySelector('dialog[open]')", "the room did not show the new name", 30);
   if (JSON.parse(chatCmd("list", "--json", "-p", "plans")).chats.find((chat) => chat.name === "shared")?.title !== "Fee table 2") await fail("Save did not set the title");
+  // ^ Purpose in the same menu: its line is the goal's first line; the sheet saves a new one, which
+  // `chat goal` shows and the menu line reads; an empty one clears it.
+  const purposeItem = "[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].find((item) => item.textContent.startsWith('Purpose'))";
+  const purposeLine = async () => {
+    await click(".bar .more-button");
+    const line = await evaluate(`${purposeItem}.textContent`);
+    await click(".bar .more-button");
+    return line;
+  };
+  const purposeSheet = async () => {
+    await click(".bar .more-button");
+    await evaluate(`${purposeItem}.click()`);
+    await until("!!document.querySelector('dialog[open] textarea[name=goal]')", "Purpose opened no sheet");
+  };
+  await click(".bar .more-button");
+  for (const scheme of ["dark", "light"]) { await inScheme(scheme); await shot(`chat-purpose-menu-${scheme}`); }
+  await inScheme("dark");
+  await click(".bar .more-button");
+  await purposeSheet();
+  if (!(await evaluate("document.querySelector('dialog[open] textarea[name=goal]').value")).startsWith("Work out the fee table.")) await fail("the Purpose sheet does not show the goal");
+  for (const scheme of ["dark", "light"]) { await inScheme(scheme); await shot(`chat-purpose-${scheme}`); }
+  await inScheme("dark");
+  for (const [goal, line] of [["Keep the fee table honest.\nSecond line.", "PurposeKeep the fee table honest."], ["", "PurposeNot set"]]) {
+    await purposeSheet();
+    await evaluate(`(() => { const area = document.querySelector('dialog[open] textarea[name=goal]'); area.value = ${JSON.stringify(goal)}; area.form.requestSubmit(); })()`);
+    await until("!document.querySelector('dialog[open]')", "the Purpose sheet stayed open", 30);
+    if (chatCmd("goal", "shared", "-p", "plans").trim() !== goal) await fail(`Save did not set the goal ${JSON.stringify(goal)}`);
+    await until("!!document.querySelector('.bar .more-button')", "the room lost its menu");
+    if ((await purposeLine()) !== line) await fail(`the Purpose line is ${await purposeLine()}, not ${line}`);
+  }
   await go("#/");
   await until(`!!(${homeRow("Fee table 2")})`, "Home shows no new name");
   chatCmd("rename", "shared", "", "-p", "plans");
@@ -4199,7 +4229,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await until("location.hash === '#/c/qa'", "the old route #/p/<id>/c/<chat> did not redirect to #/c/<chat>");
   await until("document.querySelector('.bar-label')?.textContent === 'qa' && !!document.querySelector('.bar .more-button')", "the qa chat has no ⋯ menu");
   await click(".bar .more-button");
-  if ((await menuItems()).join() !== "Rename chat,Close chat") await fail(`the qa chat's menu is ${await menuItems()}`);
+  if ((await menuItems()).join() !== "PurposeNot set,Rename chat,Close chat") await fail(`the qa chat's menu is ${await menuItems()}`);
   await evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].find((item) => item.textContent.trim() === 'Close chat').click()");
   await until(`!!document.querySelector('${sheet} #dialog-title')`, "Close chat asked nothing");
   const asks = await evaluate(`({ title: document.querySelector('${sheet} #dialog-title').textContent, text: document.querySelector('${sheet} p').textContent,

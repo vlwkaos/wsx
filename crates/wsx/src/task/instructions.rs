@@ -104,8 +104,9 @@ pub(super) fn instructions(
          Update local. When the owner asks to update local to origin, run `wsx task sync`; it moves \
          main only when no work is lost and says why when it refuses.\n\n\
          Other projects. {reach} Answer 'Chat <name>' once with `--from-chat --reply`; do not answer \
-         'Chat <name> replies'. When the owner's message of this turn asks to open or close a chat, \
-         run `wsx task chat new <name> --goal <file> --owner-said <id>` or `chat close <name> \
+         'Chat <name> replies'. When the owner's message of this turn asks to open or close a chat or to change a chat's purpose, \
+         run `wsx task chat new <name> --goal <file> --owner-said <id>`, `chat close <name> \
+         --owner-said <id>` or `chat goal <name> --goal <file> \
          --owner-said <id>`.",
         review = match workflow.review.is_empty() {
             true => String::new(),

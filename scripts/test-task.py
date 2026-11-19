@@ -6916,6 +6916,45 @@ def part_host(created=None):
     js('task', 'close', idler, '--discard')
     configure(LAND_CONFIG, 'no idle rotation')
 
+    # 32r3. A chat's purpose (docs/tasks.md "Chats"): `chat goal` shows, sets and clears it, for the
+    mark('32r3')
+    # home chat too; the agent's instructions read it at the next turn (the running agent is
+    # dropped, the digest decides the rest); a chat's agent changes it only on the owner's word.
+    first_goal, second_goal, no_goal = base / 'purpose-1.md', base / 'purpose-2.md', base / 'purpose-none.md'
+    first_goal.write_text('Keep the invoices exact.\n')
+    second_goal.write_text('Own the refunds.\n')
+    no_goal.write_text('')
+
+    def last_instructions(chat):
+        return [t for t in traces() if t.get('launch') and t.get('actor') == 'chat:' + chat][-1]['instructions']
+    js('task', 'chat', 'new', 'purpose', '--goal', first_goal)
+    assert js('task', 'chat', 'goal', 'purpose')['goal'] == first_goal.read_text()
+    chat_reply('purpose', js('task', 'say', '--to', 'purpose', 'FIRST TURN')['id'])
+    assert "The owner's purpose for this chat:\nKeep the invoices exact." in last_instructions('purpose')
+    asked = js('task', 'say', '--to', 'purpose', 'RUN wsx task chat goal purpose --goal %s -p demo --json' % second_goal)
+    assert "chat goal is the owner's" in chat_reply('purpose', asked['id'])['text']
+    assert (chats_dir / 'purpose/goal.md').read_text() == first_goal.read_text()
+    said = js('task', 'say', '--to', 'purpose', 'change your purpose\nRUN wsx task chat goal purpose --goal %s --owner-said OWNER_SAID -p demo --json' % second_goal)
+    assert '-> 0 ' in chat_reply('purpose', said['id'])['text']
+    assert (chats_dir / 'purpose/goal.md').read_text() == second_goal.read_text()
+    chat_reply('purpose', js('task', 'say', '--to', 'purpose', 'SECOND TURN')['id'])
+    assert "The owner's purpose for this chat:\nOwn the refunds." in last_instructions('purpose') and 'invoices' not in last_instructions('purpose')
+    js('task', 'chat', 'goal', 'purpose', '--goal', no_goal)
+    chat_reply('purpose', js('task', 'say', '--to', 'purpose', 'THIRD TURN')['id'])
+    assert 'purpose for this chat' not in last_instructions('purpose') and not (chats_dir / 'purpose/goal.md').exists()
+    assert last_instructions('purpose').startswith('You are purpose, a chat of the project demo.\n\n')
+    # ^ The home chat has none by default: no preamble; with one, its instructions open with it.
+    assert 'purpose for this chat' not in last_instructions('demo') and not last_instructions('demo').startswith('You are')
+    js('task', 'chat', 'goal', 'demo', '--goal', first_goal)
+    reply_to(js('task', 'say', 'HOME TURN')['id'])
+    assert last_instructions('demo').startswith("The owner's purpose for this chat:\nKeep the invoices exact.\n\n"), last_instructions('demo')[:200]
+    js('task', 'chat', 'goal', 'demo', '--goal', no_goal)
+    reply_to(js('task', 'say', 'HOME TURN 2')['id'])
+    assert 'purpose for this chat' not in last_instructions('demo')
+    (base / 'purpose-big.md').write_text('x' * 9000)
+    assert 'larger than 8192 bytes' in cli('task', 'chat', 'goal', 'purpose', '--goal', base / 'purpose-big.md', ok=False).stderr
+    js('task', 'chat', 'close', 'purpose')
+
     # 32s. Keep-warm pings (docs/tasks.md "Context rotation", "Manager"): a worker that waits on
     mark('32s2')
     # its checks gets a no-op turn tasks.agent.keepWarmSeconds after its last answer, at most 3 in

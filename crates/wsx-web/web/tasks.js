@@ -603,22 +603,28 @@ function ProjectShell({ project }) {
     aria-label="Shell" title="Shell"><${Icon} name="terminal" /></button>`;
 }
 
-function More({ project }) {
+function More({ project, manager, onSaved }) {
   const files = shows("files") && can("files_read");
+  const [editing, setEditing] = useState(false);
+  // ^ The first chat's Purpose, once its folder exists (the page reads `goal` only then).
+  const purpose = typeof manager?.goal === "string" && can("task_act");
   return html`
     <${MoreMenu}>
+      ${purpose && html`<${PurposeItem} goal=${manager.goal} onClick=${() => setEditing(true)} />`}
       <a role="menuitem" href=${`#/p/${project.id}/sessions`}>Sessions</a>
       <a role="menuitem" href=${sheetHash(project.id, "usage")}>Usage</a>
       <a role="menuitem" href=${sheetHash(project.id, "media")}>Media</a>
       ${files && html`<a role="menuitem" href=${`#/p/${project.id}/files`}>Files</a>`}
-    </${MoreMenu}>`;
+    </${MoreMenu}>
+    ${editing && html`<${PurposeSheet} project=${project.id} chat=${manager.id} goal=${manager.goal} onDone=${onSaved} onClose=${() => setEditing(false)} />`}`;
 }
 
-// ^ A chat's ⋯ menu: the owner renames it (the name Home and the room show; its id, its links and
-// `say --to` stay) and closes it (docs/tasks.md "Chats", `chats::close`), after one confirm, and
-// the page goes to Home, where its row is gone. The first chat has none.
-function ChatMore({ project, chat, shown, onRenamed }) {
-  const [renaming, setRenaming] = useState(false);
+// ^ A chat's ⋯ menu: the owner sets its purpose (the line under Purpose, `goal.md`), renames it
+// (the name Home and the room show; its id, its links and `say --to` stay) and closes it
+// (docs/tasks.md "Chats", `chats::close`), after one confirm, and the page goes to Home, where its
+// row is gone. The first chat has Purpose in the project's menu (`More`).
+function ChatMore({ project, chat, shown, goal, onRenamed }) {
+  const [editing, setEditing] = useState("");
   const close = async () => {
     const sure = await confirmDialog({ title: `Close ${shown}?`, text: "Its log and notes stay; New chat with the same name opens it again.", confirm: "Close chat" });
     if (!sure) return;
@@ -631,26 +637,44 @@ function ChatMore({ project, chat, shown, onRenamed }) {
   };
   return html`
     <${MoreMenu}>
-      <button type="button" role="menuitem" onClick=${() => setRenaming(true)}>Rename chat</button>
+      <${PurposeItem} goal=${goal} onClick=${() => setEditing("goal")} />
+      <button type="button" role="menuitem" onClick=${() => setEditing("title")}>Rename chat</button>
       <button type="button" role="menuitem" onClick=${close}>Close chat</button>
     </${MoreMenu}>
-    ${renaming && html`<${RenameChat} project=${project} chat=${chat} title=${shown === chat ? "" : shown} onDone=${onRenamed} onClose=${() => setRenaming(false)} />`}`;
+    ${editing === "title" && html`<${ChatSheet} project=${project} chat=${chat} onDone=${onRenamed} onClose=${() => setEditing("")}
+      field="title" action="rename" heading="Rename chat" label="Name" value=${shown === chat ? "" : shown}
+      note=${`Shown on Home and in the chat. The chat keeps its id ${chat}, so links still work. Empty shows the id.`} />`}
+    ${editing === "goal" && html`<${PurposeSheet} project=${project} chat=${chat} goal=${goal} onDone=${onRenamed} onClose=${() => setEditing("")} />`}`;
 }
 
-// ^ The Rename chat sheet: one name field, at most 40 characters (wsx-core `chats::checked_title`
-// says why when the server refuses one); empty shows the id again.
-function RenameChat({ project, chat, title, onDone, onClose }) {
+// ^ The Purpose line of a ⋯ menu: the first line of the chat's goal, or "Not set".
+function PurposeItem({ goal, onClick }) {
+  const line = goal.split("\n").map((text) => text.trim()).find(Boolean);
+  return html`<button type="button" role="menuitem" class="more-note-item" onClick=${onClick}>Purpose<span class="more-note">${line ?? "Not set"}</span></button>`;
+}
+
+// ^ The Purpose sheet: what the chat is for, which its agent reads at its next turn (docs/tasks.md
+// "Chats"); at most 8 KiB, the server says why when it refuses; empty clears it.
+function PurposeSheet({ project, chat, goal, onDone, onClose }) {
+  return html`<${ChatSheet} project=${project} chat=${chat} onDone=${onDone} onClose=${onClose}
+    field="goal" action="goal" heading="Purpose" label="What this chat is for" value=${goal} long
+    note="Its agent reads this at its next turn. Empty means no purpose." />`;
+}
+
+// ^ A chat's one-field sheet (Rename chat, Purpose): `field` is the body's key, posted to
+// api/tasks/<project>/chats/<chat>/<action>; the server says why it refuses a value.
+function ChatSheet({ project, chat, field: name, action, heading, label, value, note, long = false, onDone, onClose }) {
   const dialog = useRef();
   const field = useRef();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => { dialog.current.showModal(); field.current.focus(); field.current.select(); }, []);
+  useEffect(() => { dialog.current.showModal(); field.current.focus(); if (!long) field.current.select(); }, []);
   const submit = async (event) => {
     event.preventDefault();
     setBusy(true);
     setError("");
     try {
-      await api(`api/tasks/${project}/chats/${encodeURIComponent(chat)}/rename`, { method: "POST", json: { title: field.current.value } });
+      await api(`api/tasks/${project}/chats/${encodeURIComponent(chat)}/${action}`, { method: "POST", json: { [name]: field.current.value } });
     } catch (failure) {
       setError(failure.message);
       setBusy(false);
@@ -661,12 +685,15 @@ function RenameChat({ project, chat, title, onDone, onClose }) {
     onDone();
   };
   return html`
-    <dialog class="sheet" ref=${dialog} aria-labelledby="rename-chat-title" onClose=${onClose}>
+    <dialog class="sheet" ref=${dialog} aria-labelledby=${`${action}-chat-title`} onClose=${onClose}>
       <form onSubmit=${submit} noValidate>
-        <h2 class="sheet-title" id="rename-chat-title">Rename chat</h2>
-        <label class="field">Name
-          <input class="input" type="text" name="title" ref=${field} value=${title} placeholder=${chat} maxlength="40" autocomplete="off" enterkeyhint="done" />
-          <span class="field-note">Shown on Home and in the chat. The chat keeps its id ${chat}, so links still work. Empty shows the id.</span>
+        <h2 class="sheet-title" id=${`${action}-chat-title`}>${heading}</h2>
+        <label class="field">${label}
+          ${long
+            ? html`<textarea class="input" name=${name} ref=${field} rows="6" value=${value}
+                onKeyDown=${(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) event.target.form.requestSubmit(); }}></textarea>`
+            : html`<input class="input" type="text" name=${name} ref=${field} value=${value} placeholder=${chat} maxlength="40" autocomplete="off" enterkeyhint="done" />`}
+          <span class="field-note">${note}</span>
         </label>
         <p class="error" role="alert">${error}</p>
         <div class="actions sheet-actions">
@@ -1053,9 +1080,9 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
         ${!room && !thread && html`
           <a class="icon-button" href=${sheetHash(id, "page")} aria-label="Overview" title="Overview"><${Icon} name="overview" /></a>
           <${PanelsButton} project=${id} />
-          <${ProjectShell} project=${project} /><${More} project=${project} />`}
+          <${ProjectShell} project=${project} /><${More} project=${project} manager=${chat?.manager} onSaved=${reread} />`}
         ${thread && current && can("task_act") && html`<${ThreadMore} project=${id} chat=${chatName} thread=${current} others=${listed.filter((found) => found !== current)} />`}
-        ${room && !thread && can("task_act") && html`<${ChatMore} project=${id} chat=${room} shown=${chat?.manager.name ?? room} onRenamed=${reread} />`}
+        ${room && !thread && can("task_act") && html`<${ChatMore} project=${id} chat=${room} shown=${chat?.manager.name ?? room} goal=${chat?.manager.goal ?? ""} onRenamed=${reread} />`}
       </div>
     </header>`;
   // ^ The header sits at the bottom, above the composer, when this device chose it (settings.js).

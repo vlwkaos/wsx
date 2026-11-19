@@ -556,6 +556,16 @@ pub enum ChatCmd {
     },
     /// Make an open chat the repo's home chat, which hears what no chat owns (the owner's)
     Home { name: String },
+    /// Show a chat's purpose, or set it from a file or - for standard input (an empty one
+    /// clears it); the chat's agent reads it at its next turn. Setting is the owner's, or a
+    /// chat's agent on the owner's message of its turn
+    Goal {
+        name: String,
+        #[arg(long, value_name = "FILE")]
+        goal: Option<PathBuf>,
+        #[command(flatten)]
+        said: OwnerSaid,
+    },
     /// Set the name the owner reads for a chat, up to 40 characters; an empty title clears it.
     /// The chat's id stays what `say --to` and `chat close` take
     Rename { name: String, title: String },

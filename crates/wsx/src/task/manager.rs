@@ -137,6 +137,8 @@ struct Manager {
     event_model: Option<String>,
     /// The model the running agent process uses now.
     agent_model: String,
+    /// The chat's goal (`chats::goal`) the running agent's instructions began with.
+    agent_goal: String,
     /// `tasks.manager.rotateTokens` when set; `rotate_limit` is the size that counts.
     rotate_tokens: Option<u64>,
     /// `tasks.manager.effort`, passed to every launch.
@@ -189,10 +191,17 @@ const INSTRUCTION_MESSAGE_TOKENS: u64 = 100_000;
 // ^ The agent writes the notes: a link or a huge file must not reach the host's read.
 const MAX_NOTES_READ: u64 = 256 * 1024;
 
-/// A chat's instructions open with its name and goal, then the manager's.
-/// ref: docs/tasks.md "Chats"
-fn chat_preamble(chat: &str, project: &str, goal: &str) -> String {
-    format!("You are {chat}, a chat of the project {project}. The owner's goal:\n{goal}\n\n")
+/// A chat's instructions open with its name, when it is not the home chat, and its purpose, when
+/// the owner set one, then the manager's: one text for every chat. ref: docs/tasks.md "Chats"
+fn chat_preamble(chat: Option<&str>, project: &str, goal: &str) -> String {
+    let who = chat.map(|chat| format!("You are {chat}, a chat of the project {project}."));
+    let goal = goal.trim();
+    let purpose = (!goal.is_empty()).then(|| format!("The owner's purpose for this chat:\n{goal}"));
+    let parts: Vec<String> = who.into_iter().chain(purpose).collect();
+    match parts.is_empty() {
+        true => String::new(),
+        false => parts.join(" ") + "\n\n",
+    }
 }
 
 /// The manager's boundary profile as text. ref: scripts/test-manager-boundary.py
@@ -260,6 +269,7 @@ pub fn run(chat: &str) -> Result<()> {
         effort: settings.manager_effort,
         event_model,
         agent_model: String::new(),
+        agent_goal: String::new(),
         rotate_tokens: settings.manager_rotate_tokens,
         state,
         events: events.clone(),
@@ -1689,16 +1699,25 @@ impl Manager {
                 Some(format!("idle over 60 min with {}k context", tokens / 1000)),
             );
         }
-        // ^ No turn runs here: a program updated since the agent started is replaced by one
-        // that resumes the same conversation, through the start below.
+        // ^ No turn runs here: a program updated since the agent started, or a goal the owner
+        // changed since, is replaced by an agent that resumes the same conversation (or, when
+        // the new instructions need it, a new one), through the start below.
         if self.state.agent_session.is_some() {
-            if let Some(change) = self.agent.as_ref().and_then(Agent::replaced) {
+            let new_goal = || chats::goal(&self.dir) != self.agent_goal;
+            let change = self.agent.as_ref().and_then(|agent| {
+                agent
+                    .replaced()
+                    .or_else(|| new_goal().then(|| "starts again with the chat's new goal".into()))
+            });
+            if let Some(change) = change {
                 self.say(&format!("agent {} {change}", self.current_adapter()));
                 self.generation += 1;
                 self.agent = None;
             }
         }
         if self.agent.is_none() {
+            // ^ Read before the launch: a goal changed in between is seen again next turn.
+            self.agent_goal = chats::goal(&self.dir);
             let mut launch = self.launch()?;
             let digest = instructions_digest(&launch.instructions);
             // ^ Claude keeps the system prompt a conversation began with, also on resume:
@@ -1850,9 +1869,7 @@ impl Manager {
             listed,
             (&workflow, policy.role, owner_skills),
         );
-        if let Some(chat) = self.dir.named() {
-            text = chat_preamble(chat, &self.project, &chats::goal(&self.dir)) + &text;
-        }
+        text = chat_preamble(self.dir.named(), &self.project, &chats::goal(&self.dir)) + &text;
         // ^ Other adapters list lent skills themselves (pi.rs `--skill`).
         if adapter != "claude" {
             text = text.replace(

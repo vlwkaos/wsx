@@ -303,7 +303,7 @@ pub(crate) fn dismiss(project: Option<&str>, id: u64, json: bool) -> Result<()> 
     Ok(())
 }
 
-/// `wsx task chat new|list|close|home`: the owner's; a chat's agent opens and closes a chat when
+/// `wsx task chat new|list|close|goal|home`: the owner's; a chat's agent opens and closes a chat when
 /// the owner's message of its turn asks (`--owner-said`, as for `land`). ref: docs/tasks.md "Chats"
 pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -> Result<()> {
     match action {
@@ -400,6 +400,36 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
             );
             if json {
                 return print_json(&json!({ "chat": name, "state": "closed", "message": message }));
+            }
+            println!("{message}");
+            Ok(())
+        }
+        ChatCmd::Goal { name, goal, said } => {
+            let Some(path) = goal else {
+                owner_only("chat goal")?;
+                let (project, main) = project_entry(project)?;
+                chat_of_repo(&name, &store::project_id(&project, &main))?;
+                let goal = chats::goal(&chats::open_chat(&name)?);
+                if json {
+                    return print_json(&json!({ "chat": name, "goal": goal }));
+                }
+                println!("{goal}");
+                return Ok(());
+            };
+            let ((project, main), _) = lifecycle("chat goal", project, said.owner_said)?;
+            chat_of_repo(&name, &store::project_id(&project, &main))?;
+            let goal = read_goal(&path)?;
+            chats::set_goal(&name, &goal)?;
+            let message = match goal.trim().is_empty() {
+                true => {
+                    format!("chat {name} has no purpose now; its agent reads that at its next turn")
+                }
+                false => {
+                    format!("chat {name} has a new purpose; its agent reads it at its next turn")
+                }
+            };
+            if json {
+                return print_json(&json!({ "chat": name, "goal": goal, "message": message }));
             }
             println!("{message}");
             Ok(())

@@ -831,6 +831,9 @@ pub fn chat(
         manager["name"] = task::chats::shown_name(&dir, shown).into();
         manager["projects"] = task::chats::project_names(&dir).into();
     }
+    // ^ The chat's purpose (docs/tasks.md "Chats"), whole: the Purpose sheet edits it.
+    manager["id"] = dir.name().into();
+    manager["goal"] = task::chats::goal(&dir).into();
     // ^ The agent in use now, a fallback's while one runs; a chat's own, else the manager's.
     manager["agent"] = view::manager_agent(&dir, &settings);
     let window = task::chat::Window::new(find, after, around);
@@ -1058,6 +1061,17 @@ pub fn rename_chat(name: &str, title: &str) -> Outcome<Value> {
     let title = task::chats::rename(name, title)
         .map_err(|error| Fault::new(409, "invalid_chat", format!("{error:#}")))?;
     Ok(json!({ "ok": true, "chat": name, "title": title }))
+}
+
+/// The owner sets (or, empty, clears) a chat's purpose, the first chat's too; its agent reads it
+/// at its next turn. A goal over the limit is 400 `invalid_goal` with the reason, an unknown or
+/// a closed name 409.
+pub fn set_chat_goal(name: &str, goal: &str) -> Outcome<Value> {
+    task::chats::checked_goal(goal)
+        .map_err(|error| Fault::new(400, "invalid_goal", format!("{error:#}")))?;
+    task::chats::set_goal(name, goal)
+        .map_err(|error| Fault::new(409, "invalid_chat", format!("{error:#}")))?;
+    Ok(json!({ "ok": true, "chat": name }))
 }
 
 /// The owner dismisses an open chat's row from Home; the chat, its repo and its tasks go on
