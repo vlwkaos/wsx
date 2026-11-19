@@ -1,5 +1,6 @@
-//! The check slots: per lane, one check run at a time for every task host of this wsx state
-//! folder. The `checks` lane takes plain checks, the `scenarios` lane the slow end-to-end ones.
+//! The check slots: per lane, a number of check runs at a time for every task host of this wsx
+//! state folder. The `checks` lane takes plain checks, one at a time; the `scenarios` lane the
+//! slow end-to-end ones, `SCENARIO_SLOTS` at a time (each one starts its parts at once).
 //! The disk slot (`tasks/disk-slot/`) queues the same way: one task resumes from a disk wait
 //! at a time, and holds the slot for a short settle time. ref: docs/tasks.md "Checks, revisions and report"
 //!
@@ -19,6 +20,10 @@ use wsx_core::task::{now_unix_ms, store};
 
 const POLL: Duration = Duration::from_millis(250);
 const SLOT_FILE: &str = "slot.lock";
+/// Scenario rounds that run at once on this machine. Measured with the 10-core Mac (docs/tasks.md
+/// "Check slot"): a round runs its parts at once, and each part is a wsxd, hosts, fake agents
+/// and, for the web scenario, Chrome. `WSX_SCENARIO_SLOTS` sets it for the task scenario's fixture.
+const SCENARIO_SLOTS: usize = 2;
 
 #[derive(Clone, Copy)]
 pub enum Priority {
@@ -41,6 +46,18 @@ impl Lane {
         match self {
             Lane::Checks => "check-slot",
             Lane::Scenarios => "scenario-slot",
+        }
+    }
+
+    /// How many runs of the lane go at once.
+    fn slots(self) -> usize {
+        match self {
+            Lane::Checks => 1,
+            Lane::Scenarios => std::env::var("WSX_SCENARIO_SLOTS")
+                .ok()
+                .and_then(|n| n.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(SCENARIO_SLOTS),
         }
     }
 
@@ -68,7 +85,7 @@ pub fn take(
     label: &str,
     mut queued: impl FnMut(String),
 ) -> io::Result<Slot> {
-    let ticket = Ticket::join(lane.queue(), lane.what(), priority)?;
+    let ticket = Ticket::join(lane.queue(), lane.what(), lane.slots(), priority)?;
     let mut said = String::new();
     loop {
         match ticket.try_take(label) {
@@ -83,15 +100,6 @@ pub fn take(
     }
 }
 
-/// The slot when nobody holds it and nobody waits for it, else `None` at once: a `ci:` scenario
-/// then runs on CI, which polls it again (`run_ci`). ref: docs/tasks.md "Scenarios"
-pub fn take_free(lane: Lane, label: &str) -> Option<Slot> {
-    Ticket::join(lane.queue(), lane.what(), Priority::Normal)
-        .ok()?
-        .try_take(label)
-        .ok()
-}
-
 /// A place in the queue of `tasks/<queue>/`, kept while this value lives.
 pub struct Ticket {
     dir: PathBuf,
@@ -99,22 +107,31 @@ pub struct Ticket {
     /// Locked while it lives, so the waiters behind it know it is not a dead one.
     #[allow(dead_code)]
     file: File,
-    slot: File,
+    slots: Vec<File>,
     what: &'static str,
 }
 
 impl Ticket {
     /// Join the queue of `tasks/<queue>/`; `what` names its slot in the reasons.
-    pub fn join(queue: &str, what: &'static str, priority: Priority) -> io::Result<Ticket> {
+    pub fn join(
+        queue: &str,
+        what: &'static str,
+        slots: usize,
+        priority: Priority,
+    ) -> io::Result<Ticket> {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let dir = store::state_dir().join("tasks").join(queue);
         DirBuilder::new().mode(0o700).recursive(true).create(&dir)?;
-        let slot = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(dir.join(SLOT_FILE))?;
+        let slots = (0..slots)
+            .map(|n| {
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(dir.join(slot_file(n)))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
         let name = format!(
             "q-{}-{:016}-{:010}-{:06}",
             priority as u8,
@@ -140,7 +157,7 @@ impl Ticket {
             dir,
             name,
             file,
-            slot,
+            slots,
             what,
         })
     }
@@ -148,18 +165,25 @@ impl Ticket {
     /// The slot when no live ticket is ahead and nobody holds it, else the reason it waits.
     pub fn try_take(&self, label: &str) -> Result<Slot, String> {
         let ahead = live_ahead(&self.dir, &self.name);
-        if ahead == 0 && try_lock(&self.slot) {
-            // ^ A clone shares the lock, which lasts until its last descriptor closes.
-            let mut holder = self
-                .slot
-                .try_clone()
-                .map_err(|error| format!("cannot hold {}: {error}", self.what))?;
-            let _ = holder
-                .set_len(0)
-                .and_then(|()| holder.write_all(label.as_bytes()));
-            return Ok(Slot(holder));
+        if ahead == 0 {
+            if let Some(slot) = self.slots.iter().find(|slot| try_lock(slot)) {
+                // ^ A clone shares the lock, which lasts until its last descriptor closes.
+                let mut holder = slot
+                    .try_clone()
+                    .map_err(|error| format!("cannot hold {}: {error}", self.what))?;
+                let _ = holder
+                    .set_len(0)
+                    .and_then(|()| holder.write_all(label.as_bytes()));
+                return Ok(Slot(holder));
+            }
         }
-        let holder = fs::read_to_string(self.dir.join(SLOT_FILE)).unwrap_or_default();
+        // ^ A slot whose lock is free names no holder: its file keeps the last one's label.
+        let holder = (0..self.slots.len())
+            .map(|n| self.dir.join(slot_file(n)))
+            .filter(|path| File::open(path).is_ok_and(|file| !try_lock(&file)))
+            .filter_map(|path| fs::read_to_string(path).ok())
+            .collect::<Vec<_>>()
+            .join(", ");
         Err(match ahead {
             0 => format!("queued for {} behind {holder}", self.what),
             n => format!("queued for {} behind {holder} and {n} more", self.what),
@@ -170,6 +194,14 @@ impl Ticket {
 impl Drop for Ticket {
     fn drop(&mut self) {
         let _ = fs::remove_file(self.dir.join(&self.name));
+    }
+}
+
+/// The lock file of slot `n`; the first keeps the name older hosts use.
+fn slot_file(n: usize) -> String {
+    match n {
+        0 => SLOT_FILE.to_string(),
+        n => format!("slot-{n}.lock"),
     }
 }
 

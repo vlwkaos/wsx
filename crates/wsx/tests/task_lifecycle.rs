@@ -128,18 +128,16 @@ fn an_add_waits_for_the_prompt_until_the_task_waited_for_ends() {
     first_turn_has_prompt_then_add(&fixture);
 }
 
-/// A fixture whose scenario `gate` is a `ci:` command that waits for the file `gate`. It acts as
-/// scripts/ci-scenario.py does for one head: the first call per commit starts a run (a line in
-/// `starts`), a later call joins it. The script exits when the fixture is gone.
+/// A fixture whose scenario `gate` is a command that waits for the file `gate`. The first call per
+/// commit starts a run (a line in `starts`); a later call joins it. The script exits when the
+/// fixture is gone.
 fn gated_ci() -> Fixture {
-    let fixture =
-        Fixture::with_tasks_config("  scenarios:\n    gate: \"ci: sh {root}/fake-ci.sh\"\n");
+    let fixture = Fixture::with_tasks_config("  scenarios:\n    gate: \"sh {root}/fake-ci.sh\"\n");
     let root = fixture.root.display();
     fs::write(
         fixture.root.join("fake-ci.sh"),
         format!(
             "#!/bin/sh\n\
-             [ \"$1\" = --local ] && exit 69\n\
              R={root}\n\
              echo call >> $R/calls\n\
              key=$(git rev-parse HEAD)\n\
@@ -157,7 +155,7 @@ fn lines(fixture: &Fixture, name: &str) -> usize {
     fs::read_to_string(fixture.root.join(name)).map_or(0, |text| text.lines().count())
 }
 
-/// A worker whose result waits for its `ci:` check-run, the run started and not ended.
+/// A worker whose result waits for its scenario check-run, the run started and not ended.
 fn worker_with_a_run_out(fixture: &Fixture) {
     fixture.json(&["task", "new", "WORK a.txt CHECKRUN_LATER gate", "--json"]);
     fixture.wait("the result waits for the check-run", |task| {
@@ -224,7 +222,7 @@ fn a_host_that_restarts_while_a_check_run_is_out_gets_its_answer_once() {
     until("the answer", || {
         (!received(&fixture, "Your check-run ended").is_empty()).then_some(())
     });
-    // ^ One answer, and one run of the same commit: the script joined it as ci-scenario.py does.
+    // ^ One answer, and one run of the same commit: the script joined it.
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(received(&fixture, "Your check-run ended").len(), 1);
     assert_eq!(lines(&fixture, "starts"), 1);

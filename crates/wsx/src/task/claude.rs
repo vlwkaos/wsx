@@ -352,11 +352,11 @@ fn check_run_note(record: &TaskRecord) -> String {
         "After your result wsx runs all of the project's checks once: {}. {scenarios}\
          `wsx task check-run 2 3` runs checks or scenarios by number or name before that: the \
          task host runs them outside your boundary exactly as it will after your result, so a \
-         test that needs a terminal or a browser works there. A local run waits for the \
-         machine's one check slot, often 20 to 90 minutes; a `ci:` scenario runs here when \
-         the scenario slot is free, else on CI, 20 minutes or more. A scenario run names every \
-         failed section (`FAILED section`) and every section it skipped after one. Commit first and run it in the \
-         foreground: a run that must wait or runs on CI answers `queued` at once; \
+         test that needs a terminal or a browser works there. A check waits for the \
+         machine's one check slot, a scenario for one of its scenario slots; a scenario's \
+         parts run at once. A scenario run names every failed section (`FAILED section`) and \
+         every section it skipped after one. Commit first and run it in the \
+         foreground: a run that must wait answers `queued` at once; \
          then do not wait or poll, finish the step and return its result, and the host sends \
          the answer as your next turn. A check that already ran on the \
          same commit, with nothing uncommitted, answers from its stored result. Fix what \

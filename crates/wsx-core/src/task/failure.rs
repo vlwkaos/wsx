@@ -1,5 +1,4 @@
-//! A check that fails the same way in two tasks of a project, or as main's latest CI run does,
-//! fails on main, not in the tasks. ref: docs/tasks.md "Checks, revisions and report" ("Shared failure")
+//! A check that fails the same way in two tasks of a project fails on main, not in the tasks. ref: docs/tasks.md "Checks, revisions and report" ("Shared failure")
 
 use super::store::TaskDir;
 use super::{CheckResult, LogEvent};
@@ -7,10 +6,6 @@ use std::collections::BTreeMap;
 
 /// A check whose output says this ran out of disk: the machine's fault, never a shared failure.
 pub const NO_SPACE: &str = "No space left on device";
-
-/// The line `scripts/ci-scenario.py` prints before the failed log of main's latest CI run of the
-/// scenario: what follows it is main's, never the task's own.
-pub const MAIN_MARK: &str = "== main's latest CI run";
 
 /// Only tasks with a log entry this young count.
 const WINDOW_MS: u64 = 24 * 60 * 60 * 1000;
@@ -21,14 +16,8 @@ const LINE_CHARS: usize = 160;
 /// The most of a section's label that the key and the shown line keep: the label says where, the
 /// error says why.
 const LABEL_CHARS: usize = 60;
-/// The summaries that follow every failure and tell nothing of its cause: cargo's, and the line
-/// GitHub Actions prints after every failed step. Lower case.
-const GENERIC: [&str; 4] = [
-    "could not compile",
-    "previous error",
-    "test run failed",
-    "process completed with exit code",
-];
+/// The summaries that follow every failure and tell nothing of its cause: cargo's. Lower case.
+const GENERIC: [&str; 3] = ["could not compile", "previous error", "test run failed"];
 
 /// One command that fails with one line in `tasks` (ascending, this task among them).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,8 +28,6 @@ pub struct SharedFailure {
     /// The newest task's line as printed (clipped): the event and the worker sentence.
     pub shown: String,
     pub tasks: Vec<u32>,
-    /// Main's latest CI run of the scenario fails with this line too.
-    pub on_main: bool,
     /// A scenario whose paths the task's change does not touch: a finding on main, not the
     /// task's failure. ref: docs/tasks.md "Scenarios"
     pub outside: bool,
@@ -80,20 +67,19 @@ impl SharedFailure {
             .filter(|task| **task != own)
             .map(|task| format!("#{task}"))
             .collect();
-        let main = self.on_main.then(|| "on main".to_string());
         let outside = self
             .outside
             .then(|| "outside this task's changed paths".to_string());
-        let place: Vec<String> = main
+        let place: Vec<String> = (!others.is_empty())
+            .then(|| format!("in {}", others.join(", ")))
             .into_iter()
-            .chain((!others.is_empty()).then(|| format!("in {}", others.join(", "))))
             .chain(outside)
             .collect();
         format!(
             "`{}`: fails {}{}: `{}`; not yours.",
             clip(&self.command),
             place.join(" and "),
-            if self.outside && !self.on_main && others.is_empty() {
+            if self.outside && others.is_empty() {
                 ""
             } else {
                 " too"
@@ -114,22 +100,8 @@ fn clip(command: &str) -> String {
     one.chars().take(120).collect()
 }
 
-/// A line of `gh run view --log-failed` (`<job>\t<step>\t<time> <text>`, scripts/ci-scenario.py
-/// prints it as is) without the job, the step, the time and GitHub's `##[error]` mark: the same
-/// assert in two runs reads the same.
-fn log_text(line: &str) -> &str {
-    let mut text = line.splitn(3, '\t').last().unwrap_or(line);
-    if let Some((time, rest)) = text.split_once(' ') {
-        let is_time = time.len() >= 20 && time.as_bytes()[4] == b'-' && time.ends_with('Z');
-        if is_time {
-            text = rest;
-        }
-    }
-    text.trim().trim_start_matches("##[error]").trim_start()
-}
-
-/// `FAIL` or `FAILED` as a whole word, as nextest and pytest print it: not the `FAIL` in the
-/// `CACHE_ON_FAILURE: false` that GitHub's env echo puts in every log.
+/// `FAIL` or `FAILED` as a whole word, as nextest and pytest print it: not the `FAIL` in
+/// `CACHE_ON_FAILURE: false`.
 fn has_fail_word(line: &str) -> bool {
     line.split(|c: char| !c.is_alphanumeric() && c != '_')
         .any(|word| word == "FAIL" || word == "FAILED")
@@ -137,22 +109,16 @@ fn has_fail_word(line: &str) -> bool {
 
 /// The last line of a failed result's own output that tells its cause, clipped, as printed and
 /// with digits as `0`: a `FAIL`/`FAILED`/`AssertionError` line, else an `error` line that is no
-/// generic summary. What follows `MAIN_MARK` is main's, not the result's.
+/// generic summary.
 fn failure_line(result: &CheckResult) -> Option<(String, String)> {
     if result.exit == Some(0) || result.timed_out || result.output.contains(NO_SPACE) {
         return None;
     }
-    line_of(result.output.split(MAIN_MARK).next().unwrap_or_default())
-}
-
-/// The line of main's latest CI run that failed the result's command, when the log has it.
-fn main_line(result: &CheckResult) -> Option<(String, String)> {
-    let (_, main) = result.output.split_once(MAIN_MARK)?;
-    line_of(main)
+    line_of(&result.output)
 }
 
 fn line_of(output: &str) -> Option<(String, String)> {
-    let lines = || output.lines().rev().map(log_text);
+    let lines = || output.lines().rev().map(str::trim);
     let line = lines()
         .find(|line| has_fail_word(line) || line.contains("AssertionError"))
         .or_else(|| {
@@ -237,8 +203,7 @@ fn lines_of<'a>(
 
 /// The failures of `results` (task `task`'s newest) that the latest check results of the
 /// project's other tasks, logged in the last 24 h, also have: bounded reads of the newest
-/// tasks' log ends. Those with the same command and line in two or more tasks, this one included,
-/// and those main's latest CI run (the result's `MAIN_MARK` block) fails with too.
+/// tasks' log ends. Those with the same command and line in two or more tasks, this one included.
 pub fn shared_failures(
     project_id: &str,
     task: u32,
@@ -249,18 +214,11 @@ pub fn shared_failures(
     if own.values().all(Option::is_none) {
         return Vec::new();
     }
-    let on_main = |command: &str, line: &str| {
-        results
-            .iter()
-            .filter(|result| result.command == command)
-            .any(|result| main_line(result).is_some_and(|(_, main)| main == line))
-    };
-    let mut found: BTreeMap<(String, String), (String, Vec<u32>, bool)> = own
+    let mut found: BTreeMap<(String, String), (String, Vec<u32>)> = own
         .into_iter()
         .filter_map(|(command, line)| {
             let (shown, line) = line?;
-            let main = on_main(&command, &line);
-            Some(((command, line), (shown, vec![task], main)))
+            Some(((command, line), (shown, vec![task])))
         })
         .collect();
     let numbers = super::store::task_numbers(project_id).unwrap_or_default();
@@ -288,23 +246,21 @@ pub fn shared_failures(
                 }),
         );
         for (command, line) in latest {
-            if let Some((_, tasks, _)) = line.and_then(|(_, line)| found.get_mut(&(command, line)))
-            {
+            if let Some((_, tasks)) = line.and_then(|(_, line)| found.get_mut(&(command, line))) {
                 tasks.push(other);
             }
         }
     }
     found
         .into_iter()
-        .filter(|(_, (_, tasks, on_main))| tasks.len() > 1 || *on_main)
-        .map(|((command, line), (shown, mut tasks, on_main))| {
+        .filter(|(_, (_, tasks))| tasks.len() > 1)
+        .map(|((command, line), (shown, mut tasks))| {
             tasks.sort_unstable();
             SharedFailure {
                 command,
                 line,
                 shown,
                 tasks,
-                on_main,
                 outside: false,
             }
         })
@@ -320,7 +276,6 @@ pub fn outside(task: u32, result: &CheckResult) -> Option<SharedFailure> {
         line,
         shown,
         tasks: vec![task],
-        on_main: false,
         outside: true,
     })
 }

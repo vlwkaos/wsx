@@ -64,7 +64,8 @@ if (!(await evaluate("document.querySelector('dialog.sheet').open"))) await fail
 await capture("390x844-add-refused");
 await submit(repo);
 await until(`!!${homeRow(name)}`, "the added project did not appear on Home", 100);
-if (await evaluate("!!document.querySelector('dialog.sheet[open]')")) await fail("the sheet stayed open after the add");
+await until("!document.querySelector('dialog.sheet[open]')", "the sheet stayed open after the add", 20);
+// ^ The row can show before the sheet has closed: a read at once is a race, a wait is not.
 
 // The Projects page: the site that manages projects has + and a slide to Remove there.
 await evaluate("location.hash = '#/projects'");

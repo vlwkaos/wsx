@@ -451,14 +451,6 @@ pub enum LogEvent {
         attempt: u32,
         commands: Vec<String>,
     },
-    /// A `ci:` check-run ended outside the tree (exit 75) and the host ran it again on the
-    /// same tree after `wait_secs`; `attempt` is the run that ended. ref: docs/tasks.md "Scenarios"
-    CiRetry {
-        command: String,
-        attempt: u32,
-        wait_secs: u64,
-        reason: String,
-    },
     Revision {
         revision: u32,
         commit: String,
@@ -524,12 +516,6 @@ pub enum LogEvent {
     CheckQueued {
         reason: String,
     },
-    /// A `ci:` run of the task's checks waits for GitHub to start its jobs (`ci-scenario.py`
-    /// has not said `before its jobs started`); each retry waits again. `status::waits_on`
-    /// reads it: the task waits in a queue, not on a running check.
-    CiQueued {},
-    /// The jobs of the task's `ci:` run started: the line `ci-scenario.py` printed.
-    CiStarted {},
     /// A preview of the task answers at `url` (docs/tasks.md "Preview").
     Preview {
         url: String,

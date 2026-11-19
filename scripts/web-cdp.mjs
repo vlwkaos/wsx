@@ -154,6 +154,9 @@ export function requestRates({ requests }) {
   const all = busiest(requests), own = busiest(requests.filter((request) => request.from));
   const count = (key) => Object.entries(all.reduce((by, request) => ({ ...by, [request[key]]: (by[request[key]] ?? 0) + 1 }), {})).sort((a, b) => b[1] - a[1]).slice(0, 14);
   return {
+    // ^ Seconds from the window's start of each `say` and the statuses the server gave them: when a burst names the cause.
+    sayAt: all.filter((request) => request.path.endsWith('/say')).map((request) => `${Math.round((request.at - all[0].at) / 1000)}:${request.status}`),
+    window: all.length ? [new Date(all[0].at).toISOString().slice(11, 19), new Date(all.at(-1).at).toISOString().slice(11, 19)] : [],
     total: requests.length, busiest: all.length, own: own.length, refused: all.filter((request) => request.status === 429).length,
     minutes: requests.length ? Math.round((requests.at(-1).at - requests[0].at) / 600) / 100 : 0,
     // ^ Where the busiest window lies (seconds from the first request) and which requests the server refused.

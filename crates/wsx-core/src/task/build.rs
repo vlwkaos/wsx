@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// The sources to clone into each destination: every top-level entry of `main` but `.git`,
 /// with `target/<profile>/incremental` left out. A copy builds with `CARGO_INCREMENTAL=0`
@@ -66,6 +66,64 @@ pub fn prune(copy: &Path, since: SystemTime) -> u64 {
         .filter_map(|entry| entry.ok())
         .map(|entry| prune_deps(&entry.path().join("deps"), since))
         .sum()
+}
+
+/// Free disk (MiB) under which the build folders of idle copies go: the cleaner starts below
+/// this and stops once it is free again. `tasks.minFreeGb` (the refusal) is lower.
+pub const RECLAIM_BELOW_MB: u64 = 15 * 1024;
+/// A copy whose build folder nothing touched this long counts as idle.
+const IDLE_FOR: Duration = Duration::from_secs(30 * 60);
+
+/// The newest change of a copy's build folder (the folder, each profile and its `deps`), which a
+/// cargo run in it always moves.
+fn built_at(target: &Path) -> Option<SystemTime> {
+    let mut newest = fs::metadata(target).ok()?.modified().ok()?;
+    for profile in fs::read_dir(target).ok()?.filter_map(|e| e.ok()) {
+        for folder in [
+            profile.path(),
+            profile.path().join("deps"),
+            profile.path().join(".fingerprint"),
+        ] {
+            if let Some(at) = fs::metadata(&folder).ok().and_then(|m| m.modified().ok()) {
+                newest = newest.max(at);
+            }
+        }
+    }
+    Some(newest)
+}
+
+/// Remove the build folder of the project's idle task copies, the longest idle first, while
+/// `free_mb` stays under `goal_mb`; return the copies cleaned. A cleaned copy builds again in its
+/// next check. `except` is the copy that asks. ref: docs/tasks.md "Build output"
+pub fn reclaim(
+    project_id: &str,
+    except: Option<&Path>,
+    goal_mb: u64,
+    free_mb: impl Fn() -> Option<u64>,
+) -> Vec<PathBuf> {
+    let now = SystemTime::now();
+    let mut idle: Vec<(SystemTime, PathBuf)> = super::view::project_tasks(project_id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(_, record)| record.ok())
+        .map(|record| record.working_copy)
+        .filter(|copy| Some(copy.as_path()) != except)
+        .filter_map(|copy| {
+            let at = built_at(&copy.join("target"))?;
+            (now.duration_since(at).unwrap_or_default() >= IDLE_FOR).then_some((at, copy))
+        })
+        .collect();
+    idle.sort();
+    let mut cleaned = Vec::new();
+    for (_, copy) in idle {
+        if free_mb().is_none_or(|free| free >= goal_mb) {
+            break;
+        }
+        if fs::remove_dir_all(copy.join("target")).is_ok() {
+            cleaned.push(copy);
+        }
+    }
+    cleaned
 }
 
 struct File {

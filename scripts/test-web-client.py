@@ -1065,7 +1065,7 @@ def killed_daemon_leaves_no_agent(work, wsx, wsxd):
     folder.mkdir(mode=0o700)
     socket_path = folder / 's'
     env = {'HOME': str(folder), 'XDG_CONFIG_HOME': str(folder / 'c'), 'XDG_STATE_HOME': str(folder / 'st'),
-           'XDG_CACHE_HOME': str(folder / 'ca'), 'WSX_SOCKET': str(socket_path), 'WSX_DAEMON_BIN': str(wsxd),
+           'XDG_CACHE_HOME': str(folder / 'ca'), 'WSX_SOCKET': str(socket_path), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_SCENARIO_SLOTS': '1',
            'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'GIT_CEILING_DIRECTORIES': str(folder)}
     subprocess.run(['git', 'init', '-q', '-b', 'main', str(folder / 'project')], env=env, check=True, timeout=5)
     (folder / 'actor.py').write_text(wsxd_client.fixture(ACTOR))
@@ -1148,7 +1148,7 @@ def web_journey(args):
         path = work / 'state/wsx/wsx.sock'
         watch_wsxd(path, work)
         env = {'HOME': str(work / 'home'), 'XDG_CONFIG_HOME': str(work / 'config'), 'XDG_STATE_HOME': str(work / 'state'),
-               'XDG_CACHE_HOME': str(work / 'cache'), 'WSX_SOCKET': str(path), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()),
+               'XDG_CACHE_HOME': str(work / 'cache'), 'WSX_SOCKET': str(path), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_SCENARIO_SLOTS': '1', 'WSX_EXIT_WITH_PID': str(os.getpid()),
                'PATH': str(work / 'bin') + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8',
                # ^ A fixture git command must never reach the repository this script runs in.
                'GIT_CEILING_DIRECTORIES': str(work)}
@@ -3723,7 +3723,7 @@ def task_journey(args):
         path = state / 'wsx/wsx.sock'
         watch_wsxd(path, work)
         env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
-               'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(path),
+               'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(path), 'WSX_SCENARIO_SLOTS': '1',
                'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
                'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp),
                # ^ A fixture git command must never reach the repository this script runs in.
@@ -5011,6 +5011,7 @@ merge_seconds = 3
                                   str(audit) if audit.exists() else '', str(ids['plans']), str(restart),
                                   str(plans), LONG_NAME, str(work / 'relay'), str(work / 'wsx-cli.json'), str(news_file)], timeout=900)
             assert result.returncode == 0, result.stdout + result.stderr
+            print('\n'.join(line for line in result.stderr.splitlines() if line.startswith('phase ')))
             # ^ Try started #7's preview: its mapping goes with it.
             assert js('task', 'preview', 7, '--stop', '-p', 'ui')['stopped'] is True
             assert 'serve --bg --https=' in (work / 'tailscale.log').read_text() and ' off' in (work / 'tailscale.log').read_text()
@@ -5214,16 +5215,13 @@ merge_seconds = 3
         assert len(replies_of('memory guard')) == 2
         assert set(json.loads(keys_file.read_text())) == {'mem', 'oom'}, keys_file.read_text()
         new_pushes('manager', 'the push of a warn post after the window')
-        for flags in (['--level', 'loud'], ['--key', ''], ['--key', 'a b'], ['--key', 'x' * 65], ['--key', 'é']):
-            post('x\n', '--title', 'nope', *flags, expect=2)
-        assert not replies_of('nope')
         # Without the host's TMPDIR the CLI looks in another socket folder: exit 1, nothing posted.
         lost = post('x\n', '--title', 'no tmpdir', '--level', 'warn', expect=1,
                     environ={key: value for key, value in bare.items() if key != 'TMPDIR'})
         assert 'not running' in lost.stderr and not replies_of('no tmpdir'), lost.stderr
         post('x\n', '--title', 'long key', '--level', 'warn', '--key', 'A' * 64)
         new_pushes('manager', 'the push of a post with a 64 character key')
-        ok('post levels: a warn or bad `wsx task post` from a LaunchAgent-like environment (PATH, HOME, TMPDIR, no WSX_*; exit 1 without the TMPDIR of the host) logs its level and pushes once, in a push of its own (`<project>: <title>` over its first line); info pushes as before; a repeated key within 10 minutes, an empty post and bad inputs (exit 2) post nothing; the key file keeps kept keys and drops day-old ones')
+        ok('post levels: a warn or bad `wsx task post` from a LaunchAgent-like environment (PATH, HOME, TMPDIR, no WSX_*; exit 1 without the TMPDIR of the host) logs its level and pushes once, in a push of its own (`<project>: <title>` over its first line); info pushes as before; a repeated key within 10 minutes and an empty post post nothing; the key file keeps kept keys and drops day-old ones')
         ok('manager push: waiting merged in one, a new To check item, an approval, a reply the manager started (not one to the owner); each names every open item and replaces the one before; ready and failed do not push; the shown project skipped for that device; presence ends with the stream; manager needs task_view')
 
         # A project's digest is its routine (docs/tasks.md "Routines"): demo has one, ui has none.

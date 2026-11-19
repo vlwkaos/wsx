@@ -623,7 +623,8 @@ impl Manager {
         let idle = self.turn.is_none()
             && !self.work_waiting()
             && self.state.limit.is_none()
-            && self.last_activity.elapsed() >= CHAT_LINGER;
+            && self.last_activity.elapsed()
+                >= wsx_core::task::test_secs("WSX_TEST_CHAT_LINGER_SECS", CHAT_LINGER);
         if closed || idle {
             self.say(match closed {
                 true => "the chat is closed: its host leaves",

@@ -16,11 +16,8 @@ use super::trial;
 use super::RECORDED_BY_HOST;
 use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, VecDeque};
-use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::{load_project_config, load_task_config};
 use wsx_core::git::{git_cmd, output_with_timeout_tail};
@@ -63,38 +60,9 @@ const MAX_HANDOFF_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_CHECK_RETRIES: u32 = 2;
 /// The end of each failed check's output that goes back to the worker.
 const CHECK_TAIL_BYTES: usize = 3 * 1024;
-/// EX_TEMPFAIL: a check that fails for a reason outside the tree (a CI runner's network) exits
-/// with it. Its result is never kept, so the next check-run runs it again.
+/// EX_TEMPFAIL: a check that fails for a reason outside the tree exits with it. Its result is never kept, so the next check-run runs it again.
 /// ref: docs/tasks.md "Check-run"
 const TEMPFAIL: i32 = 75;
-/// A `ci:` run that exits `TEMPFAIL` (the rate limit, a queue cancel, a lost runner) is run
-/// again on the same tree by the host, at most this many runs in all; the worker gets no turn
-/// until a run answers. ref: docs/tasks.md "Scenarios"
-const CI_TRIES: u32 = 3;
-/// The wait before the second and the third run, and the longest wait the script's
-/// `retry-after: <secs>` line (the rate limit's reset) may ask for; longer ends the retries.
-const CI_BACKOFF_SECS: [u64; 2] = [60, 300];
-const CI_MAX_WAIT_SECS: u64 = 60 * 60;
-
-/// The wait before run `attempt + 1` of a `ci:` command that ended `TEMPFAIL` with `output`:
-/// the longer of the backoff (or the seconds in `WSX_TEST_CI_BACKOFF_SECS`, for the task
-/// scenario only) and the script's `retry-after: <secs>` line. `None` when it asks too long, or
-/// says `retry: no` (an invalid token).
-fn ci_retry_wait(attempt: u32, output: &str) -> Option<Duration> {
-    if output.lines().any(|line| line.trim() == "retry: no") {
-        return None;
-    }
-    let backoff = test_secs("WSX_TEST_CI_BACKOFF_SECS")
-        .map_or(CI_BACKOFF_SECS[attempt as usize - 1], |wait| wait.as_secs());
-    let hint = output
-        .lines()
-        .rev()
-        .find_map(|line| line.trim().strip_prefix("retry-after:"))
-        .and_then(|secs| secs.trim().parse::<u64>().ok())
-        .unwrap_or(0);
-    let wait = backoff.max(hint);
-    (wait <= CI_MAX_WAIT_SECS).then(|| Duration::from_secs(wait))
-}
 
 enum Event {
     Request(HostRequest, Sender<HostResponse>),
@@ -113,17 +81,6 @@ enum Event {
     CheckQueued(String),
     /// Checks took the slot, or run without it after this error.
     CheckSlot(Option<String>),
-    /// A `ci:` run starts and waits for GitHub to start its jobs.
-    CiQueued,
-    /// Its jobs started: `ci-scenario.py` printed `CI_STARTED`.
-    CiStarted,
-    /// A `ci:` run ended outside the tree and runs again after the wait (seconds).
-    CiRetry {
-        command: String,
-        attempt: u32,
-        wait: Duration,
-        reason: String,
-    },
 }
 
 /// What waits for free disk, resumed once `tasks.minFreeGb` is free again.
@@ -208,9 +165,7 @@ struct CheckRun {
     label: String,
     /// `--part`: it runs one part of a scenario, which is never a full pass.
     part: Option<String>,
-    /// It runs a `ci:` scenario, so it answered `queued` at once: CI takes 20 min or more.
-    ci: bool,
-    /// The longest it may run: each local check's timeout, and `CI_TIMEOUT` beside them.
+    /// The longest it may run: each check's timeout.
     limit: Duration,
     /// When the run must have ended (unix ms): its start, or its slot's, plus `limit`. `None`
     /// while it waits for the check slot.
@@ -221,7 +176,7 @@ struct CheckRun {
 
 /// `check-run.json`: the run a host owes an answer for, written when it starts and removed
 /// when its answer is handled. A host that restarts reads it and runs the same checks again
-/// (`resume_check_run`): a `ci:` scenario then finds its CI run and waits for that one.
+/// (`resume_check_run`).
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CheckRunMark {
     picked: Vec<(usize, String)>,
@@ -239,34 +194,11 @@ struct CheckAnswer {
     proof: Option<Evidence>,
 }
 
-/// What a `check-run` that queues for the check slot, or runs on CI, answers at once: a
+/// What a `check-run` that queues for the check slot answers at once: a
 /// background job of the agent dies long before a 20-90 min queue ends. ref: docs/tasks.md "Check-run"
 const CHECK_RUN_QUEUED: &str = "its answer comes after your result. Do not wait or poll for it: \
 finish this step and return its result now. The host sends you the answer as your next turn, \
 in this step.\n";
-
-/// A `ci:` scenario's command, here or on CI: its own time limit, the runner queue
-/// limit (60 min) plus the run limit (60 min) of scripts/ci-scenario.py and 5 min to start and
-/// fetch the files. ref: docs/tasks.md "Scenarios"
-const CI_TIMEOUT: Duration = Duration::from_secs(125 * 60);
-
-/// EX_UNAVAILABLE: a `ci:` command run here with `--local` exits with it when its job does not
-/// run on this machine (scripts/ci-scenario.py); the host then runs it on CI.
-const UNAVAILABLE: i32 = 69;
-
-/// How often a `ci:` run whose jobs wait for a runner looks at the scenario slot.
-const CI_LANE_POLL: Duration = Duration::from_secs(2);
-
-/// How long a CI run that hands over to the local lane has to cancel its run (SIGTERM, then SIGKILL).
-const CI_CANCEL_GRACE: Duration = Duration::from_secs(60);
-
-/// What scripts/ci-scenario.py prints when the first job of its run leaves GitHub's queue.
-const CI_STARTED: &str = "min before its jobs started";
-
-/// The command of a `ci:` scenario: it runs here when the scenario slot is free, else on CI.
-fn ci_command(command: &str) -> Option<&str> {
-    command.strip_prefix("ci:").map(str::trim)
-}
 
 /// The scenario names and numbers of a `check-run`, and its `--part <p>` (or `--part=<p>`).
 /// ref: docs/tasks.md "Scenarios"
@@ -293,15 +225,10 @@ fn split_part(args: &[String]) -> Result<(Vec<&String>, Option<String>), String>
     Ok((words, part))
 }
 
-/// A scenario's command with its part: the command reads `WSX_SCENARIO_PART` (a `ci:` one
-/// after the prefix, which the host strips). The result's command shows it, so a part never
-/// answers for the full run. ref: docs/tasks.md "Scenarios"
+/// A scenario's command with its part: the command reads `WSX_SCENARIO_PART`. The result's
+/// command shows it, so a part never answers for the full run. ref: docs/tasks.md "Scenarios"
 fn with_part(command: &str, part: &str) -> String {
-    let set = format!("export WSX_SCENARIO_PART='{part}'; ");
-    match ci_command(command) {
-        Some(rest) => format!("ci: {set}{rest}"),
-        None => format!("{set}{command}"),
-    }
+    format!("export WSX_SCENARIO_PART='{part}'; {command}")
 }
 
 struct Host {
@@ -324,8 +251,6 @@ struct Host {
     /// `wsx task stop` ran and no add or steer came since: nothing else starts a turn.
     /// ref: docs/tasks.md "Host" (Stop)
     stopped: bool,
-    /// `stopped`, for the threads that wait to run a `ci:` command again.
-    ci_halt: Arc<AtomicBool>,
     /// Counts check runs and stops: the results of an older run (one a stop left running) are
     /// logged and nothing more.
     checks_epoch: u64,
@@ -447,7 +372,6 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         carried: false,
         stop_requested: false,
         stopped: false,
-        ci_halt: Arc::new(AtomicBool::new(false)),
         checks_epoch: 0,
         last_result: None,
         last_denials: Vec::new(),
@@ -692,14 +616,6 @@ impl Host {
                 }
                 Event::CheckQueued(reason) => self.check_queued(reason),
                 Event::CheckSlot(error) => self.check_slot(error),
-                Event::CiQueued => self.log(LogEvent::CiQueued {}),
-                Event::CiStarted => self.log(LogEvent::CiStarted {}),
-                Event::CiRetry {
-                    command,
-                    attempt,
-                    wait,
-                    reason,
-                } => self.ci_retry(command, attempt, wait, reason),
             }
         }
         Ok(())
@@ -749,18 +665,14 @@ impl Host {
         // change does not touch, the host records it as evidence.
         // ref: docs/tasks.md "Shared failure"
         let answer = match known {
-            Some(on_main) => CheckAnswer {
+            Some(outside) => CheckAnswer {
                 text: format!(
                     "Your check-run ended on commit {commit}. {shared}\nIt is a known failure: \
                      do not run it again. Name it in your result and return your result again."
                 ),
-                proof: (on_main && tree_kept).then(|| Evidence {
+                proof: (outside && tree_kept).then(|| Evidence {
                     check: format!(
-                        "wsx task check-run {label} failed {}: {} {RECORDED_BY_HOST}",
-                        match found.iter().any(|failure| failure.outside) {
-                            true => "outside the task's changed paths",
-                            false => "on main too",
-                        },
+                        "wsx task check-run {label} failed outside the task's changed paths: {} {RECORDED_BY_HOST}",
                         found
                             .iter()
                             .map(|failure| failure.shown.as_str())
@@ -831,8 +743,7 @@ impl Host {
 
     /// Whether every check that failed in `results` is a failure `found` shows in other tasks
     /// or on main, and no other check of the tree's kept results failed: `Some(true)` when
-    /// main's latest CI run fails with all of them or their scenarios' paths name no changed
-    /// path (the host records those as evidence).
+    /// their scenarios' paths name no changed path (the host records that as evidence).
     fn known_failure(
         &self,
         results: &[CheckResult],
@@ -845,13 +756,8 @@ impl Host {
             .flat_map(|(_, kept)| kept.values())
             .any(|c| c.exit != Some(0) && !results.iter().any(|r| r.command == c.command));
         let known = |check: &CheckResult| found.iter().find(|f| f.command == check.command);
-        (!failed.is_empty() && !kept_failure && failed.iter().all(|c| known(c).is_some())).then(
-            || {
-                failed
-                    .iter()
-                    .all(|c| known(c).is_some_and(|f| f.on_main || f.outside))
-            },
-        )
+        (!failed.is_empty() && !kept_failure && failed.iter().all(|c| known(c).is_some()))
+            .then(|| failed.iter().all(|c| known(c).is_some_and(|f| f.outside)))
     }
 
     /// Whether this host must exec the wsx file that replaced it before it starts more work:
@@ -998,8 +904,7 @@ impl Host {
     }
 
     /// The run a host owed an answer for when it ended (`check-run.json`) runs again on the
-    /// same commit, and its answer comes as a turn, as a queued run's does. A `ci:` scenario
-    /// finds its CI run by the head (scripts/ci-scenario.py), so no second one starts. A task
+    /// same commit, and its answer comes as a turn, as a queued run's does. A task
     /// that was stopped keeps the answer for its next add. ref: docs/tasks.md "Check-run"
     fn resume_check_run(&mut self) {
         let mark = match self.dir.read_file(CHECK_RUN_FILE, 1 << 20) {
@@ -1404,7 +1309,6 @@ impl Host {
         }
         self.check_retries = 0;
         self.stopped = false;
-        self.ci_halt.store(false, Ordering::Relaxed);
         if self.turn.is_some() || self.record.state == TaskState::Checking {
             self.pending.push_back(text);
             "queued until the current turn ends".into()
@@ -1446,7 +1350,6 @@ impl Host {
             );
         }
         self.stopped = true;
-        self.ci_halt.store(true, Ordering::Relaxed);
         if let Some(agent) = self.agent.take() {
             self.stop_requested = true;
             agent.stop();
@@ -1512,7 +1415,6 @@ impl Host {
             agent.stop();
         }
         self.stopped = false;
-        self.ci_halt.store(false, Ordering::Relaxed);
         self.end_turn("the owner took it by hand");
         self.end_trial("the owner took it by hand");
         let dropped = self.pending.len() as u32;
@@ -2934,7 +2836,18 @@ impl Host {
     fn low_disk(&self) -> Option<(u64, u64)> {
         let min_gb =
             load_task_config(&self.record.project_path).map_or(5, |settings| settings.min_free_gb);
-        store::free_mb(&self.record.working_copy)
+        let free = || store::free_mb(&self.record.working_copy);
+        if free().is_some_and(|free_mb| free_mb < min_gb * 1024) {
+            // ^ Before a task waits, the idle copies of the project give their build folders back.
+            let goal = (min_gb * 1024).max(build::RECLAIM_BELOW_MB);
+            build::reclaim(
+                &self.record.project_id,
+                Some(&self.record.working_copy),
+                goal,
+                free,
+            );
+        }
+        free()
             .filter(|free_mb| *free_mb < min_gb * 1024)
             .map(|free_mb| (free_mb, min_gb))
     }
@@ -2947,7 +2860,7 @@ impl Host {
             _ => None,
         };
         if let Some((queue @ None, what)) = queue {
-            match slot::Ticket::join(&format!("{what}-slot"), what, Priority::Normal) {
+            match slot::Ticket::join(&format!("{what}-slot"), what, 1, Priority::Normal) {
                 Ok(ticket) => *queue = Some(ticket),
                 Err(error) => self.say(&format!("cannot join the {what} queue: {error}")),
             }
@@ -3198,7 +3111,7 @@ impl Host {
         if let Some(run) = &mut self.check_run {
             // ^ A queued run answers only after the result, also when it already ended.
             if run.queued && run.indexes == indexes && run.part == *part {
-                let _ = reply.send(queued_response(run.ci));
+                let _ = reply.send(queued_response());
                 return None;
             }
             if run.indexes != indexes || run.part != *part {
@@ -3244,18 +3157,7 @@ impl Host {
             )));
             return;
         }
-        // ^ A `ci:` scenario waits for no slot and answers `queued` at once: it runs here when
-        // the scenario slot is free, else on CI.
-        // ref: docs/tasks.md "Scenarios"
-        let ci = to_run
-            .iter()
-            .any(|(_, command)| ci_command(command).is_some());
-        let local: Vec<&(usize, String)> = to_run
-            .iter()
-            .filter(|(_, command)| ci_command(command).is_none())
-            .collect();
-        let limit = (Duration::from_secs(self.record.check_timeout_secs) * local.len() as u32)
-            .max(if ci { CI_TIMEOUT } else { Duration::ZERO });
+        let limit = Duration::from_secs(self.record.check_timeout_secs) * to_run.len() as u32;
         let mark = CheckRunMark {
             picked: picked.clone(),
             label: label.clone(),
@@ -3276,19 +3178,18 @@ impl Host {
             answer: None,
             label,
             part: part.clone(),
-            ci,
             limit,
             deadline_ms: None,
             commit,
         });
-        // ^ A run of checks that only format or compile, or only runs on CI, is light: it takes
-        // no slot. One that names a local scenario takes the scenarios lane, else the checks lane.
-        let lane = match local.iter().any(|(index, _)| *index >= checks) {
+        // ^ A run of checks that only format or compile is light: it takes no slot. One that
+        // names a scenario takes the scenarios lane, else the checks lane.
+        let lane = match to_run.iter().any(|(index, _)| *index >= checks) {
             true => Lane::Scenarios,
             false => Lane::Checks,
         };
         let priority =
-            (!local.iter().all(|(_, command)| light(command))).then_some((lane, Priority::Normal));
+            (!to_run.iter().all(|(_, command)| light(command))).then_some((lane, Priority::Normal));
         // ^ A run without a slot starts now; one with a slot when it takes it (`check_slot`).
         if priority.is_none() {
             self.start_check_run_clock();
@@ -3303,17 +3204,6 @@ impl Host {
                 results,
             ));
         });
-        if ci {
-            self.say(
-                "check-run: a scenario runs in the free scenario slot, else on CI; its answer comes after the result",
-            );
-            if let Some(run) = &mut self.check_run {
-                run.queued = true;
-                for reply in run.replies.drain(..) {
-                    let _ = reply.send(queued_response(true));
-                }
-            }
-        }
     }
 
     /// A check that ran on this clean tree with the same command gives the same answer: the
@@ -3400,9 +3290,9 @@ impl Host {
     }
 
     /// Run `checks` in a thread, holding a machine check slot (lane and priority) unless `priority` is
-    /// `None`; each check's timeout counts from the slot. A `ci:` command waits for no slot: it
-    /// starts at once beside the others, with `CI_TIMEOUT`, here when the scenarios slot is free. Check `n`'s whole output goes to
-    /// `<kind>-<n>.log` in the task folder. ref: docs/tasks.md "Checks, revisions and report"
+    /// `None`; each check's timeout counts from the slot. The checks of a run in the scenarios lane
+    /// run at once (a scenario starts its own parts); others run one after another. Check `n`'s
+    /// whole output goes to `<kind>-<n>.log` in the task folder. ref: docs/tasks.md "Checks, revisions and report"
     fn spawn_checks(
         &self,
         priority: Option<(Lane, Priority)>,
@@ -3415,89 +3305,47 @@ impl Host {
         let env = self.record.env.clone();
         let born = std::time::UNIX_EPOCH + Duration::from_millis(self.record.created_unix_ms);
         let events = self.events.clone();
-        let halt = self.ci_halt.clone();
         let label = format!("{} t{}", self.record.project, self.record.id);
         let checks = checks
             .into_iter()
             .map(|(index, command)| (command, self.dir.file(&format!("{kind}-{}.log", index + 1))))
             .collect::<Vec<_>>();
-        let (remote, local): (Vec<_>, Vec<_>) = checks
-            .into_iter()
-            .enumerate()
-            .partition(|(_, (command, _))| ci_command(command).is_some());
-        let priority = priority.filter(|_| !local.is_empty());
+        let together = matches!(priority, Some((Lane::Scenarios, _)));
         std::thread::spawn(move || {
-            let on_ci = {
-                let (working_copy, env) = (working_copy.clone(), env.clone());
-                let (events, label) = (events.clone(), label.clone());
-                std::thread::spawn(move || {
-                    // ^ Whichever lane is free first, decided again while the run waits for a
-                    // CI job: the scenario slot when nobody holds it or waits for it, else CI
-                    // until the slot frees (`run_ci` hands it over). The result keeps the
-                    // configured command in either lane, so a stored result, a shared failure
-                    // and the outside rule match it; the output's first line names the lane.
-                    // ref: docs/tasks.md "Scenarios"
-                    let mut here = (!remote.is_empty())
-                        .then(|| slot::take_free(Lane::Scenarios, &label))
-                        .flatten();
-                    let mut watch = here.is_none();
-                    remote
-                        .into_iter()
-                        .map(|(at, (command, log))| {
-                            let ran = loop {
-                                if here.is_some() {
-                                    let local = format!(
-                                        "{} --local",
-                                        ci_command(&command).unwrap_or_default()
-                                    );
-                                    let ran =
-                                        run_check(&working_copy, &local, &env, CI_TIMEOUT, &log);
-                                    if ran.exit != Some(UNAVAILABLE) {
-                                        break ran;
-                                    }
-                                    // ^ The job does not run here: no handover would help.
-                                    (here, watch) = (None, false);
-                                }
-                                let lane = watch.then_some(label.as_str());
-                                match run_ci(
-                                    (&working_copy, &env, &log),
-                                    &command,
-                                    (&events, &halt),
-                                    lane,
-                                ) {
-                                    Ok(ran) => break ran,
-                                    Err(slot) => here = Some(slot),
-                                }
-                            };
-                            (at, CheckResult { command, ..ran })
-                        })
-                        .collect::<Vec<_>>()
-                })
-            };
-            let mut results = {
-                let queued = std::time::Instant::now();
-                let _slot = priority.and_then(|(lane, priority)| {
-                    let taken = slot::take(lane, priority, &label, |reason| {
-                        let _ = events.send(Event::CheckQueued(reason));
-                    });
-                    let error = taken.as_ref().err().map(ToString::to_string);
-                    let _ = events.send(Event::CheckSlot(error));
-                    taken.ok()
+            let queued = std::time::Instant::now();
+            let _slot = priority.and_then(|(lane, priority)| {
+                let taken = slot::take(lane, priority, &label, |reason| {
+                    let _ = events.send(Event::CheckQueued(reason));
                 });
-                // ^ The wait is the run's: each of its results carries it.
-                let queued_ms = queued.elapsed().as_millis() as u64;
-                local
-                    .into_iter()
-                    .map(|(at, (command, log))| {
-                        let ran = run_check(&working_copy, &command, &env, timeout, &log);
-                        (at, CheckResult { queued_ms, ..ran })
-                    })
-                    .collect::<Vec<_>>()
+                let error = taken.as_ref().err().map(ToString::to_string);
+                let _ = events.send(Event::CheckSlot(error));
+                taken.ok()
+            });
+            // ^ The wait is the run's: each of its results carries it.
+            let queued_ms = queued.elapsed().as_millis() as u64;
+            let run = |(command, log): &(String, PathBuf)| {
+                let ran = run_check(&working_copy, command, &env, timeout, log);
+                CheckResult { queued_ms, ..ran }
             };
-            results.extend(on_ci.join().unwrap_or_default());
-            results.sort_by_key(|(at, _)| *at);
+            let results = match together {
+                true => std::thread::scope(|scope| {
+                    let started: Vec<_> = checks
+                        .iter()
+                        .map(|check| scope.spawn(|| run(check)))
+                        .collect();
+                    started
+                        .into_iter()
+                        .map(|check: std::thread::ScopedJoinHandle<CheckResult>| {
+                            check
+                                .join()
+                                .unwrap_or_else(|e| std::panic::resume_unwind(e))
+                        })
+                        .collect()
+                }),
+                false => checks.iter().map(run).collect(),
+            };
             build::prune(&working_copy, born);
-            done(results.into_iter().map(|(_, result)| result).collect());
+            done(results);
         });
     }
 
@@ -3546,7 +3394,7 @@ impl Host {
         {
             run.queued = true;
             for reply in run.replies.drain(..) {
-                let _ = reply.send(queued_response(run.ci));
+                let _ = reply.send(queued_response());
             }
         }
         if self.record.state == TaskState::Waiting {
@@ -3564,36 +3412,6 @@ impl Host {
             until_ms: None,
         };
         self.move_to(self.record.state, Some(waiting));
-    }
-
-    /// A `ci:` run of the worker's check-run ended outside the tree and runs again after `wait`:
-    /// the log records it, the run's time limit counts from its new start, and the worker
-    /// gets nothing. ref: docs/tasks.md "Scenarios"
-    fn ci_retry(&mut self, command: String, attempt: u32, wait: Duration, reason: String) {
-        self.say(&format!(
-            "check-run: {command} ended outside the tree ({reason}); run {} of {CI_TRIES} in {} s",
-            attempt + 1,
-            wait.as_secs()
-        ));
-        self.log(LogEvent::CiRetry {
-            command,
-            attempt,
-            wait_secs: wait.as_secs(),
-            reason,
-        });
-        let Some(run) = &mut self.check_run else {
-            return;
-        };
-        run.deadline_ms = Some(now_unix_ms() + (wait + run.limit).as_millis() as u64);
-        if let Some(waiting) = self
-            .record
-            .waiting
-            .as_mut()
-            .filter(|w| w.on == WaitOn::CheckRun)
-        {
-            waiting.until_ms = run.deadline_ms;
-            self.save();
-        }
     }
 
     fn check_slot(&mut self, error: Option<String>) {
@@ -3639,11 +3457,7 @@ impl Host {
         }
         let waiting = Waiting {
             on: WaitOn::CheckRun,
-            reason: format!(
-                "the result waits for check-run {}{}",
-                run.label,
-                if run.ci { " on CI" } else { "" }
-            ),
+            reason: format!("the result waits for check-run {}", run.label),
             until_ms: run.deadline_ms,
         };
         self.move_to(TaskState::Working, Some(waiting));
@@ -4474,10 +4288,7 @@ impl Host {
         }
         // ^ A failure only main's CI run has is the project's known one: no event, the ready
         // event names it from the evidence.
-        for failure in found
-            .iter()
-            .filter(|f| f.tasks.len() > 1 || (f.outside && !f.on_main))
-        {
+        for failure in found.iter().filter(|f| f.tasks.len() > 1 || f.outside) {
             self.tell_manager(failure.key(), failure.event());
         }
         found
@@ -4701,13 +4512,9 @@ fn check_run_response(
     }
 }
 
-fn queued_response(ci: bool) -> broker::Response {
-    let on = match ci {
-        true => "queued on CI, or here when the scenario slot is free",
-        false => "queued for the machine's check slot",
-    };
+fn queued_response() -> broker::Response {
     broker::Response {
-        stdout: format!("{on}: {CHECK_RUN_QUEUED}"),
+        stdout: format!("queued for the machine's check slot: {CHECK_RUN_QUEUED}"),
         stderr: String::new(),
         code: 0,
     }
@@ -4769,145 +4576,6 @@ pub(super) fn run_check(
         queued_ms: 0,
         stored: false,
     }
-}
-
-/// A `ci:` command (its text without the prefix is run) until a run answers: one that exits
-/// `TEMPFAIL` ran into the rate limit, a queue cancel or a lost runner, not into the tree, so it
-/// runs again on the same tree after a wait, up to `CI_TRIES` runs. Each retry is sent as an
-/// event (the log records it); a stopped task (`halt`) retries no more. With a `lane` label, a
-/// run whose CI jobs have not started stops when the scenario slot frees: `Err` holds the slot
-/// for the caller's `--local` run. ref: docs/tasks.md "Scenarios"
-fn run_ci(
-    (working_copy, env, log): (&Path, &BTreeMap<String, String>, &Path),
-    command: &str,
-    (events, halt): (&Sender<Event>, &AtomicBool),
-    lane: Option<&str>,
-) -> Result<CheckResult, slot::Slot> {
-    let mut attempt = 1;
-    loop {
-        // ^ The run waits for GitHub until `ci-scenario.py` prints that its jobs started: the
-        // log is read while it runs, so the record knows a queued run from a running one. An
-        // older attempt's log goes first, with its line. ref: docs/tasks.md "Status"
-        let _ = std::fs::remove_file(log);
-        let _ = events.send(Event::CiQueued);
-        let (ended, ended_rx) = channel::<()>();
-        let watch = {
-            let (events, log) = (events.clone(), log.to_path_buf());
-            std::thread::spawn(move || {
-                // ^ Only the bytes since the last read, with the marker's length kept for a line split in two reads.
-                let mut from = 0u64;
-                while ended_rx
-                    .recv_timeout(Duration::from_millis(500))
-                    .is_err_and(|e| e == RecvTimeoutError::Timeout)
-                {
-                    let mut said = Vec::new();
-                    if let Ok(mut file) = std::fs::File::open(&log) {
-                        if file.seek(SeekFrom::Start(from)).is_ok() {
-                            let _ = file.read_to_end(&mut said);
-                        }
-                    }
-                    if String::from_utf8_lossy(&said).contains(CI_STARTED) {
-                        let _ = events.send(Event::CiStarted);
-                        return;
-                    }
-                    from = (from + said.len() as u64).saturating_sub(CI_STARTED.len() as u64);
-                }
-            })
-        };
-        let ci = ci_command(command).unwrap_or_default();
-        let ran = match lane {
-            Some(label) => {
-                let (ran, free) = run_ci_watched((working_copy, env, log), ci, label);
-                free.filter(|_| !halt.load(Ordering::Relaxed))
-                    .map_or(Ok(ran), Err)
-            }
-            None => Ok(run_check(working_copy, ci, env, CI_TIMEOUT, log)),
-        };
-        drop(ended);
-        let _ = watch.join();
-        let ran = ran?;
-        let retry = (ran.exit == Some(TEMPFAIL) && attempt < CI_TRIES)
-            .then(|| ci_retry_wait(attempt, &ran.output))
-            .flatten()
-            .filter(|_| !halt.load(Ordering::Relaxed));
-        let Some(wait) = retry else {
-            return Ok(ran);
-        };
-        // ^ The line that says why: the script's own closing lines (`a temporary failure`,
-        // `retry-after:`, `retry: no`, `gh calls:`) come after it.
-        let reason = ran.output.lines().rev().map(str::trim).find(|line| {
-            !line.is_empty()
-                && ![
-                    "a temporary failure",
-                    "retry-after:",
-                    "retry: no",
-                    "gh calls:",
-                ]
-                .iter()
-                .any(|closing| line.starts_with(closing))
-        });
-        let _ = events.send(Event::CiRetry {
-            command: command.into(),
-            attempt,
-            wait,
-            reason: reason.unwrap_or_default().chars().take(160).collect(),
-        });
-        std::thread::sleep(wait);
-        if halt.load(Ordering::Relaxed) {
-            return Ok(ran);
-        }
-        attempt += 1;
-    }
-}
-
-/// One CI run of `ci` that gives way to the scenario slot: every `CI_LANE_POLL` while the log
-/// does not say a CI job started (`CI_STARTED`), it takes the slot when it is free. Then it
-/// stops the run's process group (SIGTERM: the script cancels the CI run and deletes its
-/// branch) and returns the slot; a run that ended or started on CI returns none.
-fn run_ci_watched(
-    (working_copy, env, log): (&Path, &BTreeMap<String, String>, &Path),
-    ci: &str,
-    label: &str,
-) -> (CheckResult, Option<slot::Slot>) {
-    // ^ The shell leads the group, so its pid (in `pid`) is the group to stop.
-    let pid = log.with_extension("pid");
-    let quoted = pid.to_string_lossy().replace('\'', "'\\''");
-    let (stop, stopped) = channel::<()>();
-    std::thread::scope(|scope| {
-        let (pid_file, label) = (&pid, label);
-        let watcher = scope.spawn(move || {
-            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
-                stopped.recv_timeout(CI_LANE_POLL)
-            {
-                if log_tail(log).is_ok_and(|text| text.contains(CI_STARTED)) {
-                    return None;
-                }
-                let Some(slot) = slot::take_free(Lane::Scenarios, label) else {
-                    continue;
-                };
-                let Some(group) = std::fs::read_to_string(pid_file)
-                    .ok()
-                    .and_then(|text| text.trim().parse::<libc::pid_t>().ok())
-                else {
-                    continue;
-                };
-                wsx_core::process::terminate_group(group, CI_CANCEL_GRACE);
-                return Some(slot);
-            }
-            None
-        });
-        let ran = run_check(
-            working_copy,
-            &format!("echo $$ >'{quoted}'\n{ci}"),
-            env,
-            CI_TIMEOUT,
-            log,
-        );
-        drop(stop);
-        let slot = watcher.join().ok().flatten();
-        let _ = std::fs::remove_file(&pid);
-        (ran, slot)
-    })
 }
 
 /// The last `CHECK_OUTPUT_BYTES` of a check's log: a long output (a test run) ends with its

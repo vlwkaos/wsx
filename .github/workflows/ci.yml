@@ -2,7 +2,7 @@ name: CI
 
 "on":
   push:
-    branches: ['**']
+    branches: [main]
     tags-ignore: ['**']
   pull_request:
   # ^ release.yml runs these tests on the v* tag before it builds or publishes.
@@ -21,8 +21,6 @@ env:
 jobs:
   test:
     name: ${{ matrix.os }}
-    # ^ A `wsx-scenario/<name>/` branch (scripts/ci-scenario.py) runs only its scenario's job.
-    if: ${{ !startsWith(github.ref_name, 'wsx-scenario/') }}
     strategy:
       fail-fast: false
       matrix:
@@ -86,25 +84,17 @@ jobs:
       - name: Run the memory contract test
         run: python3 -B scripts/test-memory.py "target/debug/wsx memory"
 
-  # ^ The task scenario (scripts/test-task.py) runs here instead of on the owner's Mac: on a push
-  # or pull request that changes the task code, and always on a tag (release.yml calls this
-  # workflow), and on a worker's `wsx task check-run task` (a `wsx-scenario/task/` branch). Its
-  # parts (test-task.py --part) run as one job each, at once; the run passes when all pass. A
-  # `--<part>` suffix on the branch name (`check-run task --part host`) runs that part only. Seatbelt
-  # (section 23, part worker) needs macOS. ref: docs/tasks.md "Verify", "Scenarios"
+  # ^ The task scenario (scripts/test-task.py) on a push or pull request that changes the task code,
+  # and always on a tag (release.yml calls this workflow). A worker's `check-run task` runs it on the
+  # owner's Mac (scripts/scenario.py). Its parts (test-task.py --part) run as one job each, at once;
+  # the run passes when all pass. Seatbelt (section 23, part worker) needs macOS.
+  # ref: docs/tasks.md "Verify", "Scenarios"
   task-scenario:
     name: task scenario (${{ matrix.part }})
-    if: ${{ !startsWith(github.ref_name, 'wsx-scenario/') || startsWith(github.ref_name, 'wsx-scenario/task/') }}
     strategy:
       fail-fast: false
       matrix:
         part: [core, worker, host]
-        # ^ On a part-only scenario branch (`--<part>`, ci-scenario.py --part) the other parts start
-        # no job: they would take a runner the run does not need.
-        exclude:
-          - part: ${{ startsWith(github.ref_name, 'wsx-scenario/') && contains(github.ref_name, '--') && !endsWith(github.ref_name, '--core') && 'core' || '' }}
-          - part: ${{ startsWith(github.ref_name, 'wsx-scenario/') && contains(github.ref_name, '--') && !endsWith(github.ref_name, '--worker') && 'worker' || '' }}
-          - part: ${{ startsWith(github.ref_name, 'wsx-scenario/') && contains(github.ref_name, '--') && !endsWith(github.ref_name, '--host') && 'host' || '' }}
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -117,19 +107,13 @@ jobs:
       - name: Look for a change to the task code
         id: changed
         env:
-          REF_NAME: ${{ github.ref_name }}
-          PART: ${{ matrix.part }}
           REF_TYPE: ${{ github.ref_type }}
           BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
           AFTER: ${{ github.sha }}
         shell: bash
         run: |
           paths='crates/wsx/src/task crates/wsx-core/src/task crates/wsx-core/src/memory crates/wsx/src/cli/memory.rs scripts/test-task.py scripts/test-memory.py scripts/fake-memory-backend.py'
-          # ^ A job `if` cannot read `matrix`: the matrix excludes the other parts of a part-only
-          # scenario branch; one that still starts sees the `--<part>` suffix and ends green at once.
-          if [[ "$REF_NAME" == wsx-scenario/*--* && "$REF_NAME" != *"--$PART" ]]; then
-            run=false
-          elif [ "$REF_TYPE" = tag ] || [ -z "$BEFORE" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+          if [ "$REF_TYPE" = tag ] || [ -z "$BEFORE" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
             run=true
           elif git diff --quiet "$BEFORE" "$AFTER" -- $paths; then
             run=false
@@ -195,8 +179,8 @@ jobs:
           retention-days: 1
 
   # ^ The only job that saves the build cache the scenario jobs restore (shared-key
-  # `scenario-build`): a push to main builds what they build. A branch can read the default
-  # branch's caches, so `wsx-scenario/*` runs restore it and never save (docs/tasks.md "Scenarios").
+  # `scenario-build`): a push to main builds what they build. A branch reads the default branch's
+  # caches, never another branch's.
   scenario-cache:
     name: scenario build cache
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -231,161 +215,6 @@ jobs:
         with:
           shared-key: scenario-build
 
-      - name: Build wsx and wsxd
-        run: cargo build --locked -p wsx -p wsx-daemon
-
-      # ^ An empty `p/` would be saved under the key for good: fail before the cache saves it.
-      - name: Check the Zig packages
-        run: test -n "$(ls -A "$ZIG_GLOBAL_CACHE_DIR/p")"
-
-  # ^ The web scenario of a worker's `wsx task check-run web` (scripts/ci-scenario.py). Its parts
-  # (test-web-client.py --part) run as one job each, at once; the run passes when all pass. A
-  # `--<part>` suffix on the branch name (`check-run web --part tasks`) runs that part only. Each
-  # part's captures go back to the worker's checkout as a `scenario-files-<part>` artifact.
-  web-scenario:
-    name: web scenario (${{ matrix.part }})
-    if: ${{ startsWith(github.ref_name, 'wsx-scenario/web/') }}
-    strategy:
-      fail-fast: false
-      matrix:
-        part: [chat, tasks]
-        # ^ On a part-only scenario branch (`--<part>`, ci-scenario.py --part) the other parts start
-        # no job: they would take a runner the run does not need.
-        exclude:
-          - part: ${{ startsWith(github.ref_name, 'wsx-scenario/') && contains(github.ref_name, '--') && !endsWith(github.ref_name, '--chat') && 'chat' || '' }}
-          - part: ${{ startsWith(github.ref_name, 'wsx-scenario/') && contains(github.ref_name, '--') && !endsWith(github.ref_name, '--tasks') && 'tasks' || '' }}
-    # ^ CI rule for the web scenario (task #490): the `chat` part runs on Ubuntu, the `tasks` part on
-    # macOS. A task agent runs only inside wsx's macOS Seatbelt boundary (crates/wsx/src/task/boundary.rs);
-    # on Ubuntu the task host stops every worker with "this platform has none yet", so the `tasks`
-    # part cannot reach a task state there (weblinux run 43969052230, `wsx task why`). The `task`
-    # scenario and the runtime smoke stay on macOS for the same reason. Ubuntu has no queue for a
-    # runner (jobs started 1 to 3 s after they were created; a macOS job waited 10 to 32 min, with
-    # the account's 5 macOS jobs at once), and its runner brings the tools the chat part needs.
-    runs-on: ${{ matrix.part == 'chat' && 'ubuntu-24.04' || 'macos-15' }}
-    timeout-minutes: 60
-    steps:
-      # ^ A job `if` cannot read `matrix`: the matrix excludes the other parts of a part-only
-      # branch (`--<part>` suffix); one that still starts ends green here.
-      - name: Look for this part
-        id: part
-        env:
-          REF_NAME: ${{ github.ref_name }}
-          PART: ${{ matrix.part }}
-        run: |
-          if [[ "$REF_NAME" == *--* && "$REF_NAME" != *"--$PART" ]]; then run=false; else run=true; fi
-          echo "run=$run" >> "$GITHUB_OUTPUT"
-
-      - name: Check out repository
-        if: steps.part.outputs.run == 'true'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Install Rust
-        if: steps.part.outputs.run == 'true'
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: 1.96.1
-
-      - name: Install Zig
-        if: steps.part.outputs.run == 'true'
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version: 0.15.2
-          use-cache: false
-
-      # ^ Restore only (see the Zig package cache rule in `task-scenario`).
-      - name: Restore Zig packages
-        if: steps.part.outputs.run == 'true'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ env.ZIG_GLOBAL_CACHE_DIR }}/p
-          key: zig-packages-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/libghostty-vt/build.zig.zon') }}
-
-      # ^ The Ubuntu build cache has its own key, saved by `scenario-cache-linux`.
-      - name: Cache Rust build
-        if: steps.part.outputs.run == 'true'
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          shared-key: ${{ runner.os == 'Linux' && 'scenario-build-linux' || 'scenario-build' }}
-          save-if: false
-
-      # ^ The scenario checks the compact copies of a PDF and a video (docs/web-client.md "Media").
-      - name: Install poppler and ffmpeg
-        if: steps.part.outputs.run == 'true' && runner.os == 'macOS'
-        run: brew install poppler ffmpeg
-
-      - name: Install poppler and ffmpeg (Ubuntu)
-        if: steps.part.outputs.run == 'true' && runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y poppler-utils ffmpeg
-
-      # ^ The runner image has google-chrome (scripts/web-cdp.mjs finds /usr/bin/google-chrome);
-      # Ubuntu 24.04 refuses the sandbox's user namespace until this is off.
-      - name: Allow Chrome's sandbox
-        if: steps.part.outputs.run == 'true' && runner.os == 'Linux'
-        run: |
-          google-chrome --version
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-
-      - name: Run the web scenario
-        if: steps.part.outputs.run == 'true'
-        # ^ The build and test-web-client.py's own 35 min deadline (RUN_SECONDS) fit in this.
-        timeout-minutes: 45
-        env:
-          WSX_REQUIRE_COMPACT_TOOLS: '1'
-        run: cargo build --locked -p wsx -p wsx-daemon && python3 -B scripts/test-web-client.py --browser --part ${{ matrix.part }}
-
-      - name: Pack the captures
-        if: always() && steps.part.outputs.run == 'true'
-        run: if [ -d .work/web-captures ]; then tar -cf files.tar .work/web-captures; fi
-
-      - name: Upload the captures
-        if: always() && steps.part.outputs.run == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: scenario-files-${{ matrix.part }}
-          path: files.tar
-          if-no-files-found: ignore
-          retention-days: 1
-
-  # ^ The only job that saves what the Ubuntu `chat` part of `web-scenario` restores, on a push to
-  # main, as `scenario-cache` does for macOS: the Zig packages (`zig-packages-Linux-X64-<hash>`)
-  # and the Rust build (shared key `scenario-build-linux`). A branch reads the default branch's
-  # caches, so a `wsx-scenario/*` run never saves.
-  scenario-cache-linux:
-    name: scenario cache linux
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: 1.96.1
-
-      - name: Install Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version: 0.15.2
-          use-cache: false
-
-      - name: Cache Zig packages
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ env.ZIG_GLOBAL_CACHE_DIR }}/p
-          key: zig-packages-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/libghostty-vt/build.zig.zon') }}
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          shared-key: scenario-build-linux
-
-      # ^ build.rs of wsx-terminal runs `zig build`, which fetches the packages.
       - name: Build wsx and wsxd
         run: cargo build --locked -p wsx -p wsx-daemon
 

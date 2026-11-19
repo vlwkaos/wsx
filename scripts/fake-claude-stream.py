@@ -387,6 +387,8 @@ def manager_turn(text, project, page):
         # ^ Events that come along with the turn follow the owner's message: they are no script.
         script = ('\n' + text).split('\nSCRIPT\n', 1)[1].split('\n\nEvents (message ', 1)[0]
         script = script.split('\n\nYour last reply: ', 1)[0]
+        # ^ Events along with the owner's message add "Answer message N first." after it (manager.rs): not a script line.
+        script = script.split('\n\nAnswer message', 1)[0]
         # ^ The host's line with the id of the manager's last reply ends the turn text.
         done = subprocess.run(script, shell=True, capture_output=True, text=True)
         return 'script -> %d %s' % (done.returncode, (done.stdout + done.stderr).strip()[:600])

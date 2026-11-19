@@ -121,22 +121,13 @@ pub fn waits_on(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Option<W
     )
 }
 
-/// When the task's checks began to wait in a queue, or none while they run: the check slot
-/// (`waiting` on `check_slot`, since its `check_queued`), or a `ci:` run that has not said its
-/// jobs started (`ci_queued` or `ci_retry` newer than any `ci_started` or result). The one place that tells
-/// a queued check from a running one. ref: docs/tasks.md "Status"
+/// When the task's checks began to wait for the check slot (`waiting` on `check_slot`, since
+/// its `check_queued`), or none while they run. The one place that tells a queued check from a
+/// running one. ref: docs/tasks.md "Status"
 fn queued_since(dir: &TaskDir, record: &TaskRecord, entered: u64) -> Option<u64> {
-    if record.waits_on(WaitOn::CheckSlot) {
-        return Some(slot_since(dir, entered));
-    }
-    dir.last_entry(|entry| match entry.event {
-        LogEvent::CiQueued {} | LogEvent::CiRetry { .. } => Some(Some(entry.unix_ms)),
-        LogEvent::CiStarted {} | LogEvent::CheckRun { .. } | LogEvent::Checks { .. } => Some(None),
-        _ => None,
-    })
-    .ok()
-    .flatten()
-    .flatten()
+    record
+        .waits_on(WaitOn::CheckSlot)
+        .then(|| slot_since(dir, entered))
 }
 
 /// An open task that waits for another task to land, and why.
@@ -302,20 +293,6 @@ fn status_of(
             None,
             why,
             "The manager hears of the stall and decides what to do.",
-            now_ms,
-        );
-    }
-    // ^ A `ci:` run whose jobs have not started: no check runs, and no slot is waited for.
-    if let (Some(on), false) = (
-        waits_on.filter(|on| on.kind == Holder::Queue),
-        record.waits_on(WaitOn::CheckSlot),
-    ) {
-        return words(
-            "ci_queue",
-            "Waiting for CI to start",
-            Some(on.since_unix_ms),
-            "its check-run waits for a runner",
-            "Its checks run when GitHub starts the jobs.",
             now_ms,
         );
     }
@@ -703,7 +680,7 @@ fn ready(
     }
 }
 
-/// A worker's result that waits for its own check-run's answer (a `ci:` one up to 125 min).
+/// A worker's result that waits for its own check-run's answer .
 fn held(reason: &str, now_ms: u64) -> Status {
     words(
         "check_run",

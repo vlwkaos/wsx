@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
 use wsx_core::stale;
+use wsx_core::task::build;
 use wsx_core::task::manager::{
     decided_request, open_requests, stall_wakes, state_wakes, ApprovalLine, Author, Checkin, Level,
     ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse, RepoState, Seen, Short,
@@ -1030,6 +1031,9 @@ impl Repo {
         std::thread::spawn(move || {
             let client = wsx_core::runtime::Client::new(wsx_core::runtime::default_socket_path());
             let leaked = stale::stop_leaked(&project_id, &main);
+            let cleaned = build::reclaim(&project_id, None, build::RECLAIM_BELOW_MB, || {
+                store::free_mb(&main)
+            });
             let swept = if rules.off() {
                 Ok(Vec::new())
             } else {
@@ -1037,6 +1041,11 @@ impl Repo {
             };
             let result = swept.map(|mut notes| {
                 notes.extend(leaked);
+                notes.extend(cleaned.into_iter().map(|path| stale::Note {
+                    text: "the free disk is under 15 GB: its build folder is removed, the next check builds again".into(),
+                    path,
+                    flag: false,
+                }));
                 notes
             });
             let _ = events.send(Event::Pruned(result));

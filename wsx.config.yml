@@ -28,14 +28,13 @@ tasks:
   # ^ The end-to-end scripts. After a done result the task host runs each one whose
   # `scenarioPaths` name a path the task's commits changed; a changed path that no scenario and no
   # `scenarioFree` glob names runs every one with paths. A scenario without paths runs only when a
-  # worker names it. Each builds the binaries it runs first. A
-  # `ci:` one waits for no slot: it runs here with `--local` when the scenario slot is free, else
-  # on GitHub Actions (scripts/ci-scenario.py, ci.yml);
-  # by hand, run its job's command locally: `cargo build -p wsx -p wsx-daemon && python3 -B
-  # scripts/test-web-client.py --browser` (docs/tasks.md "Scenarios").
+  # worker names it. Each builds the binaries it runs first.
+  # They run on this machine only (the `scenarios` slot lane, a few at once); scripts/scenario.py
+  # starts each part as its own process. GitHub Actions runs them for main and release tags
+  # (docs/tasks.md "Scenarios").
   scenarios:
-    task: "ci: python3 -B scripts/ci-scenario.py task"
-    web: "ci: python3 -B scripts/ci-scenario.py web"
+    task: cargo build -p wsx -p wsx-daemon && python3 -B scripts/scenario.py task
+    web: cargo build -p wsx -p wsx-daemon && python3 -B scripts/scenario.py web
     smoke: cargo build -p wsx -p wsx-daemon && python3 -B scripts/runtime-smoke.py
     boundary: cargo build -p wsx -p wsx-daemon && python3 -B scripts/test-manager-boundary.py
     memory: cargo build -p wsx && python3 -B scripts/test-memory.py "target/debug/wsx memory"
@@ -44,11 +43,11 @@ tasks:
     # task, web and boundary journeys drive the real task host, manager and wsxd through the CLI,
     # and task and smoke drive the TUI. Proof against main's breaks: docs/design/orchestration-lean.md §13.
     task: [crates/wsx, crates/wsx-core, crates/wsx-daemon, crates/wsx-terminal, scripts/test-task.py,
-      "scripts/fake-*", scripts/ci-scenario.py, scripts/tui_pty.py, scripts/wsxd_client.py, scripts/sections.py]
+      "scripts/fake-*", scripts/scenario.py, scripts/tui_pty.py, scripts/wsxd_client.py, scripts/sections.py]
     web: [crates/wsx-web, crates/wsx-core, crates/wsx-daemon, crates/wsx-terminal, crates/wsx/src/task,
       crates/wsx/src/cli, crates/wsx/src/cli.rs, crates/wsx/src/main.rs, scripts/test-web-client.py,
       "scripts/*-check.mjs", scripts/web-cdp.mjs, "scripts/design-lint*", "scripts/fake-*",
-      scripts/ci-scenario.py, scripts/wsxd_client.py, scripts/sections.py]
+      scripts/scenario.py, scripts/wsxd_client.py, scripts/sections.py]
     smoke: [crates/wsx, crates/wsx-core, crates/wsx-daemon, crates/wsx-terminal,
       scripts/runtime-smoke.py, scripts/tui_pty.py, scripts/wsxd_client.py]
     boundary: [crates/wsx/src/task, crates/wsx/src/cli, crates/wsx/src/cli.rs, crates/wsx/src/main.rs,
@@ -71,8 +70,8 @@ tasks:
       scripts/test-*.py and scripts/*-check.mjs for each UI string, label, menu item or route
       the diff adds, renames or removes, and update those asserts. When a scenario's answer comes
       as your next turn, fix what fails, also an assert your change made stale. `task` and `web`
-      run here when the scenario slot is free, else on GitHub Actions; their captures come
-      back to .work/web-captures. In your own copy only `python3 -B
+      run on this machine, their parts at once; their captures come back to
+      .work/web-captures. In your own copy only `python3 -B
       scripts/test-web-client.py --part chat` (no --browser) runs, in about 5 min; the task
       scenario, the `tasks` part and --browser need the host's check-run. After a rebase or
       a conflict fix run no check-run: the host's checks follow. Never commit knowledge/: it

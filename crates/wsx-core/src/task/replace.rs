@@ -264,14 +264,22 @@ pub fn sweep() -> Vec<String> {
     errors
 }
 
-/// The pid of the running host whose arguments after the program are `args`.
+/// The pid of the running host whose arguments after the program are `args`. A host and its
+/// callers share `TMPDIR` (`store::socket_dir`), so a host with another one is of another
+/// store (a second scenario on the machine with the same project name) and is not matched.
 pub(super) fn host_pid(args: &[&str]) -> Option<libc::pid_t> {
-    crate::process::find(|argv, _| {
+    use std::os::unix::ffi::OsStrExt;
+    let tmpdir = std::env::var_os("TMPDIR");
+    crate::process::find(|argv, env| {
         argv.len() == args.len() + 1
             && argv[1..]
                 .iter()
                 .zip(args)
                 .all(|(have, want)| *have == want.as_bytes())
+            && env
+                .iter()
+                .find_map(|variable| variable.strip_prefix(b"TMPDIR="))
+                == tmpdir.as_deref().map(|value| value.as_bytes())
     })
     .into_iter()
     .next()

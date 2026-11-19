@@ -21,6 +21,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { designLint, fingerPath, jumps, launch, mobileAudit, pair, pause, requestRates, shooter, soundCheck, thumbArc, watchFetch } from "./web-cdp.mjs";
 
+// ^ One `phase <seconds> s <name>` line on stderr for each `// ---` part below, which the scenario prints: where the check's time goes.
+let phaseAt = Date.now();
+let phaseName = "setup";
+const phase = (name) => {
+  process.stderr.write(`phase ${((Date.now() - phaseAt) / 1000).toFixed(1)} s ${new Date().toISOString().slice(11, 19)} ${phaseName}\n`);
+  phaseAt = Date.now();
+  phaseName = name;
+};
+
 const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile, plansCheckout, longName, relayFile, wsxCli, newsFile] = process.argv.slice(2);
 const project = Number(projectArg);
 const cdp = await launch({
@@ -644,6 +653,7 @@ async function homeUnread() {
   if (result.open.order.join() !== "calm,gone,quiet" || result.open.quiet) await fail(`a message in an open chat marks it unread: ${JSON.stringify(result.open)}`);
 }
 
+phase("Home: one row per project, needs first, then by activity; th");
 // --- Home: one row per project, needs first, then by activity; the bottom bar is Home, Sessions and Settings.
 await go("#/");
 await until("document.querySelectorAll('.home-row').length >= 3", "home does not list the projects");
@@ -850,6 +860,7 @@ await until("!!document.querySelector('.log .bubble') && !!document.querySelecto
   await until(atEnd, "Jump to latest did not return to the end after the reader's scroll check");
 }
 
+phase("Mentions in the composer (docs/web-client-tasks.md Project s");
 // --- Mentions in the composer (docs/web-client-tasks.md "Project screen"): `/` lists the owner's
 // skills and inserts a request to use one (the manager takes no slash command), `@` lists the
 // other projects; no row of the first read slid in.
@@ -893,6 +904,7 @@ if ((await evaluate("document.querySelector('.composer-field').value")) !== "Ask
 await typeInto(".composer-field", "");
 await until("!document.querySelector('.slash')", "the list stayed over an empty field");
 
+phase("The chat reads like a messaging app: no cards, no tray, no s");
 // --- The chat reads like a messaging app: no cards, no tray, no strip, no Explain; the
 // header names the manager only when it matters.
 for (const gone of [".need-card", ".tray", ".brief", ".events"]) {
@@ -971,6 +983,7 @@ await until("[...document.querySelectorAll('.reply-text')].some((node) => /^note
 await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = log.scrollHeight; })()");
 await until(atEnd, async () => `the chat did not go back to its end: ${JSON.stringify(await evaluate("(() => { const log = document.querySelector('.log'); return { height: log.scrollHeight, top: log.scrollTop, view: log.clientHeight, last: [...log.children].slice(-3).map((node) => node.className + ':' + node.offsetHeight) }; })()"))}`);
 
+phase("The pills: the composer row holds one pill for each of For y");
 // --- The pills: the composer row holds one pill for each of For you (Needs you and To check), Tasks and Routines,
 // between the attach button and Send, each an icon and its count (the label from 900 px, the wide layout) and
 // none for a count of 0. A tap opens that pill's list over the composer; one list at a time. No
@@ -1435,143 +1448,7 @@ if (!(await evaluate("window.answerLine.isConnected"))) await fail("a status lin
 await shot("reservoir-acted", ".composer-send");
 await closeReservoir();
 
-// --- The ⋯ menu: Sessions, Usage, Media and Files (the site reads files); Overview is a header button, Routines a pill (Chats are on Home, checked below); the worktree list hides task sessions.
-await click(".more-button");
-if ((await text(".more-menu a")).join() !== "Sessions,Usage,Media,Files") await fail(`the ⋯ menu offers ${await text(".more-menu a")}`);
-await shot("more-menu", ".composer-send");
-await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Sessions').click()");
-await until(`location.hash === '#/p/${project}/sessions' && !!document.querySelector('.worktree')`, "Sessions did not open the worktree list");
-const worktreeSessions = await text(".worktree .row-session-name");
-if (worktreeSessions.some((name) => /^task-/.test(name))) await fail(`the worktree list shows task sessions: ${worktreeSessions}`);
-await evaluate("document.querySelector('.bar a.icon-button').click()");
-await until(`location.hash === ${JSON.stringify(chat)} && !!document.querySelector('.pill')`, "Back did not return to the chat");
-
-// --- The project overview: markdown and a mermaid graph in the sheet, with its last change.
-await click('.manager a.icon-button[href$="/page"]');
-await until(`location.hash === '#/p/${project}/page' && !!document.querySelector('dialog.task-sheet[open] .project-overview h1')`, "Overview did not open the project overview");
-await until("!!document.querySelector('.project-overview .diagram img')", "the page's mermaid graph did not draw", 30);
-// ^ The button, the sheet's aria-label and its top-bar label all say Overview, and a file under the cap shows no note.
-const overviewLabels = await evaluate("({ sheet: document.querySelector('dialog.task-sheet[open]').getAttribute('aria-label'), bar: document.querySelector('dialog.task-sheet[open] .bar-label').textContent, note: !!document.querySelector('.project-overview .over-limit') })");
-if (overviewLabels.sheet !== "Overview" || overviewLabels.bar !== "Overview" || overviewLabels.note) await fail(`the overview's labels read ${JSON.stringify(overviewLabels)}`);
-if (!/^Updated /.test(await sheetState())) await fail(`the page's top row reads ${await sheetState()}`);
-const pageHeads = await text(".project-overview h2");
-if (pageHeads.join() !== "Goal,Tasks,Decisions,Open questions") await fail(`the page's sections are ${pageHeads}`);
-// ^ The deploy and the main checkout moved here from the reservoir, above the markdown. They
-// come from a separate brief request, which can answer after the page has drawn and again as
-// tasks change: wait for the words, not only the line.
-const factsRead = (facts) => /^Deploy: [0-9a-f]{8}, (up to date with main|\d+ commits? behind main)\./.test(facts) && /Main checkout on main, /.test(facts);
-let facts = "";
-for (let attempt = 0; attempt < 300 && !factsRead(facts); attempt++) {
-  if (attempt) await pause(100);
-  facts = (await text(".project-overview .facts-line"))[0] ?? "";
-}
-if (!factsRead(facts)) await fail(`the page's facts read ${facts}`);
-await shot("page");
-await closeSheet("the page", chat);
-
-// --- Usage: the ⋯ menu's sheet has the project's spend of one choice of filters, from
-// `api/tasks/<project>/usage` (docs/web-client-tasks.md "Usage").
-await click(".more-button");
-await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Usage').click()");
-await until(`location.hash === '#/p/${project}/usage' && !!document.querySelector('dialog.task-sheet[open] .usage-chart')`, "Usage did not open the usage sheet");
-// ^ One row per day, a stacked bar on one scale, a legend, and a tap shows the exact amounts.
-// ^ One chart at a time, so each day shows once: Cost first, the Tokens tab switches it.
-const usageTabs = await evaluate(`[...document.querySelectorAll('.usage-view [role=tab]')].map((tab) => tab.textContent + ':' + tab.getAttribute('aria-selected'))`);
-if (usageTabs.join() !== "Cost:true,Tokens:false" || await evaluate(`document.querySelectorAll('.usage-chart').length`) !== 1) await fail(`the usage tabs are ${usageTabs}`);
-// ^ The Cost tab holds the chart and nothing else: no totals table, no limit strip (a project's sheet has none).
-if (await evaluate(`document.querySelectorAll('.usage table, .usage-limits, [role=tabpanel] [data-chart=tokens]').length`)) await fail("the Cost tab shows more than the cost chart");
-const usageDays = await evaluate(`[...document.querySelectorAll('.usage-chart[data-chart=cost] .usage-days > li')].map((row) => ({
-  cost: row.querySelector('.usage-cost').textContent,
-  parts: [...row.querySelectorAll('.usage-bar i')].map((part) => part.dataset.part),
-  width: row.querySelector('.usage-bar').getBoundingClientRect().width,
-}))`);
-if (usageDays.length !== 7) await fail(`the usage has ${usageDays.length} day rows`);
-const usageToday = usageDays[0];
-if (!usageToday.parts.includes("manager") || !(usageToday.width > 0) || !/^\$\d+\.\d\d$/.test(usageToday.cost)) await fail(`today's usage row is ${JSON.stringify(usageToday)}`);
-if (usageDays.slice(1).some((day) => day.parts.length)) await fail(`a past day has spend: ${JSON.stringify(usageDays)}`);
-const usageLegend = await text("[data-chart=cost] .usage-legend .usage-name");
-const usageWeek = await text("[data-chart=cost] .usage-total .usage-cost");
-const usageAmounts = await text("[data-chart=cost] .usage-legend .usage-amount");
-if (!/^\$\d+\.\d\d$/.test(usageWeek[0]) || usageAmounts.length !== 7 || !usageAmounts.every((cell) => /^\$\d+\.\d\d \d+%$/.test(cell))) await fail(`the usage total is ${usageWeek}, the legend ${usageAmounts}`);
-if (usageLegend.join() !== "Build,Plan,Context,Review,Memo,Other work,Manager") await fail(`the usage legend is ${usageLegend}`);
-await evaluate(`document.querySelector('[data-chart=cost] .usage-days > li:first-child .usage-day').click()`);
-await until(`document.querySelectorAll('[data-chart=cost] .usage-days > li:first-child .usage-parts dd').length === ${usageToday.parts.length}`, "a tap on a day shows its amounts");
-// ^ The token chart: the four kinds in the legend, today's bar split into the kinds it spent
-// (the fake manager's turns have input, cache read and output), and the cache hit rate per row.
-await evaluate("[...document.querySelectorAll('.usage-view [role=tab]')].find((tab) => tab.textContent === 'Tokens').click()");
-await until(`!!document.querySelector('[data-chart=tokens]') && document.querySelectorAll('.usage-chart').length === 1`, "the Tokens tab did not switch the chart");
-// ^ The Tokens tab adds the totals table below its chart, one column, the filters' slice.
-const usageRows = await text(".usage tbody th");
-if (usageRows.join() !== "Cost,Input,Cache read,Cache write,Output,Turns") await fail(`the usage rows are ${usageRows}`);
-// ^ One column, the filters' slice: 7 days of workers and manager on every agent at first.
-const USAGE_TOTALS = `({ head: document.querySelector('.usage thead th')?.textContent,
-  cost: document.querySelector('.usage tbody tr:first-child td')?.textContent, cells: document.querySelectorAll('.usage tbody tr:first-child td').length,
-  turns: Number(document.querySelector('.usage tbody tr:last-child td')?.textContent), days: document.querySelectorAll('.usage-days > li').length,
-  periods: [...document.querySelectorAll('select[name=period] option')].map((option) => option.value),
-  agent: document.querySelector('select[name=agent]')?.value })`;
-const usageTotals = () => evaluate(USAGE_TOTALS);
-const usageAll = await usageTotals();
-// ^ The fake worker's results cost nothing; each manager turn costs 0.001 USD.
-if (usageAll.head !== "7 days" || usageAll.cells !== 1 || !/^\$\d+\.\d\d$/.test(usageAll.cost) || usageAll.cost === "$0.00" || !(usageAll.turns > 1)) {
-  await fail(`the usage totals are ${JSON.stringify(usageAll)}`);
-}
-const tokenLegend = await text("[data-chart=tokens] .usage-legend .usage-name");
-if (tokenLegend.join() !== "Input,Cache read,Cache write,Output") await fail(`the token legend is ${tokenLegend}`);
-const tokenAmounts = await text("[data-chart=tokens] .usage-legend .usage-amount");
-if (tokenAmounts.length !== 4 || !tokenAmounts.every((cell) => /^\d+(\.\d)?[kM]? \d+%$/.test(cell))) await fail(`the token legend amounts are ${tokenAmounts}`);
-const tokenDays = await evaluate(`[...document.querySelectorAll('[data-chart=tokens] .usage-days > li')].map((row) => ({
-  total: row.querySelector('.usage-cost').textContent,
-  rate: row.querySelector('.usage-rate').textContent,
-  kinds: [...row.querySelectorAll('.usage-bar i')].map((kind) => kind.dataset.part),
-  narrow: [...row.querySelectorAll('.usage-bar i')].some((kind) => kind.getBoundingClientRect().width < 3),
-}))`);
-if (tokenDays.length !== 7 || !tokenDays[0].kinds.includes("input") || !tokenDays[0].kinds.includes("cache_read") || !tokenDays[0].kinds.includes("output")
-  || tokenDays[0].narrow || !/^\d+%$/.test(tokenDays[0].rate) || !/^\d+(\.\d)?[kM]?$/.test(tokenDays[0].total)) await fail(`today's token row is ${JSON.stringify(tokenDays[0])}`);
-if (tokenDays.slice(1).some((day) => day.kinds.length || day.rate !== "-")) await fail(`a past day has tokens: ${JSON.stringify(tokenDays)}`);
-const tokenWeek = await text("[data-chart=tokens] .usage-total .usage-rate");
-if (!/^\d+%$/.test(tokenWeek[0])) await fail(`the 7-day hit rate is ${tokenWeek}`);
-await evaluate(`document.querySelector('[data-chart=tokens] .usage-days > li:first-child .usage-day').click()`);
-await until(`document.querySelectorAll('[data-chart=tokens] .usage-days > li:first-child .usage-parts dd').length === ${tokenDays[0].kinds.length}`, "a tap on a token day shows its amounts");
-// ^ One set of filters drives the chart and the table: each choice reads again and both follow.
-const choose = async (name, value) => {
-  const before = JSON.stringify(await usageTotals());
-  await evaluate(`(() => { const select = document.querySelector('select[name=${name}]'); select.value = ${JSON.stringify(value)};
-    select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-  // ^ The filters are busy until the read of the new choice came.
-  await until(`!document.querySelector('.usage-filters[aria-busy=true]') && JSON.stringify(${USAGE_TOTALS}) !== ${JSON.stringify(before)}`, `the usage did not follow ${name} ${value}`);
-  return usageTotals();
-};
-const usageOnlyToday = await choose("period", "today");
-if (usageOnlyToday.head !== "Today" || usageOnlyToday.days !== 1 || usageOnlyToday.turns !== usageAll.turns) await fail(`Today's usage is ${JSON.stringify(usageOnlyToday)} after ${JSON.stringify(usageAll)}`);
-await choose("period", "week");
-// ^ A slice with no spend says so, with its filters kept (the fake worker's results cost nothing).
-await choose("who", "workers");
-await click("#usage-tab-cost");
-await until("!document.querySelector('.usage-chart') && (document.querySelector('#usage-panel .empty')?.textContent ?? '') === 'No spend' && !!document.querySelector('select[name=who]')", "a Cost slice with no spend does not say so");
-await click("#usage-tab-tokens");
-// ^ Back on Tokens with the workers kept: their chart, or "No spend" when they used no tokens either (CI run 43553934252).
-await until("document.querySelector('#usage-tab-tokens').getAttribute('aria-selected') === 'true' && document.querySelector('select[name=who]').value === 'workers' && (!!document.querySelector('[data-chart=tokens]') || (document.querySelector('#usage-panel .empty')?.textContent ?? '') === 'No spend')", "the Tokens tab did not come back");
-await choose("who", "");
-const usageManager = await choose("who", "manager");
-if (!(usageManager.turns > 0) || !(usageManager.turns < usageAll.turns)) await fail(`the manager's usage is ${JSON.stringify(usageManager)} of ${JSON.stringify(usageAll)}`);
-await choose("who", "");
-const agents = await evaluate(`[...document.querySelectorAll('select[name=agent] option')].map((option) => option.value)`);
-if (!agents.includes("claude") || !agents.includes("claude/fake-manager")) await fail(`the agent choices are ${agents}`);
-const usageAgent = await choose("agent", "claude/fake-manager");
-if (!(usageAgent.turns > 0) || usageAgent.turns > usageManager.turns || usageAgent.cost === "$0.00") await fail(`the manager model's usage is ${JSON.stringify(usageAgent)}, the manager's ${JSON.stringify(usageManager)}`);
-// ^ The limit window: fake Claude's 5-hour window starts at its newest turn, so it holds fewer
-// turns than the 7 days; picked with every agent it counts Claude's.
-await choose("agent", "");
-if (!usageAll.periods.includes("five_hour") || !usageAll.periods.includes("seven_day")) await fail(`the periods are ${usageAll.periods}`);
-const usageWindow = await choose("period", "five_hour");
-if (usageWindow.head !== "5-hour window" || usageWindow.agent !== "claude" || !(usageWindow.turns < usageAll.turns) || usageWindow.days !== 1) await fail(`the 5-hour window's usage is ${JSON.stringify(usageWindow)}`);
-await shot("usage");
-const usageSize = size;
-await resize([1280, 800, 1]);
-await shot("usage");
-await resize(usageSize);
-await closeSheet("the usage sheet", chat);
-
+phase("Routines: the third pill and its list over the composer (doc");
 // --- Routines: the third pill and its list over the composer (docs/web-client-tasks.md "Routines"). The fixture has
 // `nightly` (on, succeeded, printed nothing, so no message), `weekly` (off, found something: it exits 1, a findings code,
 // and its end is a message in the chat) and `idle` (on, never run). The pill counts the enabled ones, tints for a failed
@@ -1740,6 +1617,7 @@ await closeSheet("the usage sheet", chat);
   }
 }
 
+phase("The Overview button in the chat header (icon only), and Sett");
 // --- The Overview button in the chat header (icon only), and Settings' "Header: top | bottom" (docs/web-client.md "Header position").
 {
   try {
@@ -1815,6 +1693,7 @@ await closeSheet("the usage sheet", chat);
   await until("!!document.querySelector('.manager > .bar') && !!document.querySelector('.log .bubble')", "the chat's bar is not back on top");
 }
 
+phase("A turn of the manager: two messages group on the right; whil");
 // --- A turn of the manager: two messages group on the right; while it runs a typing bubble
 // ends the chat and the header says "typing"; the reply edits the page (with a link to it),
 // has short chips (the same task twice as two plain chips) and a table that scrolls inside it.
@@ -1860,6 +1739,7 @@ await evaluate("[...document.querySelectorAll('.log .page-link')].at(-1).click()
 await until("/Ship the chat/.test(document.querySelector('.project-overview')?.textContent ?? '')", "the page does not show the manager's edit", 30);
 await closeSheet("the page");
 
+phase("A new conversation (BIG passes the manager's rotateTokens) s");
 // --- A new conversation (BIG passes the manager's rotateTokens) shows once: it has no id, so
 // the reads after it return it again until the next message.
 const newConversations = "[...document.querySelectorAll('.log .note')].filter((node) => node.textContent.startsWith('New conversation')).length";
@@ -1873,6 +1753,7 @@ await until("[...document.querySelectorAll('.log .bubble[data-side=out]')].some(
 await pause(1500);
 if (await evaluate(newConversations) !== shownBefore + 1) await fail(`the new conversation shows ${(await evaluate(newConversations)) - shownBefore} times`);
 
+phase("A turn that ends while the page is offline, or hidden and of");
 // --- A turn that ends while the page is offline, or hidden and offline as iOS keeps a PWA in
 // the background: the stream misses the reply and the end of the turn. Back online and
 // visible, the page reads the chat again, so the typing dots go and the reply shows without
@@ -1934,6 +1815,7 @@ await until("!document.querySelector('.notice[data-offline]')", "the stream did 
 // ^ The reads the page tried while offline failed, as they should.
 problems.splice(offlineFrom, problems.length - offlineFrom, ...problems.slice(offlineFrom).filter((problem) => !/ERR_INTERNET_DISCONNECTED/.test(problem)));
 
+phase("The typing bubble is as wide as its dots, with even padding,");
 // --- The typing bubble is as wide as its dots, with even padding, and every dot shows whole
 // (docs/web-client-tasks.md "Project screen").
 const beforeLong = await evaluate(replies);
@@ -1980,6 +1862,7 @@ await runs("after a pageshow from the back-forward cache", ".log .typing .typing
 // ^ The reply is a row of its own after the dots go: the next check reads the chat once it is in (it follows the end).
 await until(`!document.querySelector('.log .typing') && ${replies} > ${beforeLong}`, "the long turn did not end with its reply", 400);
 
+phase("The task sheet: a chip or a reservoir row opens it over the ");
 // --- The task sheet: a chip or a reservoir row opens it over the chat, and the chat does not
 // scroll; Escape, Back and a swipe down close it, the composer keeps its draft and gets the
 // focus back.
@@ -2033,6 +1916,7 @@ await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelecto
 if (await evaluate("document.querySelector('.composer-field').value") !== "a draft that stays") await fail("the swipe lost the draft");
 await typeInto(".composer-field", "");
 
+phase("The # picker: every task, filtered by number or words, a pic");
 // --- The `#` picker: every task, filtered by number or words, a pick inserts `#n `.
 const taskCount = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((view) => view.tasks.length)`);
 await typeInto(".composer-field", "land #");
@@ -2083,6 +1967,7 @@ await resize([390, 420, 2]);
 await shot("project-short", ".composer-send");
 await resize([390, 844, 2]);
 
+phase("Following the end (docs/web-client-chat.md Following the end");
 // --- Following the end (docs/web-client-chat.md "Following the end"). A reply arrives the way
 // another device's message does (not the composer, which goes to the end).
 // ^ Each one spends the task-action budget (10 at once, 20 a minute, crates/wsx-web/src/http.rs
@@ -2100,8 +1985,8 @@ async function diagramReply() {
   await pause(300);
 }
 const toLatest = async (where) => {
-  await evaluate("document.querySelector('.jump')?.click()");
-  await until(atEnd, `${where}: Jump to latest did not return to the end`);
+  // ^ The button may draw after the first click and a new row moves the end: each try clicks again.
+  await until(`(document.querySelector('.jump')?.click(), ${atEnd})`, `${where}: Jump to latest did not return to the end`);
 };
 // The probe is the first bubble wholly in view; its distance from the screen's top must not change.
 const probe = "document.querySelector('[data-follow-probe]').getBoundingClientRect().top";
@@ -2277,6 +2162,7 @@ async function followEnd(where) {
 }
 await followEnd("390 px");
 
+phase("Opening a chat and replying (docs/web-client-chat.md Opening");
 // --- Opening a chat and replying (docs/web-client-chat.md "Opening a chat", "Replies"). This
 // device keeps how far it read each chat and where it left it.
 const jumpWords = () => evaluate("document.querySelector('.jump')?.textContent.trim() ?? ''");
@@ -2548,6 +2434,7 @@ async function readAndReply(where) {
 }
 await readAndReply("390 px");
 
+phase("The task sheet of #2: how it does, one sentence of what chan");
 // --- The task sheet of #2: how it does, one sentence of what changed and the one action; the
 // report (Changes, Evidence, To check, Left open) in one Report fold, then History. No verdict,
 // no Asked, no revision number. Land, then its item is live under To check, outside the folds.
@@ -2628,6 +2515,7 @@ const history = await text(".timeline-what");
 if ((await text(".timeline > .fold-head")).join() !== "History" || !history.includes("Landed") || history.some((line) => /Verified|without verification/.test(line))) await fail(`the history reads ${history}`);
 await shot("task-landed");
 
+phase("#4: a pending approval in the sentence and its buttons. Deny");
 // --- #4: a pending approval in the sentence and its buttons. Deny, then answer through the manager.
 // ^ Opened from the chat: its close is history back, and from #2's sheet it would return to #2.
 await go(chat);
@@ -2669,6 +2557,7 @@ await until("/^Ready, waiting for you to land it for [^:]+: .+\\. Land it to put
 await until("document.querySelectorAll('.task-talk .bubble').length === 1", "the manager's add is not in the sheet's messages", 60);
 if ((await nextButtons()).includes("Answer")) await fail("a ready task's sheet offers Answer");
 
+phase("Notices lie over the screen, one at a time. An approved acti");
 // --- Notices lie over the screen, one at a time. An approved action that did not run stays
 // until dismissed, also when a later outcome comes; an outcome clears itself.
 await go(chat);
@@ -2714,6 +2603,7 @@ await until("!document.querySelector('.notice')", "the outcome did not clear its
 await until("/^Ready, waiting for you to land it for [^:]+: .+\\. Land it to put it on main\\.$/.test(document.querySelector('.story-next')?.textContent ?? '')", "#4 did not come back ready after Hand back", 300);
 await closeSheet("#4 again");
 
+phase("The manager chat attaches files as a session's chat does, an");
 // --- The manager chat attaches files as a session's chat does, and shows another project's
 // manager as its own bubbles (docs/web-client-tasks.md "Project screen").
 await go(chat);
@@ -2842,6 +2732,7 @@ async function replyQuotesAndCloses(back) {
   await until("document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 2", "the replied item stayed in the list after the reply");
 }
 
+phase("To check: the reservoir's row opens the list; Fail closes th");
 // --- To check: the reservoir's row opens the list; Fail closes the item and quotes it for the
 // owner's note; Pass in a To check row changes its bubble in place; Skip closes the last without a verdict.
 await go(chat);
@@ -3040,26 +2931,7 @@ await firstRowInside("with only running tasks");
 await shot("reservoir-running-first", ".composer-send");
 await closeReservoir();
 
-// --- Home marks a project with a message its chat has that this device has not read: an accent
-// mark and the message's first line; opening the chat clears it (docs/web-client-tasks.md "Home").
-await go("#/");
-await until("!!document.querySelector('.home-row')", "home did not open for the new message");
-const newsRow = `document.querySelector('.home-rows > .row:has(.home-row)[data-key="${project}"]')`;
-if (await evaluate(`!!${newsRow}.querySelector('.news-mark')`)) await fail("a project whose chat was read is marked new");
-await evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'STATUS for home' }) })`);
-await until(`!!${newsRow}?.querySelector('.news-mark') && /^open: /.test(${newsRow}.querySelector('.row-context[data-news]')?.textContent.trim() ?? '')`, "the new reply did not mark the project's home row", 300);
-const marked = await evaluate(`(() => { const mark = getComputedStyle(${newsRow}.querySelector('.news-mark')).backgroundColor;
-  const probe = document.createElement('span'); probe.style.color = 'var(--color-accent)'; document.body.append(probe); const accent = getComputedStyle(probe).color; probe.remove();
-  return { mark, accent, others: [...document.querySelectorAll('.home-rows > .row:has(.home-row):not([data-news]) .news-mark')].length }; })()`);
-if (marked.mark !== marked.accent || marked.others) await fail(`the new message's mark is not the accent alone: ${JSON.stringify(marked)}`);
-await shot("home-news");
-await go(chat);
-await until("!!document.querySelector('.log .bubble') && !document.querySelector('.jump')", "the chat did not open at its end for the new reply", 100);
-await pause(500);
-await go("#/");
-await until(`!!${newsRow} && !${newsRow}.querySelector('.news-mark') && !${newsRow}.querySelector('.row-context[data-news]')`, "opening the chat did not clear the home row's mark", 50);
-await shot("home-read");
-
+phase("A deep link to a task opens the chat with the sheet over it;");
 // --- A deep link to a task opens the chat with the sheet over it; Back closes the sheet, then
 // the chat is the first entry, so the next Back leaves the page.
 // ^ Through a blank page: a navigation that changes only the hash stays in this document.
@@ -3096,6 +2968,7 @@ await until("location.href === 'about:blank'", "a second history.back() after th
 await send("Page.navigate", { url: `${siteUrl}#/` });
 await until("!!document.querySelector('.home-row')", "the page did not open again on Home");
 
+phase("Back in a top row or a sheet and the system's swipe back (hi");
 // --- Back in a top row or a sheet and the system's swipe back (history.back()) lead to the same
 // place with the same scroll (docs/web-client.md "Screens"): each screen opens the normal way
 // twice, left once by its Back and once by history.back(). A list's scroll comes back too.
@@ -3165,44 +3038,13 @@ if (JSON.stringify(afterTabs) !== JSON.stringify(tabbed)) await fail(`tab and se
 await evaluate("history.back()");
 await until(`location.hash === ${JSON.stringify(chat)}`, "history.back() after the tabs did not leave the section");
 
-// --- The page never zooms (docs/web-client.md "Zoom"): a two-finger pinch on the chat and a tap
-// on the composer leave the visual viewport at scale 1.
-await resize([390, 844, 2]);
-await until("!!document.querySelector('.composer-field')", "the chat did not come back");
-await pinch({ x: 195, y: 400 });
-await pause(300);
-if (await evaluate("visualViewport.scale") !== 1) await fail(`a pinch zoomed the chat to ${await evaluate("visualViewport.scale")}`);
-const field = await evaluate("(() => { const box = document.querySelector('.composer-field').getBoundingClientRect(); return [Math.round(box.left + box.width / 2), Math.round(box.top + box.height / 2)]; })()");
-await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: field[0], y: field[1] }] });
-await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-await until("document.activeElement === document.querySelector('.composer-field')", "a tap did not focus the composer");
-await pause(300);
-const focusZoom = await evaluate("({ scale: visualViewport.scale, font: getComputedStyle(document.querySelector('.composer-field')).fontSize })");
-if (focusZoom.scale !== 1 || parseFloat(focusZoom.font) < 16) await fail(`the focused composer reads ${JSON.stringify(focusZoom)}`);
-await evaluate("document.activeElement.blur()");
-// ^ A double tap on the title does not zoom either.
-const title = await evaluate("(() => { const box = document.querySelector('.manager > .bar .bar-label').getBoundingClientRect(); return [Math.round(box.left + box.width / 2), Math.round(box.top + box.height / 2)]; })()");
-for (let tap = 0; tap < 2; tap++) {
-  await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: title[0], y: title[1] }] });
-  await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await pause(80);
-}
-await pause(400);
-const doubleTap = await evaluate("({ scale: visualViewport.scale, hash: location.hash })");
-if (doubleTap.scale !== 1 || doubleTap.hash !== chat) await fail(`a double tap on the title zoomed or moved the page: ${JSON.stringify(doubleTap)}`);
-// ^ Safari pinches through its gesture events, which Chrome does not send: the page cancels them
-// on the document, and the viewport refuses scaling (docs/web-client.md "Zoom").
-const safari = await evaluate(`(() => { const sent = ["gesturestart", "gesturechange"].map((name) => { const event = new Event(name, { bubbles: true, cancelable: true });
-  document.querySelector('.composer-field').dispatchEvent(event); return event.defaultPrevented; });
-  return { sent, viewport: document.querySelector('meta[name=viewport]').content, page: getComputedStyle(document.documentElement).touchAction }; })()`);
-if (safari.sent.join() !== "true,true" || !safari.viewport.includes("maximum-scale=1") || !safari.viewport.includes("user-scalable=no") || safari.page !== "pan-x pan-y") {
-  await fail(`Safari's zoom is not refused: ${JSON.stringify(safari)}`);
-}
-
+phase("A task that waits for the owner's answer: in plans' chat its");
 // --- A task that waits for the owner's answer: in plans' chat its manager reads "plans" and
 // ui's chat "ui". #1's reservoir row with Answer, whose chip opens its sheet: the story asks for
 // the answer, the field says so, and the answer is a bubble; then the list cleared one row
 // after another: Land #2, Land #1, and then no reservoir with the focus on the composer.
+await resize([390, 844, 2]);
+// ^ The Back phase above ends at 390x400.
 const plans = Number(plansArg);
 const plansChat = `#/c/${await homeOf(plans)}`;
 await go(plansChat);
@@ -3262,6 +3104,7 @@ await evaluate(`${foldRow}.scrollIntoView({ block: 'start' })`);
 await shot("fold-open");
 await evaluate(`${foldRow}.querySelector('.fold-toggle').click()`);
 await until(`${foldRow}.querySelector('.fold-toggle').getAttribute('aria-expanded') === 'false' && !${foldRow}.querySelector('.status-line')`, "a second tap did not fold the run");
+phase("A long chat's render (docs/web-client-chat.md Long chats): p");
 // --- A long chat's render (docs/web-client-chat.md "Long chats"): plans' log holds 3,000 older
 // messages with markdown and chips. At 390 px with the CPU slowed 4x, a read that brings no new
 // message (the event a change sends) is timed on the main thread; it renders no bubble again. The
@@ -3290,6 +3133,7 @@ const renderCost = async (label) => {
   return line;
 };
 const costs = [await renderCost("newest rows")];
+phase("Find (docs/web-client-chat.md Find): the header's icon opens");
 // --- Find (docs/web-client-chat.md "Find"): the header's icon opens the bar and loads the whole
 // chat; "quasar" is only in plans' 1st and 4th older turns, past the newest 400 entries
 // (test-web-client.py). It starts at the newer match; Previous goes to the older one, Next back.
@@ -3324,6 +3168,7 @@ costs.push(await renderCost("at the end after a find"));
 console.log(`long chat render at 390 px, CPU 4x: ${costs.map((cost) => `${cost.label} ${cost.ms} ms, ${cost.named} rows, ${cost.nodes} elements, ${cost.renders} bubbles rendered`).join("; ")}`);
 const costly = costs.filter((cost) => cost.renders > 0 || (cost.label === "at the end after a find" && cost.named > 60));
 if (costly.length) await fail(`a read with no new message rendered bubbles again, or the log kept more than its newest 60 rows: ${JSON.stringify(costs)}`);
+phase("Questions (docs/tasks.md Questions under Manager): plans' lo");
 // --- Questions (docs/tasks.md "Questions" under "Manager"): plans' log asked four times and the
 // owner answered some (test-web-client.py); the plain owner messages since answered more, so plans
 // is asked once more here. Each open question waits in the reservoir with Reply and Dismiss; a
@@ -3380,6 +3225,7 @@ if (left.some((ask) => ask.id === plansQuestion.id) || left.length !== openAsks.
 const chatAsks = await evaluate(`fetch('api/tasks/${plansArg}/chat').then((r) => r.json()).then((data) => data.asks)`);
 if (JSON.stringify(chatAsks) !== JSON.stringify(left.map((ask) => ask.id))) await fail(`the chat's asks ${JSON.stringify(chatAsks)} differ from the overview's ${JSON.stringify(left)}`);
 await until(`!document.querySelector('.log [data-key="reply-${plansQuestion.id}"][data-asks], .log [data-key="reply-${plansQuestion.id}"] [data-asks]')`, "the dismissed question's bubble keeps its border");
+phase("A tap on a quote whose message is not among the rows (docs/w");
 // --- A tap on a quote whose message is not among the rows (docs/web-client-chat.md "Replies"):
 // plans' first older turn (message 5001, test-web-client.py) is past the rows the page holds, so
 // the manager's quote of it opens the chat around that message, marked, and Back to newest returns.
@@ -3434,6 +3280,7 @@ await until(`(document.querySelector('.task-sheet .progress-health')?.textConten
 await closeSheet("the waiting sheet", plansChat);
 // ^ Closing the sheet gives the composer the focus.
 await until("document.activeElement?.classList.contains('composer-field') && !document.activeElement.closest('dialog')", "closing the sheet did not focus the composer");
+phase("An uncommitted change in the main checkout to the file #2 wr");
 // --- An uncommitted change in the main checkout to the file #2 writes: Land stays, a line
 // under the buttons names it and wraps on a phone; a commit ends the line. The commit is then
 // undone, so #2 still lands.
@@ -3458,6 +3305,7 @@ await until("!!document.querySelector('dialog.task-sheet[open] .story') && !docu
 git("reset", "-q", "--hard", "HEAD~1");
 await closeSheet("the committed sheet", plansChat);
 
+phase("plans' failed deploy: its fold opens to the last lines, mono");
 // --- plans' failed deploy: its fold opens to the last lines, monospace, at most half the screen.
 await go(`#/p/${plans}/page`);
 await until("!!document.querySelector('.project-overview .deploy-output summary')", "plans' page has no fold for the failed deploy", 30);
@@ -3495,58 +3343,8 @@ await until("!document.querySelector('.reservoir')", "the cleared list still sho
 await until("!document.activeElement?.matches('textarea, input')", `with the list cleared the focus is on ${JSON.stringify(await focused())}`, 30);
 await shot("reservoir-cleared", ".composer-send");
 
-// --- The task sheet has no link to the worker's terminal, though #6's worker has a session;
-// the project's ⋯ keeps Sessions.
-await go(page(6));
-await until("!!document.querySelector('dialog.task-sheet[open] .story')", "#6's sheet did not open");
-if (await count('.task-sheet a[href*="/terminal"]')) await fail("the task sheet links to the worker's terminal");
-await closeSheet("#6's sheet");
-await click(".more-button");
-if (!(await text(".more-menu a")).includes("Sessions")) await fail(`the ⋯ menu lost Sessions: ${await text(".more-menu a")}`);
-await click(".more-button");
-
-// --- Narrow and wide: the tabs in the first screen, the ⋯ menu to the worktrees.
-for (const next of [[320, 568, 2], [1280, 800, 1]]) {
-  await resize(next);
-  await go("#/");
-  await until("!!document.querySelector('.home-row')", "home did not open");
-  await tabsInView();
-  await shot("home");
-  // ^ On a wide screen the rail keeps the list it was reached from.
-  await go(chat);
-  await until("!!document.querySelector('.composer-field')", "the chat did not open");
-  await click(".more-button");
-  await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Sessions').click()");
-  await until(`location.hash === '#/p/${project}/sessions' && !!document.querySelector('.worktree')`, "the ⋯ menu did not open the worktrees");
-  await plainWorktree(`the worktree list at ${size[0]}x${size[1]}`);
-  if (!phone() && (await text(".rail-tabs a[aria-current=page]")).join() !== "Home") await fail("the rail does not keep Home for the worktrees");
-  await shot("project-worktrees");
-  await go(chat);
-  await until("!!document.querySelector('.composer-field')", "the chat did not come back");
-}
-// --- Wide: the chat in its column, the sheet a panel at the right.
-await go(chat);
-await until("!!document.querySelector('.pill')", "the ui chat did not come back");
-await resize([1280, 800, 1]);
-await managerWidth("the wide chat");
-await shot("project", ".composer-send");
-await followEnd("1280 px");
-await readAndReply("1280 px");
-await viewImages("chat-images", chatImages);
-await go(page(3));
-await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the sheet did not open on a wide screen");
-if ((await evaluate("getComputedStyle(document.querySelector('dialog.task-sheet')).animationName")) !== "sheet-in-side") await fail("the wide sheet does not come in from the right");
-await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
-const panel = await evaluate("(() => { const r = document.querySelector('dialog.task-sheet').getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right), height: Math.round(r.height) }; })()");
-if (panel.right !== 1280 || panel.left < 640 || panel.height !== 800) await fail(`on a wide screen the sheet is ${JSON.stringify(panel)}`);
-await shot("sheet");
-await closeSheet("the wide sheet");
-await go(`#/p/${project}/page`);
-await until("!!document.querySelector('.project-overview .diagram img')", "the wide page did not draw its graph", 30);
-await shot("page");
-await key("Escape", 27);
+phase("Settings > Notifications: three switches, each saved at once");
 await resize([390, 844, 2]);
-
 // --- Settings > Notifications: three switches, each saved at once (docs/web-client.md
 // "Notifications"). Only the browser's permission prompt and push service are stubbed: the
 // subscription is the local receiver's (WSX_PUSH_FIXTURE), and the server checks and stores it.
@@ -3629,6 +3427,7 @@ await settled("the manager switch off");
 await click("input[name=agents]");
 await until("document.querySelector('.option-status')?.textContent === 'Notifications are off for this device.'", "turning every switch off did not say so");
 
+phase("Progress: the top of an open task's sheet at 390x844, for ea");
 // --- Progress: the top of an open task's sheet at 390x844, for each state, from real tasks of
 // `plans` (docs/web-client-tasks.md "Task sheet").
 {
@@ -3847,6 +3646,7 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   await go(chat);
 }
 
+phase("A new build on the server: a pill until it is tapped; the ta");
 // --- A new build on the server: a pill until it is tapped; the tap reloads at the same route
 // with the composer's draft.
 await go(chat);
@@ -4192,6 +3992,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   if (listed.chats.find((chat) => chat.name === "qa")?.state !== "closed") await fail(`chat list after Close chat: ${JSON.stringify(listed)}`);
 }
 
+phase("Session news: the host's post for a session that needs the o");
 // --- Session news: the host's post for a session that needs the owner links to that session
 // (docs/tasks.md "Session news"). The fixture's host posts it when this file is written.
 await go(chat);
@@ -4211,6 +4012,7 @@ await until(`location.hash === '#/s/${newsSession}/chat'`, "the link of the sess
 await go(chat);
 
 // ^ The 401s are expected, and so is the 404 of the Routines block's probe of a project outside the grant.
+phase("A message a routine wrote (a digest: wsx posts it with no ag");
 // --- A message a routine wrote (a digest: wsx posts it with no agent turn) has a border in the
 // secondary accent, not the asks-you accent, in both schemes (docs/web-themes.md "color-secondary").
 {
@@ -4271,9 +4073,11 @@ await until("!!document.querySelector('.pill')", "the ui chat did not come back"
 // A long chat renders its newest 60 rows; "Show N earlier" adds rows above and keeps the reader
 // on the row they read (docs/web-client.md "Screens").
 const named = "document.querySelectorAll('.log > [data-key]').length";
-for (let n = 0; n < 35; n++) {
-  const status = await say(`NOOP ${n}`);
-  if (status !== 200) await fail(`message ${n} of the long chat was not taken: ${status}`);
+// ^ The messages go through the CLI: the web's send budget (20, then one every 3 s) would hold 15 of
+// the 35, and each refused send is retried by `watchFetch` and counts against the page's 240 requests a minute.
+{
+  const cli = JSON.parse(fs.readFileSync(wsxCli));
+  for (let n = 0; n < 35; n++) execFileSync(cli.wsx, ["task", "say", `NOOP ${n}`, "--json", "-p", "ui"], { env: cli.env, cwd: cli.cwd, stdio: "pipe" });
 }
 await until(`!document.querySelector('.log .typing')`, "the manager did not answer the long chat", 120);
 // ^ Read to the end and opened again: nothing unread, so the window is the newest 60 rows.
@@ -4295,6 +4099,7 @@ await pause(300);
 const shifted = (await rowAt(reading.key)) - reading.down;
 if (Math.abs(shifted) > 2) await fail(`Show earlier moved the row in view by ${shifted} px`);
 await toLatest("390 px");
+phase("The manager quotes an earlier message by id (docs/tasks.md M");
 // --- The manager quotes an earlier message by id (docs/tasks.md "Manager"): its reply shows the
 // quote as one line over its words, and a tap goes to the quoted message.
 const sayAgain = async (words) => {
@@ -4349,48 +4154,7 @@ await setMotion("no-preference");
     return document.querySelector('.log .bubble[data-found]')?.dataset.key ?? null; })()`);
   if (found !== row.key) await fail(`a tap on the quote of the emoji message marks ${JSON.stringify(found)}, not ${row.key}`);
 }
-// --- A table under a list item (docs/design/list-tables.md): a manager's real reply has four numbered
-// items, each with a table under it that is not indented to the item. Each table shows right after
-// its item, with all its rows, and the lists keep their numbers. A plain table, a plain list and a
-// list followed by a paragraph read as before.
-{
-  const reply = (start) => `[...document.querySelectorAll('.log .bubble[data-side=in]')].findLast((node) => node.querySelector('.markdown')?.textContent.trim().startsWith(${JSON.stringify(start)}))`;
-  const shape = (start) => evaluate(`(() => { const bubble = ${reply(start)}; if (!bubble) return null; const markdown = bubble.querySelector('.markdown');
-    return { kids: [...markdown.children].map((node) => node.tagName.toLowerCase() + (node.classList.contains('table-wrap') ? ':table' : '')),
-      starts: [...markdown.querySelectorAll(':scope > ol')].map((list) => list.getAttribute('start') ?? '1'),
-      items: [...markdown.querySelectorAll(':scope > ol > li, :scope > ul > li')].map((item) => item.textContent.trim()),
-      rows: [...markdown.querySelectorAll('.table-wrap table')].map((table) => table.querySelectorAll('tr').length),
-      heads: [...markdown.querySelectorAll('.table-wrap table')].map((table) => [...table.querySelectorAll('th')].map((cell) => cell.textContent.trim()).join('|')),
-      raw: markdown.textContent.includes('|---|'), fits: [...markdown.querySelectorAll('.table-wrap')].every((wrap) => wrap.getBoundingClientRect().right <= bubble.querySelector('.bubble-box').getBoundingClientRect().right + 0.5) }; })()`);
-  if (await say("LISTTABLE") !== 200) await fail("the message for a list-table reply was not taken");
-  await until(`!!${reply("Read-only answer against wsx main")} && !document.querySelector('.log .typing')`, "the reply with tables under list items did not arrive", 120);
-  const listed = await shape("Read-only answer against wsx main");
-  // ^ Item, table, item, table, item, table, a paragraph, item, table: the lists restart at 2, 3 and 4.
-  const kids = ["p", "ol", "div:table", "ol", "div:table", "ol", "div:table", "p", "ol", "div:table"];
-  const want = { starts: ["1", "2", "3", "4"], rows: [6, 3, 4, 6], heads: ["Step of the owner's flow|wsx today", "Need|Supported way", "PR gives|Needed for solo ir?", "Item|Kind|Smallest change"] };
-  if (!listed || JSON.stringify(listed.kids) !== JSON.stringify(kids) || JSON.stringify(listed.starts) !== JSON.stringify(want.starts)
-    || JSON.stringify(listed.rows) !== JSON.stringify(want.rows) || JSON.stringify(listed.heads) !== JSON.stringify(want.heads) || listed.raw || !listed.fits
-    || listed.items[0] !== "What wsx does today" || listed.items[3] !== "Missing vs habit") {
-    await fail(`the tables under list items read ${JSON.stringify({ listed, kids, want })}`);
-  }
-  // ^ The reader is above the new reply, so it is brought into view for the capture.
-  await evaluate(`${reply("Read-only answer against wsx main")}.scrollIntoView({ block: 'start' })`);
-  await pause(300);
-  await shot("list-tables", ".composer-send");
-  if (await say("LISTPLAIN") !== 200) await fail("the message for a plain-shapes reply was not taken");
-  await until(`!!${reply("Plain shapes:")} && !document.querySelector('.log .typing')`, "the reply with plain shapes did not arrive", 120);
-  const plain = await shape("Plain shapes:");
-  if (JSON.stringify(plain?.kids) !== JSON.stringify(["p", "div:table", "ul", "ol", "p"]) || JSON.stringify(plain.rows) !== "[3]" || JSON.stringify(plain.items) !== JSON.stringify(["first bullet", "second bullet", "only item"])) {
-    await fail(`the plain table, list and list with a paragraph read ${JSON.stringify(plain)}`);
-  }
-  await resize([1280, 800, 1]);
-  await evaluate(`${reply("Read-only answer against wsx main")}.scrollIntoView({ block: 'start' })`);
-  await pause(300);
-  const wide = await shape("Read-only answer against wsx main");
-  if (!wide || !wide.fits || wide.rows.join() !== "6,3,4,6") await fail(`the tables under list items at 1280 px read ${JSON.stringify(wide)}`);
-  await shot("list-tables-wide", ".composer-send");
-  await resize([390, 844, 2]);
-}
+phase("A * next to punctuation is no emphasis (docs/web-client-chat");
 // --- A `*` next to punctuation is no emphasis (docs/web-client-chat.md "Markdown"): file globs an agent
 // wrote without backticks keep their stars; `*word*`, `**two words**` and `_x_` are still emphasis.
 {
@@ -4430,6 +4194,7 @@ if (reviewed.running || reviewed.needs) await fail(`the review-waiting row is ${
   await go(chat);
   await until("!document.querySelector('dialog.task-sheet')", "the review-waiting sheet did not close");
 }
+phase("An overview over the cap: the sheet cuts it to 60 lines and ");
 // --- An overview over the cap: the sheet cuts it to 60 lines and 4,000 characters and says so.
 // ^ The file is written in `plans`' task folder, where no manager runs: the page only reads it.
 {
@@ -4445,6 +4210,7 @@ const cut = await evaluate("({ lines: (document.querySelector('.project-overview
 if (cut.lines > 59 || !/Over the size limit/.test(cut.note)) await fail(`the over-cap overview is not cut: ${JSON.stringify(cut)}`);
 await closeSheet("the page", plansChat);
 
+phase("A task mention of another project (docs/web-client-tasks.md ");
 // --- A task mention of another project (docs/web-client-tasks.md "Project screen"): ui and plans
 // both have a #1. "plans #1" in ui's own reply and a bare #1 in plans' manager's message open plans'
 // #1 in plans' chat; a bare #1 in ui's reply opens ui's #1; a sender the site does not grant leaves a
@@ -4528,6 +4294,7 @@ await closeSheet("the page", plansChat);
   await evaluate(`(async () => { const { update } = await ${pageModule("store.js")}; update({ projects: globalThis.mentionKept }); })()`);
 }
 
+phase("The bottom bar, Settings > UI and Settings > Usage (docs/web");
 // --- The bottom bar, Settings > UI and Settings > Usage (docs/web-client.md "Screens", "Settings").
 // ^ Equal-width tabs whatever their count, an icon over the label, the current tab on a highlight;
 // a tab hidden in Settings > UI leaves the bar, Settings cannot be hidden; Settings > Usage
@@ -4717,6 +4484,7 @@ await closeSheet("the page", plansChat);
   await resize(usageSize);
   await openTab("Cost", "[data-chart=cost]");
 }
+phase("Media a message names (docs/web-client-chat.md Markdown, doc");
 // --- Media a message names (docs/web-client-chat.md "Markdown", docs/web-client.md "Media"): `![alt](files/<path>)`
 // and a link to a media file of the main checkout, even in a dot-folder, are attachments of that bubble as the
 // owner's uploads are (one picture large, several in a grid, a video tile with its length), opening the one
@@ -5010,6 +4778,7 @@ let threadBlock = null;
 // check ask for (`untilApi`). The by-path and by-caller counts name the cause when it fails.
 const rates = requestRates(cdp);
 if (rates.own > REQUESTS_PER_MINUTE || rates.refused) await fail(`the page asked ${rates.own} times in its busiest 60 s (limit ${REQUESTS_PER_MINUTE}) and the server refused ${rates.refused}: ${JSON.stringify(rates)}; the thread block ran at seconds ${JSON.stringify(threadBlock?.map((at) => Math.round((at - cdp.requests[0].at) / 1000)))}`);
+phase("end");
 console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail closing the item and its reply kept as the note, Pass in a bubble that stays in place, Skip), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Chats (a Home row under its project with its unread dot, none in the ⋯ menu, its chat at #/p/<project>/c/<chat> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures; the page's own API requests in its busiest 60 s: ${rates.own} (limit ${REQUESTS_PER_MINUTE}; ${rates.busiest} with this check's reads, of ${rates.total} in ${rates.minutes} min)`);
 await linter.finish(fail);
 await cleanup();
