@@ -2390,8 +2390,9 @@ try:
              lambda: f"n opened no New chat form:\n{remove_tui.text()}", seconds=60)
     assert "up to 24" in remove_tui.text(), remove_tui.text()
     remove_tui.send(b"9lives\r")
-    wait_for(lambda: "from a letter" in remove_tui.text(), lambda: f"a bad name showed no refusal:\n{remove_tui.text()}", seconds=60)
-    assert "name: 9lives" in remove_tui.text() and "┌ New chat" in remove_tui.text(), remove_tui.text()
+    # The refusal shows from the first key; wait for the whole name, the rest of the keys still arrive.
+    wait_for(lambda: "from a letter" in remove_tui.text() and "name: 9lives" in remove_tui.text() and "┌ New chat" in remove_tui.text(),
+             lambda: f"a bad name showed no refusal:\n{remove_tui.text()}", seconds=60)
     remove_tui.send(b"\x7f" * 6 + b"QA\tCheck the notes\r")
     wait_for(lambda: "press i to write a message" in remove_tui.text() and re.search(r"(?m)^\s*qa\s", remove_tui.text()),
              lambda: f"a name did not open the new chat titled by its name:\n{remove_tui.text()}", seconds=60)
