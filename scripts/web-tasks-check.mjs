@@ -3011,6 +3011,8 @@ phase("Back in a top row or a sheet and the system's swipe back (hi");
 // ^ Short enough that Home's seven rows scroll.
 await resize([390, 400, 2]);
 const where = () => evaluate("JSON.stringify({ hash: location.hash, length: history.length, depth: history.state?.depth, scroll: [...document.querySelectorAll('#main > .page > .scroll, #main .log')].map((node) => Math.round(node.scrollTop)) })");
+// ^ What grew a chat's log between two reads of its place: its height and rows, the last row's key and the tray.
+const logState = () => evaluate("JSON.stringify((() => { const log = document.querySelector('.log'); if (!log) return null; const rows = [...log.children]; return { height: log.scrollHeight, client: log.clientHeight, rows: rows.length, last: rows.at(-1)?.textContent.slice(0, 80), lastHeight: rows.at(-1)?.getBoundingClientRect().height, pad: getComputedStyle(log).paddingBottom, composer: document.querySelector('.composer')?.getBoundingClientRect().height }; })())");
 const topBack = "#main > .page > .bar > a.icon-button";
 const sheetBack = "dialog.task-sheet[open] .bar button[aria-label='Back to the chat']";
 async function sameBack(name, open, back) {
@@ -3021,6 +3023,7 @@ async function sameBack(name, open, back) {
   }
   await pause(400);
   const before = await where();
+  const beforeLog = await logState();
   // ^ The screen left stays as a forward entry, so history.length is compared between the two
   // ways only, and the place (hash, depth, scroll) also with the start.
   const place = (json) => JSON.stringify({ ...JSON.parse(json), length: undefined });
@@ -3033,7 +3036,7 @@ async function sameBack(name, open, back) {
     await until(`location.hash === ${JSON.stringify(JSON.parse(before).hash)} && !document.querySelector('dialog.task-sheet')`, `${name}: ${how} did not return`);
     await pause(400);
     const after = await where();
-    if (place(after) !== place(before)) await fail(`${name}: after ${how} the page is ${after}, was ${before}`);
+    if (place(after) !== place(before)) await fail(`${name}: after ${how} the page is ${after}, was ${before}; the log was ${beforeLog}, is ${await logState()}`);
     if (byBack && after !== byBack) await fail(`${name}: history.back() leads to ${after}, Back to ${byBack}`);
     byBack ??= after;
   }
