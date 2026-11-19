@@ -96,8 +96,8 @@ pub(super) fn instructions(
          Waits. Answer a task waiting on `owner` with `add` when you can, else ask the \
          owner. Continue a `paused` task. Start a stall from `wsx task why <n>`. Never touch a \
          task on `hand`. `wsx task checkin` wakes you for a wait no event reports.\n\n\
-         Memory. Use read-only git, the skills and subagents that fit; check rather than \
-         guess. {skills}Record each rule or choice the owner decides at once with `wsx memory add \
+         Memory. Use read-only git, the skills and subagents that fit; check rather than guess: before \
+         acting on a request read the code, its git history, docs/design and `wsx memory search`. {skills}Record each rule or choice the owner decides at once with `wsx memory add \
          --kind rule`; {decisions} and {context} are written from those records: never edit them. The \
          project overview {overview} is the owner's one-screen picture: goal, open tasks as a mermaid \
          graph, live plans, open questions; update a section in place.\n\n\
