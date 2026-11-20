@@ -12,7 +12,6 @@ use super::store::{Error, Store};
 use crate::process::{run_bounded, Bound, Options, Stderr};
 use crate::task::manager::QUOTE_REF;
 use crate::task::text::first_line;
-use crate::task::thread;
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -78,9 +77,6 @@ pub struct Query {
     pub limit: usize,
     pub include_inactive: bool,
     pub kind: Option<KindFilter>,
-    /// Only the records and transcript lines of this thread. A backend plug-in is not asked: it
-    /// does not know threads.
-    pub thread: Option<thread::Filter>,
 }
 
 /// What a backend declares in `status` (`search` key); the built-in has neither.
@@ -141,8 +137,6 @@ impl Backend for Builtin {
             &terms,
         );
         let wanted = query.kind.as_ref().map(|k| k.0.as_str());
-        let thread_ok =
-            |threads: &[String]| query.thread.as_ref().is_none_or(|t| t.matches(threads));
         // ^ Filters apply after the ranking: an inactive record still counts in the word statistics.
         let kept = ranked
             .scored
@@ -152,11 +146,10 @@ impl Backend for Builtin {
                 Some(r) => {
                     (query.include_inactive || r.status == Status::Active)
                         && wanted.is_none_or(|k| k == r.kind.as_str())
-                        && thread_ok(r.thread.as_slice())
                 }
                 None => {
                     let doc = &docs[at - records.len()];
-                    wanted.is_none_or(|k| k == doc.kind.as_str()) && thread_ok(&doc.thread)
+                    wanted.is_none_or(|k| k == doc.kind.as_str())
                 }
             })
             .collect();
@@ -315,15 +308,15 @@ pub struct Found {
 
 /// The transcript hits for `words` in `targets`, best first, at most `limit`, with raw BM25
 /// scores; the words of all projects count together. `current`: the project the asker works
-/// in. `reindex` rebuilds the digests from the logs and the task files first. `only` and
-/// `in_thread` cut the records before the ranking. ref: docs/tasks.md "Search"
+/// in. `reindex` rebuilds the digests from the logs and the task files first. `only` cuts
+/// the records to one task before the ranking. ref: docs/tasks.md "Search"
 pub fn lines(
     targets: &[Target],
     current: Option<&str>,
     words: &str,
     limit: usize,
     reindex: bool,
-    (only, in_thread): (Option<u32>, Option<&thread::Filter>),
+    only: Option<u32>,
 ) -> anyhow::Result<Found> {
     let terms = index::terms(words)?;
     let mut found = Found::default();
@@ -335,7 +328,6 @@ pub fn lines(
                 docs.extend(
                     list.into_iter()
                         .filter(|doc| only.is_none_or(|task| doc.task == Some(task)))
-                        .filter(|doc| in_thread.is_none_or(|thread| thread.matches(&doc.thread)))
                         .map(|doc| (at, doc)),
                 );
             }
@@ -469,7 +461,7 @@ pub fn search(stores: &[Store], backend: Option<&Command>, query: &Query) -> Res
     };
     for store in stores {
         let mut found = Builtin.search(store, query)?;
-        if let Some(backend) = backend.filter(|_| query.thread.is_none()) {
+        if let Some(backend) = backend {
             match backend.search(store, query) {
                 Ok(more) => found.extend(more),
                 Err(error) => answer.notices.push(format!(
@@ -512,7 +504,6 @@ pub fn recall(
         limit: RECALL_POOL,
         include_inactive: false,
         kind: None,
-        thread: None,
     };
     let mut answer = search(stores, backend, &query)?;
     answer.hits.truncate(RECALL_KEEP);

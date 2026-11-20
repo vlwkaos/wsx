@@ -9,7 +9,7 @@ use crate::task::manager::{says_nothing, split_quote, Author, ManagerEntry, Mana
 use crate::task::store::{
     self, contains_bytes, ManagerDir, TaskDir, FIRST_READ_BYTES, LOG_FILE, RECORD_FILE, RESULT_FILE,
 };
-use crate::task::{chats, history, thread, view};
+use crate::task::{chats, history, view};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -102,9 +102,6 @@ pub(super) struct Doc {
     /// from the newest one it has.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub end: u64,
-    /// The threads (`<chat>/<slug>`) it belongs to; none is the trunk.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub thread: Vec<String>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -414,7 +411,6 @@ fn catch_up_chats(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
                 by: String::new(),
                 text: String::new(),
                 end: 0,
-                thread: Vec::new(),
             });
         }
     }
@@ -468,17 +464,12 @@ fn chat_doc(entry: &ManagerEntry, chat: &str) -> Option<Doc> {
         by,
         text: clip(body),
         end: 0,
-        thread: thread::row_threads(entry)
-            .into_iter()
-            .map(|slug| thread::key(chat, slug))
-            .collect(),
     })
 }
 
 /// Each task's title and prompt once, and its result again when `result.json` is newer than the
 /// record kept.
 fn catch_up_tasks(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Result<()> {
-    let from = fresh.len();
     let kept: HashMap<(Kind, u32), &Doc> = docs
         .iter()
         .filter_map(|doc| Some(((doc.kind, doc.task?), doc)))
@@ -509,7 +500,6 @@ fn catch_up_tasks(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
                     by: "task".into(),
                     text: clip(&format!("{title}\n{prompt}")),
                     end: 0,
-                    thread: Vec::new(),
                 });
             }
         }
@@ -534,18 +524,7 @@ fn catch_up_tasks(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
                 by: "task".into(),
                 text,
                 end: 0,
-                thread: Vec::new(),
             });
-        }
-    }
-    // ^ A task's docs carry its thread; it is read once for each task that has a new doc.
-    let mut threads: HashMap<u32, Vec<String>> = HashMap::new();
-    for doc in &mut fresh[from..] {
-        if let Some(task) = doc.task {
-            doc.thread = threads
-                .entry(task)
-                .or_insert_with(|| thread::of_task(project_id, task).into_iter().collect())
-                .clone();
         }
     }
     Ok(())
@@ -588,7 +567,6 @@ fn catch_up_history(dir: &TaskDir, task: u32, from: u64, fresh: &mut Vec<Doc>) {
             by: label.into(),
             text: clip_to(&text, MAX_HISTORY_BYTES),
             end,
-            thread: Vec::new(),
         });
     }
 }
@@ -671,7 +649,6 @@ fn notes(project_id: &str, records_apart: bool) -> Vec<Doc> {
                 by: "notes".into(),
                 text: clip(text),
                 end: 0,
-                thread: Vec::new(),
             });
         }
     }

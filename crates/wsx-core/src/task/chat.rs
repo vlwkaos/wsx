@@ -173,10 +173,6 @@ fn in_chat(entry: &ManagerEntry) -> bool {
             | ManagerEvent::Agent { .. }
             | ManagerEvent::Ping { .. }
             | ManagerEvent::Answered { .. }
-            | ManagerEvent::ThreadOpen { .. }
-            | ManagerEvent::ThreadClosed { .. }
-            | ManagerEvent::ThreadMerged { .. }
-            | ManagerEvent::ThreadMoved { .. }
     )
 }
 
@@ -270,8 +266,6 @@ pub struct OpenAsk {
     pub unix_ms: u64,
     /// The line a quote of it carries (`quote_of`).
     pub quote: String,
-    /// The threads of the reply that asks (`ManagerEvent::Reply::threads`).
-    pub threads: Vec<String>,
 }
 
 /// The replies that ask the owner (`asks`) and are not answered, oldest first. An owner
@@ -292,20 +286,13 @@ pub fn open_asks(
     for entry in log {
         match &entry.event {
             ManagerEvent::Delivered { .. } => turn_from = Some(entry.unix_ms),
-            ManagerEvent::Reply {
-                id,
-                text,
-                asks,
-                threads,
-                ..
-            } => {
+            ManagerEvent::Reply { id, text, asks, .. } => {
                 let from = turn_from.take();
                 if *asks && !asked_in_turn(approvals, chat, from, entry.unix_ms) {
                     open.push(OpenAsk {
                         id: *id,
                         unix_ms: entry.unix_ms,
                         quote: quote_of(text),
-                        threads: threads.clone(),
                     });
                 }
             }
@@ -326,11 +313,6 @@ pub fn open_asks(
                 }
             }
             ManagerEvent::Answered { id } => open.retain(|ask| ask.id != *id),
-            ManagerEvent::ThreadMoved { ids, thread } => {
-                for ask in open.iter_mut().filter(|ask| ids.contains(&ask.id)) {
-                    ask.threads = vec![thread.clone()];
-                }
-            }
             _ => {}
         }
     }
@@ -369,7 +351,6 @@ pub fn asking(dir: &ManagerDir, now: u64) -> Result<Vec<OpenAsk>> {
         let tail = &line[line.len().saturating_sub(256)..];
         contains_bytes(head, b"\"answered\"")
             || contains_bytes(head, b"\"delivered\"")
-            || contains_bytes(head, b"\"thread_moved\"")
             || (contains_bytes(head, b"\"message\"") && contains_bytes(head, b"\"owner\""))
             || (contains_bytes(head, b"\"reply\"")
                 && contains_bytes(tail, b"\"asks\"")
@@ -528,9 +509,6 @@ pub struct ChatRow {
     /// An event line's leading task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<u32>,
-    /// The thread the row is in: its message's or reply's, else its task's (`thread::Scope`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thread: Option<String>,
     /// A `Talk` row's messages, oldest first; its `text` is empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub said: Vec<Said>,
@@ -579,9 +557,6 @@ impl ChatRow {
             quoted_id: None,
             quoted_check: None,
             task: None,
-            thread: super::thread::row_threads(entry)
-                .first()
-                .map(|slug| slug.to_string()),
             said: Vec::new(),
             tokens: Vec::new(),
             asks: false,
@@ -628,7 +603,6 @@ pub fn read_for(
     (project, store_id): (&str, &str),
     settings: &crate::model::workspace::TaskConfig,
     window: &Window,
-    scope: super::thread::Scope,
     edit: impl FnMut(&mut ManagerEntry),
 ) -> Result<Reading> {
     let shown = settings.manager_shown_name(project);
@@ -645,7 +619,7 @@ pub fn read_for(
     let viewer = super::chats::Viewer::new(store_id, dir.map(|dir| dir.chat.as_str()));
     let approvals = super::chats::approvals_of(super::store::read_approvals(store_id)?, &viewer);
     let items = super::chats::checks_of(store_id, super::checks::open_items(store_id)?, &viewer);
-    let mut page = match dir {
+    let page = match dir {
         Some(dir) => page(
             dir,
             window,
@@ -656,9 +630,6 @@ pub fn read_for(
         )?,
         None => Page::default(),
     };
-    if let Some(dir) = dir {
-        super::thread::scope_rows(dir, scope, &mut page.rows)?;
-    }
     Ok(Reading {
         page,
         approvals,

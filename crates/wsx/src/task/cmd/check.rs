@@ -128,7 +128,6 @@ fn fail_check(project: &str, project_id: &str, id: &str, note: &str) -> Result<C
         from: None,
         into: None,
         after: None,
-        thread: None,
         title: Some(fix_title(&item.check)),
         model: None,
         fixes: Some(item.id.clone()),

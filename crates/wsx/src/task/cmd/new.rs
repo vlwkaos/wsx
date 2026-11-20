@@ -11,8 +11,8 @@ use wsx_core::task::policy::{self, Role};
 use wsx_core::task::view::{self, checked_files};
 use wsx_core::task::{
     copy, now_unix_ms,
-    store::{self, ManagerDir, TaskDir},
-    thread, After, AfterKind, Home, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState,
+    store::{self, TaskDir},
+    After, AfterKind, Home, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState,
     MAX_MESSAGE_BYTES,
 };
 use wsx_core::{ops, runtime};
@@ -24,7 +24,6 @@ pub(crate) fn new(args: NewArgs, project: Option<&str>, json: bool) -> Result<()
         into,
         after,
         because,
-        thread,
         title,
         model,
         size,
@@ -68,7 +67,6 @@ pub(crate) fn new(args: NewArgs, project: Option<&str>, json: bool) -> Result<()
         from,
         into,
         after,
-        thread,
         title,
         model,
         fixes: None,
@@ -100,35 +98,6 @@ pub(crate) fn new(args: NewArgs, project: Option<&str>, json: bool) -> Result<()
         println!("the host has not answered yet; check it with `wsx task show {id}`");
     }
     Ok(())
-}
-
-/// The key of the thread a new task joins: `--thread`, a slug of the acting chat's open threads,
-/// or the thread it inherits. A task made with neither is in the trunk: only the owner's New
-/// thread and `wsx task thread open` open a thread. ref: docs/tasks.md "Threads"
-fn task_thread(
-    project_id: &str,
-    slug: Option<&str>,
-    inherited: Option<String>,
-) -> Result<Option<String>> {
-    let Some(slug) = slug else {
-        return Ok(inherited);
-    };
-    let home = store::home_chat(project_id).unwrap_or_default();
-    let chat = wsx_core::task::chats::owner(
-        crate::task::actor().chat(),
-        &wsx_core::task::chats::open_names(),
-        &home,
-    )
-    .to_string();
-    let dir = ManagerDir::existing(&chat)?
-        .with_context(|| format!("--thread: there is no chat {chat}; no task was created"))?;
-    let key = thread::key(&chat, &thread::join(&dir, slug)?);
-    match inherited {
-        Some(other) if other != key => bail!(
-            "--thread {slug}: this task joins {other} through --into or --after; no task was created"
-        ),
-        _ => Ok(Some(key)),
-    }
 }
 
 /// `steps` without the ones `skip` names. Every name must be a step, and one step must stay.
@@ -257,8 +226,6 @@ pub(crate) struct NewTask {
     pub(crate) into: Option<u32>,
     /// It starts when this open task has landed (`new --after`).
     pub(crate) after: Option<(u32, AfterKind)>,
-    /// `--thread`: a thread of the acting chat, by slug.
-    pub(crate) thread: Option<String>,
     pub(crate) title: Option<String>,
     pub(crate) model: Option<String>,
     /// The "To check" item it fixes.
@@ -282,7 +249,6 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         from,
         into,
         after,
-        thread,
         title,
         model,
         fixes,
@@ -353,23 +319,6 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
             })
         })
         .transpose()?;
-    let thread = task_thread(
-        &project_id,
-        thread.as_deref(),
-        // ^ A child, a task that waits and a fix join the thread of the task they come from.
-        parent
-            .as_ref()
-            .map(|(_, parent)| parent.thread.clone())
-            .into_iter()
-            .chain(after.map(|(task, _)| thread::of_task(&project_id, task)))
-            .chain(
-                fixes
-                    .as_deref()
-                    .map(|item| thread::of_item(&project_id, item)),
-            )
-            .flatten()
-            .next(),
-    )?;
     if crate::task::acting_as_manager() {
         refuse_overlap(&project_id, &files, [into, after.map(|(task, _)| task)])?;
     }
@@ -460,7 +409,6 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         parent: into,
         plan,
         skills,
-        thread,
         small,
         simplified: false,
         simplify_asked: false,

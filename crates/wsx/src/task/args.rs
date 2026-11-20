@@ -248,11 +248,6 @@ pub enum TaskCmd {
         #[command(subcommand)]
         action: ProjectCmd,
     },
-    /// Threads of a chat: one subject with its tasks and questions (docs/tasks.md "Threads")
-    Thread {
-        #[command(subcommand)]
-        action: ThreadCmd,
-    },
     /// Send a message to the project's manager, or another chat; returns at once with its id
     Say {
         #[command(flatten)]
@@ -267,9 +262,6 @@ pub enum TaskCmd {
         /// With --from-chat: this answers a message it sent
         #[arg(long)]
         reply: bool,
-        /// Written in this thread of the chat (the owner's thread window)
-        #[arg(long, value_name = "SLUG", conflicts_with = "from_chat")]
-        thread: Option<String>,
     },
     /// Read the manager conversation, or another chat's, after a message id or around one; the
     /// owner opens, lists and closes chats (docs/tasks.md "Chats")
@@ -302,9 +294,6 @@ pub enum TaskCmd {
         /// Build the index of the searched projects again from their logs and tasks
         #[arg(long)]
         reindex: bool,
-        /// Only this thread of a chat: `<chat>/<slug>`, or a slug that one chat has
-        #[arg(long, value_name = "THREAD")]
-        thread: Option<String>,
     },
     /// Approve a request the manager made, and run its action (owner only)
     Approve {
@@ -403,10 +392,6 @@ pub struct NewArgs {
         requires = "after"
     )]
     pub(crate) because: Option<AfterKind>,
-    /// Join this open thread of the chat (`wsx task thread list`); `--into` and `--after`
-    /// join the thread of their task, and without any the task is in the trunk
-    #[arg(long, value_name = "SLUG")]
-    pub(crate) thread: Option<String>,
     /// A short title in plain words (at most 60 characters); default: the prompt's first line
     #[arg(long)]
     pub(crate) title: Option<String>,
@@ -500,26 +485,6 @@ pub enum ProjectCmd {
 }
 
 #[derive(Subcommand)]
-pub enum ThreadCmd {
-    /// The chat's threads, open ones first, with how many are open
-    List,
-    /// Open a thread for a subject that needs more than one task, or none
-    Open {
-        /// The subject in plain words (at most 60 characters)
-        title: String,
-    },
-    /// Close a thread whose tasks have landed and that nothing waits on the owner for
-    Close {
-        slug: String,
-        /// Why it closes, in one line
-        #[arg(long, default_value = "done")]
-        why: String,
-    },
-    /// Merge a thread into another open one: its rows and tasks read as the other's
-    Merge { from: String, into: String },
-}
-
-#[derive(Subcommand)]
 pub enum ChatCmd {
     /// Open a chat: a manager with a name and a goal, in the same project (the owner's, or a
     /// chat's on the owner's message of its turn)
@@ -608,10 +573,6 @@ impl TaskCmd {
             | Self::Sync
             | Self::Project { .. } => &[Deploy],
             Self::Checkin { .. } => &[Routine],
-            Self::Thread {
-                action: ThreadCmd::List,
-            } => &[Read],
-            Self::Thread { .. } => &[Thread],
             Self::Routine { action, .. } => match action {
                 RoutineCmd::List { .. } | RoutineCmd::Show { .. } | RoutineCmd::Logs { .. } => {
                     &[Read]

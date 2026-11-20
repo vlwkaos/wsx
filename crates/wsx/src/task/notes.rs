@@ -189,7 +189,6 @@ pub(super) fn matching(store: Store, said: &str) -> String {
             limit: MATCH_RECORDS,
             include_inactive: false,
             kind: kind.parse::<KindFilter>().ok(),
-            thread: None,
         };
         hits.extend(backend::search(&store, None, &query).map_or_else(|_| Vec::new(), |a| a.hits));
     }

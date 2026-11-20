@@ -28,7 +28,6 @@ pub mod stall;
 pub mod status;
 pub mod store;
 pub mod text;
-pub mod thread;
 pub mod usage;
 pub mod view;
 
@@ -351,10 +350,6 @@ pub struct TaskRecord {
     /// ref: docs/tasks.md "Workflow"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<Vec<String>>,
-    /// The thread the task belongs to, `<chat>/<slug>` (`thread::key`): `task new --thread`, or
-    /// the parent's or awaited task's. None is the trunk. ref: docs/tasks.md "Threads"
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread: Option<String>,
     /// `task new --size small`: exempt from the simplify check (docs/tasks.md "Workflow").
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub small: bool,

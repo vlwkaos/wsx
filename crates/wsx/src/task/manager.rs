@@ -39,7 +39,6 @@ use wsx_core::task::stall;
 use wsx_core::task::status;
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
-use wsx_core::task::thread;
 use wsx_core::task::view::{self, clip, project_tasks};
 use wsx_core::task::{chats, owner, Actor};
 use wsx_core::task::{checks, ledger, now_unix_ms, TaskRecord, TaskState, MAX_MESSAGE_BYTES};
@@ -448,31 +447,28 @@ impl Manager {
                 binary: self.binary.clone(),
                 message: format!("{} message(s) waiting", self.queue.len()),
             },
-            ManagerRequest::Say {
-                text,
-                from,
-                short,
-                thread,
-            } => match self.accept(from.unwrap_or(Author::Owner), text, short, thread) {
-                Ok(id) => ManagerResponse {
-                    ok: true,
-                    id: Some(id),
-                    busy,
-                    binary: None,
-                    message: if busy {
-                        "the manager's running turn takes it, or its next turn".into()
-                    } else {
-                        "sent to the manager".into()
+            ManagerRequest::Say { text, from, short } => {
+                match self.accept(from.unwrap_or(Author::Owner), text, short) {
+                    Ok(id) => ManagerResponse {
+                        ok: true,
+                        id: Some(id),
+                        busy,
+                        binary: None,
+                        message: if busy {
+                            "the manager's running turn takes it, or its next turn".into()
+                        } else {
+                            "sent to the manager".into()
+                        },
                     },
-                },
-                Err(error) => ManagerResponse {
-                    ok: false,
-                    id: None,
-                    busy,
-                    binary: None,
-                    message: format!("{error:#}"),
-                },
-            },
+                    Err(error) => ManagerResponse {
+                        ok: false,
+                        id: None,
+                        busy,
+                        binary: None,
+                        message: format!("{error:#}"),
+                    },
+                }
+            }
             ManagerRequest::Post { event, text, level } => {
                 let refusal = match (busy, text.trim().is_empty(), text.len() > MAX_MESSAGE_BYTES) {
                     (true, ..) => Some("a manager turn runs"),
@@ -514,14 +510,12 @@ impl Manager {
             short: Vec::new(),
             quote: None,
             check: None,
-            thread: None,
         });
         self.log(ManagerEvent::Delivered { ids: vec![id] });
         let reply = self.next_id();
         self.log(ManagerEvent::Reply {
             id: reply,
             to: vec![id],
-            threads: Vec::new(),
             text,
             usage: None,
             quiet: false,
@@ -639,13 +633,7 @@ impl Manager {
     }
 
     /// Log a message and queue it; owner messages go before events.
-    fn accept(
-        &mut self,
-        from: Author,
-        mut text: String,
-        short: Vec<Short>,
-        window: Option<String>,
-    ) -> Result<u64> {
+    fn accept(&mut self, from: Author, mut text: String, short: Vec<Short>) -> Result<u64> {
         // ^ A reply to a To check item: "x" skips it here and starts no turn; other words go on
         // with the item's check as their quote and its id on the message. The item keeps the
         // message's id, so it is taken first. ref: `checks::item_reply`
@@ -678,11 +666,6 @@ impl Manager {
         if text.len() > MAX_MESSAGE_BYTES {
             anyhow::bail!("the message is larger than the limit of {MAX_MESSAGE_BYTES} bytes");
         }
-        // ^ The owner's message is tagged by rule, no model: its quote, its window, its item.
-        let thread = match from {
-            Author::Owner => self.thread_of(quote, window.as_deref(), check.as_deref())?,
-            _ => None,
-        };
         let id = reserved.unwrap_or_else(|| self.next_id());
         let wakes = Short::any_wakes(&short);
         self.dir.append(ManagerEvent::Message {
@@ -692,7 +675,6 @@ impl Manager {
             short,
             quote,
             check,
-            thread,
         })?;
         self.last_activity = Instant::now();
         self.overview_asked &= from != Author::Owner;
@@ -726,7 +708,6 @@ impl Manager {
             short: Vec::new(),
             quote: None,
             check: Some(item),
-            thread: None,
         });
         self.log(ManagerEvent::Delivered { ids: vec![id] });
         let check = clip(check, 60);
@@ -739,7 +720,6 @@ impl Manager {
         self.log(ManagerEvent::Reply {
             id: reply,
             to: vec![id],
-            threads: Vec::new(),
             text: said,
             usage: None,
             quiet: true,
@@ -1458,11 +1438,9 @@ impl Manager {
                 self.say(&format!("{name} stood in: reply {id}"));
                 let answered = to.iter().copied().max().unwrap_or(0);
                 let (text, quote) = self.quoted(result.text, &to, false);
-                let threads = self.reply_threads(&to);
                 self.log(ManagerEvent::Reply {
                     id,
                     to,
-                    threads,
                     text,
                     usage: Some(result.usage),
                     quiet: false,
@@ -2053,11 +2031,9 @@ impl Manager {
             self.state.last_reply = Some(id);
         }
         self.save();
-        let threads = self.reply_threads(&to);
         self.log(ManagerEvent::Reply {
             id,
             to,
-            threads,
             text,
             usage: Some(result.usage),
             quiet,
@@ -2082,52 +2058,10 @@ impl Manager {
     fn check_thought(&mut self, in_thinking: bool) {
         if in_thinking && !self.thought_asked {
             self.thought_asked = true;
-            if let Err(error) = self.accept(Author::Recap, THOUGHT_ASKED.into(), Vec::new(), None) {
+            if let Err(error) = self.accept(Author::Recap, THOUGHT_ASKED.into(), Vec::new()) {
                 self.say(&format!("cannot ask for the answer in thinking: {error:#}"));
             }
         }
-    }
-
-    /// The thread of an owner's message (`thread::tag`): its quote's, its window's, its To check
-    /// item's task's; the trunk when none. A closed thread opens again with the message, a merged
-    /// one reads as the thread it went into (`thread::join`).
-    fn thread_of(
-        &self,
-        quote: Option<u64>,
-        window: Option<&str>,
-        item: Option<&str>,
-    ) -> Result<Option<String>> {
-        let log = match quote {
-            Some(id) => self
-                .dir
-                .read_around(QUOTE_READ_BYTES, |log| {
-                    log.iter()
-                        .any(|entry| entry.id().is_some_and(|at| at <= id))
-                })
-                .unwrap_or_default(),
-            None => Vec::new(),
-        };
-        let item = item
-            .and_then(|item| thread::of_item(&self.dir.project_id, item))
-            .and_then(|key| thread::slug_in(self.dir.name(), &key).map(str::to_string));
-        thread::tag(&log, quote, window, item.as_deref())
-            .map(|slug| thread::join(&self.dir, &slug))
-            .transpose()
-    }
-
-    /// The threads of a reply to messages `to`: those of the messages. A turn of only events has none.
-    fn reply_threads(&self, to: &[u64]) -> Vec<String> {
-        let Some(oldest) = to.iter().min().filter(|_| !self.turn_events) else {
-            return Vec::new();
-        };
-        let log = self
-            .dir
-            .read_around(QUOTE_READ_BYTES, |log| {
-                log.iter()
-                    .any(|entry| entry.id().is_some_and(|at| at <= *oldest))
-            })
-            .unwrap_or_default();
-        thread::reply_threads(&log, to)
     }
 
     /// A reply that opens with `> message <id>` quotes that message, when it is the owner's or
@@ -2185,12 +2119,9 @@ impl Manager {
             self.overview_asked = false;
         } else if !self.overview_asked {
             self.overview_asked = true;
-            if let Err(error) = self.accept(
-                Author::Recap,
-                overview_too_long(lines, chars),
-                Vec::new(),
-                None,
-            ) {
+            if let Err(error) =
+                self.accept(Author::Recap, overview_too_long(lines, chars), Vec::new())
+            {
                 self.say(&format!("cannot ask for a shorter overview: {error:#}"));
             }
         }

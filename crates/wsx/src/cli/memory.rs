@@ -9,7 +9,6 @@ use wsx_core::memory::start;
 use wsx_core::memory::{
     backend, known_scopes, validate_scope, Command, Error, NewRecord, Patch, Query, Record, Store,
 };
-use wsx_core::task::thread;
 
 type MemResult<T> = std::result::Result<T, Error>;
 
@@ -29,25 +28,13 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
             limit,
             include_inactive,
             kind,
-            thread,
         } => {
             let stores = stores(&scopes)?;
-            let thread = match thread {
-                Some(spec) => {
-                    let project = stores.iter().find_map(|store| store.project_ids());
-                    Some(
-                        thread::Filter::new(project.map_or("", |(id, _)| id), &spec)
-                            .map_err(|error| Error::Usage(format!("{error:#}")))?,
-                    )
-                }
-                None => None,
-            };
             let query = Query {
                 words: query,
                 limit,
                 include_inactive,
                 kind,
-                thread,
             };
             show_hits(backend::search(&stores, external().as_ref(), &query)?, json)?;
         }
@@ -69,7 +56,6 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
             keywords,
             paths,
             words,
-            thread,
             supersedes,
         } => {
             let store = one(&scopes)?;
@@ -88,7 +74,6 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
                     keywords,
                     paths,
                     words,
-                    thread,
                 },
                 supersedes.as_deref(),
             )?;

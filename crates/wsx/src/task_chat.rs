@@ -27,7 +27,7 @@ use wsx_core::task::{
     media::{self, Kind},
     owner,
     store::{self, ManagerDir, Stamp},
-    thread, view,
+    view,
 };
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(1);
@@ -620,7 +620,6 @@ impl ManagerChat {
                         text.clone(),
                         None,
                         Vec::new(),
-                        None,
                     )
                 });
             match said {
@@ -720,14 +719,7 @@ fn read(
         },
         approvals,
         items: checked,
-    } = chat::read_for(
-        dir,
-        (project, store),
-        &settings,
-        &window,
-        thread::Scope::All,
-        |_| {},
-    )?;
+    } = chat::read_for(dir, (project, store), &settings, &window, |_| {})?;
     let shown = settings.manager_shown_name(project);
     let name = dir.map_or_else(
         || shown.to_string(),

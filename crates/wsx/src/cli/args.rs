@@ -908,10 +908,6 @@ pub enum MemoryCmd {
         /// history, decision, memo)
         #[arg(long)]
         kind: Option<wsx_core::memory::KindFilter>,
-        /// Only this thread, `<chat>/<slug>` or a slug that one chat of the project has; the
-        /// built-in index answers alone
-        #[arg(long, value_name = "THREAD")]
-        thread: Option<String>,
     },
     /// The best five records for a question (top 5 by score of a search's top 20)
     Recall { question: String },
@@ -946,9 +942,6 @@ pub enum MemoryCmd {
         /// A rule's: the owner's words, which must stand in the message of --source msg:<id>
         #[arg(long)]
         words: Option<String>,
-        /// The thread the record is about, `<chat>/<slug>`; `search --thread` finds it
-        #[arg(long)]
-        thread: Option<String>,
         /// Replace this rule or fact by the new record in the same call
         #[arg(long)]
         supersedes: Option<String>,

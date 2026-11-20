@@ -29,7 +29,7 @@ use wsx_core::task::{
     needs::{self, ChatCounts, Stage, YouSource, APPROVAL_RANK},
     owner, stall, status,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
-    thread, view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
+    view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
 };
 
 const SUMMARY_CHARS: usize = 240;
@@ -211,12 +211,6 @@ fn build_overview(
         .collect();
     let tasks = view::project_tasks(&scope.store).unwrap_or_default();
     let records: Vec<&TaskRecord> = tasks.iter().filter_map(|(_, r)| r.as_ref().ok()).collect();
-    let thread_of = |task: u32| {
-        records
-            .iter()
-            .find(|record| record.id == task)
-            .and_then(|record| record.thread.clone())
-    };
     let now = task::now_unix_ms();
     let mut needs: Vec<(u8, u64, Value)> = Vec::new();
     let mut listed: Vec<(usize, u64, Value)> = Vec::new();
@@ -262,7 +256,6 @@ fn build_overview(
                 "id": record.id, "title": title, "state": record.state, "stage": stage.name(),
                 "revision": record.revision, "updated_unix_ms": record.updated_unix_ms,
                 "waiting": record.waiting,
-                "thread": record.thread,
                 "status": status,
                 "flow": flow,
                 "agent": record.state.is_open().then(|| view::task_agent(record)),
@@ -272,7 +265,6 @@ fn build_overview(
             json!({
                 "kind": kind, "task": record.id, "title": title, "state": record.state, "status": status,
                 "flow": flow, "revision": record.revision, "unix_ms": record.updated_unix_ms,
-                "thread": record.thread,
             })
         };
         if stage == Stage::Working {
@@ -295,9 +287,7 @@ fn build_overview(
         mine.iter()
             .any(|item| item.source == YouSource::Approval(line.id().to_string()))
     }) {
-        if let Some(item) = approval_item(line, |task| {
-            Some((titles.get(&task)?.clone(), thread_of(task)))
-        }) {
+        if let Some(item) = approval_item(line, |task| titles.get(&task).cloned()) {
             let unix_ms = item["unix_ms"].as_u64().unwrap_or_default();
             needs.push((APPROVAL_RANK, unix_ms, item));
         }
@@ -334,7 +324,7 @@ fn build_overview(
     let open_checks: Vec<Value> = check_items
         .iter()
         .filter(|item| mine.iter().any(|you| you.source == YouSource::Check(item.id.clone())))
-        .map(|item| json!({ "id": item.id, "task": item.task, "check": item.check, "pass_if": item.pass_if, "thread": thread_of(item.task) }))
+        .map(|item| json!({ "id": item.id, "task": item.task, "check": item.check, "pass_if": item.pass_if }))
         .collect();
     // ^ The newest message the chat counts as new: a reply that is not quiet or a To check
     // item. The home row marks it until this device read the chat that far
@@ -691,12 +681,8 @@ fn to_check_rows(dir: &TaskDir, items: &[checks::CheckItem], task: u32) -> Value
 }
 
 /// A task's pending approvals; a request carries its label.
-/// A pending request as the page lists it among the needs, with its task's title and thread
-/// (`task_of`).
-fn approval_item(
-    line: &ApprovalLine,
-    task_of: impl Fn(u32) -> Option<(String, Option<String>)>,
-) -> Option<Value> {
+/// A pending request as the page lists it among the needs, with its task's title (`task_of`).
+fn approval_item(line: &ApprovalLine, task_of: impl Fn(u32) -> Option<String>) -> Option<Value> {
     let ApprovalLine::Request {
         id,
         action,
@@ -717,8 +703,7 @@ fn approval_item(
         "label": owner::approval_label(line),
         "task": task, "revision": revision, "commit": commit,
         "path": path, "url": url,
-        "title": found.as_ref().map(|(title, _)| title),
-        "thread": found.as_ref().and_then(|(_, thread)| thread.as_ref()),
+        "title": found,
         "unix_ms": unix_ms,
     }))
 }
@@ -788,7 +773,6 @@ pub fn chat(
     scope: &Scope,
     chat: Option<&str>,
     (after, find, around): (Option<u64>, Option<&str>, Option<u64>),
-    thread: thread::Scope,
     media: &crate::media::Media,
     granted: &dyn Fn(&str) -> Vec<chat::Attachment>,
 ) -> Outcome<Value> {
@@ -828,7 +812,6 @@ pub fn chat(
         (&scope.name, &scope.store),
         &settings,
         &window,
-        thread,
         |entry| {
             if let ManagerEvent::Message {
                 id,
@@ -872,12 +855,9 @@ pub fn chat(
         .collect();
     let status = manager_status(&dir);
     let busy = status.as_ref().is_some_and(|status| status.busy);
-    let threads = thread::list(&dir, settings.land_auto).map_err(internal)?;
     Ok(json!({
         "manager": manager,
         "rows": rows,
-        // ^ The open threads, waiting first (`thread::list`): the strip reads this order.
-        "threads": threads,
         "skipped": page.skipped,
         "asks": page.asks.iter().map(|ask| ask.id).collect::<Vec<_>>(),
         // ^ This chat's own pending approvals, as the overview lists the first chat's.
@@ -887,7 +867,7 @@ pub fn chat(
                 approval_item(line, |id| {
                     let dir = open_task(scope, id).ok()?;
                     let record = dir.read_record().ok()?;
-                    Some((view::readable_title(&dir, &record)?, record.thread))
+                    view::readable_title(&dir, &record)
                 })
             })
             .collect::<Vec<_>>(),
@@ -1003,35 +983,6 @@ pub fn close_chat(app: &App, scope: &Scope, name: &str) -> Outcome<Value> {
     owner::close_chat((&scope.name, &scope.path), &wsx, name, launcher(app, scope))
         .map_err(|error| Fault::new(409, "invalid_chat", format!("{error:#}")))?;
     Ok(json!({ "ok": true, "chat": name, "state": "closed" }))
-}
-
-/// The owner opens, closes or merges a thread of chat `chat` (the home chat when none) (docs/design/chat-system.md);
-/// the core's refusal (a closed target, a question still open) is 409 `invalid_thread`.
-pub fn thread_act(
-    scope: &Scope,
-    chat: Option<&str>,
-    action: &str,
-    slug: &str,
-    title_or_into: &str,
-) -> Outcome<Value> {
-    let invalid = |error: anyhow::Error| Fault::new(409, "invalid_thread", format!("{error:#}"));
-    let dir = match chat {
-        None => ManagerDir::home(&scope.store)
-            .map_err(internal)?
-            .ok_or_else(Fault::not_found)?,
-        Some(chat) => task::chats::open_chat(chat).map_err(invalid)?,
-    };
-    let slug = match action {
-        "open" => thread::open(&dir, title_or_into).map_err(invalid)?,
-        "close" => thread::close(&dir, slug, "closed by the owner", task::now_unix_ms())
-            .map_err(invalid)?,
-        "merge" => {
-            thread::merge(&dir, slug, title_or_into).map_err(invalid)?;
-            slug.to_string()
-        }
-        _ => return Err(Fault::not_found()),
-    };
-    Ok(json!({ "ok": true, "thread": slug }))
 }
 
 /// The owner sets (or, empty, clears) the name a chat is shown by; its id stays (docs/tasks.md
@@ -1298,7 +1249,6 @@ pub fn checks(scope: &Scope, chat: Option<&str>) -> Outcome<Value> {
         .map(|(_, item)| {
             let mut row = json!(item);
             let dir = open_task(scope, item.task).ok();
-            row["thread"] = json!(dir.as_ref().and_then(|dir| dir.read_record().ok()?.thread));
             let title = dir
                 .as_ref()
                 .and_then(|dir| view::readable_title(dir, &dir.read_record().ok()?));
@@ -1464,14 +1414,8 @@ fn launcher<'a>(
 }
 
 /// Give the manager, or the open chat `chat`, an owner message, starting it when it does not
-/// run. `thread`: the thread whose window the owner writes in.
-pub fn say(
-    app: &App,
-    scope: &Scope,
-    chat: Option<&str>,
-    thread: Option<&str>,
-    text: &str,
-) -> Outcome<Value> {
+/// run.
+pub fn say(app: &App, scope: &Scope, chat: Option<&str>, text: &str) -> Outcome<Value> {
     let text = message(text, "the message")?;
     let wsx = std::env::current_exe().map_err(|error| internal(error.into()))?;
     let launch = launcher(app, scope);
@@ -1484,7 +1428,6 @@ pub fn say(
         text,
         None,
         Vec::new(),
-        thread.map(str::to_string),
     )
     .map_err(|error| Fault::new(502, "manager_unavailable", format!("{error:#}")))?;
     if !response.ok {

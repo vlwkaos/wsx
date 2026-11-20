@@ -4,12 +4,11 @@ use super::{
     chat, chats, checks,
     manager::{pending_approvals, waiting_approvals, ApprovalLine},
     status::{self, Holder},
-    store::{self, ManagerDir, TaskDir},
-    thread, view, TaskRecord, TaskState, WaitOn,
+    store::{self, TaskDir},
+    view, TaskRecord, TaskState, WaitOn,
 };
 use anyhow::Result;
 use std::collections::HashMap;
-use std::hash::Hash;
 
 /// The three states the owner sees (docs/web-client-tasks.md); the store keeps the rest. A task
 /// that needs the owner says what kind of need it is.
@@ -271,60 +270,23 @@ pub fn for_you(project_id: &str, land_auto: bool) -> Vec<YouItem> {
     items
 }
 
-/// The counts of every open chat of the project, by name.
+/// The counts of every open chat of the project, by name: every item that needs the owner or
+/// runs, added to the chat that owns it (`chats::owner`).
 pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCounts> {
-    tally(
-        project_id,
-        land_auto,
-        &chats::open_chats(project_id),
-        |chat, _| chat.to_string(),
-    )
-}
-
-/// The counts of the chat `dir`, by the slug of the thread each item is in; the trunk is none.
-/// A thread merged into another counts as that one (`resolve`).
-pub fn thread_counts(
-    dir: &ManagerDir,
-    land_auto: bool,
-    resolve: impl Fn(&str) -> String,
-) -> HashMap<Option<String>, ChatCounts> {
-    tally(
-        &dir.project_id,
-        land_auto,
-        std::slice::from_ref(dir),
-        |_, thread| thread.map(&resolve),
-    )
-}
-
-/// The one count walk, for the open chats `dirs`: every item that needs the owner or runs, added
-/// to the entry `key(chat, thread)` names, `thread` being the slug of its thread in that chat.
-fn tally<K: Eq + Hash>(
-    project_id: &str,
-    land_auto: bool,
-    dirs: &[ManagerDir],
-    key: impl Fn(&str, Option<&str>) -> K,
-) -> HashMap<K, ChatCounts> {
-    let mut counts: HashMap<K, ChatCounts> = HashMap::new();
+    let mut counts: HashMap<String, ChatCounts> = HashMap::new();
+    let dirs = chats::open_chats(project_id);
     if dirs.is_empty() {
         return counts;
     }
     let open = chats::open_names();
     let home = store::home_chat(project_id).unwrap_or_default();
-    let mut thread_of: HashMap<u32, String> = HashMap::new();
     for (dir, record) in view::project_tasks(project_id).unwrap_or_default() {
         let Ok(record) = record else { continue };
-        if let Some(thread) = &record.thread {
-            thread_of.insert(record.id, thread.clone());
-        }
         let owner = chats::owner(record.created_by.chat(), &open, &home);
         if !dirs.iter().any(|dir| dir.chat == owner) {
             continue;
         }
-        let slug = record
-            .thread
-            .as_deref()
-            .and_then(|thread| thread::slug_in(owner, thread));
-        let own = counts.entry(key(owner, slug)).or_default();
+        let own = counts.entry(owner.to_string()).or_default();
         match stage(&dir, &record, land_auto) {
             Stage::Working => own.running += 1,
             Stage::NeedsYou(_) => own.needs += 1,
@@ -335,44 +297,26 @@ fn tally<K: Eq + Hash>(
     let approvals = store::read_approvals(project_id).unwrap_or_default();
     let items = checks::open_items(project_id).unwrap_or_default();
     let now = super::now_unix_ms();
-    for dir in dirs {
-        let slug_of_task = |task: Option<u32>| {
-            task.and_then(|task| thread_of.get(&task))
-                .and_then(|thread| thread::slug_in(&dir.chat, thread))
-        };
+    for dir in &dirs {
         let viewer = chats::Viewer::named(&dir.chat, open.clone(), &home);
         let own = chats::approvals_of(approvals.clone(), &viewer);
-        for line in pending_approvals(&own) {
-            if let ApprovalLine::Request { task, .. } = line {
-                counts
-                    .entry(key(&dir.chat, slug_of_task(*task)))
-                    .or_default()
-                    .needs += 1;
-            }
-        }
+        let entry = counts.entry(dir.chat.clone()).or_default();
+        entry.needs += pending_approvals(&own)
+            .iter()
+            .filter(|line| matches!(line, ApprovalLine::Request { .. }))
+            .count();
         for line in waiting_approvals(&own) {
-            if let ApprovalLine::Request { task, .. } = line {
-                let entry = counts
-                    .entry(key(&dir.chat, slug_of_task(*task)))
-                    .or_default();
+            if matches!(line, ApprovalLine::Request { .. }) {
                 entry.running += 1;
                 entry.open += 1;
             }
         }
         // ^ An open question of the chat is an item for the owner too, as its own pill counts it.
-        for ask in chat::asking(dir, now).unwrap_or_default() {
-            let entry = counts
-                .entry(key(&dir.chat, ask.threads.first().map(String::as_str)))
-                .or_default();
+        for _ in chat::asking(dir, now).unwrap_or_default() {
             entry.needs += 1;
             entry.asks += 1;
         }
-        for item in chats::checks_of(project_id, items.clone(), &viewer) {
-            counts
-                .entry(key(&dir.chat, slug_of_task(Some(item.task))))
-                .or_default()
-                .check += 1;
-        }
+        entry.check += chats::checks_of(project_id, items.clone(), &viewer).len();
     }
     counts
 }

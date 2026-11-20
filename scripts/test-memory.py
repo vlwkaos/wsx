@@ -564,6 +564,15 @@ if os.path.exists(log):
     check(code == 0 and json.loads(out)[0]['slug'] == 'long' and 'skipped' in err, f'torn line: {code} {out} {err}')
     add('late-note', 'Written after the crash.')
     check(slugs('crash') == ['late-note'] and slugs('torn') == [], 'a write after a torn line is intact')
+    # ^ A record of before, with `thread`, is read and rewritten with the field kept, never made.
+    adds = [json.loads(line) for line in open(log).read().splitlines() if line.startswith('{"op":"add"') and line.endswith('}')]
+    old = dict(adds[-1], slug='from-a-thread', thread='chat/billing', text='Marmot lore of billing.')
+    with open(log, 'a') as file:
+        file.write(json.dumps(old) + '\n')
+    check('from-a-thread' in slugs('marmot'), 'a record with a thread field loads')
+    ok('update', '--slug', 'from-a-thread', '--status', 'failed', '--lesson', 'No.', '--source', 'task:3')
+    check(open(log).read().count('"thread":"chat/billing"') >= 1, 'the old field stays in the log')
+    exits(2, 'search', 'marmot', '--thread', 'chat/billing')
     exits(2, 'add', '--kind', 'fact', '--slug', 'tk', '--text-file', '-', '--source', 'task:1', '--verified-by', 'task:9', text='x')
     check(ok('status', scope='default')['counts']['active'] == 0, 'scopes are separate')
     project_scope()

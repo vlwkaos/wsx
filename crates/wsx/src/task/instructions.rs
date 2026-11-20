@@ -82,8 +82,7 @@ pub(super) fn instructions(
          The prompt stands alone, since a worker cannot ask: goal, the owner's decisions, \
          scope (every project and agent adapter the cause reaches), files, proof. A change you can \
          state runs with `--size small`. A broad hunt starts with one read-only audit task per area. \
-         Multi-step work is one parent with steps `--into <n>`. Close a thread \
-         (`wsx task thread close <slug>`) when its tasks have landed and nothing waits on the owner.\n\n\
+         Multi-step work is one parent with steps `--into <n>`.\n\n\
          Review. Read `wsx task review <n>` against the owner's words, its prompt and \
          each later add, and for lean code: no copy of a helper that exists, no dead code, nothing \
          unasked. Then land it, or `add` naming each ask it missed. {review}When a worker leaves for \

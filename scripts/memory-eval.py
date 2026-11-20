@@ -1034,7 +1034,6 @@ QUESTIONS = [
     ('window', 'How does task::store::open_if_exists decide a file is missing?', 'From the open\'s own io error (NotFound, or ELOOP on a dangling link); never re-stat after a failed open, as the host\'s atomic rename can create it between the two looks.', ['open_if_exists']),
     ('window', 'Which file holds the one swipe rule for chat messages and Home rows, and when does a swipe start?', 'crates/wsx-web/web/swipe.js; it starts at 10 px, not steeper than 45 degrees.', ['swipe.js']),
     ('window', 'What are the radius tokens of the web client?', 'control 16, key 12 and sheet 16 px, with the Home tab bar as reference.', ['--radius', 'radius']),
-    ('window', 'What is the key of a thread, and where is it stored?', '`<chat>/<slug>` in TaskRecord.thread, memory Record.thread and Doc.thread (wsx-core task/thread.rs); chat log rows hold the bare slug.', ['thread.rs', '<chat>/<slug>']),
     ('window', 'What must start a host under a fixed session label do first, and with which function?', 'Close the exited session first with `close_left_session` (via close_session_where in wsx-core task/mod.rs), because wsxd keeps an exited session and adds -2 to a used label.', ['close_left_session']),
 ]
 GATE_QUESTIONS = [  # ^ eight others, for B's gate only; never scored as results

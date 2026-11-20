@@ -8123,7 +8123,7 @@ def part_agents(created=None):
 
 
 def part_chats(created=None):
-    """Sections 33 to 35 and 41 to 43: managers that talk, the recap, a steer, threads."""
+    """Sections 33 to 35 and 41 to 42: managers that talk, the recap, a steer, a store of before."""
     if created is None:
         created = fresh_project()
         store_up(created)
@@ -8643,113 +8643,47 @@ def part_chats(created=None):
     js('task', 'chat', 'close', 'upd', '-p', 'demo')
     js('task', 'close', updated, '--discard')
 
-    # 42. Threads (docs/tasks.md "Threads"): a thread is opened by hand, an owner message is tagged
-    # by its quote or its window, a task joins with --thread and passes its thread to its child
-    # (--into) and to the task that waits for it (--after). No model tags anything.
+    # 42. A store of before (docs/design/flat-chats.md §3): the `thread` and `from` fields and the
+    # `thread_*` lines are read as nothing and shown as nothing; no row is lost, no command takes
+    # --thread, and the chat and the ledger carry no thread key.
     mark('42')
-    chat42 = 'demo'
-    listing = lambda: js('task', 'thread', 'list')
-    threads = lambda: {t['thread']: t for t in listing()['threads']}
-    assert threads() == {}, threads()
-    billing, speed = 'billing-fixes', 'search-speed'
-    assert 'thread %s opened' % billing in cli('task', 'thread', 'open', 'Billing fixes').stdout
-    assert 'thread %s opened' % speed in cli('task', 'thread', 'open', 'Search speed').stdout
-    # ^ No cap (owner 5278): a seventh thread opens, and the log events say how many are open.
-    for n in range(5):
-        cli('task', 'thread', 'open', 'Spare %d' % n)
-    assert listing()['open'] == 7, listing()
-    opens = [e for e in chat_entries(chat42) if e['kind'] == 'thread_open']
-    assert [e['open'] for e in opens] == list(range(1, 8)) and opens[0]['thread'] == billing, opens
-    for n in range(5):
-        cli('task', 'thread', 'close', 'spare-%d' % n, '--why', 'spare')
-    assert listing()['open'] == 2 and 'closed' in cli('task', 'thread', 'list').stdout
-    # ^ A task made with no thread is in the trunk and opens none; --thread joins an open one.
-    trunk_task = js('task', 'new', 'NOOP trunk')['id']
-    assert show(trunk_task)['record'].get('thread') is None and len(threads()) == 7, show(trunk_task)['record']
+    cli('task', 'chat', 'new', 'old42', '--goal', str(m2_goal), '-p', 'demo', '--json')
+    t0 = int(time.time() * 1000) - 60_000
+    with open(chats_dir / 'old42' / 'log.jsonl', 'a') as out:
+        for line in (
+            {'kind': 'thread_open', 'thread': 'billing', 'title': 'Billing fixes', 'open': 1},
+            {'kind': 'message', 'id': 9100001, 'from': 'owner', 'text': 'old tagged message', 'thread': 'billing'},
+            {'kind': 'delivered', 'ids': [9100001]},
+            {'kind': 'reply', 'id': 9100002, 'to': [9100001], 'text': 'old tagged reply', 'threads': ['old42/billing']},
+            {'kind': 'thread_merged', 'thread': 'billing', 'into': 'speed'},
+            {'kind': 'thread_moved', 'from': 'billing', 'to': 'speed', 'ids': [9100001]},
+            {'kind': 'thread_closed', 'thread': 'billing', 'why': 'done'},
+        ):
+            t0 += 1000
+            out.write(json.dumps({'unix_ms': t0, **line}) + '\n')
+    shown = js('task', 'chat', 'old42')['entries']
+    assert [(e['kind'], e['id']) for e in shown] == [('message', 9100001), ('reply', 9100002)], shown
+    assert not [e for e in shown if 'thread' in e or 'threads' in e], shown
+    text = cli('task', 'chat', 'old42').stdout
+    assert 'old tagged message' in text and 'old tagged reply' in text and 'thread' not in text.lower(), text
+    assert chats()['old42']['state'] == 'open' and 'thread' not in json.dumps(js('task', 'chat', 'list')), chats()
+    # ^ A task record of before, with `thread`, loads and shows no thread key; the ledger has none.
     gate42 = tmp / 'gate42'
-    parent42 = js('task', 'new', '--thread', billing, 'WAIT %s WORK p42.txt' % gate42)['id']
-    key = '%s/%s' % (chat42, billing)
-    assert show(parent42)['record']['thread'] == key, show(parent42)['record']
-    err = cli('task', 'new', '--thread', 'no-such', 'NOOP x', ok=False).stderr
-    assert 'no-such' in err and billing in err and speed in err, err
-    # ^ --into and --after inherit the thread; a different --thread is refused and makes no task.
-    child42 = js('task', 'new', '--into', parent42, 'WORK c42.txt')['id']
-    waits42 = js('task', 'new', '--after', parent42, '--because', 'needs', 'WORK w42.txt')['id']
-    assert show(child42)['record']['thread'] == key and show(waits42)['record']['thread'] == key
-    made = len(js('task', 'list')['tasks'])
-    clash = cli('task', 'new', '--into', parent42, '--thread', speed, 'NOOP y', ok=False).stderr
-    assert 'joins %s' % key in clash and len(js('task', 'list')['tasks']) == made, clash
-    # ^ A message is tagged by its window (`say --thread`) or the message it quotes, else it is in
-    # the trunk. The first message takes 25 s (LONG), so the next three come in one turn.
-    row = lambda i: next(e for e in chat_entries(chat42) if e.get('id') == i)
-    slow = js('task', 'say', '--thread', billing, 'LONG marmot billing')['id']
-    lynx = js('task', 'say', '--thread', speed, 'STATUS lynx speed')['id']
-    otter = js('task', 'say', '> message %d\n\nSTATUS otter quoted' % slow)['id']
-    stoat = js('task', 'say', 'STATUS stoat trunk')['id']
-    assert row(slow)['thread'] == billing and row(lynx)['thread'] == speed, (row(slow), row(lynx))
-    assert row(otter)['thread'] == billing and row(stoat).get('thread') is None, (row(otter), row(stoat))
-    # ^ One reply to messages of two threads carries both.
-    both = wait(lambda: next((e for e in chat_entries(chat42) if e['kind'] == 'reply' and lynx in e['to'] and otter in e['to']), None),
-                'one reply to a message of each thread', 90)
-    assert sorted(both['threads']) == [billing, speed], both
-    # ^ Search by thread: a line of the thread is found, a line of another or of the trunk is not.
-    ids = lambda *argv: {h['id'] for h in js('task', 'search', *argv)['hits'] if h.get('id')}
-    words = 'lynx otter stoat marmot'
-    in_speed, in_billing = ids('--thread', speed, words), ids('--thread', key, words)
-    assert lynx in in_speed and not {slow, otter, stoat} & in_speed, in_speed
-    assert {slow, otter} <= in_billing and not {lynx, stoat} & in_billing, in_billing
-    reply_word = re.search(r'[a-z]{6,}', both['text'].lower()).group()
-    assert all(both['id'] in ids('--thread', slug, reply_word) for slug in (billing, speed)), (reply_word, both['text'])
-    assert 'there is no thread' in cli('task', 'search', '--thread', 'nothing-here', 'lynx', ok=False).stderr
-    # ^ A task's own lines carry its thread; a memory record is added to one and found by it.
-    task_hits = {h['task'] for h in js('task', 'search', '--thread', billing, 'p42')['hits'] if h.get('task')}
-    assert parent42 in task_hits and trunk_task not in task_hits, task_hits
-    cli('memory', 'add', '--kind', 'episode', '--slug', 'thr-marmot', '--text-file', '-', '--source', 'task:1',
-        '--thread', key, stdin='the marmot lore of billing')
-    found = lambda thread: [h['slug'] for h in memory_records(cli('memory', 'search', 'marmot', '--thread', thread, '--json').stdout)]
-    assert found(billing) == ['thr-marmot'] and found(speed) == [], (found(billing), found(speed))
-    assert '<chat>/<slug>' in cli('memory', 'add', '--kind', 'episode', '--slug', 'thr-bad', '--text-file', '-',
-                                  '--source', 'task:1', '--thread', 'nochat', stdin='x', ok=False).stderr
-    # ^ A close is refused while a question of the thread waits for the owner, and allowed after.
-    cli('task', 'thread', 'open', 'Open question')
-    asked = js('task', 'say', '--thread', 'open-question', 'ASK which one')['id']
-    asking = chat_reply(chat42, asked)
-    assert asking.get('asks') and asking['threads'] == ['open-question'], asking
-    # ^ The list puts a thread that waits for the owner first, whatever its age (the strip, the TUI and
-    # this list read one order): search-speed is the newer thread, with the newer message, and is listed after.
-    # ^ The message quotes lynx: one with no quote would answer the open question.
-    chat_reply(chat42, js('task', 'say', '> message %d\n\nSTATUS newer speed' % lynx)['id'])
-    open42 = [t for t in listing()['threads'] if t['open']]
-    by42 = {t['thread']: t for t in open42}
-    order42 = [t['thread'] for t in open42]
-    assert by42['open-question']['waits'] == '1 question' and order42.index('open-question') < order42.index(speed), open42
-    assert by42[speed]['last_ms'] > by42['open-question']['last_ms'] and not by42[speed]['waits'], by42
-    waiting42 = [bool(t['waits']) for t in open42]
-    assert waiting42 == sorted(waiting42, reverse=True), open42
-    assert 'open question' in cli('task', 'thread', 'close', 'open-question', ok=False).stderr
-    chat_reply(chat42, js('task', 'say', '> message %d\n\nthis one' % asking['id'])['id'])
-    cli('task', 'thread', 'close', 'open-question')
-    assert not threads()['open-question']['open']
-    # ^ A merged thread reads as the one it went into: its search, its new tasks. The same thread
-    # twice, and a closed target, are refused.
-    cli('task', 'thread', 'merge', speed, billing)
-    assert threads()[speed]['merged_into'] == billing and not threads()[speed]['open'], threads()[speed]
-    assert lynx in ids('--thread', billing, 'lynx'), ids('--thread', billing, 'lynx')
-    assert 'merged into %s' % billing in cli('task', 'thread', 'list').stdout
-    merged_task = js('task', 'new', '--thread', speed, 'NOOP merged')['id']
-    assert show(merged_task)['record']['thread'] == key
-    assert 'nothing to merge' in cli('task', 'thread', 'merge', billing, billing, ok=False).stderr
-    assert 'is closed' in cli('task', 'thread', 'merge', billing, 'open-question', ok=False).stderr
-    # ^ A message into a closed thread opens it again.
+    old_task = js('task', 'new', 'WAIT %s WORK old42.txt' % gate42)['id']
+    record_file = Path(show(old_task)['log']).parent / 'task.json'
+    record = json.loads(record_file.read_text())
+    record['thread'] = 'demo/billing'
+    record_file.write_text(json.dumps(record))
+    assert show(old_task)['state'] and 'thread' not in show(old_task)['record'], show(old_task)['record']
+    assert 'thread' not in json.dumps(js('task', 'ledger')), 'ledger carries a thread key'
+    # ^ The flags and the subcommand of threads are gone.
+    for argv in (('new', '--thread', 'x', 'NOOP y'), ('say', '--thread', 'x', 'hi'), ('search', '--thread', 'x', 'y'), ('thread', 'list')):
+        refused = cli('task', *argv, ok=False).stderr
+        assert 'unexpected argument' in refused or 'unrecognized subcommand' in refused, (argv, refused)
+    assert cli('memory', 'search', 'x', '--thread', 'y', ok=False).returncode != 0
     gate42.write_text('go')
-    cli('task', 'thread', 'close', billing)
-    assert not threads()[billing]['open']
-    reopened = js('task', 'say', '--thread', billing, 'STATUS reopen')['id']
-    assert threads()[billing]['open'] and row(reopened)['thread'] == billing, threads()[billing]
-    chat_reply(chat42, reopened)
-    # ^ A task with open children is closed after them.
-    for task in (trunk_task, merged_task, waits42, child42, parent42):
-        js('task', 'close', task, '--discard')
+    js('task', 'close', old_task, '--discard')
+    js('task', 'chat', 'close', 'old42', '-p', 'demo')
     return created
 
 

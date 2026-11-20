@@ -40,7 +40,6 @@ use cmd::land::{after_command, hold_command, land_command, run_batch};
 use cmd::new::new;
 use cmd::project::project;
 use cmd::routine::{checkin, digest, post, routine_command};
-use cmd::thread::thread;
 use cmd::work::{
     add_command, close_command, hand, handback, list, preview_command, review, show, steer_command,
     stop_command, why,
@@ -132,7 +131,6 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
             checkin(project, after.as_deref(), at.as_deref(), &why)
         }
         TaskCmd::Project { action } => self::project(action, project, json),
-        TaskCmd::Thread { action } => thread(action, project, json),
         TaskCmd::Ledger => ledger::ledger(project),
         TaskCmd::Widths => ledger::widths(project),
         TaskCmd::Routine {
@@ -148,15 +146,7 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
             to,
             from_chat,
             reply,
-            thread,
-        } => say_command(
-            project,
-            to.as_deref(),
-            text,
-            (from_chat, reply),
-            thread,
-            json,
-        ),
+        } => say_command(project, to.as_deref(), text, (from_chat, reply), json),
         TaskCmd::Chat {
             after,
             around,
@@ -172,13 +162,12 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
             all,
             limit,
             reindex,
-            thread,
         } => search(
             project,
             &words.join(" "),
             task.as_deref(),
             all,
-            (limit, thread.as_deref()),
+            limit,
             reindex,
             json,
         ),
