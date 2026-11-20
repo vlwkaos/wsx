@@ -3854,8 +3854,8 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
       await until("!!document.querySelector('dialog[open] .folder-new input')", "a touch held 500 ms on a row opened no folder sheet", 15);
       const hash = await evaluate("location.hash");
       if (hash !== "#/" && hash !== "") await fail(`the click that ended the long press opened ${hash}`);
-      await evaluate("document.querySelector('dialog[open]').close()");
-      await until("!document.querySelector('dialog[open]')", "the folder sheet did not close");
+      await key("Escape", 27);
+      await until("!document.querySelector('dialog')", "Escape did not close the folder sheet and take it out of the page");
     }
     await evaluate(`${billing}.querySelector('.row-more').click()`);
     await until("!!document.querySelector('dialog[open] .folder-new input')", "the ⋯ of a row opened no folder sheet");
