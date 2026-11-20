@@ -673,7 +673,8 @@ const uiRow = homeRows.find((row) => row.name === "ui");
 if (!uiRow.trays.split(",").includes("you:8:true") || homeRows.find((row) => row.name === "calm").trays) await fail(`the Home trays read ${JSON.stringify(homeRows.map((row) => [row.name, row.trays]))}`);
 if (uiRow.count !== "8" || uiRow.status !== "#1 Waiting for your answer" || !/ago|now/.test(uiRow.state)) await fail(`the ui row reads ${JSON.stringify(uiRow)}`);
 const calmRow = homeRows.find((row) => row.name === "calm");
-if (!calmRow || calmRow.count || calmRow.status !== "No tasks yet" || calmRow.state) await fail(`the calm row reads ${JSON.stringify(calmRow)}`);
+// ^ A chat with no message shows when it was made (the age of its chat.json).
+if (!calmRow || calmRow.count || calmRow.status !== "No tasks yet" || !/ago|now/.test(calmRow.state)) await fail(`the calm row reads ${JSON.stringify(calmRow)}`);
 const plansRow = homeRows.find((row) => row.name === "plans");
 // ^ #1 waits for an answer; #2 is ready to land. The For you tray counts them with the project's open questions and its items to check, as the pill does.
 const plansView = await evaluate(`fetch('api/tasks/${plansArg}').then((r) => r.json()).then((view) => ({ needs: view.needs.length, asks: view.asks.length, check: view.to_check }))`);
