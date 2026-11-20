@@ -156,7 +156,7 @@ div.row-link { cursor: default; }
 /* Hook: .folder-head — a folder's heading on Home: the band of the Tasks list with a fold arrow (open turns it down) and a dot while folded. */
 .folder-head { list-style: none; padding-inline: var(--column-inset, var(--space-4)); }
 .folder-toggle {
-  width: 100%; min-height: calc(var(--size-key) - var(--space-2)); display: flex; align-items: center; gap: var(--space-1); padding: 0; border: 0; background: none;
+  width: 100%; min-height: var(--size-control); display: flex; align-items: center; gap: var(--space-1); padding: 0; border: 0; background: none;
   color: var(--color-muted); font: inherit; font-size: var(--font-size-label); font-weight: var(--font-weight-strong); letter-spacing: var(--tracking-label); text-transform: uppercase; text-align: left; cursor: pointer;
 }
 .folder-toggle .icon { width: var(--space-4); height: var(--space-4); }
@@ -166,7 +166,7 @@ div.row-link { cursor: default; }
 /* The folder sheet: the folders in use, No folder, and a field for a new one. */
 .folder-options { list-style: none; margin: 0; padding: 0; }
 .folder-option {
-  width: 100%; min-height: var(--size-key); display: flex; align-items: center; gap: var(--space-2); padding: 0;
+  width: 100%; min-height: var(--size-control); display: flex; align-items: center; gap: var(--space-2); padding: 0;
   border: 0; border-top: var(--border-width) solid var(--color-hairline); background: none; color: var(--color-text); font: inherit; font-size: var(--font-size-sm); text-align: left; cursor: pointer;
 }
 .folder-tick { flex: none; width: var(--space-4); height: var(--space-4); display: inline-flex; color: var(--color-accent); }
@@ -174,7 +174,7 @@ div.row-link { cursor: default; }
 .folder-new { display: flex; gap: var(--space-2); padding-top: var(--space-2); border-top: var(--border-width) solid var(--color-hairline); }
 .folder-new .input { flex: 1; min-width: 0; }
 /* ^ The field keeps the field size (--font-size-field): a smaller one makes iOS zoom in. */
-.folder-new .input, .folder-new .button { min-height: var(--size-key); }
+.folder-new .input, .folder-new .button { min-height: var(--size-control); }
 .folder-new .button { font-size: var(--font-size-sm); }
 a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row-link[aria-current="page"] { background: var(--color-raised); }
 /* A row whose text opens it while its actions stay buttons: the text is the link. */
