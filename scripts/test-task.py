@@ -8368,6 +8368,15 @@ def part_chats(created=None):
         wait(lambda: any(e['kind'] == 'message' and e['from'] == 'events' and '#%d moved to chat ui by owner' % qa_task in e['text']
                          for e in chat_entries(chat)), '%s hears the move' % chat, 60)
     assert js('task', 'move', qa_task, '--chat', 'ui')['moved'] == [], 'the owner chat already'
+    # ^ Its open To check item is the new chat's to see (`chats::checks_of`, as `task chat` reads it), not qa's.
+    item = {'id': 'c9901', 'task': qa_task, 'revision': 1, 'commit': 'abc1234', 'check': 'the moved page', 'state': 'open',
+            'pass_if': 'it looks right', 'unix_ms': int(time.time() * 1000)}
+    items_file = Path(show(qa_task)['report']).parent.parent / 'checks.jsonl'
+    with open(items_file, 'a') as out:
+        out.write(json.dumps(item) + '\n')
+    assert js('task', 'chat', '--chat', 'ui')['to_check'] == ['c9901'] and js('task', 'chat', '--chat', 'qa')['to_check'] == []
+    with open(items_file, 'a') as out:
+        out.write(json.dumps(dict(item, state='skipped', unix_ms=item['unix_ms'] + 1)) + '\n')
     js('task', 'add', qa_task, 'WORK qa2.txt')
     wait(lambda: any('#%d ready r2' % qa_task in e['text'] for e in chat_entries('ui') if e['kind'] == 'message'), 'ui hears the next event', 60)
     assert not [e for e in chat_entries('qa') if e['kind'] == 'message' and 'ready r2' in e['text']]
