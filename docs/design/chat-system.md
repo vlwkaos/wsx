@@ -1,5 +1,7 @@
 # Chat system: one model for chats, threads and tasks (design)
 
+Superseded by [flat-chats.md](flat-chats.md) (task 539, owner wsx 5670): threads and derived chats are removed. Kept as the record of the design.
+
 Status: design only, 2026-11-18, task #508 (owner wsx 5253: take what has piled up and make one chat system). No product code. Owner answers: 5278 (no cap, no automatic close; threads must not pile up) and 5280 (what waits for you in a thread stays easy to find). Pictures: [chat-system/](chat-system/), made by `build.py` (static pages with the real `app.css`) and `capture.mjs`. Numbers: `python3 -I docs/design/chat-system/measure.py tags|chats|roots|asks 14` (read-only, totals only, this machine's logs, 14 days to 2026-11-18). Cost and recall figures come from [thread-context.md](thread-context.md) and are not rerun.
 
 Assuming: "trunk" (the chat's own messages, owner word in wsx 5082) and the chat names in the pictures are samples. The data in the pictures is made up in the shape of real chats.

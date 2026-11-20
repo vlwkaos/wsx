@@ -4,7 +4,6 @@
   python3 -I docs/design/deep-refactor-measure.py commands [days]   wsx task|memory calls by agents
   python3 -I docs/design/deep-refactor-measure.py stores [days]     size and writes of each store
   python3 -I docs/design/deep-refactor-measure.py rows [days]       chat log rows by kind, old row shapes
-  python3 -I docs/design/deep-refactor-measure.py threads [days]    root tasks open at once per chat
 
 Role of a transcript (~/.claude/projects/<dir>/*.jsonl): `worker` when <dir> ends in -t<N>
 (a task copy), else `chat` (managers and chat agents). Bench, probe and fixture dirs are skipped.
@@ -163,29 +162,5 @@ def rows():
         print(f"  {k}: {time.strftime('%Y-%m-%d %H:%M', time.localtime(v / 1000))}")
 
 
-def threads():
-    """Root tasks (no parent, no --after) per chat: how many were open at the same time."""
-    per_chat = collections.defaultdict(list)
-    for p in glob.glob(TASKS + "/*/*/task.json"):
-        try:
-            t = json.load(open(p))
-        except (OSError, ValueError):
-            continue
-        if t.get("parent") or t.get("after"):
-            continue
-        start = (t.get("created_unix_ms") or 0) / 1000
-        done = t.get("state") in ("landed", "closed", "discarded")
-        end = (t.get("state_unix_ms") or 0) / 1000 if done else time.time()
-        if end >= SINCE:
-            per_chat[str(t.get("created_by") or "?")].append((start, end))
-    print(f"chat: root tasks touching the last {DAYS} d, open at once: median / p90 / max (sampled hourly)")
-    for chat, spans in sorted(per_chat.items(), key=lambda x: -len(x[1])):
-        counts = sorted(sum(s <= h < e for s, e in spans) for h in range(int(SINCE), int(time.time()), 3600))
-        if not counts or len(spans) < 3:
-            continue
-        print(f"  {chat[:28]:28} {len(spans):4} tasks  {counts[len(counts) // 2]:3} / "
-              f"{counts[int(len(counts) * 0.9)]:3} / {counts[-1]:3}")
-
-
 if __name__ == "__main__":
-    {"commands": commands, "stores": stores, "rows": rows, "threads": threads}[sys.argv[1] if len(sys.argv) > 1 else "commands"]()
+    {"commands": commands, "stores": stores, "rows": rows}[sys.argv[1] if len(sys.argv) > 1 else "commands"]()

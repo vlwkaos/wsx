@@ -1,7 +1,9 @@
 # Deep refactor: one owner per concern, threads by key (#501)
 
+Status: the thread steps (6, 7, 9) are superseded by [flat-chats.md](flat-chats.md); no thread is built.
+
 Status: plan only, 2026-11-17. This file is the plan; the code is unchanged. The build steps become child tasks (`--into 501`) after the owner approves.
-Numbers: `python3 -I docs/design/deep-refactor-measure.py commands|stores|rows|threads 14`. It reads this machine's transcripts and stores, prints totals only and makes no model call.
+Numbers: `python3 -I docs/design/deep-refactor-measure.py commands|stores|rows 14`. It reads this machine's transcripts and stores, prints totals only and makes no model call.
 Owner words: studio-app 1049, relayed in wsx 5194.
 
 ## 1. For the owner: one screen

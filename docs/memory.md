@@ -18,7 +18,6 @@ One command surface for stored knowledge: `wsx memory <command>` (wsx, projects 
 | `updated` | unix ms of the last write; a store that has no write time may give its file's time |
 | `verified_by` | required for `rule` and `fact`, else exit 2. Forms: `owner:<msg id>` (digits, a wsx message), `owner:transcript:<ref>` (the owner's words outside wsx), or a relative path with no `..` that exists under the project root. `url:<URL>` (a page that says it: `http` or `https` only, a host name or IPv4 address, no user name, no spaces, at most 2048 bytes; it is checked as text and never fetched). wsx also takes `task:<n>` (a landed task of the project), `task:<project>#<n>` (a landed task of another registered project, which the manager of this one ran there) and `check:<id>` (a passed check item of the project). `episode` needs none |
 | `commit` | facts: the commit it was true at |
-| `thread` | wsx extension: the thread of a chat the record is about, `<chat>/<slug>` ([tasks.md](tasks.md) "Threads"); none is the trunk. `search --thread` finds it; a search plug-in is not asked with it |
 | `superseded_by` | slug of the newer record |
 | `lesson` | why a `failed` record failed |
 | `paths` | wsx extension: globs or paths (relative to the project, no `..`, not starting with `-` or `:`, at most 500 and 32 KiB together) that the record is about; `search` marks a fact stale by them, and a rule whose paths meet a task's `--files` is in that task's first prompt. See "Start set" |
@@ -44,7 +43,7 @@ wsx also searches the transcripts of a project scope (a chat message or reply, a
 |---|---|---|
 | `search` | `<query> [--limit 10] [--include-inactive] [--kind k]` | `[hit]` by score, newer first on a tie; nothing found: `[]`, exit 0. Active records only unless `--include-inactive` |
 | `recall` (wsx) | `<question>` | the best 5 `[hit]`: the top 5 by score of a search's top 20 (no model yet) |
-| `add` | `--kind K --slug S --text-file F\|- --source ID [--title T] [--verified-by V] [--commit C] [--description D] [--keywords a,b]` (wsx also `--paths a,b`, `--words W`, `--thread <chat>/<slug>`, `--supersedes OLD`) | the record. A near duplicate returns the old record unchanged (NOOP), exit 0. wsx: a `rule` or `fact` also gets `similar`, see "Notes" |
+| `add` | `--kind K --slug S --text-file F\|- --source ID [--title T] [--verified-by V] [--commit C] [--description D] [--keywords a,b]` (wsx also `--paths a,b`, `--words W`, `--supersedes OLD`) | the record. A near duplicate returns the old record unchanged (NOOP), exit 0. wsx: a `rule` or `fact` also gets `similar`, see "Notes" |
 | `update` | `--slug S [--text-file F\|-] --source ID [--verified-by V] [--commit C] [--description D] [--keywords a,b] [--status failed --lesson L]` | the record; `--keywords` replaces the list. The old text stays in the log. `--status failed` needs `--lesson` and is INVALIDATE |
 | `supersede` | `<old> <new> --source ID` | the old record, now `superseded` with `superseded_by` set to `<new>` |
 | `get` | `<slug>` | the record; unknown slug: exit 1 |
