@@ -3798,7 +3798,8 @@ def task_journey(args):
         # the ones it counts from.
         # ^ The repo's main chat in the store layout of docs/tasks.md "Chats": `tasks/chats/plans` and `home.json`.
         # ^ A repo has a chat only when one is made: the first of each is its main chat (docs/tasks.md "Chats"); `plans` has its own.
-        for name in ('demo', 'ui', 'calm', *(folder.name for folder in session_projects)):
+        # ^ A chat with no message sorts by its file's age, newest first: calm, busy, quiet, gone are made in the reverse of the order Home shows them.
+        for name in ('demo', 'ui', *(folder.name for folder in reversed(session_projects)), 'calm'):
             js('task', 'chat', 'new', name, '-p', name)
         plans_id = 'plans-' + hashlib.sha256(str(plans).encode()).hexdigest()[:8]
         manager_dir = state / 'wsx/tasks/chats/plans'
