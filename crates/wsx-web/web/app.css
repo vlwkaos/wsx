@@ -143,15 +143,15 @@ div.row-link { cursor: default; }
 /* Hook: [data-quiet] — a slide action that is not a loss (Home's Dismiss): the muted color, not the danger one. */
 .row-remove[data-quiet] { color: var(--color-muted); }
 .row-slide[data-open] .row-remove[data-quiet] { background: var(--color-raised); color: var(--color-text); }
-/* Hook: .row-more — Home's ⋯ on a row: a sibling of the link (a button in a link is not valid), small, in the top
-   right corner over the row's head, which keeps its room (.home-rows .row-head). A touch held on the row does the same. */
+/* Hook: .row-more — Home's ⋯ on a row: a sibling of the link (a button in a link is not valid), small, in the bottom
+   right corner beside the lines under the head, which keep its room; the head's icons and time keep the edge. A touch held on the row does the same. */
 .row-more {
-  position: absolute; top: calc(var(--space-1) * -0.5); right: 0; width: var(--size-control); height: var(--size-control);
+  position: absolute; bottom: 0; right: 0; width: var(--size-control); height: var(--size-control);
   display: inline-flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--color-muted); font-size: var(--font-size-sm); cursor: pointer;
 }
 .row-more:focus-visible { color: var(--color-text); }
 @media (hover: hover) { .row-more:hover { color: var(--color-text); } }
-.home-rows .row-head { padding-right: calc(var(--size-control) - var(--space-3)); }
+.home-rows :is(.row-projects, .row-context) { padding-right: calc(var(--size-control) - var(--space-3)); }
 .home-rows .row-link { -webkit-touch-callout: none; }
 /* Hook: .folder-head — a folder's heading on Home: the band of the Tasks list with a fold arrow (open turns it down) and a dot while folded. */
 .folder-head { list-style: none; padding-inline: var(--column-inset, var(--space-4)); }
