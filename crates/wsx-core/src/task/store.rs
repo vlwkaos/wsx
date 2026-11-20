@@ -1204,7 +1204,6 @@ impl ManagerDir {
         ensure_project_dir(project_id)?;
         create_private_dir(&chats_root())?;
         let path = chats_root().join(super::chats::checked_name(chat)?);
-        let fresh = !path.exists();
         create_private_dir(&path)?;
         let dir = Self {
             project_id: project_id.into(),
@@ -1212,10 +1211,6 @@ impl ManagerDir {
             chat: chat.into(),
         };
         super::chats::ensure_file(&dir)?;
-        // ^ A chat made now has no open work to place in threads (`thread::placing_due`).
-        if fresh {
-            super::thread::placing_done(&dir)?;
-        }
         Ok(dir)
     }
 

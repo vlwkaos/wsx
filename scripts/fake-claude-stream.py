@@ -406,20 +406,6 @@ def manager_turn(text, project, page):
         return 'script -> %d %s' % (done.returncode, (done.stdout + done.stderr).strip()[:600])
     said = next((line.split('(message ', 1)[1].split(')', 1)[0] for line in text.splitlines()
                  if line.startswith('Owner (message ')), '0')
-    if 'Place the open work below once.' in text:
-        # ^ The placing turn of a chat from before threads (docs/tasks.md "Threads"): one thread for
-        # each open task and one for the open questions, as the instruction says.
-        listed = {line.split(':', 1)[0]: line.split(':', 1)[1].strip() for line in text.splitlines()
-                  if line.startswith(('Open tasks:', 'Open questions of the owner'))}
-        wsx = lambda *args: subprocess.run(['wsx', 'task', *args, '-p', project], capture_output=True, text=True, check=True).stdout
-        for number in re.findall(r'#(\d+) ', listed.get('Open tasks', '')):
-            slug = re.search(r'thread (\S+) opened', wsx('thread', 'open', 'Subject %s' % number))[1]
-            wsx('thread', 'move', slug, number)
-        replies_to = re.findall(r'(?:^|; )(\d+) ', next((v for k, v in listed.items() if k.startswith('Open questions')), ''))
-        if replies_to:
-            slug = re.search(r'thread (\S+) opened', wsx('thread', 'open', 'Open questions'))[1]
-            wsx('thread', 'move', slug, *sum((['--ask', n] for n in replies_to), []))
-        return '-'
     for line in text.splitlines():
         if line.startswith('RUN '):
             line = line.replace('OWNER_SAID', said)

@@ -3804,8 +3804,6 @@ def task_journey(args):
         (state / 'wsx/tasks' / plans_id).mkdir(mode=0o700, exist_ok=True)
         (state / 'wsx/tasks' / plans_id / 'home.json').write_text(json.dumps({'chat': 'plans'}))
         (manager_dir / 'chat.json').write_text(json.dumps({'repos': [plans_id]}))
-        # ^ A chat from before threads has no `threads-placed` file and gets one placing turn at its first start; this scenario tests other things.
-        (manager_dir / 'threads-placed').write_text('1\n')
         questions = ['Should the fold keep five rows?', 'Can #92 wait for Monday?', 'Shall I ship #93 today?', 'Is the since line right?']
         # ^ The log opens with the two questions that stay open and six spare ones: the four plain
         # owner messages the journey sends to plans answer four (the run showed four gone), and the two the web check sends before it asks (its RUN

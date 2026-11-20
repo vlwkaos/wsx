@@ -970,7 +970,6 @@ impl Host {
             HostRequest::Steer { text } => self.steer(text),
             HostRequest::Add { text, files, title } => self.add(text, files, title),
             HostRequest::Stop => self.stop(),
-            HostRequest::Thread { thread } => self.set_thread(thread),
             HostRequest::Land { tried, batch_tree } => self.land(false, tried, batch_tree),
             HostRequest::Hold { reason, by } => self.hold(reason, by),
             HostRequest::After {
@@ -1112,14 +1111,6 @@ impl Host {
             view::task_list(tasks.iter().copied()),
             store::follow_up_log_path(&self.record.project_id)?.display()
         ))
-    }
-
-    /// The task joins a thread of its chat (`wsx task thread move`).
-    fn set_thread(&mut self, thread: String) -> Result<String> {
-        self.record.thread = Some(thread.clone());
-        self.save();
-        self.say(&format!("thread {thread}"));
-        Ok(format!("in thread {thread}"))
     }
 
     fn hold(&mut self, reason: Option<String>, by: Actor) -> Result<String> {

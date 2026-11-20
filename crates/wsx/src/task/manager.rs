@@ -293,7 +293,6 @@ pub fn run(chat: &str) -> Result<()> {
         drift_said: false,
     };
     manager.restore()?;
-    manager.place_open_work();
     let requests = events.clone();
     std::thread::spawn(move || {
         hosting::serve(
@@ -2086,32 +2085,6 @@ impl Manager {
             if let Err(error) = self.accept(Author::Recap, THOUGHT_ASKED.into(), Vec::new(), None) {
                 self.say(&format!("cannot ask for the answer in thinking: {error:#}"));
             }
-        }
-    }
-
-    /// Once for the chat: one turn lists its open work that is in no thread, and the manager
-    /// places it with `wsx task thread open` and `move`. A chat with none costs no turn. It is
-    /// done when the turn is queued; a failed read tries again at the next start.
-    fn place_open_work(&mut self) {
-        if !thread::placing_due(&self.dir) {
-            return;
-        }
-        let found = match thread::unplaced(&self.dir, now_unix_ms()) {
-            Ok(found) => found,
-            Err(error) => {
-                self.say(&format!("cannot list the open work for threads: {error:#}"));
-                return;
-            }
-        };
-        if !found.is_empty() {
-            let short = vec![Short::plain("threads: place the open work")];
-            if let Err(error) = self.accept(Author::Events, found.text(), short, None) {
-                self.say(&format!("cannot ask for the threads: {error:#}"));
-                return;
-            }
-        }
-        if let Err(error) = thread::placing_done(&self.dir) {
-            self.say(&format!("cannot record the threads placing: {error:#}"));
         }
     }
 
