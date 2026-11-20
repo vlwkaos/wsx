@@ -126,7 +126,7 @@ WSX = Path(os.environ.get("WSX_SMOKE_WSX", ROOT / "target" / "debug" / "wsx"))
 
 
 def home_folder(name, path):
-    """Stage the home chat of a repo in the store layout of docs/tasks.md "Chats": `tasks/chats/<name>/` with its
+    """Stage the main chat of a repo in the store layout of docs/tasks.md "Chats": `tasks/chats/<name>/` with its
     `chat.json`, and `home.json` in the repo's own store folder. Returns the chat's folder."""
     project_id = f"{name}-{hashlib.sha256(str(path).encode()).hexdigest()[:8]}"
     store = STATE / "wsx" / "tasks" / project_id
@@ -2090,7 +2090,7 @@ finally:
     tui.close()
 
 # `d` on a project asks; `y` only unregisters it (its sessions keep running), `H` also halts all
-# its sessions, the hidden `task-<home chat>` one included (docs/web-client.md "Projects").
+# its sessions, the hidden `task-<main chat>` one included (docs/web-client.md "Projects").
 removal = {name: WORK / name for name in ("halt-me", "keep-me")}
 for name, folder in removal.items():
     folder.mkdir()
@@ -2428,7 +2428,7 @@ try:
     remove_tui.send(b"d")
     wait_for(lambda: asks in remove_tui.text(), "d did not ask again", seconds=60)
     remove_tui.send(b"y")
-    wait_for(lambda: "Closed qa; its open tasks are the home chat's" in remove_tui.text() and "Check the notes" not in remove_tui.text(),
+    wait_for(lambda: "chat qa is closed" in remove_tui.text() and "Check the notes" not in remove_tui.text(),
              lambda: f"y did not close qa and drop its row:\n{remove_tui.text()}", seconds=60)
     listed = wsx("task", "chat", "list", "-p", "keep-me", "--json")
     assert listed.returncode == 0 and {row["name"]: row["state"] for row in json.loads(listed.stdout)["chats"]}.get("qa") == "closed", listed.stdout + listed.stderr
@@ -2666,7 +2666,7 @@ try:
     remove_from_tui("halt-me", b"H")
     wait_for(lambda: "halt-me" not in config_names(), "H did not unregister halt-me")
     wait_for(lambda: project_sessions("halt-me") == [], "H did not halt the sessions of halt-me")
-    # ^ Closing qa handed back to the home chat and started its host beside the staged session (`task-keep-me-2`).
+    # ^ Closing qa handed back to the main chat and started its host beside the staged session (`task-keep-me-2`).
     assert {"shell", "task-keep-me"} <= set(project_sessions("keep-me")), f"H halted another project's sessions: {project_sessions('keep-me')}"
     remove_from_tui("keep-me", b"y")
     wait_for(lambda: "keep-me" not in config_names(), "y did not unregister keep-me")

@@ -272,7 +272,7 @@ def main():
     ap.add_argument("--wsx", default="wsx", help="the wsx binary that posts")
     a = ap.parse_args()
     if not os.path.isdir(usage.home_folder(a.state_dir)):
-        sys.exit(f"retrospect: no home chat folder for {a.state_dir}")
+        sys.exit(f"retrospect: no main chat folder for {a.state_dir}")
     events = usage.read_log(usage.home_folder(a.state_dir))
     now = int(time.time() * 1000)
     # ^ It starts at the last retrospect, else 24 h back, as the digest does.

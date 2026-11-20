@@ -48,8 +48,8 @@ const REQUESTS_PER_MINUTE = 300;
 const LINTED = new Set(["new-chat", "new-chat-refused", "chats-home-approval", "chats-home", "chats-home-wide", "home-long-name", "chat-room", "chat-room-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "tasks-check-queue-dark", "tasks-check-queue-light", "home", "home-chats-dark", "home-chats-light", "home-folders-dark", "home-folders-light", "home-folder-sheet", "home-folders-folded", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
 let size = [390, 844, 2];
 const phone = () => size[0] < 600;
-// ^ In a page script: the overview with its home chat's newest message at `ms`: Home sorts by it (home.js `homeOrder`).
-const lastAt = "const lastAt = (overview, ms) => ({ ...overview, chats: overview.chats.map((chat) => chat.name === overview.home_chat ? { ...chat, last_unix_ms: ms } : chat) });";
+// ^ In a page script: the overview with its main chat's newest message at `ms`: Home sorts by it (home.js `homeOrder`).
+const lastAt = "const lastAt = (overview, ms) => ({ ...overview, chats: overview.chats.map((chat) => chat.name === overview.main_chat ? { ...chat, last_unix_ms: ms } : chat) });";
 const audits = [];
 
 // ^ Across 900 px the app swaps its layout (main.js useWide) and an open task sheet mounts again
@@ -459,8 +459,8 @@ const bubbles = () => evaluate(`[...document.querySelectorAll('.log .bubble')].m
 
 await resize([390, 844, 2]);
 await pair(cdp, siteUrl, code);
-const homeOf = (id) => evaluate(`fetch('api/tasks/${id}').then((r) => r.json()).then((view) => view.home_chat)`);
-// ^ A project's chat is at #/c/<home chat> and its sheets at the end of that route; its sessions and files stay under #/p/<id> (docs/web-client-tasks.md "Routes"). The older #/p/<id>/<sheet> links open too.
+const homeOf = (id) => evaluate(`fetch('api/tasks/${id}').then((r) => r.json()).then((view) => view.main_chat)`);
+// ^ A project's chat is at #/c/<main chat> and its sheets at the end of that route; its sessions and files stay under #/p/<id> (docs/web-client-tasks.md "Routes"). The older #/p/<id>/<sheet> links open too.
 const repoBase = `#/p/${project}`;
 const chat = `#/c/${await homeOf(project)}`;
 const page = (n) => `${chat}/task/${n}`;
@@ -491,13 +491,13 @@ async function motion() {
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     // The manager of ui runs a turn: typing dots on its row. ^ Only ui's row: another fixture
     // manager may run a real turn at the same time.
-    update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], chats: state.tasks[ui].chats.map((chat) => chat.home ? { ...chat, busy: true } : chat) } } });
+    update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], chats: state.tasks[ui].chats.map((chat) => chat.main ? { ...chat, busy: true } : chat) } } });
     await frames();
     const typing = document.querySelectorAll('.home-rows > .row:has(.home-row)[data-key="' + ui + '"] .row-typing .typing-dot').length;
     toast('Saved the page');
     await frames();
     const notice = !!document.querySelector('.notice .notice-timer');
-    // gone's home chat gets the newest message (the chat's last_unix_ms sorts Home): it moves up; then it goes: its row fades out where it was.
+    // gone's main chat gets the newest message (the chat's last_unix_ms sorts Home): it moves up; then it goes: its row fades out where it was.
     const before = rows().map((row) => row.dataset.key);
     update({ tasks: { ...state.tasks, [mover.id]: lastAt(state.tasks[mover.id], Date.now() + 1e7) } });
     await frames();
@@ -525,7 +525,7 @@ async function motion() {
   const typingOn = () => evaluate(`(async () => {
     const { state, update } = await ${pageModule("store.js")};
     const ui = state.projects.find((project) => project.name === 'ui').id;
-    update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], chats: state.tasks[ui].chats.map((chat) => chat.home ? { ...chat, busy: true } : chat) } } });
+    update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], chats: state.tasks[ui].chats.map((chat) => chat.main ? { ...chat, busy: true } : chat) } } });
     await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
   })()`);
   // ^ A read in between can undo it again (CI run 43549626080: no dots): one of 3 tries must show them.
@@ -632,8 +632,8 @@ async function homeUnread() {
     const T = Date.now() + 2e7;
     // ^ calm has a message nobody read here; gone and quiet are read, and gone is newer by activity.
     localStorage.setItem('wsx-read', JSON.stringify(Object.fromEntries([calm, gone, quiet].map((project) => ['project-' + project.id, { read: T - 1000, place: null }]))));
-    // ^ Home reads each chat's own row: news and the newest time are staged on the home chat's row.
-    const overview = (project, extra) => ({ ...state.tasks[project.id], chats: state.tasks[project.id].chats.map((chat) => chat.home ? { ...chat, ...extra } : chat) });
+    // ^ Home reads each chat's own row: news and the newest time are staged on the main chat's row.
+    const overview = (project, extra) => ({ ...state.tasks[project.id], chats: state.tasks[project.id].chats.map((chat) => chat.main ? { ...chat, ...extra } : chat) });
     const names = () => [...document.querySelectorAll('.home-rows > .row:has(.home-row)')].map((row) => row.querySelector('.row-label').textContent).filter((name) => ['calm', 'gone', 'quiet'].includes(name));
     const marked = (project) => document.querySelector('.home-rows > .row:has(.home-row)[data-key="' + project.id + '"]').hasAttribute('data-news');
     update({ tasks: { ...state.tasks,
@@ -3766,7 +3766,7 @@ for (const wide of [false, true]) {
   // ^ A fold of another chat's words ("Talked to ui", data-talk) is no event line.
   const events = await evaluate(`[...document.querySelectorAll('.log .status-line, .log .fold')].filter((node) => !node.matches('[data-talk]')).map((node) => node.textContent)`);
   if (events.length) await fail(`a chat shows the project's events: ${events}`);
-  // ^ The speakers: the home chat's message is under its chat name, the chat's reply under the chat's own. Its message is
+  // ^ The speakers: the main chat's message is under its chat name, the chat's reply under the chat's own. Its message is
   // a Talked to row, closed: open it to read who wrote.
   await evaluate("(async () => { for (const toggle of document.querySelectorAll('.log [data-talk] .fold-toggle')) if (toggle.getAttribute('aria-expanded') === 'false') toggle.click(); await new Promise((done) => setTimeout(done, 100)); })()");
   const speakers = await evaluate(`[...document.querySelectorAll('.log .bubble, .log [data-talk] .reply-text')].map((node) => node.querySelector('.bubble-author')?.textContent ?? '').filter(Boolean)`);
@@ -3824,14 +3824,14 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await until(`!!(${billing})`, "a message did not bring the dismissed chat back", 30);
   await shot(`home-dismiss-back`);
   await untilApi(`fetch('api/tasks/${project}/chat?chat=billing').then((r) => r.json()).then((data) => data.rows.length >= ${rows} + 2)`, "the chat did not answer the message", 10);
-  // ^ An unread reply in another chat marks its row as the home chat's reply marks the project's
+  // ^ An unread reply in another chat marks its row as the main chat's reply marks the project's
   // (the same accent mark, the reply's first line in the status line, "unread" in the label): one rule
   // for every chat, the server's `news` against what this device read (docs/web-client.md "Notifications").
-  await until(`!!(${billing})?.querySelector('.news-mark') && ${billing}.hasAttribute('data-news') && (${billing}.querySelector('.row-context[data-news]')?.textContent.trim().length ?? 0) > 0`, "the chat's reply did not mark its row unread as the home chat's reply marks the project's", 300);
+  await until(`!!(${billing})?.querySelector('.news-mark') && ${billing}.hasAttribute('data-news') && (${billing}.querySelector('.row-context[data-news]')?.textContent.trim().length ?? 0) > 0`, "the chat's reply did not mark its row unread as the main chat's reply marks the project's", 300);
   const chatMark = await evaluate(`(() => { const mark = getComputedStyle(${billing}.querySelector('.news-mark')).backgroundColor;
     const probe = document.createElement('span'); probe.style.color = 'var(--color-accent)'; document.body.append(probe); const accent = getComputedStyle(probe).color; probe.remove();
     return { mark, accent, label: ${billing}.querySelector('.chat-row')?.getAttribute('aria-label') ?? '' }; })()`);
-  if (chatMark.mark !== chatMark.accent || !/unread/.test(chatMark.label)) await fail(`the chat's unread mark is not the home chat's accent mark: ${JSON.stringify(chatMark)}`);
+  if (chatMark.mark !== chatMark.accent || !/unread/.test(chatMark.label)) await fail(`the chat's unread mark is not the main chat's accent mark: ${JSON.stringify(chatMark)}`);
   await go("#/c/billing");
   await until("!!document.querySelector('.log .bubble[data-side=in]')", "the chat did not open after its message");
   await go("#/");
@@ -4000,7 +4000,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
     }
   }
   await inScheme("dark");
-  // ^ The close writes the file first, then tells the home chat; with no manager host here that tell can fail. The chat is closed either way, which `chat list` says.
+  // ^ The close writes the file first, then tells the main chat; with no manager host here that tell can fail. The chat is closed either way, which `chat list` says.
   for (const [name, owner] of [["tuning", "calm"], ["shared", "plans"]]) {
     let said = "";
     try { chatCmd("close", name, "-p", owner); } catch (error) { said = String(error.stderr); }
@@ -4071,24 +4071,24 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await until(`${chatCount} === ${own + 1}`, "the chat's row shows no pending approval of its own", 30);
   if ((await evaluate(firstCount)) !== before) await fail("a chat's approval counted on the first chat's row");
   await shot("chats-home-approval");
-  // ^ A chat that is not the home chat shows the same state on Home (task 510, owner 5329): the row of billing is
-  // built as the home chat's is, so its manager's turn shows the typing dots, with its name, the same as the home row's.
+  // ^ A chat that is not the main chat shows the same state on Home (task 510, owner 5329): the row of billing is
+  // built as the main chat's is, so its manager's turn shows the typing dots, with its name, the same as the home row's.
   {
     await resize([390, 844, 2]);
     await go("#/");
     await until("!!document.querySelector('.home-rows .chat-row')", "Home lists no chat row for the working chat");
     const pageStore = `import(new URL("store.js", [...document.scripts].find((script) => script.type === 'module').src))`;
-    // ^ Staged on the page's store: every home chat and billing run a turn (the server side is the tasks event's rows, test-web-client.py).
+    // ^ Staged on the page's store: every main chat and billing run a turn (the server side is the tasks event's rows, test-web-client.py).
     const working = (busy) => evaluate(`(async () => {
       const { state, update } = await ${pageStore};
-      update({ tasks: Object.fromEntries(Object.entries(state.tasks).map(([id, tasks]) => [id, { ...tasks, chats: (tasks.chats ?? []).map((chat) => ({ ...chat, busy: ${busy} && (chat.home || chat.name === 'billing') })) }])) });
+      update({ tasks: Object.fromEntries(Object.entries(state.tasks).map(([id, tasks]) => [id, { ...tasks, chats: (tasks.chats ?? []).map((chat) => ({ ...chat, busy: ${busy} && (chat.main || chat.name === 'billing') })) }])) });
     })()`);
     const typing = () => evaluate(`({ home: document.querySelectorAll('.home-rows .home-row .row-typing .typing-dot').length > 0,
       chats: [...document.querySelectorAll('.home-rows .chat-row')].filter((link) => link.querySelector('.row-typing')).map((link) => link.getAttribute('aria-label').split(' of ')[0]) })`);
     await working(true);
     await until(`!!document.querySelector('.home-rows .chat-row .row-typing .typing-dot')`, "a working chat's Home row shows no typing dots");
     const dots = await typing();
-    if (!dots.home || dots.chats.join() !== "Chat billing") await fail(`the working rows on Home are ${JSON.stringify(dots)}: the home chat and billing should both type`);
+    if (!dots.home || dots.chats.join() !== "Chat billing") await fail(`the working rows on Home are ${JSON.stringify(dots)}: the main chat and billing should both type`);
     for (const scheme of ["light", "dark"]) { await inScheme(scheme); await shot(`home-working-chat-${scheme}`); }
     await inScheme("dark");
     await working(false);
@@ -4220,11 +4220,11 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   // row; `wsx task chat list` has it closed. The first chat's top row has no Close chat.
   const menuItems = () => evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].map((item) => item.textContent.trim())");
   await go(`#/p/${project}`);
-  await until(`location.hash === '${chat}'`, "the old route #/p/<id> did not redirect to the home chat");
+  await until(`location.hash === '${chat}'`, "the old route #/p/<id> did not redirect to the main chat");
   await go(`#/p/${project}/t/2`);
-  await until(`location.hash === '${page(2)}'`, "the old route #/p/<id>/t/<n> did not redirect to the sheet over the home chat");
+  await until(`location.hash === '${page(2)}'`, "the old route #/p/<id>/t/<n> did not redirect to the sheet over the main chat");
   await go(`#/p/${project}`);
-  await until(`location.hash === '${chat}'`, "the sheet's old route left the home chat");
+  await until(`location.hash === '${chat}'`, "the sheet's old route left the main chat");
   await until("!!document.querySelector('.bar .more-button')", "the manager chat has no ⋯ menu");
   await click(".bar .more-button");
   if ((await menuItems()).includes("Close chat")) await fail(`the first chat offers ${await menuItems()}`);
@@ -4746,12 +4746,12 @@ phase("Media a message names (docs/web-client-chat.md Markdown, doc");
 // checkout and a remote address stay alt text; a link to an HTML file opens its sandboxed view.
 {
   const state = JSON.parse(fs.readFileSync(wsxCli)).env.XDG_STATE_HOME;
-  // ^ The home chat's log is in the chat's folder, the repo's tasks and checks in the repo's own.
+  // ^ The main chat's log is in the chat's folder, the repo's tasks and checks in the repo's own.
   const plansHome = await homeOf(plansArg);
   const files = fs.readdirSync(state, { recursive: true });
   const logFile = files.find((file) => file.endsWith(`chats/${plansHome}/log.jsonl`));
   const homeFile = files.find((file) => /(^|\/)plans-[0-9a-f]{8}\/home\.json$/.test(file));
-  if (!logFile || !homeFile) await fail(`no home chat log or repo folder of plans under ${state}: ${JSON.stringify([plansHome, logFile, homeFile])}`);
+  if (!logFile || !homeFile) await fail(`no main chat log or repo folder of plans under ${state}: ${JSON.stringify([plansHome, logFile, homeFile])}`);
   const base = ".studio-data/runs/one";
   const folder = path.join(plansCheckout, base);
   fs.mkdirSync(path.join(folder, "thumbs"), { recursive: true });

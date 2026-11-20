@@ -102,6 +102,8 @@ def run(wsx, wsxd, claude, model, work, owned):
     subprocess.run(['git', 'init', '-q', '--bare', str(origin)], env=env, check=True)
     # ^ Two targets for the manager's signals: a process outside any sandbox, and one in another
     # sandbox-exec with the manager's own profile text. The profile is printed by a hidden command.
+    subprocess.run([str(wsx), 'task', 'chat', 'new', 'demo', '-p', 'demo'], cwd=project, env=env, capture_output=True, text=True, timeout=60, check=True)
+    # ^ The repo has no chat of its own: this is its main chat, which the profile and `say` need.
     profile = subprocess.run([str(wsx), 'task', 'boundary-profile', '-p', 'demo'], cwd=project, env=env,
                              capture_output=True, text=True, timeout=60, check=True).stdout
     outside = subprocess.Popen(['sleep', '600'])

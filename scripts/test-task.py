@@ -249,7 +249,7 @@ def tui_screens(wsx, env, cwd, steps, cols=120, raw=None):
 
 
 def home_dir(store):
-    """The repo's home chat folder: `home.json` of the repo's store (`tasks/<repo-id>`) names it (docs/tasks.md "Chats")."""
+    """The repo's main chat folder: `home.json` (the main chat's pointer file) of the repo's store (`tasks/<repo-id>`) names it (docs/tasks.md "Chats")."""
     home = store / 'home.json'
     return store.parent / 'chats' / json.loads(home.read_text())['chat'] if home.exists() else None
 
@@ -513,6 +513,10 @@ def run(wsx, wsxd, work, owned, part):
 
     def js(*argv):
         return json.loads(cli(*argv, '--json').stdout)
+
+    # ^ No repo has a chat of its own: this one is made by hand, and being the repo's first it is its main chat
+    # (docs/tasks.md "Chats"). Its name is the repo's, so the `chat:demo` asserts below keep their word.
+    js('task', 'chat', 'new', 'demo')
 
     def cli_env(extra, *argv):
         return subprocess.run([str(wsx), *map(str, argv)], cwd=project, env={**env, **extra}, capture_output=True,
@@ -813,7 +817,7 @@ def manager_up(created):
         return next((t for t in traces() if t.get('manager') and text in str(t.get('message', ''))), None)
 
     # ^ An unwritten `page.md` holds nothing: the manager writes a fresh overview.md with the same text, never reads or moves
-    # it. The refusal of an old layout is tested in store.rs (`refuse_old_layout`): the home chat's host may write overview.md first.
+    # it. The refusal of an old layout is tested in store.rs (`refuse_old_layout`): the main chat's host may write overview.md first.
     old_page = state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md'
     unwritten = '# demo\n\n## Goal\n\n_Not written yet._\n\n## Tasks\n\n```mermaid\ngraph LR\n  start[No tasks yet]\n```\n\n## Decisions\n\n_None yet._\n\n## Open questions\n\n_None yet._\n'
     old_page.write_text(unwritten)
@@ -1101,7 +1105,7 @@ def manager_up(created):
     def host_gone():
         # ^ The socket goes before the process does: a host still ending may save its state after an edit.
         marker = 'task chat-host ' + manager_log.parent.name
-        wait(lambda: not leftovers(marker), 'the home chat host is gone: %s' % leftovers(marker), 30)
+        wait(lambda: not leftovers(marker), 'the main chat host is gone: %s' % leftovers(marker), 30)
 
     def manager_idle():
         entries = manager_entries()
@@ -2760,7 +2764,7 @@ def part_core(created=None):
     except ProcessLookupError:
         pass
     cli('session', 'delete', 'task-demo', '-p', 'demo')
-    # ^ The repo service may start the home chat's host first with an event: `started` or `running`.
+    # ^ The repo service may start the main chat's host first with an event: `started` or `running`.
     assert js('task', 'manager')['state'] in ('started', 'running')
     reply_to(hung['id'])
     turns_of = lambda text: [t for t in traces() if t.get('manager') and text in str(t.get('message', ''))]
@@ -4985,7 +4989,7 @@ def part_deploy(created=None):
     records_before = len(deploy_records())
     stop_manager_now()
     stop_repo_service()
-    # ^ The service that starts may send the home chat an event first: `started` or `running`.
+    # ^ The service that starts may send the main chat an event first: `started` or `running`.
     assert js('task', 'manager')['state'] in ('started', 'running')
     wait(waiters, 'the waiter the starting service started')
     wait(lambda: len(deploy_records()) > records_before and deploy_lock_free(), 'the deploy after the restart', 90)
@@ -5940,7 +5944,7 @@ def part_host(created=None):
     ow_line = r'demo #%d waits on you for 4 h 1 min: \S[^\n/]*' % owed
     assert len(first) == 1 and re.fullmatch(ow_line, first[0]['text']), first
     assert str(owed_record.parent) not in first[0]['text'] and len(first[0]['text']) < 220, first
-    # ^ A post may start the home chat's host, which takes the events that wait: the reminder itself
+    # ^ A post may start the main chat's host, which takes the events that wait: the reminder itself
     # is no message to the agent.
     assert not [t for t in traces()[ow_traces:] if 'waits on you' in t.get('message', '')], 'a reminder starts no turn'
     # ^ The key is on file: a service that starts again sends it no second time.
@@ -6789,7 +6793,7 @@ def part_host(created=None):
     with (chats_dir / 'billing/log.jsonl').open('a') as chat_log:
         chat_log.write(json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': 9000001,
                                    'from': 'chat:demo', 'text': 'MANAGER PING'}) + '\n')
-    # ^ The list shows the home chat too: the chats with needs first, then the newest message, as Home lists them.
+    # ^ The list shows the main chat too: the chats with needs first, then the newest message, as Home lists them.
     listed = sorted((c for c in js('task', 'ledger')['chats'] if c['listed']), key=lambda c: (not c.get('counts', {}).get('needs'), -c['last_unix_ms']))
     above = [c['name'] for c in listed].index('billing')
     for cols in (120, 80):
@@ -6802,7 +6806,7 @@ def part_host(created=None):
             (r'WORKSPACE', b'')], cols=cols)
         talk = shots[3]
         assert 'to check' not in talk and re.search(r'(?m)^ billing +\d\d:\d\d$', talk), talk
-        # ^ The title is the chat's name and its model; the home chat's message is one folded line
+        # ^ The title is the chat's name and its model; the main chat's message is one folded line
         # (`Talked to demo`) that opens to its words.
         assert 'billing · haiku' in talk and 'demo · billing' not in talk and 'MANAGER PING' not in talk, talk
         assert re.search(r'(?m)^ Talked to demo +Show', talk), talk
@@ -6919,7 +6923,7 @@ def part_host(created=None):
 
     # 32r3. A chat's purpose (docs/tasks.md "Chats"): `chat goal` shows, sets and clears it, for the
     mark('32r3')
-    # home chat too; the agent's instructions read it at the next turn (the running agent is
+    # main chat too; the agent's instructions read it at the next turn (the running agent is
     # dropped, the digest decides the rest); a chat's agent changes it only on the owner's word.
     first_goal, second_goal, no_goal = base / 'purpose-1.md', base / 'purpose-2.md', base / 'purpose-none.md'
     first_goal.write_text('Keep the invoices exact.\n')
@@ -6944,7 +6948,7 @@ def part_host(created=None):
     chat_reply('purpose', js('task', 'say', '--to', 'purpose', 'THIRD TURN')['id'])
     assert 'purpose for this chat' not in last_instructions('purpose') and not (chats_dir / 'purpose/goal.md').exists()
     assert last_instructions('purpose').startswith('You are purpose, a chat of the project demo.\n\n')
-    # ^ The home chat has none by default: no preamble; with one, its instructions open with it.
+    # ^ The main chat has none by default: no preamble; with one, its instructions open with it.
     assert 'purpose for this chat' not in last_instructions('demo') and last_instructions('demo').startswith('You are the manager of the wsx project')
     js('task', 'chat', 'goal', 'demo', '--goal', first_goal)
     reply_to(js('task', 'say', 'HOME TURN')['id'])
@@ -7582,7 +7586,7 @@ def part_agents(created=None):
     # the wait after one Pi launch and answers once the record goes.
     def pin_manager():
         sock = js('task', 'manager')['socket']
-        # ^ The service goes first: it starts the home chat's host again for any event while the
+        # ^ The service goes first: it starts the main chat's host again for any event while the
         # session is gone, and that host saves its own state over the pinned one.
         stop_repo_service()
         cli('session', 'delete', 'task-demo', '-p', 'demo')
@@ -7902,7 +7906,7 @@ def part_agents(created=None):
     unswept, unswept_pid = legacy_host('unswept', aged_ms=3 * 3600 * 1000)
     manager_socket = js('task', 'manager')['socket']
     # ^ The repo service stops first: with the shorter event quiet it would send the last close's event line to
-    # the home chat before the manager is down again, and the chat's host would start by that.
+    # the main chat before the manager is down again, and the chat's host would start by that.
     stop_repo_service()
     cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
@@ -7918,7 +7922,7 @@ def part_agents(created=None):
     # and the new host answers the queued message.
     socket_path = js('task', 'manager')['socket']
     stop_repo_service()
-    # ^ As above: a repo service that restarts after the last close sends an event line to the home chat, and
+    # ^ As above: a repo service that restarts after the last close sends an event line to the main chat, and
     # the chat's host starts on the harness wsx, which `install()` does not make older.
     cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(socket_path).exists() or subprocess.run(['nc', '-zU', socket_path]).returncode != 0, 'manager down')
@@ -7997,8 +8001,8 @@ def part_agents(created=None):
 
     # M2. The repo service and equal chat hosts (docs/tasks.md "Chats", docs/design/orchestration-model.md
     # 3.2): one `repo-host` per repo turns the events of the store into messages and sends each to the
-    # chat that owns it, else to the home chat; every chat's host (the home chat's too) only talks and
-    # leaves CHAT_LINGER after its queue is empty. Two repos here, each with a home chat, and named chats in demo.
+    # chat that owns it, else to the main chat; every chat's host (the main chat's too) only talks and
+    # leaves CHAT_LINGER after its queue is empty. Two repos here, each with a main chat, and named chats in demo.
     mark('m2')
     m2_config = config_dir / 'config-v2.toml'  # ^ `registry` is a closed file by here (a `with` above)
     m2_registry = m2_config.read_text()
@@ -8021,12 +8025,13 @@ def part_agents(created=None):
     m2_goal.write_text('Talk, nothing else.\n')
     # ^ A chat's name never starts with `repo-`: `task-repo-<id>` is the service's session.
     assert 'does not start with repo-' in cli('task', 'chat', 'new', 'repo-x', '--goal', str(m2_goal), '-p', 'demo', ok=False).stderr
-    # ^ Each repo has its home chat and one service; the service has no agent and no chat folder.
+    # ^ Each repo has one service; the service has no agent and no chat folder. A chat is made by hand.
+    js('task', 'chat', 'new', 'twin', '-p', 'twin')
     twin_say = js('task', 'say', '-p', 'twin', 'STATUS')
     chat_reply('twin', twin_say['id'])
     wait(lambda: service(twin_id) and service(repo_id), 'a service for each repo', 30)
     assert len(service(twin_id)) == 1 and len(service(repo_id)) == 1, (service(twin_id), service(repo_id))
-    assert twin_chats()['twin']['home'] and chats()['demo']['home']
+    assert twin_chats()['twin']['main'] and chats()['demo']['main']
     cli('task', 'chat', 'new', 'm2n', '--goal', str(m2_goal), '-p', 'demo', '--json')
     # ^ A task event goes to the chat that owns the task, though that chat's host has left: the service
     # starts it, and saves the task as seen only after the host took the line.
@@ -8042,19 +8047,21 @@ def part_agents(created=None):
     assert wait_state(m2_task, 'ready', 'failed')['state'] == 'ready'
     wait(lambda: (seen_of(m2_task) or {}).get('state') == 'ready', 'the task is saved as seen', 60)
     assert rows('m2n', '#%d ready' % m2_task), 'the line is at the chat before the service saves it as seen'
-    assert len(rows('demo', '#%d ' % m2_task)) == home_rows, 'the home chat did not hear its chat\'s task'
-    # ^ A routine result has no chat: it goes to the home chat of its repo, not to a named chat or
-    # the other repo's home chat. A closed home chat is opened again for it.
+    assert len(rows('demo', '#%d ' % m2_task)) == home_rows, 'the main chat did not hear its chat\'s task'
+    # ^ A routine result has no chat: it goes to the main chat of its repo, not to a named chat or
+    # the other repo's main chat. A closed main chat is not opened again: the event wakes nobody.
     js('task', 'routine', 'add', 'm2r', '-p', 'twin', '--cron', '0 5 * * *', '--arg=sh', '--arg=-c', '--arg=echo twinproof; exit 4')
     js('task', 'routine', 'run', 'm2r', '-p', 'twin')
-    wait(lambda: rows('twin', 'routine m2r failed (exit 4)'), 'the routine result at the home chat of twin', 60)
+    wait(lambda: rows('twin', 'routine m2r failed (exit 4)'), 'the routine result at the main chat of twin', 60)
     assert not rows('demo', 'routine m2r') and not rows('m2n', 'routine m2r')
-    wait(lambda: not chat_host('twin'), 'the home chat host leaves too', 60)
+    wait(lambda: not chat_host('twin'), 'the main chat host leaves too', 60)
     (chats_dir / 'twin/closed').write_text('closed by the owner')
     assert twin_chats()['twin']['state'] == 'closed'
     js('task', 'routine', 'run', 'm2r', '-p', 'twin')
-    wait(lambda: len(rows('twin', 'routine m2r failed (exit 4)')) == 2, 'the closed home chat is opened again and hears the event', 60)
-    assert twin_chats()['twin']['state'] == 'open' and not (chats_dir / 'twin/closed').exists()
+    wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger', '-p', 'twin')['routines']), 'the second run ended', 30)
+    time.sleep(EVENT_QUIET * 4)
+    # ^ The service saw the event and dropped it: no line, no chat made, the closed chat stays closed.
+    assert len(rows('twin', 'routine m2r failed (exit 4)')) == 1 and twin_chats()['twin']['state'] == 'closed' and (chats_dir / 'twin/closed').exists()
     js('task', 'routine', 'delete', 'm2r', '-p', 'twin')
     # ^ A check-in belongs to the chat that set it; the service fires it, also to a chat whose host left.
     text = chat_reply('m2n', js('task', 'say', '--to', 'm2n', 'RUN wsx task checkin -p demo --in 1m --why "m2 look"')['id'])['text']
@@ -8066,7 +8073,7 @@ def part_agents(created=None):
     js('task', 'close', m2_task, '--discard')
     wait_state(m2_task, 'closed')
     # ^ The idle sweep: a named chat with no message and no open task of its own for 7 days is suggested
-    # for closing, once, as a line to the home chat that starts no turn. The chat stays open.
+    # for closing, once, as a line to the main chat that starts no turn. The chat stays open.
     cli('task', 'chat', 'new', 'm2idle', '--goal', str(m2_goal), '-p', 'demo', '--json')
     idle_log = chats_dir / 'm2idle/log.jsonl'
     idle_log.touch()
@@ -8153,6 +8160,7 @@ def part_chats(created=None):
     with open(config_dir / 'config-v2.toml', 'a') as registry:
         registry.write('[[projects]]\nname = "other"\npath = ' + json.dumps(str(other)) + '\n')
     other_id = 'other-' + hashlib.sha256(str(other).encode()).hexdigest()[:8]
+    js('task', 'chat', 'new', 'other', '-p', 'other')  # ^ its main chat: a message from another project needs one
     other_log = state / 'wsx/tasks/chats/other/log.jsonl'
     asked = js('task', 'say', "SCRIPT\nwsx task ledger -p other --json >/dev/null && wsx task say -p other --from-chat --json - <<'EOF'\n"
                "RUN wsx task say -p demo --from-chat --reply 'first answer'\n"
@@ -8298,7 +8306,7 @@ def part_chats(created=None):
     text = reply_to(refused['id'], 60)['text']
     assert text.count('a manager acts in another project only with') == 2 and "project 'ghost' not found" in text, text
     assert other_ids() == before
-    # A task of demo's own by its home chat records the same `chat:demo`.
+    # A task of demo's own by its main chat records the same `chat:demo`.
     mine = js('task', 'say', 'RUN wsx task new "WORK own.txt" -p demo --json')
     reply_to(mine['id'], 60)
     own_task = max(t['id'] for t in js('task', 'list', '--all')['tasks'])
@@ -8307,9 +8315,9 @@ def part_chats(created=None):
     js('task', 'chat', 'close', 'reachr')
     reach_task = n
     # ^ Demo's manager left a landed task in other: the recap and the task counts below include it.
-    # 33c. Chats on the owner's word, and the home chat (docs/tasks.md "Chats"): a chat's agent opens
+    # 33c. Chats on the owner's word, and the main chat (docs/tasks.md "Chats"): a chat's agent opens
     # and closes a chat only with --owner-said, the new chat records no origin, a closed
-    # chat's open tasks and last decisions go back to the home chat in one row, and the home chat
+    # chat's open tasks and last decisions go back to the main chat in one row, and the main chat
     # sees every open task whichever chat made it.
     mark('33c')
     qa_goal = base / 'qa-goal.md'
@@ -8320,7 +8328,7 @@ def part_chats(created=None):
         assert why in text and 'qa' not in chats(), text
     asked = js('task', 'say', 'open a chat qa for the checkout QA\n' + new_line + ' --owner-said OWNER_SAID')
     assert '-> 0' in reply_to(asked['id'], 60)['text']
-    assert chats()['qa']['state'] == 'open' and not chats()['qa']['home'] and chats()['demo']['home'], chats()
+    assert chats()['qa']['state'] == 'open' and not chats()['qa']['main'] and chats()['demo']['main'], chats()
     meta = json.loads((chats_dir / 'qa/chat.json').read_text())
     assert meta['repos'] == [repo_id] and 'from' not in meta, meta
     assert (chats_dir / 'qa/goal.md').read_text() == qa_goal.read_text()
@@ -8331,12 +8339,12 @@ def part_chats(created=None):
     old_meta['from'] = {'chat': 'demo', 'message': asked['id']}
     (chats_dir / 'qa/chat.json').write_text(json.dumps(old_meta))
     assert chats()['qa']['state'] == 'open', chats()
-    # The chat's task is the home chat's to see; its events go to the chat that made it.
+    # The chat's task is the main chat's to see; its events go to the chat that made it.
     made = js('task', 'say', '--to', 'qa', 'RUN wsx task new "WORK qa.txt" -p demo --json')
     chat_reply('qa', made['id'])
     qa_task = max(t['id'] for t in js('task', 'list')['tasks'])
     assert show(qa_task)['record']['created_by'] == 'chat:qa', show(qa_task)['record']
-    assert qa_task in [i['id'] for i in js('task', 'ledger')['open']], 'the home chat sees the chat task in its ledger'
+    assert qa_task in [i['id'] for i in js('task', 'ledger')['open']], 'the main chat sees the chat task in its ledger'
     assert wait_state(qa_task, 'ready', 'failed')['state'] == 'ready'
     wait(lambda: any(e['kind'] == 'message' and e['from'] == 'events' and '#%d ready' % qa_task in e['text']
                      for e in chat_entries('qa')), 'qa hears its task', 60)
@@ -8347,10 +8355,10 @@ def part_chats(created=None):
     chat_reply('qa', status_say['id'])
     status_turn = next(t for t in traces() if 'Owner (message %d)' % status_say['id'] in str(t.get('message', '')))
     assert '- open: 1 ready;' in status_turn['message'], status_turn['message']
-    # ^ A routine result has no chat: it goes to the home chat, not to qa.
+    # ^ A routine result has no chat: it goes to the main chat, not to qa.
     js('task', 'routine', 'add', 'chatproof', '-p', 'demo', '--cron', '0 5 * * *', '--arg=sh', '--arg=-c', '--arg=echo qaproof; exit 3')
     js('task', 'routine', 'run', 'chatproof', '-p', 'demo')
-    wait(lambda: events_with('routine chatproof failed (exit 3)'), 'the routine result at the home chat', 60)
+    wait(lambda: events_with('routine chatproof failed (exit 3)'), 'the routine result at the main chat', 60)
     assert not any('chatproof' in e.get('text', '') for e in chat_entries('qa') if e['kind'] == 'message')
     js('task', 'routine', 'delete', 'chatproof', '-p', 'demo')
     # Move (docs/tasks.md "Chats"): qa's ready task goes to the chat ui. Its next event, its place in the
@@ -8390,7 +8398,7 @@ def part_chats(created=None):
     back = move_as('ui', qa_task, '--chat', 'qa')
     assert back.returncode == 0 and show(qa_task)['record']['moved_to'] == 'qa', back
     # Rename: the owner's, a shown name only (docs/tasks.md "Chats"): the id, the folder and `say --to` stay;
-    # the title rule is trimmed, one line, at most 40 characters; the home chat is named by its project; empty clears.
+    # the title rule is trimmed, one line, at most 40 characters; the main chat is named by its project; empty clears.
     assert "wsx task chat rename is for the owner" in reply_to(js('task', 'say', 'RUN wsx task chat rename qa "Checkout QA" -p demo --json')['id'])['text']
     assert chats()['qa']['shown'] == 'qa' and 'title' not in chats()['qa']
     renamed = js('task', 'chat', 'rename', 'qa', '  Checkout QA  ')
@@ -8403,7 +8411,7 @@ def part_chats(created=None):
     assert chats()['qa']['title'] == 'Checkout QA'
     assert js('task', 'chat', 'rename', 'qa', '')['title'] == ''
     assert chats()['qa']['shown'] == 'qa' and 'title' not in chats()['qa'] and 'title' not in json.loads((chats_dir / 'qa/chat.json').read_text())
-    # Close: refused without the word, once with it; one hand-back row at the home chat.
+    # Close: refused without the word, once with it; one hand-back row at the main chat.
     close_line = 'RUN wsx task chat close qa -p demo --json'
     assert "chat close is the owner's" in reply_to(js('task', 'say', close_line)['id'])['text'] and chats()['qa']['state'] == 'open'
     (chats_dir / 'qa/notes').mkdir(exist_ok=True)
@@ -8412,17 +8420,17 @@ def part_chats(created=None):
     assert '-> 0' in reply_to(closing['id'], 60)['text']
     assert chats()['qa']['state'] == 'closed'
     handed = wait(lambda: [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events' and 'Chat qa is closed' in e['text']],
-                  'the hand-back row at the home chat', 60)
+                  'the hand-back row at the main chat', 60)
     assert len(handed) == 1 and 'Goal: Own the QA of the checkout flow.' in handed[0]['text'], handed
     assert '#%d' % qa_task in handed[0]['text'] and 'smoke runs nightly' in handed[0]['text'], handed[0]['text']
     assert (chats_dir / 'qa/notes/decisions.md').exists()
-    # ^ The closed chat's open task is the home chat's: its next event reaches the home chat.
+    # ^ The closed chat's open task is the main chat's: its next event reaches the main chat.
     js('task', 'add', qa_task, 'WORK qa3.txt')
-    wait(lambda: events_with('#%d ready r3' % qa_task), 'the closed chat task reaches the home chat', 60)
+    wait(lambda: events_with('#%d ready r3' % qa_task), 'the closed chat task reaches the main chat', 60)
     assert not [e for e in chat_entries('qa') if e['kind'] == 'message' and 'r3' in e['text']]
-    # The home chat is not closed; only the owner repoints it.
-    assert 'home chat' in cli('task', 'chat', 'close', 'demo', ok=False).stderr
-    assert 'chat home is for the owner' in reply_to(js('task', 'say', 'RUN wsx task chat home qa -p demo --json')['id'])['text']
+    # Only the owner chooses the main chat; closing it is 33m2's.
+    assert "wsx task chat main is the owner's" in reply_to(js('task', 'say', 'RUN wsx task chat main qa -p demo --json')['id'])['text']
+    assert chats()['demo']['main'] and not chats()['qa']['main'], chats()
     js('task', 'close', qa_task, '--discard')
     # ^ A closed task has no host: the move writes its record and log, and a closed chat is refused.
     js('task', 'move', qa_task, '--chat', 'ui')
@@ -8726,6 +8734,70 @@ def part_chats(created=None):
     gate42.write_text('go')
     js('task', 'close', old_task, '--discard')
     js('task', 'chat', 'close', 'old42', '-p', 'demo')
+
+    # 33n. No chat of its own (docs/tasks.md "Chats"): a repo gets a chat only from `chat new`. Registering it and
+    # starting its service make none; the first chat is its main chat unless the owner chooses another; closing
+    # the main chat works and leaves none, and what waits for a chat then waits for nobody.
+    mark('33n')
+    solo = base / 'solo'
+    solo.mkdir()
+    git('init', '-q', '-b', 'main', cwd=solo)
+    (solo / 'README').write_text('solo\n')
+    (solo / 'wsx.config.yml').write_text('tasks:\n  minFreeGb: 0\n')
+    git('add', '.', cwd=solo)
+    git('commit', '-q', '-m', 'start', cwd=solo)
+    with open(config_dir / 'config-v2.toml', 'a') as registry:
+        registry.write('[[projects]]\nname = "solo"\npath = ' + json.dumps(str(solo)) + '\n')
+    solo_id = 'solo-' + hashlib.sha256(str(solo).encode()).hexdigest()[:8]
+    solo_store = state / 'wsx/tasks' / solo_id
+    solo_chats = lambda: {c['name']: c for c in js('task', 'chat', 'list', '-p', 'solo')['chats']}
+    solo_rows = lambda name, text: [e for e in chat_entries(name) if e['kind'] == 'message' and e['from'] == 'events' and text in e['text']]
+    solo_task = lambda text: js('task', 'new', text, '-p', 'solo')['id']
+    solo_state = lambda n: js('task', 'show', n, '-p', 'solo')['state']
+    solo_open = lambda: [i['id'] for i in js('task', 'ledger', '-p', 'solo')['open']]
+    # ^ A task starts the repo's service. No chat comes of it, nor of the events that follow.
+    t1 = solo_task('WORK s1.txt')
+    wait(lambda: [l for l in leftovers('task repo-host ') if l.split()[-1] == solo_id], 'the service of solo', 30)
+    wait(lambda: solo_state(t1) == 'ready', 'the first solo task is ready', 60)
+    time.sleep(EVENT_QUIET * 4)
+    assert solo_chats() == {} and js('task', 'ledger', '-p', 'solo')['chats'] == [], solo_chats()
+    assert not (solo_store / 'home.json').exists() and not (chats_dir / 'solo').exists() and t1 in solo_open()
+    # ^ The first chat is the main chat; the next is not, and `chat main` moves it (the owner's, no word needed).
+    js('task', 'chat', 'new', 'solo', '-p', 'solo')
+    js('task', 'chat', 'new', 'solo2', '-p', 'solo')
+    assert solo_chats()['solo']['main'] and not solo_chats()['solo2']['main'], solo_chats()
+    assert [c['main'] for c in js('task', 'ledger', '-p', 'solo')['chats'] if c['name'] == 'solo2'] == [False]
+    assert 'no open chat nosuch' in cli('task', 'chat', 'main', 'nosuch', '-p', 'solo', ok=False).stderr
+    js('task', 'chat', 'main', 'solo2', '-p', 'solo')
+    assert solo_chats()['solo2']['main'] and not solo_chats()['solo']['main'], solo_chats()
+    js('task', 'chat', 'main', 'solo', '-p', 'solo')
+    assert solo_chats()['solo']['main'], solo_chats()
+    # ^ Closing a chat that is not the main chat hands its tasks to the main chat.
+    assert 'no main chat' not in js('task', 'chat', 'close', 'solo2', '-p', 'solo')['message']
+    # ^ A task the owner makes where one chat is open wakes that chat, whatever the chat's name.
+    t2 = solo_task('WORK s2.txt')
+    wait(lambda: solo_rows('solo', '#%d ready' % t2), 'the open chat hears the owner task', 60)
+    js('task', 'routine', 'add', 'n33', '-p', 'solo', '--cron', '0 5 * * *', '--arg=sh', '--arg=-c', '--arg=exit 5')
+    js('task', 'routine', 'run', 'n33', '-p', 'solo')
+    wait(lambda: solo_rows('solo', 'routine n33 failed (exit 5)'), 'the main chat hears the routine', 60)
+    # ^ Closing the main chat works. The project has none after it, and says so.
+    closed = js('task', 'chat', 'close', 'solo', '-p', 'solo')
+    assert 'no main chat now' in closed['message'] and solo_chats()['solo']['state'] == 'closed' and not solo_chats()['solo']['main'], closed
+    assert not (solo_store / 'home.json').exists() and set(solo_chats()) == {'solo', 'solo2'}
+    # ^ Nobody is woken, and no chat comes back: the task shows in the ledger, the routine result is dropped.
+    t3 = solo_task('WORK s3.txt')
+    wait(lambda: solo_state(t3) == 'ready', 'the solo task with no chat is ready', 60)
+    js('task', 'routine', 'run', 'n33', '-p', 'solo')
+    wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger', '-p', 'solo')['routines']), 'the routine ended', 30)
+    time.sleep(EVENT_QUIET * 4)
+    assert t3 in solo_open() and not solo_rows('solo', '#%d ' % t3) and len(solo_rows('solo', 'routine n33 failed')) == 1
+    assert set(solo_chats()) == {'solo', 'solo2'} and all(c['state'] == 'closed' for c in solo_chats().values()) and not (solo_store / 'home.json').exists()
+    # ^ Another project's chat that says to it is told to choose a main chat.
+    text = reply_to(js('task', 'say', 'RUN wsx task say -p solo --from-chat hi --json')['id'], 60)['text']
+    assert 'chat main' in text, text
+    js('task', 'routine', 'delete', 'n33', '-p', 'solo')
+    for n in (t1, t2, t3):
+        js('task', 'close', n, '--discard', '-p', 'solo')
     return created
 
 

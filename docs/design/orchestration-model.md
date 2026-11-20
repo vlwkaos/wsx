@@ -81,7 +81,7 @@ flowchart TB
   S -->|"needs no decision (step 6 wake rule)"| L[ledger row only, no turn]
 ```
 
-- One rule, `chats::owner` (`crates/wsx-core/src/task/chats.rs:108`), changes its fallback from "the first chat" to `home.json`. A missing or closed home is opened again by the repo service under the repo's name, so an unowned event is never lost.
+- One rule, `chats::owner` (`crates/wsx-core/src/task/chats.rs:108`), changes its fallback from "the first chat" to `home.json`. A missing or closed home is opened again by the repo service under the repo's name, so an unowned event is never lost. (Task #554 undid this: nothing opens a home chat; the pointer is the owner's choice, the main chat, and an unowned event with none is dropped.)
 - The routing at `manager.rs:1556-1561` loses its `Party::Project` arm (`crates/wsx-core/src/task/manager.rs:34`). The owner is always a chat.
 - **The repo service** is today's `Duties` (`manager.rs:178-200`: store watch, stalls, approvals, deploys, routines, sessions, stale-worktree and capture sweeps, overview) in its own host `wsx task repo-host <repo-id>`, with no `ManagerDir` and no agent. It stays on, as the first chat's host does today; only a named chat's host leaves after `CHAT_LINGER` (`manager.rs:113`, `:1700`). So the count of always-on hosts stays one per repo.
 - **A chat host** (`wsx task chat-host <id>`) only talks. It leaves 20 s after an empty queue, as named chats do today (docs/tasks.md "Chats"). The stand-in and the notes-view checks move into it, because they belong to a conversation.

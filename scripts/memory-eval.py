@@ -42,7 +42,7 @@ from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location('usage_report', Path(__file__).resolve().parent / 'usage-report.py')
 usage = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(usage)  # ^ the repo's home chat lookup: home.json, then tasks/chats/<name>/ (docs/tasks.md "Chats")
+_spec.loader.exec_module(usage)  # ^ the repo's main chat lookup: home.json, then tasks/chats/<name>/ (docs/tasks.md "Chats")
 ROOT = Path(__file__).resolve().parent.parent
 DOC = ROOT / 'docs' / 'design' / 'memory-eval.md'
 WORK = Path(os.environ.get('MEMORY_EVAL_WORK') or ROOT / '.work' / 'memory-eval')  # ^ the dry run sets its own
@@ -282,7 +282,7 @@ def build_state(t, tasks, home, wc):
         (d / 'task.json').write_text(json.dumps(rec))
         if o.end_ms and o.end_ms < t.t0 and (o.dir / 'result.json').exists():
             shutil.copy(o.dir / 'result.json', d / 'result.json')
-    # ^ The run's home chat in the store layout: `home.json` in the repo's folder, the chat in `tasks/chats/wsx/`.
+    # ^ The run's main chat in the store layout: `home.json` in the repo's folder, the chat in `tasks/chats/wsx/`.
     chat = root.parent / 'chats' / 'wsx'
     notes = chat / 'notes'
     notes.mkdir(parents=True)

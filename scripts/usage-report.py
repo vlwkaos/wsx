@@ -3,7 +3,7 @@
 
 Reads only the task state folder (docs/tasks.md "Task logs", "Manager"):
   <dir>/<n>/task.json, <dir>/<n>/log*.jsonl   worker results, checks, revisions
-  <dir>/home.json, <dir>/../chats/<name>/log*.jsonl   the repo's chats (the home chat is the manager): messages and replies
+  <dir>/home.json, <dir>/../chats/<name>/log*.jsonl   the repo's chats (the main chat is the manager): messages and replies
 Usage fields are documented in docs/tasks.md ("Usage"). Design: docs/design/usage-audit.md.
 
   /usr/bin/python3 scripts/usage-report.py ~/.local/state/wsx/tasks/<project-id>... [--since DAY | --days N] [--until DAY] [--task N]
@@ -36,7 +36,7 @@ def own_quote(e):
 
 
 def chat_folders(state_dir):
-    """`(who, folder)` of the chats that run in the repo: its home chat as "manager" first, then the others as
+    """`(who, folder)` of the chats that run in the repo: its main chat as "manager" first, then the others as
     "chat <name>" (docs/tasks.md "Chats": `<tasks>/chats/<name>/chat.json` lists the repos)."""
     repo, root = os.path.basename(os.path.normpath(state_dir)), os.path.join(os.path.dirname(os.path.normpath(state_dir)), "chats")
     try:
@@ -57,7 +57,7 @@ def chat_folders(state_dir):
 
 
 def home_folder(state_dir):
-    """The repo's home chat folder (the manager), or a path that is not a folder."""
+    """The repo's main chat folder (the manager), or a path that is not a folder."""
     return next((folder for who, folder in chat_folders(state_dir) if who == "manager"), os.path.join(state_dir, "none"))
 
 

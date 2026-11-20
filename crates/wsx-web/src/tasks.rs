@@ -976,13 +976,12 @@ pub fn new_chat(
 }
 
 /// The owner closes an open chat from its header menu; its log and notes stay (docs/tasks.md
-/// "Chats"). An unknown or a closed name is refused. `handed` is false when the project has no
-/// main chat to take its open tasks (the closed chat was it).
+/// "Chats"). An unknown or a closed name is refused. Closing the main chat leaves the project with none.
 pub fn close_chat(app: &App, scope: &Scope, name: &str) -> Outcome<Value> {
     let wsx = std::env::current_exe().map_err(|error| internal(error.into()))?;
-    let handed = owner::close_chat((&scope.name, &scope.path), &wsx, name, launcher(app, scope))
+    owner::close_chat((&scope.name, &scope.path), &wsx, name, launcher(app, scope))
         .map_err(|error| Fault::new(409, "invalid_chat", format!("{error:#}")))?;
-    Ok(json!({ "ok": true, "chat": name, "state": "closed", "handed": handed }))
+    Ok(json!({ "ok": true, "chat": name, "state": "closed" }))
 }
 
 /// The owner sets (or, empty, clears) the name a chat is shown by; its id stays (docs/tasks.md

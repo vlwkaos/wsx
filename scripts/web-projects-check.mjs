@@ -12,7 +12,7 @@ const cdp = await launch({ captures, prefix: "projects-", timeoutSeconds: 200 })
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = cdp;
 const linter = designLint({ evaluate, captures, file: "projects" });
 const name = path.basename(repo);
-// ^ Home lists a project by its home chat's row; the Projects page (`#/projects`, one step from Sessions) lists the projects and removes them.
+// ^ Home lists a project by its main chat's row; the Projects page (`#/projects`, one step from Sessions) lists the projects and removes them.
 const rows = "[...document.querySelectorAll('.home-rows > .row:has(.home-row)')]";
 const homeRow = (project) => `${rows}.find((row) => row.querySelector('.row-label').firstChild.textContent === ${JSON.stringify(project)})`;
 const listed = "[...document.querySelectorAll('.page .rows > .row')]";

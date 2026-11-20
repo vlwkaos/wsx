@@ -526,7 +526,7 @@ def project_scope():
     exits(2, 'add', '--kind', 'fact', '--slug', 'f4', '--text-file', '-', '--source', 'task:1', '--verified-by', 'check:c1', text='x', scope=pid)
     check(pid in [row['scope'] for row in ok('list', scope=None, cwd=sub)], 'list names the project')
     # ^ A project scope also searches the project's transcripts; the manager's notes are the simplest to stage.
-    # ^ The repo's home chat holds the notes: `home.json` names it and its `chat.json` lists the repo (docs/tasks.md "Chats").
+    # ^ The repo's main chat holds the notes: `home.json` names it and its `chat.json` lists the repo (docs/tasks.md "Chats").
     tasks_root = os.path.join(ENV['XDG_STATE_HOME'], 'wsx', 'tasks')
     notes = os.path.join(tasks_root, 'chats', 'proj', 'notes')
     os.makedirs(notes)

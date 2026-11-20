@@ -3796,7 +3796,7 @@ def task_journey(args):
         # another owner message and an event with a long reply. The page folds the first run (docs/web-client-tasks.md
         # "Project screen"). Delivered turns, so its manager never takes them as new; ids far past
         # the ones it counts from.
-        # ^ The repo's home chat in the store layout of docs/tasks.md "Chats": `tasks/chats/plans` and `home.json`.
+        # ^ The repo's main chat in the store layout of docs/tasks.md "Chats": `tasks/chats/plans` and `home.json`.
         plans_id = 'plans-' + hashlib.sha256(str(plans).encode()).hexdigest()[:8]
         manager_dir = state / 'wsx/tasks/chats/plans'
         (state / 'wsx/tasks/chats').mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -4097,6 +4097,9 @@ merge_seconds = 3
         workspace = events.expect('workspace')
         ids = {item['name']: item['id'] for item in workspace['projects']}
         demo = ids['demo']
+        # ^ A repo has a chat only when one is made: the first of each is its main chat (docs/tasks.md "Chats"); `plans` has its own.
+        for name in ('demo', 'ui', 'calm'):
+            js('task', 'chat', 'new', name, '-p', name)
         # Panels (docs/panels.md): the command runs in wsxd, on open and when its result is older than
         # `refresh`; only a site that may run commands reads them.
         def panels_journey(admin):
@@ -4451,10 +4454,10 @@ merge_seconds = 3
         # ^ A chat with no agent of its own shows the manager's agent.
         assert role_chat['manager'] == {'name': 'notes', 'id': 'notes', 'goal': 'Keep the notes.\n', 'projects': ['demo'], 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and 'chats' not in role_chat and role_chat['running'], role_chat
         # ^ The overview is the observer's: it follows the chat's files within a poll.
-        # ^ The chats besides the home chat, which is a row of Home as the others are (`home`).
+        # ^ The chats besides the main chat, which is a row of Home as the others are (`main`).
         overview_chats = lambda count: wait(lambda: (lambda chats: chats if len(chats) == count and all(c['news'] for c in chats if c['name'] == 'notes') else None)(
-            [c for c in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['chats'] if not c['home']]), 'the overview lists %d chats' % count)
-        home_row = [c for c in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['chats'] if c['home']]
+            [c for c in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['chats'] if not c['main']]), 'the overview lists %d chats' % count)
+        home_row = [c for c in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['chats'] if c['main']]
         assert [(c['name'], c['listed']) for c in home_row] == [('demo', True)], home_row
         contacts = overview_chats(1)
         assert [(c['name'], c['goal']) for c in contacts] == [('notes', 'Keep the notes.')], contacts
@@ -4493,12 +4496,11 @@ merge_seconds = 3
         status, body = steady(owner, 'GET', '/api/tasks/agents')
         assert status == 200 and isinstance(body['agents'], list), (status, body)
         # ^ Close chat (docs/tasks.md "Chats"): the owner's, through `chats::close` as the CLI's;
-        # the first chat, an unknown name and a closed one are refused; the Home row goes.
+        # an unknown name and a closed one are refused; the Home row goes. Closing the main chat is test-task.py 33n's.
         close_url = lambda name: '/api/tasks/%d/chats/%s/close' % (demo, name)
         assert steady(viewer, 'POST', close_url('made'), {})[0] == 403
-        for name, words in (('demo', 'home chat'), ('nobody', 'no open chat nobody')):
-            status, body = steady(owner, 'POST', close_url(name), {})
-            assert status == 409 and words in json.dumps(body), (name, status, body)
+        status, body = steady(owner, 'POST', close_url('nobody'), {})
+        assert status == 409 and 'no open chat nobody' in json.dumps(body), (status, body)
         status, body = steady(owner, 'POST', close_url('made'), {})
         assert status == 200 and body == {'ok': True, 'chat': 'made', 'state': 'closed'}, (status, body)
         assert [(c['name']) for c in overview_chats(1)] == ['notes']
@@ -4560,8 +4562,8 @@ merge_seconds = 3
         assert status == 200, body
         watcher.expect('tasks', lambda data: data['project'] == demo and data['busy'], timeout=20)
         watcher.expect('tasks', lambda data: data['project'] == demo and not data['busy'], timeout=20)
-        # ^ One row for every chat (task 510, owner 5329): a chat that is not the home chat shows `busy` on
-        # Home as the home chat does, and each row says what its own overview says (news, first need, open questions).
+        # ^ One row for every chat (task 510, owner 5329): a chat that is not the main chat shows `busy` on
+        # Home as the main chat does, and each row says what its own overview says (news, first need, open questions).
         row_of = lambda data, name: next(c for c in data['chats'] if c['name'] == name)
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'SLOW STATUS', 'chat': 'notes'})
         assert status == 200, body
@@ -4569,8 +4571,8 @@ merge_seconds = 3
         watcher.expect('tasks', lambda data: data['project'] == demo and not row_of(data, 'notes')['busy'], timeout=20)
         def rows_equal_overviews():
             for row in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['chats']:
-                own = steady(owner, 'GET', '/api/tasks/%d%s' % (demo, '' if row['home'] else '?chat=' + row['name']))[1]
-                if row['news'] != own['news'] or row['first'] != (own['needs'] or [None])[0] or row['asks'] != len(own['asks']) or row['manager'] != (own['manager'] if row['home'] else row['shown']):
+                own = steady(owner, 'GET', '/api/tasks/%d%s' % (demo, '' if row['main'] else '?chat=' + row['name']))[1]
+                if row['news'] != own['news'] or row['first'] != (own['needs'] or [None])[0] or row['asks'] != len(own['asks']) or row['manager'] != (own['manager'] if row['main'] else row['shown']):
                     return False
             return True
         wait(rows_equal_overviews, 'a chat row does not say what its overview says')
@@ -4978,7 +4980,7 @@ merge_seconds = 3
             plans_view = steady(owner, 'GET', '/api/tasks/%d' % ids['plans'])[1]
             overview_asks = plans_view['asks']
             # ^ The Home row counts the chat's open questions as its own pill does (`needs::chat_counts`).
-            home_counts = next(chat for chat in plans_view['chats'] if chat['home'])['counts']
+            home_counts = next(chat for chat in plans_view['chats'] if chat['main'])['counts']
             assert home_counts == plans_view['counts'] and home_counts['needs'] >= len(overview_asks) > 0, (home_counts, plans_view['counts'])
             assert [(ask['id'], ask['quote']) for ask in overview_asks] == expected and expected, (overview_asks, expected)
             assert {ask[1] for ask in expected} == set(questions[:2] + spares[:2]), expected
@@ -4986,7 +4988,7 @@ merge_seconds = 3
             assert {r['id'] for r in whole['rows'] if r.get('asks')} == {ask[0] for ask in expected}, [r for r in whole['rows'] if r.get('asks')]
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
             browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
-            # Home's order by its rule, as read for each project's home chat: needs first (most urgent
+            # Home's order by its rule, as read for each project's main chat: needs first (most urgent
             # kind, then the oldest need of it), then the chat's newest message, newest first
             # (docs/web-client-tasks.md "Home"; no fixture project has a message this device read to,
             # so none is unread).
@@ -4994,7 +4996,7 @@ merge_seconds = 3
             def home_key(name):
                 view = steady(owner, 'GET', '/api/tasks/%d' % ids[name])[1]
                 if not view['needs']:
-                    return (1, -next(chat['last_unix_ms'] for chat in view['chats'] if chat['home']), 0)
+                    return (1, -next(chat['last_unix_ms'] for chat in view['chats'] if chat['main']), 0)
                 rank = min(urgency[item['kind']] for item in view['needs'])
                 return (0, rank, min(item['unix_ms'] for item in view['needs'] if urgency[item['kind']] == rank))
             home_order = sorted((name for name in ids if name in ('ui', 'demo', 'plans', 'calm')), key=home_key)
@@ -5355,8 +5357,8 @@ merge_seconds = 3
         ok('routines: empty stdout gives no event and no turn and stays in the ledger; output gives a turn')
         js('task', 'manager', '-p', 'ui')
         # ^ The name of a host's socket: socket_for in crates/wsx-core/src/task/store.rs.
-        home_chat = json.loads(next((state / 'wsx/tasks').glob('ui-*/home.json')).read_text())['chat']
-        logical = state / 'wsx/tasks/chats' / home_chat / 'manager.sock'
+        main_chat = json.loads(next((state / 'wsx/tasks').glob('ui-*/home.json')).read_text())['chat']
+        logical = state / 'wsx/tasks/chats' / main_chat / 'manager.sock'
         ui_socket = (tmp if len(str(tmp)) <= 64 else Path('/tmp')) / ('wsx-%d' % os.geteuid()) / ('m-%s.sock' % hashlib.sha256(str(logical).encode()).hexdigest()[:16])
         hidden_socket = ui_socket.with_name('aside.sock')
         add_routine('ui', 'digest', str(wsx), 'task', 'digest', '-p', 'ui')

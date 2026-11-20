@@ -89,6 +89,10 @@ Steps 1, 2, 6 and 7 touch none of their files and can start now.
 
 - For you and `needs` (`needs::for_you`, `ChatCounts`, per-chat counts, approvals, To check items): they work on chats and tasks. Only the per-thread tally inside `tally` and `thread_counts` goes; the chat-level counts stay.
 - The chat's own rows, `chat_rows`, `Window::Around`, quotes (`quote`, `check`), the To check reply, search over transcripts.
-- `say --to`, `--from-chat`, `--reply`, `Party::Chat`, muted manager-to-manager rows; the home chat per project; plain `chat new`, `close`, `rename`; `--owner-said` (also used by `land`, `deploy`, `check`).
+- `say --to`, `--from-chat`, `--reply`, `Party::Chat`, muted manager-to-manager rows; the main chat per project; plain `chat new`, `close`, `rename`; `--owner-said` (also used by `land`, `deploy`, `check`).
 - Parent tasks and `--after`: they are task links, not chats.
 - A chat's `repos` list (a single repo in practice; `repos[0]` is load-bearing): not asked, not touched. Keep or reduce to one repo is a later question.
+
+## 6. Why no home chat (task #554, owner 5935 and 5938)
+
+Wsx used to make a chat named after every repo (`open_home`, `home.json`) when its service started or an event had no owner, and refused to close it. A repo the owner never wrote in then had a chat that no one could remove. Now only `chat new` or the web New chat makes a chat. The pointer stays, as the owner's choice: the main chat (`chat main <chat>`, set by `chat new` for the repo's first chat). It hears what no chat owns (routine results, the owner's tasks with no open chat, a chat's hand-back, `say -p` from another project). A repo with none wakes nobody for those; the tasks still show in the ledger, the Tasks list and the push counts. Closing the main chat works and leaves none. The file keeps the name `home.json`, so the old pointers of an install still hold.
