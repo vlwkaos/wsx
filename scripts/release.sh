@@ -60,7 +60,8 @@ git merge-base --is-ancestor "$origin_main" "$commit" 2>/dev/null \
 echo "release $tag of $commit over origin/main $origin_main"
 
 # ^ The live handoff from the last installed release (docs/daemon-live-upgrade.md), which a task
-# cannot run inside wsx's boundary. It opens PTYs and daemons, so it takes the scenario test slot.
+# cannot run inside wsx's boundary. It opens PTYs and daemons, so it takes the scenario test slot
+# (`wsx task slot`, Priority::Deploy: before every task round, as the deploy gate does).
 step "handoff from the installed release"
 act cargo build --locked -p wsx -p wsx-daemon
 act sh scripts/terminal-context-check.sh "$version"

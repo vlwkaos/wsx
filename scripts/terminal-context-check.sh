@@ -1,6 +1,7 @@
 #!/bin/sh
-# The live handoff scenario (docs/daemon-live-upgrade.md), in the host-wide scenario test slot.
-# `scripts/deploy-web-live.sh` runs it after every land and `scripts/release.sh` before a release.
+# The live handoff scenario (docs/daemon-live-upgrade.md), in the host-wide scenario test slot. Inside a
+# `wsx task slot` it runs at once. `scripts/deploy-web-live.sh` runs it after the smoke test, in the
+# smoke test's slot, and `scripts/release.sh` before a release, which takes the slot here.
 # It opens PTYs and daemons, so a task cannot run it inside wsx's boundary.
 # Usage: sh scripts/terminal-context-check.sh [<version to leave out of the older releases>]
 # With an older wsx installed under Homebrew the scenario includes the upgrade from it; with

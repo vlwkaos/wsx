@@ -53,17 +53,20 @@ pub fn run_ptys(command: &str) -> u64 {
     }
 }
 
-/// The order of the runs that wait: a land's checks, a task others wait for, a task the owner
-/// asked for, the rest. The queue sorts tickets by it, then by arrival.
+/// The order of the runs that wait: a deploy or release, a land's checks, a task others wait for, a
+/// task the owner asked for, the rest. The queue sorts tickets by it, then by arrival.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Priority {
+    /// A deploy's or a release's gate (`wsx task slot`): it makes landed work live, so no task
+    /// round goes before it.
+    Deploy = 0,
     /// The checks of a rebased revision that lands when they pass: closest to main.
-    Land = 0,
+    Land = 1,
     /// Another open task waits for this one to land (`after`).
-    Urgent = 1,
+    Urgent = 2,
     /// The owner opened the task.
-    Asked = 2,
-    Normal = 3,
+    Asked = 3,
+    Normal = 4,
 }
 
 /// The priority of a task's run, and for an urgent one who waits for it ("#518 waits for it").
@@ -595,6 +598,10 @@ mod tests {
         assert_eq!(run_ptys("python3 -B scripts/scenario.py task"), 222);
         assert_eq!(run_ptys("python3 -B scripts/scenario.py web"), 274);
         assert_eq!(run_ptys("python3 -B scripts/foo.py"), CHECK_PTYS);
+        // The deploy gate: both steps in one command, its peak is the smoke test's.
+        let gate =
+            "sh -c python3 -B scripts/runtime-smoke.py && sh scripts/terminal-context-check.sh";
+        assert_eq!(run_ptys(gate), SMOKE_PTYS);
     }
 
     #[test]

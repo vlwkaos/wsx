@@ -27,15 +27,12 @@ trap 'code=$?; [ $code -eq 0 ] || echo "deploy failed at step: $step (exit $code
 # ^ The deploy gate is the PTY and stream smoke test and the live handoff scenario only, so a land
 # reaches the live site in minutes. The task and web end-to-end scripts are `tasks.scenarios`: the worker whose change
 # touches their area runs them by name (wsx.config.yml `workflow.build`).
-# ^ The smoke test holds the host-wide scenario test slot that a task scenario takes (`wsx task slot`).
-step "debug build"
-cargo build --locked -p wsx -p wsx-daemon
-step "runtime-smoke.py"
-target/debug/wsx task slot python3 -B scripts/runtime-smoke.py
-# ^ The live handoff from the newest installed release; it runs in the same slot, so a regression
-# surfaces after the land that caused it, not at the next release (scripts/terminal-context-check.sh).
-step "test-terminal-context.py"
-sh scripts/terminal-context-check.sh
+# ^ The gate holds the host-wide scenario test slot once, for both steps, and goes before every
+# task round (`wsx task slot`, Priority::Deploy): a second queue entry for the handoff sat behind
+# task rounds until the 2 h timeout. The `wsx task slot` inside terminal-context-check.sh runs at
+# once, as the slot is held.
+step "gate: runtime-smoke.py, test-terminal-context.py"
+target/debug/wsx task slot sh -c 'python3 -B scripts/runtime-smoke.py && sh scripts/terminal-context-check.sh'
 step "release build"
 cargo build --release --locked -p wsx -p wsx-daemon
 # ^ wsxd sits next to wsx so the web build and the daemon it hands off to stay one revision.

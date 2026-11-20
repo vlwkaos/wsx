@@ -193,19 +193,30 @@ pub fn admit(
     })
 }
 
+/// Set in the environment of a command that `wsx task slot` runs: it holds the slot already.
+const HELD_ENV: &str = "WSX_SLOT_HELD";
+
 /// `wsx task slot <command>`: run `command` once the scenarios lane lets it start, and give back its
-/// exit code. Its label names the command, as a task's names the task (`status` words it).
+/// exit code. Only a deploy or a release takes it, so it goes before every task round
+/// (`Priority::Deploy`), and a deploy runs all its steps in one call. A `wsx task slot` inside the
+/// command runs its command at once: the slot is held, and a second ticket would wait for itself.
+/// Its label names the command, as a task's names the task (`status` words it).
 pub fn run(argv: &[String]) -> anyhow::Result<i32> {
     use anyhow::Context;
+    let nested = std::env::var_os(HELD_ENV).is_some();
     let label = format!(
         "{} (pid {})",
         argv.join(" ").chars().take(120).collect::<String>(),
         std::process::id()
     );
-    let want = Want::new(Lane::Scenarios, Priority::Normal).command(&argv.join(" "));
-    let _held = take(&want, &label, |reason| println!("{reason}"))?;
+    let want = Want::new(Lane::Scenarios, Priority::Deploy).command(&argv.join(" "));
+    let _held = match nested {
+        true => None,
+        false => Some(take(&want, &label, |reason| println!("{reason}"))?),
+    };
     let status = std::process::Command::new(&argv[0])
         .args(&argv[1..])
+        .env(HELD_ENV, "1")
         .status()
         .with_context(|| format!("cannot run {}", argv[0]))?;
     Ok(status.code().unwrap_or(1))
@@ -415,11 +426,42 @@ mod tests {
             ticket_name(Priority::Urgent, 3, 1, 2),
             ticket_name(Priority::Land, 4, 1, 3),
             ticket_name(Priority::Urgent, 2, 1, 4),
+            ticket_name(Priority::Deploy, 9, 1, 5),
         ];
         queue.sort();
         let order: Vec<u8> = queue.iter().map(|name| name.as_bytes()[2] - b'0').collect();
-        assert_eq!(order, [0, 1, 1, 2, 3]);
+        assert_eq!(order, [0, 1, 2, 2, 3, 4]);
         // Within a priority the earlier arrival goes first.
-        assert!(queue[1] < queue[2] && queue[1].contains("0000000000000002"));
+        assert!(queue[2] < queue[3] && queue[2].contains("0000000000000002"));
+    }
+
+    /// The deploy of d9170ee2 sat behind task rounds: a deploy that joined last has none ahead of
+    /// it (it goes next), and every earlier round has it ahead.
+    #[test]
+    fn a_deploy_ticket_goes_before_the_rounds_that_queued_first() {
+        let dir = std::env::temp_dir().join(format!("wsx-slot-order-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let names = [
+            ticket_name(Priority::Asked, 1, 1, 0),
+            ticket_name(Priority::Asked, 2, 1, 1),
+            ticket_name(Priority::Land, 3, 1, 2),
+            ticket_name(Priority::Deploy, 4, 1, 3),
+        ];
+        // A live ticket is a locked file; keep every one open.
+        let held: Vec<File> = names
+            .iter()
+            .map(|name| {
+                let file = File::create(dir.join(name)).unwrap();
+                assert!(try_lock(&file));
+                file
+            })
+            .collect();
+        assert_eq!(live_ahead(&dir, &names[3]), 0);
+        assert_eq!(live_ahead(&dir, &names[2]), 1);
+        assert_eq!(live_ahead(&dir, &names[1]), 3);
+        assert_eq!(live_ahead(&dir, &names[0]), 2);
+        drop(held);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
