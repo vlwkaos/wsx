@@ -485,9 +485,9 @@ async function motion() {
     const { render, html, Loading } = await ${pageModule("lib.js")};
     globalThis.motionKept = { tasks: state.tasks, projects: state.projects };
     const ui = state.projects.find((project) => project.name === 'ui').id;
-    const mover = state.projects.find((project) => project.name === 'gone');
-    // ^ gone has no task and no activity: last of the quiet rows, so a newer message moves it up (calm leads them).
     const rows = () => [...document.querySelectorAll('.home-rows > .row:has(.home-row)')];
+    const mover = state.projects.find((project) => project.id === rows().at(-1).dataset.key);
+    // ^ The last row has no need and the oldest message (the quiet rows follow by their chat's age), so a newer message moves it up.
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     // The manager of ui runs a turn: typing dots on its row. ^ Only ui's row: another fixture
     // manager may run a real turn at the same time.
@@ -547,7 +547,7 @@ async function motion() {
     ${lastAt}
     const { state, update } = await ${pageModule("store.js")};
     const mover = state.projects.find((project) => project.name === 'gone');
-    // ^ gone has no task and no activity: last of the quiet rows, so a newer message moves it up (calm leads them).
+    // ^ gone's chat gets the oldest message: it goes last or stays there, and no row animates.
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     update({ tasks: { ...state.tasks, [mover.id]: lastAt(state.tasks[mover.id], 1) } });
     await frames();
