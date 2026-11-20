@@ -4465,7 +4465,7 @@ merge_seconds = 3
         assert [(c['name'], c['goal']) for c in contacts] == [('notes', 'Keep the notes.')], contacts
         assert contacts[0]['last_reply'].startswith('open: ') and contacts[0]['news']['text'].startswith('open: ') and contacts[0]['news']['unix_ms'] > 0 and contacts[0]['counts'] == {'running': 0, 'open': 0, 'needs': 0, 'check': 0, 'asks': 0} and contacts[0]['last_unix_ms'] > 0, contacts
         assert steady(owner, 'GET', '/api/tasks/%d/chat?chat=nobody' % demo)[0] == 404
-        # ^ A task an open chat made belongs to that chat: its overview lists it, the project's (home) does not; one of no open chat stays at home.
+        # ^ A task an open chat made belongs to that chat: its overview lists it, the project's main chat does not; one of no open chat belongs to the main chat.
         made = subprocess.run([str(wsx), 'task', 'new', 'NOOP by-notes', '--json', '-p', 'demo'], cwd=project, env=dict(env, WSX_TASK_ACTOR='chat:notes'),
                               capture_output=True, text=True, timeout=60)
         assert made.returncode == 0, made.stderr
