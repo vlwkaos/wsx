@@ -2098,7 +2098,8 @@ for name, folder in removal.items():
 with (CONFIG_DIR / "config-v2.toml").open("a") as config_file:
     for name, folder in removal.items():
         config_file.write(f"[[projects]]\nname = \"{name}\"\npath = {json.dumps(str(folder))}\n")
-remove_tui = smoke_tui()
+# ^ WSX_TRACE_READ_LOG: the TUI prints one stderr line (its terminal) per whole-log read; the 7.5 MiB step counts them.
+remove_tui = smoke_tui(tui_env={**{k: v for k, v in env.items() if k != "WSX_PANE_ID"}, "WSX_TRACE_READ_LOG": "1"})
 
 
 def project_sessions(name):
@@ -2521,14 +2522,12 @@ try:
         log_file.write(json.dumps({"unix_ms": base + filler_count, "kind": "message", "id": 100 + filler_count,
                                    "from": "owner", "text": "LAST-ENTRY-0"}) + "\n")
     assert 7 * MiB < halt_log.stat().st_size < 8 * MiB - 64 * 1024, halt_log.stat().st_size
+    traced_from = len(remove_tui.raw)
     select_in_tui("halt-me")
     remove_tui.send(b"t")
     wait_for(lambda: "All projects" in remove_tui.text(), "t opened no Tasks view for halt-me", seconds=120)
     remove_tui.send(b"m")
     wait_for(lambda: "LAST-ENTRY-0" in remove_tui.text(), "the TUI chat did not show the end of the 7.5 MiB log", seconds=120)
-    # ^ A new entry shows within the poll interval (1 s) and one read of the end: a read of the
-    # whole log, about 20,000 entries here, takes far longer in this build.
-    REFRESH_SECONDS = 4
     started = time.monotonic()
     with halt_log.open("a") as log_file:
         log_file.write(json.dumps({"unix_ms": base + filler_count + 1, "kind": "message", "id": 100 + filler_count + 1,
@@ -2536,7 +2535,10 @@ try:
     wait_for(lambda: "LAST-ENTRY-1" in remove_tui.text(), "the chat did not show the new entry", seconds=60)
     refresh = time.monotonic() - started
     print(f"smoke: the chat of a {halt_log.stat().st_size / MiB:.1f} MiB log refreshed in {refresh:.2f} s", flush=True)
-    assert refresh < REFRESH_SECONDS, f"the chat refresh took {refresh:.2f} s"
+    # ^ What a whole-log read costs (about 20,000 entries here) depends on the machine's load, so the
+    # seconds above are information only. The proof is that the TUI made no whole-log read of this chat.
+    whole_reads = remove_tui.raw[traced_from:].count(f"wsx-trace read_log {halt_log.parent}".encode())
+    assert whole_reads == 0, f"the chat read the whole 7.5 MiB log {whole_reads} times"
     # docs/design/tui-parity-audit.md gap 7: PgUp and PgDn page the chat, `g` goes to the oldest
     # loaded row and `G` back to the newest.
     for keys, shown, message in ((b"\x1b[5~", False, "PgUp did not scroll the chat a page"),
