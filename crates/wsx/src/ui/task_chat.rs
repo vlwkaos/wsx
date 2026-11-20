@@ -86,16 +86,20 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
         height,
         ..inner
     };
-    frame.render_widget(Paragraph::new(top), row(0, 3));
+    let top_height = top.len() as u16;
+    frame.render_widget(Paragraph::new(top), row(0, top_height));
     // ^ Newest at the bottom: a short chat sits on the items, not under the heading.
     let shown = (body.len() as u16).min(chat_height);
-    frame.render_widget(Paragraph::new(body), row(3 + chat_height - shown, shown));
+    frame.render_widget(
+        Paragraph::new(body),
+        row(top_height + chat_height - shown, shown),
+    );
     let item_offset = item_selected
         .map(|line| (line + 2).saturating_sub(items_height as usize))
         .unwrap_or(0) as u16;
     frame.render_widget(
         Paragraph::new(items).scroll((item_offset, 0)),
-        row(3 + chat_height, items_height),
+        row(top_height + chat_height, items_height),
     );
     let composer_y = inner.y + inner.height - 1;
     let (line, cursor) = composer(chat, width);
