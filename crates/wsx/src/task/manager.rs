@@ -171,7 +171,7 @@ struct Manager {
     leaving: bool,
     /// Like `overview_asked`, for the request to write an answer that sat in thinking.
     thought_asked: bool,
-    /// The home chat asked for a shorter overview since the last owner message or in-cap result.
+    /// The main chat asked for a shorter overview since the last owner message or in-cap result.
     overview_asked: bool,
     /// A hand edit of `decisions.md` or `context.md` was said once; no second notice until the
     /// owner writes again or the views are whole.
@@ -190,7 +190,7 @@ const INSTRUCTION_MESSAGE_TOKENS: u64 = 100_000;
 // ^ The agent writes the notes: a link or a huge file must not reach the host's read.
 const MAX_NOTES_READ: u64 = 256 * 1024;
 
-/// A chat's instructions open with its name, when it is not the home chat, and its purpose, when
+/// A chat's instructions open with its name, when it is not the main chat, and its purpose, when
 /// the owner set one, then the manager's: one text for every chat. ref: docs/tasks.md "Chats"
 fn chat_preamble(chat: Option<&str>, project: &str, goal: &str) -> String {
     let who = chat.map(|chat| format!("You are {chat}, a chat of the project {project}."));
@@ -206,7 +206,7 @@ fn chat_preamble(chat: Option<&str>, project: &str, goal: &str) -> String {
 /// The manager's boundary profile as text. ref: scripts/test-manager-boundary.py
 pub fn print_profile(project: &str, main: &Path, untrusted: bool) -> Result<()> {
     let project_id = store::project_id(project, main);
-    let dir = ManagerDir::open_home(&project_id)?;
+    let dir = chats::open_main(&project_id)?;
     let overview = store::ensure_overview(&project_id, project)?;
     let (trust, adapter) = match untrusted {
         true => (policy::Trust::Untrusted, "pi"),
@@ -229,7 +229,7 @@ pub fn print_profile(project: &str, main: &Path, untrusted: bool) -> Result<()> 
 pub fn run_old(project_id: &str, chat: Option<&str>) -> Result<()> {
     let (project, main) = super::project_by_id(project_id)?;
     let dir = match chat {
-        None => ManagerDir::open_home(project_id)?,
+        None => chats::open_main(project_id)?,
         Some(chat) => chats::open_chat(chat)?,
     };
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
@@ -2107,7 +2107,7 @@ impl Manager {
     /// gets one follow-up turn, and no second one until the owner writes again.
     /// ref: docs/tasks.md "Project overview"
     fn check_overview(&mut self) {
-        if !self.dir.is_home() {
+        if !self.dir.is_main() {
             return;
         }
         let Ok(Some((text, _))) = store::read_overview(&self.dir.project_id) else {
@@ -2175,12 +2175,12 @@ impl Manager {
             .dir
             .notes()
             .map_or_else(|_| String::new(), |notes| notes::preamble(&notes));
-        // ^ A new chat has no notes yet: it starts from the repo's, the home chat's.
-        match (own.is_empty(), self.dir.is_home()) {
-            (true, false) => ManagerDir::home(&self.dir.project_id)
+        // ^ A new chat has no notes yet: it starts from the repo's, the main chat's.
+        match (own.is_empty(), self.dir.is_main()) {
+            (true, false) => ManagerDir::main(&self.dir.project_id)
                 .ok()
                 .flatten()
-                .map_or(own, |home| notes::preamble(&home.path.join("notes"))),
+                .map_or(own, |main| notes::preamble(&main.path.join("notes"))),
             _ => own,
         }
     }
@@ -2214,7 +2214,7 @@ impl Manager {
     /// The handover as an episode of the project's memory, in the turn that carries it: no turn
     /// of its own. A chat's notes stay files. ref: docs/memory.md "Capture"
     fn remember_handover(&self, handover: &str) {
-        if !self.dir.is_home() {
+        if !self.dir.is_main() {
             return;
         }
         let done = super::repo::memory_store(&self.dir.project_id, &self.project, &self.main)

@@ -663,7 +663,7 @@ impl ManagerChat {
     /// Dismiss the open question of reply `id`, as `wsx task dismiss` does.
     fn dismiss(&mut self, id: u64) {
         self.run(format!("Dismissing {id}"), move |_, _, store| {
-            let done = ManagerDir::home(&store).and_then(|dir| {
+            let done = ManagerDir::main(&store).and_then(|dir| {
                 let dir = dir.ok_or_else(|| anyhow::anyhow!("no manager"))?;
                 chat::dismiss(&dir, id, wsx_core::task::now_unix_ms())
             });

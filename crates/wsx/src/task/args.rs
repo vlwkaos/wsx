@@ -509,14 +509,20 @@ pub enum ChatCmd {
     },
     /// The chats: open and closed
     List,
-    /// Close a chat; its log and notes stay, its open tasks go to the home chat
+    /// Close a chat; its log and notes stay, its open tasks go to the project's main chat
     Close {
         name: String,
         #[command(flatten)]
         said: OwnerSaid,
     },
-    /// Make an open chat the repo's home chat, which hears what no chat owns (the owner's)
-    Home { name: String },
+    /// Make an open chat of the project its main chat: it hears what no chat owns and what the
+    /// project's routines and other projects' chats address to it. Setting is the owner's, or a
+    /// chat's agent on the owner's message of its turn
+    Main {
+        name: String,
+        #[command(flatten)]
+        said: OwnerSaid,
+    },
     /// Show a chat's purpose, or set it from a file or - for standard input (an empty one
     /// clears it); the chat's agent reads it at its next turn. Setting is the owner's, or a
     /// chat's agent on the owner's message of its turn

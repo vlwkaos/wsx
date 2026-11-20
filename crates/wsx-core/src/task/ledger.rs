@@ -142,7 +142,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         .collect();
     let main_checkout = main_checkout(main, &mut git);
     let (strays, stray_omitted) = stray_worktrees(main, &copies, &mut git);
-    // ^ Open chats with their pill counts (`chats::open_rows`), the home chat too (`home`): the
+    // ^ Open chats with their pill counts (`chats::open_rows`), the main chat is marked (`main`): the
     // TUI's chat rows mark them as the web's Home rows do. A closed chat is history
     // (docs/tasks.md "Chats").
     let chats: Vec<Value> = super::chats::open_rows(&project_id, settings.land_auto)
@@ -184,7 +184,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
                 row
             })
             .collect::<Vec<_>>(),
-        // ^ Open chats besides the home chat; a closed one is history (docs/tasks.md "Chats").
+        // ^ Open chats; a closed one is history (docs/tasks.md "Chats").
         "chats": chats,
     });
     // ^ Set after `fit_size` counted the rest, and kept: a few short lines.

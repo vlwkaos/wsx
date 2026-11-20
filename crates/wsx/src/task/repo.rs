@@ -2,7 +2,7 @@
 //! agent and no chat of its own. It watches the repo's store (task states, approvals, stalls,
 //! deploys, routines, agent sessions), sweeps captures and stale worktrees, starts the idle
 //! task, asks for the recap and keeps the check-ins. Each event goes to its owner chat
-//! (`chats::owner`), else to the repo's home chat; `owner::say` starts that chat's host when it
+//! (`chats::owner`), else to the repo's main chat, or to none when it has none; `owner::say` starts that chat's host when it
 //! is not running, and the service marks the event seen only after the chat took it, so a
 //! deploy or a crash loses none. An event that needs no decision (`state_wakes`) is logged in
 //! the chat as a message that starts no turn. ref: docs/tasks.md "Chats"
@@ -72,9 +72,9 @@ fn prune_sweep() -> Duration {
 }
 
 enum Event {
-    /// The news of this session did not reach the home chat: it is posted again.
+    /// The news of this session did not reach the main chat: it is posted again.
     Unposted(u64),
-    /// The owner's reminder under this key did not reach the home chat: the next sweep sends it again.
+    /// The owner's reminder under this key did not reach the main chat: the next sweep sends it again.
     Unreminded(String),
     Request(ManagerRequest, Sender<ManagerResponse>),
     Tick,
@@ -83,8 +83,8 @@ enum Event {
     /// `wsx task new` with `tasks.workflow.idle` ended: when it began, and the task number or
     /// the error.
     IdleStarted(u64, Result<u32, String>),
-    /// The chat `to` took the lines `lines` (`ok`), or did not: they go to the home chat, or
-    /// come back for a new try when `to` is the home chat.
+    /// The chat `to` took the lines `lines` (`ok`), or did not: they go to the main chat, or
+    /// come back for a new try when `to` is the main chat.
     Delivered {
         to: String,
         lines: Vec<(String, Short)>,
@@ -102,7 +102,7 @@ struct Repo {
     events: Sender<Event>,
     /// `tasks.deploy.auto`: a deploy that worked starts no turn. ref: `state_wakes`
     deploy_auto: bool,
-    /// Event lines not yet sent, by the chat that hears them (empty: the home chat), and when
+    /// Event lines not yet sent, by the chat that hears them (empty: the main chat), and when
     /// the last one came.
     outbox: BTreeMap<String, Vec<(String, Short)>>,
     last_event: Option<Instant>,
@@ -152,8 +152,6 @@ pub fn run(project_id: &str) -> Result<()> {
     let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
     let socket = store::repo_socket(project_id)?;
     let listener = hosting::bind(&socket)?;
-    // ^ The home chat exists from the first start: an event with no owner has a place.
-    ManagerDir::open_home(project_id)?;
     let (events, receiver) = channel();
     let mut repo = Repo {
         project,
@@ -322,20 +320,20 @@ impl Repo {
         self.save_seen();
     }
 
-    /// The repo's home chat by name, as the next event would find it.
-    fn home(&self) -> String {
-        store::home_chat(&self.project_id).unwrap_or_else(|| chats::home_name(&self.project_id))
+    /// The repo's main chat by name when it is open, as the next event would find it.
+    fn main_chat(&self) -> Option<String> {
+        chats::open_main(&self.project_id).ok().map(|dir| dir.chat)
     }
 
-    /// Queue an event line for `chat` (empty: the home chat).
+    /// Queue an event line for `chat` (empty: the main chat).
     fn emit(&mut self, chat: &str, line: (String, Short)) {
         self.outbox.entry(chat.to_string()).or_default().push(line);
         self.last_event = Some(Instant::now());
     }
 
     /// Send the queued lines once they have been quiet for a while, one message per chat. A
-    /// chat that is not open, or the empty name, is the home chat, which is opened again when it
-    /// was closed. `owner::say` starts a host that is not running; the lines count as taken only
+    /// chat that is not open, or the empty name, is the main chat; with none the lines are dropped
+    /// (they stay in the ledger). `owner::say` starts a host that is not running; the lines count as taken only
     /// when it answers `ok` (`delivered`).
     fn flush_events(&mut self) {
         let quiet = self
@@ -348,22 +346,16 @@ impl Repo {
             return;
         };
         let open = chats::open_names();
-        let home = self.home();
+        let main = self.main_chat();
         let mut target: BTreeMap<String, Vec<(String, Short)>> = BTreeMap::new();
         for (to, lines) in std::mem::take(&mut self.outbox) {
-            let to = match open.contains(&to) {
-                true => to,
-                false => home.clone(),
+            let Some(to) = Some(to)
+                .filter(|to| open.contains(to))
+                .or_else(|| main.clone())
+            else {
+                continue;
             };
             target.entry(to).or_default().extend(lines);
-        }
-        if target.contains_key(&home) {
-            if let Err(error) = ManagerDir::open_home(&self.project_id) {
-                self.say(&format!("cannot open the home chat: {error:#}"));
-                self.retry_at = Some(Instant::now() + RETRY);
-                self.outbox = target;
-                return;
-            }
         }
         self.last_activity = Instant::now();
         for (to, lines) in target {
@@ -379,17 +371,16 @@ impl Repo {
     }
 
     /// A chat took its lines, or did not. A chat that did not (its host does not start or
-    /// refuses) gives them to the home chat with a line that says so; the home chat's own go
+    /// refuses) gives them to the main chat with a line that says so; the main chat's own go
     /// back for a new try.
     fn delivered(&mut self, to: String, lines: Vec<(String, Short)>, ok: bool) {
         self.in_flight = self.in_flight.saturating_sub(1);
         if ok {
             return;
         }
-        let home = self.home();
         self.retry_at = Some(Instant::now() + RETRY);
         self.say(&format!("chat {to} did not take its events"));
-        match to == home {
+        match self.main_chat().as_deref() == Some(to.as_str()) {
             true => self.outbox.entry(String::new()).or_default().extend(lines),
             false => {
                 let head = plain_event(format!(
@@ -438,7 +429,7 @@ impl Repo {
     fn restore(&mut self) -> Result<()> {
         self.state = match store::read_repo_state(&self.project_id)? {
             Some(state) => state,
-            None => ManagerDir::home(&self.project_id)?
+            None => ManagerDir::main(&self.project_id)?
                 .and_then(|dir| {
                     std::fs::read(dir.path.join("state.json"))
                         .ok()
@@ -476,15 +467,15 @@ impl Repo {
         }
     }
 
-    /// Ask the home chat for a recap once the repo has been quiet for `recap_quiet`: nothing
+    /// Ask the main chat for a recap once the repo has been quiet for `recap_quiet`: nothing
     /// sent, and nothing written to its log. The idle task starts and the `project.idle` event
     /// fires in the same look. ref: docs/tasks.md "Recap"
     fn ask_recap(&mut self) {
         let Some(quiet) = self.recap_quiet else {
             return;
         };
-        let home = ManagerDir::home(&self.project_id).ok().flatten();
-        let written = home
+        let log_dir = ManagerDir::main(&self.project_id).ok().flatten();
+        let written = log_dir
             .as_ref()
             .and_then(|dir| std::fs::metadata(dir.path.join("log.jsonl")).ok())
             .and_then(|meta| meta.modified().ok())
@@ -507,7 +498,7 @@ impl Repo {
             json!({ "unix_ms": now }),
         );
         let since = self.state.recap_ms.unwrap_or(0);
-        let log: Vec<_> = home
+        let log: Vec<_> = log_dir
             .and_then(|dir| dir.read_log().ok())
             .unwrap_or_default()
             .into_iter()
@@ -519,7 +510,10 @@ impl Repo {
         let text = format!("{RECAP_REQUEST} {}", self.cost_since(&log, since));
         self.state.recap_ms = Some(now_unix_ms());
         self.save();
-        let (own, project, to) = (self.project_id.clone(), self.project.clone(), self.home());
+        let (own, project) = (self.project_id.clone(), self.project.clone());
+        let Some(to) = self.main_chat() else {
+            return;
+        };
         let Ok(exe) = std::env::current_exe() else {
             return;
         };
@@ -531,7 +525,7 @@ impl Repo {
         });
     }
 
-    /// Once an hour, tell the home chat of each named chat that has had no message and has no
+    /// Once an hour, tell the main chat of each named chat that has had no message and has no
     /// open task for a week, with one line each. It closes nothing: the owner decides, and a
     /// chat is suggested again only a week later. ref: docs/tasks.md "Chats"
     fn suggest_closes(&mut self) {
@@ -546,7 +540,7 @@ impl Repo {
         let tasks = project_tasks(&self.project_id).unwrap_or_default();
         for dir in chats::open_chats(&self.project_id) {
             let name = dir.name().to_string();
-            if dir.is_home()
+            if dir.is_main()
                 || self
                     .state
                     .suggested_close
@@ -729,7 +723,7 @@ impl Repo {
             // ^ The chat whose agent asked hears the decision (`chats::owner`).
             let asker = match request {
                 Some(ApprovalLine::Request { chat, .. }) => {
-                    chats::owner(chat.as_deref(), &open, "")
+                    chats::owner(chat.as_deref(), &open, None).unwrap_or_default()
                 }
                 _ => "",
             };
@@ -954,10 +948,11 @@ impl Repo {
         };
         let found = session_news::attention(&snapshot, &self.main);
         let (fresh, keep) = session_news::unposted(found, self.state.sessions_seen.as_ref());
-        // ^ A post starts the home chat's host and asks the service about itself (`ensure_manager`):
-        // off the loop, which answers that. A post that did not reach the home chat (a turn runs, its
+        // ^ A post starts the main chat's host and asks the service about itself (`ensure_manager`):
+        // off the loop, which answers that. A post that did not reach the main chat (a turn runs, its
         // host does not start) is no news seen: `Unposted` takes it back, and the next look posts it.
-        for news in fresh {
+        // With no main chat the news is seen and told to nobody.
+        for news in fresh.into_iter().filter(|_| self.main_chat().is_some()) {
             let (project, main, events) =
                 (self.project.clone(), self.main.clone(), self.events.clone());
             std::thread::spawn(move || {
@@ -1314,7 +1309,7 @@ impl Repo {
     }
 
     /// Queue a task's event line. Only the task's owner hears of it: the open chat that created
-    /// it (`chats::owner`), else this repo's home chat, which is this manager.
+    /// it (`chats::owner`), else this repo's main chat.
     /// ref: docs/tasks.md "Chats"
     fn task_event(
         &mut self,
@@ -1323,7 +1318,7 @@ impl Repo {
         line: String,
         short: Short,
     ) {
-        let owner = chats::owner(record.owner_chat(), open_chats, "");
+        let owner = chats::owner(record.owner_chat(), open_chats, None).unwrap_or_default();
         self.emit(owner, (line, short));
     }
 
@@ -1397,7 +1392,7 @@ impl Repo {
         self.observed_stalls.retain(|id, _| open.contains(id));
     }
 
-    /// Push the owner's reminder once per key (task, wait, step): through the home chat as an
+    /// Push the owner's reminder once per key (task, wait, step): through the main chat as an
     /// event with no manager turn, off the loop (the post may wait for a turn that runs). The
     /// key is also in `post-keys.json`, so a restart or a deploy sends none twice.
     /// Returns the key. ref: docs/tasks.md "Manager" (Stalls)
@@ -1406,7 +1401,7 @@ impl Repo {
             "owner.{}.{}.{}",
             record.id, reminder.since_unix_ms, reminder.step
         );
-        if self.owner_reminded.insert(key.clone()) {
+        if self.owner_reminded.insert(key.clone()) && self.main_chat().is_some() {
             let (project, project_id, main) = (
                 self.project.clone(),
                 self.project_id.clone(),
@@ -1577,16 +1572,12 @@ impl Repo {
         let Ok(exe) = std::env::current_exe() else {
             return self.say("cannot find the wsx binary for the idle task");
         };
-        let (project, home, events, began) = (
-            self.project.clone(),
-            self.home(),
-            self.events.clone(),
-            now_unix_ms(),
-        );
+        let maker = self.main_chat().map_or(Actor::Owner, Actor::Chat);
+        let (project, events, began) = (self.project.clone(), self.events.clone(), now_unix_ms());
         std::thread::spawn(move || {
             let _ = events.send(Event::IdleStarted(
                 began,
-                new_task(&exe, &project, &home, &prompt),
+                new_task(&exe, &project, maker, &prompt),
             ));
         });
     }
@@ -1769,8 +1760,8 @@ fn output_ends(output: &str) -> String {
     }
 }
 
-/// `wsx task new -p <project> --title <IDLE_TITLE> -` as the home chat; the new task's number.
-fn new_task(exe: &Path, project: &str, home: &str, prompt: &str) -> Result<u32, String> {
+/// `wsx task new -p <project> --title <IDLE_TITLE> -` as `maker` (the main chat, else the owner); the new task's number.
+fn new_task(exe: &Path, project: &str, maker: Actor, prompt: &str) -> Result<u32, String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
     let mut child = Command::new(exe)
@@ -1785,7 +1776,7 @@ fn new_task(exe: &Path, project: &str, home: &str, prompt: &str) -> Result<u32, 
             "--json",
             "-",
         ])
-        .env(ACTOR_ENV, String::from(Actor::Chat(home.into())))
+        .env(ACTOR_ENV, String::from(maker))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

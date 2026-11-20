@@ -456,7 +456,7 @@ fn spend(project_id: &str, now_ms: u64, filter: &Filter, since: u64) -> Spend {
             sum.week.workers.add(&week);
         }
     }
-    let manager = ManagerDir::home(project_id)
+    let manager = ManagerDir::main(project_id)
         .ok()
         .flatten()
         .map(|dir| manager_turns(&dir))

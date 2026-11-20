@@ -1,7 +1,7 @@
 //! Chats: a manager with a name and a goal. Each is `tasks/chats/<name>/` (the name is its id,
 //! unique on the machine) with its own log, `notes/`, an optional `goal.md` and `chat.json
-//! {agent?, repos}`. A repo's `home.json` names its home chat, which hears what no chat
-//! owns. The repo (files, tasks, rules, memory) is shared; a chat reaches another's context by
+//! {agent?, repos}`. A repo's `home.json` names its main chat, the owner's choice (`set_main`),
+//! which hears what no open chat owns. The repo (files, tasks, rules, memory) is shared; a chat reaches another's context by
 //! search or by `say`. ref: docs/tasks.md "Chats"
 
 use super::chats_home;
@@ -14,7 +14,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 
 /// The chat's purpose, in the manager's instructions (`wsx task chat goal`); a changed goal
-/// reaches the agent at its next turn. Every chat has one, the home chat too.
+/// reaches the agent at its next turn. Every chat has one.
 pub const GOAL_FILE: &str = "goal.md";
 /// Written by `chat close`; its host leaves. The notes and the log stay.
 pub const CLOSED_FILE: &str = "closed";
@@ -117,14 +117,8 @@ pub fn open_names() -> Vec<String> {
         .collect()
 }
 
-/// The name of the repo's own chat before its home is set: the repo's name, in a chat's name
-/// form, and one that no chat has yet.
-pub fn home_name(project_id: &str) -> String {
-    free_name(&home_base(project_id))
-}
-
 /// The repo's name, from its store id, in a chat's name form.
-pub(super) fn home_base(project_id: &str) -> String {
+pub(super) fn repo_base(project_id: &str) -> String {
     let slug = project_id
         .rsplit_once('-')
         .filter(|(_, hash)| hash.len() == 8 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -157,50 +151,47 @@ pub(super) fn slug_name(name: &str) -> String {
     }
 }
 
-/// `base`, or `base-<n>` for the first n that is not the name of a chat folder.
-fn free_name(base: &str) -> String {
-    (1..)
-        .map(|n| match n {
-            1 => base.to_string(),
-            n => format!("{base}-{n}"),
-        })
-        .find(|name| !store::chats_root().join(name).exists())
-        .expect("a free chat name")
-}
-
 /// The one ownership rule: a task (`TaskRecord::owner_chat`: the chat it moved to, else its
 /// maker) or an approval request (`chat`) of an open chat belongs to that chat; every other one,
-/// also one of a closed chat, belongs to the
-/// repo's home chat (`home`). The chat hears the task's events and the request's decision, and
-/// its view shows the request and the task's To check items.
-pub fn owner<'a>(made_by: Option<&'a str>, open: &[String], home: &'a str) -> &'a str {
-    made_by
-        .filter(|chat| open.iter().any(|name| name == chat))
-        .unwrap_or(home)
+/// also one of a closed chat, belongs to the repo's main chat (`main`) when that is open, else to
+/// no chat. The chat hears the task's events and the request's decision, and its view shows the
+/// request and the task's To check items.
+pub fn owner<'a>(
+    made_by: Option<&'a str>,
+    open: &[String],
+    main: Option<&'a str>,
+) -> Option<&'a str> {
+    let is_open = |name: &&str| open.iter().any(|open| open == name);
+    made_by.filter(is_open).or(main.filter(is_open))
 }
 
-/// The chat that looks at a list and the open chats and home chat it is told apart from:
+/// The chat that looks at a list and the open chats and main chat it is told apart from:
 /// `owns` is `owner` for that chat, the one rule every list a chat shows reads (tasks,
 /// approvals, To check items, the overview, the ledger).
 #[derive(Debug, Clone)]
 pub struct Viewer {
     name: String,
     open: Vec<String>,
-    home: String,
+    main: Option<String>,
 }
 
 impl Viewer {
-    /// Chat `chat` of the repo, or its home chat for `None`.
+    /// Chat `chat` of the repo, or its main chat for `None` (with none, a viewer with no name
+    /// that owns nothing).
     pub fn new(project_id: &str, chat: Option<&str>) -> Self {
-        let home = store::home_chat(project_id).unwrap_or_default();
-        Self::named(chat.unwrap_or(&home), open_names(), &home)
+        let main = store::main_chat(project_id);
+        Self::named(
+            chat.or(main.as_deref()).unwrap_or_default(),
+            open_names(),
+            main.as_deref(),
+        )
     }
 
-    pub fn named(name: &str, open: Vec<String>, home: &str) -> Self {
+    pub fn named(name: &str, open: Vec<String>, main: Option<&str>) -> Self {
         Self {
             name: name.to_string(),
             open,
-            home: home.to_string(),
+            main: main.map(str::to_string),
         }
     }
 
@@ -208,8 +199,8 @@ impl Viewer {
         &self.name
     }
 
-    pub fn home(&self) -> &str {
-        &self.home
+    pub fn main(&self) -> Option<&str> {
+        self.main.as_deref()
     }
 
     pub fn open(&self) -> &[String] {
@@ -218,7 +209,7 @@ impl Viewer {
 
     /// Whether what `made_by` made belongs to this chat.
     pub fn owns(&self, made_by: Option<&str>) -> bool {
-        owner(made_by, &self.open, &self.home) == self.name
+        owner(made_by, &self.open, self.main.as_deref()) == Some(self.name.as_str())
     }
 }
 
@@ -312,11 +303,11 @@ pub fn checked_title(title: &str) -> Result<&str> {
 }
 
 /// The name the owner reads for a chat, the one rule of every surface: its title, else for the
-/// repo's home chat `home` (the project's shown name), else the chat's id.
+/// repo's main chat `home` (the project's shown name), else the chat's id.
 pub fn shown_name(dir: &ManagerDir, home: &str) -> String {
     shown_of(
         &chat_file(dir).title,
-        dir.is_home().then_some(home),
+        dir.is_main().then_some(home),
         dir.name(),
     )
 }
@@ -330,11 +321,11 @@ fn shown_of(title: &str, home: Option<&str>, id: &str) -> String {
 }
 
 /// Set (or, empty, clear) an open chat's title; the id, its folder and every reference stay.
-/// Returns the title kept. The repo's home chat is named by its project: refused.
+/// Returns the title kept. The repo's main chat is named by its project: refused.
 pub fn rename(name: &str, title: &str) -> Result<String> {
     let title = checked_title(title)?;
     let dir = open_chat(name)?;
-    if dir.is_home() {
+    if dir.is_main() {
         bail!("{name} is the project's first chat: it is named by its project");
     }
     let mut file = chat_file(&dir);
@@ -377,17 +368,17 @@ impl Registered {
         self.0
             .iter()
             .find(|(each, _)| each == id)
-            .map_or_else(|| home_base(id), |(_, name)| name.clone())
+            .map_or_else(|| repo_base(id), |(_, name)| name.clone())
     }
 }
 
 /// The fields that name a chat in a row, one owner for the chats' rows of the ledger and of the
-/// web overview: `shown` (`shown_name`, the project `project_id`'s name for its home chat),
+/// web overview: `shown` (`shown_name`, the project `project_id`'s name for its main chat),
 /// `projects` (where it runs, its own first, by name) and `title` when it has one.
 pub fn naming(
     dir: &ManagerDir,
     project_id: &str,
-    is_home: bool,
+    is_main: bool,
     registered: &Registered,
 ) -> serde_json::Map<String, Value> {
     let file = chat_file(dir);
@@ -395,7 +386,7 @@ pub fn naming(
     let mut fields = serde_json::Map::new();
     fields.insert(
         "shown".into(),
-        shown_of(&file.title, is_home.then_some(own.as_str()), dir.name()).into(),
+        shown_of(&file.title, is_main.then_some(own.as_str()), dir.name()).into(),
     );
     fields.insert(
         "projects".into(),
@@ -506,10 +497,14 @@ pub fn create(
         _ => {}
     }
     chats_home::clear(&dir)?;
+    // ^ A project's first chat is its main chat.
+    if store::main_chat(project_id).is_none() {
+        store::set_main_chat(project_id, name)?;
+    }
     Ok(dir)
 }
 
-/// Set an open chat's purpose, the home chat's too; an empty goal clears it. The chat's agent
+/// Set an open chat's purpose; an empty goal clears it. The chat's agent
 /// reads it at its next turn (`Manager::send_turn`).
 pub fn set_goal(name: &str, goal: &str) -> Result<()> {
     checked_goal(goal)?;
@@ -531,25 +526,46 @@ fn write_goal(dir: &ManagerDir, goal: &str) -> Result<()> {
 
 /// Close an open chat (`wsx task chat close`, the web's and the TUI's Close chat): its host sees
 /// the file and leaves. The notes and the log stay; `create` of the same name opens it again.
-/// A repo's home chat, an unknown or a closed name is refused: repoint the home first. Returns
-/// the hand-back for the home chat (`hand_back`); the caller says it there.
-pub fn close(name: &str) -> Result<(String, String)> {
+/// An unknown or a closed name is refused. Returns the repo's main chat that is left, which gets
+/// the hand-back (`hand_back`, the caller says it there); closing the main chat clears the
+/// pointer, so the repo has none and the text is not handed to anyone.
+pub fn close(name: &str) -> Result<(Option<String>, String)> {
     let dir = open_chat(name)?;
-    let project_id = dir.project_id.clone();
-    let home = store::home_chat(&project_id).unwrap_or_default();
-    if home == name {
-        bail!("{name} is the home chat of its repo; repoint the home first");
-    }
     let text = hand_back(&dir);
     store::write_atomic(&dir.path.join(CLOSED_FILE), b"closed by the owner")?;
-    Ok((home, text))
+    let main = store::main_chat(&dir.project_id);
+    if main.as_deref() == Some(name) {
+        store::clear_main_chat(&dir.project_id)?;
+        return Ok((None, text));
+    }
+    Ok((main, text))
+}
+
+/// The repo's main chat, which must be open: the one that hears what no chat owns and that
+/// another project's `say` reaches. An error names `chat main` when there is none.
+pub fn open_main(project_id: &str) -> Result<ManagerDir> {
+    let name = store::main_chat(project_id).context(
+        "the project has no main chat; `wsx task chat main <chat>` makes one of its chats the main chat",
+    )?;
+    open_chat(&name).with_context(|| {
+        format!("its main chat {name} is closed; `wsx task chat main` sets another")
+    })
+}
+
+/// Make the open chat `name` the main chat of `project_id`, which it must name in its `repos`.
+pub fn set_main(name: &str, project_id: &str) -> Result<()> {
+    let dir = open_chat(name)?;
+    if !repos(&dir).iter().any(|id| id == project_id) {
+        bail!("chat {name} does not name this project; it cannot be its main chat");
+    }
+    store::set_main_chat(project_id, name)
 }
 
 /// How many of the closed chat's last decisions lines the hand-back carries.
 const HAND_BACK_DECISIONS: usize = 5;
 
-/// What a closing chat hands to the home chat: its goal, its open tasks, its last decisions.
-/// The open tasks belong to the home chat from then on (`owner`).
+/// What a closing chat hands to the main chat: its goal, its open tasks, its last decisions.
+/// The open tasks belong to the main chat from then on (`owner`).
 fn hand_back(dir: &ManagerDir) -> String {
     let goal = goal(dir);
     let goal = goal.lines().map(str::trim).find(|line| !line.is_empty());
@@ -608,16 +624,16 @@ fn hand_back(dir: &ManagerDir) -> String {
 }
 
 /// The chats as rows for the ledger, `chat list` and the views, by name: `{name, shown, projects,
-/// state, goal, last_unix_ms, listed, home, title?, agent?, adapter?, model?}`. `shown` is the
-/// name the owner reads (`shown_name`, the project's name for the home chat), `title` the chat's
+/// state, goal, last_unix_ms, listed, main, title?, agent?, adapter?, model?}`. `shown` is the
+/// name the owner reads (`shown_name`, the project's name for the main chat), `title` the chat's
 /// own, `projects` the names of the projects it runs in, its own first; `goal` is the goal's
 /// first line; `agent` is the entry's name, `adapter` and `model` its own, left out for a chat on
 /// the manager's.
 pub fn rows(project_id: &str) -> Vec<Value> {
-    let (home, registered) = (store::home_chat(project_id), Registered::load());
+    let (main, registered) = (store::main_chat(project_id), Registered::load());
     all(project_id)
         .iter()
-        .map(|dir| row(dir, project_id, home.as_deref(), &registered))
+        .map(|dir| row(dir, project_id, main.as_deref(), &registered))
         .collect()
 }
 
@@ -625,20 +641,20 @@ pub fn rows(project_id: &str) -> Vec<Value> {
 /// ledger and the web's Home rows read the same row. A closed chat is history.
 pub fn open_rows(project_id: &str, land_auto: bool) -> Vec<(ManagerDir, Value)> {
     let counts = super::needs::chat_counts(project_id, land_auto);
-    let (home, registered) = (store::home_chat(project_id), Registered::load());
+    let (main, registered) = (store::main_chat(project_id), Registered::load());
     open_chats(project_id)
         .into_iter()
         .map(|dir| {
-            let mut row = row(&dir, project_id, home.as_deref(), &registered);
+            let mut row = row(&dir, project_id, main.as_deref(), &registered);
             row["counts"] = serde_json::json!(counts.get(dir.name()).copied().unwrap_or_default());
             (dir, row)
         })
         .collect()
 }
 
-fn row(dir: &ManagerDir, project_id: &str, home: Option<&str>, registered: &Registered) -> Value {
+fn row(dir: &ManagerDir, project_id: &str, main: Option<&str>, registered: &Registered) -> Value {
     let last = chats_home::last_message_ms(dir);
-    let is_home = home == Some(dir.name());
+    let is_main = main == Some(dir.name());
     let mut row = serde_json::json!({
         "name": dir.name(),
         "state": if is_open(dir) { "open" } else { "closed" },
@@ -646,11 +662,11 @@ fn row(dir: &ManagerDir, project_id: &str, home: Option<&str>, registered: &Regi
         "last_unix_ms": last,
         "listed": chats_home::listed_at(dir, || last),
         "folder": chats_home::folder(dir),
-        "home": is_home,
+        "main": is_main,
     });
     row.as_object_mut()
         .expect("a row is an object")
-        .extend(naming(dir, project_id, is_home, registered));
+        .extend(naming(dir, project_id, is_main, registered));
     if let (Some(entry), Some(own)) = (chat_file(dir).agent, agent(dir)) {
         row["agent"] = entry.into();
         row["adapter"] = own.adapter.into();
@@ -664,7 +680,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_shown_name_is_the_title_then_the_home_name_then_the_id() {
+    fn the_shown_name_is_the_title_then_the_main_name_then_the_id() {
         assert_eq!(shown_of("Fee table", None, "fees"), "Fee table");
         assert_eq!(shown_of("Fee table", Some("wsx"), "fees"), "Fee table");
         assert_eq!(shown_of("", Some("wsx"), "manager-chat"), "wsx");

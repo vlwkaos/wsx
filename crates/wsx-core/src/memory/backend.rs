@@ -236,10 +236,10 @@ pub(super) fn record_hit(store: &Store, r: &Record, score: f64) -> Hit {
 /// `current`: the project the asker works in, whose manager chat a hit can quote by id.
 fn line_hit(scope: &str, target: &Target, doc: &Doc, score: f64, current: Option<&str>) -> Hit {
     let project = target.name.as_str();
-    // ^ The repo's home chat is the manager's: its hits carry no chat name and can be quoted by id.
-    let home = crate::task::store::home_chat(&target.project_id);
+    // ^ The repo's main chat is the manager's: its hits carry no chat name and can be quoted by id.
+    let main = crate::task::store::main_chat(&target.project_id);
     let chat =
-        Some(doc.chat.as_str()).filter(|chat| !chat.is_empty() && home.as_deref() != Some(chat));
+        Some(doc.chat.as_str()).filter(|chat| !chat.is_empty() && main.as_deref() != Some(chat));
     let reference = match (doc.kind, doc.id, doc.task) {
         (index::Kind::Message | index::Kind::Reply, Some(id), _) => match chat {
             Some(chat) => format!("{project}:{chat}:{id}"),

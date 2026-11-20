@@ -69,7 +69,7 @@ pub(crate) fn checkin(
         bail!("a check-in is between 1 minute and 7 days ahead");
     }
     let (name, main) = project_entry(project)?;
-    // ^ The chat that sets it gets it; the home chat's own is stored with no chat.
+    // ^ The chat that sets it gets it; the main chat's own is stored with no chat.
     let chat = match actor() {
         Actor::Chat(chat) => Some(chat).filter(|chat| !chat.is_empty()),
         _ => None,
@@ -121,7 +121,7 @@ pub(crate) fn digest(project: Option<&str>, since: Option<u64>) -> Result<()> {
     let project_id = store::project_id(&name, &main);
     let after_ms = since.map_or_else(
         || {
-            let log = ManagerDir::home(&project_id)
+            let log = ManagerDir::main(&project_id)
                 .ok()
                 .flatten()
                 .and_then(|dir| dir.read_log().ok())
@@ -205,6 +205,11 @@ pub(crate) fn post_when_free(
     level: Option<Level>,
     mut lines: impl FnMut() -> Vec<String>,
 ) -> Result<()> {
+    // ^ A project with no open main chat has nobody to tell: its routines' results stay in the
+    // ledger.
+    if wsx_core::task::chats::open_main(&store::project_id(name, main)).is_err() {
+        return Ok(());
+    }
     // ^ The manager's own command runs inside the turn it would wait for.
     let wait = match acting_as_manager() {
         true => Duration::ZERO,

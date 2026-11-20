@@ -709,7 +709,9 @@ pub(crate) fn move_command(
     for task in tasks {
         let dir = open(project, task)?;
         let record = dir.read_record()?;
-        let from = chats::owner(record.owner_chat(), viewer.open(), viewer.home()).to_string();
+        let from = chats::owner(record.owner_chat(), viewer.open(), viewer.main())
+            .unwrap_or_default()
+            .to_string();
         if by.chat().is_some() && from != viewer.name() {
             bail!(
                 "task t{} is chat {from}'s, not yours; nothing was moved",

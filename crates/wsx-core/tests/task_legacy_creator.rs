@@ -46,8 +46,8 @@ fn a_record_an_older_host_wrote_loads_and_saves_in_the_new_shape() {
     // SAFETY: this file has one test; nothing else reads the environment meanwhile.
     unsafe { std::env::set_var("XDG_STATE_HOME", &state) };
 
-    // The repo's home chat is named in home.json, as the move left it.
-    store::set_home_chat(PROJECT, "projk-home").unwrap();
+    // The repo's main chat is named in home.json, as the move left it.
+    store::set_main_chat(PROJECT, "projk-home").unwrap();
     let (_, record, saved) = load("manager");
     assert_eq!(record.created_by, Actor::Chat("projk-home".into()));
     assert_eq!(record.state, TaskState::Working);
@@ -71,10 +71,15 @@ fn a_record_an_older_host_wrote_loads_and_saves_in_the_new_shape() {
         "{error}"
     );
 
-    // Without home.json (a store the move has not reached) the move's own name is used.
-    fs::remove_file(state.join("wsx/tasks").join(PROJECT).join("home.json")).unwrap();
-    let (_, record, _) = load("manager");
-    assert_eq!(record.created_by, Actor::Chat("demo".into()));
+    // Without a main chat (home.json) the creator names no chat: the record fails to load.
+    store::clear_main_chat(PROJECT).unwrap();
+    let dir = TaskDir::allocate(PROJECT).unwrap();
+    fs::write(
+        dir.file(RECORD_FILE),
+        serde_json::to_vec(&old_record(dir.id, "manager")).unwrap(),
+    )
+    .unwrap();
+    assert!(dir.read_record().is_err());
 
     let _ = fs::remove_dir_all(&state);
 }

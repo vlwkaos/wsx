@@ -1,4 +1,4 @@
-//! The project manager's conversation and state: `tasks/chats/<name>/`, the chat's own folder (the home chat's too).
+//! The project manager's conversation and state: `tasks/chats/<name>/`, the chat's own folder (the main chat's too).
 //! ref: docs/tasks.md "Manager"
 //!
 //! The manager host is the only writer of these files; `wsx task chat` reads the log.
@@ -872,7 +872,7 @@ pub enum ManagerRequest {
     Checkin {
         at_ms: u64,
         why: String,
-        /// The chat that set it, which hears it; none is the repo's home chat.
+        /// The chat that set it, which hears it; none is the repo's main chat.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         chat: Option<String>,
     },

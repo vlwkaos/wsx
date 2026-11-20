@@ -150,7 +150,7 @@ fn usage_sums_a_tasks_turns_and_older_running_totals() {
     assert!(text.contains("usage:        $0.0"), "{text}");
 }
 
-/// A host whose record does not load posts one alert to the home chat and ends with status 0,
+/// A host whose record does not load posts one alert to the main chat and ends with status 0,
 /// not silently; a second start inside the dedupe window posts none (docs/tasks.md "Routines").
 #[test]
 fn a_host_that_cannot_load_its_record_posts_one_alert() {
@@ -164,7 +164,9 @@ fn a_host_that_cannot_load_its_record_posts_one_alert() {
         .join("7");
     fs::create_dir_all(&dir).expect("create the task folder");
     fs::write(dir.join("task.json"), "garbage").expect("write it");
-    // ^ The manager host receives the post; its start also makes the home chat.
+    // ^ The manager host receives the post; it runs the project's main chat, its first chat.
+    let made = fixture.wsx(&["task", "chat", "new", "demo"]);
+    assert!(made.status.success(), "{made:?}");
     let started = fixture.wsx(&["task", "manager"]);
     assert!(started.status.success(), "{started:?}");
 

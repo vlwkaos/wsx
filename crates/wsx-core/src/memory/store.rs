@@ -493,7 +493,7 @@ impl Store {
     /// A project scope: the manager's `notes/` folder, when the project has a manager.
     pub fn notes_dir(&self) -> Option<PathBuf> {
         let id = self.project_id()?;
-        let dir = ManagerDir::home(id).ok().flatten()?;
+        let dir = ManagerDir::main(id).ok().flatten()?;
         Some(dir.path.join("notes"))
     }
 

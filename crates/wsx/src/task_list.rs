@@ -80,8 +80,6 @@ pub struct TaskRow {
     /// A chat's pill counts, marked after its name; zero for a task.
     pub counts: wsx_core::task::needs::ChatCounts,
     pub section: Section,
-    /// The project's home chat: its row is never closed (`chats::close`).
-    pub home: bool,
     /// Where an open task stands in its chain (`flow.place`): the chain's head, and how far in.
     pub root: u64,
     pub depth: u8,
@@ -99,7 +97,6 @@ impl TaskRow {
             status: String::new(),
             counts: Default::default(),
             section: Section::Chats,
-            home: false,
             root: 0,
             depth: 0,
         }
@@ -326,12 +323,6 @@ impl TaskList {
             .map(|row| row.chat.as_str())
     }
 
-    /// The selected row's chat when it can be closed: the home chat cannot (`chats::close`).
-    pub fn closable_chat(&self) -> Option<&str> {
-        self.selected_chat()
-            .filter(|_| self.rows.get(self.selected).is_some_and(|row| !row.home))
-    }
-
     /// `x` on a chat row: its row leaves the list (`chats_home::dismiss`); the chat, its project
     /// and its tasks go on, and a new message brings the row back. The web's Dismiss.
     pub fn dismiss_chat(&mut self) {
@@ -350,7 +341,7 @@ impl TaskList {
 
     /// A key on the list for a chat row's close: `d` asks, `y` or `Enter` closes it through
     /// `chats::close` (as `wsx task chat close`), `n` or `Esc` drops it. False when the key is not
-    /// for it. The first chat is the project's row, not a chat row, so it has no close.
+    /// for it.
     pub fn close_chat_key(&mut self, action: &Action) -> bool {
         // ^ How the last close ended shows until the next key.
         if self.detail.is_none() {
@@ -358,7 +349,7 @@ impl TaskList {
         }
         let Some(name) = self.close_chat.take() else {
             if *action == Action::Delete {
-                if let Some(chat) = self.closable_chat() {
+                if let Some(chat) = self.selected_chat() {
                     self.close_chat = Some(chat.to_string());
                     return true;
                 }
@@ -366,14 +357,16 @@ impl TaskList {
             return false;
         };
         if matches!(action, Action::ConfirmYes | Action::Select) {
-            // ^ The CLI's own path: it hands the chat back to the home chat (`owner::close_chat`).
+            // ^ The CLI's own path: it hands the chat back to the main chat (`owner::close_chat`).
             let argv = ["task", "chat", "close", &name].map(String::from).to_vec();
             let closed = std::env::current_exe()
                 .map_err(|error| error.to_string())
                 .and_then(|wsx| owner::run_as_owner(&wsx, &self.project, argv));
             self.notice = Some(match closed {
-                Ok(_) => (
-                    format!("Closed {name}; its open tasks are the home chat's"),
+                Ok(said) => (
+                    said["message"]
+                        .as_str()
+                        .map_or_else(|| format!("Closed {name}"), str::to_string),
                     false,
                 ),
                 Err(said) => (said, true),
@@ -705,7 +698,6 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
             .join(" · "),
         counts: Default::default(),
         section,
-        home: false,
         root: task["flow"]["place"]["root"].as_u64().unwrap_or_default(),
         depth: task["flow"]["place"]["depth"].as_u64().unwrap_or_default() as u8,
     };
@@ -738,7 +730,6 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         .join(" · "),
         counts: serde_json::from_value(chat["counts"].clone()).unwrap_or_default(),
         section: Section::Chats,
-        home: chat["home"].as_bool().unwrap_or(false),
         root: 0,
         depth: 0,
     };
@@ -773,7 +764,6 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         status: String::new(),
         counts: Default::default(),
         section: Section::Entry,
-        home: false,
         root: 0,
         depth: 0,
     });
@@ -832,7 +822,6 @@ pub fn rows_you(ledger: &Value) -> Vec<TaskRow> {
                 status: item["chat"].as_str().unwrap_or_default().to_string(),
                 counts: Default::default(),
                 section: Section::You,
-                home: false,
                 root: 0,
                 depth: 0,
             }
@@ -856,6 +845,6 @@ pub fn run_message(
     view: &wsx_core::routine::RoutineView,
 ) -> Option<u64> {
     let run = view.latest_run.as_ref()?;
-    let dir = store::ManagerDir::home(&store::project_id(project, main)).ok()??;
+    let dir = store::ManagerDir::main(&store::project_id(project, main)).ok()??;
     wsx_core::task::chat::run_messages(&dir, &[run]).pop()?
 }

@@ -346,7 +346,7 @@ fn views_after_write(store: &Store) -> Vec<Drift> {
 
 /// A rule's `--words` are the owner's: `--source msg:<id>`, `--verified-by owner:<id>`, and the
 /// words must stand in that message, which the owner wrote in the calling chat (message ids are
-/// per chat; no chat, as for the owner or a worker, is the repo's home chat).
+/// per chat; no chat, as for the owner or a worker, is the repo's main chat).
 fn check_words(store: &Store, new: &NewRecord, words: &str) -> Result<(), Error> {
     let id = new
         .source

@@ -968,7 +968,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   const waitingForYou = needing(overview);
   const [routineList, setRoutineList] = useRoutines(id, !room && chatIn, chat?.rows?.at(-1)?.key);
   const counts = trayCounts(overview, routineList?.counts);
-  const chatName = room ?? overview?.home_chat;
+  const chatName = room ?? overview?.main_chat;
   const [tray, toggleTray, setTray] = useTray(counts);
   const [look, setLook] = useState(null);
   const showNeed = (approval) => { setTray("you"); setLook(approval); };

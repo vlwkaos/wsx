@@ -319,7 +319,7 @@ struct Host {
     started: Instant,
 }
 
-/// A host that cannot load its record posts one alert to the project's home chat (`wsx task
+/// A host that cannot load its record posts one alert to the project's main chat (`wsx task
 /// post --level bad`, once per 10 minutes) with the file and the cause, and ends; it ended
 /// without a word before. When the alert cannot be posted either, the error says both.
 fn alert_unreadable(dir: &TaskDir, error: anyhow::Error) -> Result<()> {

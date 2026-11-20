@@ -173,16 +173,16 @@ export const shownTabs = (list = tabs()) => {
 // Routes: #/ (home: the projects with task_view, else the inbox), #/sessions (the inbox),
 // #/projects, #/machine, #/settings[/ui|usage], #/s/<id>/chat|terminal, #/p/<id> (the project's chat with task_view, else the
 // sessions), #/p/<id>/sessions, #/p/<id>/files,
-// #/c/<chat>[/<sheet>] (a chat, a project's home chat or another one, docs/tasks.md "Chats", with a sheet over it: `task/<n>`, `page` (the project overview, `sheet: "overview"`),
+// #/c/<chat>[/<sheet>] (a chat, a project's main chat or another one, docs/tasks.md "Chats", with a sheet over it: `task/<n>`, `page` (the project overview, `sheet: "overview"`),
 // `checks[/<item>]`, `usage`, `panels`, `media`; a sheet is the end of its window's route, docs/web-client-tasks.md "Routes").
 // The older #/p/<id>/<sheet> (`t/<n>` for a task) and #/p/<id>/c/<chat> read as the project's chat or the chat, and App
 // replaces them by the window's route.
 export const chatHash = (chat) => `#/c/${encodeURIComponent(chat)}`;
-// The project that runs chat `name` and its `room` (none for the project's home chat, which is
+// The project that runs chat `name` and its `room` (none for the project's main chat, which is
 // its manager), from the task overviews: none until they are read, or when no project has it.
 export function chatPlace(name) {
   for (const [id, overview] of Object.entries(state.tasks)) {
-    if (overview?.home_chat === name) return { id: Number(id), room: null };
+    if (overview?.main_chat === name) return { id: Number(id), room: null };
     if (overview?.chats?.some((chat) => chat.name === name)) return { id: Number(id), room: name };
   }
   return {};

@@ -116,7 +116,7 @@ function Screen({ route }) {
   if (route.screen === "project" && !can("task_view")) return route.sheet === "panels" ? html`<${PanelsScreen} key=${route.id} project=${route.id} />` : html`<${Project} key=${route.id} id=${route.id} />`;
   // ^ One Manager is the chat window: a project's chat or another one, whatever
   // sheet is over it, so opening a sheet keeps the composer and its draft
-  // (docs/web-client-tasks.md "Routes"). The project's own route and its sheets are the home chat's.
+  // (docs/web-client-tasks.md "Routes"). The project's own route and its sheets are the main chat's.
   if ((route.screen === "project" || route.screen === "chat") && can("task_view") && route.id != null) {
     return html`<${Manager} key=${`${route.id}/${route.room ?? ""}`} project=${route.id} chat=${route.room} sheet=${route.sheet} task=${route.task} item=${route.item} />`;
   }
@@ -136,8 +136,9 @@ function App() {
   const lastList = useRef("home");
   // ^ An old bookmark, #/p/<id>/c/<chat> or the project's #/p/<id>, is replaced by its chat's own route.
   useEffect(() => {
-    const home = route.screen === "project" && can("task_view") ? state.tasks[route.id]?.home_chat : null;
-    const to = route.old ? chatHash(route.chat) : home ? chatHash(home) + sheetSuffix(route) : null;
+    const tasks = route.screen === "project" && can("task_view") ? state.tasks[route.id] : null;
+    // ^ A project with no main chat (the owner set none) has no screen of its own: Home lists its chats.
+    const to = route.old ? chatHash(route.chat) : tasks ? (tasks.main_chat ? chatHash(tasks.main_chat) + sheetSuffix(route) : "#/") : null;
     if (to) leaveFor(to);
   });
   // ^ A link to #/machine keeps the bar on a device without the tab (no right to read panels), so the way out stays.

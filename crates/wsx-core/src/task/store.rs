@@ -718,14 +718,10 @@ impl TaskDir {
     fn legacy_record(&self, bytes: &[u8]) -> Option<TaskRecord> {
         let mut value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
         let by = value.get("created_by")?.as_str()?;
-        // ^ `manager` is the repo's home chat, `manager@<repo>` the chat named for that repo.
+        // ^ `manager` is the repo's main chat, `manager@<repo>` the chat named for that repo.
         let renamed = match by.strip_prefix("manager@") {
             Some(repo) => format!("chat:{}", super::chats::slug_name(repo)),
-            None if by == "manager" => format!(
-                "chat:{}",
-                home_chat(&self.project_id)
-                    .unwrap_or_else(|| super::chats::home_name(&self.project_id))
-            ),
+            None if by == "manager" => format!("chat:{}", main_chat(&self.project_id)?),
             None => return None,
         };
         value["created_by"] = renamed.into();
@@ -1125,7 +1121,7 @@ pub(super) fn sockets_of(folder: &Path) -> (PathBuf, PathBuf) {
         socket_for('b', &folder.join("broker.sock")),
     )
 }
-const HOME_FILE: &str = "home.json";
+const MAIN_FILE: &str = "home.json";
 const REPO_STATE: &str = "repo.json";
 const REPO_SOCKET: &str = "repo.sock";
 
@@ -1134,10 +1130,11 @@ pub fn chats_root() -> PathBuf {
     tasks_root().join(CHATS_DIR)
 }
 
-/// The name of the chat that is the repo's home, from `tasks/<project-id>/home.json`: it hears
-/// what no chat owns. ref: docs/tasks.md "Chats"
-pub fn home_chat(project_id: &str) -> Option<String> {
-    let bytes = read_bounded_if_exists(&project_dir(project_id).ok()?.join(HOME_FILE), 4096)
+/// The name of the repo's main chat, from `tasks/<project-id>/home.json` (the file keeps its old
+/// name): the owner's choice (`chats::set_main`), which hears what no open chat owns and what
+/// another project's chats and routines address to the repo. ref: docs/tasks.md "Chats"
+pub fn main_chat(project_id: &str) -> Option<String> {
+    let bytes = read_bounded_if_exists(&project_dir(project_id).ok()?.join(MAIN_FILE), 4096)
         .ok()
         .flatten()?;
     serde_json::from_slice::<serde_json::Value>(&bytes)
@@ -1170,34 +1167,24 @@ pub fn write_repo_state(project_id: &str, state: &super::manager::RepoState) -> 
     )
 }
 
-pub fn set_home_chat(project_id: &str, chat: &str) -> Result<()> {
+pub fn set_main_chat(project_id: &str, chat: &str) -> Result<()> {
     write_atomic(
-        &ensure_project_dir(project_id)?.join(HOME_FILE),
+        &ensure_project_dir(project_id)?.join(MAIN_FILE),
         &serde_json::to_vec(&serde_json::json!({ "chat": chat }))?,
     )
 }
 
-impl ManagerDir {
-    /// The repo's home chat, opened: the one `home.json` names, else a chat named after the repo
-    /// that becomes its home. A closed home is opened again.
-    pub fn open_home(project_id: &str) -> Result<Self> {
-        let chat = match home_chat(project_id) {
-            Some(chat) => chat,
-            None => {
-                let name = super::chats::home_name(project_id);
-                set_home_chat(project_id, &name)?;
-                name
-            }
-        };
-        let dir = Self::open_as(project_id, &chat)?;
-        match fs::remove_file(dir.path.join(super::chats::CLOSED_FILE)) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                Err(error).context("cannot open the home chat again")
-            }
-            _ => Ok(dir),
+/// The repo has no main chat after this.
+pub fn clear_main_chat(project_id: &str) -> Result<()> {
+    match fs::remove_file(project_dir(project_id)?.join(MAIN_FILE)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            Err(error).context("cannot clear the main chat")
         }
+        _ => Ok(()),
     }
+}
 
+impl ManagerDir {
     /// Open the chat's folder in `project_id`, creating it owner-only when it is missing. A new
     /// folder gets its `chat.json` with that repo.
     pub fn open_as(project_id: &str, chat: &str) -> Result<Self> {
@@ -1214,9 +1201,9 @@ impl ManagerDir {
         Ok(dir)
     }
 
-    /// The repo's home chat when its folder exists; a reader never creates it.
-    pub fn home(project_id: &str) -> Result<Option<Self>> {
-        match home_chat(project_id) {
+    /// The repo's main chat when its folder exists; a reader never creates it.
+    pub fn main(project_id: &str) -> Result<Option<Self>> {
+        match main_chat(project_id) {
             Some(chat) => Self::existing(&chat),
             None => Ok(None),
         }
@@ -1240,10 +1227,10 @@ impl ManagerDir {
             .map(|project_id| Self { project_id, ..dir }))
     }
 
-    /// The chat `chat` of the repo, or its home chat when none is named.
+    /// The chat `chat` of the repo, or its main chat when none is named.
     pub fn existing_in(project_id: &str, chat: Option<&str>) -> Result<Option<Self>> {
         match chat {
-            None => Self::home(project_id),
+            None => Self::main(project_id),
             Some(chat) => Self::existing(chat),
         }
     }
@@ -1253,9 +1240,9 @@ impl ManagerDir {
         &self.chat
     }
 
-    /// Whether this is its repo's home chat.
-    pub fn is_home(&self) -> bool {
-        home_chat(&self.project_id).as_deref() == Some(self.chat.as_str())
+    /// Whether this is its repo's main chat.
+    pub fn is_main(&self) -> bool {
+        main_chat(&self.project_id).as_deref() == Some(self.chat.as_str())
     }
 
     /// The arguments after the program of this chat's host.
@@ -1279,10 +1266,10 @@ impl ManagerDir {
         args
     }
 
-    /// The chat's name, unless it is the repo's home: the home chat is the repo's manager, and
+    /// The chat's name, unless it is the repo's main chat: that is the repo's manager, and
     /// the views name it so.
     pub fn named(&self) -> Option<&str> {
-        (!self.is_home()).then_some(self.chat.as_str())
+        (!self.is_main()).then_some(self.chat.as_str())
     }
 
     pub fn socket_path(&self) -> PathBuf {
@@ -1481,7 +1468,7 @@ pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
     let dir = project_dir(project_id)?;
     let mut files = vec![
         dir.join(APPROVALS_FILE),
-        dir.join(HOME_FILE),
+        dir.join(MAIN_FILE),
         dir.join(OVERVIEW_FILE),
         dir.join(super::checks::CHECKS_FILE),
         dir.join(TRIAL_FILE),
@@ -1706,7 +1693,7 @@ mod tests {
     }
 
     /// A store of before chats is refused, not moved. The scenario cannot test it: once the
-    /// home chat's host has written overview.md, a `page.md` is no longer old data.
+    /// main chat's host has written overview.md, a `page.md` is no longer old data.
     #[test]
     fn refuse_old_layout_by_what_the_folder_holds() {
         let root = std::env::temp_dir().join(format!("wsx-store-old-{}", std::process::id()));

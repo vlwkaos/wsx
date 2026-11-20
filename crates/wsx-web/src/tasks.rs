@@ -107,13 +107,13 @@ pub fn open_working_copy(scope: &Scope, task: u32) -> Option<crate::sandbox::Roo
 #[derive(PartialEq)]
 pub struct OverviewKey {
     stamp: store::Stamp,
-    /// The open chats and the home chat: a chat that opens or closes moves tasks between views.
+    /// The open chats and the main chat: a chat that opens or closes moves tasks between views.
     chats: (Vec<String>, Option<String>),
     /// `land.auto`, the manager's shown name, `preview` set, `try_live`.
     settings: Option<(bool, String, bool, bool)>,
 }
 
-/// A built overview and when, by project and the chat that looks ("" is the home chat).
+/// A built overview and when, by project and the chat that looks ("" is the main chat).
 pub type Overviews = HashMap<(u64, String), (OverviewKey, Instant, Value)>;
 
 /// A chat's agent status; `None` when its manager or chat is not running.
@@ -127,10 +127,10 @@ fn manager_busy(dir: Option<&ManagerDir>) -> bool {
         .is_some_and(|status| status.busy)
 }
 
-/// The chat `chat` looks through: its folder, or the home chat's for `None`.
+/// The chat `chat` looks through: its folder, or the main chat's for `None`.
 fn viewer_dir(scope: &Scope, chat: Option<&str>) -> Option<ManagerDir> {
     match chat {
-        None => ManagerDir::home(&scope.store).ok().flatten(),
+        None => ManagerDir::main(&scope.store).ok().flatten(),
         Some(chat) => task::chats::open_chat(chat).ok(),
     }
 }
@@ -152,7 +152,7 @@ pub fn chat_overview(app: &App, scope: &Scope, chat: Option<&str>) -> Outcome<Va
     Ok(overview_of(app, scope, chat))
 }
 
-/// The overview as chat `chat` shows it (`None`: the home chat): the tasks, needs, To check
+/// The overview as chat `chat` shows it (`None`: the main chat): the tasks, needs, To check
 /// items and counts of what that chat owns (`chats::Viewer`), the rest of the body the same.
 pub fn overview_of(app: &App, scope: &Scope, chat: Option<&str>) -> Value {
     overview_in(app, scope, chat, &OnceCell::new())
@@ -171,7 +171,7 @@ fn overview_in(
     let viewer = task::chats::Viewer::new(&scope.store, chat);
     let key = OverviewKey {
         stamp: store::stamp(&scope.store),
-        chats: (viewer.open().to_vec(), store::home_chat(&scope.store)),
+        chats: (viewer.open().to_vec(), store::main_chat(&scope.store)),
         settings: settings.as_ref().map(|settings| {
             (
                 settings.land_auto,
@@ -190,7 +190,7 @@ fn overview_in(
         let land_auto = settings.as_ref().is_some_and(|settings| settings.land_auto);
         let you = shared.get_or_init(|| needs::for_you(&scope.store, land_auto));
         let mut body = build_overview(scope, settings.as_ref(), &viewer, you);
-        // ^ The home chat's overview carries the rows of Home: one per open chat (`chat_contacts`).
+        // ^ The main chat's overview (`chat` none) carries the rows of Home: one per open chat (`chat_contacts`).
         if chat.is_none() {
             body["chats"] = json!(chat_contacts(app, scope, settings.as_ref(), &body, shared));
         }
@@ -201,7 +201,7 @@ fn overview_in(
     // ^ Each row's `busy` is read on each call too, as the overview's.
     for row in body["chats"].as_array_mut().into_iter().flatten() {
         let name = row["name"].as_str().unwrap_or_default().to_string();
-        let dir = viewer_dir(scope, (row["home"] != true).then_some(name.as_str()));
+        let dir = viewer_dir(scope, (row["main"] != true).then_some(name.as_str()));
         row["busy"] = json!(manager_busy(dir.as_ref()));
     }
     // ^ The routine pill's counts (docs/web-client-tasks.md "Home"): the scheduler's, not a store
@@ -310,7 +310,7 @@ fn build_overview(
     // ^ The latest manager entry and reply, for the home row (docs/web-client-tasks.md "Home").
     let manager_dir = viewer_dir(
         scope,
-        Some(viewer.name()).filter(|name| *name != viewer.home()),
+        Some(viewer.name()).filter(|name| Some(*name) != viewer.main()),
     );
     let tail = manager_dir
         .as_ref()
@@ -401,9 +401,9 @@ fn build_overview(
         "resolutions": resolutions(&check_items, &tasks, &approvals, now),
         "last_reply": last_reply.map(|(_, text)| text),
         "news": news,
-        // ^ The project's home chat, whose route is the project's manager, and its open chats, the
-        // home chat among them: the rows of Home (docs/web-client-tasks.md "Home").
-        "home_chat": home_name(scope),
+        // ^ The project's main chat (null when the owner set none), whose route is the project's
+        // manager: the rows of Home mark it (docs/web-client-tasks.md "Home").
+        "main_chat": store::main_chat(&scope.store),
         // ^ The agent the New chat sheet's Default runs on.
         "default_agent": settings.map(view::default_agent),
         "asks": asks,
@@ -793,7 +793,7 @@ pub fn chat(
     let shown = settings.manager_shown_name(&scope.name);
     let mut manager = json!({ "name": chat.unwrap_or(shown) });
     let dir = match chat {
-        None => ManagerDir::home(&scope.store).map_err(internal)?,
+        None => ManagerDir::main(&scope.store).map_err(internal)?,
         Some(chat) => Some(
             task::chats::open_chat(chat)
                 .map_err(|error| Fault::new(404, "not_found", format!("{error:#}")))?,
@@ -909,9 +909,9 @@ fn news_value((unix_ms, text): (u64, String)) -> Value {
     json!({ "unix_ms": unix_ms, "text": text })
 }
 
-/// The open chats as Home rows, the home chat too: the row `chats::open_rows` builds (name, the
-/// first line of the goal, `last_unix_ms`, `listed`, `home`, the pill `counts`) with the same
-/// web fields for every chat, read from that chat's own overview (`home_body` is the home chat's):
+/// The open chats as Home rows: the row `chats::open_rows` builds (name, the first line of the
+/// goal, `last_unix_ms`, `listed`, `main`, the pill `counts`) with the same web fields for every
+/// chat, read from that chat's own overview (`main_body` is the main chat's):
 /// `news` (`{unix_ms, text}` of the newest reply or To check item that is news, or `null`),
 /// `asks` (its open questions), `first` (its most urgent need), `busy` (a turn runs now; read on
 /// each call) and `last_reply` (the first line of the last reply) (docs/web-client-tasks.md "Home").
@@ -919,15 +919,15 @@ fn chat_contacts(
     app: &App,
     scope: &Scope,
     settings: Option<&wsx_core::model::workspace::TaskConfig>,
-    home_body: &Value,
+    main_body: &Value,
     you: &OnceCell<Vec<needs::YouItem>>,
 ) -> Vec<Value> {
     let land_auto = settings.is_some_and(|settings| settings.land_auto);
-    let mut rows: Vec<Value> = task::chats::open_rows(&scope.store, land_auto)
+    task::chats::open_rows(&scope.store, land_auto)
         .into_iter()
         .map(|(dir, mut row)| {
-            let own = match row["home"] == true {
-                true => home_body.clone(),
+            let own = match row["main"] == true {
+                true => main_body.clone(),
                 false => overview_in(app, scope, Some(dir.name()), you),
             };
             row["news"] = own["news"].clone();
@@ -935,8 +935,8 @@ fn chat_contacts(
             row["first"] = own["needs"].get(0).cloned().unwrap_or(Value::Null);
             row["busy"] = json!(false);
             // ^ The name that types while `busy`: the project's manager name, else the chat's own.
-            row["manager"] = match row["home"] == true {
-                true => home_body["manager"].clone(),
+            row["manager"] = match row["main"] == true {
+                true => main_body["manager"].clone(),
                 false => row["shown"].clone(),
             };
             let tail = dir.read_tail(MANAGER_TAIL_BYTES).unwrap_or_default();
@@ -957,20 +957,7 @@ fn chat_contacts(
                 .into();
             row
         })
-        .collect();
-    // ^ A reader never makes the home chat's folder: a project nobody has spoken to still has its
-    // row, empty, so the owner can write to it.
-    if !rows.iter().any(|row| row["home"] == true) {
-        // ^ No folder to read: named by its project.
-        rows.push(json!({
-            "name": home_name(scope),
-            "goal": "", "last_reply": null, "news": null, "home": true, "listed": true,
-            "last_unix_ms": 0, "counts": needs::ChatCounts::default(),
-            "shown": scope.name, "projects": [scope.name], "busy": false, "asks": 0, "first": null,
-            "manager": home_body["manager"],
-        }));
-    }
-    rows
+        .collect()
 }
 
 /// A new chat of the project, opened for the owner: its name, an optional goal and an
@@ -989,12 +976,13 @@ pub fn new_chat(
 }
 
 /// The owner closes an open chat from its header menu; its log and notes stay (docs/tasks.md
-/// "Chats"). The first chat, an unknown or a closed name is refused.
+/// "Chats"). An unknown or a closed name is refused. `handed` is false when the project has no
+/// main chat to take its open tasks (the closed chat was it).
 pub fn close_chat(app: &App, scope: &Scope, name: &str) -> Outcome<Value> {
     let wsx = std::env::current_exe().map_err(|error| internal(error.into()))?;
-    owner::close_chat((&scope.name, &scope.path), &wsx, name, launcher(app, scope))
+    let handed = owner::close_chat((&scope.name, &scope.path), &wsx, name, launcher(app, scope))
         .map_err(|error| Fault::new(409, "invalid_chat", format!("{error:#}")))?;
-    Ok(json!({ "ok": true, "chat": name, "state": "closed" }))
+    Ok(json!({ "ok": true, "chat": name, "state": "closed", "handed": handed }))
 }
 
 /// The owner sets (or, empty, clears) the name a chat is shown by; its id stays (docs/tasks.md
@@ -1071,7 +1059,7 @@ pub fn page(scope: &Scope) -> Outcome<Value> {
 /// run with the id of its events message, or with `error` when the scheduler does not answer.
 /// ref: docs/web-client-tasks.md "Routines"
 pub fn routines(scope: &Scope) -> Value {
-    let dir = ManagerDir::home(&scope.store).ok().flatten();
+    let dir = ManagerDir::main(&scope.store).ok().flatten();
     match ledger::routine_rows(&scope.path, MAX_ROUTINES, true, dir.as_ref()) {
         (rows @ Value::Array(_), counts) => json!({ "routines": rows, "counts": counts }),
         (failed, _) => json!({ "routines": [], "error": failed["error"] }),
@@ -1132,7 +1120,7 @@ pub fn since(scope: &Scope, after: u64) -> Value {
             found.entry(kind).or_default().push(record.id);
         }
     }
-    let replies = ManagerDir::home(&scope.store)
+    let replies = ManagerDir::main(&scope.store)
         .ok()
         .flatten()
         .and_then(|dir| dir.read_log().ok())
@@ -1151,28 +1139,26 @@ pub fn since(scope: &Scope, after: u64) -> Value {
 }
 
 /// What the manager composer lists: the owner's skills (`/`) and the open chats of every granted
-/// project (`@`) but the one the owner writes in (`chat`, else this project's home chat), each as
+/// project (`@`) but the one the owner writes in (`chat`, else this project's main chat), each as
 /// `{id, name, project}`: `id` is what `wsx task say --to` takes, `name` the shown name. The
 /// rows are the Home list's (`chat_contacts`). ref: docs/web-client-tasks.md "Project screen"
 pub fn mentions(app: &App, scope: &Scope, chat: Option<&str>) -> Outcome<Value> {
     let skills = crate::commands::owner_skills(&scope.path);
-    let current = chat.map_or_else(|| home_name(scope), str::to_string);
+    let current = chat
+        .map(str::to_string)
+        .or_else(|| store::main_chat(&scope.store))
+        .unwrap_or_default();
     let chats: Vec<Value> = scopes(&chat::snapshot(&app.client)?, &app.site.access)
         .iter()
         .flat_map(|other| {
             // ^ Only the names: not `chat_contacts`, which reads every chat's overview.
-            let mut rows: Vec<(Value, Value)> = task::chats::open_rows(&other.store, false)
+            task::chats::open_rows(&other.store, false)
                 .into_iter()
                 .filter(|(_, row)| row["listed"] == true)
                 .map(|(_, row)| (row["name"].clone(), row["shown"].clone()))
-                .collect();
-            if !rows
-                .iter()
-                .any(|(name, _)| *name == json!(home_name(other)))
-            {
-                rows.push((json!(home_name(other)), json!(other.name)));
-            }
-            rows.into_iter().map(
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(
                 move |(name, shown)| json!({ "id": name, "name": shown, "project": other.name }),
             )
         })
@@ -1183,11 +1169,6 @@ pub fn mentions(app: &App, scope: &Scope, chat: Option<&str>) -> Outcome<Value> 
         "truncated": skills.truncated,
         "chats": chats,
     }))
-}
-
-/// The name of the project's home chat, the folder's or the one it would have.
-fn home_name(scope: &Scope) -> String {
-    store::home_chat(&scope.store).unwrap_or_else(|| task::chats::home_name(&scope.store))
 }
 
 fn message(text: &str, what: &str) -> Outcome<String> {
@@ -1245,7 +1226,7 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
 /// The open "To check" items, oldest first, each with its task's title and what the task
 /// did (the first sentence of its worker's summary, when it is not the title).
 pub fn checks(scope: &Scope, chat: Option<&str>) -> Outcome<Value> {
-    // ^ The items of the tasks that chat owns (`chats::owner`); the home chat's without one.
+    // ^ The items of the tasks that chat owns (`chats::owner`); the main chat's without one.
     let items = task::chats::checks_of(
         &scope.store,
         checks::read(&scope.store).map_err(internal)?,
@@ -1835,9 +1816,9 @@ fn watch_overview(app: &Arc<App>, scope: &Scope, watch: &mut Watch) {
     let mut open = attention(scope.project, &overview);
     // ^ What the open chats own needs the owner too: the push and the badge count it (a chat's
     // To check items fold into the project's one line).
-    // ^ The home chat is the project's own overview above: its row is not counted again.
+    // ^ The main chat is the project's own overview above: its row is not counted again.
     for chat in overview["chats"].as_array().into_iter().flatten() {
-        let Some(name) = chat["name"].as_str().filter(|_| chat["home"] != true) else {
+        let Some(name) = chat["name"].as_str().filter(|_| chat["main"] != true) else {
             continue;
         };
         let own = overview_of(app, scope, Some(name));
@@ -1891,7 +1872,7 @@ fn publish_changes(app: &Arc<App>, scope: &Scope, changed: Vec<&PathBuf>) {
             crate::events::publish_json(app, "page", json!({ "project": scope.project }));
         } else if let Some(chat) = store::chat_of(path) {
             // ^ Another chat's page reads its folder, the manager's its contacts.
-            let event = match store::home_chat(&scope.store).as_deref() == Some(chat) {
+            let event = match store::main_chat(&scope.store).as_deref() == Some(chat) {
                 false => json!({ "project": scope.project, "chat": chat }),
                 true => json!({ "project": scope.project }),
             };
@@ -2069,24 +2050,24 @@ pub fn for_you(app: &App) -> Outcome<Value> {
     let snapshot = chat::snapshot(&app.client)?;
     let mut chats = Vec::new();
     for scope in scopes(&snapshot, &app.site.access) {
-        let home = overview(app, &scope);
-        for row in home["chats"].as_array().into_iter().flatten() {
+        let project = overview(app, &scope);
+        for row in project["chats"].as_array().into_iter().flatten() {
             let waits = ["needs", "check"]
                 .iter()
                 .any(|kind| row["counts"][kind].as_u64().unwrap_or_default() > 0);
             // ^ A chat that runs in several projects is one entry, under its first.
             let own =
-                row["home"] == true || row["projects"][0].as_str() == Some(scope.name.as_str());
+                row["main"] == true || row["projects"][0].as_str() == Some(scope.name.as_str());
             let Some(name) = row["name"].as_str().filter(|_| waits && own) else {
                 continue;
             };
-            let body = if row["home"] == true {
-                home.clone()
+            let body = if row["main"] == true {
+                project.clone()
             } else {
                 overview_of(app, &scope, Some(name))
             };
             chats.push(json!({
-                "project": scope.project, "chat": name, "shown": row["shown"], "home": row["home"],
+                "project": scope.project, "chat": name, "shown": row["shown"], "main": row["main"],
                 "needs": body["needs"], "asks": body["asks"], "check_items": body["check_items"],
             }));
         }

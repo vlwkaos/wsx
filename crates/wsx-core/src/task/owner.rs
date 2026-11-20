@@ -21,7 +21,7 @@ const MANAGER_START_WAIT: Duration = Duration::from_secs(10);
 /// Most characters of an action's answer kept in its decision.
 const MAX_OUTCOME_CHARS: usize = 1000;
 
-/// Start the open chat's host (the repo's home chat when `chat` is none), and the repo's
+/// Start the open chat's host (the repo's main chat when `chat` is none), and the repo's
 /// service when that is not running either, unless they answer. True when the chat's host was
 /// started. `launch` creates the hidden session (its label, `task-<chat>` or
 /// `task-repo-<repo-id>`) in the main checkout with the given argv; the CLI may start wsxd for
@@ -35,7 +35,7 @@ pub fn ensure_manager(
 ) -> Result<(bool, ManagerDir)> {
     let project_id = store::project_id(name, main);
     let dir = match chat {
-        None => ManagerDir::open_home(&project_id)?,
+        None => super::chats::open_main(&project_id)?,
         Some(chat) => super::chats::open_chat(chat)?,
     };
     let status = || {
@@ -155,16 +155,20 @@ pub fn say(
 }
 
 /// Close the open chat `name` of the repo (`wsx task chat close`, the web's and the TUI's Close
-/// chat) and hand it back: its goal, open tasks and last decisions go to the repo's home chat
-/// as one message of wsx, which the home chat reads with its next turn. The open tasks are the
-/// home chat's from then on (`chats::owner`). ref: docs/tasks.md "Chats"
+/// chat) and hand it back: its goal, open tasks and last decisions go to the repo's main chat
+/// as one message of wsx, which the main chat reads with its next turn. The open tasks are the
+/// main chat's from then on (`chats::owner`). True when a main chat took it; closing the main
+/// chat leaves the repo with none, and its open tasks have no chat. ref: docs/tasks.md "Chats"
 pub fn close_chat(
     project: (&str, &Path),
     wsx: &Path,
     name: &str,
     launch: impl Fn(String, Vec<String>) -> Result<()>,
-) -> Result<()> {
-    let (home, text) = super::chats::close(name)?;
+) -> Result<bool> {
+    let (main, text) = super::chats::close(name)?;
+    let Some(main) = main else {
+        return Ok(false);
+    };
     let short = super::manager::Short::event(
         format!("Chat {name} closed; its open tasks are yours"),
         false,
@@ -173,17 +177,17 @@ pub fn close_chat(
         project.0,
         project.1,
         wsx,
-        Some(&home),
+        Some(&main),
         launch,
         text,
         Some(super::manager::Author::Events),
         vec![short],
     )
-    .map(drop)
-    .context("the chat is closed, but its hand-back did not reach the home chat")
+    .map(|_| true)
+    .context("the chat is closed, but its hand-back did not reach the main chat")
 }
 
-/// Ask the repo's home chat to write to the owner with no turn, starting its host first. An
+/// Ask the repo's main chat to write to the owner with no turn, starting its host first. An
 /// error when its host does not start, `ok: false` with `busy` while a turn runs.
 #[allow(clippy::too_many_arguments)]
 pub fn post(
@@ -203,7 +207,7 @@ pub fn post(
     )
 }
 
-/// Ask the repo's service to send `why` as an event to `chat` (the home chat when none) at
+/// Ask the repo's service to send `why` as an event to `chat` (the main chat when none) at
 /// `at_ms`, in place of that chat's last check-in. It starts the service when needed.
 pub fn checkin(
     name: &str,

@@ -5,10 +5,11 @@
 
 use serde_json::json;
 use std::fs;
+use wsx_core::task::chats;
 use wsx_core::task::checks::{self, CheckItem};
 use wsx_core::task::manager::{ApprovalLine, ManagerEvent};
 use wsx_core::task::needs::{self, YouSource};
-use wsx_core::task::store::{self, ManagerDir, TaskDir, RECORD_FILE};
+use wsx_core::task::store::{self, TaskDir, RECORD_FILE};
 
 const PROJECT: &str = "demo-0a1b2c3d";
 
@@ -38,7 +39,8 @@ fn the_list_and_the_counts_of_a_chat_agree() {
     // SAFETY: this file has one test; nothing else reads the environment meanwhile.
     unsafe { std::env::set_var("XDG_STATE_HOME", &state) };
 
-    let home = ManagerDir::open_home(PROJECT).unwrap();
+    // ^ The project's first chat is its main chat, which owns what no other chat does.
+    let home = chats::create(PROJECT, "demo", None, None).unwrap();
     // ^ One task that waits for the owner's answer, one landed task whose To check item is open.
     let waits = TaskDir::allocate(PROJECT).unwrap();
     let body = record(

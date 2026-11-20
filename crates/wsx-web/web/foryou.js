@@ -17,7 +17,7 @@ export function ForYou() {
   const { total } = forYouWords(chats ?? []);
   // ^ The chat opens with its For you list at the item (`state.look`, read by the chat).
   const open = (entry, key) => {
-    update({ look: { project: entry.project, room: entry.home ? null : entry.chat, key } });
+    update({ look: { project: entry.project, room: entry.main ? null : entry.chat, key } });
     location.hash = chatHash(entry.chat);
   };
   let body;

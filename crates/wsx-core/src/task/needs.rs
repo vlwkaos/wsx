@@ -220,7 +220,7 @@ pub enum YouSource {
 /// open questions and the To check items of its tasks. Tasks first (by `rank`), then the rest.
 pub fn for_you(project_id: &str, land_auto: bool) -> Vec<YouItem> {
     let open = chats::open_names();
-    let home = store::home_chat(project_id).unwrap_or_default();
+    let main = store::main_chat(project_id);
     let mut items = Vec::new();
     for (dir, record) in view::project_tasks(project_id).unwrap_or_default() {
         let Ok(record) = record else { continue };
@@ -228,8 +228,12 @@ pub fn for_you(project_id: &str, land_auto: bool) -> Vec<YouItem> {
             continue;
         };
         let title = view::readable_title(&dir, &record).unwrap_or_default();
+        // ^ A task no chat owns (no open main chat) is nobody's item; the ledger still has it.
+        let Some(chat) = chats::owner(record.owner_chat(), &open, main.as_deref()) else {
+            continue;
+        };
         items.push(YouItem {
-            chat: chats::owner(record.owner_chat(), &open, &home).to_string(),
+            chat: chat.to_string(),
             kind: kind.name(),
             rank: kind.rank(),
             task: Some(record.id),
@@ -241,7 +245,7 @@ pub fn for_you(project_id: &str, land_auto: bool) -> Vec<YouItem> {
     let checked = checks::open_items(project_id).unwrap_or_default();
     let now = super::now_unix_ms();
     for dir in chats::open_chats(project_id) {
-        let viewer = chats::Viewer::named(&dir.chat, open.clone(), &home);
+        let viewer = chats::Viewer::named(&dir.chat, open.clone(), main.as_deref());
         let own = chats::approvals_of(approvals.clone(), &viewer);
         let mut push = |kind, rank, task, label, source| {
             items.push(YouItem {
@@ -279,10 +283,12 @@ pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCou
         return counts;
     }
     let open = chats::open_names();
-    let home = store::home_chat(project_id).unwrap_or_default();
+    let main = store::main_chat(project_id);
     for (dir, record) in view::project_tasks(project_id).unwrap_or_default() {
         let Ok(record) = record else { continue };
-        let owner = chats::owner(record.owner_chat(), &open, &home);
+        let Some(owner) = chats::owner(record.owner_chat(), &open, main.as_deref()) else {
+            continue;
+        };
         if !dirs.iter().any(|dir| dir.chat == owner) {
             continue;
         }
@@ -298,7 +304,7 @@ pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCou
     let items = checks::open_items(project_id).unwrap_or_default();
     let now = super::now_unix_ms();
     for dir in &dirs {
-        let viewer = chats::Viewer::named(&dir.chat, open.clone(), &home);
+        let viewer = chats::Viewer::named(&dir.chat, open.clone(), main.as_deref());
         let own = chats::approvals_of(approvals.clone(), &viewer);
         let entry = counts.entry(dir.chat.clone()).or_default();
         entry.needs += pending_approvals(&own)

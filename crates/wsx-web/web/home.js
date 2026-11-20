@@ -23,14 +23,14 @@ function homeOrder(projects, tasks, viewing) {
     const overview = tasks[project.id];
     for (const chat of overview?.chats ?? []) {
       // ^ A chat that runs in several projects is one row, under its own (the first of `projects`).
-      if (chat.listed === false || (chat.name !== overview.home_chat && chat.projects?.[0] !== project.name)) continue;
-      const home = chat.name === overview.home_chat;
-      const watched = viewing?.project === project.id && (viewing.room ?? overview.home_chat) === chat.name;
+      if (chat.listed === false || (!chat.main && chat.projects?.[0] !== project.name)) continue;
+      const main = chat.main === true;
+      const watched = viewing?.project === project.id && (viewing.room ?? overview.main_chat) === chat.name;
       // ^ One rule for every chat: its own row says what is new, what it needs and whether it works.
-      const news = watched ? null : unreadNews(home ? `project-${project.id}` : `project-${project.id}-c-${chat.name}`, chat.news);
+      const news = watched ? null : unreadNews(main ? `project-${project.id}` : `project-${project.id}-c-${chat.name}`, chat.news);
       const first = chat.first ?? null;
       const rank = first ? first.rank : chat.counts?.needs > 0 ? Infinity : null;
-      rows.push({ project, overview, chat, home, first, rank, news, last: chat.last_unix_ms || 0 });
+      rows.push({ project, overview, chat, main, first, rank, news, last: chat.last_unix_ms || 0 });
     }
   }
   const apart = (left, right) => (left > right) - (left < right);
@@ -92,16 +92,16 @@ function RowText({ name, projects, asks, counts, last, now, line, news, typing }
 
 // A chat's row, built from the chat's own row of the server (`overview.chats`), the same for every
 // chat: its state (typing, unread, asks, counts) and its status line. Only the name differs: the
-// project's home chat has two lines (`.home-row`, keyed by its project, named by it); any other has
+// project's main chat has two lines (`.home-row`, keyed by its project, named by it); any other has
 // three (`.chat-row`): its shown name, the projects it runs in, then the status line. A slide to the left shows Dismiss;
 // the ⋯ and a long press on a phone (`PRESS_MS`) open the folder sheet.
 const FOLDED_KEY = "wsx-home-folded";
 const PRESS_MS = 500;
 const PRESS_SLOP_PX = 10;
 function ChatRow({ row, current, now, onDismiss, onFolder }) {
-  const { project, overview, chat, home, news } = row;
-  // ^ The routines are the project's, so only its home chat's row shows their tray.
-  const counts = trayCounts(chat, home ? overview.routines : undefined);
+  const { project, overview, chat, main, news } = row;
+  // ^ The routines are the project's, so only its main chat's row shows their tray.
+  const counts = trayCounts(chat, main ? overview.routines : undefined);
   const projects = chat.projects.join(", ");
   const line = statusLine(row);
   const slidable = can("task_act");
@@ -125,12 +125,12 @@ function ChatRow({ row, current, now, onDismiss, onFolder }) {
     event.preventDefault();
   };
   return html`
-    <li class=${slidable ? "row row-slide" : "row"} ...${slidable ? slide : null} data-key=${home ? project.id : `${project.id}/c/${chat.name}`} data-news=${news ? "" : null}
+    <li class=${slidable ? "row row-slide" : "row"} ...${slidable ? slide : null} data-key=${main ? project.id : `${project.id}/c/${chat.name}`} data-news=${news ? "" : null}
       onPointerDown=${down} onPointerMove=${move} onPointerUp=${release} onPointerCancel=${release} onClickCapture=${click}
       onContextMenu=${(event) => { if (press.current.touch) event.preventDefault(); }}>
-      <a class=${home ? "row-link home-row" : "row-link chat-row"} href=${chatHash(chat.name)} aria-current=${current ? "page" : null}
-        aria-label=${home ? null : [`Chat ${chat.shown} of ${projects}`, news && "unread", ...shownTrays(counts).map((tray) => trayWords(tray, counts))].filter(Boolean).join(", ")}>
-        <${RowText} name=${home ? project.name : chat.shown} projects=${home ? null : projects} asks=${chat.asks > 0} counts=${counts}
+      <a class=${main ? "row-link home-row" : "row-link chat-row"} href=${chatHash(chat.name)} aria-current=${current ? "page" : null}
+        aria-label=${main ? null : [`Chat ${chat.shown} of ${projects}`, news && "unread", ...shownTrays(counts).map((tray) => trayWords(tray, counts))].filter(Boolean).join(", ")}>
+        <${RowText} name=${main ? project.name : chat.shown} projects=${main ? null : projects} asks=${chat.asks > 0} counts=${counts}
           last=${row.last} now=${now} line=${line} news=${Boolean(news)} typing=${chat.busy ? chat.manager : null} />
       </a>
       ${slidable && html`<button class="row-more" type="button" aria-label=${`Folder of chat ${chat.shown}`} aria-haspopup="dialog" onClick=${() => onFolder(row)}><span aria-hidden="true">⋯</span></button>`}
@@ -165,7 +165,7 @@ function FolderSheet({ row, folders, onPick, onClose }) {
       <span class="folder-tick">${current === folder ? html`<${Icon} name="pass" />` : null}</span>${text}</button></li>`;
   return html`
     <dialog class="sheet" tabindex="-1" ref=${dialog} aria-labelledby="folder-title" onClose=${onClose}>
-      <h2 class="sheet-title" id="folder-title">${row.home ? row.project.name : row.chat.shown}</h2>
+      <h2 class="sheet-title" id="folder-title">${row.main ? row.project.name : row.chat.shown}</h2>
       <ul class="folder-options" role="menu" aria-label="Folder">
         ${folders.map((folder) => option(folder, folder))}
         ${option(null, "No folder")}
@@ -302,7 +302,7 @@ export function Home({ rail }) {
   // minutes) is renewed each minute.
   const live = Object.values(store.tasks).some((overview) => overview?.working > 0);
   const now = useNow(true, live ? 1000 : 60_000);
-  // ^ The project the open screen belongs to, and its chat when that is not the home chat.
+  // ^ The project the open screen belongs to, and its chat when that is not the main chat.
   const route = parseRoute(location.hash);
   const at = route.screen === "chat" ? route : location.hash.startsWith("#/p/") ? route : null;
   const open = at?.id ?? null;
@@ -346,7 +346,7 @@ export function Home({ rail }) {
     if (rows.length || forYou?.length) {
       const waiting = (row) => row.news || row.rank !== null || row.chat.counts?.check > 0;
       const chatRow = (row) => html`<${ChatRow} key=${`${row.project.id}/${row.chat.name}`} row=${row} now=${now} onDismiss=${dismiss} onFolder=${setMoving}
-        current=${rail && open === row.project.id && (inChat ?? row.overview.home_chat) === row.chat.name} />`;
+        current=${rail && open === row.project.id && (inChat ?? row.overview.main_chat) === row.chat.name} />`;
       const sections = folderSections(rows);
       // ^ The chats of no folder get a heading of their own once a folder exists, folded like any folder (its id is "").
       const headed = sections.some((section) => section.name);

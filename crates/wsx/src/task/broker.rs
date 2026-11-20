@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use wsx_core::git::output_with_timeout_limit;
+use wsx_core::task::chats;
 use wsx_core::task::manager::Party;
 use wsx_core::task::owner::ACTOR_ENV;
 use wsx_core::task::policy::{Capability, Policy, Role, Trust, RULES_ENV, TRUST_ENV};
@@ -291,7 +292,7 @@ fn memory_pin(argv: &[String], own_id: &str, policy: Policy) -> Result<bool> {
 
 /// The other project a command reaches. The agent's role runs its `reach` there (the task
 /// lives in that project's store, as the owner's `-p` makes it; every chat is a manager) and
-/// `say --from-chat`, which reaches that project's home chat; any role only reads `ledger`.
+/// `say --from-chat`, which reaches that project's main chat; any role only reads `ledger`.
 /// A `say --from-chat` without `-p` reaches a chat of its own (`manager` without `--to`);
 /// `None` for anything else of its own. ref: docs/tasks.md "Managers talk"; policy.rs
 fn reach(argv: &[String], own: &str, project_id: &str, role: Role) -> Result<Option<Party>> {
@@ -317,32 +318,35 @@ fn reach(argv: &[String], own: &str, project_id: &str, role: Role) -> Result<Opt
             argv.iter()
                 .find_map(|arg| arg.strip_prefix("--to=").map(str::to_string))
         });
-    // ^ `manager` is the repo's home chat, as another chat names it.
-    let home = store::home_chat(project_id).unwrap_or_default();
+    // ^ `manager` is the repo's main chat, as another chat names it.
     match project.filter(|project| project != own) {
-        None if sub == "say" && from_chat => Ok(Some(Party::Chat(
-            to.filter(|to| to != "manager").unwrap_or(home),
-        ))),
+        None if sub == "say" && from_chat => {
+            Ok(Some(Party::Chat(match to.filter(|to| to != "manager") {
+                Some(to) => to,
+                None => chats::open_main(project_id)?.chat,
+            })))
+        }
         None => Ok(None),
         // ^ Reading another ledger is not a message; only a sent message is logged.
         Some(_) if sub == "ledger" => Ok(None),
         Some(other) if sub == "say" && from_chat && !role.info().reach.is_empty() => {
-            Ok(Some(Party::Chat(home_of(&other)?)))
+            Ok(Some(Party::Chat(main_of(&other)?)))
         }
         Some(_) if role.reaches(sub) && !discard => Ok(None),
         Some(other) => bail!("{}", role.reach_refusal(&other)),
     }
 }
 
-/// The name of the home chat of the registered project `name`.
-fn home_of(name: &str) -> Result<String> {
+/// The name of the main chat of the registered project `name`; an error names `chat main` when
+/// it has none.
+fn main_of(name: &str) -> Result<String> {
     let id = crate::cli::load_config()?
         .projects
         .iter()
         .find(|project| project.name == name)
         .map(|project| store::project_id(&project.name, &project.path))
         .with_context(|| format!("no registered project {name}"))?;
-    Ok(store::home_chat(&id).unwrap_or_else(|| wsx_core::task::chats::home_name(&id)))
+    Ok(chats::open_main(&id)?.chat)
 }
 
 /// A host's side: one thread per command, so a long one does not hold the others or the

@@ -210,7 +210,7 @@ pub(super) fn source_path(project_id: &str, doc: &Doc) -> String {
             .flatten()
             .map(|dir| dir.path.join(LOG_FILE)),
         (Kind::Decision | Kind::Memo, _) => {
-            ManagerDir::home(project_id).ok().flatten().map(|dir| {
+            ManagerDir::main(project_id).ok().flatten().map(|dir| {
                 dir.path.join("notes").join(match doc.kind {
                     Kind::Decision => "decisions.md",
                     _ => "context.md",
@@ -605,7 +605,7 @@ fn result_text(value: &serde_json::Value) -> String {
 /// The manager's decisions and memo lines, read from the notes as they are now: the files stay,
 /// and a line the manager merged or fixed is not found in its old form.
 fn notes(project_id: &str, records_apart: bool) -> Vec<Doc> {
-    let Ok(Some(dir)) = ManagerDir::home(project_id) else {
+    let Ok(Some(dir)) = ManagerDir::main(project_id) else {
         return Vec::new();
     };
     let mut docs = Vec::new();

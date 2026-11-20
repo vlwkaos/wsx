@@ -148,7 +148,7 @@ pub struct RoleInfo {
     pub caps: &'static [Capability],
     /// The `wsx task` commands the role runs in another project's store (`-p <other>`), with its
     /// numbers, checks and land target. `ledger` (a read) and `say --from-chat` (to that
-    /// project's home chat) are open to a role with any reach; `--discard` never is.
+    /// project's main chat) are open to a role with any reach; `--discard` never is.
     pub reach: &'static [&'static str],
 }
 
