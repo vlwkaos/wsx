@@ -63,9 +63,9 @@ await until("/does not exist/.test(document.querySelector('dialog.sheet .error')
 if (!(await evaluate("document.querySelector('dialog.sheet').open"))) await fail("a refusal closed the sheet");
 await capture("390x844-add-refused");
 await submit(repo);
-await until(`!!${homeRow(name)}`, "the added project did not appear on Home", 100);
 await until("!document.querySelector('dialog.sheet[open]')", "the sheet stayed open after the add", 20);
-// ^ The row can show before the sheet has closed: a read at once is a race, a wait is not.
+// ^ An added project has no chat, so Home has no row for it until a chat is made (docs/tasks.md "Chats").
+if (await evaluate(`!!${homeRow(name)}`)) await fail("Home lists a project that has no chat");
 
 // The Projects page: the site that manages projects has + and a slide to Remove there.
 await evaluate("location.hash = '#/projects'");

@@ -1778,7 +1778,10 @@ def part_core(created=None):
     (project / 'wsx.config.yml').write_text(area_text)
     shutil.rmtree(project / 'briefs')
     sharing_store = Path(sharing['task_dir']).parent
-    forget_notes(sharing_store, (home_dir(sharing_store) or sharing_store) / 'notes')
+    sharing_notes = (home_dir(sharing_store) or sharing_store) / 'notes'
+    shutil.rmtree(sharing_notes, ignore_errors=True)
+    # ^ demo's chat exists since section 0: its notes folder starts as it was with no chat.
+    forget_notes(sharing_store, sharing_notes)
     # 13r. Context rotation inside a turn: a model call past tasks.agent.rotateTokens gets the
     # handoff request as a steer at its tool boundary; the worker writes its notes there, and the
     # same step goes on in a fresh conversation that opens with the task's prompt and those notes.

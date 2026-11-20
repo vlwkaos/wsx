@@ -3798,7 +3798,7 @@ def task_journey(args):
         # the ones it counts from.
         # ^ The repo's main chat in the store layout of docs/tasks.md "Chats": `tasks/chats/plans` and `home.json`.
         # ^ A repo has a chat only when one is made: the first of each is its main chat (docs/tasks.md "Chats"); `plans` has its own.
-        for name in ('demo', 'ui', 'calm'):
+        for name in ('demo', 'ui', 'calm', *(folder.name for folder in session_projects)):
             js('task', 'chat', 'new', name, '-p', name)
         plans_id = 'plans-' + hashlib.sha256(str(plans).encode()).hexdigest()[:8]
         manager_dir = state / 'wsx/tasks/chats/plans'
@@ -5004,6 +5004,9 @@ merge_seconds = 3
             assert sorted(home_order[:2]) == ['plans', 'ui'] and home_order[2:] == ['demo', 'calm'], home_order
             # ^ Projects with no task, session or not, have no activity and stay in the project list's order (calm, busy, quiet, gone).
             home_order += ['busy', 'quiet', 'gone']
+            # ^ The page's list read (`GET /api/tasks`) names a main chat for each of them, as the one read above does.
+            listed_rows = {row['project']: row for row in steady(owner, 'GET', '/api/tasks')[1]}
+            assert all(name in ids and listed_rows[ids[name]]['main_chat'] for name in home_order if name in ids), listed_rows
             # A chat in ui with a reply and an agent of its own, for the page's Chats contact and room.
             with open(config / 'config-v2.toml', 'a') as agents:
                 agents.write('[[agents]]\nname = "haiku-chat"\ncommand = ["claude"]\nadapter = "claude"\nmodel = "haiku"\n')
