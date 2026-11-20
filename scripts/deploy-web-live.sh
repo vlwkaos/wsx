@@ -27,6 +27,8 @@ trap 'code=$?; [ $code -eq 0 ] || echo "deploy failed at step: $step (exit $code
 # ^ The deploy gate is the PTY and stream smoke test and the live handoff scenario only, so a land
 # reaches the live site in minutes. The task and web end-to-end scripts are `tasks.scenarios`: the worker whose change
 # touches their area runs them by name (wsx.config.yml `workflow.build`).
+step "debug build"
+cargo build --locked -p wsx -p wsx-daemon
 # ^ The gate holds the host-wide scenario test slot once, for both steps, and goes before every
 # task round (`wsx task slot`, Priority::Deploy): a second queue entry for the handoff sat behind
 # task rounds until the 2 h timeout. The `wsx task slot` inside terminal-context-check.sh runs at
