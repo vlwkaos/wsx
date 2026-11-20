@@ -7887,8 +7887,9 @@ def part_agents(created=None):
     wait(lambda: hanging(m_release), 'the manager turn hangs', 40)
     old_manager = host_of('task chat-host %s' % manager_log.parent.name)
     assert len(old_manager) == 1 and agent_tree(old_manager[0]), old_manager
-    assert any(line.split()[0] == str(old_manager[0]) and str(older / 'wsx') in line for line in leftovers('task chat-host')), leftovers('task chat-host')
     # ^ The hung host runs the older file; a host on the harness wsx would never be replaced.
+    hosts = leftovers('task chat-host')
+    assert any(line.split()[0] == str(old_manager[0]) and str(older / 'wsx') in line for line in hosts), hosts
     stopped_before = len(replaced(manager_entries()))
     install()
     time.sleep(4)
