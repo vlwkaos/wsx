@@ -514,10 +514,6 @@ def run(wsx, wsxd, work, owned, part):
     def js(*argv):
         return json.loads(cli(*argv, '--json').stdout)
 
-    # ^ No repo has a chat of its own: this one is made by hand, and being the repo's first it is its main chat
-    # (docs/tasks.md "Chats"). Its name is the repo's, so the `chat:demo` asserts below keep their word.
-    js('task', 'chat', 'new', 'demo')
-
     def cli_env(extra, *argv):
         return subprocess.run([str(wsx), *map(str, argv)], cwd=project, env={**env, **extra}, capture_output=True,
                               text=True, timeout=60, check=True)
@@ -1435,6 +1431,7 @@ def fresh_project():
     """The project as section 17 leaves it, for a part that starts after it: the deploy config and a
     first task, whose folder names the project store."""
     configure(DEPLOY_CONFIG, 'deploy config')
+    js('task', 'chat', 'new', 'demo')  # ^ demo's main chat, which a part run alone has not made (part_core makes it after section 0)
     created = js('task', 'new', 'WORK a.txt')  # ^ the task's check wants a.txt
     wait_state(created['id'], 'ready', 'failed')
     js('task', 'close', created['id'], '--discard')
@@ -1447,6 +1444,7 @@ def part_core(created=None):
     mark('0')
     empty, = tui_screens(wsx, env, project, [(r'WORKSPACE', b't'), (r'No tasks', b'')])[1:]
     assert re.search(r'Tasks demo +0 to check  0 approvals', empty) and 'TASKS' in empty, empty
+    js('task', 'chat', 'new', 'demo')  # ^ No repo has a chat of its own: this is demo's main chat (docs/tasks.md "Chats"), as the `chat:demo` asserts below expect.
 
     # 1. New: a working turn in its own working copy.
     mark('1')
@@ -3726,6 +3724,7 @@ def part_worker(created=None):
          'the project added event')
     # ^ The new project works: its ledger answers and the manager of `grown` takes a message.
     assert js('task', 'ledger', '-p', 'grown')['project'] == 'grown'
+    js('task', 'chat', 'new', 'grown', '-p', 'grown')  # ^ its main chat: `say` needs one
     assert js('task', 'say', '-p', 'grown', 'STATUS')['id']
     # ^ Registered paths and names refuse, naming the project; the owner's own run needs no card.
     text = ask_add(grown)
@@ -8092,6 +8091,8 @@ def part_agents(created=None):
     for name, rid, args, cname in (('m2o', repo_id, ['--chat', 'm2o'], 'm2o'), ('twin', twin_id, [], 'twin')):
         if name == 'm2o':
             cli('task', 'chat', 'new', 'm2o', '--goal', str(m2_goal), '-p', 'demo', '--json')
+        else:
+            (chats_dir / 'twin/closed').unlink()  # ^ the old argv opens the main chat; a closed one is not opened again, so the owner opens it
         wait(lambda: not chat_host(cname), 'no host of ' + cname, 60)
         log_path = chats_dir / cname / 'log.jsonl'
         log_path.touch()
@@ -8755,7 +8756,9 @@ def part_chats(created=None):
     solo_task = lambda text: js('task', 'new', text, '-p', 'solo')['id']
     solo_state = lambda n: js('task', 'show', n, '-p', 'solo')['state']
     solo_open = lambda: [i['id'] for i in js('task', 'ledger', '-p', 'solo')['open']]
-    # ^ A task starts the repo's service. No chat comes of it, nor of the events that follow.
+    # ^ The repo's service runs (nothing but a chat's host starts it, so the test does). No chat comes of it, nor of the events that follow.
+    service = subprocess.Popen([str(wsx), 'task', 'repo-host', solo_id], cwd=project, env=env,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     t1 = solo_task('WORK s1.txt')
     wait(lambda: [l for l in leftovers('task repo-host ') if l.split()[-1] == solo_id], 'the service of solo', 30)
     wait(lambda: solo_state(t1) == 'ready', 'the first solo task is ready', 60)
@@ -8798,6 +8801,8 @@ def part_chats(created=None):
     js('task', 'routine', 'delete', 'n33', '-p', 'solo')
     for n in (t1, t2, t3):
         js('task', 'close', n, '--discard', '-p', 'solo')
+    service.terminate()
+    service.wait(30)
     return created
 
 

@@ -3797,6 +3797,9 @@ def task_journey(args):
         # "Project screen"). Delivered turns, so its manager never takes them as new; ids far past
         # the ones it counts from.
         # ^ The repo's main chat in the store layout of docs/tasks.md "Chats": `tasks/chats/plans` and `home.json`.
+        # ^ A repo has a chat only when one is made: the first of each is its main chat (docs/tasks.md "Chats"); `plans` has its own.
+        for name in ('demo', 'ui', 'calm'):
+            js('task', 'chat', 'new', name, '-p', name)
         plans_id = 'plans-' + hashlib.sha256(str(plans).encode()).hexdigest()[:8]
         manager_dir = state / 'wsx/tasks/chats/plans'
         (state / 'wsx/tasks/chats').mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -4097,9 +4100,6 @@ merge_seconds = 3
         workspace = events.expect('workspace')
         ids = {item['name']: item['id'] for item in workspace['projects']}
         demo = ids['demo']
-        # ^ A repo has a chat only when one is made: the first of each is its main chat (docs/tasks.md "Chats"); `plans` has its own.
-        for name in ('demo', 'ui', 'calm'):
-            js('task', 'chat', 'new', name, '-p', name)
         # Panels (docs/panels.md): the command runs in wsxd, on open and when its result is older than
         # `refresh`; only a site that may run commands reads them.
         def panels_journey(admin):

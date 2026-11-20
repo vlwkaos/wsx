@@ -2422,6 +2422,14 @@ try:
     wait_for(lambda: "(d)close chat" in remove_tui.text().splitlines()[-1], lambda: f"no chat row to close:\n{remove_tui.text()}", seconds=30)
     asks = "Close qa? Its log and notes stay; New chat with the same name opens it again. (y)es  (n)o"
     remove_tui.send(b"d")
+    wait_for(lambda: "(y)es  (n)o" in remove_tui.text(), lambda: f"d asked nothing:\n{remove_tui.text()}", seconds=60)
+    if "Close keep-me?" in remove_tui.text():
+        # ^ The main chat closes as any chat does: the cursor is on its row, so drop the ask and go up to qa.
+        remove_tui.send(b"n")
+        wait_for(lambda: "(y)es  (n)o" not in remove_tui.text(), "n did not drop the close of keep-me", seconds=60)
+        remove_tui.send(b"k")
+        time.sleep(0.3)
+        remove_tui.send(b"d")
     wait_for(lambda: asks in remove_tui.text(), lambda: f"d did not ask to close qa:\n{remove_tui.text()}", seconds=60)
     remove_tui.send(b"n")
     wait_for(lambda: asks not in remove_tui.text() and "Check the notes" in remove_tui.text(), "n did not drop the close", seconds=60)
