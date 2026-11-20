@@ -4393,7 +4393,10 @@ merge_seconds = 3
         # --- A task's picture before it lands (docs/web-client.md "Files a message shows"): `![alt](task/<n>/<path>)` shows a
         # file of open task n's working copy with the rules of `files/<path>`; a path off the copy, a symlink out, a private
         # name, a closed or unknown task and a file that is not a picture show their alt text. Every refused file exists.
-        copy = Path(js('task', 'show', 2, '-p', 'demo')['record']['working_copy'])
+        # ^ #2 has landed by now; a fresh task that waits ready (open) owns the copy.
+        live = js('task', 'new', 'WORK p.txt', '-p', 'demo')['id']
+        wait_state(live, 'ready')
+        copy = Path(js('task', 'show', live, '-p', 'demo')['record']['working_copy'])
         mock = png_bytes(8, 8, (200, 60, 60))
         (copy / 'mock').mkdir(exist_ok=True)
         (copy / 'mock/ok.png').write_bytes(mock)
@@ -4407,15 +4410,16 @@ merge_seconds = 3
         js('task', 'close', gone, '--discard', '-p', 'demo')
         (gone_copy / 'mock').mkdir(parents=True, exist_ok=True)
         (gone_copy / 'mock/ok.png').write_bytes(png_bytes(8, 8, (30, 30, 30)))
-        links = ['![Mock](task/2/mock/ok.png)', '![Up](task/2/../beside.png)', '![Link](task/2/mock/link.png)', '![Private](task/2/.env.png)',
-                 '![Notes](task/2/mock/notes.png)', '![Closed](task/%d/mock/ok.png)' % gone, '![Unknown](task/999/mock/ok.png)',
-                 '![Zero](task/02/mock/ok.png)']
+        links = ['![Mock](task/%d/mock/ok.png)' % live, '![Up](task/%d/../beside.png)' % live, '![Link](task/%d/mock/link.png)' % live, '![Private](task/%d/.env.png)' % live,
+                 '![Notes](task/%d/mock/notes.png)' % live, '![Closed](task/%d/mock/ok.png)' % gone, '![Unknown](task/999/mock/ok.png)',
+                 '![Zero](task/0%d/mock/ok.png)' % live]
         posted = subprocess.run([str(wsx), 'task', 'post', '-p', 'demo'], input='Mockups:\n\n' + '\n\n'.join(links), env=env, cwd=project,
                                 capture_output=True, text=True, timeout=60)
         assert posted.returncode == 0, (posted.stdout, posted.stderr)
         row = wait(lambda: next((r for r in steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]['rows'] if r['text'].startswith('Mockups:')), None), 'the mockups row')
-        assert [file['src'] for file in row.get('attachments', [])] == ['task/2/mock/ok.png'], row
+        assert [file['src'] for file in row.get('attachments', [])] == ['task/%d/mock/ok.png' % live], row
         assert owner.request('GET', '/' + row['attachments'][0]['url'])[1] == mock
+        js('task', 'close', live, '--discard', '-p', 'demo')
         ok('a task picture: task/<n>/<path> of an open task is granted and served; off the copy, a symlink out, a private name, a non-picture, a closed, an unknown task and a leading zero are not')
         # --- The usage limit holds the manager (docs/tasks.md "Manager"): the turn that met the limit
         # keeps its bubble; a message sent meanwhile has not been taken into a turn, so its row is
