@@ -45,7 +45,7 @@ function homeOrder(projects, tasks, viewing) {
 
 // Home's folders (`chat.folder`, wsx-core `chats_home::sections`, the owner's, set in the ⋯ menu): the
 // rows of `homeOrder` split by folder, a folder where its first row is, so folders go by their newest
-// row and each keeps its rows' order; the rows of no folder come last under no heading.
+// row and each keeps its rows' order; the rows of no folder come last (a null name, headed "No folder" once a folder exists).
 function folderSections(rows) {
   const sections = [];
   for (const row of rows) {
@@ -141,10 +141,10 @@ function ChatRow({ row, current, now, onDismiss, onFolder }) {
 
 // A folder's heading: a fold button. A folded folder shows a dot while one of its chats has an unread
 // message or something for the owner (a need or a To check item), as the For you row counts them.
-function FolderHead({ name, folded, dot, onFold }) {
+function FolderHead({ id, name, folded, dot, onFold }) {
   return html`
-    <li class="row folder-head" data-key=${`folder/${name}`}>
-      <button class="folder-toggle" type="button" aria-expanded=${!folded} onClick=${() => onFold(name)}>
+    <li class="row folder-head" data-key=${`folder/${id}`}>
+      <button class="folder-toggle" type="button" aria-expanded=${!folded} onClick=${() => onFold(id)}>
         <${Icon} name="chevron" /><span class="folder-name">${name}</span>
         ${folded && dot ? html`<span class="news-mark" role="img" aria-label="Unread or waiting for you"></span>` : null}
       </button>
@@ -156,14 +156,15 @@ function FolderHead({ name, folded, dot, onFold }) {
 function FolderSheet({ row, folders, onPick, onClose }) {
   const dialog = useRef();
   const [name, setName] = useState("");
-  useEffect(() => { dialog.current.showModal(); }, []);
+  // ^ The sheet takes the focus itself, not its first option: a ring shows only once Tab moves into the list.
+  useEffect(() => { dialog.current.showModal(); dialog.current.focus(); }, []);
   const pick = (folder) => { dialog.current.close(); onPick(row, folder); };
   const current = row.chat.folder ?? null;
   const option = (folder, text) => html`
     <li key=${folder ?? ""}><button class="folder-option" type="button" role="menuitemradio" aria-checked=${current === folder} onClick=${() => pick(folder)}>
       <span class="folder-tick">${current === folder ? html`<${Icon} name="pass" />` : null}</span>${text}</button></li>`;
   return html`
-    <dialog class="sheet" ref=${dialog} aria-labelledby="folder-title" onClose=${onClose}>
+    <dialog class="sheet" tabindex="-1" ref=${dialog} aria-labelledby="folder-title" onClose=${onClose}>
       <h2 class="sheet-title" id="folder-title">${row.home ? row.project.name : row.chat.shown}</h2>
       <ul class="folder-options" role="menu" aria-label="Folder">
         ${folders.map((folder) => option(folder, folder))}
@@ -347,12 +348,14 @@ export function Home({ rail }) {
       const chatRow = (row) => html`<${ChatRow} key=${`${row.project.id}/${row.chat.name}`} row=${row} now=${now} onDismiss=${dismiss} onFolder=${setMoving}
         current=${rail && open === row.project.id && (inChat ?? row.overview.home_chat) === row.chat.name} />`;
       const sections = folderSections(rows);
+      // ^ The chats of no folder get a heading of their own once a folder exists, folded like any folder (its id is "").
+      const headed = sections.some((section) => section.name);
       body = html`
         <ul class="rows home-rows" aria-label="Chats" ref=${list}>
           ${forYou && html`<${ForYouRow} chats=${forYou} />`}
-          ${sections.map(({ name, rows: inside }) => (name
-            ? [html`<${FolderHead} key=${`folder/${name}`} name=${name} folded=${Boolean(folded[name])} dot=${inside.some(waiting)} onFold=${fold} />`,
-              ...(folded[name] ? [] : inside.map(chatRow))]
+          ${sections.map(({ name, rows: inside }) => (headed
+            ? [html`<${FolderHead} key=${`folder/${name ?? ""}`} id=${name ?? ""} name=${name ?? "No folder"} folded=${Boolean(folded[name ?? ""])} dot=${inside.some(waiting)} onFold=${fold} />`,
+              ...(folded[name ?? ""] ? [] : inside.map(chatRow))]
             : inside.map(chatRow)))}
         </ul>
         ${moving && html`<${FolderSheet} row=${moving} folders=${sections.filter((section) => section.name).map((section) => section.name)} onPick=${moveTo} onClose=${() => setMoving(null)} />`}`;

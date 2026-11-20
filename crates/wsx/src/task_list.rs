@@ -780,10 +780,11 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         .iter()
         .partition(|chat| chat["listed"].as_bool().unwrap_or(true));
     // ^ The owner's folders (set on the web's Home) are headings of their own: a folder where its
-    // first chat is, the chats of no folder last under none (wsx-core `chats_home::sections`).
+    // first chat is, the chats of no folder last under "No folder" once a folder exists (wsx-core `chats_home::sections`).
     let listed = wsx_core::task::chats_home::sections(listed, |chat| {
         chat["folder"].as_str().map(str::to_string)
     });
+    let headed = listed.iter().any(|section| section.name.is_some());
     let dismissed =
         (!dismissed.is_empty()).then(|| TaskRow::note(format!("+{} dismissed", dismissed.len())));
     // ^ The For you list is one row here: "N wait for you" opens it. A task that needs the owner
@@ -819,6 +820,7 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
                 .flat_map(|section| {
                     section
                         .name
+                        .or_else(|| headed.then(|| "No folder".to_string()))
                         .map(|name| TaskRow::note(format!("▾ {name}")))
                         .into_iter()
                         .chain(section.items.into_iter().flat_map(|found| {

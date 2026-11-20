@@ -101,10 +101,12 @@ const shot = shooter(cdp, { captures, prefix: "tasks-", size: () => size, fileOf
 // `longName` sets the name to a long text first; the page is reloaded by the caller afterwards.
 const homeHead = (row, longName = false) => evaluate(`(() => { const row = ${row}, head = row.querySelector('.row-head'), label = row.querySelector('.row-label'), box = (node) => node.getBoundingClientRect();
   if (${longName}) label.textContent = 'a very long name that does not fit on one line of a phone row and so is cut';
-  const trays = head.querySelector('.trays'), time = head.querySelector('.time'), edge = box(head).right, group = [trays, time].filter(Boolean);
-  return { cut: label.scrollWidth > label.clientWidth, trays: !!trays, time: !!time, edgeGap: group.length ? Math.round(edge - box(group.at(-1)).right) : null,
+  // ^ The head keeps the room of the row's ⋯ on the right (padding), the same on every row: the group ends where that room starts, and the ⋯ is on this line after it.
+  const trays = head.querySelector('.trays'), time = head.querySelector('.time'), edge = box(head).right - parseFloat(getComputedStyle(head).paddingRight), group = [trays, time].filter(Boolean);
+  const more = row.querySelector('.row-more')?.getBoundingClientRect(), moreOnLine = !more || (more.left + more.width / 2 > edge && more.top + more.height / 2 > box(head).top && more.top + more.height / 2 < box(head).bottom);
+  return { cut: label.scrollWidth > label.clientWidth, trays: !!trays, time: !!time, moreOnLine, edgeGap: group.length ? Math.round(edge - box(group.at(-1)).right) : null,
     between: trays && time ? Math.round(box(time).left - box(trays).right) : null, nameClear: group.length ? box(label).right <= box(group[0]).left + 1 : true }; })()`);
-const homeHeadFault = (look, longName) => look.edgeGap !== 0 || !look.nameClear || (look.between !== null && Math.abs(look.between - 8) > 1) || (longName && !look.cut) ? JSON.stringify(look) : "";
+const homeHeadFault = (look, longName) => look.edgeGap !== 0 || !look.moreOnLine || !look.nameClear || (look.between !== null && Math.abs(look.between - 8) > 1) || (longName && !look.cut) ? JSON.stringify(look) : "";
 
 // Every working state on screen has the one working color (--color-working in app.css): marks,
 // pulses, typing dots and words. `least` is how many working elements this screen must show.
@@ -3867,9 +3869,9 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
     await evaluate("document.querySelector('dialog[open] .folder-new').requestSubmit()");
     await until(`(async () => (await fetch('api/tasks/${project}').then((r) => r.json())).chats.find((chat) => chat.name === 'billing')?.folder === 'Work')()`, "the new folder was not set");
     await until(`!!(${billing}) && !document.querySelector('dialog[open]') && ${rowsNow}.findIndex((row) => row.classList.contains('folder-head')) === ${rowsNow}.indexOf(${billing}) - 1`, "billing is not under its folder's heading", 30);
-    // ^ The folder's rows first, the chats of no folder after them under no heading; the For you row stays on top.
+    // ^ The folder's rows first, the chats of no folder after them under their own heading, No folder; the For you row stays on top.
     const order = await sections();
-    if (!/^(For you,)?#Work,billing,/.test(order) || order.split(",").filter((word) => word.startsWith("#")).length !== 1) await fail(`Home reads ${order} with one folder`);
+    if (!/^(For you,)?#Work,billing,#No folder,/.test(order) || order.split(",").filter((word) => word.startsWith("#")).length !== 2) await fail(`Home reads ${order} with one folder`);
     await reloadHome();
     if (!(await sections()).includes("#Work,billing")) await fail(`a reload lost the folder section: ${await sections()}`);
     for (const next of [[390, 844, 2], [1280, 800, 1]]) {
