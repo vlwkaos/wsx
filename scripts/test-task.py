@@ -2880,10 +2880,7 @@ def part_core(created=None):
     # ^ Warm and small, with other instructions: the same conversation, the new ones as a message.
     rotations = len([e for e in manager_entries() if e['kind'] == 'rotated'])
     edit_state(instructions='stale-digest')
-    try:
-        warm_message = js('task', 'say', 'WARM CHANGE')
-    except AssertionError:
-        raise AssertionError('WARM CHANGE refused; chat tail: %s; hosts: %s' % (manager_entries()[-8:], leftovers('task chat-host ')))
+    warm_message = js('task', 'say', 'WARM CHANGE')
     reply_to(warm_message['id'])
     warm_launch = [t for t in traces() if t.get('launch') and t.get('manager')][-1]
     assert warm_launch['resume'], warm_launch

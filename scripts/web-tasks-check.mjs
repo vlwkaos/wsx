@@ -681,10 +681,11 @@ const plansView = await evaluate(`fetch('api/tasks/${plansArg}').then((r) => r.j
 if (plansRow?.status !== "#1 Waiting for your answer" || plansView.needs !== 2 || plansRow.count !== String(plansView.needs + plansView.asks + plansView.check)) await fail(`the plans row reads ${JSON.stringify([plansRow, plansView])}`);
 // Projects with agent sessions and no task: the row says only what the project has, never what
 // its agent sessions do (a session left in an error would pin its words on the row for good).
-// `busy` (working), `quiet` (done) and `gone` (exited, and one in an error) have no task: "No tasks yet", no count; each chat shows its age.
-for (const name of ["busy", "quiet", "gone"]) {
+// `busy` (working), `quiet` (done) and `gone` (exited, and one in an error) have no task and no count; each chat shows its age.
+// ^ The repo service posts a session that ended to its chat, so gone's row says that line; the two others have nothing to say.
+for (const [name, status] of [["busy", "No tasks yet"], ["quiet", "No tasks yet"], ["gone", "ended in an error"]]) {
   const row = homeRows.find((item) => item.name === name);
-  if (row?.status !== "No tasks yet" || row.count || !/ago|now/.test(row.state)) await fail(`the ${name} row reads ${JSON.stringify(row)}, not "No tasks yet" with its age`);
+  if (!row?.status.endsWith(status) || row.count || !/ago|now/.test(row.state)) await fail(`the ${name} row reads ${JSON.stringify(row)}, not ${JSON.stringify(status)} with its age`);
 }
 await tabsInView();
 await oneWorkingColor("home", 0);
