@@ -3194,6 +3194,7 @@ def part_core(created=None):
     assert re.search(r'img +#%d +passed' % shot, everything) and re.search(r'vid +#%d +removed' % video, everything), everything
     assert 'img ' in only_images and 'vid ' not in only_images, only_images
     assert 'vid ' in only_videos and 'img ' not in only_videos, only_videos
+    assert '(t/T)thread' not in listed[12] and '(i)message' in listed[12], listed[12]
     tasks_shown = set(re.findall(r'(?m)(?:img|vid) +(\S+)', one_task)) - {'-'}
     assert len(tasks_shown) == 1 and re.search(r'(?m)(?:img|vid) +#\d+ ', one_task), one_task
     # ^ The terminal output sets a colour only when it changes, so a bar after the heading in the same colour has

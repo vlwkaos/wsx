@@ -636,7 +636,7 @@ impl App {
             .collect();
         let mut list =
             crate::task_list::TaskList::new(project.name.clone(), project.path.clone(), all);
-        list.open_chat(None, None);
+        list.open_chat(None);
         if let Some(chat) = &mut list.chat {
             chat.go_to(id);
         }

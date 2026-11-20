@@ -27,8 +27,7 @@ use wsx_core::task::{
     media::{self, Kind},
     owner,
     store::{self, ManagerDir, Stamp},
-    thread::{self, Listed},
-    view,
+    thread, view,
 };
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(1);
@@ -286,8 +285,6 @@ struct View {
     activity: Option<String>,
     /// The agent in use, as `view::agent_label` writes it.
     agent: Option<String>,
-    /// The chat's open threads in the order of `thread::list`.
-    threads: Vec<Listed>,
 }
 
 /// A check's answer: the host's status, and the store read again when a stamp changed.
@@ -296,8 +293,6 @@ struct Read {
     searched: String,
     /// The message the view was read around (`ManagerChat::around`).
     around: Option<u64>,
-    /// The thread the view was read for (`ManagerChat::thread`).
-    thread: Option<String>,
     status: Option<ManagerResponse>,
     view: Option<(Stamp, Result<View, String>)>,
 }
@@ -318,10 +313,6 @@ pub struct ManagerChat {
     pub busy: bool,
     pub activity: Option<String>,
     pub agent: Option<String>,
-    /// The open threads (`thread::list`) and the slug of the one shown; none shows the chat's own
-    /// rows. Sent messages are written in the one shown.
-    pub threads: Vec<Listed>,
-    pub thread: Option<String>,
     pub error: Option<String>,
     /// What the last message or decision answered; a failure stays until the next one.
     pub notice: Option<(String, bool)>,
@@ -411,8 +402,6 @@ impl ManagerChat {
             busy: false,
             activity: None,
             agent: None,
-            threads: Vec::new(),
-            thread: None,
             error: None,
             notice: None,
             scroll: 0,
@@ -447,7 +436,7 @@ impl ManagerChat {
     fn check(&mut self) {
         let (tx, rx) = mpsc::sync_channel(1);
         let (store, last, chat) = (self.store.clone(), self.stamp.clone(), self.chat.clone());
-        let (searched, around, thread) = (self.searched.clone(), self.around, self.thread.clone());
+        let (searched, around) = (self.searched.clone(), self.around);
         let (main, project) = (self.main.clone(), self.project.clone());
         self.pending = Some(rx);
         self.last_check = Instant::now();
@@ -465,20 +454,13 @@ impl ManagerChat {
             });
             let now = store::stamp(&store);
             let view = (last.as_ref() != Some(&now)).then(|| {
-                let view = read(
-                    &project,
-                    &store,
-                    &main,
-                    dir.as_ref(),
-                    (&searched, around, thread.as_deref()),
-                )
-                .map_err(|error| format!("{error:#}"));
+                let view = read(&project, &store, &main, dir.as_ref(), (&searched, around))
+                    .map_err(|error| format!("{error:#}"));
                 (now, view)
             });
             let _ = tx.send(Read {
                 searched,
                 around,
-                thread,
                 status,
                 view,
             });
@@ -554,20 +536,9 @@ impl ManagerChat {
                 }
                 self.activity = view.activity;
                 self.agent = view.agent;
-                self.threads = view.threads;
-                // ^ A thread that closed or merged is no more: the chat's own rows show.
-                if self
-                    .thread
-                    .as_ref()
-                    .is_some_and(|slug| !self.threads.iter().any(|found| &found.slug == slug))
-                {
-                    self.thread = None;
-                }
-                // ^ A read for another find or thread: read again.
-                self.stamp = (read.searched == self.searched
-                    && read.around == self.around
-                    && read.thread == self.thread)
-                    .then_some(stamp);
+                // ^ A read for another find: read again.
+                self.stamp =
+                    (read.searched == self.searched && read.around == self.around).then_some(stamp);
                 self.loaded = true;
                 self.error = None;
                 changed = true;
@@ -635,7 +606,7 @@ impl ManagerChat {
         self.newest();
         self.composer = InputState::new("> ");
         self.scroll = 0;
-        let (chat, thread) = (self.chat.clone(), self.thread.clone());
+        let chat = self.chat.clone();
         self.run("Sending".into(), move |project, main, _| {
             let said = std::env::current_exe()
                 .map_err(anyhow::Error::from)
@@ -649,7 +620,7 @@ impl ManagerChat {
                         text.clone(),
                         None,
                         Vec::new(),
-                        thread,
+                        None,
                     )
                 });
             match said {
@@ -739,7 +710,7 @@ fn read(
     store: &str,
     main: &Path,
     dir: Option<&ManagerDir>,
-    (searched, around, thread): (&str, Option<u64>, Option<&str>),
+    (searched, around): (&str, Option<u64>),
 ) -> anyhow::Result<View> {
     let window = Window::new(Some(searched), None, around);
     let settings = load_task_config(main).unwrap_or_default();
@@ -754,7 +725,7 @@ fn read(
         (project, store),
         &settings,
         &window,
-        thread::Scope::of(Some(thread.unwrap_or(""))),
+        thread::Scope::All,
         |_| {},
     )?;
     let shown = settings.manager_shown_name(project);
@@ -791,12 +762,7 @@ fn read(
         key: format!("ask-{}", ask.id),
         quote: ask.quote,
     }));
-    let threads = match dir {
-        Some(dir) => thread::list(dir, settings.land_auto)?,
-        None => Vec::new(),
-    };
     Ok(View {
-        threads,
         rows,
         name,
         items,
@@ -879,8 +845,6 @@ impl ManagerChat {
             (Action::InputEscape, _) => return false,
             (Action::InputChar('/'), _) => self.open_find(),
             (Action::InputChar('m'), _) => self.open_media(),
-            (Action::InputChar('t'), _) => self.step_thread(1),
-            (Action::InputChar('T'), _) => self.step_thread(-1),
             (Action::InputChar('['), _) => self.step_link(-1),
             (Action::InputChar(']'), _) => self.step_link(1),
             (Action::Select, _) if self.link.is_some() => self.open_link(),
@@ -918,21 +882,6 @@ impl ManagerChat {
             _ => {}
         }
         true
-    }
-
-    /// Show the next thread toward `delta`: the chat's own rows, then each open thread in the order
-    /// of `thread::list`, then the chat again.
-    fn step_thread(&mut self, delta: isize) {
-        let at = self
-            .thread
-            .as_ref()
-            .and_then(|slug| self.threads.iter().position(|found| &found.slug == slug));
-        // ^ Positions 0 is the chat, n the nth thread.
-        let count = self.threads.len() as isize + 1;
-        let to = (at.map_or(0, |at| at as isize + 1) + delta).rem_euclid(count) as usize;
-        self.thread = to.checked_sub(1).map(|at| self.threads[at].slug.clone());
-        self.scroll = 0;
-        self.read_again();
     }
 
     /// Select the next link toward `delta` (-1 older, 1 newer), from none the newest, and show it.

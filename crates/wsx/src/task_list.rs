@@ -74,8 +74,6 @@ pub struct TaskRow {
     pub title: String,
     /// A chat's id; empty for a task.
     pub chat: String,
-    /// The slug of a thread's row under its chat (`chat` names the chat); empty otherwise.
-    pub thread: String,
     pub state: String,
     /// The status label (wsx-core `task::status`), or a chat's goal; empty when nothing.
     pub status: String,
@@ -97,7 +95,6 @@ impl TaskRow {
             id: 0,
             title,
             chat: String::new(),
-            thread: String::new(),
             state: String::new(),
             status: String::new(),
             counts: Default::default(),
@@ -282,10 +279,9 @@ impl TaskList {
     }
 
     /// Open the manager's chat, or another's (docs/tasks.md "Chats").
-    pub fn open_chat(&mut self, chat: Option<String>, thread: Option<String>) {
-        let mut open =
+    pub fn open_chat(&mut self, chat: Option<String>) {
+        let open =
             crate::task_chat::ManagerChat::new(self.project.clone(), self.main.clone(), chat);
-        open.thread = thread;
         self.chat = Some(Box::new(open));
     }
 
@@ -309,7 +305,7 @@ impl TaskList {
             crate::task_new_chat::Outcome::Cancel => self.new_chat = None,
             crate::task_new_chat::Outcome::Done(chat) => {
                 self.new_chat = None;
-                self.open_chat(Some(chat), None);
+                self.open_chat(Some(chat));
                 self.stamp = None;
             }
         }
@@ -330,32 +326,16 @@ impl TaskList {
             .map(|row| row.chat.as_str())
     }
 
-    /// The selected row's thread, which `Enter` opens in its chat.
-    pub fn selected_thread(&self) -> Option<&str> {
-        self.rows
-            .get(self.selected)
-            .map(|row| row.thread.as_str())
-            .filter(|slug| !slug.is_empty())
-    }
-
-    /// The selected row's chat when it can be closed: the home chat cannot (`chats::close`), and a
-    /// thread's row is not a chat's.
+    /// The selected row's chat when it can be closed: the home chat cannot (`chats::close`).
     pub fn closable_chat(&self) -> Option<&str> {
-        self.selected_chat().filter(|_| {
-            self.rows
-                .get(self.selected)
-                .is_some_and(|row| !row.home && row.thread.is_empty())
-        })
+        self.selected_chat()
+            .filter(|_| self.rows.get(self.selected).is_some_and(|row| !row.home))
     }
 
     /// `x` on a chat row: its row leaves the list (`chats_home::dismiss`); the chat, its project
     /// and its tasks go on, and a new message brings the row back. The web's Dismiss.
     pub fn dismiss_chat(&mut self) {
-        let Some(name) = self
-            .selected_chat()
-            .filter(|_| self.selected_thread().is_none())
-            .map(str::to_string)
-        else {
+        let Some(name) = self.selected_chat().map(str::to_string) else {
             return;
         };
         self.notice = Some(
@@ -412,15 +392,12 @@ impl TaskList {
     /// `Enter`: an open chat, else a task's detail.
     pub fn open_selected(&mut self) {
         match (self.selected_chat(), self.rows.get(self.selected)) {
-            (Some(chat), _) => {
-                let thread = self.selected_thread().map(str::to_string);
-                self.open_chat(Some(chat.to_string()), thread);
-            }
+            (Some(chat), _) => self.open_chat(Some(chat.to_string())),
             (None, Some(row)) if row.section == Section::Entry => self.set_you(true),
             // ^ A For you item opens its place: a task's detail, else the chat that holds it.
             (None, Some(row)) if row.section == Section::You && row.id == 0 => {
                 let chat = row.chat.clone();
-                self.open_chat(Some(chat), None);
+                self.open_chat(Some(chat));
             }
             (None, Some(row)) if row.section != Section::Chats => self.open_detail(),
             _ => {}
@@ -647,7 +624,7 @@ impl TaskList {
             }
             Action::NextActive => {
                 if actions.contains(&"answer") {
-                    self.open_chat(None, None);
+                    self.open_chat(None);
                     if let Some(chat) = &mut self.chat {
                         chat.mention(id);
                     }
@@ -717,7 +694,6 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
     let row = |task: &Value, section| TaskRow {
         id: task["id"].as_u64().unwrap_or_default(),
         chat: String::new(),
-        thread: String::new(),
         title: task["title"].as_str().unwrap_or_default().to_string(),
         state: state_word(task),
         // ^ The words of wsx-core `task::status` (docs/tasks.md "Status").
@@ -745,7 +721,6 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         id: 0,
         title: chat["shown"].as_str().unwrap_or_default().to_string(),
         chat: chat["name"].as_str().unwrap_or_default().to_string(),
-        thread: String::new(),
         state: chat["state"].as_str().unwrap_or_default().to_string(),
         // ^ The chat's own model first, as the room's heading shows it.
         status: [
@@ -794,7 +769,6 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         id: 0,
         title: format!("{} wait for you", you.len()),
         chat: String::new(),
-        thread: String::new(),
         state: String::new(),
         status: String::new(),
         counts: Default::default(),
@@ -823,37 +797,18 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
                         .or_else(|| headed.then(|| "No folder".to_string()))
                         .map(|name| TaskRow::note(format!("▾ {name}")))
                         .into_iter()
-                        .chain(section.items.into_iter().flat_map(|found| {
-                            std::iter::once(chat(found)).chain(thread_rows(found))
-                        }))
+                        .chain(
+                            section
+                                .items
+                                .into_iter()
+                                .flat_map(|found| std::iter::once(chat(found))),
+                        )
                         .collect::<Vec<_>>()
                 })
                 .chain(dismissed),
         )
         .chain(list("recent").iter().map(|task| row(task, Section::Recent)))
         .collect()
-}
-
-/// The rows of a chat's open threads, in the order of `thread::list` (`threads` of the ledger's
-/// chat row), each under its chat with its waiting words.
-fn thread_rows(chat: &Value) -> impl Iterator<Item = TaskRow> + '_ {
-    chat["threads"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|found| TaskRow {
-            id: 0,
-            title: found["title"].as_str().unwrap_or_default().to_string(),
-            chat: chat["name"].as_str().unwrap_or_default().to_string(),
-            thread: found["slug"].as_str().unwrap_or_default().to_string(),
-            state: "open".into(),
-            status: found["waits"].as_str().unwrap_or_default().to_string(),
-            counts: serde_json::from_value(found["counts"].clone()).unwrap_or_default(),
-            section: Section::Chats,
-            home: false,
-            root: 0,
-            depth: 0,
-        })
 }
 
 /// The For you list (`ledger.for_you`, wsx-core `needs::for_you`): the items that wait for the
@@ -873,7 +828,6 @@ pub fn rows_you(ledger: &Value) -> Vec<TaskRow> {
                 id: task,
                 title: item["label"].as_str().unwrap_or_default().to_string(),
                 chat: item["chat"].as_str().unwrap_or_default().to_string(),
-                thread: String::new(),
                 state: kind.to_string(),
                 status: item["chat"].as_str().unwrap_or_default().to_string(),
                 counts: Default::default(),

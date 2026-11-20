@@ -395,8 +395,6 @@ fn task_lines(
                 "  ".repeat(usize::from(row.depth) - 1),
                 if last { "└" } else { "├" }
             ),
-            // ^ A thread's row sits under its chat's.
-            (Section::Chats, _) if !row.thread.is_empty() => "  └ ".to_string(),
             _ => String::new(),
         };
         // ^ A chat's pill counts follow its name, inside the title's width.

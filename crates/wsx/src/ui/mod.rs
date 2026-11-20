@@ -803,7 +803,7 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
             if list.closable_chat().is_some() {
                 hints.push("(d)close chat".into());
             }
-            if list.selected_chat().is_some() && list.selected_thread().is_none() {
+            if list.selected_chat().is_some() {
                 hints.push("(x)dismiss".into());
             }
             hints.extend(["(S)hell".into(), "Esc: close".into(), "(?)help".into()]);
