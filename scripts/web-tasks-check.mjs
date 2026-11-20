@@ -19,7 +19,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { designLint, fingerPath, jumps, launch, mobileAudit, pair, pause, requestRates, shooter, soundCheck, thumbArc, watchFetch } from "./web-cdp.mjs";
+import { designLint, fingerPath, jumps, launch, mobileAudit, pair, pause, requestRates, animationsEnded, shooter, soundCheck, thumbArc, watchFetch } from "./web-cdp.mjs";
 
 // ^ One `phase <seconds> s <name>` line on stderr for each `// ---` part below, which the scenario prints: where the check's time goes.
 let phaseAt = Date.now();
@@ -227,7 +227,7 @@ async function oneMotion(where, open) {
   }
 }
 // ^ A shot of a bubble or a row still fading in shows it dim.
-const entered = () => until("document.getAnimations().every((animation) => animation.effect?.getTiming().iterations === Infinity || animation.playState !== 'running')", "the page kept moving");
+const entered = () => animationsEnded(until);
 // The manager's composer holds `value`, focused, the caret at its end and no `#` list open.
 const composerHas = (value, what) => until(`(() => { const field = document.querySelector('.composer-field');
   return field.value === ${JSON.stringify(value)} && document.activeElement === field && field.selectionStart === field.value.length

@@ -188,13 +188,18 @@ export function soundCheck({ evaluate, fail }, size, { free, apart, settle }) {
   };
 }
 
+// Waits until no finite animation is running or about to start (an infinite one, a spinner or the typing dots, stays):
+// a row or a count that pops in is at low opacity until it ends, and a capture or a lint would read it dim.
+export const animationsEnded = (until) => until("document.getAnimations().every((animation) => animation.effect?.getTiming().iterations === Infinity || (animation.playState !== 'running' && animation.playState !== 'pending'))", "the page kept moving");
+
 // One capture with its audits. At most one filled accent control, no sideways scroll, no zooming
 // field, and no other field in the way of the composer's iOS arrows. `size()` is the viewport as
 // [width, height]; `fileOf(name)` is the capture's name; `before(name)` runs first; `record(file,
 // mobile)` gets the mobile audit (null off a phone); `linted` is the set of names that get the design lint.
-export function shooter({ evaluate, fail, capture }, { captures, prefix, size, fileOf, linter, linted, auditSource, mobileSource, before, record }) {
+export function shooter({ evaluate, until, fail, capture }, { captures, prefix, size, fileOf, linter, linted, auditSource, mobileSource, before, record }) {
   return async (name, primary) => {
     await before?.(name);
+    await animationsEnded(until);
     const label = `${name} at ${size()[0]}x${size()[1]}`;
     const file = fileOf(name);
     let mobile = null;
