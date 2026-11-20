@@ -168,8 +168,9 @@ fn free_name(base: &str) -> String {
         .expect("a free chat name")
 }
 
-/// The one ownership rule: a task (`created_by`) or an approval request (`chat`) made by an
-/// open chat belongs to that chat; every other one, also one of a closed chat, belongs to the
+/// The one ownership rule: a task (`TaskRecord::owner_chat`: the chat it moved to, else its
+/// maker) or an approval request (`chat`) of an open chat belongs to that chat; every other one,
+/// also one of a closed chat, belongs to the
 /// repo's home chat (`home`). The chat hears the task's events and the request's decision, and
 /// its view shows the request and the task's To check items.
 pub fn owner<'a>(made_by: Option<&'a str>, open: &[String], home: &'a str) -> &'a str {
@@ -243,10 +244,9 @@ pub fn checks_of(project_id: &str, items: Vec<CheckItem>, viewer: &Viewer) -> Ve
     items
         .into_iter()
         .filter(|item| {
-            let made_by = store::TaskDir::open(project_id, item.task)
-                .and_then(|dir| dir.read_record())
-                .map(|record| record.created_by);
-            viewer.owns(made_by.as_ref().ok().and_then(|by| by.chat()))
+            let record =
+                store::TaskDir::open(project_id, item.task).and_then(|dir| dir.read_record());
+            viewer.owns(record.as_ref().ok().and_then(|record| record.owner_chat()))
         })
         .collect()
 }
@@ -562,7 +562,7 @@ fn hand_back(dir: &ManagerDir) -> String {
                 .read_record()
                 .ok()
         })
-        .filter(|record| record.created_by.chat() == Some(dir.name()) && record.state.is_open())
+        .filter(|record| record.owner_chat() == Some(dir.name()) && record.state.is_open())
         .map(|record| {
             format!(
                 "#{} {} ({})",

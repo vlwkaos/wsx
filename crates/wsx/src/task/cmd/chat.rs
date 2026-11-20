@@ -444,7 +444,7 @@ fn lifecycle(command: &str, project: Option<&str>, said: Option<u64>) -> Result<
 }
 
 /// The open chat `name`, which must run in the repo `project_id`.
-fn chat_of_repo(name: &str, project_id: &str) -> Result<ManagerDir> {
+pub(super) fn chat_of_repo(name: &str, project_id: &str) -> Result<ManagerDir> {
     match chats::open_chat(name)? {
         dir if dir.project_id == project_id => Ok(dir),
         _ => bail!("chat {name} runs in another project"),

@@ -110,6 +110,10 @@ pub fn line(event: &LogEvent) -> Option<(&'static str, String)> {
                 false => "kept".into(),
             },
         ),
+        LogEvent::Moved { chat, by } => (
+            "moved",
+            format!("moved to chat {chat} by {}", String::from(by.clone())),
+        ),
         LogEvent::Stopped { reason } => ("stopped", format!("stopped: {reason}")),
         LogEvent::LandStopped { reason } => ("stopped", format!("land stopped: {reason}")),
         _ => return None,

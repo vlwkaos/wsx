@@ -41,8 +41,8 @@ use cmd::new::new;
 use cmd::project::project;
 use cmd::routine::{checkin, digest, post, routine_command};
 use cmd::work::{
-    add_command, close_command, hand, handback, list, preview_command, review, show, steer_command,
-    stop_command, why,
+    add_command, close_command, hand, handback, list, move_command, preview_command, review, show,
+    steer_command, stop_command, why,
 };
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -84,6 +84,7 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
         TaskCmd::Check { action } => check(action, project, json),
         TaskCmd::Land { task, tried, said } => land_command(task, tried, said, project, json),
         TaskCmd::LandBatch { tasks } => run_batch(project, &tasks),
+        TaskCmd::Move { task, chat } => move_command(&task, &chat, project, json),
         TaskCmd::Hold {
             task,
             reason,

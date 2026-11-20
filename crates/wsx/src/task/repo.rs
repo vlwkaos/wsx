@@ -563,7 +563,7 @@ impl Repo {
                 .map_or(0, |age| age.as_millis() as u64);
             let owns = tasks.iter().any(|(_, record)| {
                 record.as_ref().is_ok_and(|record| {
-                    record.state.is_open() && record.created_by.chat() == Some(name.as_str())
+                    record.state.is_open() && record.owner_chat() == Some(name.as_str())
                 })
             });
             if written < CHAT_IDLE_MS || owns {
@@ -1323,7 +1323,7 @@ impl Repo {
         line: String,
         short: Short,
     ) {
-        let owner = chats::owner(record.created_by.chat(), open_chats, "");
+        let owner = chats::owner(record.owner_chat(), open_chats, "");
         self.emit(owner, (line, short));
     }
 
@@ -1595,7 +1595,7 @@ impl Repo {
 /// Give chat `to` `lines` as one message from `author`, starting its host when it is not
 /// running. A chat of another repo hears the lines with this repo's name and no task chip,
 /// which would link into that repo's tasks. True when the chat took the message.
-fn say_chat(
+pub(super) fn say_chat(
     own: &str,
     project: &str,
     exe: &Path,

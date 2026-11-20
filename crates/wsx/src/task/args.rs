@@ -101,6 +101,14 @@ pub enum TaskCmd {
         #[command(flatten)]
         said: OwnerSaidAfter,
     },
+    /// Give tasks to another chat of the repo: its events, waits and To check items go there
+    Move {
+        #[arg(required = true, num_args = 1..)]
+        task: Vec<String>,
+        /// The open chat that owns them from now on
+        #[arg(long, value_name = "NAME")]
+        chat: String,
+    },
     /// Park a task until another lands, then add text to it; --off ends the wait
     After {
         task: String,
@@ -559,9 +567,11 @@ impl TaskCmd {
             Self::Post { .. } | Self::Digest { .. } | Self::Say { .. } => &[Notify],
             Self::CheckRun { .. } => &[Result],
             Self::After { .. } | Self::Hold { .. } => &[Backlog],
-            Self::Steer { .. } | Self::Add { .. } | Self::Stop { .. } | Self::Preview { .. } => {
-                &[Direct]
-            }
+            Self::Steer { .. }
+            | Self::Add { .. }
+            | Self::Stop { .. }
+            | Self::Move { .. }
+            | Self::Preview { .. } => &[Direct],
             Self::New(_) => &[CreateTask],
             Self::Close { discard: true, .. } => &[Discard],
             Self::Close { .. } => &[Close],
@@ -621,6 +631,7 @@ impl TaskCmd {
                 | Self::Hand { .. }
                 | Self::Handback { .. }
                 | Self::Manager
+                | Self::Move { .. }
                 | Self::Say { .. }
                 | Self::Approve { .. }
         )

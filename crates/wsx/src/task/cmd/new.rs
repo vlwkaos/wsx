@@ -404,6 +404,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         title,
         fixes,
         created_by: actor(),
+        moved_to: None,
         hold: hold.clone(),
         after: wait.clone(),
         parent: into,

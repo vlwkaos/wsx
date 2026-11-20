@@ -8353,6 +8353,33 @@ def part_chats(created=None):
     wait(lambda: events_with('routine chatproof failed (exit 3)'), 'the routine result at the home chat', 60)
     assert not any('chatproof' in e.get('text', '') for e in chat_entries('qa') if e['kind'] == 'message')
     js('task', 'routine', 'delete', 'chatproof', '-p', 'demo')
+    # Move (docs/tasks.md "Chats"): qa's ready task goes to the chat ui. Its next event, its place in the
+    # chat summaries and the log line follow it; `created_by` stays; only its owner chat's agent moves it.
+    def move_as(chat, *argv):
+        return subprocess.run([str(wsx), 'task', 'move', *argv, '-p', 'demo', '--json'], cwd=project,
+                              env={**env, 'WSX_TASK_ACTOR': 'chat:' + chat}, capture_output=True, text=True, timeout=60)
+
+    js('task', 'chat', 'new', 'ui', '--goal', str(qa_goal))
+    assert 'no open chat nosuch' in cli('task', 'move', qa_task, '--chat', 'nosuch', ok=False).stderr
+    assert js('task', 'move', qa_task, '--chat', 'ui')['moved'] == [qa_task]
+    moved = show(qa_task)['record']
+    assert moved['moved_to'] == 'ui' and moved['created_by'] == 'chat:qa', moved
+    for chat in ('qa', 'ui'):
+        wait(lambda: any(e['kind'] == 'message' and e['from'] == 'events' and '#%d moved to chat ui by owner' % qa_task in e['text']
+                         for e in chat_entries(chat)), '%s hears the move' % chat, 60)
+    assert js('task', 'move', qa_task, '--chat', 'ui')['moved'] == [], 'the owner chat already'
+    js('task', 'add', qa_task, 'WORK qa2.txt')
+    wait(lambda: any('#%d ready r2' % qa_task in e['text'] for e in chat_entries('ui') if e['kind'] == 'message'), 'ui hears the next event', 60)
+    assert not [e for e in chat_entries('qa') if e['kind'] == 'message' and 'ready r2' in e['text']]
+    for chat, line in (('ui', '- open: 1 ready;'), ('qa', '- open: none;')):
+        said = js('task', 'say', '--to', chat, 'STATUS')
+        chat_reply(chat, said['id'])
+        turn = next(t for t in traces() if 'Owner (message %d)' % said['id'] in str(t.get('message', '')))
+        assert line in turn['message'], (chat, turn['message'])
+    refused = move_as('qa', qa_task, '--chat', 'qa')
+    assert refused.returncode != 0 and 'not yours' in refused.stderr, refused
+    back = move_as('ui', qa_task, '--chat', 'qa')
+    assert back.returncode == 0 and show(qa_task)['record']['moved_to'] == 'qa', back
     # Rename: the owner's, a shown name only (docs/tasks.md "Chats"): the id, the folder and `say --to` stay;
     # the title rule is trimmed, one line, at most 40 characters; the home chat is named by its project; empty clears.
     assert "wsx task chat rename is for the owner" in reply_to(js('task', 'say', 'RUN wsx task chat rename qa "Checkout QA" -p demo --json')['id'])['text']
@@ -8381,13 +8408,19 @@ def part_chats(created=None):
     assert '#%d' % qa_task in handed[0]['text'] and 'smoke runs nightly' in handed[0]['text'], handed[0]['text']
     assert (chats_dir / 'qa/notes/decisions.md').exists()
     # ^ The closed chat's open task is the home chat's: its next event reaches the home chat.
-    js('task', 'add', qa_task, 'WORK qa2.txt')
-    wait(lambda: events_with('#%d ready r2' % qa_task), 'the closed chat task reaches the home chat', 60)
-    assert not [e for e in chat_entries('qa') if e['kind'] == 'message' and 'r2' in e['text']]
+    js('task', 'add', qa_task, 'WORK qa3.txt')
+    wait(lambda: events_with('#%d ready r3' % qa_task), 'the closed chat task reaches the home chat', 60)
+    assert not [e for e in chat_entries('qa') if e['kind'] == 'message' and 'r3' in e['text']]
     # The home chat is not closed; only the owner repoints it.
     assert 'home chat' in cli('task', 'chat', 'close', 'demo', ok=False).stderr
     assert 'chat home is for the owner' in reply_to(js('task', 'say', 'RUN wsx task chat home qa -p demo --json')['id'])['text']
     js('task', 'close', qa_task, '--discard')
+    # ^ A closed task has no host: the move writes its record and log, and a closed chat is refused.
+    js('task', 'move', qa_task, '--chat', 'ui')
+    assert show(qa_task)['record']['moved_to'] == 'ui'
+    assert [(e['chat'], e['by']) for e in log(qa_task) if e['kind'] == 'moved'][-1] == ('ui', 'owner')
+    js('task', 'chat', 'close', 'ui')
+    assert 'no open chat ui' in cli('task', 'move', qa_task, '--chat', 'ui', ok=False).stderr
 
     # 33s. Search (docs/tasks.md "Search"): a manager finds an old decision across projects, ranked,
     mark('33s')

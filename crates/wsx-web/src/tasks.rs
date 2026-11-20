@@ -239,7 +239,7 @@ fn build_overview(
     let pending = pending_approvals(&approvals);
     for (dir, record) in &tasks {
         let Ok(record) = record else { continue };
-        if !viewer.owns(record.created_by.chat()) {
+        if !viewer.owns(record.owner_chat()) {
             continue;
         }
         let title = view::readable_title(dir, record).unwrap_or_default();

@@ -50,7 +50,7 @@ pub enum Capability {
     Handoff,
     /// `new`.
     CreateTask,
-    /// `add`, `steer`, `stop`, `preview`: act on a task.
+    /// `add`, `steer`, `stop`, `move`, `preview`: act on a task.
     Direct,
     /// `close` without `--discard`.
     Close,

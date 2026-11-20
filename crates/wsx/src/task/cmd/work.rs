@@ -1,18 +1,23 @@
 //! The commands on one task: list, show, hand, close (docs/tasks.md).
 
 use super::approve::{after_landing, ask_covering, owner_only, request_of};
+use super::chat::chat_of_repo;
 use crate::cli::PromptSource;
 use crate::cli::{existing_daemon_snapshot, load_config};
 use crate::task::args::OwnerSaidAfter;
-use crate::task::{acting_as_manager, open, outward_said, send};
+use crate::task::manager::plain_event;
+use crate::task::repo::say_chat;
+use crate::task::{acting_as_manager, actor, open, outward_said, send};
 use crate::task::{ask_host_ok, print_json, project_entry};
 use crate::task::{preview, trial};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use std::path::Path;
 use std::time::{Duration, Instant};
+use wsx_core::task::chats;
 use wsx_core::task::checks::{self};
 use wsx_core::task::manager::ApprovalAction;
+use wsx_core::task::manager::Author;
 use wsx_core::task::owner::HOST_TIMEOUT;
 use wsx_core::task::status::Status;
 use wsx_core::task::view::{checked_files, checked_title, short_commit};
@@ -684,6 +689,84 @@ pub(crate) fn add_command(
 /// `wsx task stop`: interrupt the worker.
 pub(crate) fn stop_command(task: &str, project: Option<&str>, json: bool) -> Result<()> {
     send(&open(project, task)?, HostRequest::Stop, json)
+}
+
+/// `wsx task move`: the open chat `chat` of this repo owns the tasks from now on, open and landed
+/// alike (`TaskRecord::owner_chat`). A chat's agent moves only what it owns. Each chat that
+/// owned one and the new owner hear one event. ref: docs/tasks.md "Chats"
+pub(crate) fn move_command(
+    tasks: &[String],
+    chat: &str,
+    project: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let (name, main) = project_entry(project)?;
+    let project_id = store::project_id(&name, &main);
+    chat_of_repo(chat, &project_id)?;
+    let by = actor();
+    let viewer = chats::Viewer::new(&project_id, by.chat());
+    let mut moves = Vec::new();
+    for task in tasks {
+        let dir = open(project, task)?;
+        let record = dir.read_record()?;
+        let from = chats::owner(record.owner_chat(), viewer.open(), viewer.home()).to_string();
+        if by.chat().is_some() && from != viewer.name() {
+            bail!(
+                "task t{} is chat {from}'s, not yours; nothing was moved",
+                dir.id
+            );
+        }
+        if from != chat {
+            moves.push((dir, record, from));
+        }
+    }
+    for (dir, record, _) in &mut moves {
+        // ^ A running host is the writer of the record; with none, write it here.
+        let request = HostRequest::Move {
+            chat: chat.into(),
+            by: by.clone(),
+        };
+        match call_host(&dir.socket_path(), &request, HOST_TIMEOUT) {
+            Ok(response) if !response.ok => bail!("task t{}: {}", dir.id, response.message),
+            Ok(_) => {}
+            Err(_) => {
+                record.moved_to = Some(chat.into());
+                record.updated_unix_ms = now_unix_ms();
+                dir.write_record(record)?;
+                dir.append(LogEvent::Moved {
+                    chat: chat.into(),
+                    by: by.clone(),
+                })?;
+            }
+        }
+    }
+    let ids: Vec<u32> = moves.iter().map(|(dir, ..)| dir.id).collect();
+    if json {
+        print_json(&json!({ "moved": ids, "chat": chat }))?;
+    } else {
+        println!("moved {} task(s) to chat {chat}", ids.len());
+    }
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let numbers: Vec<String> = ids.iter().map(|id| format!("#{id}")).collect();
+    let line = format!(
+        "{} moved to chat {chat} by {}",
+        numbers.join(", "),
+        String::from(by)
+    );
+    let mut hearers: Vec<&str> = moves.iter().map(|(.., from)| from.as_str()).collect();
+    hearers.push(chat);
+    hearers.sort_unstable();
+    hearers.dedup();
+    let exe = std::env::current_exe().context("cannot find the wsx binary")?;
+    for to in hearers {
+        let lines = vec![plain_event(line.clone())];
+        if !say_chat(&project_id, &name, &exe, to, lines, Author::Events) {
+            eprintln!("chat {to} did not take the event");
+        }
+    }
+    Ok(())
 }
 
 /// `wsx task close`: remove the task; `--discard` of unlanded commits is the owner's word.

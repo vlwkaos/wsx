@@ -972,6 +972,7 @@ impl Host {
             HostRequest::Stop => self.stop(),
             HostRequest::Land { tried, batch_tree } => self.land(false, tried, batch_tree),
             HostRequest::Hold { reason, by } => self.hold(reason, by),
+            HostRequest::Move { chat, by } => Ok(self.move_to_chat(chat, by)),
             HostRequest::After {
                 task,
                 text,
@@ -1111,6 +1112,17 @@ impl Host {
             view::task_list(tasks.iter().copied()),
             store::follow_up_log_path(&self.record.project_id)?.display()
         ))
+    }
+
+    /// `task move`: the chat owns the task from now on, in any state.
+    fn move_to_chat(&mut self, chat: String, by: Actor) -> String {
+        self.record.moved_to = Some(chat.clone());
+        self.save();
+        self.log(LogEvent::Moved {
+            chat: chat.clone(),
+            by,
+        });
+        format!("moved to chat {chat}")
     }
 
     fn hold(&mut self, reason: Option<String>, by: Actor) -> Result<String> {

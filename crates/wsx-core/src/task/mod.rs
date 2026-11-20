@@ -206,8 +206,8 @@ pub struct Waiting {
 }
 
 /// Who acted: the owner or a chat's agent (`WSX_TASK_ACTOR=chat:<name>`). A task made by a chat
-/// records it as `created_by`; its events go to that chat (`chats::owner`). ref: docs/tasks.md
-/// "Chats"
+/// records it as `created_by`; its events go to that chat, or to the chat it moved to
+/// (`TaskRecord::owner_chat`, `chats::owner`). ref: docs/tasks.md "Chats"
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 pub enum Actor {
@@ -331,6 +331,10 @@ pub struct TaskRecord {
     /// (docs/tasks.md "Landing").
     #[serde(default)]
     pub created_by: Actor,
+    /// `task move --chat`: the chat that owns the task now, whoever made it. `created_by` stays
+    /// as it was: `status` and `schedule` read it as owner or chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_to: Option<String>,
     /// Why the owner tries this task before it lands. A held task never lands by itself.
     /// ref: docs/tasks.md "Hold and trial"
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -546,6 +550,11 @@ pub enum LogEvent {
         child: u32,
         commits: u32,
     },
+    /// The task now belongs to chat `chat` (`task move`).
+    Moved {
+        chat: String,
+        by: Actor,
+    },
     /// The task is held for the owner to try (`reason`), or no longer (`None`).
     Hold {
         reason: Option<String>,
@@ -658,6 +667,11 @@ pub struct LogEntry {
 pub const SIMPLIFY_MISSING: &str = "simplify did not run";
 
 impl TaskRecord {
+    /// The chat that owns the task, for `chats::owner`: the one it moved to, else its maker.
+    pub fn owner_chat(&self) -> Option<&str> {
+        self.moved_to.as_deref().or(self.created_by.chat())
+    }
+
     /// The worker was sent back to run the simplify skill and still did not.
     /// ref: docs/tasks.md "Workflow"
     pub fn simplify_missing(&self) -> bool {
@@ -800,6 +814,11 @@ pub enum HostRequest {
     /// Hold the task for the owner to try (`reason`), or release it (`None`).
     Hold {
         reason: Option<String>,
+        by: Actor,
+    },
+    /// The task belongs to chat `chat` from now on (`task move`).
+    Move {
+        chat: String,
         by: Actor,
     },
     /// Wait for task `task` to land and then add `text` (`None`: wait no more).

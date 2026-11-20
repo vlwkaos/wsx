@@ -229,7 +229,7 @@ pub fn for_you(project_id: &str, land_auto: bool) -> Vec<YouItem> {
         };
         let title = view::readable_title(&dir, &record).unwrap_or_default();
         items.push(YouItem {
-            chat: chats::owner(record.created_by.chat(), &open, &home).to_string(),
+            chat: chats::owner(record.owner_chat(), &open, &home).to_string(),
             kind: kind.name(),
             rank: kind.rank(),
             task: Some(record.id),
@@ -282,7 +282,7 @@ pub fn chat_counts(project_id: &str, land_auto: bool) -> HashMap<String, ChatCou
     let home = store::home_chat(project_id).unwrap_or_default();
     for (dir, record) in view::project_tasks(project_id).unwrap_or_default() {
         let Ok(record) = record else { continue };
-        let owner = chats::owner(record.created_by.chat(), &open, &home);
+        let owner = chats::owner(record.owner_chat(), &open, &home);
         if !dirs.iter().any(|dir| dir.chat == owner) {
             continue;
         }

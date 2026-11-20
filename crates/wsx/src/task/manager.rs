@@ -1560,7 +1560,7 @@ impl Manager {
                 .unwrap_or_default()
                 .into_iter()
                 .filter_map(|(dir, record)| record.ok().map(|record| (dir, record)))
-                .filter(|(_, record)| viewer.owns(record.created_by.chat()))
+                .filter(|(_, record)| viewer.owns(record.owner_chat()))
                 .collect();
         let open = match open_counts(tasks.iter().map(|(_, record)| record)) {
             (0, _) => "none".to_string(),
