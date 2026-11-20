@@ -151,7 +151,7 @@ div.row-link { cursor: default; }
 }
 .row-more:focus-visible { color: var(--color-text); }
 @media (hover: hover) { .row-more:hover { color: var(--color-text); } }
-.home-rows :is(.row-projects, .row-context) { padding-right: calc(var(--size-control) - var(--space-3)); }
+.home-rows .row-slide :is(.row-projects, .row-context) { padding-right: calc(var(--size-control) - var(--space-3)); }
 .home-rows .row-link { -webkit-touch-callout: none; }
 /* Hook: .folder-head — a folder's heading on Home: the band of the Tasks list with a fold arrow (open turns it down) and a dot while folded. */
 .folder-head { list-style: none; padding-inline: var(--column-inset, var(--space-4)); }
