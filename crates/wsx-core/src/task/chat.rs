@@ -90,7 +90,6 @@ impl<'a> Window<'a> {
 /// The entries a chat needs from the log's end: its window and the manager's last step
 /// (`activity`). The open questions are `asking`'s.
 pub fn read_chat(dir: &ManagerDir, window: &Window) -> Result<Vec<ManagerEntry>> {
-    let _ = dir.read_log();
     if let Window::Around(id) = window {
         // ^ Ids grow: an entry below `id` and none at it means the message is not in the log.
         // Else enough entries before it, or the oldest file's start, end the read.
