@@ -7877,6 +7877,9 @@ def part_agents(created=None):
     # A say: the manager's turn hangs (MHANG) in a host on the older file; the next say replaces it
     # and the new host answers the queued message.
     socket_path = js('task', 'manager')['socket']
+    stop_repo_service()
+    # ^ As above: a repo service that restarts after the last close sends an event line to the home chat, and
+    # the chat's host starts on the harness wsx, which `install()` does not make older.
     cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(socket_path).exists() or subprocess.run(['nc', '-zU', socket_path]).returncode != 0, 'manager down')
     m_release = work / 'mhang-release'
@@ -7884,21 +7887,14 @@ def part_agents(created=None):
     wait(lambda: hanging(m_release), 'the manager turn hangs', 40)
     old_manager = host_of('task chat-host %s' % manager_log.parent.name)
     assert len(old_manager) == 1 and agent_tree(old_manager[0]), old_manager
+    assert any(line.split()[0] == str(old_manager[0]) and str(older / 'wsx') in line for line in leftovers('task chat-host')), leftovers('task chat-host')
+    # ^ The hung host runs the older file; a host on the harness wsx would never be replaced.
     stopped_before = len(replaced(manager_entries()))
     install()
     time.sleep(4)
     queued = on(wsx, 'task', 'say', 'STATUS after the hang', extra=caller)
     assert queued['ok'], queued
-    # ^ Under the load of several parts the host's status probe (2 s) can fail, and a say then
-    # leaves the hung host; a later say replaces it.
     ended = lambda: process_gone(old_manager[0]) and not agent_tree(old_manager[0])
-    for _ in range(3):
-        if ended():
-            break
-        try:
-            wait(ended, 'the old manager host ends', 10)
-        except RuntimeError:
-            on(wsx, 'task', 'say', 'STATUS again after the hang', extra=caller)
     wait(ended, lambda: 'the old manager host and its agent tree end %r now %d turn %s entries %r' % (
         [line[:40] for line in agent_tree(old_manager[0])], time.time() * 1000, (manager_log.parent / 'turn.json').read_text(),
         [(e['unix_ms'], e['kind']) for e in manager_entries()[-14:]]), 10)
