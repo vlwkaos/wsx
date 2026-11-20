@@ -83,18 +83,19 @@ const proseParser = makeParser().disable("code");
 
 const LINK = /^(https?:|mailto:)/i;
 
-// The file the server granted for a `files/<path>` address (docs/web-client.md "Media"): it
-// names the path it was granted for, so a remote address or another folder's file of the same
-// name is never it.
+// The file the server granted for a `files/<path>` or `task/<n>/<path>` address (docs/web-client.md
+// "Media"): it names what the message named (the path, or the whole `task/` address), so a
+// remote address or another folder's file of the same name is never it.
 const grantedFile = (files, href) => {
-  if (!href?.startsWith("files/")) return undefined;
-  let path;
+  const [scheme] = href?.split("/", 1) ?? [];
+  if (scheme !== "files" && scheme !== "task") return undefined;
+  let address;
   try {
-    path = decodeURIComponent(href.slice(6).split(/[?#]/)[0]);
+    address = decodeURIComponent(href.split(/[?#]/)[0]);
   } catch {
     return undefined;
   }
-  return files?.find((file) => file.src === path);
+  return files?.find((file) => file.src === (scheme === "files" ? address.slice(6) : address));
 };
 // Fence names people write, as the highlight.js grammar that reads them.
 const LANGUAGES = {

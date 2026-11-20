@@ -253,7 +253,7 @@ pub struct Attachment {
     /// A video's compact copy is still being made (`Media::prepare`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub preparing: bool,
-    /// A file a message names: the path it names (`files/<src>`), which the page matches.
+    /// A file a message names: the path of `files/<path>`, or `task/<n>/<path>`, which the page matches.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub src: Option<String>,
     /// A video's poster, the image beside it with the same name: `media/<sha256>.jpg`.
@@ -513,17 +513,36 @@ impl Chat {
         found
     }
 
-    /// The pictures and videos of `root` that a message links or shows (`![](files/<path>)`,
-    /// `[name](files/<path>)`), as attachments that name their path; a video also names the
-    /// jpg beside it as its poster. The rule is `grant`'s, and a file outside the root, a
-    /// secret or another type is left out, so the page shows its alt text. A file of any age.
-    /// ref: docs/web-client.md "Media"
-    pub fn granted_files(&self, text: &str, root: &Root, media: &Media) -> Vec<Attachment> {
+    /// The pictures and videos that a message links or shows (`![](files/<path>)`,
+    /// `[name](files/<path>)`) in `root`, and (`![](task/<n>/<path>)`) in the working copy that
+    /// `task_root` gives open task `n`, as attachments that name what the message named (`src`: the path, or `task/<n>/<path>`); a video
+    /// also names the jpg beside it as its poster. The rule is `grant`'s, and a file outside its
+    /// root, a secret, another type or a task that is not open is left out, so the page shows its
+    /// alt text. A file of any age. ref: docs/web-client.md "Media"
+    pub fn granted_files(
+        &self,
+        text: &str,
+        root: &Root,
+        task_root: &dyn Fn(u32) -> Option<Root>,
+        media: &Media,
+    ) -> Vec<Attachment> {
+        use wsx_core::task::chat::{linked_files, linked_task_files};
+        let main = linked_files(text)
+            .into_iter()
+            .map(|path| (path.clone(), None, path));
+        let tasks = linked_task_files(text)
+            .into_iter()
+            .map(|(task, path)| (format!("task/{task}/{path}"), Some(task), path));
         let mut found: Vec<Attachment> = Vec::new();
-        for path in wsx_core::task::chat::linked_files(text) {
-            let Some(file) = self.granted_file(&path, root, media) else {
+        for (address, task, path) in main.chain(tasks) {
+            let copy = task.and_then(task_root);
+            let Some(root) = copy.as_ref().or(task.is_none().then_some(root)) else {
                 continue;
             };
+            let Some(mut file) = self.granted_file(&path, root, media) else {
+                continue;
+            };
+            file.src = Some(address);
             if !found.iter().any(|existing| existing.hash == file.hash) {
                 found.push(file);
             }
@@ -548,7 +567,6 @@ impl Chat {
             None
         };
         let mut file = Attachment::from(entry);
-        file.src = Some(path.to_string());
         file.poster = poster;
         Some(file)
     }

@@ -90,6 +90,18 @@ fn open_task(scope: &Scope, task: u32) -> Outcome<TaskDir> {
     TaskDir::open(&scope.store, task).map_err(|_| Fault::not_found())
 }
 
+/// The working copy of open task `task` of the project, pinned for reading; none when the task is
+/// unknown, landed or closed, or its copy is gone (`![alt](task/<n>/<path>)`, docs/web-client.md
+/// "Files a message shows").
+pub fn open_working_copy(scope: &Scope, task: u32) -> Option<crate::sandbox::Root> {
+    let record = open_task(scope, task).ok()?.read_record().ok()?;
+    let path = std::fs::canonicalize(&record.working_copy).ok()?;
+    record
+        .state
+        .is_open()
+        .then(|| crate::sandbox::Root::pin(&path).ok())?
+}
+
 /// What an overview was built from: the project's files and the settings it reads. The
 /// manager's `busy` is not in it: it is read on every call.
 #[derive(PartialEq)]

@@ -984,7 +984,7 @@ def manager_up(created):
                  'Say as fact only what wsx reported or you checked', '`since then:` line',
                  "state and `checks` from the ledger", 'live only when a deploy event names the task', 'or call it unchecked',
                  'Talk like a person in a chat, not a report', 'Replies are chat messages, not reports', 'Never coin a label',
-                 'is built only after its intent and design are discussed with the owner and shown as a picture (mockup or capture)', 'the first task turn makes the mockups and stops',
+                 'is built only after its intent and design are discussed with the owner and shown as a picture (mockup or capture)', 'the first task turn makes the mockups and stops', '![alt](task/<n>/<path>)',
                  'answer each Owner message first, every question in it', 'Define each name the owner has not used',
                  'say how both hold', 'A turn of only Events is your work', 'or with exactly `-` when nothing',
                  "never to a line 'for the owner'", 'Never hand the owner chores or ask them to wait',

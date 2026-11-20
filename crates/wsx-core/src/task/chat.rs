@@ -26,9 +26,22 @@ pub const ASKS_WITHIN_MS: u64 = 7 * 24 * 3600 * 1000;
 /// writes each byte outside a safe set so). The chats, the web's media grant and the TUI read
 /// the address through it.
 pub fn file_href(href: &str) -> Option<String> {
-    let path = href
-        .strip_prefix("files/")
-        .filter(|path| !path.is_empty() && !path.contains(char::is_whitespace))?;
+    decoded(href.strip_prefix("files/")?)
+}
+
+/// The task and the path a `task/<n>/<path>` link address names: a file of open task `n`'s
+/// working copy, `%XX` decoded as `file_href`. The `task/` prefix is not `files/`, so the form
+/// cannot be read as a path of the main checkout. ref: docs/web-client.md "Files a message shows"
+pub fn task_file_href(href: &str) -> Option<(u32, String)> {
+    let (number, path) = href.strip_prefix("task/")?.split_once('/')?;
+    let number = number.parse().ok().filter(|_| !number.starts_with('0'))?;
+    Some((number, decoded(path)?))
+}
+
+fn decoded(path: &str) -> Option<String> {
+    if path.is_empty() || path.contains(char::is_whitespace) {
+        return None;
+    }
     let (mut bytes, mut at) = (Vec::new(), path.bytes());
     while let Some(byte) = at.next() {
         if byte != b'%' {
@@ -41,22 +54,32 @@ pub fn file_href(href: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-/// Every `files/<path>` a message links or shows as an image (`[x](files/p)`, `![x](files/p)`),
-/// decoded, in order, once each. ref: docs/web-client-chat.md "Markdown"
-pub fn linked_files(text: &str) -> Vec<String> {
-    let mut found: Vec<String> = Vec::new();
+/// What `read` finds of every link or image address in a message, in order, once each.
+fn linked<T: PartialEq>(text: &str, read: impl Fn(&str) -> Option<T>) -> Vec<T> {
+    let mut found: Vec<T> = Vec::new();
     let mut rest = text;
     while let Some(open) = rest.find("](") {
         rest = &rest[open + 2..];
         let Some(end) = rest.find(')') else { break };
-        if let Some(path) = file_href(&rest[..end]) {
-            if !found.contains(&path) {
-                found.push(path);
+        if let Some(item) = read(&rest[..end]) {
+            if !found.contains(&item) {
+                found.push(item);
             }
         }
         rest = &rest[end + 1..];
     }
     found
+}
+
+/// Every `files/<path>` a message links or shows as an image (`[x](files/p)`, `![x](files/p)`),
+/// decoded, in order, once each. ref: docs/web-client-chat.md "Markdown"
+pub fn linked_files(text: &str) -> Vec<String> {
+    linked(text, file_href)
+}
+
+/// The same for `task/<n>/<path>`: (task, path), in order, once each.
+pub fn linked_task_files(text: &str) -> Vec<(u32, String)> {
+    linked(text, task_file_href)
 }
 
 /// Which part of the log a chat shows (docs/tasks.md "Log window").

@@ -347,7 +347,7 @@ The project's media archive lists what was captured or posted, so the owner can 
 | Source | What | Date | Gone when |
 |---|---|---|---|
 | `capture` | a To check item's capture, with its task, check text, verdict and poster | when the item was collected | the budget removed the file |
-| `file` | a picture or video `files/<path>` that a message of the manager, a chat or a peer links (`![alt](files/<path>)`, `[name](files/<path>)`; a path off the checkout is left out) | the message's | the file is no longer in the main checkout |
+| `file` | a picture or video `files/<path>` that a message of the manager, a chat or a peer links (`![alt](files/<path>)`, `[name](files/<path>)`; a path off the checkout is left out; `![alt](task/<n>/<path>)` shows a file of open task `n`'s working copy in the chat only, it is not archived) | the message's | the file is no longer in the main checkout |
 | `upload` | a file an owner message attached (the web's media store, `[attached files]` lines) | the message's | the store no longer has it (the web decides; the TUI lists no uploads) |
 
 A gone item stays in the list, marked "Removed" (capture, file) or "Expired" (upload), with its date, so the owner sees it existed. A message has no task, so a task filter lists captures only. Reading is bounded: the logs are read from their end, only lines that name a file are parsed, and reading stops once the page and one item more are found.

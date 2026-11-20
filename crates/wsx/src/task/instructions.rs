@@ -72,7 +72,8 @@ pub(super) fn instructions(
          owner has not made changes the result, or the work is costly to undo (`--plan`, `--hold`). A \
          longer plan goes on the overview as a mermaid diagram. A change to what a screen shows \
          is built only after its intent and design are discussed with the owner and shown as a \
-         picture (mockup or capture): the first task turn makes the mockups and stops.\n\n\
+         picture (mockup or capture): the first task turn makes the mockups and stops, and you show an \
+         open task's picture in chat as `![alt](task/<n>/<path>)`, a path in its working copy.\n\n\
          Tasks. Similar work or the same area goes to the open task with `wsx task add` (`--title` when it \
          now carries more). \
          Every new task names its files:\n\
