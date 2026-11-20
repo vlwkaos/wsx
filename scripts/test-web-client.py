@@ -2921,6 +2921,8 @@ capabilities = ["terminal_view"]
         # once it exited.
         project_shell = '/api/projects/%d/shell' % projects['project2']
         if args.browser:
+            # ^ The project screen is its main chat's page: a project with no chat opens Home.
+            cli('task', 'chat', 'new', 'project2', '-p', 'project2')
             result = check(work, [node, str(ROOT / 'scripts/web-browser-check.mjs'), 'shell', work_site.origin + '/',
                                   cli('web', 'pair', '--site', files['work']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                   str(args.captures), '', str(projects['project2'])], timeout=120)
@@ -3798,8 +3800,7 @@ def task_journey(args):
         # the ones it counts from.
         # ^ The repo's main chat in the store layout of docs/tasks.md "Chats": `tasks/chats/plans` and `home.json`.
         # ^ A repo has a chat only when one is made: the first of each is its main chat (docs/tasks.md "Chats"); `plans` has its own.
-        # ^ A chat with no message sorts by its file's age, newest first: calm, busy, quiet, gone are made in the reverse of the order Home shows them.
-        for name in ('demo', 'ui', *(folder.name for folder in reversed(session_projects)), 'calm'):
+        for name in ('demo', 'ui', 'calm', *(folder.name for folder in session_projects)):
             js('task', 'chat', 'new', name, '-p', name)
         plans_id = 'plans-' + hashlib.sha256(str(plans).encode()).hexdigest()[:8]
         manager_dir = state / 'wsx/tasks/chats/plans'
@@ -5000,11 +5001,10 @@ merge_seconds = 3
                     return (1, -next(chat['last_unix_ms'] for chat in view['chats'] if chat['main']), 0)
                 rank = min(urgency[item['kind']] for item in view['needs'])
                 return (0, rank, min(item['unix_ms'] for item in view['needs'] if urgency[item['kind']] == rank))
-            home_order = sorted((name for name in ids if name in ('ui', 'demo', 'plans', 'calm')), key=home_key)
-            # ^ ui and plans have a waiting task, demo only tasks to land.
-            assert sorted(home_order[:2]) == ['plans', 'ui'] and home_order[2:] == ['demo', 'calm'], home_order
-            # ^ Projects with no task, session or not, have no activity and stay in the project list's order (calm, busy, quiet, gone).
-            home_order += ['busy', 'quiet', 'gone']
+            home_order = sorted((name for name in ids if name in ('ui', 'demo', 'plans', 'calm', 'busy', 'quiet', 'gone')), key=home_key)
+            # ^ ui and plans have a waiting task, demo only tasks to land; the rest follow by their chat's newest message
+            # (a chat with none, by its file's age).
+            assert sorted(home_order[:2]) == ['plans', 'ui'] and home_order[2] == 'demo' and sorted(home_order[3:]) == sorted(set(ids) & {'calm', 'busy', 'quiet', 'gone'}), home_order
             # ^ The page's list read (`GET /api/tasks`) names a main chat for each of them, as the one read above does.
             listed_rows = {row['project']: row for row in steady(owner, 'GET', '/api/tasks')[1]}
             assert all(name in ids and listed_rows[ids[name]]['main_chat'] for name in home_order if name in ids), listed_rows
