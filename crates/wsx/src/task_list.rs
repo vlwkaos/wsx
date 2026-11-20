@@ -89,6 +89,26 @@ pub struct TaskRow {
     pub depth: u8,
 }
 
+impl TaskRow {
+    /// A row of the Chats section that is no chat and no task: a folder's heading, the
+    /// `+N dismissed` count. Nothing on it opens or acts.
+    fn note(title: String) -> Self {
+        Self {
+            id: 0,
+            title,
+            chat: String::new(),
+            thread: String::new(),
+            state: String::new(),
+            status: String::new(),
+            counts: Default::default(),
+            section: Section::Chats,
+            home: false,
+            root: 0,
+            depth: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     /// The one muted row "N wait for you" that opens the For you list; it has no heading.
@@ -761,35 +781,11 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         .partition(|chat| chat["listed"].as_bool().unwrap_or(true));
     // ^ The owner's folders (set on the web's Home) are headings of their own: a folder where its
     // first chat is, the chats of no folder last under none (wsx-core `chats_home::sections`).
-    let heading = |title: String| TaskRow {
-        id: 0,
-        title,
-        chat: String::new(),
-        thread: String::new(),
-        state: String::new(),
-        status: String::new(),
-        counts: Default::default(),
-        section: Section::Chats,
-        home: false,
-        root: 0,
-        depth: 0,
-    };
     let listed = wsx_core::task::chats_home::sections(listed, |chat| {
         chat["folder"].as_str().map(str::to_string)
     });
-    let dismissed = (!dismissed.is_empty()).then(|| TaskRow {
-        id: 0,
-        title: format!("+{} dismissed", dismissed.len()),
-        chat: String::new(),
-        thread: String::new(),
-        state: String::new(),
-        status: String::new(),
-        counts: Default::default(),
-        section: Section::Chats,
-        home: false,
-        root: 0,
-        depth: 0,
-    });
+    let dismissed =
+        (!dismissed.is_empty()).then(|| TaskRow::note(format!("+{} dismissed", dismissed.len())));
     // ^ The For you list is one row here: "N wait for you" opens it. A task that needs the owner
     // stays in its chain under Waiting (the chain rows keep their place), as the ledger lists it.
     let you = list("for_you");
@@ -823,7 +819,7 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
                 .flat_map(|section| {
                     section
                         .name
-                        .map(|name| heading(format!("▾ {name}")))
+                        .map(|name| TaskRow::note(format!("▾ {name}")))
                         .into_iter()
                         .chain(section.items.into_iter().flat_map(|found| {
                             std::iter::once(chat(found)).chain(thread_rows(found))
