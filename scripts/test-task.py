@@ -8356,7 +8356,7 @@ def part_chats(created=None):
     # Move (docs/tasks.md "Chats"): qa's ready task goes to the chat ui. Its next event, its place in the
     # chat summaries and the log line follow it; `created_by` stays; only its owner chat's agent moves it.
     def move_as(chat, *argv):
-        return subprocess.run([str(wsx), 'task', 'move', *argv, '-p', 'demo', '--json'], cwd=project,
+        return subprocess.run([str(wsx), 'task', 'move', *map(str, argv), '-p', 'demo', '--json'], cwd=project,
                               env={**env, 'WSX_TASK_ACTOR': 'chat:' + chat}, capture_output=True, text=True, timeout=60)
 
     js('task', 'chat', 'new', 'ui', '--goal', str(qa_goal))
