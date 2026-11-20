@@ -4516,6 +4516,27 @@ merge_seconds = 3
         assert {c['name']: c['listed'] for c in js('task', 'chat', 'list', '-p', 'demo')['chats']}['tidy'] is True
         assert steady(owner, 'POST', close_url('tidy'), {})[0] == 200
         ok('chats: Dismiss unlists a row and keeps the chat; a message or a new chat lists it; a viewer is refused')
+        # ^ Folder (docs/web-client-tasks.md "Home"): the owner's, one per chat, `folder` of the chat's row
+        # (null for none); a bad name, an unknown or a closed chat is refused; the owner's act, so a viewer is refused.
+        folder_url = lambda name: '/api/tasks/%d/chats/%s/folder' % (demo, name)
+        folder_of = lambda name: {c['name']: c['folder'] for c in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['chats']}.get(name, 'absent')
+        assert steady(owner, 'POST', '/api/tasks/%d/chats' % demo, {'name': 'sorted'})[0] == 200
+        wait(lambda: folder_of('sorted') is None or None, 'a new chat is in no folder')
+        assert steady(viewer, 'POST', folder_url('sorted'), {'folder': 'Work'})[0] == 403
+        status, body = steady(owner, 'POST', folder_url('nobody'), {'folder': 'Work'})
+        assert status == 409 and 'no open chat nobody' in json.dumps(body), (status, body)
+        for bad in ('', '   ', 'two\nlines', 'x' * 25):
+            status, body = steady(owner, 'POST', folder_url('sorted'), {'folder': bad})
+            assert status == 409 and 'folder' in json.dumps(body), (bad, status, body)
+        status, body = steady(owner, 'POST', folder_url('sorted'), {'folder': ' Work '})
+        assert status == 200 and body == {'ok': True, 'chat': 'sorted', 'folder': 'Work'}, (status, body)
+        wait(lambda: folder_of('sorted') == 'Work' or None, 'the folder is in the chat row')
+        status, body = steady(owner, 'POST', folder_url('sorted'), {'folder': None})
+        assert status == 200 and body == {'ok': True, 'chat': 'sorted', 'folder': None}, (status, body)
+        wait(lambda: folder_of('sorted') is None or None, 'No folder clears the chat row')
+        assert steady(owner, 'POST', close_url('sorted'), {})[0] == 200
+        assert steady(owner, 'POST', folder_url('sorted'), {'folder': 'Work'})[0] == 409
+        ok('chats: a folder is set on an open chat and cleared by null; a bad name, an unknown or a closed chat is 409; a viewer is refused')
         assert steady(owner, 'POST', close_url('made'), {})[0] == 409
         ok('chats: the page makes a chat (a bad or an open name refused) and closes it (the first, an unknown or a closed one refused), the agents list answers')
         # A manager turn alone changes the overview: its `busy` (the home row's typing dots) goes

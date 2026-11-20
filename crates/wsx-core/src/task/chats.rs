@@ -643,6 +643,7 @@ fn row(dir: &ManagerDir, project_id: &str, home: Option<&str>, registered: &Regi
         "goal": goal(dir).lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
         "last_unix_ms": last,
         "listed": chats_home::listed_at(dir, || last),
+        "folder": chats_home::folder(dir),
         "home": is_home,
     });
     row.as_object_mut()

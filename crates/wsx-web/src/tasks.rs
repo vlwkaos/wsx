@@ -1068,6 +1068,14 @@ pub fn dismiss_chat(name: &str) -> Outcome<Value> {
     Ok(json!({ "ok": true, "chat": name, "listed": false }))
 }
 
+/// The owner puts an open chat in a Home folder, or in none (`folder` null). An unknown or a
+/// closed name, or a bad folder name, is refused (`chats_home::set_folder`).
+pub fn set_chat_folder(name: &str, folder: Option<&str>) -> Outcome<Value> {
+    task::chats_home::set_folder(name, folder)
+        .map_err(|error| Fault::new(409, "invalid_chat", format!("{error:#}")))?;
+    Ok(json!({ "ok": true, "chat": name, "folder": folder.map(str::trim) }))
+}
+
 /// The `[[agents]]` entries a chat may run on, for the New chat sheet.
 pub fn chat_agents() -> Value {
     json!(task::chats::agent_entries()

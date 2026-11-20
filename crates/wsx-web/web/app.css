@@ -143,6 +143,37 @@ div.row-link { cursor: default; }
 /* Hook: [data-quiet] — a slide action that is not a loss (Home's Dismiss): the muted color, not the danger one. */
 .row-remove[data-quiet] { color: var(--color-muted); }
 .row-slide[data-open] .row-remove[data-quiet] { background: var(--color-raised); color: var(--color-text); }
+/* Hook: .row-more — Home's ⋯ on a row: a sibling of the link (a button in a link is not valid), small, in the top
+   right corner over the row's head, which keeps its room (.home-rows .row-head). A touch held on the row does the same. */
+.row-more {
+  position: absolute; top: calc(var(--space-1) * -0.5); right: 0; width: var(--size-control); height: var(--size-control);
+  display: inline-flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--color-muted); font-size: var(--font-size-sm); cursor: pointer;
+}
+.row-more:focus-visible { color: var(--color-text); }
+@media (hover: hover) { .row-more:hover { color: var(--color-text); } }
+.home-rows .row-head { padding-right: calc(var(--size-control) - var(--space-3)); }
+.home-rows .row-link { -webkit-touch-callout: none; }
+/* Hook: .folder-head — a folder's heading on Home: the band of the Tasks list with a fold arrow (open turns it down) and a dot while folded. */
+.folder-head { list-style: none; padding-inline: var(--column-inset, var(--space-4)); }
+.folder-toggle {
+  width: 100%; min-height: calc(var(--size-key) - var(--space-2)); display: flex; align-items: center; gap: var(--space-1); padding: 0; border: 0; background: none;
+  color: var(--color-muted); font: inherit; font-size: var(--font-size-label); font-weight: var(--font-weight-strong); letter-spacing: var(--tracking-label); text-transform: uppercase; text-align: left; cursor: pointer;
+}
+.folder-toggle .icon { width: var(--space-4); height: var(--space-4); }
+.folder-toggle[aria-expanded="true"] .icon { transform: rotate(90deg); }
+.folder-toggle .news-mark { margin-left: var(--space-1); }
+.folder-toggle:focus-visible { color: var(--color-text); }
+/* The folder sheet: the folders in use, No folder, and a field for a new one. */
+.folder-options { list-style: none; margin: 0; padding: 0; }
+.folder-option {
+  width: 100%; min-height: var(--size-key); display: flex; align-items: center; gap: var(--space-2); padding: 0;
+  border: 0; border-top: var(--border-width) solid var(--color-hairline); background: none; color: var(--color-text); font: inherit; font-size: var(--font-size-sm); text-align: left; cursor: pointer;
+}
+.folder-tick { flex: none; width: var(--space-4); height: var(--space-4); display: inline-flex; color: var(--color-accent); }
+.folder-tick .icon { width: var(--space-4); height: var(--space-4); }
+.folder-new { display: flex; gap: var(--space-2); padding-top: var(--space-2); border-top: var(--border-width) solid var(--color-hairline); }
+.folder-new .input { flex: 1; min-width: 0; }
+.folder-new .input, .folder-new .button { min-height: var(--size-key); font-size: var(--font-size-sm); }
 a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row-link[aria-current="page"] { background: var(--color-raised); }
 /* A row whose text opens it while its actions stay buttons: the text is the link. */
 .row-link:has(> .row-open) { padding-block: 0; }

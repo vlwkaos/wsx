@@ -1498,8 +1498,9 @@ pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
             chat.path.join(MANAGER_LOG),
             chat.path.join(super::chats::CLOSED_FILE),
             chat.path.join(super::chats::CHAT_FILE),
-            // ^ A dismissed row changes what Home lists (`chats_home::listed`).
+            // ^ A dismissed row changes what Home lists (`chats_home::listed`), a folder where.
             chat.path.join(super::chats_home::DISMISSED_FILE),
+            chat.path.join(super::chats_home::FOLDER_FILE),
         ]);
     }
     for id in task_numbers(project_id)? {

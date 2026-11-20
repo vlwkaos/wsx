@@ -759,6 +759,24 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
     let (listed, dismissed): (Vec<_>, Vec<_>) = chats
         .iter()
         .partition(|chat| chat["listed"].as_bool().unwrap_or(true));
+    // ^ The owner's folders (set on the web's Home) are headings of their own: a folder where its
+    // first chat is, the chats of no folder last under none (wsx-core `chats_home::sections`).
+    let heading = |title: String| TaskRow {
+        id: 0,
+        title,
+        chat: String::new(),
+        thread: String::new(),
+        state: String::new(),
+        status: String::new(),
+        counts: Default::default(),
+        section: Section::Chats,
+        home: false,
+        root: 0,
+        depth: 0,
+    };
+    let listed = wsx_core::task::chats_home::sections(listed, |chat| {
+        chat["folder"].as_str().map(str::to_string)
+    });
     let dismissed = (!dismissed.is_empty()).then(|| TaskRow {
         id: 0,
         title: format!("+{} dismissed", dismissed.len()),
@@ -802,7 +820,16 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         .chain(
             listed
                 .into_iter()
-                .flat_map(|found| std::iter::once(chat(found)).chain(thread_rows(found)))
+                .flat_map(|section| {
+                    section
+                        .name
+                        .map(|name| heading(format!("▾ {name}")))
+                        .into_iter()
+                        .chain(section.items.into_iter().flat_map(|found| {
+                            std::iter::once(chat(found)).chain(thread_rows(found))
+                        }))
+                        .collect::<Vec<_>>()
+                })
                 .chain(dismissed),
         )
         .chain(list("recent").iter().map(|task| row(task, Section::Recent)))

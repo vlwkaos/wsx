@@ -104,6 +104,10 @@ pub fn router(app: Shared) -> Router {
                 "/api/tasks/{project}/chats/{name}/dismiss",
                 post(tasks_chat_dismiss),
             )
+            .route(
+                "/api/tasks/{project}/chats/{name}/folder",
+                post(tasks_chat_folder),
+            )
             .route("/api/tasks/{project}/threads/{action}", post(tasks_thread))
             .route("/api/tasks/{project}", get(tasks_overview))
             .route("/api/tasks/{project}/chat", get(tasks_chat))
@@ -1252,6 +1256,26 @@ async fn tasks_chat_dismiss(
     tasks_allowed(&app, true)?;
     act_budget(&app, &device)?;
     with_scope(&app, project, |_| crate::tasks::dismiss_chat(&name)).map(Json)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FolderInput {
+    folder: Option<String>,
+}
+
+async fn tasks_chat_folder(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    UrlPath((project, name)): UrlPath<(u64, String)>,
+    Json(input): Json<FolderInput>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, true)?;
+    act_budget(&app, &device)?;
+    with_scope(&app, project, |_| {
+        crate::tasks::set_chat_folder(&name, input.folder.as_deref())
+    })
+    .map(Json)
 }
 
 async fn tasks_chat_new(

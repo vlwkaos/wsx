@@ -45,7 +45,7 @@ const linter = designLint({ evaluate, captures, file: "tasks" });
 // ^ The server's bucket (`Paired`, burst 120, 240 a minute) lets 360 requests through in one minute from full;
 // the page's own busiest 60 s stays under 300, so the check's reads and a refill still fit (before #482: 329).
 const REQUESTS_PER_MINUTE = 300;
-const LINTED = new Set(["new-chat", "new-chat-refused", "chats-home-approval", "chats-home", "chats-home-wide", "home-long-name", "chat-room", "chat-room-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "tasks-check-queue-dark", "tasks-check-queue-light", "home", "home-chats-dark", "home-chats-light", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
+const LINTED = new Set(["new-chat", "new-chat-refused", "chats-home-approval", "chats-home", "chats-home-wide", "home-long-name", "chat-room", "chat-room-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "tasks-check-queue-dark", "tasks-check-queue-light", "home", "home-chats-dark", "home-chats-light", "home-folders-dark", "home-folders-light", "home-folder-sheet", "home-folders-folded", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
 let size = [390, 844, 2];
 const phone = () => size[0] < 600;
 // ^ In a page script: the overview with its home chat's newest message at `ms`: Home sorts by it (home.js `homeOrder`).
@@ -3831,6 +3831,62 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await until("!!document.querySelector('.log .bubble[data-side=in]')", "the chat did not open after its message");
   await go("#/");
   await until(`!!(${billing}) && !${billing}.hasAttribute('data-news')`, "the chat's reply stayed unread after it was read");
+  // ^ Folders (docs/web-client-tasks.md "Home"): the ⋯ of a row opens the folder sheet; a new name makes the
+  // folder and a section; the section survives a reload; a fold is kept on this device and shows a dot while
+  // it holds an unread message; "No folder" takes the chat out and an empty folder is gone.
+  {
+    const rowsNow = "[...document.querySelectorAll('.home-rows > .row')]";
+    const sections = () => evaluate(`${rowsNow}.map((row) => row.classList.contains('folder-head') ? '#' + row.querySelector('.folder-name').textContent + (row.querySelector('.folder-toggle').getAttribute('aria-expanded') === 'true' ? '' : '+') : row.querySelector('.row-label')?.textContent ?? '').join()`);
+    const folderOf = () => evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((data) => data.chats.find((chat) => chat.name === 'billing')?.folder ?? null)`);
+    const reloadHome = async () => { await send("Page.reload"); await until(`!!(${billing})`, "Home did not come back after a reload", 30); };
+    if (await folderOf() !== null || (await sections()).includes("#")) await fail(`billing starts in a folder: ${await sections()}`);
+    await evaluate(`${billing}.querySelector('.row-more').click()`);
+    await until("!!document.querySelector('dialog[open] .folder-new input')", "the ⋯ of a row opened no folder sheet");
+    const sheet = await evaluate("[...document.querySelectorAll('dialog[open] .folder-option')].map((option) => option.textContent.trim() + (option.getAttribute('aria-checked') === 'true' ? '*' : '')).join()");
+    if (sheet !== "No folder*") await fail(`the folder sheet of a chat in no folder reads ${sheet}`);
+    await shot("home-folder-sheet");
+    await evaluate("(() => { const input = document.querySelector('dialog[open] .folder-new input'); input.value = 'Work'; input.dispatchEvent(new Event('input', { bubbles: true })); })()");
+    await until("!document.querySelector('dialog[open] .folder-new .button').disabled", "a typed folder name did not enable Add");
+    await evaluate("document.querySelector('dialog[open] .folder-new').requestSubmit()");
+    await until(`(async () => (await fetch('api/tasks/${project}').then((r) => r.json())).chats.find((chat) => chat.name === 'billing')?.folder === 'Work')()`, "the new folder was not set");
+    await until(`!!(${billing}) && !document.querySelector('dialog[open]') && ${rowsNow}.findIndex((row) => row.classList.contains('folder-head')) === ${rowsNow}.indexOf(${billing}) - 1`, "billing is not under its folder's heading", 30);
+    // ^ The folder's rows first, the chats of no folder after them under no heading; the For you row stays on top.
+    const order = await sections();
+    if (!/^(For you,)?#Work,billing,/.test(order) || order.split(",").filter((word) => word.startsWith("#")).length !== 1) await fail(`Home reads ${order} with one folder`);
+    await reloadHome();
+    if (!(await sections()).includes("#Work,billing")) await fail(`a reload lost the folder section: ${await sections()}`);
+    for (const next of [[390, 844, 2], [1280, 800, 1]]) {
+      await resize(next);
+      for (const scheme of ["dark", "light"]) { await inScheme(scheme); await shot(`home-folders-${scheme}`); }
+    }
+    await inScheme("dark");
+    await resize([390, 844, 2]);
+    // ^ A fold hides the folder's rows and is kept on this device; a message in a folded folder shows the dot.
+    await click(".home-rows .folder-toggle");
+    await until(`!(${billing}) && ${rowsNow}.some((row) => row.querySelector('.folder-toggle[aria-expanded=false]'))`, "the fold left the folder's rows");
+    await send("Page.reload");
+    await until("!!document.querySelector('.home-rows .folder-toggle[aria-expanded=false]')", "a reload lost the fold", 30);
+    if (await count(".home-rows .folder-head .news-mark")) await fail("a folded folder with nothing unread shows the dot");
+    await evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'STATUS', chat: 'billing' }) })`);
+    await until("!!document.querySelector('.home-rows .folder-head .news-mark')", "a folded folder shows no dot for an unread message", 300);
+    await shot("home-folders-folded");
+    await click(".home-rows .folder-toggle");
+    await until(`!!(${billing})`, "the unfold did not show the folder's rows");
+    await go("#/c/billing");
+    await until("!!document.querySelector('.log .bubble[data-side=in]')", "the chat did not open from its folder");
+    await go("#/");
+    await until(`!!(${billing}) && !${billing}.hasAttribute('data-news')`, "the folder's chat stayed unread after it was read");
+    // ^ "No folder" moves it out; with no chat left the folder has no heading, also after a reload.
+    await evaluate(`${billing}.querySelector('.row-more').click()`);
+    await until("!!document.querySelector('dialog[open] .folder-option[aria-checked=true]')", "the folder sheet did not open again");
+    const again = await evaluate("[...document.querySelectorAll('dialog[open] .folder-option')].map((option) => option.textContent.trim() + (option.getAttribute('aria-checked') === 'true' ? '*' : '')).join()");
+    if (again !== "Work*,No folder") await fail(`the folder sheet of a chat in Work reads ${again}`);
+    await evaluate("[...document.querySelectorAll('dialog[open] .folder-option')].find((option) => option.textContent.trim() === 'No folder').click()");
+    await until(`!document.querySelector('.home-rows .folder-head') && !!(${billing})`, "No folder left the heading or took the chat away", 30);
+    if (await folderOf() !== null) await fail("No folder left the folder in the chat's row");
+    await reloadHome();
+    if (await count(".home-rows .folder-head")) await fail("an empty folder came back after a reload");
+  }
   // ^ A chat of another project with a title, and one that runs in two projects (a hand-written
   // `repos`, no command makes one yet): Home shows each once, in three lines, with the project
   // line muted (docs/web-client-tasks.md "Home"). Closed again after the captures.

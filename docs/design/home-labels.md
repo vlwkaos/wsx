@@ -1,5 +1,7 @@
 # Home: labels or groups
 
+**Chosen: B, as folders (owner 5768, "그냥 폴더처럼 해보자"); built in task 541, see [web-client-tasks.md](../web-client-tasks.md) "Home" and [tasks.md](../tasks.md) "Dismiss". The word is *folder* everywhere; the manager's choices: no "Ungrouped" header, no registry, fold per device, no count on a heading. The mocks below stay as drawn.**
+
 Task 541. Mocks of the web Home on task 510's branch (For you row, one state on every chat row). The owner organizes chats alone; no manager or agent sets either.
 Both options reuse `homeOrder`; its order holds inside a filter or a group. One accent, no colour per label or group.
 
