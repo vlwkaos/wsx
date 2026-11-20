@@ -3840,6 +3840,23 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
     const folderOf = () => evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((data) => data.chats.find((chat) => chat.name === 'billing')?.folder ?? null)`);
     const reloadHome = async () => { await send("Page.reload"); await until(`!!(${billing})`, "Home did not come back after a reload", 30); };
     if (await folderOf() !== null || (await sections()).includes("#")) await fail(`billing starts in a folder: ${await sections()}`);
+    // ^ A phone: a touch held 500 ms on the row (home.js `PRESS_MS`) opens the same sheet and the click that ends it opens no chat; a touch that moves past the slop first (a scroll) opens nothing.
+    if (phone()) {
+      const rowPoint = () => evaluate(`(() => { const rect = ${billing}.querySelector('.row-link').getBoundingClientRect(); return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }; })()`);
+      const at = await rowPoint();
+      await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: at.x, y: at.y }] });
+      await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: at.x, y: at.y + 40 }] });
+      await pause(700);
+      await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await pause(300);
+      if (await count("dialog[open]")) await fail("a touch that moved past the slop opened the folder sheet");
+      await touch(await rowPoint(), 0, 700);
+      await until("!!document.querySelector('dialog[open] .folder-new input')", "a touch held 500 ms on a row opened no folder sheet", 15);
+      const hash = await evaluate("location.hash");
+      if (hash !== "#/" && hash !== "") await fail(`the click that ended the long press opened ${hash}`);
+      await evaluate("document.querySelector('dialog[open]').close()");
+      await until("!document.querySelector('dialog[open]')", "the folder sheet did not close");
+    }
     await evaluate(`${billing}.querySelector('.row-more').click()`);
     await until("!!document.querySelector('dialog[open] .folder-new input')", "the ⋯ of a row opened no folder sheet");
     const sheet = await evaluate("[...document.querySelectorAll('dialog[open] .folder-option')].map((option) => option.textContent.trim() + (option.getAttribute('aria-checked') === 'true' ? '*' : '')).join()");
