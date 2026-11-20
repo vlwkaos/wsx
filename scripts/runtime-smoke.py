@@ -2523,15 +2523,17 @@ try:
         log_file.write(json.dumps({"unix_ms": base + filler_count, "kind": "message", "id": 100 + filler_count,
                                    "from": "owner", "text": "LAST-ENTRY-0"}) + "\n")
     assert 7 * MiB < halt_log.stat().st_size < 8 * MiB - 64 * 1024, halt_log.stat().st_size
-    # ^ dirs::cache_dir: the home's Library/Caches on macOS, XDG_CACHE_HOME elsewhere.
-    ui_stderr = next((p for p in (HOME / "Library/Caches/wsx/ui-stderr.log", WORK / "cache/wsx/ui-stderr.log") if p.exists()), None)
-    assert ui_stderr, "the TUI wrote no ui-stderr.log"
-    traced_from = ui_stderr.stat().st_size
     select_in_tui("halt-me")
     remove_tui.send(b"t")
     wait_for(lambda: "All projects" in remove_tui.text(), "t opened no Tasks view for halt-me", seconds=120)
     remove_tui.send(b"m")
     wait_for(lambda: "LAST-ENTRY-0" in remove_tui.text(), "the TUI chat did not show the end of the 7.5 MiB log", seconds=120)
+    # ^ From here only the chat's own refresh reads the log: the Tasks view's usage tab parsed the whole log
+    # once, when it opened (usage::manager_turns, its own 30 s timer).
+    # dirs::cache_dir: the home's Library/Caches on macOS, XDG_CACHE_HOME elsewhere.
+    ui_stderr = next((p for p in (HOME / "Library/Caches/wsx/ui-stderr.log", WORK / "cache/wsx/ui-stderr.log") if p.exists()), None)
+    assert ui_stderr, "the TUI wrote no ui-stderr.log"
+    traced_from = ui_stderr.stat().st_size
     started = time.monotonic()
     with halt_log.open("a") as log_file:
         log_file.write(json.dumps({"unix_ms": base + filler_count + 1, "kind": "message", "id": 100 + filler_count + 1,
