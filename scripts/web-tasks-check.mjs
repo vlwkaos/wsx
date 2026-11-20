@@ -486,8 +486,8 @@ async function motion() {
     globalThis.motionKept = { tasks: state.tasks, projects: state.projects };
     const ui = state.projects.find((project) => project.name === 'ui').id;
     const rows = () => [...document.querySelectorAll('.home-rows > .row:has(.home-row)')];
-    const mover = state.projects.find((project) => project.id === rows().at(-1).dataset.key);
-    // ^ The last row has no need and the oldest message (the quiet rows follow by their chat's age), so a newer message moves it up.
+    const mover = state.projects.find((project) => String(project.id) === rows().map((row) => row.dataset.key).filter((key) => !key.includes('/')).at(-1));
+    // ^ The last main-chat row has no need and the oldest message (the quiet rows follow by their chat's age), so a newer message moves it up.
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     // The manager of ui runs a turn: typing dots on its row. ^ Only ui's row: another fixture
     // manager may run a real turn at the same time.
