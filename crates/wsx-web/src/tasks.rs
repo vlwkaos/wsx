@@ -1199,12 +1199,15 @@ pub fn mentions(app: &App, scope: &Scope, chat: Option<&str>) -> Outcome<Value> 
                 .filter(|(_, row)| row["listed"] == true)
                 .map(|(_, row)| (row["name"].clone(), row["shown"].clone()))
                 .collect();
-            if !rows.iter().any(|(name, _)| *name == json!(home_name(other))) {
+            if !rows
+                .iter()
+                .any(|(name, _)| *name == json!(home_name(other)))
+            {
                 rows.push((json!(home_name(other)), json!(other.name)));
             }
-            rows.into_iter().map(move |(name, shown)| {
-                json!({ "id": name, "name": shown, "project": other.name })
-            })
+            rows.into_iter().map(
+                move |(name, shown)| json!({ "id": name, "name": shown, "project": other.name }),
+            )
         })
         .filter(|row| row["id"] != json!(current))
         .collect();
