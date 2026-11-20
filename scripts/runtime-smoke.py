@@ -2098,7 +2098,8 @@ for name, folder in removal.items():
 with (CONFIG_DIR / "config-v2.toml").open("a") as config_file:
     for name, folder in removal.items():
         config_file.write(f"[[projects]]\nname = \"{name}\"\npath = {json.dumps(str(folder))}\n")
-# ^ WSX_TRACE_READ_LOG: the TUI prints one stderr line (its terminal) per whole-log read; the 7.5 MiB step counts them.
+# ^ WSX_TRACE_READ_LOG: the TUI writes one stderr line per whole-log read to its ui-stderr.log (tui.rs
+# stderr_aside); the 7.5 MiB step counts them.
 remove_tui = smoke_tui(tui_env={**{k: v for k, v in env.items() if k != "WSX_PANE_ID"}, "WSX_TRACE_READ_LOG": "1"})
 
 
@@ -2522,7 +2523,10 @@ try:
         log_file.write(json.dumps({"unix_ms": base + filler_count, "kind": "message", "id": 100 + filler_count,
                                    "from": "owner", "text": "LAST-ENTRY-0"}) + "\n")
     assert 7 * MiB < halt_log.stat().st_size < 8 * MiB - 64 * 1024, halt_log.stat().st_size
-    traced_from = len(remove_tui.raw)
+    # ^ dirs::cache_dir: the home's Library/Caches on macOS, XDG_CACHE_HOME elsewhere.
+    ui_stderr = next((p for p in (HOME / "Library/Caches/wsx/ui-stderr.log", WORK / "cache/wsx/ui-stderr.log") if p.exists()), None)
+    assert ui_stderr, "the TUI wrote no ui-stderr.log"
+    traced_from = ui_stderr.stat().st_size
     select_in_tui("halt-me")
     remove_tui.send(b"t")
     wait_for(lambda: "All projects" in remove_tui.text(), "t opened no Tasks view for halt-me", seconds=120)
@@ -2537,8 +2541,9 @@ try:
     print(f"smoke: the chat of a {halt_log.stat().st_size / MiB:.1f} MiB log refreshed in {refresh:.2f} s", flush=True)
     # ^ What a whole-log read costs (about 20,000 entries here) depends on the machine's load, so the
     # seconds above are information only. The proof is that the TUI made no whole-log read of this chat.
-    whole_reads = remove_tui.raw[traced_from:].count(f"wsx-trace read_log {halt_log.parent}".encode())
-    assert whole_reads == 0, f"the chat read the whole 7.5 MiB log {whole_reads} times"
+    traced = ui_stderr.read_bytes()[traced_from:].decode(errors="replace").splitlines()
+    whole_reads = [line for line in traced if line.startswith("wsx-trace read_log ") and line.endswith("/chats/halt-me")]
+    assert not whole_reads, f"the chat read the whole 7.5 MiB log {len(whole_reads)} times: {whole_reads[:2]}"
     # docs/design/tui-parity-audit.md gap 7: PgUp and PgDn page the chat, `g` goes to the oldest
     # loaded row and `G` back to the newest.
     for keys, shown, message in ((b"\x1b[5~", False, "PgUp did not scroll the chat a page"),
