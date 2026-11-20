@@ -173,8 +173,7 @@ export const shownTabs = (list = tabs()) => {
 // Routes: #/ (home: the projects with task_view, else the inbox), #/sessions (the inbox),
 // #/projects, #/machine, #/settings[/ui|usage], #/s/<id>/chat|terminal, #/p/<id> (the project's chat with task_view, else the
 // sessions), #/p/<id>/sessions, #/p/<id>/files,
-// #/c/<chat>[/t/<thread>][/<sheet>] (a chat, a project's home chat or another one, docs/tasks.md "Chats", at one of its
-// threads, docs/design/chat-system.md, with a sheet over it: `task/<n>`, `page` (the project overview, `sheet: "overview"`),
+// #/c/<chat>[/<sheet>] (a chat, a project's home chat or another one, docs/tasks.md "Chats", with a sheet over it: `task/<n>`, `page` (the project overview, `sheet: "overview"`),
 // `checks[/<item>]`, `usage`, `panels`, `media`; a sheet is the end of its window's route, docs/web-client-tasks.md "Routes").
 // The older #/p/<id>/<sheet> (`t/<n>` for a task) and #/p/<id>/c/<chat> read as the project's chat or the chat, and App
 // replaces them by the window's route.
@@ -197,22 +196,22 @@ const sheetOf = (name, arg) => {
 };
 // The end of a route that has a sheet: `/checks/c3`, `/task/7`, `/page`.
 export const sheetSuffix = ({ sheet, task, item }) => sheet ? `/${sheet === "overview" ? "page" : sheet}${task != null ? `/${task}` : item ? `/${item}` : ""}` : "";
-// ^ A sheet's link: the open window's route and the sheet, so the chat and its thread stay under it. Outside
+// ^ A sheet's link: the open window's route and the sheet, so the chat stays under it. Outside
 // a chat of this project it is the older `#/p/<project>/<sheet>`, which App replaces by the project's chat.
 export function sheetHash(project, sheet, arg = null) {
-  const [, first, chat, third, fourth] = location.hash.split("/");
+  const [, first, chat] = location.hash.split("/");
   const here = first === "c" && chatPlace(decodeURIComponent(chat)).id === project;
-  const at = here ? `#/c/${chat}${third === "t" && fourth ? `/t/${fourth}` : ""}` : `#/p/${project}`;
+  const at = here ? `#/c/${chat}` : `#/p/${project}`;
   return `${at}/${!here && sheet === "task" ? "t" : sheet}${arg != null ? `/${arg}` : ""}`;
 }
 export function parseRoute(hash) {
-  const [, first = "", second, third, fourth, fifth, sixth] = hash.split("/");
+  const [, first = "", second, third, fourth] = hash.split("/");
   if (first === "s" && Number(second)) return { screen: "session", id: Number(second), tab: third === "terminal" ? "terminal" : "chat" };
   const old = sheetOf(third === "t" ? "task" : third, fourth);
   if (first === "p" && Number(second) && old.sheet) return { screen: "project", id: Number(second), ...old };
   if (first === "c" && second) {
-    const chat = decodeURIComponent(second), thread = third === "t" && fourth ? decodeURIComponent(fourth) : null;
-    return { screen: "chat", chat, ...chatPlace(chat), thread, ...(thread ? sheetOf(fifth, sixth) : sheetOf(third, fourth)) };
+    const chat = decodeURIComponent(second);
+    return { screen: "chat", chat, ...chatPlace(chat), ...sheetOf(third, fourth) };
   }
   if (first === "p" && Number(second) && third === "c" && fourth) return { screen: "chat", chat: decodeURIComponent(fourth), ...chatPlace(decodeURIComponent(fourth)), old: true };
   if (first === "p" && Number(second)) {

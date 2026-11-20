@@ -1243,13 +1243,13 @@ for (const [width, height, scale] of [[390, 560, 2], [1280, 520, 1]]) {
   await evaluate("document.querySelector('.reservoir-scroll').scrollTop = 0");
 }
 // ^ The open list ends at its last row: between that row and the composer is only the list's own
-// bottom padding, never an empty block (the thread strip, when the chat has one, sits between the list and the composer).
+// bottom padding, never an empty block.
 const noEmptyBlock = async (where) => {
   const seen = await evaluate(`(() => {
     const reservoir = document.querySelector('.reservoir'), last = [...reservoir.querySelectorAll('.need')].at(-1);
     let end = last.getBoundingClientRect().bottom;
     for (let node = last.parentElement; node !== reservoir; node = node.parentElement) if (/auto|scroll/.test(getComputedStyle(node).overflowY)) end = Math.min(end, node.getBoundingClientRect().bottom);
-    return { gap: (document.querySelector('.threads') ?? document.querySelector('.composer')).getBoundingClientRect().top - end, pad: parseFloat(getComputedStyle(document.querySelector('.reservoir-body')).paddingBottom), last: last.textContent.trim().replace(/\\s+/g, ' ').slice(0, 30) };
+    return { gap: document.querySelector('.composer').getBoundingClientRect().top - end, pad: parseFloat(getComputedStyle(document.querySelector('.reservoir-body')).paddingBottom), last: last.textContent.trim().replace(/\\s+/g, ' ').slice(0, 30) };
   })()`);
   if (seen.gap > seen.pad + 1.5) await fail(`${where}: ${Math.round(seen.gap)} px of empty space under the list's last row (${JSON.stringify(seen)}), only ${seen.pad} px is padding`);
 };
@@ -1656,10 +1656,9 @@ phase("The Overview button in the chat header (icon only), and Sett");
   }
 
   // The header at the bottom: the chat's bar sits between the log and the composer, the other
-  // screens' bar at the foot of the page, and the choice survives a reload. In a chat the thread strip
-  // is between the bar and the composer, so `composer` here is the strip's top there.
+  // screens' bar at the foot of the page, and the choice survives a reload.
   const place = () => evaluate(`(() => { const box = (selector) => document.querySelector(selector)?.getBoundingClientRect();
-    const bar = box('.page > .bar, .chat > .bar'), composer = box('.threads') ?? box('.composer'), log = box('.log'), page = box('.page');
+    const bar = box('.page > .bar, .chat > .bar'), composer = box('.composer'), log = box('.log'), page = box('.page');
     return { side: document.documentElement.dataset.bar ?? 'top', bar: bar && [Math.round(bar.top), Math.round(bar.bottom)], composer: composer && Math.round(composer.top),
       log: log && Math.round(log.bottom), page: page && [Math.round(page.top), Math.round(page.bottom)], menu: document.querySelector('.more-menu') ? 1 : 0 }; })()`);
   await go("#/settings/ui");
@@ -4975,74 +4974,28 @@ phase("Media a message names (docs/web-client-chat.md Markdown, doc");
   fs.rmSync(path.join(plansCheckout, ".env"));
   await go(plansChat);
 }
-// --- Threads (docs/design/chat-system.md "Using threads"): the strip above the composer, New thread,
-// a message written in a thread shows in it and not in the chat, a thread that waits for the owner has
-// its count and one line in the chat; captures of the chat and the thread at both sizes and schemes.
-let threadBlock = null;
+// --- The chat's composer card: captures of the chat at both sizes and schemes.
 {
-  const began = Date.now();
-  const sayIn = (words, extra = {}) => evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(${JSON.stringify({ text: words, ...extra })}) }).then((response) => response.status)`);
-  const chips = () => text(".threads .thread-chip .thread-name");
-  const shown = (words) => evaluate(`[...document.querySelectorAll('.log .bubble')].some((bubble) => bubble.textContent.includes(${JSON.stringify(words)}))`);
-  await resize([390, 844, 2]);
   await go(`#/p/${project}`);
-  await until("!!document.querySelector('.threads .thread-new') && document.querySelectorAll('.log .bubble').length > 0", "no thread strip above the composer");
-  if ((await chips()).join() !== "Chat") await fail(`the strip of a chat with no thread is ${JSON.stringify(await chips())}`);
-  await click(".thread-new");
-  await until("!!document.querySelector('dialog[open] input[name=title]')", "New thread did not open its form");
-  await typeInto("dialog[open] input[name=title]", "Fee table");
-  await click("dialog[open] button[type=submit]");
-  await until("/\\/t\\/fee-table$/.test(location.hash) && document.querySelector('.threads [aria-current=true] .thread-name')?.textContent === 'Fee table'", "New thread did not open its window");
-  // ^ Written in the thread's window: the message carries the thread, shows there and not in the chat.
-  await typeInto(".composer-field", "In the thread: fee setup");
-  await click(".composer-send");
-  await until(`document.querySelectorAll('.log .bubble').length > 0 && [...document.querySelectorAll('.log .bubble')].some((bubble) => bubble.textContent.includes('In the thread: fee setup'))`, "the message written in the thread is not in its window");
-  await click(".threads .thread-chip:first-child");
-  // ^ One window rereads in place: the chip is current at once, the rows follow with their read.
-  await until("document.querySelector('.threads [aria-current=true] .thread-name')?.textContent === 'Chat' && document.querySelectorAll('.log .bubble').length > 0 && ![...document.querySelectorAll('.log .bubble')].some((bubble) => bubble.textContent.includes('In the thread: fee setup'))", "the chat shows a message written in a thread, or no chat");
-  // ^ A question in the thread: its chip has the count, the chat one line for it, and it is listed first.
-  if (await sayIn("ASK which fee line goes first", { thread: "fee-table" }) !== 200) await fail("the question for the thread was not taken");
-  await until("!!document.querySelector('.threads .thread-ask') && !!document.querySelector('.thread-waits')", "the thread that waits has no count and no line in the chat");
-  if (!/Fee table waits for you · 1 question/.test((await text(".thread-waits"))[0] ?? "")) await fail(`the line in the chat is ${JSON.stringify(await text(".thread-waits"))}`);
-  // ^ One page load for all four captures (each `go` is a burst of reads in the busiest minute of the request-rate check below).
-  // ^ At each size: the chat in both schemes, then one visit to the thread (it remounts the window, a burst of reads) for its window and menu in both.
   for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
     await resize([width, height, scale]);
-    await until("document.querySelector('.threads [aria-current=true] .thread-name')?.textContent === 'Chat' && !!document.querySelector('.thread-waits') && !!document.querySelector('.composer-send')", "the chat with its thread line did not show");
+    await until("document.querySelectorAll('.log .bubble').length > 0 && !!document.querySelector('.composer-send')", "the chat did not show");
     for (const scheme of ["dark", "light"]) {
       await inScheme(scheme);
-      await shot(`thread-chat-${width}-${scheme}`, ".composer-send");
+      await shot(`chat-${width}-${scheme}`, ".composer-send");
     }
-    // ^ The composer is one card on no band: the thread strip paints nothing, the card is narrower than the window and the whole box is in it, 8 px (--space-2) above the foot.
-    const card = await evaluate(`(() => { const box = document.querySelector('.manager .composer').getBoundingClientRect();       return { footGap: Math.round(innerHeight - box.bottom), narrower: box.width < innerWidth, bandless: getComputedStyle(document.querySelector('.threads')).backgroundColor === 'rgba(0, 0, 0, 0)' }; })()`);
-    if (card.footGap < 8 || !card.narrower || !card.bandless) await fail(`the composer card at ${width}: ${JSON.stringify(card)}`);
-    await click(".threads .thread-chip:nth-child(2)");
-    await until("/Fee table/.test(document.querySelector('.bar-label')?.textContent ?? '') && document.querySelectorAll('.log .bubble').length > 0", "the thread's window did not show");
-    for (const scheme of ["dark", "light"]) {
-      await inScheme(scheme);
-      await shot(`thread-window-${width}-${scheme}`, ".composer-send");
-      await click(".more-button");
-      await until("!!document.querySelector('.more-menu')", "the thread's menu did not open");
-      await shot(`thread-menu-${width}-${scheme}`);
-      await key("Escape", 27);
-    }
-    await inScheme("dark");
-    await click(".threads .thread-chip:first-child");
+    // ^ The composer is one card: narrower than the window and the whole box is in it, 8 px (--space-2) above the foot.
+    const card = await evaluate(`(() => { const box = document.querySelector('.manager .composer').getBoundingClientRect(); return { footGap: Math.round(innerHeight - box.bottom), narrower: box.width < innerWidth }; })()`);
+    if (card.footGap < 8 || !card.narrower) await fail(`the composer card at ${width}: ${JSON.stringify(card)}`);
   }
+  await inScheme("dark");
   await resize([390, 844, 2]);
-  // ^ The owner answers it: the count and the line go, and Close thread is refused no more.
-  const asked = await evaluate("fetch('api/tasks/' + " + project + " + '/chat?thread=fee-table').then((r) => r.json()).then((chat) => chat.asks)");
-  if (asked.length !== 1 || await sayIn("this one", { thread: "fee-table", quote_id: asked[0] }) !== 200) await fail(`the question of the thread: ${JSON.stringify(asked)}`);
-  await go(`#/p/${project}`);
-  await until("!!document.querySelector('.threads .thread-new') && !document.querySelector('.thread-ask') && !document.querySelector('.thread-waits')", "the answered thread still waits for the owner");
-  threadBlock = [began, Date.now()];
 }
 // ^ The page's own request rate over the whole journey: its busiest 60 s must stay under REQUESTS_PER_MINUTE
 // and the server must refuse none (`refused`), whatever the waits of this
 // check ask for (`untilApi`). The by-path and by-caller counts name the cause when it fails.
 const rates = requestRates(cdp);
-if (rates.own > REQUESTS_PER_MINUTE || rates.refused) await fail(`the page asked ${rates.own} times in its busiest 60 s (limit ${REQUESTS_PER_MINUTE}) and the server refused ${rates.refused}: ${JSON.stringify(rates)}; the thread block ran at seconds ${JSON.stringify(threadBlock?.map((at) => Math.round((at - cdp.requests[0].at) / 1000)))}`);
+if (rates.own > REQUESTS_PER_MINUTE || rates.refused) await fail(`the page asked ${rates.own} times in its busiest 60 s (limit ${REQUESTS_PER_MINUTE}) and the server refused ${rates.refused}: ${JSON.stringify(rates)}`);
 phase("end");
 console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail closing the item and its reply kept as the note, Pass in a bubble that stays in place, Skip), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Chats (a Home row under its project with its unread dot, none in the ⋯ menu, its chat at #/p/<project>/c/<chat> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures; the page's own API requests in its busiest 60 s: ${rates.own} (limit ${REQUESTS_PER_MINUTE}; ${rates.busiest} with this check's reads, of ${rates.total} in ${rates.minutes} min)`);
 await linter.finish(fail);

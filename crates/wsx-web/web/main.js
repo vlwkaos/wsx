@@ -114,11 +114,11 @@ function Screen({ route }) {
   if (route.screen === "session") return html`<${Session} key=${route.id} id=${route.id} tab=${route.tab} />`;
   if (route.screen === "files") return html`<${Files} key=${`${route.id}:${route.file ?? ""}`} project=${route.id} file=${route.file} />`;
   if (route.screen === "project" && !can("task_view")) return route.sheet === "panels" ? html`<${PanelsScreen} key=${route.id} project=${route.id} />` : html`<${Project} key=${route.id} id=${route.id} />`;
-  // ^ One Manager is the chat window: a project's chat or another one, whatever thread it is at and whatever
-  // sheet is over it, so opening a sheet or a thread keeps the strip, the composer and its draft
+  // ^ One Manager is the chat window: a project's chat or another one, whatever
+  // sheet is over it, so opening a sheet keeps the composer and its draft
   // (docs/web-client-tasks.md "Routes"). The project's own route and its sheets are the home chat's.
   if ((route.screen === "project" || route.screen === "chat") && can("task_view") && route.id != null) {
-    return html`<${Manager} key=${`${route.id}/${route.room ?? ""}`} project=${route.id} chat=${route.room} thread=${route.thread} sheet=${route.sheet} task=${route.task} item=${route.item} />`;
+    return html`<${Manager} key=${`${route.id}/${route.room ?? ""}`} project=${route.id} chat=${route.room} sheet=${route.sheet} task=${route.task} item=${route.item} />`;
   }
   if (route.screen === "sessions") return html`<${ProjectSessions} key=${route.id} id=${route.id} />`;
   if (route.screen === "settings") return html`<${Settings} sub=${route.sub} />`;

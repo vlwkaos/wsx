@@ -4390,22 +4390,6 @@ merge_seconds = 3
         assert manager_usage['turns'] >= 1 and manager_usage['cost_micro_usd'] == 1000 * manager_usage['turns'], manager_usage
         later = steady(owner, 'GET', '/api/tasks/%d/chat?after=%d' % (demo, reply['id']))[1]
         assert all(r.get('id', reply['id'] + 1) > reply['id'] for r in later['rows']), later
-        # --- Threads in the window (docs/design/chat-system.md "Using threads"): the owner opens one, a
-        # message written in it carries it, a read for the thread shows only its rows and the chat's own
-        # read none of them; the chat's read lists the open thread (`thread::list`, the strip's order).
-        status, opened = steady(owner, 'POST', '/api/tasks/%d/threads/open' % demo, {'thread': '', 'title': 'Poll cut', 'into': ''})
-        assert status == 200 and opened['thread'] == 'poll-cut', (status, opened)
-        in_thread = steady(owner, 'POST', say_route, {'text': 'STATUS in the thread', 'thread': 'poll-cut'})[1]
-        wait(lambda: next((e for e in js('task', 'chat', '-p', 'demo')['entries'] if e['kind'] == 'reply' and in_thread['id'] in e['to']), None), 'the thread message answered')
-        read_rows = lambda scope: steady(owner, 'GET', '/api/tasks/%d/chat?thread=%s' % (demo, scope))[1]
-        assert any(r.get('id') == in_thread['id'] for r in read_rows('poll-cut')['rows']), read_rows('poll-cut')['rows']
-        assert not any(r.get('id') == in_thread['id'] for r in read_rows('')['rows'])
-        # ^ Open beside the one the browser journey made; nothing waits in it.
-        assert ('poll-cut', 'Poll cut', '') in [(t['slug'], t['title'], t['waits']) for t in read_rows('')['threads']], read_rows('')['threads']
-        assert steady(owner, 'POST', '/api/tasks/%d/threads/open' % demo, {'thread': '', 'title': '', 'into': ''})[1]['error']['code'] == 'invalid_thread'
-        assert steady(owner, 'POST', '/api/tasks/%d/threads/close' % demo, {'thread': 'poll-cut', 'title': '', 'into': ''})[0] == 200
-        assert 'poll-cut' not in [t['slug'] for t in read_rows('')['threads']]
-        ok('a thread: a message written in it carries it, its read shows only its rows, the list holds it while it is open')
         # --- The usage limit holds the manager (docs/tasks.md "Manager"): the turn that met the limit
         # keeps its bubble; a message sent meanwhile has not been taken into a turn, so its row is
         # queued, after the others; once the manager resumes and takes it, it is a normal bubble.

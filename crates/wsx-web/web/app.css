@@ -964,7 +964,7 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 /* The pills, between the attach button and the Send button: an icon and its count, the label
    too from 900 px (the wide layout). A pressed pill is the open list. */
 .pills { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: var(--space-1); margin-right: var(--space-3); }
-.pill, .thread-chip {
+.pill {
   --pill-height: calc(var(--size-key) - var(--space-2));
   position: relative; flex: 0 0 auto; height: var(--pill-height); display: inline-flex; align-items: center; gap: var(--space-1);
   padding: 0 var(--space-2); border: var(--border-width) solid var(--color-hairline); border-radius: var(--pill-height); background: var(--color-raised); color: var(--color-muted);
@@ -979,22 +979,6 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 /* Routines: the last run of an enabled routine failed (danger) or found something (attention). */
 .pill[data-tone="danger"] { border-color: var(--color-danger); color: var(--color-danger); }
 .pill[data-tone="attention"] { border-color: var(--color-attention); color: var(--color-attention); }
-/* The chat's threads: one strip directly above the composer that scrolls sideways; the chat is the first chip, `+` the last
-   (docs/design/chat-system.md "Using threads"). A chip is as high as a pill, its hit area the control size. */
-/* ^ As high as a hit area: the chips' ::after fits inside, so the strip scrolls sideways only (soundCheck counts a vertical scroller). */
-.threads { flex: 0 0 auto; box-sizing: border-box; min-height: var(--size-control); display: flex; align-items: center; gap: var(--space-2); overflow: auto hidden; scrollbar-width: none; padding: 0 var(--column-inset, var(--space-4)); }
-.thread-chip {
-  position: relative; flex: none; height: var(--pill-height); display: inline-flex; align-items: center; gap: var(--space-1); padding: 0 var(--space-3);
-  border: var(--border-width) solid var(--color-hairline); border-radius: var(--pill-height); color: var(--color-muted); text-decoration: none; font-size: var(--font-size-sm);
-}
-.thread-chip::after { content: ""; position: absolute; inset: calc((var(--pill-height) - var(--size-control)) / 2) 0; }
-.thread-chip[aria-current="true"] { color: var(--color-text); border-color: var(--color-accent); }
-.thread-name { max-width: calc(var(--size-rail) / 2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.thread-ask { min-width: var(--space-4); text-align: center; border-radius: var(--space-4); background: var(--color-attention); color: var(--color-surface); font-size: var(--font-size-sm); font-weight: var(--font-weight-strong); }
-.thread-new { position: relative; flex: none; width: var(--size-key); height: var(--size-key); display: inline-flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--color-muted); cursor: pointer; }
-.thread-new::after { content: ""; position: absolute; inset: calc((var(--size-key) - var(--size-control)) / 2); }
-.thread-waits { margin: 0; padding-inline: var(--column-inset, var(--space-4)); color: var(--color-muted); }
-.thread-waits a { color: var(--color-accent); }
 /* A device that cannot act has no composer: the pills have a bar of their own. */
 .pill-bar { flex: 0 0 auto; padding: var(--space-2) var(--column-inset); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
 /* ^ The label follows the count from 900 px, in the bar of a device that cannot act and in a composer with three pills. */

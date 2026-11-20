@@ -47,7 +47,7 @@ export const rowLine = (task) => ({
 export const BANDS = { moving: "Moving", waiting: "Waiting" };
 // What waits for the owner in an overview (or a chat's entry of the For you list), in the server's
 // order: its needs, then its open questions as items of kind `ask` (docs/web-client-tasks.md "Project screen").
-export const needing = (body) => [...(body?.needs ?? []), ...(body?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote, thread: ask.threads?.[0] }))];
+export const needing = (body) => [...(body?.needs ?? []), ...(body?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote }))];
 // The open tasks in `task`'s group, in the list's order: upstream, itself, downstream.
 export const chainOf = (tasks, task) => {
   const root = task?.flow?.place?.root;

@@ -220,8 +220,8 @@ export function useFollowEnd(name, ready) {
   const top = useRef(0);
   const full = useRef(0);
   const [away, setAway] = useState(false);
-  // ^ The place the log shows: its read mark and where the reader left it. A new `name` (a chat's
-  // other thread, whose rows came in) is a first opening of that place: the old one is kept first.
+  // ^ The place the log shows: its read mark and where the reader left it. A new `name` is a first
+  // opening of that place: the old one is kept first.
   const entered = useRef({ name: null, opened: null });
   const placed = useRef(false);
   // ^ The row the reader left, held where they left it until they scroll: the rows above it
