@@ -8661,10 +8661,10 @@ def part_chats(created=None):
         ):
             t0 += 1000
             out.write(json.dumps({'unix_ms': t0, **line}) + '\n')
-    shown = js('task', 'chat', 'old42')['entries']
+    shown = js('task', 'chat', '--chat', 'old42')['entries']
     assert [(e['kind'], e['id']) for e in shown] == [('message', 9100001), ('reply', 9100002)], shown
     assert not [e for e in shown if 'thread' in e or 'threads' in e], shown
-    text = cli('task', 'chat', 'old42').stdout
+    text = cli('task', 'chat', '--chat', 'old42').stdout
     assert 'old tagged message' in text and 'old tagged reply' in text and 'thread' not in text.lower(), text
     assert chats()['old42']['state'] == 'open' and 'thread' not in json.dumps(js('task', 'chat', 'list')), chats()
     # ^ A task record of before, with `thread`, loads and shows no thread key; the ledger has none.
