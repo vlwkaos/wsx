@@ -1,6 +1,6 @@
 //! Chats: a manager with a name and a goal. Each is `tasks/chats/<name>/` (the name is its id,
 //! unique on the machine) with its own log, `notes/`, an optional `goal.md` and `chat.json
-//! {agent?, repos, from?}`. A repo's `home.json` names its home chat, which hears what no chat
+//! {agent?, repos}`. A repo's `home.json` names its home chat, which hears what no chat
 //! owns. The repo (files, tasks, rules, memory) is shared; a chat reaches another's context by
 //! search or by `say`. ref: docs/tasks.md "Chats"
 
@@ -267,23 +267,14 @@ pub fn checked_goal(goal: &str) -> Result<&str> {
     Ok(goal)
 }
 
-/// The chat and the message that asked for a chat (`chat new --owner-said`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChatFrom {
-    pub chat: String,
-    pub message: u64,
-}
-
 /// `chat.json`: the chat's own agent, the repos it runs in (the first is its own, where its
-/// host runs) and the message that asked for it.
+/// host runs).
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ChatFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
     #[serde(default)]
     repos: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    from: Option<ChatFrom>,
     /// The name the owner reads in place of the chat's id (`shown_name`); none shows the id.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     title: String,
@@ -432,11 +423,6 @@ pub(super) fn ensure_file(dir: &ManagerDir) -> Result<()> {
     write_chat_file(dir, &file)
 }
 
-/// The message that asked for the chat, if a chat's agent did.
-pub fn from(dir: &ManagerDir) -> Option<ChatFrom> {
-    chat_file(dir).from
-}
-
 /// A chat's own agent: an `[[agents]]` entry's adapter and model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatAgent {
@@ -486,13 +472,12 @@ pub fn agent(dir: &ManagerDir) -> Option<ChatAgent> {
 }
 
 /// Open the chat in the repo `project_id`: a new folder, or a closed one again with its notes.
-/// A new `goal` replaces the old (`set_goal`); `from` is the message of a chat's agent that asked for it.
+/// A new `goal` replaces the old (`set_goal`);
 pub fn create(
     project_id: &str,
     name: &str,
     goal: Option<&str>,
     agent: Option<&str>,
-    from: Option<ChatFrom>,
 ) -> Result<ManagerDir> {
     let name = checked_name(name)?;
     let agent = agent.map(checked_agent).transpose()?;
@@ -513,7 +498,6 @@ pub fn create(
     }
     let mut file = chat_file(&dir);
     file.agent = agent.map(str::to_string);
-    file.from = from;
     write_chat_file(&dir, &file)?;
     match std::fs::remove_file(dir.path.join(CLOSED_FILE)) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {

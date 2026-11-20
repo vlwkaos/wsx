@@ -4,7 +4,7 @@
 //! ref: docs/web-client-tasks.md "Home"
 
 use std::fs;
-use wsx_core::task::chats::{self, ChatFrom};
+use wsx_core::task::chats;
 use wsx_core::task::chats_home;
 
 const PROJECT: &str = "demo-0a1b2c3d";
@@ -30,7 +30,7 @@ fn a_folder_is_one_file_of_its_chat_and_goes_with_its_last_chat() {
     unsafe { std::env::set_var("XDG_STATE_HOME", &state) };
 
     for name in ["wsx", "wsx-ui", "projk", "research"] {
-        chats::create(PROJECT, name, None, None, None::<ChatFrom>).unwrap();
+        chats::create(PROJECT, name, None, None).unwrap();
     }
     assert!(row_folders().iter().all(|(_, folder)| folder.is_none()));
 

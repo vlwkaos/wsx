@@ -991,7 +991,7 @@ pub fn new_chat(
 ) -> Outcome<Value> {
     let goal = goal.map(str::trim).filter(|goal| !goal.is_empty());
     let agent = agent.filter(|agent| !agent.is_empty());
-    task::chats::create(&scope.store, name, goal, agent, None)
+    task::chats::create(&scope.store, name, goal, agent)
         .map_err(|error| Fault::new(400, "invalid_chat", format!("{error:#}")))?;
     Ok(json!({ "ok": true, "chat": name }))
 }

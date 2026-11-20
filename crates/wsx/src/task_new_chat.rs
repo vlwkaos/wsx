@@ -147,13 +147,7 @@ impl NewChat {
             .agent
             .and_then(|at| self.agents.get(at))
             .map(|(name, _)| name.as_str());
-        match chats::create(
-            project_id,
-            &name,
-            (!goal.is_empty()).then_some(goal),
-            agent,
-            None,
-        ) {
+        match chats::create(project_id, &name, (!goal.is_empty()).then_some(goal), agent) {
             Ok(_) => Outcome::Done(name),
             Err(error) => {
                 self.error = Some(format!("{error:#}"));

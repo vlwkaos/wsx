@@ -13,10 +13,8 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::memory::{backend, index::Target};
 use wsx_core::task::chat::{self, Reading, Window};
-use wsx_core::task::chats::{self, ChatFrom};
-use wsx_core::task::manager::{
-    pending_approvals, Author, ManagerRequest, ManagerResponse, Party, Short,
-};
+use wsx_core::task::chats;
+use wsx_core::task::manager::{pending_approvals, Author, ManagerRequest, ManagerResponse, Party};
 use wsx_core::task::owner::{self};
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::store::{self, TaskDir};
@@ -313,36 +311,10 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
             agent,
             said,
         } => {
-            let ((project, main), from) = lifecycle("chat new", project, said.owner_said)?;
+            let (project, main) = lifecycle("chat new", project, said.owner_said)?;
             let project_id = store::project_id(&project, &main);
             let goal = goal.as_deref().map(read_goal).transpose()?;
-            chats::create(
-                &project_id,
-                &name,
-                goal.as_deref(),
-                agent.as_deref(),
-                from.clone(),
-            )?;
-            // ^ The first row of a chat that a chat's agent opened links to the message that asked.
-            if let Some(from) = from {
-                let short = Short::event(
-                    format!("Opened from chat {}, message {}", from.chat, from.message),
-                    false,
-                );
-                let text = format!("Opened from chat {}, message {}.", from.chat, from.message);
-                let exe = std::env::current_exe().context("cannot find the wsx binary")?;
-                owner::say(
-                    &project,
-                    &main,
-                    &exe,
-                    Some(&name),
-                    launch_manager(&main),
-                    text,
-                    Some(Author::Events),
-                    vec![short],
-                    None,
-                )?;
-            }
+            chats::create(&project_id, &name, goal.as_deref(), agent.as_deref())?;
             let message = format!("chat {name} is open; `wsx task say --to {name}` talks to it");
             if json {
                 return print_json(&json!({ "chat": name, "state": "open", "message": message }));
@@ -391,7 +363,7 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
             Ok(())
         }
         ChatCmd::Close { name, said } => {
-            let ((project, main), _) = lifecycle("chat close", project, said.owner_said)?;
+            let (project, main) = lifecycle("chat close", project, said.owner_said)?;
             chat_of_repo(&name, &store::project_id(&project, &main))?;
             let exe = std::env::current_exe().context("cannot find the wsx binary")?;
             owner::close_chat((&project, &main), &exe, &name, launch_manager(&main))?;
@@ -415,7 +387,7 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
                 println!("{goal}");
                 return Ok(());
             };
-            let ((project, main), _) = lifecycle("chat goal", project, said.owner_said)?;
+            let (project, main) = lifecycle("chat goal", project, said.owner_said)?;
             chat_of_repo(&name, &store::project_id(&project, &main))?;
             let goal = read_goal(&path)?;
             chats::set_goal(&name, &goal)?;
@@ -464,16 +436,11 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
     }
 }
 
-/// The repo and the origin of a chat lifecycle command: the owner's own `-p` with no origin; a
-/// chat's agent acts in its own repo on the owner's message of its turn, which is the origin of
-/// a chat it opens. ref: docs/tasks.md "Chats"
-fn lifecycle(
-    command: &str,
-    project: Option<&str>,
-    said: Option<u64>,
-) -> Result<((String, PathBuf), Option<ChatFrom>)> {
+/// The repo of a chat lifecycle command: the owner's own `-p`; a chat's agent acts in its own
+/// repo on the owner's message of its turn. ref: docs/tasks.md "Chats"
+fn lifecycle(command: &str, project: Option<&str>, said: Option<u64>) -> Result<(String, PathBuf)> {
     if !acting_as_manager() {
-        return Ok((project_entry(project)?, None));
+        return project_entry(project);
     }
     let asker = actor().chat().map(str::to_string).unwrap_or_default();
     let said = crate::task::owner_said(said).with_context(|| {
@@ -483,14 +450,7 @@ fn lifecycle(
     })?;
     let own = ManagerDir::existing(&asker)?.context("the asking chat has no folder")?;
     owner::check_owner_said(&own.project_id, Some(&asker), said)?;
-    let entry = crate::task::project_by_id(&own.project_id)?;
-    Ok((
-        entry,
-        Some(ChatFrom {
-            chat: asker,
-            message: said,
-        }),
-    ))
+    crate::task::project_by_id(&own.project_id)
 }
 
 /// The open chat `name`, which must run in the repo `project_id`.

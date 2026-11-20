@@ -8307,7 +8307,7 @@ def part_chats(created=None):
     reach_task = n
     # ^ Demo's manager left a landed task in other: the recap and the task counts below include it.
     # 33c. Chats on the owner's word, and the home chat (docs/tasks.md "Chats"): a chat's agent opens
-    # and closes a chat only with --owner-said, the new chat records where it came from, a closed
+    # and closes a chat only with --owner-said, the new chat records no origin, a closed
     # chat's open tasks and last decisions go back to the home chat in one row, and the home chat
     # sees every open task whichever chat made it.
     mark('33c')
@@ -8321,12 +8321,15 @@ def part_chats(created=None):
     assert '-> 0' in reply_to(asked['id'], 60)['text']
     assert chats()['qa']['state'] == 'open' and not chats()['qa']['home'] and chats()['demo']['home'], chats()
     meta = json.loads((chats_dir / 'qa/chat.json').read_text())
-    assert meta['repos'] == [repo_id] and meta['from'] == {'chat': 'demo', 'message': asked['id']}, meta
+    assert meta['repos'] == [repo_id] and 'from' not in meta, meta
     assert (chats_dir / 'qa/goal.md').read_text() == qa_goal.read_text()
-    # ^ The new chat's first row links back to the asking message, and costs no turn.
-    first_row = wait(lambda: next(iter(chat_entries('qa')), None), 'the first row of qa')
-    assert first_row['kind'] == 'message' and first_row['from'] == 'events', first_row
-    assert first_row['text'] == 'Opened from chat demo, message %d.' % asked['id'], first_row
+    # ^ The new chat has no first row: nothing says where it came from, and it costs no turn.
+    assert not chat_entries('qa'), chat_entries('qa')
+    # ^ A `chat.json` of before, with `from`, still loads.
+    old_meta = dict(meta)
+    old_meta['from'] = {'chat': 'demo', 'message': asked['id']}
+    (chats_dir / 'qa/chat.json').write_text(json.dumps(old_meta))
+    assert chats()['qa']['state'] == 'open', chats()
     # The chat's task is the home chat's to see; its events go to the chat that made it.
     made = js('task', 'say', '--to', 'qa', 'RUN wsx task new "WORK qa.txt" -p demo --json')
     chat_reply('qa', made['id'])
