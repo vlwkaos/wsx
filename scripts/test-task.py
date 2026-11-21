@@ -7462,7 +7462,8 @@ def part_agents(created=None):
     js('task', 'add', s2, 'WORK s2b.txt')
     assert wait_state(s2, 'ready', 'failed')['state'] == 'ready', show(s2)
     assert show(s2)['record']['adapter'] == 'claude' and not show(s2)['record'].get('fallback'), show(s2)['record']
-    s2_handoff = [t for t in traces()[s2_before:] if t.get('adapter') == 'pi' and 'message' in t]
+    s2_handoff = [t for t in traces()[s2_before:] if t.get('adapter') == 'pi' and 'message' in t and '/%s/rotate-notes.md' % s2 in t['message']]
+    # ^ The task's own handoff turn: a manager turn of the repo's chat can run on Pi in the same window.
     assert len(s2_handoff) == 1 and 'This conversation ends after this turn and its own conversation continues' in s2_handoff[0]['message'], s2_handoff
     assert len(lc_claude_launches(s2_before)) == 1 and not lc_claude_launches(s2_before)[0]['resume'], lc_claude_launches(s2_before)
     s2_turn = lc_claude_turn(s2_before, 'WORK s2b.txt')['message']
