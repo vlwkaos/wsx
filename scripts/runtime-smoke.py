@@ -2446,10 +2446,21 @@ try:
     # real TUI. The help scrolls to its last section at 40 rows; the footers list the project and
     # routine keys; a bracketed paste lands in the `p` path and the chat line; a routine runs now
     # and turns off and on from its row; the chat pages. (An Esc followed at once by a key reads as Alt.)
-    def screen_key(keys, found, message, pause=0.5):
+    def settled(before=None, quiet=0.5, change=5):
+        # ^ The screen once the TUI stopped drawing: after a key the first changed frame can be half
+        # drawn, and a loaded host repaints late. Waits up to `change` s for a screen other than
+        # `before`, then until the output paused for `quiet` s, and returns the text. A screen that
+        # a key leaves as it was gets the `quiet` s the TUI needs to start drawing.
+        deadline = time.monotonic() + change
+        time.sleep(quiet)
+        while before is not None and remove_tui.text() == before and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return remove_tui.wait_text(lambda text: True, "the TUI kept drawing", seconds=60, idle=quiet)
+
+    def screen_key(keys, found, message):
         remove_tui.send(keys)
         wait_for(lambda: re.search(found, remove_tui.text()), lambda: f"{message}:\n{remove_tui.text()}", seconds=60)
-        time.sleep(pause)
+        settled()
     select_in_tui("keep-me")
     footer_row = lambda: next(line for line in reversed(remove_tui.text().splitlines()) if line.startswith(" WORKSPACE"))
     wait_for(lambda: "(t)asks" in footer_row() and "(v/M)panels" in footer_row(), lambda: f"the project footer lacks the tasks and panels keys:\n{footer_row()}", seconds=60)
@@ -2562,9 +2573,9 @@ try:
                                  (b"G", True, "G did not go to the newest row")):
         remove_tui.send(keys)
         wait_for(lambda: ("LAST-ENTRY-1" in remove_tui.text()) == shown, lambda: f"{message}:\n{remove_tui.text()}", seconds=60)
-        time.sleep(0.3)
+        text = settled()
         if keys == b"g":
-            assert re.search(r"old-\d{5}", remove_tui.text()), remove_tui.text()
+            assert re.search(r"old-\d{5}", text), text
     # ^ A 20 KB line typed (a terminal without bracketed paste sends a paste as keys), in ten
     # parts of 2,000 characters, each ending in a mark that shows when the TUI has taken the
     # part. Each key costs one redraw (the first part sets the cost of that), so the last part
@@ -2606,20 +2617,18 @@ try:
     wait_for(lambda: "Plain shapes:" in remove_tui.text(), lambda: f"the chat did not show the replies with tables:\n{remove_tui.text()}", seconds=60)
 
     def chat_pages():
-        # ^ The newest screen, then each page up to the oldest loaded row, one read of the text each.
+        # ^ The newest screen, then each page up to the oldest loaded row: each one a settled screen,
+        # and the end is a settled screen equal to the page before.
         remove_tui.send(b"G")
-        time.sleep(0.5)
-        pages = []
-        for _ in range(10):
-            pages.append(remove_tui.text())
+        pages = [settled()]
+        for _ in range(9):
             remove_tui.send(b"\x1b[5~")
-            deadline = time.monotonic() + 2
-            while remove_tui.text() == pages[-1] and time.monotonic() < deadline:
-                time.sleep(0.05)
-            if remove_tui.text() == pages[-1]:
+            page = settled(pages[-1])
+            if page == pages[-1]:
                 break
+            pages.append(page)
         remove_tui.send(b"G")
-        time.sleep(0.5)
+        settled()
         return pages
 
     def table_rows(pages, header):
