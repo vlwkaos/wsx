@@ -781,10 +781,9 @@ def manager_up(created):
 
     # 20. The manager: started by the first say, answers from the ledger, acts through wsx task.
     mark('20')
-    # ^ The repo service holds every event line of sections 1 to 18 for the main chat: no manager can start before the config
-    # below, so it tries again every 10 s and, once the config is in, a try that lands before the first say sends them first (the
-    # manager starts on them, and the say is not message 1). A service that starts again with no `repo.json` takes what happened
-    # as its baseline, not news: the events of section 20 on are the ones it sends.
+    # ^ No manager model exists before the config below, so the repo service holds the event lines of sections 1 to 18 and retries
+    # every 10 s: a try between the config and the first say would send them first (the say is not message 1). A service that
+    # starts with no `repo.json` takes what happened as its baseline, not news.
     stop_repo_service()
     (Path(created['task_dir']).parent / 'repo.json').unlink(missing_ok=True)
     configure((project / 'wsx.config.yml').read_text()
