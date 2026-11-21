@@ -221,26 +221,30 @@ impl App {
                 // ^ Only proof that wsxd still sends; the reader's idle limit is the use.
                 runtime::TerminalServerMessage::Heartbeat => {}
                 runtime::TerminalServerMessage::Exited => {
-                    self.clear_active_terminal_selection();
-                    // ^ The stream says it before the next snapshot does, and Enter on the
-                    // pane must already start it again.
-                    let exited = self.terminal_stream.take().map(|active| active.pane_id);
-                    if let Some(pane_id) = exited {
-                        self.terminal_surfaces.forget(pane_id);
-                        if let Some(pane) = self.pane_mut(pane_id) {
-                            pane.exited = true;
-                        }
-                    }
-                    self.pending_terminal_entry = None;
-                    // ^ Back to the chat, whose `S` makes a new shell.
-                    self.mode = self.mode_after_terminal(exited);
-                    self.set_warning(
-                        "Terminal process exited\nEnter starts it again; d closes the session",
-                    );
+                    let pane_id = self.terminal_stream.as_ref().map(|active| active.pane_id);
+                    self.terminal_program_exited(pane_id);
                     break;
                 }
             }
         }
+    }
+
+    /// The one end of a pane's program, from the stream's `Exited` or from a snapshot that
+    /// first reports `exited` (a reattach, or no stream). Enter on the pane must already start
+    /// it again, and the chat's `S` makes a new shell.
+    pub(super) fn terminal_program_exited(&mut self, pane_id: Option<runtime::PaneId>) {
+        self.clear_active_terminal_selection();
+        self.terminal_stream = None;
+        self.pending_terminal_entry = None;
+        self.pending_terminal_resume = None;
+        if let Some(pane_id) = pane_id {
+            self.terminal_surfaces.forget(pane_id);
+            if let Some(pane) = self.pane_mut(pane_id) {
+                pane.exited = true;
+            }
+        }
+        self.mode = self.mode_after_terminal(pane_id);
+        self.set_warning("Terminal process exited\nEnter starts it again; d closes the session");
     }
 
     pub(super) fn apply_terminal_update(
@@ -504,19 +508,24 @@ impl App {
                 return;
             }
         };
-        let target_is_live = snapshot
+        let target = snapshot
             .panes
             .iter()
-            .any(|pane| pane.id == pane_id && pane.terminal_id == terminal_id && !pane.exited);
+            .find(|pane| pane.id == pane_id && pane.terminal_id == terminal_id)
+            .map(|pane| pane.exited);
         self.apply_projected_snapshot(snapshot, None);
-        if target_is_live {
-            if let Some(target) = self.pending_terminal_resume.as_mut() {
-                target.snapshot_ready = true;
+        match target {
+            Some(false) => {
+                if let Some(target) = self.pending_terminal_resume.as_mut() {
+                    target.snapshot_ready = true;
+                }
             }
-        } else {
-            self.pending_terminal_resume = None;
-            self.mode = self.mode_after_terminal(Some(pane_id));
-            self.set_warning("Terminal closed while wsx was reconnecting");
+            Some(true) => self.terminal_program_exited(Some(pane_id)),
+            None => {
+                self.pending_terminal_resume = None;
+                self.mode = self.mode_after_terminal(Some(pane_id));
+                self.set_warning("Terminal closed while wsx was reconnecting");
+            }
         }
     }
 

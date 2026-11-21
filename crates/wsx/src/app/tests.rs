@@ -1485,6 +1485,37 @@ fn resume_snapshot_must_confirm_the_exact_live_terminal_before_reconnect() {
     app.apply_resume_refresh(3, Ok(snapshot(vec![])));
     assert!(app.pending_terminal_resume.is_none());
     assert!(matches!(app.mode, Mode::Workspace));
+
+    // The program exited while the stream reattached: the same mode and line as `Exited`.
+    app.mode = Mode::Terminal { pane_id };
+    app.notice = None;
+    app.pending_terminal_resume = Some(PendingTerminalResume {
+        pane_id,
+        terminal_id,
+        generation: 4,
+        snapshot_ready: false,
+        connecting: false,
+    });
+    app.apply_resume_refresh(
+        4,
+        Ok(snapshot(vec![runtime::Pane {
+            id: pane_id,
+            terminal_id,
+            session_id: runtime::SessionId(1),
+            label: "terminal".into(),
+            agent: None,
+            exited: true,
+            revision: 10,
+        }])),
+    );
+    assert!(app.pending_terminal_resume.is_none());
+    assert!(matches!(app.mode, Mode::Workspace));
+    let notice = app.notice.as_ref().expect("the exit is said");
+    assert_eq!(notice.title, "Terminal process exited");
+    assert_eq!(
+        notice.body.as_deref(),
+        Some("Enter starts it again; d closes the session")
+    );
 }
 
 #[test]

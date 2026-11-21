@@ -358,8 +358,13 @@ impl App {
                 && self.pending_terminal_resume.is_none()
                 && self.pending_terminal_entry.is_none(),
         ) {
-            self.mode = self.mode_after_terminal(Some(*pane_id));
-            self.set_warning("Terminal closed");
+            let pane_id = *pane_id;
+            if self.pane_mut(pane_id).is_some_and(|pane| pane.exited) {
+                self.terminal_program_exited(Some(pane_id));
+            } else {
+                self.mode = self.mode_after_terminal(Some(pane_id));
+                self.set_warning("Terminal closed");
+            }
         }
         for session in self
             .workspace
