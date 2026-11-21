@@ -13,8 +13,6 @@ use anyhow::{bail, Result};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
-/// The same line again this soon shows once.
-const REPEAT_MS: u64 = 60_000;
 /// Most entries the chat shows at once.
 pub const CHAT_ENTRIES: usize = 200;
 /// A window around a message shows this many chat entries before it.
@@ -1008,7 +1006,9 @@ fn push_row(rows: &mut Vec<ChatRow>, row: ChatRow) {
     }
 }
 
-/// The lines of an events message, one row each unless the line repeats the one before it.
+/// The lines of an events message, one row each unless the line repeats: a task's line is a repeat
+/// when it has the text of that task's latest line since the last message bubble (any time later);
+/// a line with no task, when it has the text of the row before it.
 fn event_rows(rows: &mut Vec<ChatRow>, entry: &ManagerEntry, text: &str, short: &[Short]) {
     // ^ A line logged before `short` shows its first clause.
     let lines: Vec<Short> = match short.is_empty() {
@@ -1020,11 +1020,15 @@ fn event_rows(rows: &mut Vec<ChatRow>, entry: &ManagerEntry, text: &str, short: 
             .collect(),
     };
     for (nth, line) in lines.into_iter().enumerate() {
-        let repeat = rows.last().is_some_and(|last| {
-            last.kind == RowKind::Line
-                && last.text == line.text
-                && entry.unix_ms.saturating_sub(last.unix_ms) < REPEAT_MS
-        });
+        let latest = match line.task {
+            Some(task) => rows
+                .iter()
+                .rev()
+                .take_while(|row| row.kind != RowKind::Message)
+                .find(|row| row.kind == RowKind::Line && row.task == Some(task)),
+            None => rows.last().filter(|row| row.kind == RowKind::Line),
+        };
+        let repeat = latest.is_some_and(|row| row.text == line.text);
         if !repeat {
             rows.push(ChatRow {
                 task: line.task,
