@@ -3630,7 +3630,7 @@ TASK_CONFIG = '''tasks:
   checks:
     - "test ! -e broken.txt"
   manager: { model: fake-manager, rotateTokens: 100000 }
-  deploy: { command: 'test -z "$WSX_FIXTURE_DEPLOY_FAIL" || { seq -f "deploy step %g" 60; exit 3; }' }
+  deploy: { command: 'test -z "$FIXTURE_DEPLOY_FAIL" || { seq -f "deploy step %g" 60; exit 3; }' }
   preview:
     command: 'exec python3 -m http.server "$PORT" --bind 127.0.0.1'
     ports: 9150-9199
@@ -3976,7 +3976,7 @@ def task_journey(args):
             wait(answered, 'plans answered the reply of ui', timeout=30)
             assert all(e.get('quiet') for e in answered()), answered()
             # plans' deploy fails with 60 lines: its project overview folds their end.
-            failed = subprocess.run([str(wsx), 'task', 'deploy', '-p', 'plans', '--json'], env=dict(env, WSX_FIXTURE_DEPLOY_FAIL='1'),
+            failed = subprocess.run([str(wsx), 'task', 'deploy', '-p', 'plans', '--json'], env=dict(env, FIXTURE_DEPLOY_FAIL='1'),
                                     cwd=project, capture_output=True, text=True, timeout=60)
             assert json.loads(failed.stdout)['started'] is True, (failed.stdout, failed.stderr)
             wait(lambda: js('task', 'deployed', '-p', 'plans')['deploy'].get('failed_since') == 1,
