@@ -4234,7 +4234,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await until("location.hash === '#/c/qa'", "the old route #/p/<id>/c/<chat> did not redirect to #/c/<chat>");
   await until("document.querySelector('.bar-label')?.textContent === 'qa' && !!document.querySelector('.bar .more-button')", "the qa chat has no ⋯ menu");
   // ^ The menu reads the goal from the overview the page holds: wait for that read, not a time.
-  await until(`${pageModule("store.js")}.then(({ state }) => state.tasks['${project}']?.chats?.find((item) => item.name === 'qa')?.goal === 'Check the release notes.')`, "the page's overview has no goal for the qa chat", 30);
+  await until(`import(new URL('store.js', [...document.scripts].find((script) => script.type === 'module').src)).then(({ state }) => state.tasks['${project}']?.chats?.find((item) => item.name === 'qa')?.goal === 'Check the release notes.')`, "the page's overview has no goal for the qa chat", 30);
   await click(".bar .more-button");
   if ((await menuItems()).join() !== "PurposeCheck the release notes.,Rename chat,Close chat") await fail(`the qa chat's menu is ${await menuItems()}`);
   await evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].find((item) => item.textContent.trim() === 'Close chat').click()");
