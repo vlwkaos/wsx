@@ -122,32 +122,45 @@ impl Drop for Fixture {
     }
 }
 
+impl Fixture {
+    /// Start a deploy by hand (as `env` says, in the caller's environment) and wait until
+    /// its detached run records one failure; returns the tip it deployed and `wsx task deployed`.
+    fn failed_deploy(&self, env: &[(&str, &str)]) -> (String, Value) {
+        let tip = self.git(&["rev-parse", "main"]);
+        // ^ A deploy by hand answers that it started; its detached run records the result.
+        let mut command = self.command(Path::new(env!("CARGO_BIN_EXE_wsx")));
+        command.envs(env.iter().copied());
+        let deploy = command
+            .args(["task", "deploy", "-p", "demo", "--json"])
+            .output()
+            .expect("run wsx task deploy");
+        assert!(deploy.status.success(), "{deploy:?}");
+        let started: Value = serde_json::from_slice(&deploy.stdout).expect("deploy JSON");
+        assert_eq!(started["started"], true, "{started}");
+        assert_eq!(started["commit"], tip.as_str(), "{started}");
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            let deployed = self.wsx(&["task", "deployed", "-p", "demo", "--json"]);
+            assert!(deployed.status.success(), "{deployed:?}");
+            let status: Value = serde_json::from_slice(&deployed.stdout).expect("deployed JSON");
+            if status["deploy"]["failed_since"] == 1 {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the deploy was not recorded: {status}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        (tip, status)
+    }
+}
+
 #[test]
 fn a_failed_deploy_shows_the_end_of_its_output() {
     let fixture = Fixture::new("seq 1 60; echo deploy broke here >&2; exit 3");
-    let tip = fixture.git(&["rev-parse", "main"]);
-
-    // ^ A deploy by hand answers that it started; its detached run records the result.
-    let deploy = fixture.wsx(&["task", "deploy", "-p", "demo", "--json"]);
-    assert!(deploy.status.success(), "{deploy:?}");
-    let started: Value = serde_json::from_slice(&deploy.stdout).expect("deploy JSON");
-    assert_eq!(started["started"], true, "{started}");
-    assert_eq!(started["commit"], tip.as_str(), "{started}");
-
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let status = loop {
-        let deployed = fixture.wsx(&["task", "deployed", "-p", "demo", "--json"]);
-        assert!(deployed.status.success(), "{deployed:?}");
-        let status: Value = serde_json::from_slice(&deployed.stdout).expect("deployed JSON");
-        if status["deploy"]["failed_since"] == 1 {
-            break status;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the deploy was not recorded: {status}"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    };
+    let (tip, status) = fixture.failed_deploy(&[]);
     let deploy = &status["deploy"];
     assert_eq!(deploy["failed"]["commit"], tip.as_str(), "{status}");
     assert_eq!(deploy["failed"]["exit"], 3, "{status}");
@@ -170,6 +183,20 @@ fn a_failed_deploy_shows_the_end_of_its_output() {
             .matches("worktree ")
             .count(),
         1
+    );
+}
+
+/// A deploy's tests act as the owner: the caller's `WSX_*` variables (a manager's
+/// `WSX_TASK_ACTOR`) stay out;
+/// only `WSX_DEPLOY_COMMIT` is set (as for a check, docs/tasks.md "Deploy and release").
+#[test]
+fn a_deploy_command_gets_no_wsx_variable_from_its_caller() {
+    let fixture = Fixture::new("env | grep '^WSX_'; exit 3");
+    let (tip, status) = fixture.failed_deploy(&[("WSX_PROBE", "1")]);
+    assert_eq!(
+        status["deploy"]["failed"]["output"].as_str().map(str::trim),
+        Some(format!("WSX_DEPLOY_COMMIT={tip}").as_str()),
+        "{status}"
     );
 }
 

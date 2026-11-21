@@ -451,8 +451,9 @@ pub(crate) fn deploy(
     process
         .args(["-c", &command])
         .current_dir(&path)
-        .env("WSX_DEPLOY_COMMIT", &commit)
         .stdin(std::process::Stdio::null());
+    host::clean_env(&mut process);
+    process.env("WSX_DEPLOY_COMMIT", &commit);
     if let Some(socket) = agent {
         process.env("SSH_AUTH_SOCK", socket);
     }

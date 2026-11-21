@@ -4704,6 +4704,16 @@ pub(super) fn light(command: &str) -> bool {
             .any(|light| light.split(' ').eq(words.iter().copied()))
 }
 
+/// A project command's environment: no `WSX_*` variable from the caller, so its tests act as
+/// the owner, not as the worker or manager that started it. Checks and deploys share it.
+pub(super) fn clean_env(process: &mut std::process::Command) {
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("WSX_") {
+            process.env_remove(name);
+        }
+    }
+}
+
 /// `env`: `tasks.env`, as the worker's commands have it. ref: docs/tasks.md "Config"
 pub(super) fn run_check(
     working_copy: &Path,
@@ -4720,11 +4730,7 @@ pub(super) fn run_check(
         .args(["-c", &format!("exec >'{quoted}' 2>&1\n{command}")])
         .current_dir(working_copy)
         .stdin(std::process::Stdio::null());
-    for (name, _) in std::env::vars_os() {
-        if name.to_string_lossy().starts_with("WSX_") {
-            process.env_remove(name);
-        }
-    }
+    clean_env(&mut process);
     process.envs(env);
     // ^ The pipes get only what the shell says before its redirection, such as a log it
     // cannot open; then no earlier run's log stands in for this one.
