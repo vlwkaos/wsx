@@ -4236,7 +4236,8 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   // ^ The menu reads the goal from the overview the page holds: wait for that read, not a time.
   await until(`import(new URL('store.js', [...document.scripts].find((script) => script.type === 'module').src)).then(({ state }) => state.tasks['${project}']?.chats?.find((item) => item.name === 'qa')?.goal === 'Check the release notes.')`, "the page's overview has no goal for the qa chat", 30);
   await click(".bar .more-button");
-  if ((await menuItems()).join() !== "PurposeCheck the release notes.,Rename chat,Close chat") await fail(`the qa chat's menu is ${await menuItems()}`);
+  // ^ The open menu renders after the click: wait for its items, not one read.
+  await until("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].map((item) => item.textContent.trim()).join() === 'PurposeCheck the release notes.,Rename chat,Close chat'", `the qa chat's menu is ${await menuItems()}`);
   await evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].find((item) => item.textContent.trim() === 'Close chat').click()");
   await until(`!!document.querySelector('${sheet} #dialog-title')`, "Close chat asked nothing");
   const asks = await evaluate(`({ title: document.querySelector('${sheet} #dialog-title').textContent, text: document.querySelector('${sheet} p').textContent,
