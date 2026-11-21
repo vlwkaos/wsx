@@ -29,6 +29,7 @@ use wsx_core::task::manager::asks_owner;
 use wsx_core::task::replace::{Binary, HANDOFF_FILE};
 use wsx_core::task::schedule;
 use wsx_core::task::status::{self, STOPPED_BY_REQUEST};
+use wsx_core::task::text::question;
 use wsx_core::task::view::{checked_files, checked_title, short_commit};
 use wsx_core::task::{
     build, call_host, checks,
@@ -410,6 +411,9 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         started: Instant::now(),
     };
     (host.context_tokens, host.answered_ms) = host.last_context();
+    if host.dir.restore_question(&mut host.record) {
+        host.save();
+    }
     // ^ A record from before `home`: its own agent is the one in use, or when a switch is on
     // record, the project's configured one.
     if host.record.home.is_none() {
@@ -2104,7 +2108,7 @@ impl Host {
         // ^ A status is no question: the task waits for the manager, who continues it. No checks
         // run. ref: docs/tasks.md "Status"
         if result.status == "paused" {
-            self.wait(WaitOn::Paused, first_line(&result.summary).to_string());
+            self.wait(WaitOn::Paused, question(&result.summary));
             return;
         }
         // ^ Only the worker's own word blocks a task. Denials it worked around are evidence.
@@ -2112,7 +2116,7 @@ impl Host {
             self.log(LogEvent::Blocked {
                 denials: self.last_denials.clone(),
             });
-            self.wait(WaitOn::Owner, first_line(&result.summary).to_string());
+            self.wait(WaitOn::Owner, question(&result.summary));
             // ^ A worker stopped by a full disk continues once there is space again.
             self.wait_for_disk(DiskWait::Turn(
                 "The disk was full; there is space again. Continue the task where it stopped."
@@ -2932,7 +2936,11 @@ impl Host {
     /// "ready", "waiting (the owner works on it by hand)" or "checking (queued for ...)".
     fn state_words(&self) -> String {
         match &self.record.waiting {
-            Some(waiting) => format!("{} ({})", self.record.state.as_str(), waiting.reason),
+            Some(waiting) => format!(
+                "{} ({})",
+                self.record.state.as_str(),
+                first_line(&waiting.reason)
+            ),
             None => self.record.state.as_str().into(),
         }
     }

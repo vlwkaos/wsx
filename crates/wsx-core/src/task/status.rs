@@ -55,7 +55,7 @@ impl Status {
         // ^ A question to the owner is shown on its own line, so the rest starts after it.
         let tail = if self.asks() {
             tail.trim_start()
-                .strip_prefix(self.facts.as_str())
+                .strip_prefix(clip(&self.facts, FACT_CHARS).as_str())
                 .unwrap_or(tail)
         } else {
             tail
@@ -834,10 +834,12 @@ fn words(
         sentence.push_str(&format!(" for {}", span(now_ms.saturating_sub(since))));
     }
     let head_len = sentence.len();
-    let facts = clip(facts.trim(), FACT_CHARS);
-    if !facts.is_empty() {
+    // ^ The sentence has one line; `facts` keeps the whole text, a question for the owner.
+    let facts = facts.trim().to_string();
+    let shown = clip(&facts, FACT_CHARS);
+    if !shown.is_empty() {
         sentence.push_str(": ");
-        sentence.push_str(&facts);
+        sentence.push_str(&shown);
     }
     if !sentence.ends_with(['.', '?', '!', '…']) {
         sentence.push('.');

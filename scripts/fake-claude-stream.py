@@ -51,6 +51,7 @@ Each user message is a small script of words:
                tool boundary where a message the host sends during the turn (its handoff request) is
                taken, as Claude takes a steer; none in a conversation that opens with handoff notes
   OWNERQ       (worker) the summary's last line is a question for the owner
+  THREEQ       (worker) end the turn blocked, the summary three numbered questions on lines of their own
   SIMPLIFY     (worker) a Skill tool call of owner:simplify in the turn; SIMPLIFYLATE does it only in
                the host's send-back ("The simplify skill did not run ...")
 The host's request for handoff notes ("Write <path> for that fresh conversation") makes it
@@ -803,7 +804,7 @@ def main():
             subprocess.run(['git', 'commit', '-q', '-am', 'edit ' + name], check=True,
                            env=dict(os.environ, GIT_AUTHOR_NAME='fake', GIT_AUTHOR_EMAIL='fake@example.invalid',
                                     GIT_COMMITTER_NAME='fake', GIT_COMMITTER_EMAIL='fake@example.invalid'))
-        status = 'blocked' if blocked else 'paused' if 'PAUSE' in words else 'done'
+        status = 'blocked' if blocked or 'THREEQ' in words else 'paused' if 'PAUSE' in words else 'done'
         # ^ CAPTURE leaves a small PNG for the item; CMDHV names a command and BAREHV is a page
         # without a capture: wsx sends both back.
         verify = []
@@ -876,6 +877,8 @@ def main():
             with open(handoff.group(1), 'w') as out:
                 out.write('NOTES from the fixture\n')
         summary = 'did: ' + text + (' | steers: ' + '; '.join(steers) if steers else '')
+        if 'THREEQ' in words:
+            summary = 'Three questions for you:\n1. Which type, 15 or 13?\n2. Keep the old name?\n3. Land it as it is?'
         if 'OWNERQ' in words:
             summary += '\nWhich of the two layouts do you want?'
         if 'BGRESULT' in words:

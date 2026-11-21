@@ -6104,6 +6104,25 @@ def part_host(created=None):
         js('task', 'close', n, '--discard')
     for n in (pausing, questioning):
         wait_state(n, 'closed')
+    # 32aq. A worker blocks with a three-line summary: the task keeps all of it as `waiting.reason`
+    # (record, ledger row, `why`), while the status sentence and `list` stay one line.
+    mark('32aq')
+    three = manager_new('THREEQ WORK aq.txt')
+    wait_state(three, 'waiting')
+    questions = ['Three questions for you:', '1. Which type, 15 or 13?', '2. Keep the old name?', '3. Land it as it is?']
+    shown = show(three)
+    assert shown['record']['waiting']['on'] == 'owner' and shown['record']['waiting']['reason'].split('\n') == questions, shown['record']['waiting']
+    assert '\n' not in shown['status']['sentence'], shown['status']
+    assert shown['status']['sentence'].count('Three questions for you:') == 1 and '15 or 13' not in shown['status']['sentence'], shown['status']
+    row = next(r for r in js('task', 'ledger')['open'] if r['id'] == three)
+    assert row['waiting']['reason'].split('\n') == questions, row
+    assert any(i['task'] == three and i['kind'] == 'waiting' for i in js('task', 'ledger')['for_you']), js('task', 'ledger')['for_you']
+    human = cli('task', 'why', str(three)).stdout
+    assert 'waiting: Three questions for you:\n         1. Which type' in human, human
+    listed = cli('task', 'list').stdout
+    assert len([l for l in listed.splitlines() if l.startswith('t%d ' % three)]) == 1 and '15 or 13' not in listed, listed
+    js('task', 'close', three, '--discard')
+    wait_state(three, 'closed')
     # 32ap. A worker whose turn ends `paused` while its scenario check-run is out (docs/tasks.md
     # "Status"): the host holds the result, so the task waits on `check_run`, not on the manager;
     # no `paused` event reaches the manager; an add queues behind the answer, and the answer starts

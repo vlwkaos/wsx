@@ -1,7 +1,7 @@
 //! Files of one task under `$XDG_STATE_HOME/wsx/tasks/<project-id>/<n>/`.
 //! ref: docs/tasks.md "Store"
 
-use super::{now_unix_ms, LogEntry, LogEvent, MessageKind, TaskRecord};
+use super::{now_unix_ms, text, LogEntry, LogEvent, MessageKind, TaskRecord, WaitOn};
 use crate::config::global::is_agent_name;
 use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
@@ -726,6 +726,33 @@ impl TaskDir {
         };
         value["created_by"] = renamed.into();
         serde_json::from_value(value).ok()
+    }
+
+    /// A wait on the owner or a pause that an older host recorded as the first line of the
+    /// worker's summary gets the whole summary again, taken from the newest `result` event. A
+    /// reason that is not that first line (a stop, a disk wait) or already whole stays.
+    /// Returns whether `record` changed.
+    pub fn restore_question(&self, record: &mut TaskRecord) -> bool {
+        let Some(waiting) = record
+            .waiting
+            .as_mut()
+            .filter(|waiting| matches!(waiting.on, WaitOn::Owner | WaitOn::Paused))
+        else {
+            return false;
+        };
+        let newest = self.last_event(|event| match event {
+            LogEvent::Result { summary, .. } => Some(summary.clone()),
+            _ => None,
+        });
+        let Ok(Some(summary)) = newest else {
+            return false;
+        };
+        let whole = text::question(&summary);
+        if whole == waiting.reason || waiting.reason != text::first_line(&summary) {
+            return false;
+        }
+        waiting.reason = whole;
+        true
     }
 
     pub fn write_record(&self, record: &TaskRecord) -> Result<()> {

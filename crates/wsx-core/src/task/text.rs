@@ -1,6 +1,7 @@
 //! Small text helpers of the task code: a line shortened, a date in words.
 
 const FIRST_LINE_CHARS: usize = 160;
+const QUESTION_CHARS: usize = 4000;
 
 /// The first line of `text` with words, cut to `FIRST_LINE_CHARS` characters.
 pub fn first_line(text: &str) -> String {
@@ -15,6 +16,23 @@ pub fn first_line(text: &str) -> String {
             line.chars().take(FIRST_LINE_CHARS - 1).collect::<String>()
         ),
         false => line.to_string(),
+    }
+}
+
+/// A worker's blocked or paused summary as the reason its task waits: all of it, trimmed, cut
+/// only past `QUESTION_CHARS` so the record stays far under its size limit. A place with room
+/// for one line shortens it with `first_line` or `view::clip`.
+pub fn question(summary: &str) -> String {
+    let text = summary.trim();
+    match text.chars().count() > QUESTION_CHARS {
+        true => format!(
+            "{}…",
+            text.chars()
+                .take(QUESTION_CHARS - 1)
+                .collect::<String>()
+                .trim_end()
+        ),
+        false => text.to_string(),
     }
 }
 

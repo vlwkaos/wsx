@@ -216,7 +216,7 @@ pub(crate) fn why(dir: &TaskDir, json: bool) -> Result<()> {
     );
     println!("status:  {}", status.sentence);
     if let Some(waiting) = &record.waiting {
-        println!("waiting: {}", waiting.reason);
+        println!("waiting: {}", waiting.reason.replace('\n', "\n         "));
     }
     if let Some(after) = &record.after {
         println!(
