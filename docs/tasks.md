@@ -107,6 +107,8 @@ One function, `task::status::status` in `crates/wsx-core/src/task/status.rs`, pu
 
 A task needs the owner (web Home, TUI marks) when it waits on `owner`, `disk` or `limit`, unless the owner works on it by hand.
 
+An `owner` or `paused` wait's `waiting.reason` is the worker's whole summary (`text::question`: multi-line, at most 4000 characters), carried whole in `status.ask`; a place with room for one line shortens it (`first_line`, `view::clip`).
+
 **Moves.** One write changes `state` and `waiting`: `TaskRecord::move_to` in `crates/wsx-core/src/task/mod.rs`, which the task host and a `close` without a host call. It allows only the moves in `TaskState::may_move`, and staying in the same state is always allowed. A `waiting` task holds any wait except a check's or a stopped landing's. A check slot wait holds in any other state, a check-run wait holds only in `working`, and a `land_stopped` or `asks` wait holds only in `ready`. A ready result whose summary ends with a question for the owner (`manager::asks_owner`, the rule of a reply that asks) gets the `asks` wait: the owner's need (web, push), not the manager's review; the worker's instructions ask it to end such a summary with the question. The host refuses any other move: it logs `move_refused` with both states and leaves the record as it was. No CLI request reaches such a move, because each one refuses a task in the wrong state first.
 
 | From | To |
