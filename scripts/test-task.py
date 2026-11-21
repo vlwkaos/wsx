@@ -770,8 +770,23 @@ def default_manager_model():
 
 def manager_up(created):
     """Section 20: the manager starts and answers. A part run alone starts it again."""
+
+    def stop_repo_service():
+        """Delete the repo's service session, as a reboot does: its next start sweeps captures and
+        hung hosts again, reads `repo.json` and fires a check-in that came due (docs/tasks.md "Chats")."""
+        service = Path(created['task_dir']).parent.name
+        # ^ A service that is not running has no session: the delete's exit code is no matter.
+        subprocess.run([str(wsx), 'session', 'delete', 'task-repo-' + service, '-p', 'demo'], cwd=project, env=env, capture_output=True, timeout=60)
+        wait(lambda: not leftovers('task repo-host ' + service), 'the repo service is down', 30)
+
     # 20. The manager: started by the first say, answers from the ledger, acts through wsx task.
     mark('20')
+    # ^ The repo service holds every event line of sections 1 to 18 for the main chat: no manager can start before the config
+    # below, so it tries again every 10 s and, once the config is in, a try that lands before the first say sends them first (the
+    # manager starts on them, and the say is not message 1). A service that starts again with no `repo.json` takes what happened
+    # as its baseline, not news: the events of section 20 on are the ones it sends.
+    stop_repo_service()
+    (Path(created['task_dir']).parent / 'repo.json').unlink(missing_ok=True)
     configure((project / 'wsx.config.yml').read_text()
               + '  manager: { name: "  Atlas ", model: fake-manager, eventModel: fake-events, '
                 'rotateTokens: 100000 }\n'
@@ -819,7 +834,7 @@ def manager_up(created):
     old_page.write_text(unwritten)
     running = js('task', 'new', 'SLOW SLOW SLOW WORK r.txt')['id']
     asked = js('task', 'say', 'STATUS')
-    assert asked['ok'] and asked['id'] == 1, asked
+    assert asked['ok'] and asked['id'] == 1, (asked, [(e['kind'], e.get('id'), e.get('from'), str(e.get('text'))[:60]) for e in chat()])
     asked_reply = reply_to(asked['id'])
     assert ('#%d working' % running) in asked_reply['text'] and 'quiet' not in asked_reply, asked_reply
     launch = next(t for t in traces() if t.get('launch') and t.get('manager'))
@@ -1089,14 +1104,6 @@ def manager_up(created):
     def manager_entries(raw=False):
         found = [json.loads(line) for line in manager_log.read_text().splitlines()]
         return found if raw else [unquoted(e) for e in found]
-
-    def stop_repo_service():
-        """Delete the repo's service session, as a reboot does: its next start sweeps captures and
-        hung hosts again, reads `repo.json` and fires a check-in that came due (docs/tasks.md "Chats")."""
-        service = Path(created['task_dir']).parent.name
-        # ^ A service that is not running has no session: the delete's exit code is no matter.
-        subprocess.run([str(wsx), 'session', 'delete', 'task-repo-' + service, '-p', 'demo'], cwd=project, env=env, capture_output=True, timeout=60)
-        wait(lambda: not leftovers('task repo-host ' + service), 'the repo service is down', 30)
 
     def host_gone():
         # ^ The socket goes before the process does: a host still ending may save its state after an edit.
