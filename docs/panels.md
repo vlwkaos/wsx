@@ -104,7 +104,7 @@ The web's *Machine* tab and the TUI's `M` show the machine, with no project, as 
 
 ### The built-in panel
 
-wsxd reads it itself (`crates/wsx-daemon/src/machine.rs`): system calls, no script, no disk scan, no project. A `panel` request with no project lists it (`{name: "this-mac", refresh: 60, scope: machine}`) and reads it; a project panel's rules hold: it reads on open, on a manual refresh and after 60 s, one read at a time, the last result in wsxd's memory. The result is a document (`PanelRun::doc`, title "This Mac", "This machine" off macOS) and `output` is that document as JSON. A reading the system does not give is left out, never an error. Daemon revision 46.
+wsxd reads it itself (`crates/wsx-daemon/src/machine.rs`): system calls, no script, no disk scan, no project. A `panel` request with no project lists it (`{name: "this-mac", refresh: 60, scope: machine}`) and reads it; a project panel's rules hold: it reads on open, on a manual refresh and after 60 s, one read at a time, the last result in wsxd's memory. The result is a document (`PanelRun::doc`, title "This Mac", "This machine" off macOS) and `output` is that document as JSON. A reading the system does not give is left out, never an error. The Load section also names the busiest owners of the CPU (`wsx_core::task::procs`). Daemon revision 46.
 
 | Section | Item | Read with | `warn` / `bad` |
 |---|---|---|---|
