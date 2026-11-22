@@ -60,7 +60,7 @@ fn one_rule_decides_the_stage_the_counts_the_push_and_the_band() {
         .as_object_mut()
         .unwrap()
         .extend(after.as_object().unwrap().clone());
-    let held = json!({ "hold": "a trial" });
+    let held = json!({ "hold": "the owner tries it first" });
     use NeedKind::{Failed, Land, Waiting};
     let cases: Vec<Case> = vec![
         ("an agent turn", "working", "owner", json!({}), None, false),

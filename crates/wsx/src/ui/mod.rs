@@ -777,12 +777,11 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
             let has = |name| actions.contains(&name);
             let mut hints = vec!["(j/k)scroll".to_string(), "(S)hell".into()];
             for (shown, hint) in [
-                (has("land") || has("pass"), "(L)and"),
+                (has("land"), "(L)and"),
                 (has("answer"), "(a)nswer"),
                 (has("handback"), "(H)and back"),
                 (has("hand") && !has("handback"), "(H)and"),
-                (has("trial_end"), "(T)end trial"),
-                (has("try") && !has("trial_end"), "(T)ry"),
+                (has("try"), "(T)ry"),
             ] {
                 if shown {
                     hints.push(hint.into());

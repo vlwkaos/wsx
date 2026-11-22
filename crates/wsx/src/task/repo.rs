@@ -811,11 +811,7 @@ impl Repo {
                 json!({ "commit": record.commit, "exit": record.exit }),
             );
             if record.exit == Some(0) {
-                // ^ A trial puts an unlanded revision live: no landed task is live by it.
-                let live = match record.trial {
-                    Some(_) => String::new(),
-                    None => self.made_live(&records, record),
-                };
+                let live = self.made_live(&records, record);
                 let line = format!(
                     "{} of {:.12} succeeded after {} s{live}",
                     ledger::kind_name(record.kind),

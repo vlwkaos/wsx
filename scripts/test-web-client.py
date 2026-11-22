@@ -4287,35 +4287,21 @@ merge_seconds = 3
         status, headers, body = trier.request('POST', '/api/pair', {'code': code.lower(), 'name': 'trier'}, raw=True)
         assert status == 200, body
         trier.cookie = headers['set-cookie'].split(';')[0]
-        # Hold and trial (docs/tasks.md "Hold and trial"): the owner holds #2, tries it on the
-        # live site, ends the trial and releases the hold. Pass needs a running trial.
-        status, body = act(2, 'pass', {}, site=trier)
-        assert status == 409 and 'no trial of t2 runs' in body['error']['message'], body
+        # Hold (docs/tasks.md "Hold"): the owner holds #2 and releases the hold.
         assert act(2, 'hold', {'text': 'two\nlines'}, site=trier)[0] == 400
         assert act(2, 'hold', {}, site=trier)[0] == 200
         held = steady(trier, 'GET', '/api/tasks/%d/t/2' % demo)[1]
         assert held['hold'] == 'the owner holds it' and held['status']['label'] == 'Held', held
-        assert held['status']['sentence'].endswith(': the owner holds it. It lands only when you say so, or after a trial you pass.'), held['status']
-        assert held['actions'] == ['land', 'hand', 'try'] and held['trial'] is None, held['actions']
+        assert held['status']['sentence'].endswith(': the owner holds it. It lands only when you say so.'), held['status']
+        assert held['actions'] == ['land', 'hand', 'try'], held['actions']
         # ^ Where it goes (wsx-core `view::flow`): the label says Held, so the row adds the reason only.
         assert held['flow']['held'] == 'the owner holds it' and held['flow']['into'] == 'main', held['flow']
         assert held['flow']['phrase'] == 'the owner holds it', held['flow']
         overview = steady(trier, 'GET', '/api/tasks/%d' % demo)[1]
         assert next(t for t in overview['tasks'] if t['id'] == 2)['flow']['phrase'] == 'the owner holds it', overview['tasks']
-        assert overview['try_live'] is True and overview['trial'] is None, overview
-        assert act(2, 'trial', {}, site=trier)[0] == 200
-        # ^ The CLI polls: the device's request budget stays for the steps that follow.
-        wait(lambda: (js('task', 'deployed', '-p', 'demo')['trial'] or {}).get('stage') == 'live',
-             'the trial of #2 goes live')
-        assert steady(trier, 'GET', '/api/tasks/%d/t/2' % demo)[1]['trial']['stage'] == 'live'
-        assert steady(trier, 'GET', '/api/tasks/%d' % demo)[1]['trial']['task'] == 2
-        status, body = act(3, 'trial', {}, site=trier)
-        assert status == 409 and 'runs the trial of #2' in body['error']['message'], body
-        assert act(2, 'trial_end', {}, site=trier)[0] == 200
-        assert steady(trier, 'GET', '/api/tasks/%d' % demo)[1]['trial'] is None
         assert act(2, 'unhold', {}, site=trier)[0] == 200
         assert steady(trier, 'GET', '/api/tasks/%d/t/2' % demo)[1]['hold'] is None
-        ok('hold and trial: hold and release, Try live goes live, one trial per project, End frees the site')
+        ok('hold: hold and release')
         status, body = act(1, 'land', {})
         assert status == 409 and body['error']['code'] == 'refused', body
         status, body = act(2, 'land', {})

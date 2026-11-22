@@ -560,7 +560,7 @@ impl TaskList {
     }
 
     /// The owner's actions on the task whose detail shows: the web's rule (`owner_actions`),
-    /// read off the ledger row, the project's trial and its `tasks.preview`.
+    /// read off the ledger row and the project's `tasks.preview`.
     pub fn detail_actions(&self) -> Vec<&'static str> {
         let (Some(task), Some(ledger)) = (self.detail_task(), &self.ledger) else {
             return Vec::new();
@@ -569,17 +569,10 @@ impl TaskList {
             return Vec::new();
         };
         let waiting = serde_json::from_value::<WaitOn>(task["waiting"]["on"].clone()).ok();
-        let trial = &ledger["deploys"]["trial"];
-        let stage = if trial["task"].as_u64() == self.detail {
-            trial["stage"].as_str()
-        } else {
-            None
-        };
         view::owner_actions(
             state,
             waiting,
             task["status"]["kind"].as_str(),
-            stage,
             ledger["preview"].as_bool().unwrap_or(false),
         )
     }
@@ -608,10 +601,10 @@ impl TaskList {
         let offered =
             |names: &[&'static str]| names.iter().copied().find(|name| actions.contains(name));
         match action {
-            Action::Land => self.confirm = offered(&["pass", "land"]),
+            Action::Land => self.confirm = offered(&["land"]),
             Action::ConfirmHalt => self.confirm = offered(&["handback", "hand"]),
             Action::GroupManager => {
-                if let Some(what) = offered(&["trial_end", "try"]) {
+                if let Some(what) = offered(&["try"]) {
                     self.run(id, what);
                 }
             }
@@ -634,16 +627,13 @@ impl TaskList {
         if self.acting.is_some() {
             return;
         }
-        let (doing, verb, flag) = match what {
-            "land" => ("Landing", "land", None),
-            "pass" => ("Landing", "land", Some("--tried")),
-            "hand" => ("Taking over", "hand", None),
-            "handback" => ("Handing back", "handback", None),
-            "trial_end" => ("Ending the trial of", "trial", Some("--end")),
-            _ => ("Starting the preview of", "preview", None),
+        let (doing, verb) = match what {
+            "land" => ("Landing", "land"),
+            "hand" => ("Taking over", "hand"),
+            "handback" => ("Handing back", "handback"),
+            _ => ("Starting the preview of", "preview"),
         };
-        let mut argv = vec!["task".to_string(), verb.into(), id.to_string()];
-        argv.extend(flag.map(String::from));
+        let argv = vec!["task".to_string(), verb.into(), id.to_string()];
         let project = self.project.clone();
         let (tx, rx) = mpsc::sync_channel(1);
         self.acting = Some(format!("{doing} #{id}…"));

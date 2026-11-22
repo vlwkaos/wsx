@@ -4926,7 +4926,7 @@ def part_worker(created=None):
 
 
 def part_deploy(created=None):
-    """Sections 28 to 32ak: the deploy, a preview, by hand, hold and trial, the checks and the skills."""
+    """Sections 28 to 32ak: the deploy, a preview, by hand, hold, the checks and the skills."""
     if created is None:
         created = fresh_project()
         store_up(created)
@@ -5164,25 +5164,9 @@ def part_deploy(created=None):
     assert not keep.exists() and not keep_sessions() and git('branch', '--list', 'feat/keep')
     git('branch', '-D', 'feat/keep')
 
-    # 32. Hold and trial (docs/tasks.md "Hold and trial"): a held task waits for the owner while
+    # 32. Hold (docs/tasks.md "Hold"): a held task waits for the owner while pipeline work lands.
     mark('32')
-    # pipeline work lands; its trial puts the rebased revision on the live site, holds the
-    # default branch's deploys, and ends on Pass (it lands), End, or a message to the worker.
-    configure(LAND_CONFIG.replace('  land: { auto: false }\n', '') + """  deploy:
-    command: 'echo "$WSX_DEPLOY_COMMIT" >> ../trial-deploy.log'
-    auto: true
-    quietMinutes: 0
-  release:
-    command: 'echo released >> ../trial-release.log'
-""", 'hold and trial')
-    live_log = base / 'trial-deploy.log'
-
-    def live():
-        return live_log.read_text().split()[-1] if live_log.exists() else None
-
-    def trial():
-        return js('task', 'deployed')['trial']
-
+    configure(LAND_CONFIG.replace('  land: { auto: false }\n', ''), 'hold')
     held = js('task', 'new', '--hold', 'try the held page', 'WORK held.txt HV')
     assert held['hold'] == 'try the held page', held
     held = held['id']
@@ -5194,61 +5178,17 @@ def part_deploy(created=None):
     first = js('task', 'new', 'WORK pipe1.txt')['id']
     reviewed(first)
     wait_closed(first)
-    wait(lambda: live() == git('rev-parse', 'main'), 'the pipeline land deploys', 60)
-    # The trial rebases onto the newest main and checks it before it goes live.
-    started = js('task', 'trial', held)
-    assert started['ok'] and 'rebased onto main' in started['message'], started
-    wait(lambda: (trial() or {}).get('stage') == 'live', 'the trial goes live', 60)
-    tried = trial()
-    assert tried['task'] == held and live() == tried['commit'], (tried, live())
-    assert subprocess.run(['git', 'merge-base', '--is-ancestor', 'main', tried['commit']], cwd=project, env=env).returncode == 0
-    assert [e['commit'] for e in log(held) if e['kind'] == 'trial'] == [tried['commit']]
-    assert 'already runs' in js('task', 'trial', held)['message']
-    # Pipeline work lands meanwhile; its deploy waits, and a deploy by hand is refused.
-    second = js('task', 'new', 'WORK pipe2.txt')['id']
-    reviewed(second)
-    wait_closed(second)
-    time.sleep(2)
-    assert live() == tried['commit'] and main_has('pipe2.txt'), live()
-    assert 'runs the trial of #%d' % held in follow_up.read_text()
-    assert 'end it first' in cli('task', 'deploy', ok=False).stderr
-    # ^ A release also waits for open To check items, which it checks first.
-    released = cli('task', 'release', ok=False).stderr
-    assert 'end it first' in released or 'to check are open' in released, released
-    assert not (base / 'trial-release.log').exists()
+    assert main_has('pipe1.txt') and not main_has('held.txt')
+    # The owner lands it by hand.
+    land(held)
+    wait_closed(held)
+    assert main_has('held.txt')
     other_held = js('task', 'new', '--hold', 'second', 'WORK held2.txt')['id']
     assert wait_state(other_held, 'ready', 'failed')['state'] == 'ready'
-    assert 'runs the trial of #%d' % held in cli('task', 'trial', other_held, ok=False).stderr
-    # Only the owner passes a trial; Pass lands it without To check items and deploys main.
-    refused = subprocess.run([str(wsx), 'task', 'land', str(held), '--tried'], cwd=project, env=manager_env,
-                             capture_output=True, text=True)
-    assert refused.returncode != 0 and 'only the owner' in refused.stderr, refused.stderr
-    assert 'no trial of t%d runs' % other_held in cli('task', 'land', other_held, '--tried', ok=False).stdout
-    land(held, '--tried')
-    wait_closed(held)
-    assert main_has('held.txt') and trial() is None
-    assert not [item for item in js('task', 'check')['open'] if item['task'] == held]
-    wait(lambda: live() == git('rev-parse', 'main'), 'main deploys after the pass', 60)
-    assert [e['reason'] for e in log(held) if e['kind'] == 'trial_ended'] == ['the owner passed it and it landed']
-    # End frees the live site; a message to the worker ends the trial too.
-    for ending in ('end', 'add'):
-        js('task', 'trial', other_held)
-        wait(lambda: (trial() or {}).get('stage') == 'live', 'the second trial goes live', 60)
-        assert live() != git('rev-parse', 'main')
-        if ending == 'end':
-            assert js('task', 'trial', other_held, '--end')['ended'] is True
-        else:
-            js('task', 'add', other_held, 'WORK more.txt')
-        assert trial() is None
-        wait(lambda: live() == git('rev-parse', 'main'), 'main deploys after the trial ends', 60)
-        if ending == 'add':
-            assert wait_state(other_held, 'ready', 'failed')['state'] == 'ready'
-    assert [e['reason'] for e in log(other_held) if e['kind'] == 'trial_ended'] == [
-        'ended without a decision', 'a message went to the worker']
     js('task', 'hold', other_held, '--off')
     assert 'hold' not in show(other_held)['record']
     js('task', 'close', other_held, '--discard')
-    configure(LAND_CONFIG, 'no trial')
+    configure(LAND_CONFIG, 'no hold')
 
     # 32b. A wsx older than its config (docs/tasks.md "Config"): unknown keys at any level are
     mark('32b')
@@ -5464,45 +5404,6 @@ def part_deploy(created=None):
     for n in (busy, carry, idle):
         js('task', 'close', n, '--discard')
     wait_closed(lander)
-    # 32y. A batch land: ready tasks stack on main in order, the checks run once on the
-    # combined tree and each lands without checks of its own. A batch whose checks fail splits
-    # until the failing task lands alone through its own checks (docs/tasks.md "Batch land").
-    mark('32y')
-    batch = [js('task', 'new', 'WORK %s.txt' % name)['id'] for name in ('b1', 'b2', 'b3')]
-    for n in batch:
-        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
-    ran = {n: len(kinds(n, 'checks')) for n in batch}
-    ended = follow_up.read_text().count('batch land ended')
-    started = js('task', 'land', *map(str, batch))
-    assert started['ok'] and 'batch land of #%d, #%d, #%d started' % tuple(batch) in started['message'], started
-    for n in batch:
-        wait(lambda: show(n)['state'] == 'landed', 't%s lands in the batch' % n, 60)
-        assert len(kinds(n, 'checks')) == ran[n], log(n)
-    assert all(main_has('%s.txt' % name) for name in ('b1', 'b2', 'b3'))
-    wait(lambda: follow_up.read_text().count('batch land ended') == ended + 1, 'the batch ends', 60)
-    assert 'and 1 batch check run(s)' in follow_up.read_text().rsplit('batch land ended', 1)[-1], follow_up.read_text()[-2000:]
-    assert not any(Path(p).name.startswith(project.name + '-batch-') for p in base.iterdir())
-    for n in batch:
-        wait_closed(n)
-    refused = cli('task', 'land', batch[0], batch[1], ok=False)
-    assert 'is landed: a batch lands only ready tasks' in refused.stderr, refused.stderr
-    configure(LAND_CONFIG.replace('  checks:\n', '  checks:\n    - "! test -e s1.txt -a -e s2.txt"\n'), 'no s1 with s2')
-    split = [js('task', 'new', 'WORK %s.txt' % name)['id'] for name in ('g1', 's1', 's2')]
-    for n in split:
-        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
-    assert js('task', 'land', *map(str, split))['ok']
-    g1, s1, s2 = split
-    for n in (g1, s1):
-        wait(lambda: show(n)['state'] == 'landed', 't%s lands' % n, 60)
-    wait(lambda: show(s2)['state'] == 'failed', 't%s fails alone' % s2, 60)
-    assert any(e['kind'] == 'land_stopped' for e in log(s2)) and not main_has('s2.txt'), log(s2)
-    wait(lambda: follow_up.read_text().count('batch land ended') == ended + 2, 'the split batch ends', 60)
-    tail = follow_up.read_text().rsplit('the checks failed on the batch', 1)
-    assert len(tail) == 2 and 'and 2 batch check run(s)' in tail[-1], follow_up.read_text()[-3000:]
-    for n in (g1, s1):
-        wait_closed(n)
-    js('task', 'close', s2, '--discard')
-    configure(LAND_CONFIG, 'no batch check')
     # 32s. A scenario runs through check-run by name or by number after the checks, never in a
     # bare check-run or after a result; the worker's instructions list it.
     mark('32s')

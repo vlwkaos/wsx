@@ -1635,24 +1635,15 @@ impl Manager {
             0 => String::new(),
             failed => format!(", {failed} failed since"),
         };
-        // ^ A trial holds the live site; the default branch deploys when it ends.
-        let trial = &status["trial"];
-        let trial = match trial["task"].as_u64() {
-            Some(task) => format!(
-                "; the live site runs the trial of #{task} ({})",
-                trial["stage"].as_str().unwrap_or("?")
-            ),
-            None => String::new(),
-        };
         Some(match deploy["commit"].as_str() {
             Some(commit) => format!(
-                "deploy: {} live, {} commit(s) behind{failed}{trial}",
+                "deploy: {} live, {} commit(s) behind{failed}",
                 &commit[..commit.len().min(7)],
                 deploy["behind"]
                     .as_u64()
                     .map_or("?".into(), |n| n.to_string())
             ),
-            None => format!("deploy: none yet{failed}{trial}"),
+            None => format!("deploy: none yet{failed}"),
         })
     }
 

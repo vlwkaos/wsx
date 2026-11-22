@@ -6,10 +6,10 @@ use crate::cli::PromptSource;
 use crate::cli::{existing_daemon_snapshot, load_config};
 use crate::task::args::OwnerSaidAfter;
 use crate::task::manager::plain_event;
+use crate::task::preview;
 use crate::task::repo::say_chat;
 use crate::task::{acting_as_manager, actor, open, outward_said, send};
 use crate::task::{ask_host_ok, print_json, project_entry};
-use crate::task::{preview, trial};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use std::path::Path;
@@ -522,14 +522,6 @@ pub(crate) fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
     }
     // ^ A preview runs in the working copy: it stops before the copy goes.
     preview::stop(dir).with_context(|| format!("task t{} is unchanged", record.id))?;
-    // ^ The host ends its trial on close; this covers a host that no longer runs.
-    trial::end(
-        &dir.project_id,
-        &record.project,
-        Some(record.id),
-        "the task closed",
-        false,
-    )?;
     // ^ The host is the writer while it runs: ask it to close and wait for it to exit.
     let socket = dir.socket_path();
     if call_host(&socket, &HostRequest::Close { discard }, HOST_TIMEOUT).is_ok() {

@@ -2,49 +2,11 @@
 
 use super::approve::{after_landing, ask_owner, request_of};
 use crate::task::args::OwnerSaidAfter;
-use crate::task::{acting_as_manager, actor, asks_owner, batch, open, outward_said, send};
-use anyhow::{bail, Context, Result};
+use crate::task::{actor, asks_owner, open, outward_said, send};
+use anyhow::{bail, Result};
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::manager::ApprovalAction;
-use wsx_core::task::{AfterKind, HostRequest, TaskState};
-
-/// `land <a> <b>...`: refuse what one land would refuse, then ask the first task's host to
-/// start the batch land. ref: docs/tasks.md "Batch land"
-pub(crate) fn land_batch(
-    project: Option<&str>,
-    tasks: &[String],
-    tried: bool,
-    json: bool,
-) -> Result<()> {
-    if tried {
-        bail!("--tried passes one trial: land that task alone");
-    }
-    let mut ids = Vec::new();
-    let mut first = None;
-    for task in tasks {
-        let dir = open(project, task)?;
-        let record = dir.read_record()?;
-        if ids.contains(&record.id) {
-            bail!("#{} is named twice; nothing was landed", record.id);
-        }
-        if record.state != TaskState::Ready || record.parent.is_some() || record.hold.is_some() {
-            bail!(
-                "#{} is {}: a batch lands only ready tasks with no parent and no hold; nothing was landed",
-                record.id,
-                record.state.as_str()
-            );
-        }
-        ids.push(record.id);
-        first.get_or_insert((dir, record));
-    }
-    let (dir, first) = first.context("no task to land")?;
-    let settings = load_task_config(&first.project_path)
-        .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
-    if asks_owner(settings.land_approve) {
-        bail!("each land needs the owner's approval: land the tasks one at a time");
-    }
-    send(&dir, HostRequest::LandBatch { tasks: ids }, json)
-}
+use wsx_core::task::{AfterKind, HostRequest};
 
 /// `wsx task after <n> <m> "<then>"`, or `<n> --off`: task `n` waits for task `m` to land,
 /// then gets `then` as an add. ref: docs/tasks.md "After another task"
@@ -83,27 +45,16 @@ pub(crate) fn after_command(
     send(&dir, request, json)
 }
 
-/// `wsx task land`: several tasks land as one batch; one asks the owner first when the manager
-/// lands onto a project that approves lands.
+/// `wsx task land`: asks the owner first when the manager lands onto a project that approves
+/// lands.
 pub(crate) fn land_command(
-    task: Vec<String>,
-    tried: bool,
+    task: String,
     said: OwnerSaidAfter,
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let (said, after) = outward_said(&said)?;
-    if task.len() > 1 {
-        if after.is_some() {
-            bail!("--after records one task's land: land the tasks one at a time");
-        }
-        return land_batch(project, &task, tried, json);
-    }
-    let dir = open(project, &task[0])?;
-    // ^ Only the owner tries a trial, so only the owner passes one.
-    if tried && acting_as_manager() {
-        bail!("only the owner passes a trial; ask the owner to try it");
-    }
+    let dir = open(project, &task)?;
     let record = dir.read_record()?;
     let settings = load_task_config(&record.project_path)
         .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
@@ -120,14 +71,7 @@ pub(crate) fn land_command(
     {
         return Ok(());
     }
-    send(
-        &dir,
-        HostRequest::Land {
-            tried,
-            batch_tree: None,
-        },
-        json,
-    )
+    send(&dir, HostRequest::Land, json)
 }
 
 /// `wsx task hold`: hold a task for the owner to try, or release it with `--off`.
@@ -144,15 +88,5 @@ pub(crate) fn hold_command(
             by: actor(),
         },
         json,
-    )
-}
-
-/// The hidden `wsx task land-batch`: the detached run of a batch land.
-pub(crate) fn run_batch(project: Option<&str>, tasks: &[String]) -> Result<()> {
-    batch::run(
-        tasks
-            .iter()
-            .map(|task| open(project, task))
-            .collect::<Result<_>>()?,
     )
 }

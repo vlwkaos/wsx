@@ -7,7 +7,7 @@ use super::store::TaskDir;
 use super::view::{
     check_outcomes, clip, overlaps, project_tasks, read_result, task_agent, task_summary,
 };
-use super::{checks, copy, status, store, usage, DeployKind, DeployRecord, TaskRecord, TaskState};
+use super::{checks, copy, status, store, usage, DeployKind, TaskRecord, TaskState};
 use crate::config::project::load_task_config;
 use crate::model::workspace::TaskConfig;
 use crate::{ops, runtime, stale};
@@ -265,7 +265,7 @@ fn open_row(
         "waiting": record.waiting,
         // ^ The same words as every other view (docs/tasks.md "Status").
         "status": status,
-        // ^ Held for the owner to try before it lands (docs/tasks.md "Hold and trial").
+        // ^ Held for the owner to try before it lands (docs/tasks.md "Hold").
         "hold": record.hold,
         "after": record.after,
         // ^ Held, after, parent, children and where it goes, in the words of every view.
@@ -630,29 +630,5 @@ pub fn deploy_status(
             });
         }
     }
-    out["trial"] = trial_status(&project_id, &records);
     Ok(out)
-}
-
-/// The project's trial: `null`, or `{task, revision, commit, by, unix_ms, stage}` with
-/// `stage` `preparing` (rebase and checks), `deploying` or `live` (its deploy succeeded).
-/// ref: docs/tasks.md "Hold and trial"
-pub fn trial_status(project_id: &str, records: &[DeployRecord]) -> Value {
-    let Ok(Some(trial)) = store::read_trial(project_id) else {
-        return Value::Null;
-    };
-    let live = records.iter().any(|record| {
-        record.trial == Some(trial.task)
-            && record.exit == Some(0)
-            && Some(&record.commit) == trial.commit.as_ref()
-            && record.unix_ms >= trial.unix_ms
-    });
-    let stage = match (&trial.commit, live) {
-        (None, _) => "preparing",
-        (Some(_), false) => "deploying",
-        (Some(_), true) => "live",
-    };
-    let mut value = json!(trial);
-    value["stage"] = json!(stage);
-    value
 }

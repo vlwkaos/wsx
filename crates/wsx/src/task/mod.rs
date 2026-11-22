@@ -3,7 +3,6 @@
 
 mod agent;
 mod args;
-mod batch;
 mod boundary;
 pub mod broker;
 mod claude;
@@ -23,7 +22,6 @@ mod repo;
 mod slot;
 #[cfg(test)]
 mod stream_tests;
-mod trial;
 
 use crate::cli::load_config;
 use anyhow::{bail, Context, Result};
@@ -35,8 +33,8 @@ use cmd::chat::{
 };
 use cmd::check::check;
 use cmd::commit::commit;
-use cmd::deploy::{deploy, deployed, push, sync, trial_command};
-use cmd::land::{after_command, hold_command, land_command, run_batch};
+use cmd::deploy::{deploy, deployed, push, sync};
+use cmd::land::{after_command, hold_command, land_command};
 use cmd::new::new;
 use cmd::project::project;
 use cmd::routine::{checkin, digest, post, routine_command};
@@ -82,8 +80,7 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
         } => add_command(&task, text, &files, title.as_deref(), project, json),
         TaskCmd::Stop { task } => stop_command(&task, project, json),
         TaskCmd::Check { action } => check(action, project, json),
-        TaskCmd::Land { task, tried, said } => land_command(task, tried, said, project, json),
-        TaskCmd::LandBatch { tasks } => run_batch(project, &tasks),
+        TaskCmd::Land { task, said } => land_command(task, said, project, json),
         TaskCmd::Move { task, chat } => move_command(&task, &chat, project, json),
         TaskCmd::Hold {
             task,
@@ -97,7 +94,6 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
             because,
             off: _,
         } => after_command(project, &task, on, then, because, json),
-        TaskCmd::Trial { task, end } => trial_command(&task, end, project, json),
         TaskCmd::Close {
             task,
             discard,
@@ -116,7 +112,6 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
                 commit,
                 if_new: false,
                 quiet: None,
-                trial: None,
                 run,
                 said,
             },
@@ -289,8 +284,8 @@ fn report_response(dir: &TaskDir, response: HostResponse, json: bool) -> Result<
 /// One request to the task's host (`call_task_host`); an error says why none answered and
 /// that the task is unchanged.
 fn ask_host(dir: &TaskDir, request: &HostRequest) -> Result<HostResponse> {
-    // ^ A landing or a trial rebases the branch on the host before it answers.
-    let timeout = if matches!(request, HostRequest::Land { .. } | HostRequest::Trial) {
+    // ^ A landing rebases the branch on the host before it answers.
+    let timeout = if matches!(request, HostRequest::Land) {
         LAND_TIMEOUT
     } else {
         HOST_TIMEOUT

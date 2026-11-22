@@ -1,10 +1,10 @@
-//! `wsx task push`, `sync`, `deploy`, `release`, `trial` and `deployed` (docs/tasks.md).
+//! `wsx task push`, `sync`, `deploy`, `release` and `deployed` (docs/tasks.md).
 
 use super::approve::{after_landing, ask_covering, request_of};
 use crate::task::args::{DeployArgs, PushArgs};
-use crate::task::{acting_as_manager, actor, ask_host, print_json, project_entry, report_response};
-use crate::task::{asks_owner, open, outward_said};
-use crate::task::{host, hosting, trial};
+use crate::task::{acting_as_manager, actor, print_json, project_entry};
+use crate::task::{asks_owner, outward_said};
+use crate::task::{host, hosting};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use std::os::unix::io::AsRawFd;
@@ -21,7 +21,7 @@ use wsx_core::task::view::short_commit;
 use wsx_core::task::{
     copy, now_unix_ms,
     store::{self, TaskDir},
-    DeployKind, DeployRecord, HostRequest,
+    DeployKind, DeployRecord,
 };
 
 /// ^ A deploy or release longer than this is killed with its process group and recorded as
@@ -269,7 +269,6 @@ pub(crate) fn deploy(
         commit,
         if_new,
         quiet,
-        trial,
         run,
         said,
     } = args;
@@ -279,7 +278,7 @@ pub(crate) fn deploy(
     // ^ The run of an approved `release --after`: the owner's message asked for it, so open To
     // check items stay on it. The manager cannot pass the flag.
     let waived = run.checks_waived && kind == DeployKind::Release && !acting_as_manager();
-    let by_hand = !if_new && trial.is_none() && run_locked.is_none();
+    let by_hand = !if_new && run_locked.is_none();
     // ^ The run of an approved request (the owner's go, now or after a land) waits for the
     // lock instead of refusing: a refused approval is spent. The manager cannot pass the flag.
     let approved = run.approved && !acting_as_manager();
@@ -353,7 +352,7 @@ pub(crate) fn deploy(
         return Ok(());
     }
     // ^ One deploy or release at a time per project: one by hand refuses while another runs,
-    // and one that a land, a trial or an approval started waits here.
+    // and one that a land or an approval started waits here.
     let mut waited = false;
     let running = match run_locked {
         Some(fd) => store::adopt_deploy_lock(&project_id, fd)?,
@@ -367,28 +366,9 @@ pub(crate) fn deploy(
         },
         None => store::lock_deploys(&project_id)?,
     };
-    // ^ While a trial holds the live site, only its own deploy runs; the default branch
-    // deploys when it ends. ref: docs/tasks.md "Hold and trial"
-    let live_trial = store::read_trial(&project_id)?;
-    let revision = match (trial, &live_trial) {
-        (Some(task), Some(live)) if live.task == task && live.commit.is_some() => {
-            live.commit.clone().unwrap_or_default()
-        }
-        (Some(task), _) => return skip(format!("the trial of #{task} ended; nothing was run")),
-        (None, Some(live)) if if_new => {
-            return skip(format!(
-                "the live site runs the trial of #{}; the default branch deploys when it ends",
-                live.task
-            ))
-        }
-        (None, Some(live)) => bail!(
-            "the live site runs the trial of #{task}; end it first (`wsx task trial {task} --end`). Nothing was run",
-            task = live.task
-        ),
-        (None, None) => match commit {
-            Some(commit) => commit.to_string(),
-            None => default_ref(&main),
-        },
+    let revision = match commit {
+        Some(commit) => commit.to_string(),
+        None => default_ref(&main),
     };
     if if_new {
         let tip = copy::resolve_commit(&main, &revision)?;
@@ -490,20 +470,9 @@ pub(crate) fn deploy(
         exit,
         unix_ms: now_unix_ms(),
         duration_ms,
-        trial,
         output: (!succeeded).then(|| output.clone()),
     };
     store::append_deploy(&project_id, &record)?;
-    // ^ A trial whose deploy failed ends, and the default branch deploys again.
-    if let (Some(task), false) = (trial, succeeded) {
-        trial::end(
-            &project_id,
-            &project_name,
-            Some(task),
-            "its deploy failed",
-            false,
-        )?;
-    }
     removed.with_context(|| {
         format!(
             "the {name} was recorded, but its copy {} remains",
@@ -528,80 +497,10 @@ pub(crate) fn deploy(
     }
     // ^ A deploy that installed wsx reaches a host only before its next turn; one hung in a turn
     // under the older wsx is replaced now. ref: docs/tasks.md "Host"
-    if trial.is_none() {
-        for error in wsx_core::task::replace::sweep() {
-            eprintln!("cannot replace a hung host: {error}");
-        }
+    for error in wsx_core::task::replace::sweep() {
+        eprintln!("cannot replace a hung host: {error}");
     }
     Ok(())
-}
-
-/// `wsx task trial <n>`: take the project's trial slot and have the host put the ready
-/// revision on the live site; `--end` frees the slot and deploys the default branch again.
-/// ref: docs/tasks.md "Hold and trial"
-pub(crate) fn trial_command(
-    task: &str,
-    end: bool,
-    project: Option<&str>,
-    json: bool,
-) -> Result<()> {
-    let dir = open(project, task)?;
-    let record = dir.read_record()?;
-    if end {
-        let ended = trial::end(
-            &dir.project_id,
-            &record.project,
-            Some(record.id),
-            "ended without a decision",
-            false,
-        )?;
-        let message = match ended {
-            Some(_) => "the trial ended; the default branch deploys again",
-            None => "no trial of this task runs",
-        };
-        if json {
-            return print_json(&json!({ "ended": ended.is_some(), "message": message }));
-        }
-        println!("t{} {message}", record.id);
-        return Ok(());
-    }
-    let settings = load_task_config(&record.project_path)
-        .map_err(|error| anyhow::anyhow!("{error}; nothing was tried"))?;
-    if settings.deploy_command.is_none() {
-        bail!("tasks.deploy.command is not set: there is no live site to try it on");
-    }
-    if settings.deploy_public {
-        bail!("tasks.deploy.public is on: unlanded work does not go public; try it on a preview");
-    }
-    // ^ A trial changes the live site: a manager that may not deploy alone asks the owner
-    // to start it.
-    if asks_owner(settings.deploy_approve) {
-        bail!("tasks.deploy.approve is on: ask the owner to start the trial (Try live)");
-    }
-    if !trial::claim(&record, actor())? {
-        let trial = store::read_trial(&dir.project_id)?;
-        let message = format!(
-            "the trial of t{} already runs{}",
-            record.id,
-            trial
-                .and_then(|trial| trial.commit)
-                .map_or(String::new(), |commit| format!(" at {commit:.12}"))
-        );
-        if json {
-            return print_json(&json!({ "ok": true, "state": record.state, "message": message }));
-        }
-        println!("{message}");
-        return Ok(());
-    }
-    let response = ask_host(&dir, &HostRequest::Trial);
-    // ^ A host that refused or did not answer leaves the slot free again.
-    if !response.as_ref().is_ok_and(|response| response.ok) {
-        let _ = store::change_trial(&dir.project_id, |current| match current {
-            Some(trial) if trial.task == record.id && trial.commit.is_none() => (None, ()),
-            other => (other, ()),
-        });
-    }
-    report_response(&dir, response?, json)
 }
 
 /// The last successful deploy and release and how many default-branch commits each lacks.

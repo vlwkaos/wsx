@@ -3372,20 +3372,6 @@ await closeSheet("plans' page", plansChat);
 
 await openReservoir();
 await until(`(${rowOf("#1")}?.querySelector('.need-action')?.title ?? '') === 'Land'`, "#1's row does not offer Land", 60);
-// ^ A trial on the live site: its Fail tells the manager, with the mention; the trial runs until
-// the manager's add or End (docs/tasks.md "Hold and trial").
-const actOnTwo = (name) => evaluate(`fetch('api/tasks/${plans}/t/2/${name}', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).then((answer) => answer.status)`);
-if (await actOnTwo("trial") !== 200) await fail("the trial of #2 did not start");
-await until(`(${rowOf("#2")}?.querySelector('.need-action')?.title ?? '') === 'Fail: tell the manager'`, "the live trial's row has no Fail: tell the manager", 120);
-await typeInto(".composer-field", "");
-await evaluate(`${rowOf("#2")}.querySelector('.need-action').click()`);
-await composerHas("#2 ", "Fail: tell the manager did not put #2 into the composer");
-await entered();
-if (await evaluate(`(() => { const [fail, pass] = ${rowOf("#2")}.querySelectorAll('.need-action'); return getComputedStyle(fail).color === getComputedStyle(pass).color; })()`)) await fail("Fail: tell the manager looks like Pass and land");
-await shot("trial-fail-mention", ".composer-send");
-await typeInto(".composer-field", "");
-if (await actOnTwo("trial_end") !== 200) await fail("the trial of #2 did not end");
-await until(`(${rowOf("#2")}?.querySelector('.need-action')?.title ?? '') === 'Land'`, "#2's row did not go back to Land", 60);
 moved = await clearRow("#2", "Land");
 moved = await clearRow("#1", "Land");
 await until("!document.querySelector('.reservoir')", "the cleared list still shows the reservoir", 60);

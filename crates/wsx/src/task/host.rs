@@ -12,7 +12,6 @@ use super::broker;
 use super::hosting;
 use super::limit;
 use super::slot::{self, Lane, Priority, Taken, Want};
-use super::trial;
 use super::RECORDED_BY_HOST;
 use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, VecDeque};
@@ -269,7 +268,7 @@ struct Host {
     /// The file this host runs from, and whether it must exec its replacement.
     binary: Option<Binary>,
     reexec: bool,
-    /// A `land` or a `trial` waits for the checks of its rebased revision.
+    /// A `land` waits for the checks of its rebased revision.
     after_rebase: Option<AfterRebase>,
     disk_wait: Option<DiskWait>,
     /// The place of a disk wait in the machine's disk queue, and the disk slot it took to
@@ -590,7 +589,7 @@ impl Host {
             };
             let Some(event) = event else { break };
             match event {
-                Event::Request(HostRequest::Land { .. }, reply)
+                Event::Request(HostRequest::Land, reply)
                     if self.record.state == TaskState::Ready && self.must_follow_binary() =>
                 {
                     // ^ Only a ready task lands, and has no agent turn to follow a deploy at, so its land
@@ -962,11 +961,9 @@ impl Host {
                 request,
                 HostRequest::Steer { .. }
                     | HostRequest::Add { .. }
-                    | HostRequest::Land { .. }
-                    | HostRequest::Trial
+                    | HostRequest::Land
                     | HostRequest::Notice { .. }
                     | HostRequest::AfterEnd { .. }
-                    | HostRequest::LandBatch { .. }
             );
         let message = match request {
             _ if held => Err(self.by_hand_refusal()),
@@ -974,7 +971,7 @@ impl Host {
             HostRequest::Steer { text } => self.steer(text),
             HostRequest::Add { text, files, title } => self.add(text, files, title),
             HostRequest::Stop => self.stop(),
-            HostRequest::Land { tried, batch_tree } => self.land(false, tried, batch_tree),
+            HostRequest::Land => self.land(false),
             HostRequest::Hold { reason, by } => self.hold(reason, by),
             HostRequest::Move { chat, by } => Ok(self.move_to_chat(chat, by)),
             HostRequest::After {
@@ -984,18 +981,15 @@ impl Host {
                 by,
             } => self.after(task, text, because, by),
             HostRequest::AfterEnd { task, text } => self.after_end(task, text),
-            HostRequest::Trial => self.trial(),
             HostRequest::Hand => self.hand(),
             HostRequest::Handback => self.handback(),
             HostRequest::ChildLanded { child, commits } => self.child_landed(child, commits),
             HostRequest::Notice { text } => self.notice(text),
-            HostRequest::LandBatch { tasks } => self.land_batch(&tasks),
             HostRequest::Close { discard } => {
                 if let Some(agent) = self.agent.take() {
                     agent.stop();
                 }
                 self.end_turn("the task closed");
-                self.end_trial("the task closed");
                 self.record.after = None;
                 self.log(LogEvent::Closed { discarded: discard });
                 // ^ A landed task keeps `landed`: its work is on the default branch.
@@ -1072,8 +1066,6 @@ impl Host {
             mode: MessageKind::Add,
             text: text.clone(),
         });
-        // ^ The answer is a new revision, so the one on trial is no longer what lands.
-        self.end_trial("a message went to the worker");
         Ok(self.deliver_or_queue(text))
     }
 
@@ -1099,23 +1091,6 @@ impl Host {
         });
         self.notices.push(text);
         Ok("queued for the worker's next turn".into())
-    }
-
-    /// Start `wsx task land-batch` as this host's own process: the caller may be the
-    /// manager, whose boundary cannot write the state folder. ref: docs/tasks.md "Batch land"
-    fn land_batch(&mut self, tasks: &[u32]) -> Result<String> {
-        self.require_ready(false)?;
-        let names: Vec<String> = tasks.iter().map(u32::to_string).collect();
-        let mut args = vec!["task", "land-batch"];
-        args.extend(names.iter().map(String::as_str));
-        args.extend(["-p", self.record.project.as_str()]);
-        let log = store::follow_up_log(&self.record.project_id)?;
-        hosting::spawn_wsx(&args, log, None)?;
-        Ok(format!(
-            "the batch land of {} started: its checks run once on them all; its lines go to {}",
-            view::task_list(tasks.iter().copied()),
-            store::follow_up_log_path(&self.record.project_id)?.display()
-        ))
     }
 
     /// `task move`: the chat owns the task from now on, in any state.
@@ -1226,90 +1201,6 @@ impl Host {
         match text {
             Some(text) => self.add(text, Vec::new(), None),
             None => Ok(format!("#{task} was closed: the wait is over")),
-        }
-    }
-
-    /// Put the ready revision on the live site: rebased onto the default branch first, so
-    /// the owner tries what would land. The caller claimed the trial slot.
-    fn trial(&mut self) -> Result<String> {
-        self.require_ready(false)?;
-        self.require_committed()?;
-        let tip = self.default_tip()?;
-        let head = copy::resolve_commit(&self.record.working_copy, "HEAD")?;
-        if copy::is_ancestor(&self.record.working_copy, &tip, &head)? {
-            return self.start_trial();
-        }
-        match copy::rebase(&self.record.working_copy, &tip)? {
-            Rebase::Conflict(paths) => {
-                self.end_trial("the rebase onto the default branch conflicted");
-                Ok(self.resolve_conflict(&tip, &paths))
-            }
-            Rebase::Done => {
-                self.after_rebase = Some(AfterRebase::Trial);
-                self.start_checks();
-                Ok(format!(
-                    "rebased onto {} at {tip:.12}; checks run on the new revision and it goes live when they pass",
-                    self.record.default_branch
-                ))
-            }
-        }
-    }
-
-    /// Name the current revision in the trial slot and deploy it in a `wsx task deploy` of
-    /// its own, which outlives this host.
-    fn start_trial(&mut self) -> Result<String> {
-        let commit = copy::resolve_commit(&self.record.working_copy, "HEAD")?;
-        let revision = self.record.revision;
-        if !trial::set_commit(&self.record.project_id, self.record.id, revision, &commit)? {
-            bail!("the trial of t{} ended before it started", self.record.id);
-        }
-        self.log(LogEvent::Trial {
-            revision,
-            commit: commit.clone(),
-        });
-        let id = self.record.id.to_string();
-        let started = store::follow_up_log(&self.record.project_id).and_then(|log| {
-            hosting::spawn_wsx(
-                &[
-                    "task",
-                    "deploy",
-                    "-p",
-                    &self.record.project,
-                    "--trial",
-                    &id,
-                    "--json",
-                ],
-                log,
-                None,
-            )
-        });
-        if let Err(error) = started {
-            self.end_trial("its deploy did not start");
-            return Err(error);
-        }
-        Ok(format!(
-            "r{revision} at {commit:.12} deploys to the live site for the owner to try"
-        ))
-    }
-
-    /// End this task's trial, if it holds the slot, and deploy the default branch again.
-    fn end_trial(&self, reason: &str) {
-        let ended = trial::end(
-            &self.record.project_id,
-            &self.record.project,
-            Some(self.record.id),
-            reason,
-            true,
-        );
-        match ended {
-            Ok(Some(_)) => {
-                self.log(LogEvent::TrialEnded {
-                    reason: reason.to_string(),
-                });
-                self.say(&format!("trial ended: {reason}"));
-            }
-            Ok(None) => {}
-            Err(error) => self.say(&format!("cannot end the trial: {error:#}")),
         }
     }
 
@@ -1429,7 +1320,6 @@ impl Host {
         }
         self.stopped = false;
         self.end_turn("the owner took it by hand");
-        self.end_trial("the owner took it by hand");
         let dropped = self.pending.len() as u32;
         self.pending.clear();
         self.disk_wait = None;
@@ -3370,7 +3260,7 @@ impl Host {
         let epoch = self.checks_epoch;
         self.gate = Some((head(&self.record.working_copy), false));
         let priority = match self.after_rebase {
-            Some(AfterRebase::Land { .. }) => Priority::Land,
+            Some(AfterRebase::Land) => Priority::Land,
             _ => Priority::Normal,
         };
         let events = self.events.clone();
@@ -3672,7 +3562,7 @@ impl Host {
 
     /// The revision the checks produced is recorded: the result and report are written, then the
     /// task is ready, sent back to the worker (a failed check, bounded), landed again (a
-    /// conflict it resolved) or continues the landing, trial or push that waited for them.
+    /// conflict it resolved) or continues the landing or push that waited for them.
     fn checked_revision(
         &mut self,
         (revision, commit): (u32, &str),
@@ -3730,7 +3620,7 @@ impl Host {
                 && self.pending.is_empty()
                 && self.auto_land() =>
             {
-                let landed = self.land(true, false, None);
+                let landed = self.land(true);
                 self.finish_landing(landed, state);
             }
             // ^ A result that ends with a question for the owner is the owner's need, not the
@@ -3747,23 +3637,13 @@ impl Host {
                 );
             }
             None => self.set_state(state),
-            Some(AfterRebase::Land { tried }) => {
+            Some(AfterRebase::Land) => {
                 let finished = if state == TaskState::Ready {
-                    self.land_on_tip(tried, None)
+                    self.land_on_tip()
                 } else {
                     Err(anyhow::anyhow!("checks failed on the rebased revision"))
                 };
                 self.finish_landing(finished, state);
-            }
-            Some(AfterRebase::Trial) => {
-                self.set_state(state);
-                if state == TaskState::Ready {
-                    if let Err(error) = self.start_trial() {
-                        self.say(&format!("the trial did not start: {error:#}"));
-                    }
-                } else {
-                    self.end_trial("checks failed on the rebased revision");
-                }
             }
         }
     }
@@ -3905,27 +3785,17 @@ impl Host {
 
     /// Land the current revision on the default branch (docs/tasks.md "Landing").
     /// `auto`: the checks of this revision just passed, so the task is not yet `ready`.
-    /// `tried`: the owner passed this task's trial.
-    /// `batch_tree`: the tree a batch land checked with this task on top (see land_on_tip).
-    fn land(&mut self, auto: bool, tried: bool, batch_tree: Option<String>) -> Result<String> {
+    fn land(&mut self, auto: bool) -> Result<String> {
         self.require_ready(auto)?;
         view::refuse_open_children(&self.record.project_id, self.record.id, "land")?;
         self.require_committed()?;
-        if tried && !self.on_trial()? {
-            bail!(
-                "no trial of t{} runs; land it without --tried",
-                self.record.id
-            );
-        }
-        self.land_on_tip(tried, batch_tree.as_deref())
+        self.land_on_tip()
     }
 
     /// Fast-forward when the branch has the default branch tip, else rebase onto it. The
     /// checks of a rebased revision come back here, so a tip that moved while they ran
     /// rebases and checks again (#84 stopped on it, 2026-10-27).
-    /// A rebase that gives `batch_tree` lands at once: a batch land checked that tree, with
-    /// the tasks before this one already on the default branch (docs/tasks.md "Batch land").
-    fn land_on_tip(&mut self, tried: bool, batch_tree: Option<&str>) -> Result<String> {
+    fn land_on_tip(&mut self) -> Result<String> {
         self.require_parent_at_rest()?;
         let working_copy = self.record.working_copy.clone();
         let tip = self.default_tip()?;
@@ -3935,10 +3805,10 @@ impl Host {
         let revision = format!("refs/wsx/task/{}/r{}", self.record.id, self.record.revision);
         if copy::is_ancestor(&working_copy, &tip, &head)? {
             let tree = copy::tree(&working_copy, "HEAD")?;
-            if copy::tree(&working_copy, &revision)? == tree || batch_tree == Some(&tree) {
-                return self.fast_forward(tried);
+            if copy::tree(&working_copy, &revision)? == tree {
+                return self.fast_forward();
             }
-            return Ok(self.check_then_land(tried, "HEAD moved after the ready revision"));
+            return Ok(self.check_then_land("HEAD moved after the ready revision"));
         }
         match copy::rebase(&working_copy, &tip)? {
             Rebase::Conflict(paths) => {
@@ -3946,24 +3816,17 @@ impl Host {
                 Ok(self.resolve_conflict(&tip, &paths))
             }
             // ^ The rebase kept the tree whose checks passed: their results stand.
-            Rebase::Done if self.rebase_kept_tree()? => self.fast_forward(tried),
-            Rebase::Done
-                if batch_tree.is_some()
-                    && copy::tree(&working_copy, "HEAD").ok().as_deref() == batch_tree =>
-            {
-                self.say("the rebase gave the tree the batch land checked");
-                self.fast_forward(tried)
-            }
-            Rebase::Done => Ok(self.check_then_land(
-                tried,
-                &format!("rebased onto {} at {tip:.12}", self.record.default_branch),
-            )),
+            Rebase::Done if self.rebase_kept_tree()? => self.fast_forward(),
+            Rebase::Done => Ok(self.check_then_land(&format!(
+                "rebased onto {} at {tip:.12}",
+                self.record.default_branch
+            ))),
         }
     }
 
     /// Run the checks on HEAD as a new revision; it lands when they pass.
-    fn check_then_land(&mut self, tried: bool, why: &str) -> String {
-        self.after_rebase = Some(AfterRebase::Land { tried });
+    fn check_then_land(&mut self, why: &str) -> String {
+        self.after_rebase = Some(AfterRebase::Land);
         self.start_checks();
         format!("{why}; checks run on the new revision and it lands when they pass")
     }
@@ -4022,15 +3885,6 @@ impl Host {
         )
     }
 
-    /// Whether the trial slot holds this task's current revision.
-    fn on_trial(&self) -> Result<bool> {
-        Ok(
-            store::read_trial(&self.record.project_id)?.is_some_and(|trial| {
-                trial.task == self.record.id && trial.revision == Some(self.record.revision)
-            }),
-        )
-    }
-
     fn require_ready(&self, auto: bool) -> Result<()> {
         if !auto && self.record.state != TaskState::Ready {
             bail!(
@@ -4080,7 +3934,7 @@ impl Host {
         )
     }
 
-    fn fast_forward(&mut self, tried: bool) -> Result<String> {
+    fn fast_forward(&mut self) -> Result<String> {
         let tip = self.default_tip()?;
         let head = copy::resolve_commit(&self.record.working_copy, "HEAD")?;
         let cleared = copy::move_branch(
@@ -4096,7 +3950,7 @@ impl Host {
                 age_s: lock.age_s,
             });
         }
-        self.landed(&head, tried);
+        self.landed(&head);
         if let Some(parent) = self.record.parent {
             self.tell_parent(parent, &tip, &head);
         }
@@ -4164,13 +4018,10 @@ impl Host {
     }
 
     /// The revision is on the default branch: its Human Verify items join the project's
-    /// "To check" list before readers see `landed` (docs/tasks.md "To check"), unless the
-    /// owner tried them on the live site. A child's items wait in its `result.json`, its
-    /// captures kept, until its parent lands. A trial of this task ends.
-    fn landed(&mut self, commit: &str, tried: bool) {
-        if tried {
-            self.carried_verify.clear();
-        } else if self.record.parent.is_some() {
+    /// "To check" list before readers see `landed` (docs/tasks.md "To check"). A child's items
+    /// wait in its `result.json`, its captures kept, until its parent lands.
+    fn landed(&mut self, commit: &str) {
+        if self.record.parent.is_some() {
             self.keep_verify_for_parent();
         } else {
             self.collect_verify(commit);
@@ -4179,11 +4030,6 @@ impl Host {
             commit: commit.to_string(),
         });
         self.refuse_queued(commit);
-        self.end_trial(if tried {
-            "the owner passed it and it landed"
-        } else {
-            "it landed"
-        });
         self.write_report(TaskState::Landed);
         self.record.after = None;
         self.set_state(TaskState::Landed);
@@ -4552,11 +4398,10 @@ enum Place {
     Ci(String),
 }
 
-/// What a land or a trial does after the checks of its rebased revision pass.
+/// What a land does after the checks of its rebased revision pass.
 #[derive(Clone, Copy)]
 enum AfterRebase {
-    Land { tried: bool },
-    Trial,
+    Land,
 }
 
 fn check_message(text: &str) -> Result<()> {

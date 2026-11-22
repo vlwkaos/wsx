@@ -109,8 +109,8 @@ pub struct OverviewKey {
     stamp: store::Stamp,
     /// The open chats and the main chat: a chat that opens or closes moves tasks between views.
     chats: (Vec<String>, Option<String>),
-    /// `land.auto`, the manager's shown name, `preview` set, `try_live`.
-    settings: Option<(bool, String, bool, bool)>,
+    /// `land.auto`, the manager's shown name, `preview` set.
+    settings: Option<(bool, String, bool)>,
 }
 
 /// A built overview and when, by project and the chat that looks ("" is the main chat).
@@ -177,7 +177,6 @@ fn overview_in(
                 settings.land_auto,
                 settings.manager_shown_name(&scope.name).to_string(),
                 settings.preview.is_some(),
-                settings.deploy_command.is_some() && !settings.deploy_public,
             )
         }),
     };
@@ -410,11 +409,6 @@ fn build_overview(
         "last_unix_ms": last_unix_ms,
         // ^ Tasks can be tried on a preview link (docs/tasks.md "Preview").
         "preview": settings.is_some_and(|settings| settings.preview.is_some()),
-        // ^ A ready task can be tried on the live site, and which one is (docs/tasks.md "Hold and trial").
-        "try_live": settings.is_some_and(|settings| {
-            settings.deploy_command.is_some() && !settings.deploy_public
-        }),
-        "trial": ledger::trial_status(&scope.store, &store::read_deploys(&scope.store).unwrap_or_default()),
     })
 }
 
@@ -647,16 +641,6 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     summary["status"]["rest"] = json!(status.rest());
     summary["status"]["ask"] = json!(status.ask());
     summary["hold"] = json!(record.hold);
-    let trial = ledger::trial_status(
-        &scope.store,
-        &store::read_deploys(&scope.store).unwrap_or_default(),
-    );
-    // ^ The project's trial when it is this task's; `try_live` says whether one can start.
-    summary["trial"] = if trial["task"] == json!(task) {
-        trial
-    } else {
-        Value::Null
-    };
     summary["landed_commit"] = json!(landed);
     summary["approvals"] = approval_rows(&approvals);
     summary["actions"] = if can_act {
@@ -665,7 +649,6 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
             record.state,
             on,
             summary["status"]["kind"].as_str(),
-            summary["trial"]["stage"].as_str(),
             settings
                 .as_ref()
                 .is_ok_and(|settings| settings.preview.is_some()),
@@ -1187,19 +1170,19 @@ fn message(text: &str, what: &str) -> Outcome<String> {
 /// One request to a task's host. The host's refusal is a 409 with its reason.
 pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
     match &request {
-        HostRequest::Land { .. } => {}
+        HostRequest::Land => {}
         HostRequest::Hold { reason, .. } => {
             if let Some(reason) = reason {
                 view::checked_hold(reason)
                     .map_err(|error| Fault::new(400, "invalid_hold", error.to_string()))?;
             }
         }
-        // ^ `run_task` runs the hand session and the trial slot; a child's host alone sends
+        // ^ `run_task` runs the hand session; a child's host alone sends
         // `ChildLanded`; add and steer are the manager's, through `wsx task`.
         _ => return Err(Fault::new(400, "unsupported", "not a web action")),
     }
     let dir = open_task(scope, task)?;
-    let timeout = if matches!(request, HostRequest::Land { .. }) {
+    let timeout = if matches!(request, HostRequest::Land) {
         owner::LAND_TIMEOUT
     } else {
         owner::HOST_TIMEOUT
@@ -1348,20 +1331,12 @@ pub fn dismiss(scope: &Scope, id: u64) -> Outcome<Value> {
 
 /// `wsx task <command> <task>`: `preview` starts a preview or answers the running one
 /// (`{url, port, until_unix_ms}`); `hand` and `handback` (`hand --back`) open and close the hand session the
-/// way the CLI does (docs/tasks.md "By hand"); `trial` and `trial_end` take and free the
-/// trial slot (docs/tasks.md "Hold and trial").
+/// way the CLI does (docs/tasks.md "By hand").
 pub fn run_task(scope: &Scope, command: &str, task: u32) -> Outcome<Value> {
     let mut argv = vec!["task".into(), command.into(), task.to_string()];
-    match command {
-        "trial_end" => {
-            argv[1] = "trial".into();
-            argv.push("--end".into());
-        }
-        "handback" => {
-            argv[1] = "hand".into();
-            argv.push("--back".into());
-        }
-        _ => {}
+    if command == "handback" {
+        argv[1] = "hand".into();
+        argv.push("--back".into());
     }
     run_wsx(scope, argv)
 }

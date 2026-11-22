@@ -337,7 +337,7 @@ pub struct TaskRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved_to: Option<String>,
     /// Why the owner tries this task before it lands. A held task never lands by itself.
-    /// ref: docs/tasks.md "Hold and trial"
+    /// ref: docs/tasks.md "Hold"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<String>,
     /// `wsx task after`: the task waits for task `after.task` to land, then gets `after.text`.
@@ -574,15 +574,6 @@ pub enum LogEvent {
         task: u32,
         landed: bool,
     },
-    /// Revision `revision` at `commit` goes to the live site for the owner to try.
-    Trial {
-        revision: u32,
-        commit: String,
-    },
-    /// The live site no longer runs this task's trial.
-    TrialEnded {
-        reason: String,
-    },
 }
 
 /// What started a worker turn, logged on its `result`. ref: docs/tasks.md "Usage"
@@ -755,26 +746,9 @@ pub struct DeployRecord {
     pub exit: Option<i32>,
     pub unix_ms: u64,
     pub duration_ms: u64,
-    /// The task whose trial this deploy put on the live site.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trial: Option<u32>,
     /// The end of a failed command's output (stdout, then stderr).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
-}
-
-/// `tasks/<project-id>/trial.json`: the one task whose unlanded revision the live site runs
-/// for the owner to try. `commit` is known once a rebase onto the default branch passed its
-/// checks. ref: docs/tasks.md "Hold and trial"
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Trial {
-    pub task: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub revision: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
-    pub by: Actor,
-    pub unix_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -802,16 +776,8 @@ pub enum HostRequest {
         title: Option<String>,
     },
     Stop,
-    /// Land the ready revision. `tried`: the owner passed its trial, so its Human Verify
-    /// items are not added to "To check".
-    Land {
-        #[serde(default)]
-        tried: bool,
-        /// A batch land checked a tree with this task on top of the ones before it: when
-        /// the rebase gives this tree, it lands without its own checks. ref: docs/tasks.md "Batch land"
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        batch_tree: Option<String>,
-    },
+    /// Land the ready revision.
+    Land,
     /// Hold the task for the owner to try (`reason`), or release it (`None`).
     Hold {
         reason: Option<String>,
@@ -836,9 +802,6 @@ pub enum HostRequest {
         task: u32,
         text: Option<String>,
     },
-    /// Put the ready revision on the live site for the owner to try; the trial slot is
-    /// already claimed for this task.
-    Trial,
     Close {
         discard: bool,
     },
@@ -856,11 +819,6 @@ pub enum HostRequest {
     /// and no turn starts for it. ref: docs/tasks.md "Landing"
     Notice {
         text: String,
-    },
-    /// Start the batch land of `tasks`, this one first, outside the caller's boundary.
-    /// ref: docs/tasks.md "Batch land"
-    LandBatch {
-        tasks: Vec<u32>,
     },
 }
 

@@ -1576,10 +1576,7 @@ async fn task_act(
 ) -> Outcome<Json<Value>> {
     use wsx_core::task::HostRequest;
     tasks_allowed(&app, true)?;
-    if matches!(
-        action.as_str(),
-        "preview" | "hand" | "handback" | "trial" | "trial_end"
-    ) {
+    if matches!(action.as_str(), "preview" | "hand" | "handback") {
         act_budget(&app, &device)?;
         // ^ A preview waits for its command to answer, up to minutes.
         return with_scope_long(&app, project, move |scope| {
@@ -1589,15 +1586,7 @@ async fn task_act(
         .map(Json);
     }
     let request = match action.as_str() {
-        "land" => HostRequest::Land {
-            tried: false,
-            batch_tree: None,
-        },
-        // ^ Pass on a trial: the owner tried it on the live site.
-        "pass" => HostRequest::Land {
-            tried: true,
-            batch_tree: None,
-        },
+        "land" => HostRequest::Land,
         "hold" => HostRequest::Hold {
             reason: Some(input.text.unwrap_or_else(|| "the owner holds it".into())),
             by: wsx_core::task::Actor::Owner,

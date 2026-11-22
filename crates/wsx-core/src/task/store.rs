@@ -1054,55 +1054,6 @@ pub fn read_deploys(project_id: &str) -> Result<Vec<super::DeployRecord>> {
     Ok(records)
 }
 
-const TRIAL_FILE: &str = "trial.json";
-const TRIAL_LOCK_FILE: &str = "trial.lock";
-const MAX_TRIAL_BYTES: u64 = 4096;
-
-/// The project's trial, when one holds the live site. ref: docs/tasks.md "Hold and trial"
-pub fn read_trial(project_id: &str) -> Result<Option<super::Trial>> {
-    let path = project_dir(project_id)?.join(TRIAL_FILE);
-    let Some(bytes) = read_bounded_if_exists(&path, MAX_TRIAL_BYTES)? else {
-        return Ok(None);
-    };
-    Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
-        format!("cannot parse {}", path.display())
-    })?))
-}
-
-/// Change the project's trial under its lock: `change` gets the current one and returns
-/// the new one (`None` removes it) with its answer.
-pub fn change_trial<T>(
-    project_id: &str,
-    change: impl FnOnce(Option<super::Trial>) -> (Option<super::Trial>, T),
-) -> Result<T> {
-    let dir = ensure_project_dir(project_id)?;
-    let _lock = open_locked(
-        &dir.join(TRIAL_LOCK_FILE),
-        OpenOptions::new().write(true).create(true),
-    )?;
-    let current = read_trial(project_id)?;
-    let (next, answer) = change(current.clone());
-    if next != current {
-        let path = dir.join(TRIAL_FILE);
-        match &next {
-            Some(trial) => write_atomic(&path, &serde_json::to_vec_pretty(trial)?)?,
-            None => fs::remove_file(&path)
-                .with_context(|| format!("cannot remove {}", path.display()))?,
-        }
-    }
-    Ok(answer)
-}
-
-/// Whether a trial holds the live site of any project. Hosts do not follow a replaced wsx
-/// binary meanwhile: it may be the trial's build. ref: docs/tasks.md "Host"
-pub fn any_trial() -> bool {
-    fs::read_dir(tasks_root()).is_ok_and(|entries| {
-        entries
-            .flatten()
-            .any(|entry| entry.path().join(TRIAL_FILE).exists())
-    })
-}
-
 /// The ids of the projects that have a folder in the store (the same folder also holds the agents'
 /// and the chats'; `task_numbers` finds no task in those).
 pub(super) fn project_ids() -> Vec<String> {
@@ -1507,8 +1458,6 @@ pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
         dir.join(MAIN_FILE),
         dir.join(OVERVIEW_FILE),
         dir.join(super::checks::CHECKS_FILE),
-        dir.join(TRIAL_FILE),
-        // ^ A trial goes live when its deploy is recorded here.
         dir.join(DEPLOYS_FILE),
     ];
     for chat in super::chats::all(project_id) {

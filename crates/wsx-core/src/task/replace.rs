@@ -59,12 +59,11 @@ impl Binary {
 
 /// True when a host that answered with `binary` runs an older wsx than the file now at its
 /// path; a host from before this answer names none, and is older. A missing file is not
-/// followed, and neither is one put there while a trial runs: it may be the trial's build.
+/// followed.
 pub fn behind(binary: Option<&Binary>) -> bool {
-    !store::any_trial()
-        && binary.is_none_or(|binary| {
-            crate::runtime::binary_identity(&binary.path).is_ok_and(|now| now != binary.identity)
-        })
+    binary.is_none_or(|binary| {
+        crate::runtime::binary_identity(&binary.path).is_ok_and(|now| now != binary.identity)
+    })
 }
 
 /// A turn with no agent output past the quiet bound: when it started and how long it is quiet.

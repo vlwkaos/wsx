@@ -91,13 +91,9 @@ pub enum TaskCmd {
     },
     /// Interrupt the worker; the next add resumes the same conversation
     Stop { task: String },
-    /// Bring a ready task onto the default branch; several land as one batch, checked once
+    /// Bring a ready task onto the default branch
     Land {
-        #[arg(required = true, num_args = 1..)]
-        task: Vec<String>,
-        /// The owner passed its trial: its Human Verify items are not added to To check
-        #[arg(long)]
-        tried: bool,
+        task: String,
         #[command(flatten)]
         said: OwnerSaidAfter,
     },
@@ -139,13 +135,6 @@ pub enum TaskCmd {
         reason: Option<String>,
         #[arg(long)]
         off: bool,
-    },
-    /// Put a ready task's revision on the live site to try before it lands, or end the trial
-    Trial {
-        task: String,
-        /// End the trial and deploy the default branch again
-        #[arg(long)]
-        end: bool,
     },
     /// Remove the working copy, session and branch
     Close {
@@ -337,8 +326,6 @@ pub enum TaskCmd {
     #[command(hide = true)]
     PreviewHost { project_id: String, task: String },
     #[command(hide = true)]
-    LandBatch { tasks: Vec<String> },
-    #[command(hide = true)]
     Host { project_id: String, task: String },
     /// Runs a command in the machine's scenario lane, as a task's scenario does: the deploy's
     /// smoke test and the release's live handoff wait here for the Mac's load (docs/design/scheduler.md).
@@ -444,9 +431,6 @@ pub struct DeployArgs {
     /// leave the deploy to the land that moved it
     #[arg(long, hide = true, value_name = "SECS", requires = "if_new")]
     pub(crate) quiet: Option<u64>,
-    /// Deploy the revision in this task's trial slot (the task host starts it)
-    #[arg(long, hide = true, value_name = "TASK", conflicts_with_all = ["commit", "if_new"])]
-    pub(crate) trial: Option<u32>,
     #[command(flatten)]
     pub(crate) run: RunLocked,
     #[command(flatten)]
@@ -582,8 +566,7 @@ impl TaskCmd {
             Self::Close { discard: true, .. } => &[Discard],
             Self::Close { .. } => &[Close],
             Self::Land { .. } | Self::Commit { .. } => &[Land],
-            Self::Trial { .. }
-            | Self::Deploy(_)
+            Self::Deploy(_)
             | Self::Release(_)
             | Self::Push(_)
             | Self::Sync
@@ -604,7 +587,6 @@ impl TaskCmd {
             | Self::Approve { .. }
             | Self::Deny { .. }
             | Self::PreviewHost { .. }
-            | Self::LandBatch { .. }
             | Self::Host { .. }
             | Self::BoundaryProfile { .. }
             | Self::Slot { .. }

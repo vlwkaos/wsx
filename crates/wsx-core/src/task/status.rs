@@ -691,7 +691,7 @@ fn ready(
             "Held",
             Some(entered),
             hold,
-            "It lands only when you say so, or after a trial you pass.",
+            "It lands only when you say so.",
             now_ms,
         );
     }
