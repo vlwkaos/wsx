@@ -118,9 +118,6 @@ pub enum WaitOn {
     /// asked of the owner. The manager continues it with an `add`.
     /// ref: docs/tasks.md "Status"
     Paused,
-    /// A worker's result waits for its own `check-run`'s answer, at most until `until_ms`
-    /// (the run's time limit); the task stays `working`. ref: docs/tasks.md "Check-run"
-    CheckRun,
     /// A landing that started stopped (a dirty main checkout): the task stays `ready` and the
     /// owner lands it again once that is fixed; `reason` says why. ref: docs/tasks.md "Landing"
     LandStopped,
@@ -141,7 +138,6 @@ impl WaitOn {
             Self::CheckSlot => "check_slot",
             Self::Limit => "limit",
             Self::Paused => "paused",
-            Self::CheckRun => "check_run",
             Self::LandStopped => "land_stopped",
             Self::Asks => "asks",
         }
@@ -200,8 +196,7 @@ pub struct Waiting {
     pub on: WaitOn,
     /// What it waits for, in plain words.
     pub reason: String,
-    /// When a wait on `limit` resumes, or a wait on `check_run` outlives its run's time limit,
-    /// in unix ms.
+    /// When a wait on `limit` resumes, in unix ms.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until_ms: Option<u64>,
 }
@@ -364,9 +359,8 @@ pub struct TaskRecord {
     /// The host sent the worker back once to run the simplify skill.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub simplify_asked: bool,
-    /// Set while the state is `waiting`, on `check_slot` while checks wait for the slot, on
-    /// `check_run` while a result waits for its check-run, and on `land_stopped` while a ready
-    /// task's landing stopped. Only `move_to` writes it.
+    /// Set while the state is `waiting`, on `check_slot` while checks wait for the slot, and on
+    /// `land_stopped` while a ready task's landing stopped. Only `move_to` writes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<Waiting>,
     pub created_unix_ms: u64,
@@ -590,7 +584,7 @@ pub enum TurnTrigger {
     Verify,
     /// The one turn that asks the worker to run the simplify skill.
     Simplify,
-    /// The answer of a `check-run` that ended after the worker's result.
+    /// A `check-run`'s answer: a failure after the result reopens the task.
     CheckRun,
     /// A landing's rebase conflict.
     Conflict,
@@ -673,14 +667,13 @@ impl TaskRecord {
     /// The one write of `state` and `waiting`: a move the table (`TaskState::may_move`) has, with
     /// a wait its state holds, else an error that names both and leaves the record as it was.
     /// `waiting` is the whole wait in the new state: `waiting` holds any wait but a check's, a
-    /// stopped landing's and a question's, a check slot's holds in any other state, a check-run's
-    /// only in `working`, a stopped landing's and a question's (`asks`) only in `ready`.
+    /// stopped landing's and a question's, a check slot's holds in any other state,
+    /// a stopped landing's and a question's (`asks`) only in `ready`.
     pub fn move_to(&mut self, to: TaskState, waiting: Option<Waiting>) -> anyhow::Result<()> {
         let from = self.state;
         let held = match waiting.as_ref().map(|waiting| waiting.on) {
             None => to != TaskState::Waiting,
             Some(WaitOn::CheckSlot) => to != TaskState::Waiting,
-            Some(WaitOn::CheckRun) => to == TaskState::Working,
             Some(WaitOn::LandStopped | WaitOn::Asks) => to == TaskState::Ready,
             Some(_) => to == TaskState::Waiting,
         };

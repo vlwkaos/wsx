@@ -21,7 +21,7 @@ tasks:
     - cargo nextest run --workspace --locked
   checkTimeoutSeconds: 1200
   # ^ Every call reads the whole context again: rotating at 200k costs less than letting it grow
-  # (docs/design/token-usage.md "Rotation or compaction"). No long-context premium applies.
+  # (docs/design/token-usage.md in git history). No long-context premium applies.
   # ^ A trial from 2026-11-04 for 8 landed tasks, judged on cost per landed task and reverts
   # against the 11-04 baseline ($2.38, 5.5 turns). The manager passes --model opus for large work.
   agent: { rotateTokens: 200000, model: sonnet }
@@ -45,7 +45,7 @@ tasks:
   scenarioPaths:
     # ^ Each scenario names every path whose output its journey reads, not its crate edges: the
     # task, web and boundary journeys drive the real task host, manager and wsxd through the CLI,
-    # and task and smoke drive the TUI. Proof against main's breaks: docs/design/orchestration-lean.md §13.
+    # and task and smoke drive the TUI.
     task: [crates/wsx, crates/wsx-core, crates/wsx-daemon, crates/wsx-terminal, scripts/test-task.py,
       "scripts/fake-*", scripts/scenario.py, scripts/tui_pty.py, scripts/wsxd_client.py, scripts/sections.py]
     web: [crates/wsx-web, crates/wsx-core, crates/wsx-daemon, crates/wsx-terminal, crates/wsx/src/task,
@@ -64,16 +64,17 @@ tasks:
   # ^ Workers get the owner's skills; the project's words for each stage (docs/tasks.md "Workflow").
   skills: owner
   # ^ Only these skills in a worker's list: all 76 cost 8.9k tokens in every prefix
-  # (docs/design/token-usage.md option 1). The manager keeps all.
+  # (docs/design/token-usage.md in git history). The manager keeps all.
   skillsOnly: [develop, simplify, recall, memo, backpressure, ui-view-standards, seek, write-test]
   workflow:
     # ^ The steps (context, plan, build, review, memo) are the owner's, in ~/.config/wsx/wsx.config.yml.
     build: >-
       Follow CLAUDE.md and AGENTS.md. Keep the change lean: reuse what exists, remove what your
-      change makes dead; prefer removing code to adding it. Before your result, search
-      scripts/test-*.py and scripts/*-check.mjs for each UI string, label, menu item or route
-      the diff adds, renames or removes, and update those asserts. When a scenario's answer comes
-      as your next turn, fix what fails, also an assert your change made stale. `task` and `web`
+      change makes dead; prefer removing code to adding it. Prove a change with an integration
+      test when one proves it as well; touch a scenario assert only for a core contract or a bug
+      that came back, never for a label or a layout. A scenario never holds your result: when
+      its failure comes back as your next turn, fix the code, or the assert if your change was
+      the decided behavior. `task` and `web`
       run on this machine, their parts at once; their captures come back to
       .work/web-captures. In your own copy only `python3 -B
       scripts/test-web-client.py --part chat` (no --browser) runs, in about 5 min; the task

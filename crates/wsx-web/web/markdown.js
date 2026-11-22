@@ -10,7 +10,7 @@ import { html, useMemo, useState } from "./lib.js";
 import { Diagram } from "./diagram.js";
 
 // ^ A table whose header sits right under a list item's line, not indented to the item
-// (docs/design/list-tables.md): markdown-it's table rule needs the delimiter row at the item's
+// (scripts/fixtures/list-tables.md): markdown-it's table rule needs the delimiter row at the item's
 // indent, so those lines stayed text of the item. This rule ends the item's paragraph at such a
 // header, by asking the table rule itself with the indent of the page; the table then follows
 // the list, as GitHub shows it with a blank line between.

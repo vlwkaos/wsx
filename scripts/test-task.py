@@ -361,6 +361,7 @@ def main():
         if 'env' in owned:
             subprocess.run([str(wsx), 'daemon', 'stop', '--force'], env=owned['env'],
                            capture_output=True, timeout=20)
+        wsxd_client.reap(work, wsx)
         if not args.keep:
             shutil.rmtree(work, ignore_errors=True)
     if sections.failed:
@@ -4122,17 +4123,17 @@ def part_worker(created=None):
     for n in (probed, held):
         js('task', 'close', n, '--discard')
 
-    # 23g. The manager's new task names no files an open task names or changes (docs/tasks.md
-    # "Store"): it adds to that task or starts after it. `why` and `review` read a task for the
-    # manager, through its broker as for the owner (docs/tasks.md "Manager").
+    # 23g. The manager's new task may name files an open task names or changes (docs/tasks.md
+    # "Store"): it is made, and its land rebases it; one parked after that task keeps the wait.
+    # `why` and `review` read a task for the manager, through its broker as for the owner
+    # (docs/tasks.md "Manager").
     mark('23g')
     ov_gate = work / 'release-23g'
     ov_first = js('task', 'new', '--files', 'ov*.txt', '--title', 'Overlap first', 'WAIT %s WORK ov-a.txt' % ov_gate)['id']
     ov_new = 'RUN wsx task new --files "ov*.txt" -p demo --json%s NOOP'
-    refused = reply_to(js('task', 'say', ov_new % '')['id'])['text']
-    assert '-> 0' not in refused and ('--files ov*.txt meets open task #%d "Overlap first": add the work to it with '
-                                      'wsx task add %d, or start after it with --after %d --because files; no task was '
-                                      'created' % (ov_first, ov_first, ov_first)) in refused, refused
+    ov_beside = next_task()
+    made = reply_to(js('task', 'say', ov_new % '')['id'])['text']
+    assert '-> 0' in made, made
     ov_after = next_task()
     assert '-> 0' in reply_to(js('task', 'say', ov_new % (' --after %d --because files' % ov_first))['id'])['text']
     why = js('task', 'why', ov_after)
@@ -4148,32 +4149,7 @@ def part_worker(created=None):
     assert 'ov-a.txt' in review['stat'] and '+++ b/ov-a.txt' in review['diff'], review
     said_review = reply_to(js('task', 'say', 'RUN wsx task review %d -p demo' % ov_first)['id'])['text']
     assert '-> 0' in said_review and '== prompt ' in said_review, said_review
-    # ^ A task no worker edits blocks only through the paths its commits changed: #ov_after waits
-    # for #ov_first with no commits, #ov_quiet is stopped with none, #ov_first is stopped after
-    # its commit of ov-a.txt.
-    ov_quiet = js('task', 'new', '--files', 'ovq*.txt', 'WAIT %s WORK ovq.txt' % (work / 'release-23g-q'))['id']
-    js('task', 'add', ov_first, 'WAIT %s' % (work / 'release-23g-2'))
-    for n in (ov_quiet, ov_first):
-        wait(lambda n=n: show(n)['state'] == 'working', 'the 23g worker of #%d' % n)
-        assert js('task', 'stop', n)['state'] == 'waiting'
-    # ^ A parked task whose branch moved to main with no commits of its own (a wait's end moves
-    # the copy, no revision follows) keeps an older `base`; it blocks only through its own
-    # commits, so a path main changed after that base is free.
-    (project / 'ovm.txt').write_text('main\n')
-    git('add', 'ovm.txt')
-    git('commit', '-q', '-m', 'ovm.txt on main')
-    quiet = show(ov_quiet)['record']
-    git('merge', '-q', '--ff-only', 'main', cwd=Path(quiet['working_copy']))
-    assert git('rev-list', '--count', 'main..' + quiet['branch']) == '0' and git('rev-list', '--count', quiet['base'] + '..main') != '0', quiet
-    ov_moved = next_task()
-    passed = reply_to(js('task', 'say', ov_new.replace('"ov*.txt"', 'ovm.txt') % '')['id'])['text']
-    assert '-> 0' in passed, passed
-    ov_free = next_task()
-    passed = reply_to(js('task', 'say', ov_new.replace('"ov*.txt"', '"ovq*.txt" --files ov-b.txt') % '')['id'])['text']
-    assert '-> 0' in passed, passed
-    refused = reply_to(js('task', 'say', ov_new.replace('"ov*.txt"', 'ov-a.txt') % '')['id'])['text']
-    assert '-> 0' not in refused and '--files ov-a.txt meets open task #%d "Overlap first"' % ov_first in refused, refused
-    for n in (ov_first, ov_after, ov_quiet, ov_moved, ov_free):
+    for n in (ov_first, ov_beside, ov_after):
         js('task', 'close', n, '--discard')
 
     # 23s. An untrusted agent (Pi with any model) runs under the strict profile and the broker's
@@ -5260,8 +5236,8 @@ def part_deploy(created=None):
         js('task', 'close', n, '--discard')
     # A worker's check-run that must wait for the slot answers `queued` at once, also to a
     # client that asks again, so no turn waits or polls (docs/tasks.md "Check-run"): the step
-    # ends with its result, the answer comes as one `check_run` turn of that step, and the next
-    # step follows. The checks run once, never beside each other.
+    # ends with its result and the next step follows without the answer; the run's pass starts
+    # no turn.
     slot_spans.unlink()
     release.unlink()
     configure(LAND_CONFIG.replace('"test ! -e broken.txt"', '"%s %s 60"' % (sys.executable, slot_check))
@@ -5274,19 +5250,16 @@ def part_deploy(created=None):
     code, said = wait(lambda: next((t for t in traces() if 'check_run_again' in t), None),
                       'the queued answer', 30)['check_run_again']
     assert code == 0 and "queued for the machine's check slot" in said, said
-    # ^ The step's result comes while the run still waits: it waits too, the step stays.
-    wait(lambda: kinds(again, 'result'), 'the step result before the answer', 30)
-    assert show(again)['record']['step'] == 0 and not kinds(again, 'check_run'), log(again)
+    # ^ The step's result comes while the run still waits: the next step starts without it.
+    wait(lambda: show(again)['record']['step'] == 1, 'the next step before the answer', 30)
+    assert not kinds(again, 'check_run'), log(again)
     release.touch()
     assert wait_state(again, 'ready', 'failed')['state'] == 'ready', log(again)
-    assert kinds(again, 'result', 'check_run', 'checks') == ['result', 'check_run', 'result', 'result', 'checks'], log(again)
+    wait(lambda: kinds(again, 'check_run'), 'the check-run answers', 60)
     turns = [(e['step'], e['trigger']) for e in log(again) if e['kind'] == 'result']
-    assert turns == [('build', 'step'), ('build', 'check_run'), ('review', 'step')], turns
+    assert turns == [('build', 'step'), ('review', 'step')], turns
     answers = [t['message'] for t in traces() if t.get('message', '').startswith('Your check-run ended. Its answer')]
-    assert len(answers) == 1 and ': exit 0' in answers[0], answers
-    # ^ One start for the check-run and one for the checks after the result.
-    starts = [line for line in slot_spans.read_text().splitlines() if line.startswith(copy_name(again) + ' start')]
-    assert len(starts) == 2, slot_spans.read_text()
+    assert not answers, answers
     for n in (holder, again):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'no slot checks')
@@ -5428,21 +5401,21 @@ def part_deploy(created=None):
     named = next(t for t in traces() if 'check_run_with' in t and 'ping' in t['check_run_with'][0][1])['check_run_with'][0]
     assert named[0] == 0, named
     js('task', 'close', meeting, '--discard')
-    # 32t. A result that comes before its own check-run's answer waits for it: the worker gets
-    # the answer in one turn, and only its next result runs the checks.
+    # 32t. A check-run never holds the result (docs/tasks.md "Check-run"): a result that comes
+    # before the run's answer settles at once, the task is ready while the run is out, and the
+    # run's pass starts no turn.
     mark('32t')
     late_gate = base / 'late-gate'
     configure(LAND_CONFIG + '  scenarios:\n    slow: %s\n' % gate_cmd(late_gate), 'a slow scenario')
     late = js('task', 'new', 'CHECKRUN_LATE slow WORK late.txt')['id']
-    wait(lambda: kinds(late, 'result'), 'the result before the answer', 30)
-    time.sleep(1)
-    assert show(late)['state'] == 'working' and not kinds(late, 'checks'), log(late)
-    late_gate.touch()
     assert wait_state(late, 'ready', 'failed')['state'] == 'ready', log(late)
-    assert kinds(late, 'result', 'check_run', 'checks') == ['result', 'check_run', 'result', 'checks'], log(late)
-    # ^ 32c's answer turn has the same words: only this task's late gate counts.
+    assert not kinds(late, 'check_run'), log(late)
+    late_gate.touch()
+    wait(lambda: kinds(late, 'check_run'), 'the run answers in the background', 30)
+    time.sleep(1)
+    assert show(late)['state'] == 'ready' and kinds(late, 'result') == ['result'], log(late)
     answers = [t['message'] for t in traces() if 'Your check-run ended. Its answer' in t.get('message', '') and str(late_gate) in t['message']]
-    assert len(answers) == 1 and 'check 2 `while [ ! -e' in answers[0] and ': exit 0' in answers[0], answers
+    assert not answers, answers
     js('task', 'close', late, '--discard')
     # 32t1. A stop outlasts a check-run (docs/tasks.md "Host", Stop): its late answer is logged and
     # kept, starts no turn, and joins the turn the next add starts.
@@ -5456,15 +5429,15 @@ def part_deploy(created=None):
     wait(lambda: kinds(parked, 'check_run'), 'the check-run ends while stopped', 30)
     time.sleep(3)
     assert show(parked)['state'] == 'waiting' and show(parked)['record']['waiting']['on'] == 'owner', log(parked)
-    assert kinds(parked, 'result', 'check_run', 'checks') == ['result', 'check_run'], log(parked)
+    assert kinds(parked, 'result') == ['result'] and kinds(parked, 'check_run') == ['check_run'], log(parked)
     answers = lambda: [t['message'] for t in traces() if 'Your check-run ended. Its answer' in t.get('message', '') and str(stop_gate) in t['message']]
     assert not answers(), answers()
     js('task', 'add', parked, 'WORK parked2.txt')
     assert wait_state(parked, 'ready', 'failed')['state'] == 'ready', log(parked)
     assert len(answers()) == 1 and 'WORK parked2.txt' in answers()[0], answers()
     js('task', 'close', parked, '--discard')
-    # 32t2. A check-run that ended after the worker's last result and passed on a clean tree
-    # starts no turn: the host records it as evidence in the result. A failure starts a turn.
+    # 32t2. A check-run that ends after the worker's result settled and passed on a clean tree
+    # starts no turn: the host records it as evidence in the result. A failure reopens the task.
     mark('32t2')
     pass_gate, fail_gate = base / 'pass-gate', base / 'fail-gate'
     configure(LAND_CONFIG + '  scenarios:\n    slow: %s\n'
@@ -5473,50 +5446,45 @@ def part_deploy(created=None):
     failed = js('task', 'new', 'CHECKRUN_LATER slowfail WORK laterfail.txt')['id']
     for n in (passed, failed):
         wait(lambda: kinds(n, 'result'), 'the result before the answer', 30)
-    time.sleep(1)
+    for n in (passed, failed):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
     assert not kinds(passed, 'check_run') and not kinds(failed, 'check_run'), (log(passed), log(failed))
     pass_gate.touch()
     fail_gate.touch()
+    wait(lambda: kinds(passed, 'check_run'), 'the pass answers', 30)
+    wait(lambda: [e for e in log(failed) if e['kind'] == 'result' and e.get('trigger') == 'check_run'], 'the failure reopens', 30)
     for n in (passed, failed):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
-    assert kinds(passed, 'result', 'check_run', 'checks') == ['result', 'check_run', 'checks'], log(passed)
+    assert kinds(passed, 'result', 'check_run', 'checks') == ['result', 'checks', 'check_run'], log(passed)
     assert [e['trigger'] for e in log(passed) if e['kind'] == 'result'] == ['step'], log(passed)
     proof = [e for e in show(passed)['result']['result']['evidence'] if 'check-run' in e['check']]
     assert len(proof) == 1 and ': exit 0' in proof[0]['proof'] and str(pass_gate) in proof[0]['proof'], show(passed)['result']
     assert not [t for t in traces() if 'Your check-run ended' in t.get('message', '') and str(pass_gate) in t['message']]
-    # ^ The manager hears the pass in the ready event: the worker's own words (written while the
-    # run was pending) come after it. The task whose run failed has no such line.
-    heard = wait(lambda: events_with('#%d ready r1' % passed, 'check-run slow passed (recorded by the host); worker says'),
-                 'the ready event with the recorded check-run', 30)
-    assert len(heard) == 1 and len(events_with('#%d ready' % passed)) == 1, manager_entries()[-6:]
-    # ^ Events that come together are one message: look at the failed task's own line.
-    own = wait(lambda: [line for e in events_with('#%d ready r1' % failed) for line in e['text'].split('\n')
-                        if line.startswith('#%d ready r1' % failed)], 'the ready event of the failed run', 30)
-    assert 'recorded by the host' not in own[0], own
     assert [e['trigger'] for e in log(failed) if e['kind'] == 'result'] == ['step', 'check_run'], log(failed)
     sent = [t for t in traces() if 'Your check-run ended' in t.get('message', '') and str(fail_gate) in t['message']]
     assert len(sent) == 1 and ': exit 1' in sent[0]['message'], sent
     for n in (passed, failed):
         js('task', 'close', n, '--discard')
     # 32t4. A check-run joins a pending run only on the same commit (docs/tasks.md "Check-run"):
-    # one on a newer commit answers `queued` and starts when the pending run ends, the held
-    # result waits for it, and each answer names its own commit, as the run's own output does.
+    # one on a newer commit answers `queued` and starts when the pending run ends, no result
+    # waits for either, and each answer names its own commit, as the run's own output does.
     mark('32t4')
     two_gate = base / 'two-commits-gate'
     # ^ The run reads HEAD when it starts: the gate opens after commit B.
     configure(LAND_CONFIG + '  scenarios:\n    oncommit: "at=$(git rev-parse --short=12 HEAD); '
               '%s; echo ran-on-$at; exit 1"\n' % gate_cmd(two_gate), 'a ci scenario per commit')
     two = js('task', 'new', 'CHECKRUN_LATER oncommit WORK first.txt')['id']
-    wait(lambda: kinds(two, 'result'), 'the result before the first answer', 30)
+    assert wait_state(two, 'ready', 'failed')['state'] == 'ready', log(two)
     js('task', 'add', two, 'WORK second.txt CHECKRUN_LATER oncommit')
-    held = wait(lambda: len(kinds(two, 'result')) == 2 and (current := show(two))['record'].get('waiting') and current,
-                'the result after the second commit waits', 30)
-    assert held['record']['waiting']['on'] == 'check_run' and not kinds(two, 'check_run'), log(two)
-    copy = held['record']['working_copy']
+    settled = wait(lambda: len(kinds(two, 'result')) == 2 and (current := show(two))['state'] == 'ready' and current,
+                   'the result after the second commit settles', 30)
+    assert not kinds(two, 'check_run'), log(two)
+    copy = settled['record']['working_copy']
     first, second = (git('rev-parse', '--short=12', ref, cwd=copy) for ref in ('HEAD~1', 'HEAD'))
     two_gate.touch()
+    wait(lambda: len([e for e in log(two) if e['kind'] == 'result']) == 3, 'the newer failure reopens', 60)
     assert wait_state(two, 'ready', 'failed')['state'] == 'ready', log(two)
-    assert kinds(two, 'result', 'check_run', 'checks') == ['result', 'result', 'check_run', 'check_run', 'result', 'checks'], log(two)
+    assert len(kinds(two, 'check_run')) == 2, log(two)
     assert [e['trigger'] for e in log(two) if e['kind'] == 'result'] == ['step', 'message', 'check_run'], log(two)
     sent = [t['message'] for t in traces() if 'Your check-run ended' in t.get('message', '') and 'ran-on-' in t['message']]
     assert len(sent) == 1, sent
@@ -5554,14 +5522,12 @@ def part_deploy(created=None):
     holds = js('task', 'new', 'CHECKRUN_LATE slow WORK lane1.txt')['id']
     wait(lambda: kinds(holds, 'result'), 'the first scenario run', 30)
     waits = js('task', 'new', 'CHECKRUN_LATE slow WORK lane2.txt')['id']
-    reason = wait(lambda: (show(waits)['record'].get('waiting') or {}).get('reason', '').startswith('queued') and show(waits)['record']['waiting']['reason'], 'the second scenario run queued', 30)
+    queued = lambda: next((e['reason'] for e in log(waits) if e['kind'] == 'check_queued' and e['reason'].startswith('queued')), None)
+    reason = wait(queued, 'the second scenario run queued', 30)
     assert reason.startswith('queued for the scenario test slot behind demo t%s' % holds), reason
-    # ^ `show` and its text say the scenario wait in wsx-core's words (docs/tasks.md "Status").
-    lane_status = show(waits)['status']
-    assert lane_status['label'] == 'Waiting for the scenario test slot', lane_status
-    assert lane_status['waits_on']['kind'] == 'queue', lane_status
-    assert re.match(r'Waiting for the scenario test slot for [^:]+: #%s runs its scenario tests now(, \d+ more tasks? ahead)?\. Its scenario tests start when the slot is free\.$' % holds, lane_status['sentence']), lane_status
-    assert 'status:       Waiting for the scenario test slot for ' in cli('task', 'show', waits).stdout
+    # ^ The queued run does not hold its task (docs/tasks.md "Check-run"): it is ready.
+    assert wait_state(waits, 'ready', 'failed')['state'] == 'ready', log(waits)
+    assert not show(waits)['record'].get('waiting'), show(waits)['record']
     plain = js('task', 'new', 'WORK lane3.txt')['id']
     assert wait_state(plain, 'ready', 'failed')['state'] == 'ready', log(plain)
     checked = next(e for e in log(plain) if e['kind'] == 'checks')
@@ -5574,7 +5540,7 @@ def part_deploy(created=None):
         js('task', 'close', n, '--discard')
     # 32v2. The disk is low when a scenario-only check-run starts (docs/design/scheduler.md): this
     # Mac cannot run it, so it goes to CI (WSX_SCENARIO_ON=ci on the unchanged command) and the
-    # status says why. The task works on the disk while the cap is normal; the cap rises before
+    # log says why. The task works on the disk while the cap is normal; the cap rises before
     # the run starts.
     mark('32v2')
     low_open, low_gate, low_log = base / 'low-open', base / 'low-gate', base / 'low.log'
@@ -5583,9 +5549,8 @@ def part_deploy(created=None):
     wait_state(low, 'working')
     configure(LAND_CONFIG.replace('minFreeGb: 0', 'minFreeGb: 100000') + '  scenarios:\n    lowdisk: "echo on=[$WSX_SCENARIO_ON] >> %s; %s"\n' % (low_log, gate_cmd(low_gate)), 'a full disk')
     low_open.touch()
-    on_ci = wait(lambda: (show(low)['record'].get('waiting') or {}).get('reason', '').startswith('went to CI: ') and show(low)['record']['waiting']['reason'], 'the run went to CI', 60)
+    on_ci = wait(lambda: next((e['reason'] for e in log(low) if e['kind'] == 'check_queued' and e['reason'].startswith('went to CI: ')), None), 'the run went to CI', 60)
     assert ' GB free of the 100000 GB' in on_ci, on_ci
-    assert show(low)['status']['label'] == 'Running its scenario tests on CI', show(low)['status']
     wait(lambda: low_log.exists() and low_log.read_text() == 'on=[ci]\n', 'the command saw WSX_SCENARIO_ON=ci', 30)
     configure(LAND_CONFIG, 'the disk is back')
     low_gate.touch()
@@ -6031,36 +5996,28 @@ def part_host(created=None):
     js('task', 'close', three, '--discard')
     wait_state(three, 'closed')
     # 32ap. A worker whose turn ends `paused` while its scenario check-run is out (docs/tasks.md
-    # "Status"): the host holds the result, so the task waits on `check_run`, not on the manager;
-    # no `paused` event reaches the manager; an add queues behind the answer, and the answer starts
-    # one turn that carries it.
+    # "Status", "Check-run"): the run does not hold the result, so the task waits on the manager
+    # (`paused`) at once; an add starts a turn at once; the run's pass starts no turn.
     mark('32ap')
     ap_gate, ap_started = base / 'ap-gate', base / 'ap-started.log'
     (base / 'ap-ci.sh').write_text('echo started >> %s\n%s\necho scenario-passed\n'
                                    % (ap_started, gate_cmd(ap_gate)))
     configure(LAND_CONFIG + '  scenarios:\n    pausecheck: "sh %s"\n' % (base / 'ap-ci.sh'), 'a scenario for 32ap')
-    held = manager_new('WORK ap.txt CHECKRUN_LATER pausecheck PAUSE')
-    wait(lambda: (show(held)['record'].get('waiting') or {}).get('on') == 'check_run', 'the paused result waits for its check-run', 60)
-    # ^ Until the run has the scenario slot the check-run is queued, not out.
-    wait(lambda: show(held)['status']['label'] == 'Waiting for its check-run', 'the check-run is out, not queued', 30)
-    held_now = show(held)
-    assert held_now['record']['state'] == 'working' and held_now['status']['label'] == 'Waiting for its check-run', held_now['status']
-    assert [e['status'] for e in log(held) if e['kind'] == 'result'] == ['paused'], log(held)
-    said = js('task', 'add', held, 'NOOP go on ap')['message']
-    assert 'queued until the check-run answers' in said, said
-    stays(lambda: len(kinds(held, 'message')) >= 2, lambda: not any('go on ap' in str(t.get('message', '')) for t in traces()),
-          'the add starts no turn while the check-run is out', 20)
-    assert (show(held)['record'].get('waiting') or {}).get('on') == 'check_run', show(held)['record']
+    paused = manager_new('WORK ap.txt CHECKRUN_LATER pausecheck PAUSE')
+    wait(lambda: (show(paused)['record'].get('waiting') or {}).get('on') == 'paused', 'the paused result waits on the manager', 60)
+    wait(lambda: ap_started.exists(), 'the check-run is out', 30)
+    assert [e['status'] for e in log(paused) if e['kind'] == 'result'] == ['paused'], log(paused)
+    said = js('task', 'add', paused, 'NOOP go on ap')['message']
+    assert 'started a new turn' in said, said
+    wait(lambda: any('go on ap' in str(t.get('message', '')) for t in traces()), 'the add starts its turn', 30)
+    assert wait_state(paused, 'ready', 'failed')['state'] == 'ready', log(paused)
     ap_gate.touch()
-    wait(lambda: any('go on ap' in str(t.get('message', '')) for t in traces()), 'the answer starts the turn with the add', 60)
-    turns = [t['message'] for t in traces() if 'go on ap' in str(t.get('message', ''))]
-    assert len(turns) == 1 and 'Your check-run ended' in turns[0], turns
-    assert wait_state(held, 'ready', 'failed')['state'] == 'ready', log(held)
-    assert len(turns := [t for t in traces() if 'go on ap' in str(t.get('message', ''))]) == 1, turns
-    assert not events_with('#%d paused' % held), events_with('#%d paused' % held)
-    assert ap_started.read_text() == 'started\n', ap_started.read_text()
-    js('task', 'close', held, '--discard')
-    wait_state(held, 'closed')
+    wait(lambda: kinds(paused, 'check_run'), 'the run answers in the background', 60)
+    time.sleep(1)
+    assert not [t for t in traces() if 'Your check-run ended' in t.get('message', '') and str(ap_gate) in t['message']]
+    assert show(paused)['state'] == 'ready' and ap_started.read_text() == 'started\n', log(paused)
+    js('task', 'close', paused, '--discard')
+    wait_state(paused, 'closed')
     configure(LAND_CONFIG, 'scenario for 32ap over')
     # 32wk. One wake rule (docs/tasks.md "Manager"; root-cause-refactor step 6): a ready task
     # parked behind another and a ready result that asks the owner start no manager turn; they
@@ -6434,28 +6391,35 @@ def part_host(created=None):
     def triggers(n):
         return [e['trigger'] for e in log(n) if e['kind'] == 'result']
 
+    # ^ The scenarios run after the result settled (docs/tasks.md "Check-run"): the task is
+    # ready first, and the pass joins its evidence.
+    near_proof = lambda n: [e for e in show(n)['result']['result']['evidence'] if e['check'] == 'wsx task check-run near passed (recorded by the host)']
     near = js('task', 'new', 'WORK near.txt')['id']
-    done = wait_state(near, 'ready', 'failed')
-    assert done['state'] == 'ready' and path_runs() == ['near'] and triggers(near) == ['step'], (path_runs(), log(near))
-    assert [e for e in done['result']['result']['evidence'] if e['check'] == 'wsx task check-run near passed (recorded by the host)'], done['result']
+    assert wait_state(near, 'ready', 'failed')['state'] == 'ready', log(near)
+    wait(lambda: near_proof(near), 'the near pass joins the evidence', 30)
+    assert path_runs() == ['near'] and triggers(near) == ['step'], (path_runs(), log(near))
     free = js('task', 'new', 'WORK path-free.txt')['id']
     assert wait_state(free, 'ready', 'failed')['state'] == 'ready' and not kinds(free, 'check_run'), log(free)
     assert path_runs() == ['near'], path_runs()
-    # ^ The worker names `far` after its commit; its answer holds the result, then `near` runs.
-    # The gate opens once the result is in, so the answer cannot reach the worker's own call.
+    # ^ The worker names `far` after its commit; the result settles without its answer, and
+    # `near`, which the change touches, starts after it.
     finding = js('task', 'new', 'CHECKRUN_LATER far WORK near.txt')['id']
-    wait(lambda: kinds(finding, 'result'), 'the result before the far answer', 30)
+    assert wait_state(finding, 'ready', 'failed')['state'] == 'ready', log(finding)
     far_gate.touch()
-    done = wait_state(finding, 'ready', 'failed')
-    assert done['state'] == 'ready' and triggers(finding) == ['step'] and path_runs()[1:] == ['far', 'near'], (path_runs(), log(finding))
-    proof = [e for e in done['result']['result']['evidence'] if 'check-run far failed outside the task\'s changed paths' in e['check']]
-    assert len(proof) == 1 and 'FAIL: far assert' in proof[0]['check'] and 'not yours' in proof[0]['proof'], done['result']
+    wait(lambda: path_runs()[1:] == ['far', 'near'], 'far, then near', 60)
+    far_proof = lambda: [e for e in show(finding)['result']['result']['evidence'] if 'check-run far failed outside the task\'s changed paths' in e['check']]
+    proof = wait(far_proof, 'the far finding joins the evidence', 30)
+    assert triggers(finding) == ['step'], log(finding)
+    assert len(proof) == 1 and 'FAIL: far assert' in proof[0]['check'] and 'not yours' in proof[0]['proof'], proof
     event = wait(lambda: events_with('#%d outside its changed paths' % finding), 'the finding event', 30)
     assert len(event) == 1 and 'ends with `FAIL: far assert`' in event[0]['text'], event
     unnamed = js('task', 'new', 'WORK misc.txt')['id']
     assert wait_state(unnamed, 'ready', 'failed')['state'] == 'ready', log(unnamed)
-    assert sorted(path_runs()[3:]) == ['far', 'near'] and triggers(unnamed) == ['step', 'check_run'], (path_runs(), log(unnamed))
-    # ^ #finding's log has the same assert, so the turn calls it known; it is still no finding.
+    wait(lambda: kinds(unnamed, 'check_run'), 'the unnamed scenarios answer', 60)
+    time.sleep(1)
+    # ^ #finding's log has the same assert, so it is a known failure: no turn reopens the task,
+    # and it is still no finding.
+    assert sorted(path_runs()[3:]) == ['far', 'near'] and triggers(unnamed) == ['step'], (path_runs(), log(unnamed))
     assert not [e for e in show(unnamed)['result']['result']['evidence'] if 'recorded by the host' in e['check']], show(unnamed)['result']
     assert 'named' not in path_runs(), path_runs()
     for n in (near, free, finding, unnamed):

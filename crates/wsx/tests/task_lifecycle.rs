@@ -1,6 +1,6 @@
 //! A task never loses work at the host: an add to a task that waits on `after` joins its first
-//! turn after the prompt, and a check-run's answer reaches the owner and the worker after a stop
-//! or a host restart (docs/tasks.md "After another task", "Check-run"). Real host binary, fake
+//! turn after the prompt; a check-run never holds the worker's result, and its answer reaches the
+//! owner and the worker after a stop or a host restart (docs/tasks.md "After another task", "Check-run"). Real host binary, fake
 //! Claude (`scripts/fake-claude-stream.py`); the boundary is Seatbelt, so run it as a check
 //! (`wsx task check-run`), outside a worker's boundary.
 
@@ -128,9 +128,9 @@ fn an_add_waits_for_the_prompt_until_the_task_waited_for_ends() {
     first_turn_has_prompt_then_add(&fixture);
 }
 
-/// A fixture whose scenario `gate` is a command that waits for the file `gate`. The first call per
-/// commit starts a run (a line in `starts`); a later call joins it. The script exits when the
-/// fixture is gone.
+/// A fixture whose scenario `gate` is a command that waits for the file `gate`, then fails when
+/// the file `fail` exists. The first call per commit starts a run (a line in `starts`); a later
+/// call joins it. The script exits when the fixture is gone.
 fn gated_ci() -> Fixture {
     let fixture = Fixture::with_tasks_config("  scenarios:\n    gate: \"sh {root}/fake-ci.sh\"\n");
     let root = fixture.root.display();
@@ -144,6 +144,7 @@ fn gated_ci() -> Fixture {
              mkdir -p $R/runs\n\
              if [ ! -e $R/runs/$key ]; then touch $R/runs/$key; echo $key >> $R/starts; fi\n\
              while [ ! -e $R/gate ]; do [ -d $R ] || exit 1; sleep 0.2; done\n\
+             if [ -e $R/fail ]; then echo 'FAILED section gate'; exit 1; fi\n\
              echo ci-passed\n"
         ),
     )
@@ -155,14 +156,37 @@ fn lines(fixture: &Fixture, name: &str) -> usize {
     fs::read_to_string(fixture.root.join(name)).map_or(0, |text| text.lines().count())
 }
 
-/// A worker whose result waits for its scenario check-run, the run started and not ended.
+/// A worker whose result settled while its scenario check-run is out: the task is `ready`, the
+/// run started and not ended.
 fn worker_with_a_run_out(fixture: &Fixture) {
     fixture.json(&["task", "new", "WORK a.txt CHECKRUN_LATER gate", "--json"]);
-    fixture.wait("the result waits for the check-run", |task| {
-        (task["record"]["waiting"]["on"] == "check_run").then_some(())
-    });
     until("the run started", || {
         (lines(fixture, "starts") == 1).then_some(())
+    });
+    fixture.wait("the result settles without the answer", |task| {
+        (task["state"] == "ready").then_some(())
+    });
+    let task = fixture.json(&["task", "show", "1", "--json"]);
+    assert!(
+        !fixture.log(&task).contains("\"kind\":\"check_run\""),
+        "the run ended early: {task}"
+    );
+}
+
+#[test]
+fn a_failed_check_run_reopens_the_settled_task() {
+    let fixture = gated_ci();
+    worker_with_a_run_out(&fixture);
+    fs::write(fixture.root.join("fail"), "").expect("mark the run failed");
+    fs::write(fixture.root.join("gate"), "").expect("open the gate");
+    let turn = until("the failure's turn", || {
+        received(&fixture, "Your check-run ended")
+            .into_iter()
+            .next()
+    });
+    assert!(turn.contains("FAILED section gate"), "{turn}");
+    fixture.wait("the task settles again", |task| {
+        (task["state"] == "ready").then_some(())
     });
 }
 
@@ -198,7 +222,7 @@ fn a_check_run_that_ends_after_a_stop_wakes_the_manager() {
 }
 
 #[test]
-fn a_host_that_restarts_while_a_check_run_is_out_gets_its_answer_once() {
+fn a_host_that_restarts_while_a_check_run_is_out_runs_it_once() {
     let fixture = gated_ci();
     worker_with_a_run_out(&fixture);
     let task = fixture.json(&["task", "show", "1", "--json"]);
@@ -219,11 +243,63 @@ fn a_host_that_restarts_while_a_check_run_is_out_gets_its_answer_once() {
         (lines(&fixture, "calls") >= 2).then_some(())
     });
     fs::write(fixture.root.join("gate"), "").expect("open the gate");
-    until("the answer", || {
-        (!received(&fixture, "Your check-run ended").is_empty()).then_some(())
+    fixture.wait("the answer is logged", |task| {
+        fixture
+            .log(task)
+            .contains("\"kind\":\"check_run\"")
+            .then_some(())
     });
-    // ^ One answer, and one run of the same commit: the script joined it.
+    // ^ A pass after the settled result starts no turn, and one run of the same commit ran: the
+    // script joined it.
     std::thread::sleep(Duration::from_secs(2));
-    assert_eq!(received(&fixture, "Your check-run ended").len(), 1);
+    assert!(received(&fixture, "Your check-run ended").is_empty());
     assert_eq!(lines(&fixture, "starts"), 1);
+    let task = fixture.json(&["task", "show", "1", "--json"]);
+    assert_eq!(task["state"], "ready", "{task}");
+}
+
+/// A task parked `--because files` plans at once; only its build waits for the other task's
+/// end, then starts on the default branch (docs/tasks.md "After another task").
+#[test]
+fn a_task_parked_for_its_files_plans_now_and_builds_after_the_wait() {
+    let fixture = Fixture::with_tasks_config(
+        "  workflow:\n    steps:\n      - {name: plan, prompt: plan it}\n      - {name: build, prompt: build it}\n",
+    );
+    with_a_manager(&fixture);
+    let hold = fixture.root.join("hold");
+    fixture.json(&["task", "new", &format!("WAIT {}", hold.display()), "--json"]);
+    fixture.json(&[
+        "task",
+        "new",
+        "--after",
+        "1",
+        "--because",
+        "files",
+        "NOOP parked",
+        "--json",
+    ]);
+    let plan = until("the plan turn of #2", || {
+        received(&fixture, "NOOP parked").into_iter().next()
+    });
+    assert!(plan.contains("plan it"), "{plan}");
+    fixture.wait_task("2", "the build waits", |task| {
+        let reason = task["record"]["waiting"]["reason"]
+            .as_str()
+            .unwrap_or_default();
+        (task["state"] == "waiting" && reason.contains("its build waits for #1")).then_some(())
+    });
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        received(&fixture, "build it").is_empty(),
+        "{:?}",
+        messages(&fixture)
+    );
+    let closed = fixture.wsx(&["task", "close", "1", "--discard"]);
+    assert!(closed.status.success(), "{closed:?}");
+    until("the build turn of #2", || {
+        received(&fixture, "build it").into_iter().next()
+    });
+    fixture.wait_task("2", "the build ends", |task| {
+        (task["state"] == "ready").then_some(())
+    });
 }

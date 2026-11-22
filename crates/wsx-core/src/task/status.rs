@@ -17,10 +17,10 @@ pub const STOPPED_BY_REQUEST: &str = "stopped by request";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Status {
-    /// Which row of the table in docs/tasks.md "Status" matched: "scenario_slot", "review",
+    /// Which row of the table in docs/tasks.md "Status" matched: "check_slot", "review",
     /// "owner". A client picks its tone or icon by it, never by the words.
     pub kind: &'static str,
-    /// "Waiting for the scenario test slot", "Ready, waiting for the manager's review".
+    /// "Waiting for the check slot", "Ready, waiting for the manager's review".
     pub label: String,
     /// The label, how long, the facts and what comes next: "Waiting for the scenario test
     /// slot for 4 min: #233 runs its scenario tests now, 2 more tasks ahead. Its scenario
@@ -130,7 +130,7 @@ pub fn waits_on(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Option<W
     Some(
         match (record.state, record.waiting.as_ref().map(|w| w.on)) {
             (TaskState::Landed | TaskState::Closed, _) => return None,
-            (TaskState::Checking, _) | (_, Some(WaitOn::CheckSlot | WaitOn::CheckRun)) => {
+            (TaskState::Checking, _) | (_, Some(WaitOn::CheckSlot)) => {
                 match queued_since(dir, record, entered) {
                     Some(since_unix_ms) => WaitsOn {
                         kind: Holder::Queue,
@@ -342,7 +342,7 @@ fn status_of(
             if state == TaskState::Waiting
                 || matches!(
                     waiting.on,
-                    WaitOn::CheckSlot | WaitOn::CheckRun | WaitOn::LandStopped | WaitOn::Asks
+                    WaitOn::CheckSlot | WaitOn::LandStopped | WaitOn::Asks
                 ) =>
         {
             waiting_on(dir, record, waiting, entered, now_ms)
@@ -454,18 +454,6 @@ pub fn owner_waits_after(dir: &TaskDir, record: &TaskRecord) -> bool {
         && record.state == TaskState::Waiting
         && record.waits_on(WaitOn::Owner)
         && stop_reason(dir).is_none()
-}
-
-/// Whether a worker may still edit the task's copy, so `new --files` must not meet its
-/// declared globs: every open state but a stop by request and a wait parked until another
-/// task lands. Those hold only the paths their commits changed. ref: docs/tasks.md "Store"
-pub fn worker_edits(dir: &TaskDir, record: &TaskRecord) -> bool {
-    let stopped = record
-        .waiting
-        .as_ref()
-        .is_some_and(|waiting| waiting.on == WaitOn::Owner && waiting.reason == STOPPED_BY_REQUEST);
-    record.state.is_open()
-        && !(record.state == TaskState::Waiting && (stopped || owner_waits_after(dir, record)))
 }
 
 /// The word for a task's state in a line or a count: "paused" for a worker that ended its turn
@@ -597,7 +585,6 @@ fn waiting_on(
             now_ms,
         ),
         WaitOn::CheckSlot => slot(dir, record, &waiting.reason, entered, now_ms),
-        WaitOn::CheckRun => held(&waiting.reason, now_ms),
     }
 }
 
@@ -727,53 +714,15 @@ fn ready(
     }
 }
 
-/// A worker's result that waits for its own check-run's answer .
-fn held(reason: &str, now_ms: u64) -> Status {
-    words(
-        "check_run",
-        "Waiting for its check-run",
-        None,
-        reason,
-        "A failure goes back to the worker; a pass on its committed tree goes on by itself.",
-        now_ms,
-    )
-}
-
-/// A run that waits for the machine's check slot, in its lane, since its `check_queued`.
+/// The checks after a result wait for the machine's check slot, since their `check_queued`.
+/// A `check-run` never holds the task, so its queue is no status (docs/tasks.md "Check-run").
 fn slot(dir: &TaskDir, record: &TaskRecord, reason: &str, entered: u64, now_ms: u64) -> Status {
-    let since = slot_since(dir, entered);
-    // ^ A run the scheduler sent to GitHub CI: the reason says why (`schedule::decide`).
-    if let Some(why) = reason.strip_prefix(super::schedule::ON_CI) {
-        return words(
-            "ci_scenario",
-            "Running its scenario tests on CI",
-            Some(since),
-            why,
-            "GitHub CI answers in about 25 minutes.",
-            now_ms,
-        );
-    }
-    let scenarios = queue(reason).is_some_and(|queue| queue.what.contains("scenario"));
-    let (kind, label, run, next) = match scenarios {
-        true => (
-            "scenario_slot",
-            "Waiting for the scenario test slot",
-            "runs its scenario tests now",
-            "Its scenario tests start when the slot is free.",
-        ),
-        false => (
-            "check_slot",
-            "Waiting for the check slot",
-            "runs its checks now",
-            "Its checks start when the slot is free.",
-        ),
-    };
     words(
-        kind,
-        label,
-        Some(since),
-        &queue_words(record, reason, run),
-        next,
+        "check_slot",
+        "Waiting for the check slot",
+        Some(slot_since(dir, entered)),
+        &queue_words(record, reason, "runs its checks now"),
+        "Its checks start when the slot is free.",
         now_ms,
     )
 }
@@ -864,7 +813,6 @@ fn words(
 /// A slot's queue reason, made by crates/wsx/src/task/slot.rs `try_take`:
 /// "queued for the check slot behind demo t3 and 2 more".
 pub(crate) struct Queue<'a> {
-    pub what: &'a str,
     /// The holders' labels; empty when no run holds a slot (the Mac's load holds this one).
     pub holder: &'a str,
     pub ahead: u32,
@@ -879,13 +827,12 @@ pub(crate) fn queue(reason: &str) -> Option<Queue<'_>> {
         Some((rest, note)) => (rest, Some(note)),
         None => (rest, None),
     };
-    let (what, holder) = rest.split_once(" behind ").unwrap_or((rest, ""));
+    let holder = rest.split_once(" behind ").map_or("", |(_, holder)| holder);
     let more = holder
         .rsplit_once(" and ")
         .and_then(|(holder, more)| Some((holder, more.strip_suffix(" more")?.parse().ok()?)));
     let (holder, ahead) = more.unwrap_or((holder, 0));
     Some(Queue {
-        what,
         holder,
         ahead,
         note,

@@ -342,8 +342,12 @@ fn check_run_note(record: &TaskRecord) -> String {
     let scenarios = match listed_scenarios.is_empty() {
         true => String::new(),
         false => format!(
-            "Then it runs each end-to-end scenario whose paths your commits touch, and your \
-             result waits for its answer; one without paths runs only when you name it: {}. ",
+            "Then it runs each end-to-end scenario whose paths your commits touch, in the \
+             background: your result never waits for it, a pass is recorded and a failure \
+             reopens the task as your next turn; one without paths runs only when you name \
+             it: {}. Prove your change with an integration test when one proves it as well, \
+             and then name no scenario; add a scenario assert only for a core contract or a \
+             bug that came back. ",
             listed_scenarios.join(" ")
         ),
     };
@@ -356,13 +360,13 @@ fn check_run_note(record: &TaskRecord) -> String {
          parts run at once. A scenario run names every failed section (`FAILED section`) and \
          every section it skipped after one. Commit first and run it in the \
          foreground: a run that must wait answers `queued` at once; \
-         then do not wait or poll, finish the step and return its result, and the host sends \
-         the answer as your next turn. A check that already ran on the \
+         then do not wait or poll, finish the step and return its result: a pass is \
+         recorded, a failure comes back as your next turn. A check that already ran on the \
          same commit, with nothing uncommitted, answers from its stored result. Fix what \
          fails in code you changed. A check that fails in code you did not touch is not \
          yours: do not run it again, name it in your summary. \
          `--part <part>` reruns one part of a scenario that has parts (`web`: `chat`, `tasks`) \
-         after a fix; run the whole scenario once more before your result. ",
+         after a fix. ",
         listed.join(" ")
     )
 }

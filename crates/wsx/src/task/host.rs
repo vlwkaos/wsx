@@ -79,10 +79,10 @@ enum Event {
     /// structured output.
     Reported(Option<String>, Sender<broker::Response>),
     CheckRunDone(Vec<CheckResult>, broker::Response, Option<StoredChecks>),
-    /// Checks wait for the machine's check slot, for this reason.
-    CheckQueued(String),
-    /// Checks took the slot, or run without it after this error.
-    CheckSlot(Option<String>),
+    /// Checks wait for the machine's check slot, for this reason; true for a `check-run`'s.
+    CheckQueued(String, bool),
+    /// Checks took the slot, or run without it after this error; true for a `check-run`'s.
+    CheckSlot(Option<String>, bool),
 }
 
 /// What waits for free disk, resumed once `tasks.minFreeGb` is free again; a turn held for the
@@ -156,9 +156,10 @@ StructuredOutput is the last call of a turn, and nothing runs after it.";
 struct CheckRun {
     indexes: Vec<usize>,
     replies: Vec<Sender<broker::Response>>,
-    /// The worker returned its result before the answer: the answer goes to it in one turn,
-    /// and the checks after the result wait for that turn's result.
-    result_waits: bool,
+    /// The result settled without the answer (a run never holds a task): the answer comes in
+    /// the background, a pass as an event line, a failure as a turn that reopens the task.
+    /// ref: docs/tasks.md "Check-run"
+    background: bool,
     /// The run queued for the check slot, so its calls got `queued` at once: the answer goes
     /// to the worker as a turn after its result, never to a client that waits.
     queued: bool,
@@ -190,18 +191,20 @@ struct CheckRunMark {
 
 const CHECK_RUN_FILE: &str = "check-run.json";
 
-/// A check-run's answer to the worker, and the proof the host keeps when the run passed on
-/// an unchanged tree: a pass that comes after the worker's last result needs no turn.
+/// A check-run's answer to the worker, the proof the host keeps when the run passed on
+/// an unchanged tree, and whether it failed in a way that is the task's own (not a known
+/// failure): only that reopens a settled task.
 struct CheckAnswer {
     text: String,
     proof: Option<Evidence>,
+    fails: bool,
 }
 
 /// What a `check-run` that queues for the check slot answers at once: a
 /// background job of the agent dies long before a 20-90 min queue ends. ref: docs/tasks.md "Check-run"
 const CHECK_RUN_QUEUED: &str = "its answer comes after your result. Do not wait or poll for it: \
-finish this step and return its result now. The host sends you the answer as your next turn, \
-in this step.\n";
+finish this step and return its result now. A pass is recorded; a failure comes back to you \
+as a turn.\n";
 
 /// The scenario names and numbers of a `check-run`, and its `--part <p>` (or `--part=<p>`).
 /// ref: docs/tasks.md "Scenarios"
@@ -287,8 +290,10 @@ struct Host {
     background_wait: Option<BackgroundWait>,
     /// The worker's queued or running `check-run`.
     check_run: Option<CheckRun>,
+    /// The HEAD the scenarios a change touches last started for: once per commit.
+    touched_for: Option<String>,
     /// A `check-run` on a newer commit than the pending one's (its call got `queued`): it
-    /// starts when that run ends, and a held result waits for it instead.
+    /// starts when that run ends.
     check_run_next: Option<Vec<String>>,
     /// The result the worker reported with `wsx task result -` in the running turn.
     reported: Option<serde_json::Value>,
@@ -395,6 +400,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         limit_slot: None,
         background_wait: None,
         check_run: None,
+        touched_for: None,
         check_run_next: None,
         reported: None,
         turn_text: String::new(),
@@ -623,8 +629,8 @@ impl Host {
                 Event::CheckRunDone(results, response, stored) => {
                     self.check_run_done(results, response, stored)
                 }
-                Event::CheckQueued(reason) => self.check_queued(reason),
-                Event::CheckSlot(error) => self.check_slot(error),
+                Event::CheckQueued(reason, run) => self.check_queued(reason, run),
+                Event::CheckSlot(error, run) => self.check_slot(error, run),
             }
         }
         Ok(())
@@ -650,9 +656,6 @@ impl Host {
         }
         let known = self.known_failure(&results, &found);
         let run = self.check_run.take();
-        if self.record.waits_on(WaitOn::CheckRun) {
-            self.move_to(self.record.state, None);
-        }
         let label = run
             .as_ref()
             .map_or_else(String::new, |run| run.label.clone());
@@ -690,6 +693,7 @@ impl Host {
                     ),
                     proof: shared.clone(),
                 }),
+                fails: false,
             },
             None => CheckAnswer {
                 text: format!(
@@ -702,21 +706,22 @@ impl Host {
                     check: format!("wsx task check-run {label} passed {RECORDED_BY_HOST}"),
                     proof: response.stdout.trim_end().into(),
                 }),
+                fails: response.code != 0,
             },
         };
-        // ^ A run on a newer commit waited for this one: this answer joins the next turn, and a
-        // held result waits for the new run. One that does not start (refused, or every check
-        // kept) adds its words, and this answer takes its usual way.
+        // ^ A run on a newer commit waited for this one: it supersedes this answer, which joins
+        // the next turn. One that does not start (refused, or every check kept) adds its words,
+        // and this answer takes its usual way.
         if let Some(argv) = self.check_run_next.take().filter(|_| !self.stopped) {
             let (reply, said) = std::sync::mpsc::channel();
             self.check_run(&argv, reply);
-            let result_waits = run.as_ref().is_some_and(|run| run.result_waits);
+            // ^ A turn that runs gets the answer with its result; with none, it is settled.
+            let background = self.turn.is_none();
             if let Some(next) = &mut self.check_run {
                 next.queued = true;
-                next.result_waits = result_waits;
+                next.background = background;
                 self.say("check-run: the run on the newer commit starts");
                 self.notices.push(answer.text);
-                self.show_held_result();
                 return;
             }
             if let Ok(said) = said.try_recv() {
@@ -733,7 +738,7 @@ impl Host {
                 self.say("check-run ended while stopped: its answer joins the next turn");
                 self.notices.push(answer.text);
             }
-            Some(run) if run.result_waits => self.answer_check_run(answer),
+            Some(run) if run.background => self.answer_in_background(answer, &run.commit),
             Some(run) if run.queued && self.turn.is_none() => self.send_check_answer(answer.text),
             // ^ The worker still works after `queued`: its result gets the answer.
             Some(run) if run.queued => {
@@ -824,21 +829,76 @@ impl Host {
                 .is_none()
     }
 
-    /// The wait of a task that has not started is over: its copy follows the default branch,
-    /// where the task it waited for landed, and its first turn starts.
-    fn start_after_wait(&mut self) -> Result<()> {
-        let tip = self.default_tip()?;
-        if let Rebase::Conflict(paths) = copy::rebase(&self.record.working_copy, &tip)? {
-            bail!("cannot move the copy onto {tip:.12}: {}", paths.join(", "));
+    /// The step that waits for the `after` task to land, for a task parked `--because files`
+    /// or `check` whose steps have a `plan`: the one after it. Every step before it runs at
+    /// once; `needs` and a `--plan` task wait whole. ref: docs/tasks.md "After another task"
+    fn build_step(&self) -> Option<usize> {
+        let after = self.record.after.as_ref()?;
+        if after.because == AfterKind::Needs || self.record.plan {
+            return None;
         }
+        let plan = self
+            .record
+            .steps
+            .iter()
+            .position(|step| step.name == "plan")?;
+        (plan + 1 < self.record.steps.len()).then_some(plan + 1)
+    }
+
+    /// Whether the task planned and its build waits for the `after` task (`build_step`).
+    fn build_parked(&self) -> bool {
+        self.build_step() == Some(self.record.step as usize)
+            && self.record.agent_session.is_some()
+            && self.record.state == TaskState::Waiting
+            && self
+                .record
+                .waiting
+                .as_ref()
+                .is_some_and(|w| w.on == WaitOn::Owner && w.reason != STOPPED_BY_REQUEST)
+    }
+
+    /// The copy follows the default branch, where the task waited for landed. A conflict is
+    /// left to the worker: its words join the turn that starts.
+    fn follow_default_branch(&mut self) -> Result<Option<String>> {
+        let tip = self.default_tip()?;
+        let note = match copy::rebase(&self.record.working_copy, &tip)? {
+            Rebase::Conflict(paths) => Some(format!(
+                "Your branch does not rebase cleanly onto {} at {tip:.12} ({}): rebase it first.",
+                self.record.default_branch,
+                paths.join(", ")
+            )),
+            _ => None,
+        };
         // ^ The copy moved without a revision: the stored fork point follows it.
         let working_copy = &self.record.working_copy;
         self.record.base = copy::fork_point(working_copy, "HEAD", &self.record.default_branch)?;
         self.save();
         self.say(&format!(
-            "starts on {} at {tip:.12}",
+            "follows {} at {tip:.12}",
             self.record.default_branch
         ));
+        Ok(note)
+    }
+
+    /// The parked build starts: the copy follows the default branch, then the build step's
+    /// turn carries the adds that waited and `text`, the manager's words for the end of the
+    /// wait.
+    fn start_parked_build(&mut self, text: Option<String>) -> Result<String> {
+        let note = self.follow_default_branch()?;
+        let mut words: Vec<String> = self.pending.drain(..).collect();
+        words.extend(note);
+        words.extend(text);
+        words.extend(self.step_text());
+        self.start_turn(&words.join("\n\n"), TurnTrigger::Step);
+        Ok("the build starts".into())
+    }
+
+    /// The wait of a task that has not started is over: its copy follows the default branch,
+    /// where the task it waited for landed, and its first turn starts.
+    fn start_after_wait(&mut self) -> Result<()> {
+        if let Some(conflict) = self.follow_default_branch()? {
+            bail!("{conflict}");
+        }
         self.first_turn()
     }
 
@@ -847,6 +907,8 @@ impl Host {
             // ^ A new task: no conversation yet, so its first turn has not run.
             // ^ One created with `new --after` waits for that task first.
             TaskState::Working if self.record.agent_session.is_none() => match &self.record.after {
+                // ^ Parked for its files: it plans now, only its build waits.
+                Some(_) if self.build_step().is_some() => self.first_turn()?,
                 Some(after) => {
                     let reason = format!("waits for #{} to land", after.task);
                     self.wait(WaitOn::Owner, reason);
@@ -913,7 +975,7 @@ impl Host {
     }
 
     /// The run a host owed an answer for when it ended (`check-run.json`) runs again on the
-    /// same commit, and its answer comes as a turn, as a queued run's does. A task
+    /// same commit, and its answer comes as a queued run's does. A task
     /// that was stopped keeps the answer for its next add. ref: docs/tasks.md "Check-run"
     fn resume_check_run(&mut self) {
         let mark = match self.dir.read_file(CHECK_RUN_FILE, 1 << 20) {
@@ -942,10 +1004,13 @@ impl Host {
             (mark.label, indexes, mark.part, mark.commit),
             reply,
         );
-        // ^ Nobody waits for the call: its answer is a turn.
+        // ^ Nobody waits for the call: its answer is a turn, or a background answer when the
+        // worker's result already settled.
+        let settled = self.record.state != TaskState::Working;
         match &mut self.check_run {
             Some(run) => {
                 run.queued = true;
+                run.background = settled;
                 run.replies.clear();
             }
             None => {
@@ -1156,6 +1221,7 @@ impl Host {
         if self.record.after.is_none() && wait.is_none() {
             return Ok("unchanged".into());
         }
+        let parked = self.build_parked();
         self.record.after = wait;
         self.save();
         let message = match task {
@@ -1171,6 +1237,8 @@ impl Host {
         self.say(&message);
         if task.is_none() && self.awaits_start() {
             self.start_after_wait()?;
+        } else if task.is_none() && parked {
+            self.start_parked_build(None)?;
         }
         Ok(message)
     }
@@ -1186,6 +1254,7 @@ impl Host {
         {
             return Ok("unchanged".into());
         }
+        let parked = self.build_parked();
         self.record.after = None;
         self.save();
         self.log(LogEvent::AfterEnded {
@@ -1197,6 +1266,9 @@ impl Host {
         if self.awaits_start() {
             self.start_after_wait()?;
             return Ok(format!("#{task} is over: the first turn started"));
+        }
+        if parked {
+            return self.start_parked_build(text);
         }
         match text {
             Some(text) => self.add(text, Vec::new(), None),
@@ -1211,22 +1283,15 @@ impl Host {
         if unstarted && self.record.after.is_some() {
             return "queued: it follows the prompt when the wait ends".into();
         }
+        if self.build_parked() {
+            self.pending.push_back(text);
+            return "queued: the build starts with it when the wait ends".into();
+        }
         self.check_retries = 0;
         self.stopped = false;
         if self.turn.is_some() || self.record.state == TaskState::Checking {
             self.pending.push_back(text);
             "queued until the current turn ends".into()
-        } else if self.record.waits_on(WaitOn::CheckRun)
-            && self
-                .last_result
-                .as_ref()
-                .is_some_and(|r| r.status == "paused")
-        {
-            // ^ A paused result waits only for its check-run: a turn now could only say the
-            // answer has not come. The add joins the turn the answer starts. A done result's
-            // add may work on, also on a newer commit (32t4). ref: docs/tasks.md "Status"
-            self.pending.push_back(text);
-            "queued until the check-run answers".into()
         } else if unstarted {
             // ^ Never started, and no wait: the first turn carries the prompt, then this add.
             match self.first_turn() {
@@ -1276,10 +1341,6 @@ impl Host {
         self.result_asked = false;
         self.gate = None;
         self.checks_epoch += 1;
-        // ^ The result it held is dead with the turn: an add's new result is not its answer's.
-        if let Some(run) = &mut self.check_run {
-            run.result_waits = false;
-        }
         self.check_run_next = None;
         let dropped = self.pending.len();
         self.pending.clear();
@@ -1618,13 +1679,11 @@ impl Host {
         self.turn.is_some() && self.trigger == TurnTrigger::Ping
     }
 
-    /// When the next ping is due (unix ms): the worker waits on the checks or on a queued
-    /// check-run, its last answer is younger than Claude's 1-hour prompt cache, and fewer than
+    /// When the next ping is due (unix ms): the worker waits on the checks, its last answer is younger than Claude's 1-hour prompt cache, and fewer than
     /// `KEEP_WARM_PINGS` came since its last turn. Never in a usage limit, a disk wait, by
     /// hand, or when the next turn rotates by size anyway. ref: docs/tasks.md "Context rotation"
     fn ping_due(&self) -> Option<u64> {
-        let waits = self.record.state == TaskState::Checking
-            || self.check_run.as_ref().is_some_and(|run| run.queued);
+        let waits = self.record.state == TaskState::Checking;
         // ^ Claude's cache lives 1 hour; Pi's default lives 5 minutes, which no ping keeps.
         if !waits
             || self.stopped
@@ -1890,27 +1949,42 @@ impl Host {
         self.last_denials = turn.denials.clone();
         self.write_result(&result, &[]);
         self.last_result = Some(result.clone());
-        // ^ A result before its own check-run's answer waits for it: no second run queues.
-        // ref: docs/tasks.md "Checks, revisions and report"
-        if let Some(run) = &mut self.check_run {
-            if let Some(answer) = run.answer.take() {
-                self.check_run = None;
-                self.answer_check_run(answer);
-                return;
-            }
-            run.result_waits = true;
-            self.say("the result waits for its check-run");
-            self.show_held_result();
-            return;
+        // ^ A check-run never holds the result: it settles now, and the run's answer comes in
+        // the background. One that ended during the turn answers right after the settle.
+        // ref: docs/tasks.md "Check-run"
+        let ended = match &mut self.check_run {
+            Some(run) => match run.answer.take() {
+                Some(answer) => Some((answer, run.commit.clone())),
+                None => {
+                    run.background = true;
+                    None
+                }
+            },
+            None => None,
+        };
+        if ended.is_some() {
+            self.check_run = None;
         }
-        self.settle_result();
+        // ^ A failure on the current head that is already in is the next turn: nothing to
+        // settle before it. Any other answer follows the settle.
+        let on_head = |commit: &str| head(&self.record.working_copy).is_some_and(|h| h == commit);
+        match ended {
+            Some((answer, commit)) if answer.fails && on_head(&commit) => {
+                self.answer_in_background(answer, &commit)
+            }
+            ended => {
+                self.settle_result();
+                if let Some((answer, commit)) = ended {
+                    self.answer_in_background(answer, &commit);
+                }
+            }
+        }
     }
 
-    /// A done result runs the scenarios its change touches that have no kept result on this
-    /// tree, as the worker's own check-run of them would, and the result waits for their answer:
-    /// true when they run.
-    /// ref: docs/tasks.md "Scenarios"
-    fn run_touched_scenarios(&mut self) -> bool {
+    /// A done result starts the scenarios its change touches, as the worker's own check-run of
+    /// them would, in the background: the result settles without them. Once per commit; while
+    /// a check-run is pending they start after its answer. ref: docs/tasks.md "Scenarios"
+    fn run_touched_scenarios(&mut self) {
         let done = self
             .last_result
             .as_ref()
@@ -1922,8 +1996,16 @@ impl Host {
                 .flatten()
                 .is_some()
         };
-        if !done || self.stopped || self.record.plan || !clean() {
-            return false;
+        let commit = head(&self.record.working_copy);
+        if !done
+            || self.stopped
+            || self.record.plan
+            || self.check_run.is_some()
+            || commit.is_none()
+            || self.touched_for == commit
+            || !clean()
+        {
+            return;
         }
         let names: Vec<String> = self
             .scenarios_touched("HEAD")
@@ -1931,26 +2013,24 @@ impl Host {
             .filter_map(|(name, _, touched)| touched.then_some(name))
             .collect();
         if names.is_empty() {
-            return false;
+            return;
         }
         let argv: Vec<String> = ["task", "check-run"]
             .into_iter()
             .map(String::from)
             .chain(names)
             .collect();
-        // ^ Nobody waits on the call: the answer goes to the held result.
+        // ^ Nobody waits on the call: the answer comes in the background.
+        self.touched_for = commit;
         let (reply, _answer) = std::sync::mpsc::channel();
         self.check_run(&argv, reply);
-        let Some(run) = &mut self.check_run else {
-            return false;
-        };
-        run.result_waits = true;
-        let label = run.label.clone();
-        self.say(&format!(
-            "the result waits for the scenarios its change touches: {label}"
-        ));
-        self.show_held_result();
-        true
+        if let Some(run) = &mut self.check_run {
+            run.background = true;
+            let label = run.label.clone();
+            self.say(&format!(
+                "the scenarios its change touches run in the background: {label}"
+            ));
+        }
     }
 
     /// Each scenario with `paths` as (name, command, whether the change of `head` touches
@@ -1986,10 +2066,7 @@ impl Host {
         let Some(result) = self.last_result.clone() else {
             return;
         };
-        // ^ The scenarios the change touches answer first, also after a held check-run's answer.
-        if self.run_touched_scenarios() {
-            return;
-        }
+        self.run_touched_scenarios();
         // ^ Claude's own turn (a background task's notice) can answer while the checks of an
         // earlier result run: those checks answer it, never a second run beside them.
         if let Some((_, newer)) = &mut self.gate {
@@ -2026,6 +2103,13 @@ impl Host {
         if result.status == "done" && (self.record.step as usize) + 1 < self.record.steps.len() {
             self.record.step += 1;
             self.save();
+            if let (Some(build), Some(after)) = (self.build_step(), &self.record.after) {
+                if build == self.record.step as usize {
+                    let reason = format!("planned; its build waits for #{} to land", after.task);
+                    self.wait(WaitOn::Owner, reason);
+                    return;
+                }
+            }
             let mut text: Vec<String> = self.pending.drain(..).collect();
             text.extend(self.step_text());
             self.start_turn(&text.join("\n\n"), TurnTrigger::Step);
@@ -3080,6 +3164,8 @@ impl Host {
                 ));
                 return None;
             }
+            // ^ The call gets the answer itself: no background turn repeats it.
+            run.background = false;
             run.replies.push(reply);
             self.say("check-run: joined the run of the same checks");
             return None;
@@ -3135,7 +3221,7 @@ impl Host {
         self.check_run = Some(CheckRun {
             indexes,
             replies: vec![reply],
-            result_waits: false,
+            background: false,
             queued: false,
             answer: None,
             label,
@@ -3305,6 +3391,7 @@ impl Host {
             .into_iter()
             .map(|(index, command)| (command, self.dir.file(&format!("{kind}-{}.log", index + 1))))
             .collect::<Vec<_>>();
+        let of_run = kind == "check-run";
         let together = match &place {
             Place::Slot(want) => matches!(want.lane, Lane::Scenarios),
             Place::Ci(_) => true,
@@ -3318,13 +3405,13 @@ impl Host {
                 Place::Ci(why) => ci = Some(why),
                 Place::Slot(want) => {
                     let taken = slot::take(&want, &label, |reason| {
-                        let _ = events.send(Event::CheckQueued(reason));
+                        let _ = events.send(Event::CheckQueued(reason, of_run));
                     });
                     let error = taken.as_ref().err().map(ToString::to_string);
                     match taken {
                         Ok(Taken::Ci(why)) => ci = Some(why),
                         taken => {
-                            let _ = events.send(Event::CheckSlot(error));
+                            let _ = events.send(Event::CheckSlot(error, of_run));
                             width = match &taken {
                                 Ok(Taken::Slot(slot)) => slot.width,
                                 _ => 0,
@@ -3353,7 +3440,10 @@ impl Host {
                 }
             };
             let on_ci = |why: &str| {
-                let _ = events.send(Event::CheckQueued(format!("{}{why}", schedule::ON_CI)));
+                let _ = events.send(Event::CheckQueued(
+                    format!("{}{why}", schedule::ON_CI),
+                    of_run,
+                ));
             };
             if let Some(why) = &ci {
                 on_ci(why);
@@ -3399,35 +3489,49 @@ impl Host {
             }
             drop(held);
             if went_ci {
-                let _ = events.send(Event::CheckSlot(None));
+                let _ = events.send(Event::CheckSlot(None, of_run));
             }
             build::prune(&working_copy, born);
             done(results);
         });
     }
 
-    /// A check-run that ended after the worker's result, which is held. A pass on an unchanged tree
-    /// starts no turn: on the last step the host records it as evidence in the held result,
-    /// on an earlier one the next step's prompt carries it. Else (a failure, a result that is
-    /// not `done`) the worker gets it as a turn. ref: docs/tasks.md "Check-run"
-    fn answer_check_run(&mut self, answer: CheckAnswer) {
+    /// A check-run's answer after the worker's result settled. A pass is an event line, and its
+    /// proof joins a done result. A failure of the task's own reopens it as a turn, unless the
+    /// run's tree is no longer the task's head or the task has ended. ref: docs/tasks.md "Check-run"
+    fn answer_in_background(&mut self, answer: CheckAnswer, commit: &str) {
         self.drop_check_run_mark();
-        let done = self
-            .last_result
-            .as_mut()
-            .filter(|result| result.status == "done");
-        let (Some(proof), Some(result)) = (answer.proof, done) else {
-            return self.send_check_answer(answer.text);
-        };
-        if (self.record.step as usize) + 1 < self.record.steps.len() {
-            self.pending.push_back(answer.text);
-        } else {
-            result.evidence.push(proof);
-            let held = result.clone();
-            self.write_result(&held, &[]);
+        let label = short_commit(commit).to_string();
+        let current = self.record.state.is_open()
+            && head(&self.record.working_copy).is_some_and(|head| head == commit);
+        if !answer.fails {
+            let done = self
+                .last_result
+                .as_mut()
+                .filter(|result| current && result.status == "done");
+            if let (Some(proof), Some(result)) = (answer.proof, done) {
+                result.evidence.push(proof);
+                let kept = result.clone();
+                self.write_result(&kept, &[]);
+            }
+            self.say(&format!(
+                "check-run on {label} ended with no failure of the task's own"
+            ));
+            // ^ The scenarios its change touches waited for this run: they start now.
+            return self.run_touched_scenarios();
         }
-        self.say("check-run passed after the result: no turn for its answer");
-        self.settle_result();
+        if !current {
+            return self.say(&format!(
+                "check-run on {label} failed, but the task moved on: no turn for it"
+            ));
+        }
+        self.say(&format!("check-run on {label} failed: the task reopens"));
+        // ^ The checks of a result run now: the failure is the turn after them.
+        if self.record.state == TaskState::Checking {
+            self.pending.push_back(answer.text);
+            return;
+        }
+        self.send_check_answer(answer.text);
     }
 
     /// A check-run's answer goes to the worker as one turn, after its current turn if any.
@@ -3441,18 +3545,21 @@ impl Host {
         }
     }
 
-    /// The checks wait for the slot: the record shows it while the task works or checks.
-    fn check_queued(&mut self, reason: String) {
-        // ^ A worker's check-run (never beside the checks after a result) answers at once.
-        if let Some(run) = self
-            .check_run
-            .as_mut()
-            .filter(|_| self.record.state != TaskState::Checking)
-        {
-            run.queued = true;
-            for reply in run.replies.drain(..) {
-                let _ = reply.send(queued_response());
+    /// Checks wait for the slot. The checks after a result show it on the record; a check-run's
+    /// wait is only logged, since a run never holds the task, and its calls get `queued` at once.
+    /// ref: docs/tasks.md "Check-run"
+    fn check_queued(&mut self, reason: String, run: bool) {
+        if run {
+            if let Some(run) = &mut self.check_run {
+                run.queued = true;
+                for reply in run.replies.drain(..) {
+                    let _ = reply.send(queued_response());
+                }
             }
+            self.log(LogEvent::CheckQueued {
+                reason: reason.clone(),
+            });
+            return self.say(&format!("check-run: {reason}"));
         }
         if self.record.state == TaskState::Waiting {
             return;
@@ -3471,11 +3578,14 @@ impl Host {
         self.move_to(self.record.state, Some(waiting));
     }
 
-    fn check_slot(&mut self, error: Option<String>) {
+    fn check_slot(&mut self, error: Option<String>, run: bool) {
         if let Some(error) = error {
             self.say(&format!(
                 "no check slot, so the checks run unqueued: {error}"
             ));
+        }
+        if run {
+            return self.start_check_run_clock();
         }
         if self.record.waits_on(WaitOn::CheckSlot) {
             self.say(match self.record.waiting.as_ref() {
@@ -3483,11 +3593,6 @@ impl Host {
                 _ => "took the check slot",
             });
             self.move_to(self.record.state, None);
-        }
-        // ^ The checks after a result never run beside a check-run: this slot is the run's.
-        if self.record.state != TaskState::Checking {
-            self.start_check_run_clock();
-            self.show_held_result();
         }
     }
 
@@ -3500,27 +3605,6 @@ impl Host {
         {
             run.deadline_ms = Some(now_unix_ms() + run.limit.as_millis() as u64);
         }
-    }
-
-    /// A result held for its own running check-run shows as a wait on `check_run` until the
-    /// run's time limit, so `show`, the ledger and the stall check see what it waits for.
-    /// ref: docs/tasks.md "Check-run"
-    fn show_held_result(&mut self) {
-        let Some(run) = self.check_run.as_ref().filter(|run| run.result_waits) else {
-            return;
-        };
-        if run.deadline_ms.is_none()
-            || self.record.waiting.is_some()
-            || self.record.state != TaskState::Working
-        {
-            return;
-        }
-        let waiting = Waiting {
-            on: WaitOn::CheckRun,
-            reason: format!("the result waits for check-run {}", run.label),
-            until_ms: run.deadline_ms,
-        };
-        self.move_to(TaskState::Working, Some(waiting));
     }
 
     /// Results that decide nothing now: a result that came during the checks (a block keeps its

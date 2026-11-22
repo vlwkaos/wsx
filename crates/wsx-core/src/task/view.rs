@@ -693,41 +693,6 @@ pub fn overlaps(record: &TaskRecord, others: &[&TaskRecord], with_paths: bool) -
     json!(rows)
 }
 
-/// The open tasks, but `besides`, whose globs or changed paths meet `files`, the globs of a
-/// task not created yet, each with the globs that meet it. A task no worker edits now
-/// (`status::worker_edits`) meets them only through the paths its commits changed since
-/// `base`. ref: docs/tasks.md "Store"
-pub fn files_meet<'a>(
-    files: &'a [String],
-    others: &[(&TaskDir, &TaskRecord)],
-    besides: &[u32],
-) -> Vec<(u32, Vec<&'a str>)> {
-    others
-        .iter()
-        .filter(|(_, other)| other.state.is_open() && !besides.contains(&other.id))
-        .map(|&(dir, other)| {
-            let common = if super::status::worker_edits(dir, other) {
-                declared_meetings(files, &[], other)
-            } else {
-                // ^ Its own commits, also those of a turn a stop cut before its revision: from
-                // where its branch left the default branch now. The stored `base` is the fork
-                // point of its last revision, older when the branch moved since (a wait's end).
-                let repo = &other.project_path;
-                let changed = super::copy::fork_point(repo, &other.branch, &other.default_branch)
-                    .and_then(|fork| super::copy::changed_paths(repo, &fork, &other.branch))
-                    .map_or_else(|_| other.paths.clone(), |(paths, _)| paths);
-                files
-                    .iter()
-                    .map(String::as_str)
-                    .filter(|glob| changed.iter().any(|path| meet(glob, path)))
-                    .collect()
-            };
-            (other.id, common)
-        })
-        .filter(|(_, common)| !common.is_empty())
-        .collect()
-}
-
 /// The globs `files` and paths `paths` of a task that meet one of `other`'s through a
 /// declared glob.
 fn declared_meetings<'a>(

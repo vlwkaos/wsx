@@ -26,9 +26,9 @@ flowchart TD
   C --> R
 ```
 
-States of a waiting run: `queued for the <lane> slot` (record `waiting.on = check_slot`) until it takes the
-slot, then `checking`. A run on CI shows `Running its scenario tests on CI` (kind `ci_scenario`) until the run
-ends. Both end when the run answers.
+States of a waiting run: the checks after a result show `queued for the check slot` (record `waiting.on =
+check_slot`) until they take the slot, then `checking`. A worker's `check-run` (a scenario, here or on CI)
+never holds the task: its `check_queued` log entry says where it waits or why it went to CI.
 
 ## Rules
 

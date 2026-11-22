@@ -3604,29 +3604,13 @@ phase("Progress: the top of an open task's sheet at 390x844, for ea");
     wsx("task", "close", task, "--discard");
   }
 
-  // A worker's scenario run that waits for another's: the row and the sheet show wsx-core's
-  // status words, the same as `wsx task show` (docs/tasks.md "Status").
+  // Two workers' scenario runs, the second queued behind the first: neither run holds its task,
+  // so both are ready while the runs wait (docs/tasks.md "Check-run").
   const gate = path.join(path.dirname(wsxCli), "scenario-gate");
   fs.writeFileSync(config, fs.readFileSync(config, "utf8").replace("tasks:\n", `tasks:\n  scenarios:\n    slow: "while [ ! -e ${gate} ]; do sleep 0.2; done"\n`));
   const scenario = taskNew("--no-steps", "CHECKRUN_LATE slow WORK scenario1.txt");
-  for (let waited = 0; !show(scenario).log || !fs.readFileSync(show(scenario).log, "utf8").includes('"kind":"result"') && waited < 30_000; waited += 200) await pause(200);
   const behind = taskNew("--no-steps", "CHECKRUN_LATE slow WORK scenario2.txt");
-  const slotWords = new RegExp(`^Waiting for the scenario test slot for [^:]+: #${scenario} runs its scenario tests now\\. Its scenario tests start when the slot is free\\.$`);
-  for (let waited = 0; show(behind).status?.label !== "Waiting for the scenario test slot"; waited += 200) {
-    if (waited > 60_000) await fail(`plans #${behind} never waited for the scenario test slot: ${JSON.stringify(show(behind).status)}`);
-    await pause(200);
-  }
-  const slotRest = new RegExp(`^#${scenario} runs its scenario tests now\\. Its scenario tests start when the slot is free\\.$`);
-  const shownStatus = show(behind).status;
-  if (shownStatus.kind !== "scenario_slot" || !slotWords.test(shownStatus.sentence)) await fail(`wsx task show says ${JSON.stringify(shownStatus)}`);
-  await open(behind);
-  await shows(behind, "scenario test slot", { health: shownStatus.label, steps: "", now: "", next: slotRest });
-  await shot("progress-scenario-slot", ".composer-send");
-  await go(plansChat);
-  await until("!document.querySelector('dialog.task-sheet')", "the scenario wait's sheet did not close");
-  await openReservoir("tasks");
-  // ^ The server publishes the overview on its next watch step, up to 2 s after the wait began.
-  await rowReads(behind, (text) => text.startsWith(shownStatus.label), `the scenario wait's Running row does not read "${shownStatus.label}"`);
+  for (const task of [scenario, behind]) await stateIs(task, "ready", 120);
   // A wait for another task (`wsx task after`): the Running row says what it waits after
   // (`flow.phrase`), the sheet's Waits on row and sentence give the reason, and the sheet of the
   // task waited for lists who waits in its Chain section (docs/tasks.md "After another task").
