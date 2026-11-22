@@ -4270,7 +4270,7 @@ merge_seconds = 3
         # ^ No per-task verdict: the route is gone, and so is its body field.
         assert act(2, 'verify', {})[0] == 404
         assert act(2, 'land', {'result': 'pass'})[0] == 422
-        # ^ The owner talks to the manager; only `wsx task add` and `steer` reach a worker.
+        # ^ The owner talks to the manager; only `wsx task add` reaches a worker.
         assert act(2, 'add', {'text': 'hi'})[0] == 404 and act(2, 'steer', {'text': 'hi'})[0] == 404
         assert act(2, 'explode', {})[0] == 404 and act(99, 'land', {})[0] == 404
         say_route = '/api/tasks/%d/say' % demo
@@ -4341,7 +4341,7 @@ merge_seconds = 3
         # A steer reaches the running turn.
         assert js('task', 'new', 'SLOW WORK s.txt', '-p', 'demo')['id'] == 4
         wait_state(4, 'working')
-        js('task', 'steer', 4, 'steer words', '-p', 'demo')
+        js('task', 'add', 4, 'steer words', '--now', '-p', 'demo')
         wait(lambda: 'steer words' in (work / 'fake-claude.trace').read_text(), 'steer reached the turn')
         wait_state(4, 'ready')
         # By hand (docs/tasks.md "By hand"): the owner's own pane in the task's copy; the

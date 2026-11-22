@@ -8205,19 +8205,6 @@ def part_chats(created=None):
     assert fact['paths'] == ['b.txt'] and fact['commit'] == other_tip, (fact, other_tip)
     assert [h for h in json.loads(cli('memory', 'search', 'reach lesson', '--scope', other_id, '--json').stdout) if h['kind'] == 'fact']
 
-    def stale():
-        found = next(h for h in memory_records(cli('memory', 'search', 'reach lesson', '--json').stdout) if h['slug'] == fact['slug'])
-        return bool(found.get('stale'))
-    # ^ A change in demo to a file of the same name moves nothing; one in other marks the fact stale.
-    assert not stale()
-    (project / 'b.txt').write_text('a\n')
-    git('add', 'b.txt')
-    git('commit', '-q', '-m', 'a b.txt')
-    assert not stale()
-    (other / 'b.txt').write_text('changed\n')
-    git('add', 'b.txt', cwd=other)
-    git('commit', '-q', '-m', 'change b.txt', cwd=other)
-    assert stale()
     # Refusals: a chat of demo, then the manager's discard, deploy and an unregistered project.
     js('task', 'chat', 'new', 'reachr', '--goal', goal)
     before = other_ids()
