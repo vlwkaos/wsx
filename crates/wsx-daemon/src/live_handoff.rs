@@ -412,13 +412,7 @@ pub(crate) fn lifecycle_status(daemon: &Daemon, state: &mut State) -> DaemonLife
     let target = state.replacement_target.clone();
     let blockers = target
         .as_deref()
-        .map(|target| {
-            if state.replacement_executable.is_some() {
-                handoff_blockers(state, target)
-            } else {
-                replacement_blockers(state, target)
-            }
-        })
+        .map(|target| handoff_blockers(state, target))
         .unwrap_or_default();
     let target_version = target
         .as_deref()
@@ -441,7 +435,7 @@ pub(crate) fn lifecycle_status(daemon: &Daemon, state: &mut State) -> DaemonLife
         },
         live_runtimes: live_runtime_count(state),
         active_clients: daemon.active_clients.load(Ordering::Acquire),
-        active_tuis: state.tui_clients.len() + usize::from(state.legacy_tui_until.is_some()),
+        active_tuis: state.tui_clients.len(),
         recovered_from_backup: daemon.recovered_from_backup,
         replacement_target: target,
         replacement_target_version: target_version,
@@ -450,53 +444,11 @@ pub(crate) fn lifecycle_status(daemon: &Daemon, state: &mut State) -> DaemonLife
     }
 }
 
-pub(crate) fn replacement_blockers(
-    state: &mut State,
-    target_binary_id: &str,
-) -> Vec<ReplacementBlocker> {
-    let now = Instant::now();
-    expire_tui_presence(state, now);
-    let mut blockers = Vec::new();
-    let target_daemon_revision = state.replacement_daemon_revision.unwrap_or_default();
-    if state.legacy_tui_until.is_some()
-        || state.tui_clients.values().any(|client| {
-            if target_daemon_revision == 0 {
-                client.target_binary_id != target_binary_id
-            } else {
-                client.target_daemon_revision != target_daemon_revision
-            }
-        })
-    {
-        blockers.push(ReplacementBlocker::OtherTui);
-    }
-    if has_fresh_working_agent(state, now) {
-        blockers.push(ReplacementBlocker::WorkingAgent);
-    }
-    if state.recovery_in_progress {
-        blockers.push(ReplacementBlocker::HandoffUnavailable);
-    }
-    if live_runtime_count(state) > 0 && !state.listener_scan_complete {
-        blockers.push(ReplacementBlocker::ListenerScanPending);
-    }
-    if !state.foreground_jobs.is_empty() {
-        blockers.push(ReplacementBlocker::ForegroundJob);
-    }
-    if state
-        .listening_ports
-        .values()
-        .any(|ports| !ports.is_empty())
-    {
-        blockers.push(ReplacementBlocker::ListeningPort);
-    }
-    blockers
-}
-
 pub(crate) fn replacement_response(
     state: &State,
     disposition: ReplacementDisposition,
     target_version: String,
     blockers: Vec<ReplacementBlocker>,
-    use_current_daemon: bool,
 ) -> Response {
     Response::Replacement {
         disposition,
@@ -504,92 +456,8 @@ pub(crate) fn replacement_response(
         daemon_version: WSX_VERSION.to_string(),
         target_version,
         blockers,
-        use_current_daemon,
+        use_current_daemon: false,
     }
-}
-
-#[cfg(test)]
-pub(crate) fn prepare_replacement(
-    daemon: &Daemon,
-    target_binary_id: String,
-) -> Result<Response, ApiError> {
-    prepare_replacement_with_revision(daemon, target_binary_id, 0)
-}
-
-pub(crate) fn prepare_replacement_with_revision(
-    daemon: &Daemon,
-    target_binary_id: String,
-    target_daemon_revision: u32,
-) -> Result<Response, ApiError> {
-    if target_binary_id.is_empty() || target_binary_id.len() > 512 {
-        return Err(api(
-            "invalid_request",
-            "replacement binary identity is invalid",
-        ));
-    }
-    let target_version = binary_identity_version(&target_binary_id)
-        .ok_or_else(|| {
-            api(
-                "invalid_request",
-                "replacement binary identity has no valid wsx version",
-            )
-        })?
-        .to_string();
-    let candidate_order = compare_binary_identities(&target_binary_id, &daemon.binary_id)
-        .ok_or_else(|| {
-            api(
-                "invalid_request",
-                "replacement binary identity is malformed",
-            )
-        })?;
-    let mut state = lock(&daemon.state);
-    if (target_daemon_revision > 0 && target_daemon_revision <= DAEMON_REVISION)
-        || (target_daemon_revision == 0 && candidate_order != std::cmp::Ordering::Greater)
-    {
-        return Ok(replacement_response(
-            &state,
-            ReplacementDisposition::Deferred,
-            target_version,
-            Vec::new(),
-            true,
-        ));
-    }
-
-    if let Some(current) = state.replacement_target.as_deref() {
-        let order = match (state.replacement_daemon_revision, target_daemon_revision) {
-            (Some(current), target) if current > 0 && target > 0 => target.cmp(&current),
-            _ => compare_binary_identities(&target_binary_id, current)
-                .ok_or_else(|| api("invalid_request", "pending binary identity is malformed"))?,
-        };
-        if order != std::cmp::Ordering::Greater {
-            return Ok(replacement_response(
-                &state,
-                ReplacementDisposition::Deferred,
-                target_version,
-                vec![ReplacementBlocker::PendingTarget],
-                false,
-            ));
-        }
-    }
-    state.replacement_target = Some(target_binary_id.clone());
-    state.replacement_daemon_revision = Some(target_daemon_revision);
-    let blockers = replacement_blockers(&mut state, &target_binary_id);
-    let disposition = if blockers.is_empty() {
-        state.stopping = true;
-        state.stop_reason = Some(StopReason::Replacement);
-        daemon.changed.notify_all();
-        daemon.plugin_changed.notify_all();
-        ReplacementDisposition::Stopping
-    } else {
-        ReplacementDisposition::Deferred
-    };
-    Ok(replacement_response(
-        &state,
-        disposition,
-        target_version,
-        blockers,
-        false,
-    ))
 }
 
 pub(crate) fn prepare_handoff(
@@ -634,7 +502,6 @@ pub(crate) fn prepare_handoff(
                 ReplacementDisposition::Deferred,
                 target_version,
                 vec![ReplacementBlocker::PendingTarget],
-                false,
             ));
         }
     }
@@ -653,7 +520,6 @@ pub(crate) fn prepare_handoff(
         },
         target_version,
         blockers,
-        false,
     ))
 }
 
@@ -686,11 +552,10 @@ pub(crate) fn handoff_blockers(
     // to the successor on its own, and a TUI that follows re-executes into the installed
     // wsx. Only a TUI that can do neither must leave first.
     let target_protocol = state.replacement_protocol.unwrap_or(u32::MAX);
-    let another_tui = state.legacy_tui_until.is_some()
-        || state
-            .tui_clients
-            .values()
-            .any(|client| client.max_protocol < target_protocol && !client.follows);
+    let another_tui = state
+        .tui_clients
+        .values()
+        .any(|client| client.max_protocol < target_protocol && !client.follows);
     let mut blockers = Vec::new();
     if another_tui {
         blockers.push(ReplacementBlocker::OtherTui);

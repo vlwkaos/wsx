@@ -23,7 +23,7 @@ impl App {
             Ok(committed) => committed,
             Err(error) => {
                 // ^ A save that keeps failing is tried again after a growing pause, and the
-                // notice shows once, not on every key (audit note, docs/design/tui-health-audit.md).
+                // notice shows once, not on every key.
                 let pause = self
                     .cache_retry
                     .map_or(CACHE_RETRY_MIN, |(_, last)| (last * 2).min(CACHE_RETRY_MAX));

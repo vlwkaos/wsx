@@ -1,6 +1,6 @@
 # Local model endpoint
 
-How wsx uses a local model as a fallback agent. Why and what was measured: [design/local-model-fallback.md](design/local-model-fallback.md) "2.6". wsx uses it with no entry to add: it is the built-in stand-in that answers the owner while the manager waits for a usage limit ([tasks.md](tasks.md) "Agents", "Local floor"). Nothing here edits your Pi or wsx config.
+How wsx uses a local model as a fallback agent. wsx uses it with no entry to add: it is the built-in stand-in that answers the owner while the manager waits for a usage limit ([tasks.md](tasks.md) "Agents", "Local floor"). Nothing here edits your Pi or wsx config.
 
 ## Endpoint
 

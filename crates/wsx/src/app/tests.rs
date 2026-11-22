@@ -694,7 +694,7 @@ fn pending_terminal_entry_cancels_on_selection_change_and_suspend() {
     assert!(matches!(app.mode, Mode::Workspace));
 }
 
-/// docs/design/tui-health-audit.md finding 7: a wsxd that accepts and never answers holds the
+/// A wsxd that accepts and never answers holds the
 /// connect on its worker. The UI thread returns at once, shows the job, and a reply that comes
 /// after the selection moved is dropped.
 #[test]
@@ -5355,8 +5355,7 @@ fn pending_deletion_matches_exact_paths_only() {
 
 #[test]
 fn a_failing_cache_save_waits_between_tries_and_shows_one_notice() {
-    // ^ docs/design/tui-health-audit.md, note under the findings: every key used to retry
-    // the save and bring the notice back.
+    // ^ Every key used to retry the save and bring the notice back.
     let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
     let blocker = app.cache_path.with_extension("blocker");
     std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();

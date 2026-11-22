@@ -171,7 +171,7 @@ pub fn url_of(provider: &str) -> Option<String> {
 
 /// Give a launch's `models.json` the floor's provider when `model` is the floor's and the file
 /// lacks one by that name: an owner's own `llama-wsx` wins. The file is the launch's copy,
-/// mode 600, gone with the launch. ref: docs/design/local-model-fallback.md 2.6
+/// mode 600, gone with the launch. ref: docs/local-model.md
 pub fn add_provider(models_json: &Path, model: &str) -> Result<()> {
     let Some(id) = model.strip_prefix(&format!("{PROVIDER}/")) else {
         return Ok(());

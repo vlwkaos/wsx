@@ -1,6 +1,6 @@
 # The `memory` contract
 
-One command surface for stored knowledge: `wsx memory <command>` (wsx, projects and `default`) and any other program that follows this text (dotfiles `memory.py`, vault scopes). Each scope has exactly one store and one program writes it. Design and reasons: [design/memory-system.md](design/memory-system.md).
+One command surface for stored knowledge: `wsx memory <command>` (wsx, projects and `default`) and any other program that follows this text (dotfiles `memory.py`, vault scopes). Each scope has exactly one store and one program writes it.
 
 ## Scope
 
@@ -103,7 +103,7 @@ The first prompt of a worker holds a block from the memory, built by `wsx_core::
 1. **Area briefs**: `memory.areas` of the project's `wsx.config.yml` is `{"<glob>": "<brief file>"}`. Each brief whose glob meets one of the task's `--files` is read from the project (a relative path inside it, at most 8 KiB) and shown whole.
 2. **Rules**: each active `rule` whose `paths` meet one of the task's `--files` (the same match as for areas), newest decision first, as `Rule <slug> (paths …), the owner's words: "…"` and the record text. Rules are the owner's decisions, few and not checked for stale; a rule is shown whole or named, never cut. A rule with no `paths` joins no block: it would crowd out the briefs and the rules that fit the task (a store holds about 40, more than the budget), and the manager already reads them all in `decisions.md`. `--paths '**'` makes a rule project-wide: it joins every block, so give it only to a rule every task needs (`add` of a rule with no paths says this on stderr). A superseded or failed rule never joins.
 
-No fact records: the paid evaluation (`docs/design/memory-eval.md`, #392) found that records in the start block gave no gain and likely harm (plan cost +11% median, inside noise; recall -0.05; about 3 extra calls to check records, 92% of them marked stale), and baseline plans already name 0.81 of the landed files by reading. A worker finds records on demand with `wsx memory recall` and `search`.
+No fact records: the paid evaluation (#392) found that records in the start block gave no gain and likely harm (plan cost +11% median, inside noise; recall -0.05; about 3 extra calls to check records, 92% of them marked stale), and baseline plans already name 0.81 of the landed files by reading. A worker finds records on demand with `wsx memory recall` and `search`.
 
 Nothing is cut silently: a piece that does not fit is named on a last line (`Not shown, over the 4096-byte start budget: <names>.`, a brief by its file, a rule by its slug), and a brief that is cut says how many bytes and where the whole is.
 

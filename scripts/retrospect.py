@@ -1,15 +1,14 @@
 #!/usr/bin/python3
 """Retrospect: one project's spend and a look back over its manager chat, posted to the chat.
 
-A routine runs it (docs/design/dynamic-routines-retrospect.md); it prints nothing on success, so
+A routine runs it; it prints nothing on success, so
 the run costs no manager turn, and posts its lines with `wsx task post`:
 
   /usr/bin/python3 scripts/retrospect.py ~/.local/state/wsx/tasks/<project-id> -p <project> [--no-model] [--wsx PATH]
 
 Code counts: spend, owner messages that ask the same again, phrases the manager repeats, and
 each reply the owner answered within 30 minutes. One model call (sonnet, high effort, the
-owner's rule) judges only those pairs: which replies the owner turned down, of which kind (A-F of
-docs/design/manager-reliability.md), and which text or product changes the repeats point to
+owner's rule) judges only those pairs: which replies the owner turned down, of which kind (A-F), and which text or product changes the repeats point to
 (scripts/retrospect-prompt.md). The whole report goes to
 <state dir>/retrospect/<unix ms>.md; the newest 14 stay.
 """

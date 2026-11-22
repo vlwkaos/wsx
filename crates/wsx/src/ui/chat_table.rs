@@ -1,7 +1,7 @@
 //! A GFM table in a chat message, drawn as aligned columns. The web's markdown shows a table
 //! right after a list item too; this reads it the same way: a header row and a delimiter row of
 //! as many cells start it, whatever line is above, and the first line without `|` ends it.
-//! ref: docs/design/list-tables.md
+//! ref: docs/web-client-chat.md
 use super::{
     text::{width_of, wrap_cells, Cell},
     theme,

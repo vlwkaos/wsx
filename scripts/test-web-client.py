@@ -4578,7 +4578,7 @@ merge_seconds = 3
         rows = steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]['rows']
         sent_row = next(r for r in rows if r.get('author') == 'owner' and r.get('attachments'))
         assert sent_row['text'] == 'STATUS with the report' and [a['hash'] for a in sent_row['attachments']] == [report['hash']], sent_row
-        # --- The overview and the chat read little (docs/design/web-server-health-audit.md findings 4, 5): the
+        # --- The overview and the chat read little: the
         # server traces each whole-log read on stderr (WSX_TRACE_READ_LOG).
         def traced(suffix=''):
             return [line for line in (work / 'owner.log').read_text().splitlines()

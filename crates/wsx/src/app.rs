@@ -739,7 +739,7 @@ pub struct TerminalConnect {
     stream: std::result::Result<runtime::TerminalStream, (NoticeLevel, String)>,
 }
 
-// ^ docs/design/tui-health-audit.md finding 7: every wsxd call here waits up to the 5 s IO
+// ^ Every wsxd call here waits up to the 5 s IO
 // timeout, so none runs on the UI thread.
 fn connect_terminal(client: &runtime::Client, request: ConnectRequest) -> TerminalConnect {
     let ConnectRequest {

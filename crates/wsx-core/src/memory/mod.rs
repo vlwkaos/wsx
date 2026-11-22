@@ -1,6 +1,5 @@
 //! The `memory` contract's built-in store: records in an append-only log, folded into the
-//! current ones, and the index that searches them. ref: docs/memory.md,
-//! docs/design/memory-system.md
+//! current ones, and the index that searches them. ref: docs/memory.md
 
 pub mod backend;
 pub mod index;

@@ -1,10 +1,10 @@
 //! The start set: what the first prompt of a worker holds from the memory: the area briefs of
 //! the project config, then the active rules whose `paths` meet its files (the owner's
 //! decisions: few, so no stale check). No fact records: the paid evaluation found
-//! they gave no gain (docs/design/memory-eval.md); `wsx memory recall` and `search` find them on
+//! they gave no gain; `wsx memory recall` and `search` find them on
 //! demand. Nothing is cut silently: what does not fit the budget is named, with the file or
 //! slug that holds it. This module also holds the one rule that says a fact is stale (search marks it).
-//! ref: docs/memory.md "Start set", docs/design/memory-system.md "Who gets what"
+//! ref: docs/memory.md "Start set"
 
 use super::manage::{clip_to, decided};
 use super::record::{Kind, Record, Status};

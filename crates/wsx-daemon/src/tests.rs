@@ -41,14 +41,12 @@ fn agent_test_daemon(persisted: Persisted) -> (Arc<Daemon>, PathBuf) {
             terminal_operation_locks: HashMap::new(),
             listening_ports: HashMap::new(),
             foreground_jobs: HashSet::new(),
-            listener_scan_complete: false,
             leases: HashMap::new(),
             transferred_streams: VecDeque::new(),
             events: VecDeque::new(),
             plugins: Vec::new(),
             plugin_events: VecDeque::new(),
             tui_clients: HashMap::new(),
-            legacy_tui_until: None,
             replacement_target: None,
             replacement_daemon_revision: None,
             replacement_protocol: None,
@@ -163,40 +161,7 @@ fn lifecycle_status_is_available_across_protocol_mismatch() {
 }
 
 #[test]
-fn newer_replacement_stops_atomically_without_blockers() {
-    let (daemon, path) = agent_test_daemon(agent_test_persisted());
-    let target = "0.23.0:1:2:3:20";
-    let response = prepare_replacement(&daemon, target.into()).unwrap();
-    assert_eq!(
-        response,
-        Response::Replacement {
-            disposition: ReplacementDisposition::Stopping,
-            live_runtimes: 0,
-            daemon_version: WSX_VERSION.into(),
-            target_version: "0.23.0".into(),
-            blockers: vec![],
-            use_current_daemon: false,
-        }
-    );
-    let state = lock(&daemon.state);
-    assert!(state.stopping);
-    assert_eq!(state.stop_reason, Some(StopReason::Replacement));
-    drop(state);
-    let socket = path.with_extension("sock");
-    cleanup(&daemon, &socket);
-    assert_eq!(
-        fs::read_to_string(path.with_extension("lifecycle"))
-            .unwrap()
-            .trim(),
-        format!("replacement:{target}")
-    );
-    let _ = fs::remove_file(&path);
-    let _ = fs::remove_file(path.with_extension("json.backup"));
-    let _ = fs::remove_file(path.with_extension("lifecycle"));
-}
-
-#[test]
-fn replacement_waits_for_work_and_servers_but_not_blocked_agent() {
+fn stop_cleanup_ends_runtimes_and_keeps_the_recovery_recipe() {
     let pane_id = PaneId(4);
     let recovery_recipe = LaunchRecipe {
         command: vec!["/bin/cat".into()],
@@ -222,71 +187,14 @@ fn replacement_waits_for_work_and_servers_but_not_blocked_agent() {
         )
         .unwrap(),
     );
-    let generation = {
-        let mut state = lock(&daemon.state);
-        state.runtimes.insert(pane_id, Arc::clone(&runtime));
-        assert_eq!(
-            replacement_blockers(&mut state, "0.23.0:1:2:3:20"),
-            vec![ReplacementBlocker::ListenerScanPending]
-        );
-        state.listener_scan_complete = true;
-        state.runtime_generations[&pane_id].clone()
-    };
-    agent_report(
-        &daemon,
-        RuntimeAgentAuthority::new(pane_id, Some(generation.clone())),
-        "pi".into(),
-        AgentState::Working,
-        None,
-        None,
-        AgentCapabilities::default(),
-    )
-    .unwrap();
-    assert_eq!(
-        prepare_replacement(&daemon, "0.23.0:1:2:3:20".into()).unwrap(),
-        Response::Replacement {
-            disposition: ReplacementDisposition::Deferred,
-            live_runtimes: 1,
-            daemon_version: WSX_VERSION.into(),
-            target_version: "0.23.0".into(),
-            blockers: vec![ReplacementBlocker::WorkingAgent],
-            use_current_daemon: false,
-        }
-    );
-    assert!(!lock(&daemon.state).stopping);
-    assert!(!runtime.exited());
-
-    agent_report(
-        &daemon,
-        RuntimeAgentAuthority::new(pane_id, Some(generation)),
-        "pi".into(),
-        AgentState::Blocked,
-        None,
-        None,
-        AgentCapabilities::default(),
-    )
-    .unwrap();
+    lock(&daemon.state)
+        .runtimes
+        .insert(pane_id, Arc::clone(&runtime));
     {
         let mut state = lock(&daemon.state);
-        state.foreground_jobs.insert(pane_id);
-        state.listening_ports.insert(pane_id, vec![3000]);
+        state.stopping = true;
+        state.stop_reason = Some(StopReason::Intentional);
     }
-    assert!(!advance_replacement(&daemon));
-    assert!(!runtime.exited());
-    {
-        let mut state = lock(&daemon.state);
-        assert_eq!(
-            replacement_blockers(&mut state, "0.23.0:1:2:3:20"),
-            vec![
-                ReplacementBlocker::ForegroundJob,
-                ReplacementBlocker::ListeningPort,
-            ]
-        );
-        state.foreground_jobs.clear();
-    }
-    assert!(!advance_replacement(&daemon));
-    lock(&daemon.state).listening_ports.clear();
-    assert!(advance_replacement(&daemon));
     assert!(!runtime.exited());
 
     let socket = path.with_extension("sock");
@@ -298,12 +206,12 @@ fn replacement_waits_for_work_and_servers_but_not_blocked_agent() {
         .panes
         .iter()
         .find(|pane| pane.id == pane_id)
-        .expect("replacement cleanup must preserve pane identity 4");
+        .expect("stop cleanup must preserve pane identity 4");
     assert_eq!(pane.id, PaneId(4));
     let reloaded_recipe = pane
         .recovery
         .as_ref()
-        .expect("replacement cleanup must preserve the recovery recipe");
+        .expect("stop cleanup must preserve the recovery recipe");
     assert_eq!(reloaded_recipe.command, recovery_recipe.command);
     assert_eq!(reloaded_recipe.initial_input, recovery_recipe.initial_input);
     assert_eq!(reloaded_recipe.rows, recovery_recipe.rows);
@@ -315,24 +223,6 @@ fn replacement_waits_for_work_and_servers_but_not_blocked_agent() {
 }
 
 #[test]
-fn older_binary_never_downgrades_the_daemon() {
-    let (daemon, path) = agent_test_daemon(agent_test_persisted());
-    assert_eq!(
-        prepare_replacement(&daemon, "0.20.0:1:2:3:20".into()).unwrap(),
-        Response::Replacement {
-            disposition: ReplacementDisposition::Deferred,
-            live_runtimes: 0,
-            daemon_version: WSX_VERSION.into(),
-            target_version: "0.20.0".into(),
-            blockers: vec![],
-            use_current_daemon: true,
-        }
-    );
-    assert!(lock(&daemon.state).replacement_target.is_none());
-    let _ = fs::remove_file(path);
-}
-
-#[test]
 fn live_handoff_waits_for_tuis_but_not_terminal_work() {
     let (daemon, path) = agent_test_daemon(agent_test_persisted());
     let mut state = lock(&daemon.state);
@@ -341,8 +231,6 @@ fn live_handoff_waits_for_tuis_but_not_terminal_work() {
     state.tui_clients.insert(
         7,
         TuiPresenceLease {
-            target_binary_id: "target".into(),
-            target_daemon_revision: DAEMON_REVISION + 1,
             max_protocol: 0,
             follows: false,
             expires_at: Instant::now() + TUI_PRESENCE_TTL,
@@ -435,125 +323,6 @@ fn rollback_preserves_remaining_terminal_lease_time() {
 }
 
 #[test]
-fn active_other_tui_defers_replacement_until_its_presence_expires() {
-    let (daemon, path) = agent_test_daemon(agent_test_persisted());
-    record_tui_presence(
-        &mut lock(&daemon.state),
-        Some(TuiClientPresence {
-            instance_id: 7,
-            version: "0.20.0".into(),
-            target_binary_id: "0.20.0:1:2:3:10".into(),
-            target_daemon_revision: 0,
-            max_protocol: 0,
-            follows: false,
-        }),
-    )
-    .unwrap();
-    assert!(matches!(
-        prepare_replacement(&daemon, "0.22.0:1:2:3:20".into())
-        .unwrap(),
-        Response::Replacement {
-            disposition: ReplacementDisposition::Deferred,
-            blockers,
-            ..
-        } if blockers == vec![ReplacementBlocker::OtherTui]
-    ));
-    assert!(!advance_replacement(&daemon));
-    lock(&daemon.state)
-        .tui_clients
-        .get_mut(&7)
-        .unwrap()
-        .expires_at = Instant::now();
-    assert!(advance_replacement(&daemon));
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn same_version_different_build_tui_blocks_replacement_until_expiry() {
-    let (daemon, path) = agent_test_daemon(agent_test_persisted());
-    record_tui_presence(
-        &mut lock(&daemon.state),
-        Some(TuiClientPresence {
-            instance_id: 8,
-            version: "0.22.0".into(),
-            target_binary_id: "0.22.0:1:2:3:10".into(),
-            target_daemon_revision: 0,
-            max_protocol: 0,
-            follows: false,
-        }),
-    )
-    .unwrap();
-
-    assert!(matches!(
-        prepare_replacement(&daemon, "0.22.0:1:2:3:20".into()).unwrap(),
-        Response::Replacement {
-            disposition: ReplacementDisposition::Deferred,
-            blockers,
-            ..
-        } if blockers == vec![ReplacementBlocker::OtherTui]
-    ));
-    assert!(!advance_replacement(&daemon));
-    lock(&daemon.state)
-        .tui_clients
-        .get_mut(&8)
-        .unwrap()
-        .expires_at = Instant::now();
-    assert!(advance_replacement(&daemon));
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn daemon_revision_controls_replacement_and_tui_build_compatibility() {
-    let (daemon, path) = agent_test_daemon(agent_test_persisted());
-    assert!(matches!(
-        prepare_replacement_with_revision(&daemon, "0.23.0:1:2:3:20".into(), DAEMON_REVISION,)
-            .unwrap(),
-        Response::Replacement {
-            use_current_daemon: true,
-            ..
-        }
-    ));
-    assert!(lock(&daemon.state).replacement_target.is_none());
-
-    let mut state = lock(&daemon.state);
-    state.replacement_target = Some("0.23.0:1:2:3:20".into());
-    state.replacement_daemon_revision = Some(DAEMON_REVISION + 1);
-    record_tui_presence(
-        &mut state,
-        Some(TuiClientPresence {
-            instance_id: 10,
-            version: "0.23.1".into(),
-            target_binary_id: "0.23.1:4:5:6:30".into(),
-            target_daemon_revision: DAEMON_REVISION + 1,
-            max_protocol: 0,
-            follows: false,
-        }),
-    )
-    .unwrap();
-    assert!(!replacement_blockers(&mut state, "0.23.0:1:2:3:20")
-        .contains(&ReplacementBlocker::OtherTui));
-    state
-        .tui_clients
-        .get_mut(&10)
-        .unwrap()
-        .target_daemon_revision = DAEMON_REVISION;
-    assert!(
-        replacement_blockers(&mut state, "0.23.0:1:2:3:20").contains(&ReplacementBlocker::OtherTui)
-    );
-    state.stop_reason = Some(StopReason::Replacement);
-    drop(state);
-    cleanup(&daemon, &path.with_extension("sock"));
-    assert_eq!(
-        fs::read_to_string(path.with_extension("lifecycle"))
-            .unwrap()
-            .trim(),
-        format!("replacement:0.23.0:1:2:3:20|{}", DAEMON_REVISION + 1)
-    );
-    let _ = fs::remove_file(&path);
-    let _ = fs::remove_file(path.with_extension("lifecycle"));
-}
-
-#[test]
 fn malformed_or_empty_tui_presence_is_rejected() {
     let (daemon, path) = agent_test_daemon(agent_test_persisted());
     for (version, target_binary_id) in [
@@ -580,57 +349,6 @@ fn malformed_or_empty_tui_presence_is_rejected() {
         );
     }
     assert!(lock(&daemon.state).tui_clients.is_empty());
-    let _ = fs::remove_file(path);
-}
-
-#[test]
-fn newer_pending_build_supersedes_stale_target_without_ping_pong() {
-    let (daemon, path) = agent_test_daemon(agent_test_persisted());
-    record_tui_presence(&mut lock(&daemon.state), None).unwrap();
-    for target in ["0.22.0:1:2:3:20", "0.22.0:1:2:3:30"] {
-        assert!(matches!(
-            prepare_replacement(&daemon, target.into()).unwrap(),
-            Response::Replacement {
-                disposition: ReplacementDisposition::Deferred,
-                ..
-            }
-        ));
-    }
-    assert_eq!(
-        lock(&daemon.state).replacement_target.as_deref(),
-        Some("0.22.0:1:2:3:30")
-    );
-    assert!(matches!(
-        prepare_replacement(&daemon, "0.22.0:1:2:3:25".into())
-        .unwrap(),
-        Response::Replacement { blockers, .. }
-            if blockers == vec![ReplacementBlocker::PendingTarget]
-    ));
-    assert_eq!(
-        lock(&daemon.state).replacement_target.as_deref(),
-        Some("0.22.0:1:2:3:30")
-    );
-
-    assert!(matches!(
-        prepare_replacement(&daemon, "0.23.0:1:2:3:10".into()).unwrap(),
-        Response::Replacement {
-            disposition: ReplacementDisposition::Deferred,
-            ..
-        }
-    ));
-    assert_eq!(
-        lock(&daemon.state).replacement_target.as_deref(),
-        Some("0.23.0:1:2:3:10")
-    );
-    assert!(matches!(
-        prepare_replacement(&daemon, "0.22.0:1:2:3:99".into()).unwrap(),
-        Response::Replacement { blockers, .. }
-            if blockers == vec![ReplacementBlocker::PendingTarget]
-    ));
-    assert_eq!(
-        lock(&daemon.state).replacement_target.as_deref(),
-        Some("0.23.0:1:2:3:10")
-    );
     let _ = fs::remove_file(path);
 }
 
@@ -4538,7 +4256,6 @@ fn foreground_job_changes_without_waiting_for_listener_scan() {
         );
         thread::sleep(Duration::from_millis(10));
     }
-    assert!(!lock(&daemon.state).listener_scan_complete);
     lock(&daemon.state).stopping = true;
     scanner.join().unwrap();
     runtime.terminate();
@@ -4546,17 +4263,13 @@ fn foreground_job_changes_without_waiting_for_listener_scan() {
 }
 
 #[test]
-fn failed_listener_scan_preserves_prior_server_fence() {
+fn failed_listener_scan_keeps_the_prior_ports() {
     let (daemon, path) = agent_test_daemon(agent_test_persisted());
     let mut state = lock(&daemon.state);
-    state.listener_scan_complete = true;
     state.listening_ports.insert(PaneId(4), vec![3000]);
 
     assert!(!apply_port_scan(&mut state, None));
-    assert!(state.listener_scan_complete);
     assert_eq!(state.listening_ports[&PaneId(4)], vec![3000]);
-    assert!(replacement_blockers(&mut state, "0.23.0:1:2:3:20")
-        .contains(&ReplacementBlocker::ListeningPort));
     drop(state);
     let _ = fs::remove_file(path);
 }

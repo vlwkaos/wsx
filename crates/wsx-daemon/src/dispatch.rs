@@ -175,9 +175,6 @@ pub(crate) fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Res
             let revision = release_client_lease(daemon, pane_id, client_id)?;
             Ok(Response::Ack { revision })
         }
-        Request::TerminalHeartbeat { pane_id, client_id } => mutate_runtime(daemon, |state| {
-            refresh_lease(state, pane_id, LeaseAccess::Client(client_id))
-        }),
         Request::TerminalSubscribe { .. } | Request::TerminalRawSubscribe { .. } => Err(api(
             "invalid_request",
             "a terminal subscribe is only valid as a connection upgrade",
@@ -207,35 +204,6 @@ pub(crate) fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Res
             request_claude_reconcile(daemon, pane_id, key_interrupts_agent(&key));
             Ok(Response::Ack { revision })
         }
-        Request::TerminalPaste {
-            pane_id,
-            client_id,
-            text,
-        } => {
-            if text.len() > MAX_INPUT_BYTES {
-                return Err(api("invalid_input", "paste exceeds limit"));
-            }
-            let (runtime, revision) =
-                leased_runtime(daemon, pane_id, LeaseAccess::Client(client_id))?;
-            runtime.paste(&text).map_err(terminal_api)?;
-            Ok(Response::Ack { revision })
-        }
-        Request::TerminalMouse {
-            pane_id,
-            client_id,
-            mouse,
-        } => {
-            let (runtime, revision) =
-                leased_runtime(daemon, pane_id, LeaseAccess::Client(client_id))?;
-            runtime.mouse(&mouse).map_err(terminal_api)?;
-            Ok(Response::Ack { revision })
-        }
-        Request::TerminalResize {
-            pane_id,
-            client_id,
-            rows,
-            cols,
-        } => resize_terminal(daemon, pane_id, LeaseAccess::Client(client_id), rows, cols),
         Request::View { pane_ids } => view(daemon, pane_ids),
         Request::Frames { pane_ids } => frames(daemon, pane_ids),
         Request::AgentReport {
@@ -563,10 +531,6 @@ pub(crate) fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Res
             let mut state = lock(&daemon.state);
             Ok(Response::Lifecycle(lifecycle_status(daemon, &mut state)))
         }
-        Request::PrepareReplacement {
-            target_binary_id,
-            target_daemon_revision,
-        } => prepare_replacement_with_revision(daemon, target_binary_id, target_daemon_revision),
         Request::PrepareHandoff {
             target_binary_id,
             target_version,
@@ -658,16 +622,10 @@ pub(crate) fn render_plugin_view(
 
 pub(crate) fn capabilities() -> Capabilities {
     Capabilities {
-        pane_splits: true,
-        plugins: true,
-        plugin_views: true,
         worktree_review_available: false,
-        agent_reports: true,
-        agent_session_restore: true,
         resume_shell_fallback: true,
         listening_ports: true,
         foreground_jobs: true,
-        process_restore: false,
         lifecycle_coordination: true,
         version_coordination: true,
         daemon_revision_coordination: true,
@@ -775,7 +733,6 @@ pub(crate) fn record_tui_presence(
     let now = Instant::now();
     expire_tui_presence(state, now);
     let Some(tui) = tui else {
-        state.legacy_tui_until = Some(now + TUI_PRESENCE_TTL);
         return Ok(());
     };
     if tui.instance_id == 0
@@ -791,8 +748,6 @@ pub(crate) fn record_tui_presence(
     state.tui_clients.insert(
         tui.instance_id,
         TuiPresenceLease {
-            target_binary_id: tui.target_binary_id,
-            target_daemon_revision: tui.target_daemon_revision,
             max_protocol: tui.max_protocol,
             follows: tui.follows,
             expires_at: now + TUI_PRESENCE_TTL,
@@ -805,9 +760,6 @@ pub(crate) fn expire_tui_presence(state: &mut State, now: Instant) {
     state
         .tui_clients
         .retain(|_, client| client.expires_at > now);
-    if state.legacy_tui_until.is_some_and(|expires| expires <= now) {
-        state.legacy_tui_until = None;
-    }
 }
 
 pub(crate) fn event_revision(event: &Event) -> u64 {

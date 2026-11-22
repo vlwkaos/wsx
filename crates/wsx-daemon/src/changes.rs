@@ -46,17 +46,6 @@ where
     Ok(Response::Ack { revision })
 }
 
-pub(crate) fn mutate_runtime<F>(daemon: &Daemon, mutation: F) -> Result<Response, ApiError>
-where
-    F: FnOnce(&mut State) -> Result<(), ApiError>,
-{
-    let mut state = lock(&daemon.state);
-    mutation(&mut state)?;
-    Ok(Response::Ack {
-        revision: state.revision,
-    })
-}
-
 pub(crate) fn publish(daemon: &Daemon, state: &mut State, revision: u64, entity: &str, id: u64) {
     state.revision = revision;
     state.push_event(Event::Changed {

@@ -16,7 +16,7 @@ pub const ON_CI: &str = "went to CI: ";
 pub const CANNOT_RUN_HERE: i32 = 69;
 /// The most scenario rounds at once; the load, memory and disk of the moment decide how many.
 pub const MAX_SCENARIO_RUNS: usize = 3;
-/// A CI round, p50 of 40 runs (docs/design/scenario-feedback-research.md), and the longest a CI run is waited for.
+/// A CI round, p50 of 40 runs, and the longest a CI run is waited for.
 const CI_ROUND_MS: u64 = 25 * 60_000;
 pub const CI_TIMEOUT: Duration = Duration::from_secs(75 * 60);
 /// A local round when no run of the command is recorded (the same document, 11-19).

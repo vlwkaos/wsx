@@ -2,7 +2,7 @@
 
 Task 491. Owner ask (studio-app 995, wsx 5065): in a chat, show at a glance whether what they asked for is carried out. Plan approved in wsx 5072. **Built: steps 1 to 3** (rule, muted tokens, peer fold, `add --title`). **Waiting: steps 4 and 5** (topics) for the owner's answer on the tree-context design, which is its own task.
 
-Measure: `python3 -I docs/design/transcript-measure.py ~/.local/state/wsx/tasks 7 wsx studio-app` (stdlib, read-only, totals only). It mirrors the old rule (`before`) and the new rule (`after`) over the chat logs of the last 7 days (to 2026-11-17).
+Measure: a stdlib, read-only script that printed totals only (since deleted). It mirrors the old rule (`before`) and the new rule (`after`) over the chat logs of the last 7 days (to 2026-11-17).
 
 ## 1. Cause
 
@@ -39,7 +39,7 @@ Counts, last 7 days, bubbles before to after:
 
 An open ask or an approval keeps its reply a bubble; the script cannot see them, so the bubble counts after are an upper bound. 10 empty replies show nowhere before or after.
 
-Corrections to the approved plan: the plan counted the 10 empty `-` replies as bubbles before; they were not (table above). A first version of the rule muted every reply to events; the task scenario showed that hides a routine event's reply for the owner and the long replies the manager writes on purpose. Only a reply to another chat's words is muted by who it answers; a reply to events keeps the `quiet` flag (counts above, `python3 -I docs/design/transcript-measure.py`).
+Corrections to the approved plan: the plan counted the 10 empty `-` replies as bubbles before; they were not (table above). A first version of the rule muted every reply to events; the task scenario showed that hides a routine event's reply for the owner and the long replies the manager writes on purpose. Only a reply to another chat's words is muted by who it answers; a reply to events keeps the `quiet` flag (counts above).
 
 ## 3. Muted lines carry tokens
 
@@ -84,7 +84,7 @@ Owner decisions: topics extend the 11-11 decision (pills, quotes, search); no th
 
 | Step | Files | Proof |
 |---|---|---|
-| 1 Measure and doc | `docs/design/transcript-measure.py`, this file | the script's totals above |
+| 1 Measure and doc | the measure script (since deleted), this file | the script's totals above |
 | 2 Rule, tokens, peer fold | `wsx-core task/chat.rs`, `manager.rs` (`Short.state`, `.checks`), `status.rs` (`tone`), `repo.rs`; web `bubbles.js`, `tasks.js`, `app.css`; TUI `task_chat.rs`, `ui/task_chat.rs` | web scenario (`web-tasks-check.mjs`, `test-web-client.py` chat part): a muted reply to `#93 landed` shows the `#93` link, the `landed` chip in the accent tone and `2 of 2 checks`; `Talked to ui` opens to the words; smoke (`runtime-smoke.py`): TUI rows `#3 landed 4 of 4 checks` and `Talked to elsewhere  Show`, `test-task.py`: `Talked to demo` in a chat's TUI. Captures at 375, 390 and 1280 px, light and dark: web check-run only |
 | 3 `add --title` | `args.rs`, `cmd/work.rs`, `host.rs`, `HostRequest::Add.title`, `instructions.rs`, `docs/tasks.md` | `test-task.py` 14b: title set, listed, a 61-character or empty title refused, nothing sent |
 | 2b Quote rule | `chat.rs` `quoted_message`, `manager.rs` `resolve_quote`, `Manager::quoted`, `instructions.rs`, open-questions header, `docs/tasks.md` | `test-task.py` quote section: a manager quote of its own reply is dropped, an events turn has no quote, owner quotes resolve |

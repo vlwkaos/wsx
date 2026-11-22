@@ -54,7 +54,7 @@ pub struct PiAgent {
 
 /// Pi's own folder for one launch (`PI_CODING_AGENT_DIR`): only the owner's `models.json`, so
 /// their Pi settings, packages, keys and extensions are not loaded. Pi adds its own caches
-/// to it. ref: docs/design/local-model-fallback.md 6.1, 8 (W2)
+/// to it. ref: docs/local-model.md
 struct LaunchHome(PathBuf);
 
 static HOMES: AtomicU64 = AtomicU64::new(0);
@@ -141,7 +141,7 @@ impl PiAgent {
         wrap: impl Fn(Option<AgentLine>) -> E + Send + Sync + 'static,
     ) -> Result<Self> {
         // ^ A worker's check or a manager's quiet hour outlasts Pi's default 5-minute cache, and
-        // then the whole context is written again. ref: docs/design/manager-efficiency.md
+        // then the whole context is written again.
         let source = owner_dir();
         let home = LaunchHome::create(&source, &launch.model)?;
         // ^ Best effort: Pi reports a folder it cannot write.
@@ -287,7 +287,7 @@ fn pi_args(
         args.extend(["-e".into(), path.into()]);
     }
     // ^ W1 hook: a tier 3 agent adds `--no-tools` here as a stand-in does, once `tier` is on
-    // the registry entry (docs/design/local-model-fallback.md 3.4, 8).
+    // the registry entry.
     // ^ A small model read Pi's coding prompt and said it could only work with files.
     if launch.minimal {
         args.extend(["--no-session", "--no-tools", "--thinking", "off"].map(Into::into));

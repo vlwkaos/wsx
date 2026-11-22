@@ -107,20 +107,13 @@ fn pending_handoff_target_does_not_supersede_a_different_target() {
     };
 
     assert_eq!(
-        pending_handoff_target(
-            &status,
-            &executable,
-            "0.28.0",
-            &current_id,
-            super::super::protocol::WSX_VERSION,
-        )
-        .unwrap(),
+        pending_handoff_target(&status, &current_id, super::super::protocol::WSX_VERSION),
         None
     );
 }
 
 #[test]
-fn older_pending_cold_target_can_be_converted_but_equal_or_newer_cannot() {
+fn older_pending_target_is_superseded_but_equal_or_newer_is_not() {
     let executable = std::env::current_exe().unwrap();
     let current_id = binary_identity(&executable).unwrap();
     let mut status = super::super::domain::DaemonLifecycle {
@@ -141,14 +134,7 @@ fn older_pending_cold_target_can_be_converted_but_equal_or_newer_cannot() {
         last_handoff_error: None,
     };
     let candidate = |status: &super::super::domain::DaemonLifecycle| {
-        pending_handoff_target(
-            status,
-            &executable,
-            "0.26.2",
-            &current_id,
-            super::super::protocol::WSX_VERSION,
-        )
-        .unwrap()
+        pending_handoff_target(status, &current_id, super::super::protocol::WSX_VERSION)
     };
     assert_eq!(
         candidate(&status),
@@ -183,69 +169,6 @@ fn older_pending_cold_target_can_be_converted_but_equal_or_newer_cannot() {
         None,
         "unknown target version remains protected"
     );
-}
-
-#[test]
-fn rejected_cross_version_handoff_retries_with_the_legacy_daemon_prefix() {
-    let executable = std::env::current_exe().unwrap();
-    let status = super::super::domain::DaemonLifecycle {
-        protocol: PROTOCOL_VERSION,
-        epoch: 7,
-        binary_id: "0.25.0:1:2:3:4".into(),
-        version: "0.25.0".into(),
-        daemon_revision: 5,
-        started_unix_ms: 1,
-        phase: super::super::domain::DaemonPhase::Ready,
-        live_runtimes: 1,
-        active_clients: 1,
-        active_tuis: 0,
-        recovered_from_backup: false,
-        replacement_target: None,
-        replacement_target_version: String::new(),
-        replacement_blockers: vec![],
-        last_handoff_error: None,
-    };
-    let response = Response::Error(super::super::protocol::ApiError::new(
-        "invalid_handoff_target",
-        "unsafe wsxd handoff executable",
-    ));
-
-    let request = legacy_handoff_retry_request(true, &status, "0.25.0", &response, &executable)
-        .unwrap()
-        .expect("affected live-handoff daemon must receive one compatibility retry");
-    let Request::PrepareHandoff {
-        target_binary_id,
-        target_version,
-        target_daemon_revision,
-        ..
-    } = request
-    else {
-        panic!("expected handoff retry");
-    };
-    assert_eq!(target_version, "0.25.0");
-    assert_eq!(
-        super::super::protocol::binary_identity_version(&target_binary_id),
-        Some("0.25.0")
-    );
-    assert_eq!(
-        target_daemon_revision,
-        super::super::protocol::DAEMON_REVISION
-    );
-
-    assert!(
-        legacy_handoff_retry_request(false, &status, "0.25.0", &response, &executable,)
-            .unwrap()
-            .is_none()
-    );
-    assert!(legacy_handoff_retry_request(
-        true,
-        &status,
-        super::super::protocol::WSX_VERSION,
-        &response,
-        &executable,
-    )
-    .unwrap()
-    .is_none());
 }
 
 #[test]
@@ -451,117 +374,6 @@ fn newer_daemon_is_reused_without_a_downgrade_request() {
 }
 
 #[test]
-fn different_pending_target_keeps_its_authoritative_blockers() {
-    let directory = std::env::current_dir().unwrap().join(".work").join(format!(
-        "{:x}-{:x}",
-        std::process::id(),
-        new_client_id()
-    ));
-    std::fs::create_dir_all(&directory).unwrap();
-    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let path = directory.join("wsx.sock");
-    let listener = UnixListener::bind(&path).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let server_path = path.clone();
-    let server = thread::spawn(move || {
-        for step in 0..6 {
-            let (mut stream, _) = listener.accept().unwrap();
-            assert!(matches!(
-                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
-                Request::Hello { .. }
-            ));
-            send_response(
-                &mut stream,
-                &Response::Hello {
-                    protocol: PROTOCOL_VERSION,
-                    epoch: 7,
-                    capabilities: current_capabilities(),
-                },
-            );
-            let request = read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap();
-            match step {
-                0 | 2 => {
-                    assert_eq!(request, Request::Snapshot);
-                    send_response(
-                        &mut stream,
-                        &Response::Snapshot(super::super::domain::Snapshot {
-                            protocol: PROTOCOL_VERSION,
-                            epoch: 7,
-                            revision: 1,
-                            projects: vec![],
-                            worktrees: vec![],
-                            sessions: vec![],
-                            panes: vec![],
-                            listening_ports: vec![],
-                            pane_activity: vec![],
-                            plugin_sidecars: Vec::new(),
-                            capabilities: current_capabilities(),
-                        }),
-                    );
-                }
-                1 | 3 | 4 => {
-                    assert_eq!(request, Request::LifecycleStatus);
-                    send_response(
-                        &mut stream,
-                        &Response::Lifecycle(super::super::domain::DaemonLifecycle {
-                            protocol: PROTOCOL_VERSION,
-                            epoch: 7,
-                            binary_id: "0.20.0:1:2:3:10".into(),
-                            version: String::new(),
-                            daemon_revision: 0,
-                            started_unix_ms: 1,
-                            phase: super::super::domain::DaemonPhase::ReplacementPending,
-                            live_runtimes: 4,
-                            active_clients: 1,
-                            active_tuis: 0,
-                            recovered_from_backup: false,
-                            replacement_target: Some("0.20.0:1:2:3:20".into()),
-                            replacement_target_version: String::new(),
-                            replacement_blockers: vec![
-                                super::super::domain::ReplacementBlocker::WorkingAgent,
-                            ],
-                            last_handoff_error: None,
-                        }),
-                    );
-                }
-                5 => {
-                    assert!(matches!(request, Request::PrepareReplacement { .. }));
-                    send_response(
-                        &mut stream,
-                        &Response::Error(super::super::protocol::ApiError::new(
-                            "replacement_conflict",
-                            "another wsxd binary is already pending replacement",
-                        )),
-                    );
-                }
-                _ => unreachable!(),
-            }
-        }
-        drop(listener);
-        std::fs::remove_file(server_path).unwrap();
-    });
-
-    let availability = ensure_available_with_binary(
-        &Client::new(path.clone()),
-        false,
-        &std::env::current_exe().unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        availability,
-        Availability::ReplacementDeferred {
-            daemon_version: "0.20.0".into(),
-            target_version: "0.20.0".into(),
-            live_runtimes: 4,
-            blockers: vec![super::super::domain::ReplacementBlocker::WorkingAgent],
-        }
-    );
-    server.join().unwrap();
-    let _ = std::fs::remove_file(path.with_extension("bootstrap.lock"));
-    std::fs::remove_dir(directory).unwrap();
-}
-
-#[test]
 fn bootstrap_lock_serializes_startup_owners() {
     let (path, listener) = test_listener("bootstrap-lock");
     drop(listener);
@@ -636,314 +448,6 @@ fn shared_start_budget_blocks_a_loop_and_explicit_recovery_resets_it() {
         .contains("crash_loop"));
     record_start_attempt(&mut lock.file, true).unwrap();
     drop(lock);
-    let _ = std::fs::remove_file(path.with_extension("bootstrap.lock"));
-}
-
-#[test]
-fn supported_legacy_daemon_remains_usable_while_replacement_is_deferred() {
-    for legacy_protocol in [LEGACY_BASELINE_PROTOCOL, 14] {
-        let (path, listener) = test_listener("legacy-protocol-bridge");
-        let server_path = path.clone();
-        let server = thread::spawn(move || {
-            for step in 0..5 {
-                let (mut stream, _) = listener.accept().unwrap();
-                let hello = read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap();
-                let expected_protocol = if step == 4 {
-                    legacy_protocol
-                } else {
-                    PROTOCOL_VERSION
-                };
-                assert_eq!(
-                    hello,
-                    Request::Hello {
-                        protocol: expected_protocol
-                    }
-                );
-                let hello = format!(
-                    "{{\"type\":\"hello\",\"data\":{{\"protocol\":{legacy_protocol},\"epoch\":7,\"capabilities\":{{\"resume_shell_fallback\":true,\"foreground_jobs\":true,\"lifecycle_coordination\":true,\"version_coordination\":true,\"daemon_revision_coordination\":true}}}}}}\n"
-                );
-                stream.write_all(hello.as_bytes()).unwrap();
-                if matches!(step, 0 | 1) {
-                    continue;
-                }
-                let request = read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap();
-                match step {
-                    2 => {
-                        assert_eq!(request, Request::LifecycleStatus);
-                        send_response(
-                            &mut stream,
-                            &Response::Lifecycle(super::super::domain::DaemonLifecycle {
-                                protocol: legacy_protocol,
-                                epoch: 7,
-                                binary_id: "0.23.0:1:2:3:1".into(),
-                                version: "0.23.0".into(),
-                                daemon_revision: 4,
-                                started_unix_ms: 1,
-                                phase: super::super::domain::DaemonPhase::Ready,
-                                live_runtimes: 1,
-                                active_clients: 1,
-                                active_tuis: 0,
-                                recovered_from_backup: false,
-                                replacement_target: None,
-                                replacement_target_version: String::new(),
-                                replacement_blockers: vec![],
-                                last_handoff_error: None,
-                            }),
-                        );
-                    }
-                    3 => {
-                        assert!(matches!(request, Request::PrepareReplacement { .. }));
-                        send_response(
-                            &mut stream,
-                            &Response::Replacement {
-                                disposition: super::super::domain::ReplacementDisposition::Deferred,
-                                live_runtimes: 1,
-                                daemon_version: "0.23.0".into(),
-                                target_version: super::super::protocol::WSX_VERSION.into(),
-                                blockers: vec![
-                                    super::super::domain::ReplacementBlocker::WorkingAgent,
-                                ],
-                                use_current_daemon: false,
-                            },
-                        );
-                    }
-                    4 => {
-                        assert_eq!(request, Request::Snapshot);
-                        let snapshot = format!(
-                            "{{\"type\":\"snapshot\",\"data\":{{\"protocol\":{legacy_protocol},\"epoch\":7,\"revision\":9,\"projects\":[{{\"id\":1,\"path\":\"/\",\"name\":\"legacy\",\"revision\":2,\"last_agent_active_unix_ms\":1}}],\"worktrees\":[{{\"id\":2,\"project_id\":1,\"path\":\"/\",\"branch\":\"main\",\"revision\":3}}],\"sessions\":[],\"panes\":[],\"conversations\":[{{\"id\":1}}],\"capabilities\":{{}}}}}}\n"
-                        );
-                        stream.write_all(snapshot.as_bytes()).unwrap();
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            drop(listener);
-            std::fs::remove_file(server_path).unwrap();
-        });
-
-        let client = Client::new(path);
-        let availability =
-            ensure_available_with_binary(&client, false, &std::env::current_exe().unwrap())
-                .unwrap();
-        assert!(matches!(
-            availability,
-            Availability::ReplacementDeferred {
-                blockers,
-                ..
-            } if blockers == [super::super::domain::ReplacementBlocker::WorkingAgent]
-        ));
-        let Response::Snapshot(snapshot) = client.call(&Request::Snapshot).unwrap() else {
-            panic!("expected bridged snapshot");
-        };
-        assert_eq!(snapshot.protocol, legacy_protocol);
-        assert_eq!(snapshot.revision, 9);
-        assert_eq!(snapshot.projects[0].name, "legacy");
-        assert_eq!(snapshot.projects[0].last_agent_active_unix_ms, Some(1));
-        assert_eq!(snapshot.worktrees[0].branch, "main");
-        set_active_protocol(client.socket(), PROTOCOL_VERSION);
-        server.join().unwrap();
-    }
-}
-
-#[test]
-fn protocol_15_pending_handoff_retries_the_same_legacy_target() {
-    let (path, listener) = test_listener("protocol-15-pending-handoff");
-    let server_path = path.clone();
-    let executable = std::env::current_exe().unwrap();
-    let expected_target = binary_identity_with_version(&executable, "0.28.0").unwrap();
-    let server_target = expected_target.clone();
-    let server_executable = executable.clone();
-    let server = thread::spawn(move || {
-        for step in 0..4 {
-            let (mut stream, _) = listener.accept().unwrap();
-            assert_eq!(
-                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
-                Request::Hello {
-                    protocol: PROTOCOL_VERSION
-                }
-            );
-            stream
-                .write_all(
-                    b"{\"type\":\"hello\",\"data\":{\"protocol\":15,\"epoch\":7,\"capabilities\":{\"lifecycle_coordination\":true,\"version_coordination\":true,\"daemon_revision_coordination\":true,\"live_handoff\":true}}}\n",
-                )
-                .unwrap();
-            if step < 2 {
-                continue;
-            }
-            let request = read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap();
-            if step == 2 {
-                assert_eq!(request, Request::LifecycleStatus);
-                send_response(
-                    &mut stream,
-                    &Response::Lifecycle(super::super::domain::DaemonLifecycle {
-                        protocol: 15,
-                        epoch: 7,
-                        binary_id: "0.28.0:1:2:3:1".into(),
-                        version: "0.28.0".into(),
-                        daemon_revision: 13,
-                        started_unix_ms: 1,
-                        phase: super::super::domain::DaemonPhase::ReplacementPending,
-                        live_runtimes: 2,
-                        active_clients: 1,
-                        active_tuis: 0,
-                        recovered_from_backup: false,
-                        replacement_target: Some(server_target.clone()),
-                        replacement_target_version: "0.28.0".into(),
-                        replacement_blockers: vec![
-                            super::super::domain::ReplacementBlocker::WorkingAgent,
-                        ],
-                        last_handoff_error: None,
-                    }),
-                );
-            } else {
-                assert_eq!(
-                    request,
-                    Request::PrepareHandoff {
-                        target_binary_id: server_target.clone(),
-                        target_version: "0.28.0".into(),
-                        target_protocol: PROTOCOL_VERSION,
-                        target_daemon_revision: super::super::protocol::DAEMON_REVISION,
-                        executable: server_executable.clone(),
-                        restart: false,
-                    }
-                );
-                send_response(
-                    &mut stream,
-                    &Response::Replacement {
-                        disposition: super::super::domain::ReplacementDisposition::Deferred,
-                        live_runtimes: 2,
-                        daemon_version: "0.28.0".into(),
-                        target_version: "0.28.0".into(),
-                        blockers: vec![super::super::domain::ReplacementBlocker::WorkingAgent],
-                        use_current_daemon: false,
-                    },
-                );
-            }
-        }
-        drop(listener);
-        std::fs::remove_file(server_path).unwrap();
-    });
-
-    let availability =
-        ensure_available_with_binary(&Client::new(path.clone()), false, &executable).unwrap();
-    assert_eq!(
-        availability,
-        Availability::ReplacementDeferred {
-            daemon_version: "0.28.0".into(),
-            target_version: "0.28.0".into(),
-            live_runtimes: 2,
-            blockers: vec![super::super::domain::ReplacementBlocker::WorkingAgent],
-        }
-    );
-    server.join().unwrap();
-    let _ = std::fs::remove_file(path.with_extension("bootstrap.lock"));
-}
-
-#[test]
-fn protocol_15_older_pending_cold_target_is_replaced_by_live_handoff_request() {
-    let (path, listener) = test_listener("protocol-15-older-pending-target");
-    let server_path = path.clone();
-    let executable = std::env::current_exe().unwrap();
-    let target_id = binary_identity(&executable).unwrap();
-    let legacy_id = binary_identity_with_version(&executable, "0.26.2").unwrap();
-    let expected_binary = executable.clone();
-    let server = thread::spawn(move || {
-        for step in 0..5 {
-            let (mut stream, _) = listener.accept().unwrap();
-            assert_eq!(
-                read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
-                Request::Hello {
-                    protocol: PROTOCOL_VERSION
-                }
-            );
-            stream.write_all(b"{\"type\":\"hello\",\"data\":{\"protocol\":15,\"epoch\":7,\"capabilities\":{\"lifecycle_coordination\":true,\"version_coordination\":true,\"daemon_revision_coordination\":true,\"live_handoff\":true}}}\n").unwrap();
-            if step < 2 {
-                continue;
-            }
-            let request = read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap();
-            match step {
-                2 => {
-                    assert_eq!(request, Request::LifecycleStatus);
-                    send_response(
-                        &mut stream,
-                        &Response::Lifecycle(super::super::domain::DaemonLifecycle {
-                            protocol: 15,
-                            epoch: 7,
-                            binary_id: "0.26.2:1:2:3:1".into(),
-                            version: "0.26.2".into(),
-                            daemon_revision: 8,
-                            started_unix_ms: 1,
-                            phase: super::super::domain::DaemonPhase::ReplacementPending,
-                            live_runtimes: 11,
-                            active_clients: 1,
-                            active_tuis: 0,
-                            recovered_from_backup: false,
-                            replacement_target: Some("0.28.0:1:2:3:2".into()),
-                            replacement_target_version: "0.28.0".into(),
-                            replacement_blockers: vec![
-                                super::super::domain::ReplacementBlocker::WorkingAgent,
-                            ],
-                            last_handoff_error: None,
-                        }),
-                    );
-                }
-                3 | 4 => {
-                    assert_eq!(
-                        request,
-                        Request::PrepareHandoff {
-                            target_binary_id: if step == 3 {
-                                target_id.clone()
-                            } else {
-                                legacy_id.clone()
-                            },
-                            target_version: if step == 3 {
-                                super::super::protocol::WSX_VERSION.into()
-                            } else {
-                                "0.26.2".into()
-                            },
-                            target_protocol: PROTOCOL_VERSION,
-                            target_daemon_revision: super::super::protocol::DAEMON_REVISION,
-                            executable: expected_binary.clone(),
-                            restart: false,
-                        }
-                    );
-                    send_response(
-                        &mut stream,
-                        &if step == 3 {
-                            Response::Error(super::super::protocol::ApiError::new(
-                                "invalid_handoff_target",
-                                "legacy executable version prefix",
-                            ))
-                        } else {
-                            Response::Replacement {
-                                disposition: super::super::domain::ReplacementDisposition::Deferred,
-                                live_runtimes: 11,
-                                daemon_version: "0.26.2".into(),
-                                target_version: "0.26.2".into(),
-                                blockers: vec![super::super::domain::ReplacementBlocker::OtherTui],
-                                use_current_daemon: false,
-                            }
-                        },
-                    );
-                }
-                _ => unreachable!(),
-            }
-        }
-        drop(listener);
-        std::fs::remove_file(server_path).unwrap();
-    });
-    let availability =
-        ensure_available_with_binary(&Client::new(path.clone()), false, &executable).unwrap();
-    assert_eq!(
-        availability,
-        Availability::ReplacementDeferred {
-            daemon_version: "0.26.2".into(),
-            target_version: "0.26.2".into(),
-            live_runtimes: 11,
-            blockers: vec![super::super::domain::ReplacementBlocker::OtherTui],
-        }
-    );
-    server.join().unwrap();
     let _ = std::fs::remove_file(path.with_extension("bootstrap.lock"));
 }
 
@@ -1616,7 +1120,7 @@ fn terminal_reader_shutdown_interrupts_full_update_queue() {
     reader.join().unwrap();
 }
 
-// ^ docs/design/tui-health-audit.md #15: a frame stream from a daemon that sends heartbeats ends
+// ^ A frame stream from a daemon that sends heartbeats ends
 // as `stream_disconnected` when nothing, not even a heartbeat, arrives within the idle limit.
 #[test]
 fn terminal_stream_ends_when_a_heartbeat_daemon_goes_silent() {
@@ -1691,7 +1195,7 @@ fn terminal_stream_ends_when_a_heartbeat_daemon_goes_silent() {
 #[test]
 fn event_monitor_reports_one_reason_per_outage_when_the_restart_fails() {
     // ^ A custom client cannot restart wsxd, so each pass fails the poll and then the restart.
-    // The monitor must say it once (docs/design/tui-health-audit.md #8), not flip between two texts.
+    // The monitor must say it once, not flip between two texts.
     let (path, listener) = test_listener("monitor-one-reason");
     drop(listener);
     std::fs::remove_file(&path).unwrap();

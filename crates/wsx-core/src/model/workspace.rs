@@ -65,7 +65,7 @@ pub struct ProjectConfig {
 pub(crate) const DEFAULT_CHECK_TIMEOUT_SECS: u64 = 20 * 60;
 /// 1 GiB: about 17 times the largest project's captures when measured (2026-11-11, 58 MB).
 const DEFAULT_CAPTURE_BUDGET_MB: u64 = 1024;
-/// ^ Ten minutes: the lands of one burst deploy once (docs/design/orchestration-lean.md §9).
+/// ^ Ten minutes: the lands of one burst deploy once.
 const DEFAULT_DEPLOY_QUIET_SECS: u64 = 600;
 
 /// One `tasks.scenarios` entry: its command and the path globs whose change runs it (none: it

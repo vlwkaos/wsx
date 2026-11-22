@@ -1283,7 +1283,7 @@ impl Repo {
     }
 
     /// The memo of this project's task, as a record in the scope of `origin`, the repo of the
-    /// chat that created it. Until the memory scopes of M4 (docs/design/orchestration-model.md).
+    /// chat that created it. Until the memory scopes of M4.
     fn record_memo_at(
         &self,
         origin: &str,

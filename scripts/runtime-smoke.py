@@ -923,13 +923,6 @@ stale = call("terminal_input", {"pane_id": pane_id, "client_id": 10, "bytes": [3
 assert stale["type"] == "error" and stale["data"]["code"] == "lease_required", stale
 assert call("terminal_release", {"pane_id": pane_id, "client_id": 11})["type"] == "ack"
 assert call("terminal_acquire", {"pane_id": pane_id, "client_id": 20, "takeover": False})["type"] == "ack"
-time.sleep(2.0)
-assert call("terminal_heartbeat", {"pane_id": pane_id, "client_id": 20})["type"] == "ack"
-time.sleep(2.0)
-still_busy = call("terminal_acquire", {"pane_id": pane_id, "client_id": 21, "takeover": False})
-assert still_busy["type"] == "error" and still_busy["data"]["code"] == "terminal_busy", still_busy
-assert call("terminal_release", {"pane_id": pane_id, "client_id": 20})["type"] == "ack"
-assert call("terminal_acquire", {"pane_id": pane_id, "client_id": 20, "takeover": False})["type"] == "ack"
 time.sleep(3.2)
 assert call("terminal_acquire", {"pane_id": pane_id, "client_id": 21, "takeover": False})["type"] == "ack"
 expired = call("terminal_input", {"pane_id": pane_id, "client_id": 20, "bytes": [3]})
@@ -1427,7 +1420,7 @@ raw_close(scrollback_client)
 close_session(scrollback_session)
 
 
-# ^ docs/design/tui-health-audit.md #9 and #15. The TUI preview polls one pane twice a second: its
+# ^ The TUI preview polls one pane twice a second: its
 # `frames` reply carries the screen and the epoch, not the snapshot of every session. A frame stream
 # that asked for it hears a heartbeat while its pane is quiet; one that did not hears none.
 preview_sessions = [pane_session(["/bin/sh", "-c", "sleep 120"]) for _ in range(50)]
@@ -1626,13 +1619,6 @@ terminal_activity_before_restart = snapshot["projects"][0]["last_terminal_active
 failed_session = next(item for item in snapshot["sessions"] if item["label"] == "failed-recovery")
 failed_session_id = failed_session["id"]
 failed_pane_id = failed_session["focused_pane"]
-replacement = call(
-    "prepare_replacement", {"target_binary_id": "0.22.0:1:2:3:ffffffffffffffff"}
-)
-assert replacement["type"] == "replacement", replacement
-assert replacement["data"]["disposition"] == "deferred", replacement
-assert replacement["data"]["live_runtimes"] >= 1, replacement
-assert call("snapshot")["type"] == "snapshot"
 # ^ docs/daemon-state-store.md: a reply comes after the save, so a SIGKILL right after it
 # keeps the change.
 killed_session = next(item for item in call("snapshot")["data"]["sessions"] if item["id"] == recovery_session_id)
@@ -1979,7 +1965,7 @@ try:
     cursor_session("keep-d")
     assert settled_cursor() == viewed, ("the cursor left the viewed session", cursor_sessions, CURSOR_CACHE.read_text())
 
-    # docs/design/tui-health-audit.md finding 7: wsxd stops (SIGSTOP) and does not answer. Enter
+    # wsxd stops (SIGSTOP) and does not answer. Enter
     # opens the session on a worker, so keys still move the selection, an open the selection left
     # is dropped when wsxd answers late, and an open that stays wanted reports its failure.
     def tui_sees(text, since):
@@ -2052,7 +2038,7 @@ try:
     viewed_shell_answers("restarted", 3)
     assert not viewed_exited()
 
-    # docs/design/tui-health-audit.md #5: a window drag sends many resize events; wsxd gets the
+    # A window drag sends many resize events; wsxd gets the
     # last size, not one resize per event. The raw fixture prints a line at each SIGWINCH it gets.
     viewed_pane = next(pane["id"] for pane in call("snapshot")["data"]["panes"]
                        if pane["terminal_id"] == viewed)
@@ -2442,7 +2428,7 @@ try:
     assert listed.returncode == 0 and {row["name"]: row["state"] for row in json.loads(listed.stdout)["chats"]}.get("qa") == "closed", listed.stdout + listed.stderr
     remove_tui.send(b"q")
     wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close the Tasks view after New chat", seconds=60)
-    # docs/design/tui-parity-audit.md gaps 3 to 7: the keys the footers and the help name work in the
+    # The keys the footers and the help name work in the
     # real TUI. The help scrolls to its last section at 40 rows; the footers list the project and
     # routine keys; a bracketed paste lands in the `p` path and the chat line; a routine runs now
     # and turns off and on from its row; the chat pages. (An Esc followed at once by a key reads as Alt.)
@@ -2525,7 +2511,7 @@ try:
     wait_for(lambda: "> ?one two" not in remove_tui.text(), "Esc did not leave the chat", seconds=60)
     remove_tui.send(b"q")
     wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close keep-me's Tasks view", seconds=60)
-    # docs/design/tui-health-audit.md #1, #2, #10, #14: the chat of a manager log of about 7.5
+    # The chat of a manager log of about 7.5
     # MiB (the log rolls over at 8 MiB) reads only the end of it, and a 20 KB line in the
     # composer costs the same as a short one. The find in the chat is in scripts/test-task.py.
     MiB = 1024 * 1024
@@ -2565,7 +2551,7 @@ try:
     traced = ui_stderr.read_bytes()[traced_from:].decode(errors="replace").splitlines()
     whole_reads = [line for line in traced if line.startswith("wsx-trace read_log ") and line.endswith("/chats/halt-me")]
     assert not whole_reads, f"the chat read the whole 7.5 MiB log {len(whole_reads)} times: {whole_reads[:2]}"
-    # docs/design/tui-parity-audit.md gap 7: PgUp and PgDn page the chat, `g` goes to the oldest
+    # PgUp and PgDn page the chat, `g` goes to the oldest
     # loaded row and `G` back to the newest.
     for keys, shown, message in ((b"\x1b[5~", False, "PgUp did not scroll the chat a page"),
                                  (b"\x1b[6~", True, "PgDn did not scroll the chat back"),
@@ -2605,7 +2591,7 @@ try:
     # ^ Two Escs in one write read as Alt-Esc: the first leaves the composer, the second the chat.
     remove_tui.send(b"\x1b")
     wait_for(lambda: "Enter: send" not in remove_tui.text(), "Esc did not leave the composer", seconds=60)
-    # docs/design/list-tables.md: a manager's reply whose numbered items each have a table under
+    # A manager's reply whose numbered items each have a table under
     # them, not indented (scripts/fixtures/list-tables.md), shows each table as aligned columns in
     # the chat; so do a plain table, a plain list and a list followed by a paragraph, as before.
     list_tables = (ROOT / "scripts" / "fixtures" / "list-tables.md").read_text().rstrip("\n")

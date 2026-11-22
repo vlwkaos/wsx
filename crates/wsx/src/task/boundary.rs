@@ -149,7 +149,7 @@ impl Boundary {
         let mut deny_read = secrets;
         if policy.strict() {
             // ^ What the strict profile adds to the secrets: the owner's other credentials
-            // and wsx's own config (docs/design/local-model-fallback.md 5.3).
+            // and wsx's own config.
             deny_read.extend(STRICT_SECRETS.iter().map(|name| real(&home.join(name))));
             deny_read.push(real(&home.join("Library/Keychains")));
             deny_read.extend(config_dirs().iter().map(|dir| real(dir)));
@@ -211,7 +211,7 @@ impl Boundary {
     /// The endpoint of the agent's provider, which a strict agent reaches besides the
     /// loopback: a Pi model `provider/id`'s `baseUrl` in the adapter's `models.json` or the
     /// built-in provider's own, else `ANTHROPIC_BASE_URL` for another adapter. A provider
-    /// wsx cannot name reaches nothing. ref: docs/design/local-model-fallback.md 5.3 (P6)
+    /// wsx cannot name reaches nothing. ref: docs/local-model.md
     pub fn reach(mut self, adapter: &str, model: &str, env: &[(String, OsString)]) -> Self {
         let (url, builtin) = if adapter == "pi" {
             let provider = model.split_once('/').map_or("", |(provider, _)| provider);

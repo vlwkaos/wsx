@@ -820,7 +820,7 @@ impl Manager {
             text.push_str(&self.memory_matching(&said));
         }
         // ^ Events that go along must not take the owner's answer: a fresh turn of 2284 with
-        // two events answered only the events (docs/design/manager-reliability.md "A").
+        // two events answered only the events.
         if first == Author::Owner && !along.is_empty() {
             let owner = ids.iter().map(u64::to_string).collect::<Vec<_>>();
             text.push_str(&format!(

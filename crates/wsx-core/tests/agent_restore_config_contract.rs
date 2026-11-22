@@ -46,7 +46,7 @@ fn legacy_agent_info_defaults_missing_session_reference() {
 }
 
 #[test]
-fn legacy_capabilities_default_missing_agent_session_restore_to_disabled() {
+fn legacy_capabilities_default_missing_resume_shell_fallback_to_disabled() {
     let capabilities: Capabilities = serde_json::from_str(
         r#"{
             "pane_splits": true,
@@ -58,6 +58,5 @@ fn legacy_capabilities_default_missing_agent_session_restore_to_disabled() {
     )
     .expect("legacy capabilities JSON must decode");
 
-    assert!(!capabilities.agent_session_restore);
     assert!(!capabilities.resume_shell_fallback);
 }

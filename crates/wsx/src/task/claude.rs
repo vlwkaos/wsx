@@ -238,9 +238,8 @@ fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: boo
         false => String::new(),
     };
     // ^ 42% of worker spend is reads, one call at a time, each paying for the whole context
-    // again (docs/design/manager-efficiency.md). Only Claude has subagents here. The
-    // foreground: a background subagent's result came after a plan's result
-    // (docs/design/manager-reliability.md "F").
+    // again. Only Claude has subagents here. The
+    // foreground: a background subagent's result came after a plan's result.
     let search = match record.adapter.as_str() {
         "claude" => {
             "A search across many files goes to a subagent in the foreground (the Agent tool, \
@@ -439,12 +438,10 @@ impl ClaudeAgent {
 /// a disallowed tool leaves the request's tool list, and these with Agent were 7.4k of a fresh
 /// request's 32k tokens (a `claude -p` call with and without `--disallowedTools`, 2026-11-15).
 /// Agent stays: the worker and the manager instructions send searches to subagents.
-/// ref: docs/design/context-budget.md (bound 2)
 const NEVER_TOOLS: &str = "Workflow,ScheduleWakeup,ReportFindings";
 /// The longest Bash output Claude keeps in the conversation (characters; Claude Code's own default
 /// is 30,000): a file read or a log through Bash is a third of a conversation's growth, and every
 /// later call reads it again. About 2k tokens, the cap the replay measured.
-/// ref: docs/design/context-budget.md (bound 3)
 const BASH_MAX_OUTPUT: &str = "8000";
 
 /// Claude's argv: stream JSON both ways, no prompt for any tool (`bypassPermissions`: the
@@ -459,7 +456,7 @@ fn claude_args(launch: &Launch, session: &str, resume: bool) -> Vec<std::ffi::Os
         // ^ The owner's CLAUDE.md files (user, project and the folders above it) and the auto
         // memory index are 7K to 14K tokens at the start of every fresh conversation; the
         // instructions carry the rules a manager needs. A 12-turn blind replay judged its
-        // decisions no worse. ref: docs/design/manager-context-split.md option 2
+        // decisions no worse.
         settings["claudeMdExcludes"] =
             json!(["**/CLAUDE.md", "**/CLAUDE.local.md", "**/AGENTS.md"]);
         settings["autoMemoryEnabled"] = json!(false);
@@ -494,7 +491,6 @@ fn claude_args(launch: &Launch, session: &str, resume: bool) -> Vec<std::ffi::Os
     }
     // ^ A manager reads a skill's SKILL.md by hand: the flag drops the Skill tool and the
     // 30 KB skill listing from every fresh conversation, and with them a plugin's skills.
-    // ref: docs/design/manager-context-split.md option 1
     if manager {
         args.push("--disable-slash-commands".into());
     } else {

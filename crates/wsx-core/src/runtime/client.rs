@@ -1,7 +1,6 @@
 use super::protocol::{
-    binary_identity, binary_identity_with_version, check_socket_path, encode_line, Request,
-    Response, TerminalClientMessage, TerminalRawServerMessage, TerminalServerMessage,
-    MAX_RESPONSE_BYTES, PROTOCOL_VERSION,
+    binary_identity, check_socket_path, encode_line, Request, Response, TerminalClientMessage,
+    TerminalRawServerMessage, TerminalServerMessage, MAX_RESPONSE_BYTES, PROTOCOL_VERSION,
 };
 use std::{
     borrow::Cow,
@@ -1086,85 +1085,61 @@ fn ensure_available_with_binary(
                     return Ok(Availability::UpgradeFailed { reason });
                 }
             }
-            let replacement_request = if live_handoff {
-                let Some((handoff_binary_id, handoff_version)) = pending_handoff_target(
-                    &status,
-                    binary,
-                    &daemon_version,
-                    &target_binary_id,
-                    &target_version,
-                )?
-                else {
-                    return Ok(Availability::ReplacementDeferred {
-                        daemon_version,
-                        target_version: lifecycle_target_version(&status, &target_version),
-                        live_runtimes: status.live_runtimes,
-                        blockers: status.replacement_blockers,
-                    });
-                };
-                Request::PrepareHandoff {
-                    target_binary_id: handoff_binary_id,
-                    target_version: handoff_version,
-                    target_protocol: PROTOCOL_VERSION,
-                    target_daemon_revision: super::protocol::DAEMON_REVISION,
-                    executable: binary.to_path_buf(),
-                    restart: false,
-                }
-            } else {
-                Request::PrepareReplacement {
-                    target_binary_id: target_binary_id.clone(),
-                    target_daemon_revision: super::protocol::DAEMON_REVISION,
-                }
-            };
-            let mut response = lifecycle_round_trip(client, &replacement_request)?;
-            // ^ Protocol-15 daemons through revision 7 recompute a candidate identity with
-            // their own version. Retry once with that legacy prefix; the successor still
-            // validates the requested daemon revision and the source/target version bridge.
-            if let Some(request) = legacy_handoff_retry_request(
-                live_handoff,
-                &status,
-                &daemon_version,
-                &response,
-                binary,
-            )? {
-                response = lifecycle_round_trip(client, &request)?;
+            // ^ Support floor v0.40.0 (DAEMON_REVISION 34): every supported wsxd hands off
+            // live. An older one is refused with the incompatible-daemon error.
+            if !live_handoff {
+                return Err(incompatible_daemon_error(match &existing {
+                    ExistingDaemon::Incompatible {
+                        advertised_protocol,
+                        ..
+                    } => *advertised_protocol,
+                    _ => Some(PROTOCOL_VERSION),
+                }));
             }
-            match response {
+            let Some((handoff_binary_id, handoff_version)) =
+                pending_handoff_target(&status, &target_binary_id, &target_version)
+            else {
+                return Ok(Availability::ReplacementDeferred {
+                    daemon_version,
+                    target_version: lifecycle_target_version(&status, &target_version),
+                    live_runtimes: status.live_runtimes,
+                    blockers: status.replacement_blockers,
+                });
+            };
+            let request = Request::PrepareHandoff {
+                target_binary_id: handoff_binary_id,
+                target_version: handoff_version,
+                target_protocol: PROTOCOL_VERSION,
+                target_daemon_revision: super::protocol::DAEMON_REVISION,
+                executable: binary.to_path_buf(),
+                restart: false,
+            };
+            match lifecycle_round_trip(client, &request)? {
                 Response::Replacement {
                     disposition: super::domain::ReplacementDisposition::Stopping,
                     ..
                 } => {
                     set_active_protocol(client.socket(), PROTOCOL_VERSION);
-                    if live_handoff {
-                        match wait_until_handoff_ready(client, super::protocol::DAEMON_REVISION)? {
-                            HandoffWait::Ready => {}
-                            // ^ The same protocol: the running daemon serves this client, so a
-                            // failed upgrade is a notice, not an error.
-                            HandoffWait::RolledBack(after) if compatible => {
-                                let reason = rollback_reason(&after);
-                                note_failed_upgrade(
-                                    client.socket(),
-                                    after.epoch,
-                                    &target_binary_id,
-                                    &reason,
-                                );
-                                return Ok(Availability::UpgradeFailed { reason });
-                            }
-                            HandoffWait::RolledBack(after) => {
-                                return Err(io::Error::other(format!(
-                                    "wsxd live handoff failed and was rolled back ({}); the running daemon kept its sessions",
-                                    rollback_reason(&after)
-                                )));
-                            }
+                    match wait_until_handoff_ready(client, super::protocol::DAEMON_REVISION)? {
+                        HandoffWait::Ready => {}
+                        // ^ The same protocol: the running daemon serves this client, so a
+                        // failed upgrade is a notice, not an error.
+                        HandoffWait::RolledBack(after) if compatible => {
+                            let reason = rollback_reason(&after);
+                            note_failed_upgrade(
+                                client.socket(),
+                                after.epoch,
+                                &target_binary_id,
+                                &reason,
+                            );
+                            return Ok(Availability::UpgradeFailed { reason });
                         }
-                    } else {
-                        wait_until_stopped(client)?;
-                        consume_planned_marker(
-                            client.socket(),
-                            Some(&target_binary_id),
-                            super::protocol::DAEMON_REVISION,
-                        )?;
-                        start_daemon(client, binary, &mut bootstrap, true)?;
+                        HandoffWait::RolledBack(after) => {
+                            return Err(io::Error::other(format!(
+                                "wsxd live handoff failed and was rolled back ({}); the running daemon kept its sessions",
+                                rollback_reason(&after)
+                            )));
+                        }
                     }
                     Ok(Availability::DaemonReplaced {
                         previous_version: daemon_version,
@@ -1176,24 +1151,17 @@ fn ensure_available_with_binary(
                     daemon_version: response_daemon_version,
                     target_version: response_target_version,
                     blockers,
-                    use_current_daemon,
-                } if compatible => {
-                    let daemon_version = nonempty_or(response_daemon_version, daemon_version);
-                    if use_current_daemon {
-                        Ok(Availability::NewerDaemon { daemon_version })
+                    ..
+                } if compatible => Ok(Availability::ReplacementDeferred {
+                    daemon_version: nonempty_or(response_daemon_version, daemon_version),
+                    target_version: nonempty_or(response_target_version, target_version),
+                    live_runtimes,
+                    blockers: if blockers.is_empty() && !version_coordination {
+                        vec![super::domain::ReplacementBlocker::LegacyDaemon]
                     } else {
-                        Ok(Availability::ReplacementDeferred {
-                            daemon_version,
-                            target_version: nonempty_or(response_target_version, target_version),
-                            live_runtimes,
-                            blockers: if blockers.is_empty() && !version_coordination {
-                                vec![super::domain::ReplacementBlocker::LegacyDaemon]
-                            } else {
-                                blockers
-                            },
-                        })
-                    }
-                }
+                        blockers
+                    },
+                }),
                 Response::Replacement {
                     live_runtimes,
                     daemon_version: response_daemon_version,
@@ -1215,14 +1183,6 @@ fn ensure_available_with_binary(
                         "replacement_deferred: incompatible wsxd is protecting {live_runtimes} live runtime(s)"
                     ),
                 )),
-                Response::Error(error) if compatible && error.code == "replacement_conflict" => {
-                    Ok(Availability::ReplacementDeferred {
-                        daemon_version,
-                        target_version: lifecycle_target_version(&status, &target_version),
-                        live_runtimes: status.live_runtimes,
-                        blockers: status.replacement_blockers,
-                    })
-                }
                 response => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("unexpected wsxd replacement response: {response:?}"),
@@ -1476,30 +1436,17 @@ fn wait_until_restarted(client: &Client, old_epoch: u64) -> io::Result<()> {
 
 fn pending_handoff_target(
     status: &super::domain::DaemonLifecycle,
-    binary: &Path,
-    daemon_version: &str,
     target_binary_id: &str,
     target_version: &str,
-) -> io::Result<Option<(String, String)>> {
-    if status.phase != super::domain::DaemonPhase::ReplacementPending {
-        return Ok(Some((
-            target_binary_id.to_string(),
-            target_version.to_string(),
-        )));
+) -> Option<(String, String)> {
+    if status.phase != super::domain::DaemonPhase::ReplacementPending
+        || status.replacement_target.as_deref() == Some(target_binary_id)
+    {
+        return Some((target_binary_id.to_string(), target_version.to_string()));
     }
-    if status.replacement_target.as_deref() == Some(target_binary_id) {
-        return Ok(Some((
-            target_binary_id.to_string(),
-            target_version.to_string(),
-        )));
-    }
-    let legacy_id = binary_identity_with_version(binary, daemon_version)?;
-    if status.replacement_target.as_deref() == Some(legacy_id.as_str()) {
-        return Ok(Some((legacy_id, daemon_version.to_string())));
-    }
-    // ^ A newer installed binary may convert an older pending cold replacement
-    // into live handoff. The daemon still validates the executable and fences a
-    // pending higher daemon revision; equal-version different builds stay protected.
+    // ^ A newer installed binary replaces an older pending target. The daemon still
+    // validates the executable and fences a pending higher daemon revision;
+    // equal-version different builds stay protected.
     let pending_version = status
         .replacement_target
         .as_deref()
@@ -1510,40 +1457,9 @@ fn pending_handoff_target(
             && super::protocol::compare_wsx_versions(version, target_version)
                 == Some(std::cmp::Ordering::Less)
     }) {
-        return Ok(Some((
-            target_binary_id.to_string(),
-            target_version.to_string(),
-        )));
+        return Some((target_binary_id.to_string(), target_version.to_string()));
     }
-    Ok(None)
-}
-
-fn legacy_handoff_retry_request(
-    live_handoff: bool,
-    status: &super::domain::DaemonLifecycle,
-    daemon_version: &str,
-    response: &Response,
-    binary: &Path,
-) -> io::Result<Option<Request>> {
-    if !live_handoff
-        || status.daemon_revision >= super::protocol::DAEMON_REVISION
-        || super::protocol::compare_wsx_versions(daemon_version, super::protocol::WSX_VERSION)
-            != Some(std::cmp::Ordering::Less)
-        || !matches!(
-            response,
-            Response::Error(error) if error.code == "invalid_handoff_target"
-        )
-    {
-        return Ok(None);
-    }
-    Ok(Some(Request::PrepareHandoff {
-        target_binary_id: binary_identity_with_version(binary, daemon_version)?,
-        target_version: daemon_version.to_string(),
-        target_protocol: PROTOCOL_VERSION,
-        target_daemon_revision: super::protocol::DAEMON_REVISION,
-        executable: binary.to_path_buf(),
-        restart: false,
-    }))
+    None
 }
 
 fn lifecycle_status(client: &Client) -> io::Result<super::domain::DaemonLifecycle> {

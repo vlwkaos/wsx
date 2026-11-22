@@ -498,16 +498,10 @@ pub struct Snapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Capabilities {
-    pub pane_splits: bool,
-    pub plugins: bool,
-    pub plugin_views: bool,
     pub worktree_review_available: bool,
-    pub agent_reports: bool,
-    pub agent_session_restore: bool,
     pub resume_shell_fallback: bool,
     pub listening_ports: bool,
     pub foreground_jobs: bool,
-    pub process_restore: bool,
     pub lifecycle_coordination: bool,
     pub version_coordination: bool,
     pub daemon_revision_coordination: bool,
@@ -1060,7 +1054,6 @@ mod tests {
         )
         .unwrap();
         assert!(snapshot.plugin_sidecars.is_empty());
-        assert!(!snapshot.capabilities.plugin_views);
     }
 
     #[test]

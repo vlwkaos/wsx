@@ -226,8 +226,6 @@ struct Lease {
 
 #[derive(Clone)]
 struct TuiPresenceLease {
-    target_binary_id: String,
-    target_daemon_revision: u32,
     max_protocol: u32,
     follows: bool,
     expires_at: Instant,
@@ -263,7 +261,6 @@ impl RuntimeAgentAuthority {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StopReason {
     Unexpected,
-    Replacement,
     Handoff,
     Intentional,
 }
@@ -272,7 +269,7 @@ impl StopReason {
     fn marker(self) -> &'static str {
         match self {
             Self::Unexpected => "unexpected",
-            Self::Replacement | Self::Handoff => "replacement",
+            Self::Handoff => "replacement",
             Self::Intentional => "intentional",
         }
     }
@@ -313,14 +310,12 @@ struct State {
     terminal_operation_locks: HashMap<PaneId, Arc<Mutex<()>>>,
     listening_ports: HashMap<PaneId, Vec<u16>>,
     foreground_jobs: HashSet<PaneId>,
-    listener_scan_complete: bool,
     leases: HashMap<PaneId, Lease>,
     transferred_streams: VecDeque<StreamLease>,
     events: VecDeque<Event>,
     plugins: Vec<PluginManifest>,
     plugin_events: VecDeque<(String, String)>,
     tui_clients: HashMap<u64, TuiPresenceLease>,
-    legacy_tui_until: Option<Instant>,
     replacement_target: Option<String>,
     replacement_daemon_revision: Option<u32>,
     replacement_protocol: Option<u32>,

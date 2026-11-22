@@ -38,14 +38,12 @@ pub(crate) fn new_state(persisted: Persisted) -> State {
         terminal_operation_locks: HashMap::new(),
         listening_ports: HashMap::new(),
         foreground_jobs: HashSet::new(),
-        listener_scan_complete: false,
         leases: HashMap::new(),
         transferred_streams: VecDeque::new(),
         events: VecDeque::new(),
         plugins: plugins::discover(),
         plugin_events: VecDeque::new(),
         tui_clients: HashMap::new(),
-        legacy_tui_until: None,
         replacement_target: None,
         replacement_daemon_revision: None,
         replacement_protocol: None,
@@ -440,20 +438,6 @@ pub(crate) fn advance_replacement(daemon: &Daemon) -> bool {
         daemon.changed.notify_all();
         daemon.plugin_changed.notify_all();
     }
-    let replacement_ready = if state.stopping || state.replacement_executable.is_some() {
-        false
-    } else {
-        state
-            .replacement_target
-            .clone()
-            .is_some_and(|target| replacement_blockers(&mut state, &target).is_empty())
-    };
-    if replacement_ready {
-        state.stopping = true;
-        state.stop_reason = Some(StopReason::Replacement);
-        daemon.changed.notify_all();
-        daemon.plugin_changed.notify_all();
-    }
     state.stopping
 }
 
@@ -518,19 +502,7 @@ pub(crate) fn cleanup(daemon: &Daemon, socket: &Path) {
         }
         daemon.changed.notify_all();
         daemon.plugin_changed.notify_all();
-        let marker = if matches!(reason, StopReason::Replacement | StopReason::Handoff) {
-            let target = state.replacement_target.as_deref().unwrap_or_default();
-            match state
-                .replacement_daemon_revision
-                .filter(|revision| *revision > 0)
-            {
-                Some(revision) => format!("replacement:{target}|{revision}"),
-                None => format!("replacement:{target}"),
-            }
-        } else {
-            reason.marker().to_string()
-        };
-        (runtimes, marker, preserve_runtimes)
+        (runtimes, reason.marker(), preserve_runtimes)
     };
     if !preserve_runtimes {
         let _ = daemon.saver.flush();
@@ -539,7 +511,7 @@ pub(crate) fn cleanup(daemon: &Daemon, socket: &Path) {
         }
     }
     if !preserve_runtimes {
-        let _ = write_lifecycle_marker(&daemon.lifecycle_path, &reason);
+        let _ = write_lifecycle_marker(&daemon.lifecycle_path, reason);
         let _ = fs::remove_file(socket);
     }
 }
@@ -589,7 +561,6 @@ pub(crate) fn serve_client(mut stream: UnixStream, daemon: Arc<Daemon>) -> io::R
             Ok(
                 request @ (Request::Shutdown
                 | Request::LifecycleStatus
-                | Request::PrepareReplacement { .. }
                 | Request::PrepareHandoff { .. }),
             ) => handle(&daemon, request),
             Ok(_) => Response::Error(ApiError::new(

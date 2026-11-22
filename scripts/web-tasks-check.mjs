@@ -193,7 +193,7 @@ async function rowReads(task, good, why) {
 async function oneMotion(where, open) {
   // ^ Each frame also notes the dialogs, the sheet's animations (state and time) and the page's
   // own events about the sheet (an animation start or cancel, a dialog added or removed, `open`
-  // or `data-fit` changed): a step back then names its cause (docs/design/scenario-flakes.md).
+  // or `data-fit` changed): a step back then names its cause.
   await evaluate(`(() => { window.sheetFrames = []; window.sheetEvents = []; window.sheetWatched = false; let seen = null;
     const note = (text) => window.sheetEvents.push(window.sheetFrames.length + ' ' + text);
     for (const type of ['animationstart', 'animationcancel']) {

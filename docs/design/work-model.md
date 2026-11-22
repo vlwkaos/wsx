@@ -99,7 +99,7 @@ stateDiagram-v2
 
 **Long sessions.** Nothing stays running. The record and the conversation stay; the copy comes back at the same path on the next add, so Claude finds its session by folder and Pi by `--session-dir` under the agent's home (pi.rs:297). You open it from the task sheet (add), from session `task-<n>` in the TUI or web Sessions, or with `wsx task hand`, which opens a fork of the worker's conversation, not the conversation itself (`--fork-session`, cmd/work.rs:378-383). You run it with `wsx task preview`, or `--hold` and a pane in its session. It ends as today: `close` at land. After 24 h a follow-up is a new task. The limit rests on one measure: 86% of follow-ups start inside 24 h. The price of a late turn does not decide it: a turn an add starts after a pause over 24 h costs $0.57 p50 (n 6), after 1-24 h $0.79 (n 48).
 
-A long conversation still loses context at rotation (51% of long tasks). The task's `rotate-notes.md` carries it; context-budget.md and manager-continuity.md own that. This model makes those notes matter more and changes nothing in them.
+A long conversation still loses context at rotation (51% of long tasks). The task's `rotate-notes.md` carries it; the manager host's rotation owns that (docs/tasks.md "Context rotation"). This model makes those notes matter more and changes nothing in them.
 
 **Async tasks.** Splitting fits independent work: 323 tasks (38%) ended with 1 revision, p50 16 min, $1.26. That group has no add after a result by construction (an add that is acted on makes a second revision), so it shows how much such work there is, not that splitting helps. Splitting hurts when the new task needs what a just-landed task knows. wsx can read that from the command: the prompt names a task of the same chat landed in the 24 h before, and `--files` meets that task's own area. That was 206 of the 796 tasks with `--files` (26%). Files alone cannot be the rule: 578 of those 796 (73%) meet such an area.
 
@@ -160,7 +160,7 @@ Order: reopen, then the refusal (it needs reopen to be worth an add), then the t
 | #541 Home: chat folders | Keep |
 | #542 Shared failure key | Keep |
 | #543 Client plugins | Keep. The split arm of §6 |
-| flat-chats.md steps 1-7 | Keep all. This model adds no chat, thread or derived chat. Step 1 edits instructions.rs first; the same-area line goes after it |
+| Flat-chats steps 1-7 | Keep all. This model adds no chat, thread or derived chat. Step 1 edits instructions.rs first; the same-area line goes after it |
 
 ## 6. Experiment
 
@@ -270,7 +270,7 @@ How each change is verified:
 | Change | Test | Decides |
 |---|---|---|
 | No index of past tasks for workers | Tasks with even numbers run without it for a week; `--tasks` per arm | Keep it off when "sent back" and "owner add after" (T1) are not higher. The first call drops by about 9.3K tokens (T7) |
-| Deletion rules | A scenario per row in `scripts/test-task.py` and `scripts/test-memory.py`; `scripts/memory-eval.py` before and after the first pass | Recall does not drop |
+| Deletion rules | A scenario per row in `scripts/test-task.py` and `scripts/test-memory.py`; the memory eval before and after the first pass | Recall does not drop |
 | Rotation carries your words and the rules | The fork pairs, then T9 again after 100 tasks | The "after a rotation" columns come down to the "no rotation yet" ones |
 
 Changes, lines rough:

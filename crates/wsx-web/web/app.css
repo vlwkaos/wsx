@@ -566,7 +566,7 @@ div.steps .steps-summary { cursor: default; }
   .reservoir .need[data-leaving] { animation: row-out calc(var(--motion-duration) * 1.25) var(--motion-easing) forwards; }
   .bubble[data-fresh], .status-line[data-fresh], .reply-line[data-fresh] { animation: slide-up calc(var(--motion-duration) * 1.5) var(--motion-easing); }
   .since { animation: since-in var(--motion-duration) var(--motion-easing); }
-  /* ^ `backwards`: until the animation starts (the browser starts it a frame or two late under load) the sheet stays at its `from` value, not at its rest. docs/design/scenario-flakes.md */
+  /* ^ `backwards`: until the animation starts (the browser starts it a frame or two late under load) the sheet stays at its `from` value, not at its rest. */
   .task-sheet[open] { animation: sheet-in calc(var(--motion-duration) * 2) var(--motion-easing) backwards; }
   .app[data-wide] .task-sheet[open] { animation-name: sheet-in-side; }
   .task-sheet[open]::backdrop { animation: arrive calc(var(--motion-duration) * 2) var(--motion-easing); }

@@ -1,7 +1,7 @@
 //! The manager's notes as views of the records: the write path (records first, then the views),
 //! the top-5 check of a new rule or fact, and drift. Old notes files are not imported: a store
 //! that still holds them is refused (`refuse_unimported`).
-//! ref: docs/memory.md "Notes", docs/design/memory-system.md "Decisions stay the owner's words"
+//! ref: docs/memory.md "Notes"
 
 use super::backend::{record_hit, searchable, Hit};
 use super::index;

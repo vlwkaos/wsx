@@ -5,7 +5,7 @@ and records which ones worked. Run by fake-pi-rpc.py (`FORBID <script> <spec> <o
 agent's boundary; test-task.py section 23s judges the answers and the files left behind.
 Usage: fake-weak-model.py <spec.json> <out.json>
        fake-weak-model.py --tunnel <host> <port> connect|plain   (one request to the egress proxy)
-ref: docs/design/local-model-fallback.md 5.6 (F1 to F5), 5.3 (P6)
+ref: docs/local-model.md, docs/tasks.md "Permissions"
 """
 import json
 import os

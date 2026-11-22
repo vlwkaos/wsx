@@ -147,7 +147,6 @@ pub(crate) fn apply_port_scan(
     detected: Option<HashMap<PaneId, Vec<u16>>>,
 ) -> bool {
     let Some(next) = detected else { return false };
-    state.listener_scan_complete = true;
     if state.listening_ports == next {
         return false;
     }

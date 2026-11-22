@@ -48,7 +48,7 @@ CLAUDE, SAMPLE = os.path.expanduser(arg('--claude', '~/.claude/projects')), int(
 H, DAY, INF = 3600_000, 86_400_000, 1 << 62
 OWNER = ('owner', 'outside')  # ^ the add classes counted as the owner's
 
-def events(path):  # ^ a torn or foreign line is skipped, as in task-time-cost-measure.py
+def events(path):  # ^ a torn or foreign line is skipped.
     out = []
     for name in dict.fromkeys((path.replace('log.jsonl', 'log.1.jsonl'), path)):  # ^ the rolled log first
         if os.path.exists(name):

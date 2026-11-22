@@ -3,7 +3,7 @@
 //! and `status`. The built-in always answers; a backend adds hits, and a backend that fails
 //! (exit 3, 10 s, bad output) is named in a notice and left out. `lines` is the built-in
 //! over the transcripts alone, for `wsx task search`; both answer with the one `Hit`.
-//! ref: docs/memory.md "Search backend", docs/design/memory-system.md "Retrieve"
+//! ref: docs/memory.md "Search backend"
 
 use super::index::{self, Doc, Target};
 use super::record::{self, Record, Status, EXCERPT_CHARS};

@@ -457,7 +457,7 @@ impl App {
 
     /// Sends the pane size to wsxd once, and only when it differs from the last one sent.
     /// Returns false while resize events are still queued (at most `RESIZE_MERGE_MAX`), so
-    /// the loop skips the draw and reads the next one. ^ audit #5 docs/design/tui-health-audit.md
+    /// the loop skips the draw and reads the next one.
     pub(super) fn flush_terminal_resize(&mut self, terminal: &Tui) -> bool {
         let Some(since) = self.terminal_resize_due else {
             return true;

@@ -10,7 +10,7 @@ Status: plan only, 2026-11-20, no product edit. Owner wsx 5554: move the whole w
 | Why do it | Updates touch only the DOM they change. Today a whole component runs again on each change, and the code carries guards and mirrors to cope (§3). |
 | Solid 2 | Stable: `solid-js` 2.0.3, published 2026-11-19, MIT. |
 | Cost | 14 to 20 turns [estimate: 8 steps (0 to 7), the chat and task screens take 3 to 5 turns, each check-run can add a fix turn]. Dollars: no measured source in the repo; price the turns at the host's per-turn cost [unverified]. |
-| Order | After #510, #531, #533, #534 and after flat-chats step 4 (`docs/design/flat-chats.md` §4). The port counts and ports only the client left by step 4. It ports no `threads.js`, thread route or strip. |
+| Order | After #510, #531, #533, #534 and after flat-chats step 4. The port counts and ports only the client left by step 4. It ports no `threads.js`, thread route or strip. |
 | I stop and ask you if | (1) gzip JS served for the first chat paint grows by more than 60 KB; (2) the median of 5 runs of a 400-row chat render is slower than before; (3) a MutationObserver probe counts more remounts than before; (4) a check assert must change its meaning (not only a selector) to pass. |
 | Not touched | The TUI, the daemon, the wire protocol. |
 

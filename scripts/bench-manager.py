@@ -6,8 +6,8 @@
 It plays the manager host of docs/tasks.md "Manager" for a throwaway project: a fixture repo,
 a fake `wsx` on PATH that serves a fixture ledger, and fixed turns. `synthetic` is five turns
 (a status question, 'build X', the owner's go after the manager sized it, an event-only turn and
-an events turn with a review due). `logged` replays batches of the 2026-11-04 manager log
-(docs/design/manager-reliability.md), each in a fresh conversation after its handover, and one
+an events turn with a review due). `logged` replays batches of the 2026-11-04 manager log,
+each in a fresh conversation after its handover, and one
 sonnet call judges whether each reply answers its owner messages. The instructions come from
 crates/wsx/src/task/instructions.rs: `before` reads them at `--before <commit>` (default
 BEFORE_COMMIT, where they were in manager.rs) and its turn text has no "Answer message <id>
@@ -25,10 +25,10 @@ wrote at the warm moment, and a cold resume of a copy of the real transcript cut
 tools, a sonnet judge per return (`--returns`, `--budget`; a return already in the out file is skipped).
 `discussion` is two owner turns (review points one by one, then 'agreed on A and C, do them') and checks
 the tool calls: no `wsx task new`/`add`/`steer` in the first turn, exactly one new or add in the second.
-`events` (docs/design/manager-event-model.md) prints what `eventModel: sonnet` would cost on the logged
+`events` prints what `eventModel: sonnet` would cost on the logged
 turns, cache switches counted, then replays real event-only turns on Opus and Sonnet from a fork of the
 manager's transcript (`--samples`, `--budget`; `--probe`: one turn across a model change) for a blind
-Opus judge. `switches` (docs/design/manager-context-split.md): one real call with the skill listing and one without, the
+Opus judge. `switches`: one real call with the skill listing and one without, the
 first call's tokens each; `switches --replay N` (paid) replays N real owner and event turns in fresh
 conversations with and without the CLAUDE.md and auto memory switch, judged blind. `rotation` models the manager's weekly spend over rotation sizes and idle rules; no model call.
 `rotation --replay N` (paid) judges N real turns where a manager at ROTATE_TO would rotate in the middle of
@@ -118,7 +118,7 @@ def source_at(commit):
     raise SystemExit('no instructions() at %s' % commit)
 
 
-# ^ The manager's lend_line(true) and reach_line() of wsx-core task/policy.rs (docs/design/chat-capability.md).
+# ^ The manager's lend_line(true) and reach_line() of wsx-core task/policy.rs.
 LEND = '`new --skills` lends a worker the ones its task needs. '
 REACH = ("`-p <project>` runs new, show, list, add, steer, stop, hold, land, close in another project, not its deploys, "
          "releases or pushes. Consult its manager ('@<project>') with `wsx task say -p <project> --from-chat`.")
@@ -126,7 +126,7 @@ REACH = ("`-p <project>` runs new, show, list, add, steer, stop, hold, land, clo
 
 def skills_sentence(source, folder, names):
     """The `Skills::Folder` sentence of instructions() in task/instructions.rs for a manager that
-    reads SKILL.md by path (docs/design/manager-context-split.md option 1)."""
+    reads SKILL.md by path."""
     literal = re.search(r'Skills::Folder\(folder, names\) => format!\(\s*"((?:[^"\\]|\\.)*)"', source, re.S).group(1)
     return unescape(literal).replace('{lend}', LEND).replace('{}', str(folder), 1).replace('{}', ', '.join(names), 1)
 
@@ -243,7 +243,7 @@ def check_discussion(rows):
 
 
 def logged(state):
-    """The logged batches (docs/design/manager-reliability.md "A", "C", "E"), clipped as the
+    """The logged batches, clipped as the
     events are, with the ledger they met; the 2312 screenshot is a line of text."""
     def open_task(n, title, state_, **extra):
         return {'id': n, 'open': state_ != 'landed', 'record': {'id': n, 'created_by': 'manager'},
@@ -314,7 +314,7 @@ def stale(state):
                     ('Events', 4410, '#423 waiting r0: Usage limit falls to local model; %sAssuming: the endpoint stays '
                                      'down while I build, so the live LFM3 proof may en…' % limit),
                     ('Events', 4411, '#422 waiting r0: Lean orchestration design on Fable; %sPlan for '
-                                     'docs/design/orchestration-lean.md (doc only, no code).' % limit),
+                                     'the orchestration design (doc only, no code).' % limit),
                     ('Events', 4412, release)], None, False)])]
 
 
@@ -601,8 +601,7 @@ def warm_ask(row):
                   + row['output'] * PRICE['output']) / 1e6, 4)
 
 
-# ^ The hidden turn's request that `idle` measured (docs/design/manager-continuity.md "Written
-# handover"): sent about 55 min after the last answer, while the prompt cache is warm.
+# ^ The hidden turn's request that `idle` measured (a written handover): sent about 55 min after the last answer, while the prompt cache is warm.
 HANDOVER_ASK = ("wsx handover: the owner has been away for about an hour and this conversation's prompt "
                 "cache ends soon. If the owner comes back later, a fresh conversation continues from your "
                 "notes, the notes files and the ledger; if sooner, this conversation goes on. Do no other "
@@ -1097,7 +1096,7 @@ def replay_start(first, base, source=None):
 
 def run_events(options, out):
     """`events`: the cost model on the logged turns, then real event-only bursts replayed on Opus and
-    Sonnet from a fork of the manager's own transcript, judged blind by Opus (docs/design/manager-event-model.md)."""
+    Sonnet from a fork of the manager's own transcript, judged blind by Opus."""
     projects = manager_turns(options.days)
     print(json.dumps({'cost_model': event_cost(projects, options.days)}), flush=True)
     path = Path(out.name)
@@ -1326,8 +1325,7 @@ def run_rotation(options):
             print(json.dumps(rotation_cost(projects, options.days, rotate, idle_min, ping)), flush=True)
 
 
-# ^ The quality side of the rotation question (docs/design/manager-event-model.md "Rotation
-# replay"): at each busy crossing of ROTATE_TO, arm A is the real turn of the kept conversation
+# ^ The quality side of the rotation question (rotation replay): at each busy crossing of ROTATE_TO, arm A is the real turn of the kept conversation
 # and arm B the same turn in a fresh conversation that opens as a rotation's does.
 ROTATE_TO = 160_000
 BUSY_MS = 600_000
@@ -1558,7 +1556,7 @@ def rotation_judge(case, original, entries, arms):
 
 
 def fails(judged, against):
-    """The case's rule (docs/design/manager-event-model.md "Rotation replay"): `fresh` decided
+    """The case's rule: `fresh` decided
     otherwise than `against` and wrongly, or lost a fact."""
     fresh = judged['fresh']
     return bool(fresh['lost_facts']) or (against not in fresh['same_as'] and fresh['wrong'] != 'none')

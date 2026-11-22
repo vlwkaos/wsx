@@ -4,7 +4,7 @@
 Reads only the task state folder (docs/tasks.md "Task logs", "Manager"):
   <dir>/<n>/task.json, <dir>/<n>/log*.jsonl   worker results, checks, revisions
   <dir>/home.json, <dir>/../chats/<name>/log*.jsonl   the repo's chats (the main chat is the manager): messages and replies
-Usage fields are documented in docs/tasks.md ("Usage"). Design: docs/design/usage-audit.md.
+Usage fields are documented in docs/tasks.md ("Usage").
 
   /usr/bin/python3 scripts/usage-report.py ~/.local/state/wsx/tasks/<project-id>... [--since DAY | --days N] [--until DAY] [--task N]
 Several state folders (`~/.local/state/wsx/tasks/*`) add up; the manager table by trigger names

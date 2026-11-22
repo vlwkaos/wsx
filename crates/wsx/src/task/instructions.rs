@@ -13,7 +13,6 @@ pub(super) enum Skills<'a> {
     /// The adapter lists them and has a Skill tool (Pi).
     Tool,
     /// Claude: no listing and no Skill tool; the manager reads `<folder>/<name>/SKILL.md`.
-    /// ref: docs/design/manager-context-split.md option 1
     Folder(&'a Path, &'a [String]),
 }
 

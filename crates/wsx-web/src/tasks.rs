@@ -137,8 +137,7 @@ fn viewer_dir(scope: &Scope, chat: Option<&str>) -> Option<ManagerDir> {
 
 /// What the strip, the inbox, the chips and the `#` picker need, in one answer. The body is
 /// kept while the project's stamp and settings are the same (and for `OVERVIEW_TTL`): the
-/// files it reads change only with the stamp (finding 4 of
-/// docs/design/web-server-health-audit.md).
+/// files it reads change only with the stamp.
 pub fn overview(app: &App, scope: &Scope) -> Value {
     overview_of(app, scope, None)
 }

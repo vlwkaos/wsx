@@ -349,10 +349,6 @@ pub enum Request {
         pane_id: PaneId,
         client_id: u64,
     },
-    TerminalHeartbeat {
-        pane_id: PaneId,
-        client_id: u64,
-    },
     TerminalSubscribe {
         pane_id: PaneId,
         client_id: u64,
@@ -382,22 +378,6 @@ pub enum Request {
         pane_id: PaneId,
         client_id: u64,
         key: KeyEvent,
-    },
-    TerminalPaste {
-        pane_id: PaneId,
-        client_id: u64,
-        text: String,
-    },
-    TerminalMouse {
-        pane_id: PaneId,
-        client_id: u64,
-        mouse: MouseEvent,
-    },
-    TerminalResize {
-        pane_id: PaneId,
-        client_id: u64,
-        rows: u16,
-        cols: u16,
     },
     View {
         pane_ids: Vec<PaneId>,
@@ -620,11 +600,6 @@ pub enum Request {
         generation: u64,
     },
     LifecycleStatus,
-    PrepareReplacement {
-        target_binary_id: String,
-        #[serde(default)]
-        target_daemon_revision: u32,
-    },
     PrepareHandoff {
         target_binary_id: String,
         target_version: String,
@@ -855,9 +830,6 @@ mod tests {
         let Response::Hello { capabilities, .. } = response else {
             panic!("expected hello response");
         };
-        assert!(capabilities.pane_splits);
-        assert!(!capabilities.plugin_views);
-        assert!(!capabilities.agent_session_restore);
         assert!(!capabilities.resume_shell_fallback);
         assert!(!capabilities.listening_ports);
         assert!(!capabilities.foreground_jobs);
@@ -1048,12 +1020,6 @@ mod tests {
         .unwrap();
         assert!(matches!(poll, Request::Poll { tui: None, .. }));
 
-        let replacement = serde_json::from_str::<Request>(
-            r#"{"method":"prepare_replacement","params":{"target_binary_id":"0.20.0:1:2:3:4"}}"#,
-        )
-        .unwrap();
-        assert!(matches!(replacement, Request::PrepareReplacement { .. }));
-
         let lifecycle = serde_json::from_str::<Response>(
             r#"{"type":"lifecycle","data":{"protocol":8,"epoch":7,"binary_id":"0.20.0:1:2:3:4","started_unix_ms":11,"phase":"replacement_pending","live_runtimes":2,"active_clients":1,"recovered_from_backup":false,"replacement_target":"0.21.0:1:2:3:4"}}"#,
         )
@@ -1096,13 +1062,6 @@ mod tests {
 
     #[test]
     fn lifecycle_control_is_additive_and_tagged() {
-        let request = Request::PrepareReplacement {
-            target_binary_id: "0.22.0:1:2:3:4".into(),
-            target_daemon_revision: DAEMON_REVISION,
-        };
-        let encoded = serde_json::to_string(&request).unwrap();
-        assert_eq!(serde_json::from_str::<Request>(&encoded).unwrap(), request);
-
         let handoff = Request::PrepareHandoff {
             target_binary_id: "0.25.0:1:2:3:4".into(),
             target_version: "0.25.0".into(),

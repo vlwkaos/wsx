@@ -56,7 +56,7 @@ The status and the log say why: `queued for the scenario slot behind <holder>; <
   The gate has no setting. Fixtures set `WSX_SCENARIO_SLOTS`, which turns the machine rules off, so their turns
   start first come, first served.
 - The constants are first guesses. At 10 cores and 24 GiB with agents building, load sits near 18, so the
-  lane stays at width 1 until load drops; `docs/design/check-queue-research.md` rank 7 (N slots) was
+  lane stays at width 1 until load drops; the check-queue research's rank 7 (N slots) was
   rejected because timed tests fail under load, so the width follows load, not a fixed N.
 
 ## Measured

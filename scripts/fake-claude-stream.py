@@ -69,7 +69,7 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   SCRIPT         (a line) run the rest of the message as one shell script, heredocs too
   TABLE          answer with a wide markdown table that names #4 twice and #2
   LISTTABLE      answer with scripts/fixtures/list-tables.md: a manager's reply whose numbered items each
-                 have a table under them, not indented (docs/design/list-tables.md)
+                 have a table under them, not indented
   LISTPLAIN      answer with a plain table, a plain list and a list followed by a paragraph
   GLOBS          answer with file globs written without backticks, and real emphasis (docs/web-client-chat.md "Markdown")
   TABLE5         answer "Five columns:" with a table of five columns and 20 rows, and 30 lines after it

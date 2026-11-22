@@ -172,13 +172,16 @@ def alive(pid):
 
 
 def legacy_window(fx):
-    """Renew the presence of a wsx window from before the presence contract: it defers a handoff."""
+    """Renew the presence of an old wsx window that cannot follow a handoff: it defers one."""
     stop = threading.Event()
+    presence = {"instance_id": 2**40 + os.getpid(), "version": "0.40.0",
+                "target_binary_id": "0.40.0:1:2:3:4", "target_daemon_revision": 34,
+                "max_protocol": 0, "follows": False}
 
     def renew():
         while not stop.is_set():
             try:
-                fx.call("poll", {"after_revision": 2**62, "timeout_ms": 0})
+                fx.call("poll", {"after_revision": 2**62, "timeout_ms": 0, "tui": presence})
             except (OSError, ValueError, AssertionError):
                 pass
             stop.wait(0.5)

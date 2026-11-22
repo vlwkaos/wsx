@@ -6,8 +6,7 @@
 //! approval rules of the outward commands (`WSX_TASK_TRUST`). What a role may reach in another
 //! project and lend a worker is in the same table, and the instruction lines an agent reads
 //! are built from it, so a prompt never promises what a broker refuses.
-//! ref: docs/tasks.md "Chats", "Permissions"; docs/design/local-model-fallback.md 3.2, 5;
-//! docs/design/chat-capability.md
+//! ref: docs/tasks.md "Chats", "Permissions"; docs/local-model.md
 
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
@@ -396,8 +395,8 @@ impl RunnerFile {
 mod tests {
     use super::*;
 
-    // ^ Owner-asked check of docs/design/chat-capability.md: the instruction lines and the
-    // refusals read the one `reach` list, so a prompt never promises what a broker refuses.
+    // ^ Owner-asked check: the instruction lines and the refusals read the one `reach` list,
+    // so a prompt never promises what a broker refuses.
     #[test]
     fn prompt_and_checks_read_one_table() {
         for (role, info) in &ROLES {

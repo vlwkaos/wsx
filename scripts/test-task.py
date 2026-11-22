@@ -848,12 +848,12 @@ def manager_up(created):
     page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'overview.md')
     assert Path(page).read_text() == unwritten and old_page.read_text() == unwritten, old_page
     # ^ It uses the owner's skills (docs/tasks.md "Manager"); no allow list: nothing prompts. Only
-    # the tools no wsx agent calls leave its request, and Bash output is capped (context-budget.md).
+    # the tools no wsx agent calls leave its request, and Bash output is capped.
     assert '--allowedTools' not in launch['argv'], launch['argv']
     assert launch['argv'][launch['argv'].index('--disallowedTools') + 1] == 'Workflow,ScheduleWakeup,ReportFindings', launch['argv']
     assert launch['bash_max_output'] == '8000', launch
-    # ^ A claude manager takes no plugin and no Skill tool: it reads SKILL.md by path
-    # (docs/design/manager-context-split.md option 1); the link in its folder stays the path.
+    # ^ A claude manager takes no plugin and no Skill tool: it reads SKILL.md by path;
+    # the link in its folder stays the path.
     assert launch['plugin_dir'] is None and '--disable-slash-commands' in launch['argv'], launch['argv']
     plugin = home_dir(Path(created['task_dir']).parent) / 'skills-plugin'
     assert plugin.parent == home_dir(Path(created['task_dir']).parent) and plugin.resolve().is_relative_to(state.resolve()), plugin
@@ -4177,7 +4177,7 @@ def part_worker(created=None):
         js('task', 'close', n, '--discard')
 
     # 23s. An untrusted agent (Pi with any model) runs under the strict profile and the broker's
-    # class table (docs/tasks.md "Permissions", docs/design/local-model-fallback.md 5.6). A scripted
+    # class table (docs/tasks.md "Permissions", docs/local-model.md). A scripted
     # weak model (scripts/fake-weak-model.py) tries each forbidden action as the write tool, as bash
     # and as `python -c`; the OS profile and the broker refuse, whatever the model does.
     mark('23s')
@@ -6638,7 +6638,7 @@ def part_host(created=None):
     assert chat_launch['model'] == 'haiku', chat_launch
     assert chat_launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], chat_launch
     assert chats()['billing']['running'], chats()
-    # ^ docs/design/chat-capability.md: demo lends no skills here, so a chat's prompt does not offer `new --skills`.
+    # ^ Demo lends no skills here, so a chat's prompt does not offer `new --skills`.
     assert '--skills' not in chat_launch['instructions'] and 'Other projects.' in chat_launch['instructions'], chat_launch['instructions']
     # A chat records a rule from its own message: `--source msg:<id>` resolves in the calling chat's log, not the first chat's.
     chat_reply('billing', js('task', 'say', '--to', 'billing', 'Always run the billing export before a land.')['id'])
@@ -7928,8 +7928,7 @@ def part_agents(created=None):
     assert len(lc_alerts(0)) == manager_alerts, 'the chat alerts in its own chat, not the manager\'s'
     cli('task', 'chat', 'close', 'alerts', '-p', 'demo', '--json')
 
-    # M2. The repo service and equal chat hosts (docs/tasks.md "Chats", docs/design/orchestration-model.md
-    # 3.2): one `repo-host` per repo turns the events of the store into messages and sends each to the
+    # M2. The repo service and equal chat hosts (docs/tasks.md "Chats"): one `repo-host` per repo turns the events of the store into messages and sends each to the
     # chat that owns it, else to the main chat; every chat's host (the main chat's too) only talks and
     # leaves CHAT_LINGER after its queue is empty. Two repos here, each with a main chat, and named chats in demo.
     mark('m2')
@@ -8226,7 +8225,7 @@ def part_chats(created=None):
               'RUN wsx task list -p other --json\nRUN wsx task say -p other --from-chat hi\n'
               'RUN wsx task deploy -p other --json\nRUN wsx task close %d --discard -p other --json' % n)
     text = chat_reply('reachr', talk['id'])['text']
-    # ^ A chat reaches another project as the manager does (docs/design/chat-capability.md): it lists and says there, and the
+    # ^ A chat reaches another project as the manager does: it lists and says there, and the
     # manager's refusals (deploy, discard) are its own.
     assert 'list -p other --json -> 0' in text and 'say -p other --from-chat hi -> 0' in text, text
     assert text.count('a manager acts in another project only with') == 2, text
@@ -8624,7 +8623,7 @@ def part_chats(created=None):
     js('task', 'chat', 'close', 'upd', '-p', 'demo')
     js('task', 'close', updated, '--discard')
 
-    # 42. A store of before (docs/design/flat-chats.md §3): the `thread` and `from` fields and the
+    # 42. A store of before: the `thread` and `from` fields and the
     # `thread_*` lines are read as nothing and shown as nothing; no row is lost, no command takes
     # --thread, and the chat and the ledger carry no thread key.
     mark('42')

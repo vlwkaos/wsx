@@ -487,8 +487,6 @@ pub fn encode_paste(data: &[u8], bracketed: bool) -> Result<Vec<u8>, Error> {
 pub struct Terminal {
     raw: ffi::GhosttyTerminal,
     selection_gesture: ffi::GhosttySelectionGesture,
-    #[cfg(windows)]
-    tracked_row: ffi::GhosttyTrackedGridRef,
     callback_state: Box<TerminalCallbackState>,
 }
 
@@ -516,8 +514,6 @@ impl Terminal {
         let mut terminal = Self {
             raw,
             selection_gesture,
-            #[cfg(windows)]
-            tracked_row: ptr::null_mut(),
             callback_state: Box::new(TerminalCallbackState {
                 size_report: ffi::GhosttySizeReportSize {
                     rows,
@@ -1064,22 +1060,6 @@ impl Terminal {
         })
     }
 
-    #[cfg(windows)]
-    pub(crate) fn track_row(&mut self, y: u32) -> Option<usize> {
-        let mut point = ffi::GhosttyPointCoordinate::default();
-        let tag = ffi::GhosttyPointTag_GHOSTTY_POINT_TAG_SCREEN;
-        let result =
-            unsafe { ffi::ghostty_tracked_grid_ref_point(self.tracked_row, tag, &mut point) };
-        let terminal = self.raw;
-        let target = ghostty_viewport_point(0, y);
-        unsafe {
-            ffi::ghostty_tracked_grid_ref_free(self.tracked_row);
-            self.tracked_row = ptr::null_mut();
-            let _ = ffi::ghostty_terminal_grid_ref_track(terminal, target, &mut self.tracked_row);
-        }
-        (result == ffi::GhosttyResult_GHOSTTY_SUCCESS).then_some(point.y as usize)
-    }
-
     pub fn title(&self) -> Result<String, Error> {
         let mut title = ffi::GhosttyString::default();
         unsafe {
@@ -1335,8 +1315,6 @@ impl Drop for Terminal {
         // must release its tracked refs before the terminal that owns them is freed.
         unsafe {
             ffi::ghostty_selection_gesture_free(self.selection_gesture, self.raw);
-            #[cfg(windows)]
-            ffi::ghostty_tracked_grid_ref_free(self.tracked_row);
             ffi::ghostty_terminal_free(self.raw);
         }
     }
@@ -1806,41 +1784,6 @@ impl<'a> RowIter<'a> {
             .into_result()?;
         }
         Ok(dirty)
-    }
-
-    #[cfg(windows)]
-    pub fn wrap_state(&self) -> Result<(bool, bool), Error> {
-        let mut row = 0;
-        // SAFETY: row output matches requested row data type.
-        unsafe {
-            ffi::ghostty_render_state_row_get(
-                self.iterator.raw,
-                ffi::GhosttyRenderStateRowData_GHOSTTY_RENDER_STATE_ROW_DATA_RAW,
-                (&mut row as *mut ffi::GhosttyRow).cast(),
-            )
-            .into_result()?;
-        }
-        let mut soft_wrapped = false;
-        // SAFETY: wrap output matches requested row data type.
-        unsafe {
-            ffi::ghostty_row_get(
-                row,
-                ffi::GhosttyRowData_GHOSTTY_ROW_DATA_WRAP,
-                (&mut soft_wrapped as *mut bool).cast(),
-            )
-            .into_result()?;
-        }
-        let mut wrap_continuation = false;
-        // SAFETY: wrap continuation output matches requested row data type.
-        unsafe {
-            ffi::ghostty_row_get(
-                row,
-                ffi::GhosttyRowData_GHOSTTY_ROW_DATA_WRAP_CONTINUATION,
-                (&mut wrap_continuation as *mut bool).cast(),
-            )
-            .into_result()?;
-        }
-        Ok((soft_wrapped, wrap_continuation))
     }
 
     pub fn clear_dirty(&mut self) -> Result<(), Error> {
