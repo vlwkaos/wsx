@@ -570,6 +570,46 @@ pub fn stop_found(pick: impl Fn(&[&[u8]], &[&[u8]]) -> bool, grace: Duration) {
     }
 }
 
+/// Stop every process whose arguments or environment name a path under `root`, with its
+/// descendants: a run's helpers that left its process groups (a pane's agent, a check's shell)
+/// still carry its folder. The caller and its ancestors are never stopped. A root that is not
+/// absolute or has fewer than three parts is refused (it would match too much). Returns how many
+/// it signalled. ref: docs/tasks.md "Scenarios"
+pub fn stop_naming(root: &Path, grace: Duration) -> std::io::Result<usize> {
+    use std::os::unix::ffi::OsStrExt;
+    if !root.is_absolute() || root.components().count() < 3 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "{} is not an absolute folder of 3 or more parts",
+                root.display()
+            ),
+        ));
+    }
+    let needles: Vec<Vec<u8>> = root_forms(root)
+        .iter()
+        .map(|form| form.as_os_str().as_bytes().to_vec())
+        .collect();
+    let names = |word: &[u8]| {
+        needles
+            .iter()
+            .any(|needle| word.windows(needle.len()).any(|at| at == needle.as_slice()))
+    };
+    let mut tree = Tree::find(&[], |argv, env| argv.iter().chain(env).any(|w| names(w)));
+    let mut ancestor = std::process::id() as libc::pid_t;
+    while let Some((parent, _)) = born(ancestor).filter(|(parent, _)| *parent > 1) {
+        tree.0.retain(|(pid, _)| *pid != parent);
+        ancestor = parent;
+    }
+    let count = tree.0.len();
+    tree.signal(libc::SIGTERM);
+    if !wait_until(grace, || tree.gone()) {
+        tree.signal(libc::SIGKILL);
+        wait_until(KILL_WAIT, || tree.gone());
+    }
+    Ok(count)
+}
+
 // ^ A tuple struct, so `ProcArgs::default()` is a call on both targets (a unit struct makes clippy
 // say `default_constructed_unit_structs` on Linux).
 #[cfg(not(target_os = "macos"))]

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import re
 import socket
+import subprocess
+import sys
 import threading
 import weakref
 
@@ -13,6 +15,20 @@ PROTOCOL = int(re.search(r"PROTOCOL_VERSION: u32 = (\d+);",
                          (ROOT / "crates/wsx-core/src/runtime/protocol.rs").read_text()).group(1))
 HELLO = json.dumps({"method": "hello", "params": {"protocol": PROTOCOL}}).encode() + b"\n"
 BUFFERS = weakref.WeakKeyDictionary()
+
+
+def reap(folder, wsx=ROOT / "target" / "debug" / "wsx"):
+    """Stop every process that still names the run's folder in its arguments or environment, with
+    its descendants (`wsx task reap`, libproc, no `ps`): a pane's agent or a check's shell left
+    the run's process groups, so a group stop misses it. Call it when a run ends, after its
+    wsxd stops. ref: docs/tasks.md "Scenarios" """
+    try:
+        done = subprocess.run([str(wsx), "task", "reap", str(folder)], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print("reap %s: %s" % (folder, error), file=sys.stderr)
+        return
+    if done.returncode:
+        print("reap %s: %s" % (folder, done.stderr.strip()), file=sys.stderr)
 
 
 def fixture(source):

@@ -529,11 +529,11 @@ def png(size, shade, rgb=None):
 
 
 # ^ A run can be killed with SIGKILL (the check runner's timeout kills the run's group that way),
-# and then no cleanup runs. So every helper gets its own process group, recorded in the run's
-# work folder, and a reaper in its own session ends those groups when the run dies without
-# saying `done`. The next run in the checkout also ends what a dead run left (`sweep`)
+# and then no cleanup runs. So every helper gets its own process group, and a reaper in its own
+# session ends those groups when the run dies without saying `done`. A process that left the
+# groups (a pane's agent) still names the run's folder: the run's end reaps the folder
+# (`wsxd_client.reap`), and so does the next run in the checkout for a dead run (`sweep`)
 # (docs/web-client.md "Verification").
-RECORD = 'processes'
 STARTED = []
 REAPER = []
 REAPER_LOCK = threading.Lock()
@@ -576,14 +576,12 @@ def tell_reaper(line):
             pass
 
 
-def start(work, args, **options):
-    """Start a helper in its own process group and record it. Chrome started by a Node
+def start(args, **options):
+    """Start a helper in its own process group and tell the reaper. Chrome started by a Node
     check stays in the check's group."""
     process = subprocess.Popen(args, start_new_session=True, **options)
     tell_reaper(str(process.pid))
     STARTED.append(process)
-    with (work / RECORD).open('a') as out:
-        out.write('%d\t%s\n' % (process.pid, ' '.join(map(str, args))))
     return process
 
 
@@ -621,27 +619,15 @@ def finish(process, timeout):
 def check(work, args, timeout, **options):
     """Run a Node check in its own group. Its Chrome profile goes into the run's folder."""
     options.setdefault('stderr', subprocess.PIPE)
-    done = finish(start(work, args, stdout=subprocess.PIPE, text=True,
+    done = finish(start(args, stdout=subprocess.PIPE, text=True,
                         env=dict(os.environ, WSX_TEST_WORK=str(work)), **options), timeout)
     done.stdout, done.stderr = sections.fail_first(done.stdout, done.stderr)
     return done
 
 
 def sweep():
-    """End the processes of earlier runs in this checkout that died before their cleanup,
-    and remove their Chrome profiles. A process is ended only when its group is in the
-    run's record and its command is the recorded one, or its command names the run's folder."""
-    try:
-        listing = subprocess.run(['ps', '-axo', 'pid=,pgid=,command='], capture_output=True, text=True, timeout=10).stdout
-    except PermissionError:
-        # ^ wsx's worker boundary refuses `ps` (docs/tasks.md "Permissions"): no process is ended,
-        # the earlier runs' folders still go.
-        listing = ''
-    running = []
-    for line in listing.splitlines():
-        parts = line.split(None, 2)
-        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
-            running.append((int(parts[0]), int(parts[1]), parts[2]))
+    """End the processes of earlier runs in this checkout that died before their cleanup, and
+    remove their Chrome profiles: a dead run's folder is reaped as its own end would have."""
     ended = []
     for folder in (ROOT / '.work').glob('*-*'):
         prefix, _, owner = folder.name.partition('-')
@@ -655,29 +641,10 @@ def sweep():
             pass
         except PermissionError:
             continue
-        record = folder / RECORD
-        groups = {}
-        if record.exists():
-            for line in record.read_text().splitlines():
-                group, _, command = line.partition('\t')
-                if group.isdigit():
-                    groups[int(group)] = command
-        targets = [pid for pid, group, command in running if pid != os.getpid()
-                   and (str(folder) in command or (group in groups and command == groups[group]))]
-        ended.extend(targets)
-        for signal_number in (signal.SIGTERM, signal.SIGKILL):
-            for pid in targets:
-                try:
-                    os.kill(pid, signal_number)
-                except (ProcessLookupError, PermissionError):
-                    pass
-            deadline = time.monotonic() + 3
-            while targets and time.monotonic() < deadline:
-                targets = [pid for pid in targets if alive(pid)]
-                time.sleep(0.05)
+        wsxd_client.reap(folder)
+        ended.append(folder)
         for profile in folder.glob('wsx-web-chrome-*'):
             shutil.rmtree(profile, ignore_errors=True)
-        record.unlink(missing_ok=True)
     return ended
 
 
@@ -1069,7 +1036,7 @@ def killed_daemon_leaves_no_agent(work, wsx, wsxd):
            'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'GIT_CEILING_DIRECTORIES': str(folder)}
     subprocess.run(['git', 'init', '-q', '-b', 'main', str(folder / 'project')], env=env, check=True, timeout=5)
     (folder / 'actor.py').write_text(wsxd_client.fixture(ACTOR))
-    daemon = start(work, [str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    daemon = start([str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     agent = None
     try:
         deadline = time.monotonic() + 10
@@ -1112,7 +1079,7 @@ def web_journey(args):
     assert node, 'Node is required for the independent Web Push receiver'
     left = sweep()
     if left:
-        print('ended %d processes of earlier runs that were killed' % len(left), file=sys.stderr)
+        print('reaped %d earlier runs that were killed' % len(left), file=sys.stderr)
     # Short path: the Unix socket must fit macOS SUN_LEN.
     work = ROOT / '.work' / ('web-' + str(os.getpid()))
     work.parent.mkdir(exist_ok=True)
@@ -1251,7 +1218,7 @@ def web_journey(args):
             moved = wait(lambda: [m for m in seen if m['type'] == 'error'], 'the wsx window is displaced')
             assert moved[0]['data']['code'] == 'lease_transferred', moved
 
-        daemon = start(work, [str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        daemon = start([str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         processes.append(daemon)
         wait(path.exists, 'daemon')
         # The browser's project has a second worktree, so its project screen shows two.
@@ -1271,7 +1238,7 @@ def web_journey(args):
             sessions[name] = created['data']['id']
         wait(lambda: all(pane['agent'] for pane in call('snapshot')['data']['panes']), 'agent reports')
 
-        push = start(work, [node, str(ROOT / 'scripts/web-push-fixture.mjs'), str(work / 'push.jsonl')],
+        push = start([node, str(ROOT / 'scripts/web-push-fixture.mjs'), str(work / 'push.jsonl')],
                                 stdout=subprocess.PIPE, text=True)
         processes.append(push)
         receiver = json.loads(push.stdout.readline())
@@ -1513,7 +1480,7 @@ capabilities = ["terminal_view"]
         servers = {}
 
         def serve(name):
-            process = start(work, [str(wsx), 'web', 'serve', '--site', str(files[name])], env=env,
+            process = start([str(wsx), 'web', 'serve', '--site', str(files[name])], env=env,
                                        cwd=project, stdout=subprocess.DEVNULL, stderr=(work / (name + '.log')).open('a'))
             processes.append(process)
             servers[name] = process
@@ -2251,7 +2218,7 @@ capabilities = ["terminal_view"]
         events.connection.sock.shutdown(socket.SHUT_RDWR)
         owner_process.terminate()
         owner_process.wait(timeout=5)
-        owner_server = start(work, [str(wsx), 'web', 'serve', '--site', str(files['owner'])], env=env, cwd=project,
+        owner_server = start([str(wsx), 'web', 'serve', '--site', str(files['owner'])], env=env, cwd=project,
                              stdout=subprocess.DEVNULL, stderr=(work / 'owner.log').open('a'))
         processes.append(owner_server)
         wait(lambda: up(owner), 'restarted web server')
@@ -3284,7 +3251,7 @@ capabilities = ["terminal_view"]
             # The page asks for the restart with a file and waits for the answer file.
             signals = work / 'restart'
             signals.mkdir()
-            restart = start(work, [node, str(ROOT / 'scripts/web-browser-check.mjs'), 'restart', m2.origin + m2.base + '/',
+            restart = start([node, str(ROOT / 'scripts/web-browser-check.mjs'), 'restart', m2.origin + m2.base + '/',
                                       cli('web', 'pair', '--site', files['m2']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                       str(page_captures), str(signals), str(audit) if audit.exists() else ''],
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -3547,6 +3514,7 @@ capabilities = ["terminal_view"]
         # Every helper, a check that was still running too.
         for process in reversed(STARTED):
             stop(process)
+        wsxd_client.reap(work)
         if path is not None and path.exists():
             assert path.lstat().st_uid == os.getuid(), 'private socket changed owner'
         for record in work.glob('*.pid'):
@@ -3784,7 +3752,7 @@ def task_journey(args):
                 # ^ The first wrong state: what the task waits on, its last turn and the end of its log.
                 raise AssertionError('%s; wsx task why: %s' % (error, cli('task', 'why', n, '-p', 'demo').stdout[-2000:])) from error
 
-        daemon = start(work, [str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        daemon = start([str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait(path.exists, 'daemon')
         # The fixture store: #1 refused a tool and waiting for the owner, #2 ready with a Human Verify item, #3 ready to land.
         assert js('task', 'new', 'NEEDS Bash(curl:*) WORK m.txt', '-p', 'demo')['id'] == 1
@@ -4039,7 +4007,7 @@ def task_journey(args):
                 return block, head, status
             plain_before = plain_git()
 
-        push = start(work, [node, str(ROOT / 'scripts/web-push-fixture.mjs'), str(work / 'push.jsonl')],
+        push = start([node, str(ROOT / 'scripts/web-push-fixture.mjs'), str(work / 'push.jsonl')],
                      stdout=subprocess.PIPE, text=True)
         receiver = json.loads(push.stdout.readline())
         push_origin = 'http://127.0.0.1:%d' % receiver['port']
@@ -4081,7 +4049,7 @@ service_origins = ["{push_origin}"]
 merge_seconds = 3
 ''')
             files[name].chmod(0o600)
-            servers[name] = start(work, [str(wsx), 'web', 'serve', '--site', str(files[name])], env={**env, 'WSX_TRACE_READ_LOG': '1'}, cwd=project,
+            servers[name] = start([str(wsx), 'web', 'serve', '--site', str(files[name])], env={**env, 'WSX_TRACE_READ_LOG': '1'}, cwd=project,
                                   stdout=subprocess.DEVNULL, stderr=(work / (name + '.log')).open('a'))
             sites[name] = Site(ports[name], '', origin=public[name])
         for site in sites.values():
@@ -5014,7 +4982,7 @@ merge_seconds = 3
                     time.sleep(0.2)
                 stop(servers['owner'])
                 files['owner'].write_text(files['owner'].read_text().replace('name = "owner"', 'name = "owner next"'))
-                servers['owner'] = start(work, [str(wsx), 'web', 'serve', '--site', str(files['owner'])], env=env, cwd=project,
+                servers['owner'] = start([str(wsx), 'web', 'serve', '--site', str(files['owner'])], env=env, cwd=project,
                                          stdout=subprocess.DEVNULL, stderr=(work / 'owner.log').open('a'))
                 wait(lambda: _up(owner), 'restarted web server')
                 (work / 'restart-owner.done').write_text('done')
@@ -5371,7 +5339,7 @@ merge_seconds = 3
              'choices': {'manager': False, 'agents': True, 'digest': old_digest}, 'muted': [], 'digest_sent': [20000, 1700000000]},
             {'device_id': 'digest-only', 'endpoint': push_origin + '/push/old2', 'keys': keys, 'created_unix': int(time.time()),
              'choices': {'manager': False, 'agents': False, 'digest': old_digest}, 'digest_sent': [20000, 1700000000]}]))
-        servers['viewer'] = start(work, [str(wsx), 'web', 'serve', '--site', str(files['viewer'])], env=env, cwd=project,
+        servers['viewer'] = start([str(wsx), 'web', 'serve', '--site', str(files['viewer'])], env=env, cwd=project,
                                   stdout=subprocess.DEVNULL, stderr=(work / 'viewer.log').open('a'))
         wait(lambda: _up(viewer), 'restarted viewer server')
         assert steady(viewer, 'GET', '/api/push')[1]['choices'] == {'manager': False, 'agents': True}
@@ -5385,7 +5353,7 @@ merge_seconds = 3
         stop(servers['viewer'])
         stored.write_text(json.dumps([{'device_id': viewer_device, 'endpoint': push_origin + '/push/old', 'keys': keys,
                                        'topics': ['blocked', 'done', 'tasks'], 'created_unix': int(time.time())}]))
-        servers['viewer'] = start(work, [str(wsx), 'web', 'serve', '--site', str(files['viewer'])], env=env, cwd=project,
+        servers['viewer'] = start([str(wsx), 'web', 'serve', '--site', str(files['viewer'])], env=env, cwd=project,
                                   stdout=subprocess.DEVNULL, stderr=(work / 'viewer.log').open('a'))
         wait(lambda: _up(viewer), 'restarted viewer server')
         migrated = steady(viewer, 'GET', '/api/push')[1]
@@ -5521,6 +5489,7 @@ merge_seconds = 3
             stop(process)
         if env is not None:
             subprocess.run([str(wsx), 'daemon', 'stop', '--force'], env=env, capture_output=True, timeout=20)
+        wsxd_client.reap(work, wsx)
         if success:
             shutil.rmtree(work, ignore_errors=True)
         else:

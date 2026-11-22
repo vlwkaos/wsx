@@ -54,7 +54,7 @@ use wsx_core::task::{
 };
 use wsx_core::{ops, runtime};
 
-/// Ends the evidence name of a check-run pass the host recorded in a held result; the
+/// Ends the evidence name of a check-run pass the host recorded in a done result; the
 /// manager's ready event repeats it. ref: docs/tasks.md "Check-run"
 const RECORDED_BY_HOST: &str = "(recorded by the host)";
 const HOST_START_WAIT: Duration = Duration::from_secs(10);
@@ -181,6 +181,11 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
         TaskCmd::ChatHost { chat } => manager::run(&chat),
         TaskCmd::RepoHost { project_id } => repo::run(&project_id),
         TaskCmd::Slot { command } => std::process::exit(slot::run(&command)?),
+        TaskCmd::Reap { folder } => {
+            let stopped = wsx_core::process::stop_naming(&folder, wsx_core::process::STOP_GRACE)?;
+            println!("stopped {stopped} process(es) naming {}", folder.display());
+            Ok(())
+        }
         TaskCmd::BoundaryProfile { untrusted } => boundary_profile(project, untrusted),
         TaskCmd::Host { project_id, task } => {
             host::run(&project_id, store::parse_task_number(&task)?)

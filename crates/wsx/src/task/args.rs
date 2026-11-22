@@ -304,8 +304,7 @@ pub enum TaskCmd {
     /// From a task's worker: run the project's checks as after its result (all, or by number
     /// or scenario name). `--part` reruns one part of one scenario, such as
     /// `check-run web --part tasks`: the scenario's command gets `WSX_SCENARIO_PART`, and a
-    /// part's pass is no full pass (nothing is kept, no evidence is recorded); the full run
-    /// still gates the task
+    /// part's pass is no full pass (nothing is kept, no evidence is recorded)
     CheckRun {
         names: Vec<String>,
         /// One part of one scenario (the project's scenario must know its parts)
@@ -331,6 +330,11 @@ pub enum TaskCmd {
         #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+    /// Stops every process whose arguments or environment name a path under the folder, with
+    /// its descendants: a scenario part's end, so no helper outlives its run (docs/tasks.md
+    /// "Scenarios").
+    #[command(hide = true)]
+    Reap { folder: PathBuf },
     /// Prints the manager's Seatbelt profile; scripts/test-manager-boundary.py starts a second
     /// sandbox with it.
     #[command(hide = true)]
@@ -585,6 +589,7 @@ impl TaskCmd {
             | Self::Host { .. }
             | Self::BoundaryProfile { .. }
             | Self::Slot { .. }
+            | Self::Reap { .. }
             | Self::ChatHost { .. }
             | Self::RepoHost { .. }
             | Self::ManagerHost { .. } => &[Approve],
