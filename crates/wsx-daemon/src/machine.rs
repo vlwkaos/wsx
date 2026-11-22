@@ -8,6 +8,7 @@ use std::ffi::c_int;
 use wsx_core::panel::{
     Item, Level, Num, PanelDoc, PanelInfo, PanelRun, PanelScope, PanelStatus, Section,
 };
+use wsx_core::task::{procs, schedule};
 
 pub(crate) const NAME: &str = "this-mac";
 pub(crate) const REFRESH_SECS: u64 = 60;
@@ -32,16 +33,13 @@ const VOLUME: (f64, f64) = (0.9, 0.95);
 const VOLUME_MIN_BYTES: u64 = 1_000_000_000;
 /// ^ The panel document's item limit per section (docs/panels.md "JSON panels").
 const MAX_VOLUMES: usize = 50;
+/// The busiest owners of the CPU shown under the load.
+const TOP_GROUPS: usize = 3;
 
 /// Memory and swap in GB of 1024³ (as Activity Monitor), disks in GB of 10⁹ (as Finder).
 #[cfg(target_os = "macos")]
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 const GB: f64 = 1e9;
-
-extern "C" {
-    // ^ POSIX on macOS and Linux; libc declares it for Linux only.
-    fn getloadavg(loadavg: *mut f64, nelem: c_int) -> c_int;
-}
 
 pub(crate) fn info() -> PanelInfo {
     PanelInfo {
@@ -86,10 +84,11 @@ pub(crate) fn read() -> PanelRun {
             items,
         });
     }
-    if let Some(item) = load() {
+    let load = load();
+    if !load.is_empty() {
         sections.push(Section {
             title: Some("Load".into()),
-            items: vec![item],
+            items: load,
         });
     }
     let volumes: Vec<Item> = volumes()
@@ -120,19 +119,29 @@ pub(crate) fn read() -> PanelRun {
     }
 }
 
-fn load() -> Option<Item> {
-    let mut load = [0f64; 3];
-    // SAFETY: room for the 3 values asked for.
-    if unsafe { getloadavg(load.as_mut_ptr(), 3) } != 3 {
-        return None;
-    }
+/// The load average, then the groups that use the most CPU: the cause of a loaded Mac, by owner.
+fn load() -> Vec<Item> {
+    let Some(load) = schedule::load_average() else {
+        return Vec::new();
+    };
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
-    Some(Item::Stat {
+    let mut items = vec![Item::Stat {
         label: "Load average".into(),
         value: format!("{:.2}, {:.2}, {:.2}", load[0], load[1], load[2]),
         note: Some(format!("1, 5, 15 min, {cores} cores")),
         level: Some(level(load[0] / cores as f64, LOAD)),
-    })
+    }];
+    items.extend(
+        procs::top_groups(TOP_GROUPS)
+            .into_iter()
+            .map(|group| Item::Stat {
+                value: format!("{:.1} cores", group.cores),
+                note: Some(group.tops_words()),
+                label: group.name,
+                level: None,
+            }),
+    );
+    items
 }
 
 /// (label, used bytes, total bytes) of each volume to show, the boot volume first.

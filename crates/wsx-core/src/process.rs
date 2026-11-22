@@ -394,7 +394,7 @@ impl ProcArgs {
     /// The executable's path. `proc_pidpath` is the resolved path of a running file; it fails
     /// once the file is removed, so the exec path the process was started with answers then,
     /// when it is absolute (a relative one cannot be placed).
-    fn executable(&mut self, pid: libc::pid_t) -> Option<PathBuf> {
+    pub(crate) fn executable(&mut self, pid: libc::pid_t) -> Option<PathBuf> {
         let mut buffer = [0u8; 4096];
         // SAFETY: the buffer holds 4096 bytes.
         let length = unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), 4096) };
@@ -460,7 +460,7 @@ pub fn find(_pick: impl Fn(&[&[u8]], &[&[u8]]) -> bool) -> Vec<libc::pid_t> {
 
 /// A process's parent and its start time, which tells it from a newer process with its pid.
 /// None when it is gone, or on Linux.
-fn born(pid: libc::pid_t) -> Option<(libc::pid_t, (u64, u64))> {
+pub(crate) fn born(pid: libc::pid_t) -> Option<(libc::pid_t, (u64, u64))> {
     #[cfg(target_os = "macos")]
     {
         // SAFETY: a zeroed proc_bsdinfo is valid, and proc_pidinfo writes at most its size.

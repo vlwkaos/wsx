@@ -94,18 +94,20 @@ pub struct Machine {
     pub total_ptys: Option<u64>,
 }
 
-/// The Mac's load, free memory and free disk (on the volume of `disk`) now.
-pub fn sample(disk: &Path) -> Machine {
+/// The 1, 5 and 15 minute load averages. The one reader: `sample` and wsxd's `this-mac` panel use it.
+pub fn load_average() -> Option<[f64; 3]> {
     extern "C" {
         // ^ POSIX on macOS and Linux; libc declares it for Linux only.
         fn getloadavg(loadavg: *mut f64, nelem: std::ffi::c_int) -> std::ffi::c_int;
     }
     let mut load = [0f64; 3];
     // SAFETY: room for the 3 values asked for.
-    let load1 = match unsafe { getloadavg(load.as_mut_ptr(), 3) } {
-        n if n >= 1 => load[0],
-        _ => 0.0,
-    };
+    (unsafe { getloadavg(load.as_mut_ptr(), 3) } == 3).then_some(load)
+}
+
+/// The Mac's load, free memory and free disk (on the volume of `disk`) now.
+pub fn sample(disk: &Path) -> Machine {
+    let load1 = load_average().map_or(0.0, |load| load[0]);
     let (total_ptys, free_ptys) = pty_pool().unzip();
     Machine {
         load1,
@@ -239,6 +241,15 @@ pub enum Verdict {
     Ci(String),
 }
 
+/// A wait reason without its list of the busiest groups: the CPU figures change at each reading, and
+/// a waiter says its reason again only when the rest changes.
+pub fn wait_key(reason: &str) -> String {
+    match (reason.find(" ("), reason.find("), ")) {
+        (Some(from), Some(to)) if from < to => format!("{}{}", &reason[..from], &reason[to + 1..]),
+        _ => reason.to_string(),
+    }
+}
+
 /// How long a run has waited for the load: the clock runs only while the lane is free for it (no
 /// holder, none ahead), so a run that queued behind a long scenario round still waits the whole
 /// `LOAD_WAIT` for a quieter Mac once its turn comes, not none (the deploy's smoke test failed on a
@@ -299,10 +310,14 @@ pub fn decide(run: &Run, lane: &Lane) -> Verdict {
     if lane.paced && lane.ahead == 0 && lane.holders == 0 {
         return match load1 < START_LOAD * cores_f || lane.waited >= LOAD_WAIT {
             true => Verdict::Go,
-            false => Verdict::Wait(Some(format!(
-                "load {load1:.0} on {cores} cores, it starts under {:.0}",
-                START_LOAD * cores_f
-            ))),
+            false => {
+                // ^ Read only when a wait shows the load (`procs::top_groups` reads once per 10 s).
+                let blame = super::procs::blame(3).map_or_else(String::new, |b| format!(" ({b})"));
+                Verdict::Wait(Some(format!(
+                    "load {load1:.0} on {cores} cores{blame}, it starts under {:.0}",
+                    START_LOAD * cores_f
+                )))
+            }
         };
     }
     if lane.paced && lane.ahead == 0 && lane.holders < lane.max {

@@ -112,7 +112,7 @@ wsxd reads it itself (`crates/wsx-daemon/src/machine.rs`): system calls, no scri
 | | *Pressure* stat: normal, warning, critical | `kern.memorystatus_vm_pressure_level` | warning / critical |
 | | *Compressed* stat: its size, and what it holds as the note | `host_statistics64` | none |
 | | *Swap* gauge of the swap total, or *none* | `vm.swapusage` | used is 25 % / 50 % of the RAM |
-| Load | *Load average* stat: 1, 5 and 15 min, the cores as the note | `getloadavg` | 1-min load per core 1.0 / 2.0 |
+| Load | *Load average* stat: 1, 5 and 15 min, the cores as the note; then a stat per group that uses 0.5 core or more, the 3 busiest (the owner as the label, its cores as the value, its busiest processes as the note) | `getloadavg` (`schedule::load_average`); libproc (`task::procs`, at most one reading per 10 s, docs/design/scheduler.md) | 1-min load per core 1.0 / 2.0; the groups have no level |
 | Disks | a gauge per volume, its name, GB of 10⁹ (as Finder) | `getfsstat`, `getattrlist`; elsewhere `statvfs("/")` | 90 % / 95 % used |
 
 The thresholds are the constants at the top of `machine.rs`. The disks are `/` (the boot volume: its numbers are the APFS container's, the Data volume included) and every other local volume that is writable, browsable (`MNT_DONTBROWSE` off), not a snapshot, not under `/System/Volumes/` and at least 1 GB: an external disk shows; a disk image, a simulator runtime or a Time Machine snapshot does not. At most 50.

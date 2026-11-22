@@ -1103,6 +1103,15 @@ pub fn any_trial() -> bool {
     })
 }
 
+/// The ids of the projects that have a folder in the store (the same folder also holds the agents'
+/// and the chats'; `task_numbers` finds no task in those).
+pub(super) fn project_ids() -> Vec<String> {
+    let entries = fs::read_dir(tasks_root()).into_iter().flatten().flatten();
+    let dirs = entries.filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()));
+    dirs.filter_map(|entry| entry.file_name().into_string().ok())
+        .collect()
+}
+
 /// All task numbers of a project, ascending.
 pub fn task_numbers(project_id: &str) -> Result<Vec<u32>> {
     let dir = project_dir(project_id)?;

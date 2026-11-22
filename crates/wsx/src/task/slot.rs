@@ -151,7 +151,7 @@ pub fn take(want: &Want, label: &str, mut queued: impl FnMut(String)) -> io::Res
         let decided = admit(&ticket, want, label, &mut load_since);
         match decided {
             Ok(taken) => return Ok(taken),
-            Err(reason) if reason != said => {
+            Err(reason) if schedule::wait_key(&reason) != schedule::wait_key(&said) => {
                 queued(reason.clone());
                 said = reason;
             }

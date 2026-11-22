@@ -20,6 +20,7 @@ pub mod media;
 pub mod needs;
 pub mod owner;
 pub mod policy;
+pub mod procs;
 pub mod replace;
 pub mod report;
 pub mod schedule;
