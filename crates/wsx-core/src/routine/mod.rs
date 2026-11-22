@@ -61,6 +61,10 @@ pub struct Routine {
     /// `Findings`, not `Failed`. Stored only when set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub findings_exit: Vec<u8>,
+    /// The chat that hears a run's end, by name, in any project; none: the project's main
+    /// chat. A chat that is not open then is the main chat too. ref: docs/tasks.md "Routines"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
 }
 
 const fn yes() -> bool {
@@ -92,6 +96,13 @@ impl Routine {
             return Err(RoutineError::validation(
                 "findings exit codes are 1 to 255, not 0",
             ));
+        }
+        if let Some(to) = &self.to {
+            if crate::task::chats::checked_name(to).is_err() {
+                return Err(RoutineError::validation(format!(
+                    "to must be a chat name, not {to:?}"
+                )));
+            }
         }
         self.findings_exit.sort_unstable();
         self.findings_exit.dedup();

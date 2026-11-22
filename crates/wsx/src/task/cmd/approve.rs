@@ -35,6 +35,7 @@ pub(crate) fn request_of(
         after: None,
         said: None,
         chat: actor().chat().map(str::to_string),
+        run: None,
         unix_ms: now_unix_ms(),
     }
 }
@@ -95,6 +96,7 @@ pub(crate) fn covered_requests(
         commit,
         lease,
         path,
+        run,
         ..
     } = new
     else {
@@ -116,6 +118,7 @@ pub(crate) fn covered_requests(
                 commit: old_commit,
                 lease: old_lease,
                 path: old_path,
+                run: old_run,
                 ..
             } = old
             else {
@@ -130,6 +133,8 @@ pub(crate) fn covered_requests(
                                 if copy::is_ancestor(main, &old, new).unwrap_or(false))
                     }
                     ApprovalAction::Project => path.is_some() && old_path == path,
+                    // ^ The same command in the same folder, asked again.
+                    ApprovalAction::Run => run.is_some() && old_run == run,
                     ApprovalAction::Land => false,
                 };
             covers.then(|| id.clone())
@@ -224,7 +229,7 @@ pub(crate) fn approve(project: Option<&str>, id: &str, json: bool) -> Result<()>
     .ok()
     .and_then(|line| match line {
         ApprovalLine::Request { action, .. } => Some(*action),
-        ApprovalLine::Decision { .. } => None,
+        ApprovalLine::Decision { .. } | ApprovalLine::Ran { .. } => None,
     });
     let approved = owner::approve(&name, &main, id, &exe)?;
     if json {

@@ -1498,6 +1498,49 @@ capabilities = ["terminal_view"]
         for site in sites.values():
             wait(lambda: up(site), 'web server')
         owner, family, root = sites['owner'], sites['family'], sites['root']
+
+        # `wsx web`: the serving sites of the site folder; several ask, a script gets the list.
+        # ref: docs/web-client.md "Open"
+        folder = work / 'config/wsx/web'
+        idle_port = free_port()
+        for name, text in (('owner', files['owner'].read_text()), ('family', files['family'].read_text()),
+                           ('idle', files['bare'].read_text().replace('id = "bare"', 'id = "idle"')
+                            .replace('port = %d' % ports['bare'], 'port = %d' % idle_port)
+                            .replace(':%d"' % ports['bare'], ':%d"' % idle_port))):
+            (folder / (name + '.toml')).write_text(text)
+            (folder / (name + '.toml')).chmod(0o600)
+        refused = cli('web', expect=1)
+        assert '2 sites are serving' in refused.stderr and 'wsx web open <site>' in refused.stderr, refused.stderr
+        assert 'http://127.0.0.1:%d/app/owner/' % ports['owner'] in refused.stderr and 'idle' not in refused.stderr, refused.stderr
+        opened = work / 'opened.txt'
+        opener = work / 'opener.sh'
+        opener.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> "%s"\n' % ('%s', opened))
+        opener.chmod(0o700)
+        shown = subprocess.run([str(wsx), 'web', 'open', 'family'], env={**env, 'WSX_BROWSER': str(opener)}, cwd=project,
+                               capture_output=True, text=True, timeout=10)
+        family_url = shown.stdout.strip()
+        assert shown.returncode == 0 and family_url.endswith(':%d/app/family/' % ports['family']), shown
+        assert opened.read_text().splitlines() == [family_url], opened.read_text()
+        printed = cli('web', 'open', 'owner', '--pair', '--print').stdout.strip()
+        url, _, code = printed.partition('#pair=')
+        assert url == 'http://127.0.0.1:%d/app/owner/' % ports['owner'] and re.fullmatch('[0-9A-Z]{5}-[0-9A-Z]{5}', code), printed
+        # ^ The code is a stored pairing like `wsx web pair`'s; drop it so the pairing checks below
+        # start with none unused.
+        store = work / 'state/wsx/web/owner/devices.json'
+        kept = json.loads(store.read_text())
+        assert len(kept['pairings']) == 1, kept
+        kept['pairings'] = []
+        store.write_text(json.dumps(kept))
+        assert opened.read_text().splitlines() == [family_url], 'a --print run opened a browser'
+        refused = cli('web', 'open', 'idle', '--print', expect=1)
+        assert "site 'idle' is not serving" in refused.stderr and 'wsx web serve idle' in refused.stderr, refused.stderr
+        (folder / 'family.toml').unlink()
+        shown = subprocess.run([str(wsx), 'web'], env={**env, 'WSX_BROWSER': str(opener)}, cwd=project,
+                               capture_output=True, text=True, timeout=10)
+        assert shown.returncode == 0 and shown.stdout.strip() == url, shown
+        for name in ('owner', 'idle'):
+            (folder / (name + '.toml')).unlink()
+        ok('wsx web: one serving site opens, two are listed for a script, a named one opens, --pair adds a code, an idle one says how to start it')
         viewer = sites['viewer']
 
         # --- Sub-path first: both inbound shapes serve the same base-filled documents.

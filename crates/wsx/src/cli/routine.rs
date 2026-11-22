@@ -38,6 +38,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
             prompt,
             no_post,
             findings_exit,
+            to,
             project,
             revision,
             json,
@@ -52,6 +53,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
                 enabled: true,
                 post: !no_post,
                 findings_exit,
+                to,
             }
             .validated()?;
             return print_routine_response(
@@ -67,6 +69,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
             prompt,
             no_post,
             findings_exit,
+            to,
             project,
             revision,
             json,
@@ -86,6 +89,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
                 enabled,
                 post: !no_post,
                 findings_exit,
+                to,
             }
             .validated()?;
             return print_routine_response(

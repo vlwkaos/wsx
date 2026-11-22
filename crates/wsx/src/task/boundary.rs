@@ -58,6 +58,9 @@ pub struct Boundary {
     checkout: Option<PathBuf>,
     /// Other tasks' copies `<parent>/<repo>-t<n>`, also those created after the launch.
     deny_copies: Option<(PathBuf, String)>,
+    /// `tasks.boundary.writable` of the owner config: the folders under `/Volumes` that open
+    /// again after its denial. The other denials still win over them.
+    writable: Vec<PathBuf>,
     own: Vec<PathBuf>,
     /// The project overview and the temporary files an editor writes beside it.
     own_prefix: Vec<PathBuf>,
@@ -78,6 +81,9 @@ pub struct Boundary {
     /// A built-in Pi provider signs in with the adapter's credential file: it stays readable.
     credential_open: bool,
 }
+
+/// Where macOS mounts other volumes.
+const VOLUMES: &str = "/Volumes";
 
 impl Boundary {
     /// A worker: its own copy and task folder; never the default branch's ref: wsx lands, nor
@@ -146,6 +152,13 @@ impl Boundary {
             }
             _ => None,
         };
+        // ^ Another volume (an external disk, a network share) is the owner's, not the
+        // project's: only the folders the owner lists open again (docs/tasks.md "Permissions").
+        let writable = wsx_core::config::project::owner_writable()
+            .map_err(|error| anyhow::anyhow!(error))?
+            .iter()
+            .map(|path| real(path))
+            .collect();
         let mut deny_read = secrets;
         if policy.strict() {
             // ^ What the strict profile adds to the secrets: the owner's other credentials
@@ -160,6 +173,7 @@ impl Boundary {
             deny_write_prefix: Vec::new(),
             checkout: None,
             deny_copies,
+            writable,
             own: vec![real(own)],
             own_prefix: Vec::new(),
             policy,
@@ -340,6 +354,12 @@ impl Boundary {
             if let Some((dir, _)) = &self.adapter_home {
                 rule("allow file-write*", subpath(dir));
             }
+        }
+        // ^ Before the role's own paths, so a project on another volume keeps its copy and git
+        // folder; after the strict denial, so a listed folder opens for every role.
+        rule("deny file-write*", subpath(Path::new(VOLUMES)));
+        for path in &self.writable {
+            rule("allow file-write*", subpath(path));
         }
         // ^ The main checkout is shut and its git folder opens again, for the worker's own copy.
         if let Some(checkout) = &self.checkout {

@@ -11,6 +11,7 @@ mod devices;
 mod events;
 mod http;
 mod media;
+mod open;
 mod panels;
 mod projects;
 mod push;
@@ -103,6 +104,8 @@ impl App {
         Ok(root)
     }
 }
+
+pub use open::open;
 
 /// `wsx web serve [<site>]`: run until SIGINT or SIGTERM.
 pub fn serve(named: Option<&str>) -> Result<()> {

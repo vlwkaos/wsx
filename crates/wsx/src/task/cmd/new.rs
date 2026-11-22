@@ -435,15 +435,20 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
     }
     // ^ The events of a task a chat of another repo created are routed by this repo's service
     // to that chat, so the service must run. ref: docs/tasks.md "Chats"
-    let from_elsewhere = record
-        .created_by
-        .chat()
-        .and_then(|chat| {
-            wsx_core::task::store::ManagerDir::existing(chat)
-                .ok()
-                .flatten()
-        })
+    let asking_chat = record.created_by.chat().and_then(|chat| {
+        wsx_core::task::store::ManagerDir::existing(chat)
+            .ok()
+            .flatten()
+    });
+    let from_elsewhere = asking_chat
+        .as_ref()
         .is_some_and(|chat| chat.project_id != record.project_id);
+    if let Some(chat) = asking_chat.as_ref().filter(|_| from_elsewhere) {
+        // ^ The goal now spans this project too (docs/design/manager-mode.md "Model").
+        if let Err(error) = wsx_core::task::chats::join(chat, &record.project_id) {
+            eprintln!("wsx: the chat did not join {}: {error:#}", project.name);
+        }
+    }
     if from_elsewhere {
         if let Err(error) = super::chat::ensure_repo(Some(&project.name)) {
             eprintln!(

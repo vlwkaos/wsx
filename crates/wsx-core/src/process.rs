@@ -577,6 +577,12 @@ pub fn stop_found(pick: impl Fn(&[&[u8]], &[&[u8]]) -> bool, grace: Duration) {
 /// it signalled. ref: docs/tasks.md "Scenarios"
 pub fn stop_naming(root: &Path, grace: Duration) -> std::io::Result<usize> {
     use std::os::unix::ffi::OsStrExt;
+    if !cfg!(target_os = "macos") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "reading other processes' arguments needs macOS (KERN_PROCARGS2)",
+        ));
+    }
     if !root.is_absolute() || root.components().count() < 3 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -590,17 +596,36 @@ pub fn stop_naming(root: &Path, grace: Duration) -> std::io::Result<usize> {
         .iter()
         .map(|form| form.as_os_str().as_bytes().to_vec())
         .collect();
+    // ^ The folder itself or a path under it: a name byte on either side means another path
+    // (`tk12` never names `tk123` or `/other/x/tk12`); anything else (`/`, `;`, `)`, `,`, a
+    // quote, a newline) ends it.
+    let name_byte = |byte: &u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.');
     let names = |word: &[u8]| {
-        needles
-            .iter()
-            .any(|needle| word.windows(needle.len()).any(|at| at == needle.as_slice()))
+        needles.iter().any(|needle| {
+            word.windows(needle.len()).enumerate().any(|(at, window)| {
+                window == needle.as_slice()
+                    && !at
+                        .checked_sub(1)
+                        .and_then(|before| word.get(before))
+                        .is_some_and(name_byte)
+                    && !word.get(at + needle.len()).is_some_and(name_byte)
+            })
+        })
     };
-    let mut tree = Tree::find(&[], |argv, env| argv.iter().chain(env).any(|w| names(w)));
+    let mut ancestors = Vec::new();
     let mut ancestor = std::process::id() as libc::pid_t;
     while let Some((parent, _)) = born(ancestor).filter(|(parent, _)| *parent > 1) {
-        tree.0.retain(|(pid, _)| *pid != parent);
+        ancestors.push(parent);
         ancestor = parent;
     }
+    // ^ Descendants follow only from what is not the caller's ancestor: a runner whose
+    // environment names the folder keeps its other children.
+    let roots: Vec<libc::pid_t> = find(|argv, env| argv.iter().chain(env).any(|w| names(w)))
+        .into_iter()
+        .filter(|pid| !ancestors.contains(pid))
+        .collect();
+    let mut tree = Tree::find(&roots, |_, _| false);
+    tree.0.retain(|(pid, _)| !ancestors.contains(pid));
     let count = tree.0.len();
     tree.signal(libc::SIGTERM);
     if !wait_until(grace, || tree.gone()) {
@@ -672,6 +697,30 @@ pub(crate) fn root_forms(root: &Path) -> Vec<PathBuf> {
     };
     let mut forms = vec![root.to_path_buf()];
     forms.extend(resolved.filter(|path| path != root));
+    // ^ macOS names `/var`, `/tmp` and `/etc` also as `/private/...`: a process may hold either
+    // form (Chrome's profile under `$TMPDIR` reads `/var/folders/...`).
+    let aliases: Vec<PathBuf> = forms
+        .iter()
+        .filter_map(|form| match form.strip_prefix("/private") {
+            Ok(rest)
+                if ["var", "tmp", "etc"]
+                    .iter()
+                    .any(|top| rest.starts_with(top)) =>
+            {
+                Some(Path::new("/").join(rest))
+            }
+            Ok(_) => None,
+            Err(_) => ["var", "tmp", "etc"]
+                .iter()
+                .any(|top| form.starts_with(Path::new("/").join(top)))
+                .then(|| Path::new("/private").join(form.strip_prefix("/").unwrap_or(form))),
+        })
+        .collect();
+    for alias in aliases {
+        if !forms.contains(&alias) {
+            forms.push(alias);
+        }
+    }
     forms
 }
 

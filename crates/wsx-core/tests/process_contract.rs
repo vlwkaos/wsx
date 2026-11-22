@@ -232,3 +232,87 @@ fn terminate_group_with_no_grace_kills_and_refuses_the_callers_group() {
     terminate_group(1, Duration::ZERO);
     terminate_group(unsafe { libc::getpgrp() }, Duration::ZERO);
 }
+
+/// `stop_naming` (`wsx task reap`): a process naming the folder in its arguments or environment
+/// ends with its children, in either macOS form of the path, also after the folder is gone; a
+/// sibling folder that shares the name's start, or a longer path that contains it, does not.
+/// ref: docs/tasks.md "Scenarios"
+#[cfg(target_os = "macos")]
+#[test]
+fn reap_stops_what_names_the_folder_and_spares_its_siblings() {
+    use wsx_core::process::stop_naming;
+    let base = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("reap-names-{}", std::process::id()));
+    let root = base.join("tk12");
+    let sibling = base.join("tk123");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&sibling).unwrap();
+    // ^ The `/var/...` form a process may hold when the canonical form is `/private/var/...`.
+    let short = |path: &Path| {
+        PathBuf::from(
+            path.to_str()
+                .unwrap()
+                .strip_prefix("/private")
+                .unwrap_or(path.to_str().unwrap()),
+        )
+    };
+    // ^ `sleep 60; :` keeps the shell from exec-ing `sleep`, so the shell is the process
+    // that names the path and `sleep` is its child.
+    let spawn = |script: String, env: Option<(&str, String)>| {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", &script])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        if let Some((key, value)) = env {
+            command.env(key, value);
+        }
+        command.spawn().unwrap()
+    };
+    let mut semicolon = spawn(format!("cd {}; sleep 60; :", short(&root).display()), None);
+    // ^ macOS hides the environment of Apple-signed binaries (`/bin/sh`, `/bin/sleep`) from
+    // other processes, so this test binary is the process that holds the folder in its
+    // environment: it runs only the `sleeper` below.
+    let mut in_env = Command::new(std::env::current_exe().unwrap())
+        .args(["sleeper", "--exact", "--ignored", "--nocapture"])
+        .env("REAP_SLEEPER", "1")
+        .env("WSX_TEST_WORK", format!("{}/out", root.display()))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let spared = [
+        spawn(format!("sleep 60; : {}", sibling.display()), None),
+        spawn(format!("sleep 60; : /zz{}", root.display()), None),
+        spawn(format!("sleep 60; : {}.log", root.display()), None),
+    ];
+    std::thread::sleep(Duration::from_millis(300));
+    std::fs::remove_dir_all(&base).unwrap();
+
+    let stopped = stop_naming(&root, Duration::from_secs(5)).unwrap();
+    // ^ The shell, its `sleep` child and the sleeper.
+    assert_eq!(stopped, 3, "stopped {stopped}");
+    assert_ends(semicolon.id() as i32);
+    assert_ends(in_env.id() as i32);
+    // ^ `stop_naming` may have collected them already: either way no zombie stays.
+    let _ = semicolon.wait();
+    let _ = in_env.wait();
+    for mut child in spared {
+        assert!(alive(child.id() as i32), "a sibling path was stopped");
+        // ^ The shell leads its own group: the group's end takes its `sleep` too.
+        terminate_group(child.id() as i32, Duration::ZERO);
+        child.wait().unwrap();
+    }
+}
+
+/// The process of the reap test that names the folder only in its environment.
+#[test]
+#[ignore = "run by reap_stops_what_names_the_folder_and_spares_its_siblings"]
+fn sleeper() {
+    if std::env::var_os("REAP_SLEEPER").is_some() {
+        std::thread::sleep(Duration::from_secs(60));
+    }
+}

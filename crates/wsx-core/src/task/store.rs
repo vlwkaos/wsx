@@ -1622,6 +1622,14 @@ pub fn append_approval(
     Ok(line)
 }
 
+/// Where an approved run keeps what it printed: `runs/<id>.log` beside `approvals.jsonl`.
+/// ref: docs/tasks.md "Approved runs"
+pub fn run_log(project_id: &str, id: &str) -> Result<PathBuf> {
+    let dir = ensure_project_dir(project_id)?.join("runs");
+    fs::create_dir_all(&dir)?;
+    Ok(dir.join(format!("{id}.log")))
+}
+
 pub fn read_approvals(project_id: &str) -> Result<Vec<super::manager::ApprovalLine>> {
     let path = project_dir(project_id)?.join(APPROVALS_FILE);
     let Some(bytes) =

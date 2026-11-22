@@ -5,7 +5,7 @@ Each `prompt` command is one run. `PIREFUSE <file>` refuses the prompt command i
 of <file>, as Pi does without an API key: no run follows. `PIHANG <file>` starts a run that writes nothing
 until <file> exists. `PIERROR <file>` ends the run as a provider's refusal, with the
 words of <file> as the error; `PICOST <usd>` reports that cost for the run; `PICTX <n>` reports a context of n tokens. A worker (its instructions name a task worker) does
-`WORK <file>` (writes and commits it) and sends its result to `wsx task result -`, as the
+`WORK <file>` (writes and commits it), `ASKRUN <pid>` (asks the owner to run `kill <pid>`, `wsx task run`) and sends its result to `wsx task result -`, as the
 Pi adapter's instructions ask; a manager answers "pi answers: <first line>". The run then
 streams Pi's own events: agent_start, an assistant message_end with usage, agent_settled.
 Launch arguments, the Pi folder (`PI_CODING_AGENT_DIR`: its files and `models.json`) and messages
@@ -215,6 +215,13 @@ def main():
                         sys.exit(1)
             if 'MEMORY' in words:
                 trace({'session': session, 'memory': memory_probe()})
+            if 'ASKRUN' in words:
+                # ^ As fake-claude-stream.py: ask the owner for `kill <pid>` through the broker.
+                pid = words[words.index('ASKRUN') + 1]
+                asked = subprocess.run(['wsx', 'task', 'run', '--why', 'stop the stray helper', '--', 'kill', pid],
+                                       capture_output=True, text=True)
+                trace({'session': session, 'askrun': {'code': asked.returncode, 'out': asked.stdout + asked.stderr,
+                                                      'adapter': 'pi'}})
             if 'RUNNERWRITE' in words:
                 target = words[words.index('RUNNERWRITE') + 1]
                 control = os.path.join(os.getcwd(), 'runner-control.txt')

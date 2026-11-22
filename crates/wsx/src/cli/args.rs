@@ -79,10 +79,10 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: RoutineCmd,
     },
-    /// Host one paired web site for remote agent work (docs/web-client.md)
+    /// Open the web client of the site that serves now; host, pair and list sites (docs/web-client.md)
     Web {
         #[command(subcommand)]
-        subcommand: WebCmd,
+        subcommand: Option<WebCmd>,
     },
     /// Stored knowledge: records of rules, facts and episodes (docs/memory.md)
     Memory {
@@ -105,6 +105,17 @@ pub enum Command {
 
 #[derive(Subcommand)]
 pub enum WebCmd {
+    /// Open the web client of a site that serves now in the browser (the default); asks which when several serve
+    Open {
+        #[command(flatten)]
+        site: WebSite,
+        /// Add a one-time pairing code to the link, so this browser pairs with one tap
+        #[arg(long)]
+        pair: bool,
+        /// Print the link without opening a browser
+        #[arg(long)]
+        print: bool,
+    },
     /// Serve one site on its loopback port until interrupted
     Serve {
         #[command(flatten)]
@@ -535,6 +546,9 @@ pub enum RoutineCmd {
         /// `findings`, not `failed` (docs/tasks.md "Routines")
         #[arg(long, value_delimiter = ',', value_parser = clap::value_parser!(u8).range(1..))]
         findings_exit: Vec<u8>,
+        /// The chat that hears a run's end, in any project (default: the project's main chat)
+        #[arg(long, value_name = "CHAT")]
+        to: Option<String>,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -559,6 +573,9 @@ pub enum RoutineCmd {
         /// `findings`, not `failed` (docs/tasks.md "Routines")
         #[arg(long, value_delimiter = ',', value_parser = clap::value_parser!(u8).range(1..))]
         findings_exit: Vec<u8>,
+        /// The chat that hears a run's end, in any project (default: the project's main chat)
+        #[arg(long, value_name = "CHAT")]
+        to: Option<String>,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]

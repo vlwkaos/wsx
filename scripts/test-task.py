@@ -10,6 +10,7 @@ WSX_SCENARIO_PART) runs one part; none runs all. ref: docs/tasks.md
 import argparse
 import atexit
 import calendar
+import plistlib
 import datetime
 import fcntl
 import hashlib
@@ -167,7 +168,7 @@ PROBE_EXPECTED = {'read_ssh': False, 'write_ssh': False, 'write_state': False, '
                   'write_main_head': False, 'reset_main': False, 'commit_own_copy': True, 'write_hooks': False, 'write_config': False, 'write_routines': False,
                   'write_own_copy': True, 'write_task_folder': True, 'write_tmpdir': True, 'write_cargo': True,
                   'write_library': True, 'move_main': False, 'listen': True, 'pty': True,
-                  'signal_own': True, 'signal_outside': False}
+                  'signal_own': True, 'signal_outside': False, 'write_volume_listed': True, 'write_volume_other': False}
 
 
 # ^ Ctrl-A q: quits the TUI.
@@ -684,7 +685,9 @@ def run(wsx, wsxd, work, owned, part):
                       ('  workflow: { build: "a\\u0007b" }\n', 'tasks.workflow.build must be'),
                       ('  workflow: { idle: "a\\u0007b" }\n', 'tasks.workflow.idle must be'),
                       ('  env: { WSX_SOCKET: x }\n', 'tasks.env: wsx sets WSX_SOCKET itself'),
-                      ('  env: { "A-B": x }\n', 'is not a variable name')):
+                      ('  env: { "A-B": x }\n', 'is not a variable name'),
+                      # ^ A repository may not widen its own agents' boundary (docs/tasks.md "Permissions").
+                      ('  boundary: { writable: [/Volumes/disk/models] }\n', 'tasks.boundary is read only from the owner config')):
         (project / 'wsx.config.yml').write_text('tasks:\n' + bad)
         refused = cli('task', 'new', 'WORK a.txt', ok=False).stderr
         assert word in refused, refused
@@ -844,7 +847,7 @@ def manager_up(created):
     assert summary.startswith('- open: ') and 'working; to check: ' in summary, summary
     assert '#%d working r' % running in summary.split('- open tasks:\n', 1)[1], summary
     assert '`wsx task ledger -p demo` are the truth' in launch['instructions'], launch['instructions']
-    # ^ The manager never commits in the main checkout (docs/design/root-cause-refactor.md step 1).
+    # ^ The manager never commits in the main checkout (docs/tasks.md "Permissions").
     assert 'git commit' not in launch['instructions'] and 'only after the owner says yes' not in launch['instructions']
     page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'overview.md')
     assert Path(page).read_text() == unwritten and old_page.read_text() == unwritten, old_page
@@ -1410,6 +1413,19 @@ def probe_up(created):
 
     atexit.register(signal_target.kill)
 
+    # ^ Another volume, mounted by this user under /Volumes: only the folder the owner config
+    # lists is writable (docs/tasks.md "Permissions").
+    volume_image = work / 'probe-volume.dmg'
+    volume_name = 'wsx-probe-%d' % os.getpid()
+    subprocess.run(['hdiutil', 'create', '-quiet', '-size', '4m', '-fs', 'HFS+', '-volname', volume_name,
+                    str(volume_image)], check=True)
+    attached = subprocess.run(['hdiutil', 'attach', '-nobrowse', '-plist', str(volume_image)],
+                              check=True, capture_output=True).stdout
+    volume = Path(next(entry['mount-point'] for entry in plistlib.loads(attached)['system-entities']
+                       if 'mount-point' in entry))
+    atexit.register(subprocess.run, ['hdiutil', 'detach', '-force', str(volume)], capture_output=True)
+    (volume / 'listed').mkdir()
+
     def probe_files(n):
         """The probe's spec and answer for task n, which is created next."""
         spec = {'read': {'read_ssh': str(secret)}, 'signal_outside': signal_target.pid, 'main': str(project),
@@ -1426,7 +1442,9 @@ def probe_up(created):
                           'write_own_copy': str(base / ('project-t%d' % n) / 'probe.txt'),
                           'write_task_folder': str(store_dir / str(n) / 'probe.txt'),
                           'write_tmpdir': str(tmp / 'probe.txt'), 'write_cargo': str(home / '.cargo/registry/probe.txt'),
-                          'write_library': str(home / 'Library/Caches/wsx-probe/probe.txt')}}
+                          'write_library': str(home / 'Library/Caches/wsx-probe/probe.txt'),
+                          'write_volume_listed': str(volume / 'listed/probe.txt'),
+                          'write_volume_other': str(volume / 'other/probe.txt')}}
         spec_file, answer = work / ('probe-%d.json' % n), work / ('probe-%d-answer.json' % n)
         spec_file.write_text(json.dumps(spec))
         return spec_file, answer
@@ -2742,19 +2760,19 @@ def part_core(created=None):
         data.update(fields)
         state_file.write_text(json.dumps(data))
 
-    # ^ A decisions.md of 12 KiB takes the start budget except what a short context.md uses.
+    # ^ A decisions.md of 26 KiB takes the start budget except what a short context.md uses.
     put('context.md')
     put('context.md', 'PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
-    put('decisions.md', ''.join('- decision %03d %s\n' % (n, 'x' * 50) for n in range(200)))
+    put('decisions.md', ''.join('- decision %03d %s\n' % (n, 'x' * 50) for n in range(400)))
     edit_state(instructions=None)
     notes_message = js('task', 'say', 'NOTES BUDGET')
     reply_to(notes_message['id'])
     opened = turn_with('NOTES BUDGET')['message']
     head = opened.split('\n\nHandover')[0]
-    assert 'PROJECT-SECTION line' in head and '- #30: memo 30' in head and '- decision 199' in head, head
-    assert '- decision 000' not in head and len(head.encode()) < 10 * 1024 + 600, len(head)
+    assert 'PROJECT-SECTION line' in head and '- #30: memo 30' in head and '- decision 399' in head, head
+    assert '- decision 000' not in head and len(head.encode()) < 24 * 1024 + 600, len(head)
     # ^ The decisions it left out are named, with their lines and the file's absolute path.
-    assert re.search(r'NOT SHOWN: decisions\.md lines 1-\d+ of 200 .*Read /\S+/notes/decisions\.md', head), head
+    assert re.search(r'NOT SHOWN: decisions\.md lines 1-\d+ of 400 .*Read /\S+/notes/decisions\.md', head), head
     assert 'NOT SHOWN: context.md' not in head, head
     # 21b. Restart: a message delivered to a turn that got no reply goes to the next turn once,
     # one with a reply does not (docs/tasks.md "Manager"). The first HANG turn never answers; the
@@ -2795,7 +2813,7 @@ def part_core(created=None):
         def word(n):
             return 'qz' + ''.join(chr(97 + n // 26 ** k % 26) for k in range(4))
         fact = '- #7: restarted Claude.app with open -g -a Claude from the Background session on 2026-10-31'
-        memos = [fact if n == 7 else '- #%d: %s notes %s %s' % (n, word(n), 'fixture detail ' * 15, word(n + 100))
+        memos = [fact if n == 7 else '- #%d: %s notes %s %s' % (n, word(n), 'fixture detail ' * 45, word(n + 100))
                  for n in range(1, 58)]
         return first_line + '\nShopfront sells pizza.\nIt has an oven.\n' + '\n'.join(memos) + '\n'
 
@@ -2805,7 +2823,8 @@ def part_core(created=None):
     edit_state(instructions=None)
     put('context.md', pizza('# shopfront'))
     fixture = (notes / 'context.md').read_text().splitlines()
-    assert len(fixture) == 60 and 14000 < len('\n'.join(fixture)) < 17000, len(fixture)
+    # ^ Over the 24 KiB of start notes (`notes::preamble`), so the first turn names what it leaves out.
+    assert len(fixture) == 60 and 38000 < len('\n'.join(fixture)) < 41000, len('\n'.join(fixture))
     reply_to(js('task', 'say', 'NOTES PIZZA')['id'])
     first_turn = turn_with('NOTES PIZZA')['message']
     reply_to(js('task', 'say', 'STATUS ordinary')['id'])
@@ -2826,8 +2845,8 @@ def part_core(created=None):
     assert fixture[9] not in head_text and 10 in hidden and len(hidden) > 10, (sorted(hidden), first_turn)
     # ^ The notice names the file, whose path is absolute and is the one the manager reads.
     assert notice.group(2) == str((notes / 'context.md').resolve()) or notice.group(2).endswith('/chats/demo/notes/context.md'), notice.group(2)
-    # ^ The first message holds at most the 10 KiB budget of the notes.
-    assert len(head_text.encode()) < 10 * 1024 + 400, len(head_text)
+    # ^ The first message holds at most the 24 KiB budget of the notes.
+    assert len(head_text.encode()) < 24 * 1024 + 400, len(head_text)
     # ^ A fresh conversation, an owner message whose key word matches a line it did not show: the
     # line stays in the file (the NOT SHOWN notice names it); no notes are attached to the message.
     edit_state(instructions=None)
@@ -2872,12 +2891,12 @@ def part_core(created=None):
     opened_big = turn_with('STATUS after the big context')['message']
     assert 'NOT SHOWN: context.md' in opened_big and 'context-archive' not in opened_big, opened_big
     put('context.md', 'PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
-    # ^ Idle past 60 min with a context over 60k: a fresh conversation, with the reason logged.
-    edit_state(last_reply_ms=int((time.time() - 7200) * 1000), context_tokens=70000)
+    # ^ Idle past 60 min with a context over 150k: a fresh conversation, with the reason logged.
+    edit_state(last_reply_ms=int((time.time() - 7200) * 1000), context_tokens=160000)
     idle_message = js('task', 'say', 'IDLE LARGE')
     reply_to(idle_message['id'])
     rotated = [e for e in manager_entries() if e['kind'] == 'rotated']
-    assert rotated[-1].get('reason') == 'idle over 60 min with 70k context', rotated
+    assert rotated[-1].get('reason') == 'idle over 60 min with 160k context', rotated
     # ^ The launch just before the turn that holds the message: a later launch is not the rotation's.
     idle_turn = turn_with('IDLE LARGE')
     idle_launch = [t for t in traces()[:traces().index(idle_turn)] if t.get('launch') and t.get('manager')][-1]
@@ -2895,7 +2914,7 @@ def part_core(created=None):
     # so the turn after the reset continues it, where the held message is. Before, the rotation kept
     # the old size and the idle rule rotated again at each try (5 times in a row on 2026-11-10),
     # into a conversation that never saw the message.
-    edit_state(last_reply_ms=int((time.time() - 7200) * 1000), context_tokens=70000)
+    edit_state(last_reply_ms=int((time.time() - 7200) * 1000), context_tokens=160000)
     rotations = len([e for e in manager_entries() if e['kind'] == 'rotated'])
     held_back = js('task', 'say', 'LIMIT 1 BACK INTO A LIMIT')
     reply_to(held_back['id'], 60)
@@ -2924,17 +2943,18 @@ def part_core(created=None):
     reply_to(js('task', 'say', 'RULES mid')['id'])
     mid = turn_with('RULES mid')['message']
     assert 'rule 200' in mid and 'rule 249' in mid and 'NOT SHOWN: decisions.md' not in mid, mid
-    # ^ Still over after the rewrite: the newest rules fill 6 KiB, context.md keeps at least 3.5 KiB,
-    # and what is left out is named with its lines.
-    over = rules(110, 300)
+    # ^ Over the budget: the newest rules fill up to 20 KiB (24 KiB less the 4 KiB context.md
+    # keeps, `notes::preamble`), context.md keeps at least 3.5 KiB, and what is left out is named
+    # with its lines.
+    over = rules(260, 300)
     over[3] = '- 2026-10-04 rule 303: never render the 3d scene with tessellation'
     put('decisions.md', '\n'.join(over) + '\n')
     edit_state(instructions=None)
     reply_to(js('task', 'say', 'RULES big')['id'])
     big = turn_with('RULES big')['message'].split('\n\nHandover')[0]
     shown = big.split('Your project context (context.md):')[0]
-    assert 'rule 409' in shown and 'rule 300' not in shown and 5800 < len(shown.encode()) < 7000, (len(shown), shown[:300])
-    assert re.search(r'NOT SHOWN: decisions\.md lines 1-\d+ of 110 .*Read /\S+/notes/decisions\.md', shown), shown
+    assert 'rule 559' in shown and 'rule 300' not in shown and 19000 < len(shown.encode()) < 21500, (len(shown), shown[:300])
+    assert re.search(r'NOT SHOWN: decisions\.md lines 1-\d+ of 260 .*Read /\S+/notes/decisions\.md', shown), shown
     assert 'tessellation' not in shown and 'decisions-archive' not in shown, shown
     context_part = big.split('Your project context (context.md):')[1]
     assert 'Shopfront sells pizza.' in context_part and len(context_part.split('NOT SHOWN')[0].encode()) > 3500, context_part[:200]
@@ -3863,7 +3883,15 @@ def part_worker(created=None):
         assert landed['state'] == 'landed', landed
     by_task = {i['task']: i for i in js('task', 'check')['open']}
     first, second, third, fourth, fifth = (by_task[n] for n in replied)
-    reply_to(js('task', 'say', 'STATUS')['id'])  # ^ The landings' events are read by now.
+    reply_to(js('task', 'say', 'STATUS')['id'])
+    # ^ The landings' events, and the manager's turn on them, come before what follows: an event
+    # turn after the quote below would put its fold under it, and `[` would take the fold.
+    def landing_events():
+        lines = [e for e in events_with('landed') if any('#%d landed' % n in e['text'] for n in replied)]
+        if not all(any('#%d landed' % n in e['text'] for e in lines) for n in replied):
+            return None
+        return lines
+    reply_to(wait(landing_events, 'the five landing events', 60)[-1]['id'])
     # ^ Only the turns that take an owner message: an event turn (a landed task's ready line) can come
     # at any time in this section and is not what it counts.
     manager_turns = lambda: len([t for t in traces() if t.get('manager') and 'Owner (message' in str(t.get('message', ''))])
@@ -4034,6 +4062,66 @@ def part_worker(created=None):
     Path(page).write_text('# demo\n\n## Goal\n\nshort\n')
     js('task', 'close', asks, '--discard')
 
+    # Approved runs (docs/tasks.md "Approved runs"): a worker asks for one command outside its
+    # boundary. Nothing runs before the owner approves; then a session of the main checkout runs
+    # it as asked, and its end goes to the asking task's chat and, as an add, to the task.
+    mark('22r')
+    strays = [subprocess.Popen(['sleep', '600']) for _ in range(2)]
+    for stray in strays:
+        atexit.register(stray.kill)
+    asks = []
+    for stray in strays:
+        n = js('task', 'new', 'ASKRUN %d NOOP' % stray.pid)['id']
+        asks.append((n, stray))
+        wait(lambda: len([t for t in traces() if 'askrun' in t]) == len(asks), 'the ask of #%d' % n)
+    seen = [t['askrun'] for t in traces() if 'askrun' in t]
+    assert len(seen) == 2 and all(a['code'] == 0 and 'needs the owner' in a['out'] for a in seen), seen
+    assert all(a['elsewhere'] != 0 and 'own project only' in a['elsewhere_out'] for a in seen), seen
+    assert all(a['disguised'] != 0 and 'bidi' in a['disguised_out'] and '\\u{202e}' in a['disguised_out'] for a in seen), seen
+    pending = js('task', 'ledger')['approvals']
+    labels = {p['label']: p['id'] for p in pending}
+    run_ok, run_no = (labels['Approve run: kill %d' % stray.pid] for _, stray in asks)
+    time.sleep(1)
+    assert all(stray.poll() is None for _, stray in asks), 'a run ran before its approval'
+    done = js('task', 'approve', run_ok)
+    assert done['ok'] and ('running in session run-%s' % run_ok) in done['outcome'], done
+    wait(lambda: asks[0][1].poll() is not None, 'the approved kill')
+    approvals_file = Path(created['task_dir']).parent / 'approvals.jsonl'
+    ran = wait(lambda: next((line for line in map(json.loads, approvals_file.read_text().splitlines())
+                             if line['kind'] == 'ran' and line['id'] == run_ok), None), 'the Ran line')
+    assert ran['exit'] == 0, ran
+    assert 'already ran' in cli('task', 'ran', run_ok, ok=False).stderr
+    wait(lambda: events_with('Approved run %s ended (exit 0): kill %d' % (run_ok, asks[0][1].pid)), 'the run end event')
+    wait(lambda: any('Approved run %s ended (exit 0)' % run_ok in e.get('text', '') for e in log(asks[0][0])),
+         'the run end as an add to the task')
+    js('task', 'deny', run_no, '--note', 'not that one')
+    wait(lambda: events_with('approval %s (run #%d) denied; not that one' % (run_no, asks[1][0])), 'the run deny event')
+    assert asks[1][1].poll() is None, 'a denied run ran'
+    assert 'is not approved' in cli('task', 'ran', run_no, ok=False).stderr
+    # ^ The owner runs a command in a terminal: `run` is only how an agent asks.
+    assert 'how an agent asks' in cli('task', 'run', '--', 'true', ok=False).stderr
+    for n, stray in asks:
+        stray.kill()
+        js('task', 'close', n, '--discard')
+    # The same for a Pi worker, which wsx runs under the strict boundary: asking and the run are
+    # wsx's, not the adapter's (docs/design/manager-mode.md "Every agent, not only Claude").
+    config_before = (project / 'wsx.config.yml').read_text()
+    configure(config_before.replace('tasks:\n', 'tasks:\n  agent: { adapter: pi, model: fake/pi-model }\n', 1), 'pi workers')
+    stray = subprocess.Popen(['sleep', '600'])
+    atexit.register(stray.kill)
+    seen = len([t for t in traces() if 'askrun' in t])
+    pi_task = js('task', 'new', 'ASKRUN %d' % stray.pid)['id']
+    asked = wait(lambda: next((t['askrun'] for t in traces()[::-1] if 'askrun' in t and t['askrun'].get('adapter') == 'pi'), None)
+                 if len([t for t in traces() if 'askrun' in t]) > seen else None, 'the pi worker asks', 60)
+    assert asked['code'] == 0 and 'needs the owner' in asked['out'], asked
+    pi_run = {p['label']: p['id'] for p in js('task', 'ledger')['approvals']}['Approve run: kill %d' % stray.pid]
+    assert stray.poll() is None
+    js('task', 'approve', pi_run)
+    wait(lambda: stray.poll() is not None, 'the approved kill of the pi worker')
+    wait(lambda: any('Approved run %s ended (exit 0)' % pi_run in e.get('text', '') for e in log(pi_task)),
+         'the run end as an add to the pi task')
+    js('task', 'close', pi_task, '--discard')
+    configure(config_before, 'claude workers again')
     # 23. wsx's boundary (docs/tasks.md "Permissions"): one Seatbelt profile per role over the
     mark('23')
     # whole agent process tree, so this fake worker, which is not Claude, is inside it too.
@@ -4047,9 +4135,12 @@ def part_worker(created=None):
     main_tip, config_before = git('rev-parse', 'main'), (common / 'config').read_text()
     main_status = git('status', '--porcelain', '--untracked-files=no')
     spec_file, answer = probe_files(next_task())
+    # ^ The owner lists the folder; a repository's own config may not (it is refused).
+    owner_config.write_text('tasks:\n  boundary:\n    writable:\n      - %s\n' % (volume / 'listed'))
     probed = js('task', 'new', 'PROBE %s %s %s WORK p.txt' % (probe_script, spec_file, answer))['id']
     assert spec_file.name == 'probe-%d.json' % probed
     assert wait_state(probed, 'ready', 'failed')['state'] == 'ready'
+    owner_config.unlink()
     seen = next(t['probe'] for t in traces() if 'probe' in t)
     assert seen == PROBE_EXPECTED, {k: v for k, v in seen.items() if PROBE_EXPECTED.get(k) != v}
     assert git('rev-parse', 'main') == main_tip and (common / 'config').read_text() == config_before
@@ -4664,7 +4755,7 @@ def part_worker(created=None):
     assert land(landed_first)['state'] == 'landed'
     # ^ A landing that stops on the main checkout (a file in its way) waits on the owner, not
     # the manager: `ready` on `land_stopped`, and no manager-review stall after it
-    # (docs/design/root-cause-refactor.md step 5, cause 3).
+    # (docs/tasks.md "Landing").
     (project / 'rw3.txt').write_text('in the way\n')
     land(stopped)
     wait(lambda: kinds(stopped, 'land_stopped'), 'the landing stops', 120)
@@ -6019,7 +6110,7 @@ def part_host(created=None):
     js('task', 'close', paused, '--discard')
     wait_state(paused, 'closed')
     configure(LAND_CONFIG, 'scenario for 32ap over')
-    # 32wk. One wake rule (docs/tasks.md "Manager"; root-cause-refactor step 6): a ready task
+    # 32wk. One wake rule (docs/tasks.md "Manager"; the one wake rule): a ready task
     # parked behind another and a ready result that asks the owner start no manager turn; they
     # go along with the next one, here the review of a third ready task. The asking task waits
     # ready on the owner.
@@ -8139,6 +8230,10 @@ def part_chats(created=None):
     record = b_show(n)['record']
     assert record['created_by'] == 'chat:demo' and record['project'] == 'other' and record['branch'] == 'wsx/t%d' % n, record
     assert record['project_id'] == other_id, record
+    # ^ The goal now spans other: demo's chat joined its repos, so other's chat list shows it
+    # with both projects, its own first (docs/tasks.md "Chats").
+    joined = {c['name']: c for c in js('task', 'chat', 'list', '-p', 'other')['chats']}
+    assert joined['demo']['projects'] == ['demo', 'other'], joined
     assert other_state(n, 'ready', 'failed')['state'] == 'ready', b_show(n)
     # ^ The creator reviews it: it waits ready, and the event is demo's.
     wait(lambda: next((e for e in event_lines() if 'other #%d ready' % n in e['text']), None), 'the ready event in demo', 60)
@@ -8150,6 +8245,16 @@ def part_chats(created=None):
     event = wait(lambda: next((e for e in event_lines() if 'other #%d landed' % n in e['text'] and 'memo: reach lesson' in e['text']), None),
                  'the land event in demo', 60)
     assert any(line['text'] == 'other #%d done' % n and 'task' not in line for line in event['short']), event
+    # A routine of other reaches demo's chat by name (`--to`), not other's main chat (docs/tasks.md "Routines").
+    js('task', 'routine', 'add', 'crosscheck', '-p', 'other', '--cron', '0 5 * * *', '--to', 'demo',
+       '--arg=echo', '--arg=cross words')
+    js('task', 'routine', 'run', 'crosscheck', '-p', 'other')
+    wait(lambda: next((e for e in event_lines() if 'routine crosscheck succeeded' in e['text'] and 'cross words' in e['text']), None),
+         'the routine event in demo', 60)
+    assert not [e for e in other_entries() if 'routine crosscheck' in e.get('text', '')], other_entries()
+    refused = cli('task', 'routine', 'add', 'badto', '-p', 'other', '--cron', '0 5 * * *', '--to', '../x', '--arg=true', ok=False)
+    assert 'to must be a chat name' in refused.stderr, refused.stderr
+    js('task', 'routine', 'delete', 'crosscheck', '-p', 'other')
     # ^ other's manager never hears of it: its host ran (`new` starts it) and heard its own land event.
     assert not [e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'events'
                 and '#%d ' % n in e['text'] and 'reach lesson' in e['text']], other_entries()

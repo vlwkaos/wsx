@@ -128,6 +128,8 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
             checkin(project, after.as_deref(), at.as_deref(), &why)
         }
         TaskCmd::Project { action } => self::project(action, project, json),
+        TaskCmd::Run { cwd, why, argv } => cmd::run::ask(project, cwd, why, argv, json),
+        TaskCmd::Ran { id } => cmd::run::ran(project, &id),
         TaskCmd::Ledger => ledger::ledger(project),
         TaskCmd::Widths => ledger::widths(project),
         TaskCmd::Routine {

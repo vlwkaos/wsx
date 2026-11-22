@@ -685,6 +685,7 @@ fn approval_item(line: &ApprovalLine, task_of: impl Fn(u32) -> Option<String>) -
         commit,
         path,
         url,
+        run,
         unix_ms,
         ..
     } = line
@@ -692,11 +693,16 @@ fn approval_item(line: &ApprovalLine, task_of: impl Fn(u32) -> Option<String>) -
         return None;
     };
     let found = task.and_then(task_of);
+    // ^ A run's second line: why the agent asks, and where it runs.
+    let why = run.as_ref().map(|run| match run.why.is_empty() {
+        true => format!("in {}", run.cwd),
+        false => format!("{} · in {}", run.why, run.cwd),
+    });
     Some(json!({
         "kind": "approval", "approval": id, "action": owner::action_name(*action),
         "label": owner::approval_label(line),
         "task": task, "revision": revision, "commit": commit,
-        "path": path, "url": url,
+        "path": path, "url": url, "why": why,
         "title": found,
         "unix_ms": unix_ms,
     }))

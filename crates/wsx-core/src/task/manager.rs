@@ -608,6 +608,8 @@ pub struct RepoState {
     pub seen: Option<BTreeMap<u32, Seen>>,
     /// Approval decisions already turned into events.
     pub decisions_seen: u64,
+    /// Ends of approved runs (`Ran` lines) already turned into events. Absent: none yet.
+    pub runs_seen: Option<u64>,
     /// The `unix_ms` of the newest deploy record already turned into events.
     pub deploys_seen_ms: Option<u64>,
     /// The `finished_epoch` of the newest routine run already turned into events.
@@ -702,6 +704,19 @@ pub enum ApprovalAction {
     Push,
     /// `project add`: clone and register a project (docs/tasks.md "Approvals").
     Project,
+    /// `run`: one command outside the boundary, in a session pane the owner can watch and type
+    /// into (docs/tasks.md "Approved runs").
+    Run,
+}
+
+/// The command of a `Run` request: run as given, no shell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunSpec {
+    pub argv: Vec<String>,
+    pub cwd: String,
+    /// Why the agent asks, shown with the command.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub why: String,
 }
 
 /// One line of `approvals.jsonl`.
@@ -742,6 +757,17 @@ pub enum ApprovalLine {
         /// the request and its host hears the decision (`chats::owner`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         chat: Option<String>,
+        /// A `Run` request's command.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run: Option<RunSpec>,
+        unix_ms: u64,
+    },
+    /// An approved run ended: its exit code (none: a signal ended it) and its last lines.
+    Ran {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit: Option<i32>,
+        tail: String,
         unix_ms: u64,
     },
     Decision {
@@ -764,13 +790,13 @@ impl ApprovalLine {
     pub fn chat(&self) -> Option<&str> {
         match self {
             Self::Request { chat, .. } => chat.as_deref(),
-            Self::Decision { .. } => None,
+            Self::Decision { .. } | Self::Ran { .. } => None,
         }
     }
 
     pub fn id(&self) -> &str {
         match self {
-            Self::Request { id, .. } | Self::Decision { id, .. } => id,
+            Self::Request { id, .. } | Self::Decision { id, .. } | Self::Ran { id, .. } => id,
         }
     }
 }

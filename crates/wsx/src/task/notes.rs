@@ -9,10 +9,11 @@ use wsx_core::memory::backend;
 use wsx_core::memory::{KindFilter, Query, Store};
 use wsx_core::task::text::first_line;
 
-/// The most of both files a fresh conversation's first message carries.
-const MAX_NOTES_BYTES: usize = 10 * 1024;
+/// The most of both files a fresh conversation's first message carries: every one of the
+/// owner's decisions fits (wsx 11-22: 125 lines, 14.4 KB), about 6k tokens.
+const MAX_NOTES_BYTES: usize = 24 * 1024;
 /// What `context.md` keeps of that budget when `decisions.md` is long: the owner's rules come
-/// first, so `decisions.md` takes the rest (6 KiB), and a short file leaves its part to the other.
+/// first, so `decisions.md` takes the rest (20 KiB), and a short file leaves its part to the other.
 const CONTEXT_FLOOR_BYTES: usize = 4 * 1024;
 /// Ranges named in one notice.
 const NOTICE_RANGES: usize = 4;

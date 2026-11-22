@@ -142,6 +142,16 @@ fn memory_areas(file: MemoryFile) -> Result<Vec<(String, String)>, String> {
         .collect()
 }
 
+/// `tasks.boundary` (docs/tasks.md "Permissions").
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct TaskBoundaryFile {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    writable: Vec<String>,
+}
+
+const MAX_WRITABLE: usize = 32;
+
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 struct TasksFile {
@@ -156,6 +166,9 @@ struct TasksFile {
     check_timeout_seconds: Option<u64>,
     #[serde(rename = "minFreeGb", skip_serializing_if = "Option::is_none")]
     min_free_gb: Option<u64>,
+    /// Read from the owner config only (`owner_writable`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    boundary: Option<TaskBoundaryFile>,
     #[serde(rename = "captureBudgetMb", skip_serializing_if = "Option::is_none")]
     capture_budget_mb: Option<u64>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -496,6 +509,16 @@ fn warn_once(warning: String) {
 /// cannot be read or parsed is an error: a task must not run with default tools.
 pub fn load_task_config(repo_path: &Path) -> Result<TaskConfig, String> {
     let mut tasks = read_tasks(&repo_path.join(PROJECT_CONFIG_FILE))?;
+    // ^ A repository must not widen its own agents' boundary: only the owner's file does.
+    if !tasks.writable.is_empty() {
+        return Err(format!(
+            "tasks.boundary is read only from the owner config ({}), not from {}",
+            owner_config_path().map_or("~/.config/wsx/wsx.config.yml".into(), |path| path
+                .display()
+                .to_string()),
+            repo_path.join(PROJECT_CONFIG_FILE).display()
+        ));
+    }
     // ^ The owner's workflow and fallback agents apply to every project that names none of
     // its own (docs/tasks.md "Workflow", "Agents").
     let wants_owner = tasks.workflow.steps.is_empty()
@@ -541,6 +564,48 @@ fn read_tasks(path: &Path) -> Result<TaskConfig, String> {
             config.tasks
         })
         .map_err(|error| format!("cannot parse {}: {error}", path.display()))
+}
+
+/// `tasks.boundary.writable` of the owner config: folders under `/Volumes` every agent may
+/// write, which the boundary otherwise denies (docs/tasks.md "Permissions"). None by default;
+/// an unreadable owner config is an error, so no agent starts with a wider boundary than meant.
+pub fn owner_writable() -> Result<Vec<PathBuf>, String> {
+    match owner_config_path() {
+        Some(path) => Ok(read_tasks(&path)?.writable),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Folders under `/Volumes/<volume>/`, without `..`, at most `MAX_WRITABLE`.
+fn validate_writable(paths: Vec<String>) -> Result<Vec<PathBuf>, String> {
+    if paths.len() > MAX_WRITABLE {
+        return Err(format!(
+            "tasks.boundary.writable has {} paths; at most {MAX_WRITABLE}",
+            paths.len()
+        ));
+    }
+    paths
+        .into_iter()
+        .map(|text| {
+            let path = match text.strip_prefix("~/") {
+                Some(rest) => dirs::home_dir()
+                    .ok_or("tasks.boundary.writable: no home folder for ~/")?
+                    .join(rest),
+                None => PathBuf::from(&text),
+            };
+            let parent = path
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir));
+            // ^ It opens what the /Volumes denial shuts, nothing else: a folder of home would
+            // open the owner's own files (LaunchAgents, shell startup files).
+            if !path.is_absolute() || parent || !path.starts_with("/Volumes/") || path.components().count() < 4 {
+                return Err(format!(
+                    "tasks.boundary.writable: {text:?} must be a folder on another volume, /Volumes/<volume>/<folder>, without .."
+                ));
+            }
+            Ok(path)
+        })
+        .collect()
 }
 
 /// Names are short words, unique; each prompt is one bounded text.
@@ -635,6 +700,10 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
     if let Some(preview) = file.preview {
         config.preview = Some(preview_config(preview)?);
     }
+    config.writable = match file.boundary {
+        Some(boundary) => validate_writable(boundary.writable)?,
+        None => Vec::new(),
+    };
     if let Some(gb) = file.min_free_gb {
         if gb > MAX_MIN_FREE_GB {
             return Err(format!("tasks.minFreeGb must be 0..={MAX_MIN_FREE_GB}"));

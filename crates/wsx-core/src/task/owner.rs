@@ -234,7 +234,45 @@ pub fn action_name(action: ApprovalAction) -> &'static str {
         ApprovalAction::Discard => "close --discard",
         ApprovalAction::Push => "push",
         ApprovalAction::Project => "project add",
+        ApprovalAction::Run => "run",
     }
+}
+
+/// A character that could make a shown command read as another: a control, a format (zero
+/// width, bidi) or a line break. `wsx task run` refuses words with one.
+pub fn misleading_char(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}' | '\u{2028}' | '\u{2029}')
+}
+
+/// A word with each misleading character written as its escape, so the card shows what runs.
+pub fn shown_word(word: &str) -> String {
+    word.chars()
+        .map(|c| match misleading_char(c) {
+            true => c.escape_unicode().to_string(),
+            false => c.to_string(),
+        })
+        .collect()
+}
+
+/// A run's command as one line the owner reads: each word as given, quoted when it holds a
+/// space, a quote or nothing.
+pub fn command_line(argv: &[String]) -> String {
+    argv.iter()
+        .map(|word| shown_word(word))
+        .map(|word| {
+            if !word.is_empty()
+                && !word
+                    .chars()
+                    .any(|c| c.is_whitespace() || matches!(c, '\'' | '"' | '\\' | '$' | '`'))
+            {
+                word.clone()
+            } else {
+                format!("'{}'", word.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// An approval request as the action it asks for, never its id: "Approve land #3",
@@ -249,11 +287,16 @@ pub fn approval_label(request: &ApprovalLine) -> String {
         tasks,
         commits,
         path,
+        run,
         ..
     } = request
     else {
         return String::new();
     };
+    // ^ A run names its command; why it asks is the card's second line.
+    if let Some(run) = run {
+        return format!("Approve run: {}", command_line(&run.argv));
+    }
     let verb = match action {
         ApprovalAction::Discard => "discard",
         ApprovalAction::Push if lease.is_some() => "force push",
@@ -416,7 +459,13 @@ pub struct Approved {
 pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved> {
     let project_id = store::project_id(name, main);
     let lines = store::read_approvals(&project_id)?;
-    run_request(name, &project_id, find_request(&lines, id)?.clone(), wsx)
+    run_request(
+        name,
+        main,
+        &project_id,
+        find_request(&lines, id)?.clone(),
+        wsx,
+    )
 }
 
 /// Run a request that waited for its `after` task, once that task has landed: the same run
@@ -439,11 +488,12 @@ pub fn approve_waiting(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<
             bail!("#{after} is {}, not landed; {id} waits", state.as_str());
         }
     }
-    run_request(name, &project_id, request, wsx)
+    run_request(name, main, &project_id, request, wsx)
 }
 
 fn run_request(
     name: &str,
+    main: &Path,
     project_id: &str,
     request: ApprovalLine,
     wsx: &Path,
@@ -458,12 +508,16 @@ fn run_request(
         path,
         url,
         said: owner_said,
+        run,
         ..
     } = request
     else {
         unreachable!("only requests run");
     };
     let id = id.as_str();
+    if action == ApprovalAction::Run {
+        return start_run(name, main, project_id, id, run.as_ref(), wsx, owner_said);
+    }
     // ^ The owner approves one revision: a task that moved on needs a new request.
     if let (Some(task), Some(revision)) = (task, revision) {
         let now = TaskDir::open(project_id, task)?.read_record()?.revision;
@@ -489,6 +543,7 @@ fn run_request(
                 argv.extend(["--clone".into(), url]);
             }
         }
+        ApprovalAction::Run => unreachable!("a run starts in a session (start_run)"),
         ApprovalAction::Push => {
             argv.push("push".into());
             // ^ No commit: the default branch tip at run time (a push that waited for a land).
@@ -539,6 +594,71 @@ fn run_request(
         outcome,
         result,
     })
+}
+
+/// Start an approved run in a session of the project's main checkout: the pane runs
+/// `wsx task ran <id>`, which runs the request's own command on the pane's terminal, so the
+/// owner watches it and answers a prompt (`sudo`) there. The decision says where it runs;
+/// its end is a `Ran` line. ref: docs/tasks.md "Approved runs"
+fn start_run(
+    name: &str,
+    main: &Path,
+    project_id: &str,
+    id: &str,
+    run: Option<&super::manager::RunSpec>,
+    wsx: &Path,
+    owner_said: Option<u64>,
+) -> Result<Approved> {
+    let Some(run) = run else {
+        let outcome = "not run: the request names no command".to_string();
+        decide(project_id, id, true, None, &outcome, owner_said)?;
+        bail!("{outcome}");
+    };
+    let (config, _) = crate::config::global::GlobalConfig::load()?;
+    let argv = vec![
+        wsx.display().to_string(),
+        "task".into(),
+        "ran".into(),
+        id.into(),
+        "-p".into(),
+        name.into(),
+    ];
+    // ^ The decision comes first: the pane's `ran` refuses a request that is not approved.
+    let outcome = format!("running in session run-{id}: {}", command_line(&run.argv));
+    decide(project_id, id, true, None, &outcome, owner_said)?;
+    let started = crate::ops::create_session_launch(
+        &crate::runtime::Client::local(),
+        &config,
+        main,
+        format!("run-{id}"),
+        argv,
+        None,
+    );
+    match started {
+        Ok(_) => Ok(Approved {
+            ok: true,
+            outcome,
+            result: serde_json::Value::Null,
+        }),
+        // ^ No pane, no run: its end says so, and the asker hears it as it hears any end.
+        Err(error) => {
+            let said = format!("not run: no session started ({error:#})");
+            store::append_approval(
+                project_id,
+                ApprovalLine::Ran {
+                    id: id.into(),
+                    exit: None,
+                    tail: said.clone(),
+                    unix_ms: now_unix_ms(),
+                },
+            )?;
+            Ok(Approved {
+                ok: false,
+                outcome: said,
+                result: serde_json::Value::Null,
+            })
+        }
+    }
 }
 
 /// Run `wsx <argv> -p <project> --json` as the owner (no task actor) and return its JSON

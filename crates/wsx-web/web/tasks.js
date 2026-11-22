@@ -147,7 +147,7 @@ export function NeedRow({ project, item, index, onActing, onFailed, onMention, o
     actions = button("Land", "land", "accent", () => run("land"), { "aria-label": `Land #${item.task}` });
   }
   // ^ An approval reads as the action it asks for, never as its id (docs/web-client-tasks.md).
-  const context = item.kind === "ask" ? "Asks you" : item.kind === "approval" ? item.title ?? item.url ?? item.commit ?? ""
+  const context = item.kind === "ask" ? "Asks you" : item.kind === "approval" ? item.why ?? item.title ?? item.url ?? item.commit ?? ""
     : item.kind === "land" && trial?.stage === "live" ? "on the live site: try it" : [item.status.label, item.flow?.phrase].filter(Boolean).join(" · ");
   const asks = item.kind === "ask";
   return html`

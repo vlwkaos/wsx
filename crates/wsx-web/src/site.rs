@@ -556,6 +556,15 @@ impl Site {
     }
 }
 
+/// Every site file of the site folder, sorted by path (`wsx web open`).
+pub fn files() -> Result<Vec<PathBuf>> {
+    let folder = site_folder().context("HOME is not set, so the site folder is unknown")?;
+    Ok(list_folder(&folder)?
+        .into_iter()
+        .map(|site| site.path)
+        .collect())
+}
+
 /// `${XDG_CONFIG_HOME:-$HOME/.config}/wsx/web`, like the plugin folder.
 fn site_folder() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")

@@ -125,6 +125,9 @@ pub struct TaskConfig {
     /// Free disk a task needs before an agent turn or its checks; below it the task waits
     /// (docs/tasks.md "Checks, revisions and report").
     pub min_free_gb: u64,
+    /// `tasks.boundary.writable`, read from the owner config only: folders under `/Volumes`
+    /// an agent may write (docs/tasks.md "Permissions").
+    pub writable: Vec<std::path::PathBuf>,
     /// `tasks.captureBudgetMb`: the most a project's kept To check captures may take; over it the
     /// manager host removes the oldest decided ones (docs/tasks.md "To check").
     pub capture_budget_mb: u64,
@@ -282,6 +285,7 @@ impl Default for TaskConfig {
             env: Default::default(),
             check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
             min_free_gb: 5,
+            writable: Vec::new(),
             capture_budget_mb: DEFAULT_CAPTURE_BUDGET_MB,
             land_approve: false,
             land_auto: true,

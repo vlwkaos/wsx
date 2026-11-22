@@ -113,6 +113,7 @@ impl RoutinePreset {
             prompt: String::new(),
             enabled: true,
             findings_exit: Vec::new(),
+            to: None,
         });
         form.integration_target = self.integration_target();
         form
@@ -131,6 +132,8 @@ pub struct RoutineForm {
     enabled: bool,
     post: bool,
     findings_exit: Vec<u8>,
+    /// The routine's chat, kept as it was: the form does not edit it.
+    to: Option<String>,
 }
 
 impl RoutineForm {
@@ -148,6 +151,7 @@ impl RoutineForm {
             enabled: routine.enabled,
             post: routine.post,
             findings_exit: routine.findings_exit,
+            to: routine.to,
         }
     }
 
@@ -223,6 +227,7 @@ impl RoutineForm {
             enabled: self.enabled,
             post: self.post,
             findings_exit: self.findings_exit.clone(),
+            to: self.to.clone(),
         }
         .validated()
         .map_err(|e| e.to_string())
@@ -405,6 +410,7 @@ mod tests {
             prompt: "before".into(),
             enabled: false,
             findings_exit: Vec::new(),
+            to: None,
         });
         form.prompt = "after".into();
 
@@ -425,6 +431,7 @@ mod tests {
             prompt: String::new(),
             enabled: true,
             findings_exit: Vec::new(),
+            to: None,
         });
 
         assert_eq!(

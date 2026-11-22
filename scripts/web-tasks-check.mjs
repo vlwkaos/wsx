@@ -3611,13 +3611,14 @@ phase("Progress: the top of an open task's sheet at 390x844, for ea");
   const scenario = taskNew("--no-steps", "CHECKRUN_LATE slow WORK scenario1.txt");
   const behind = taskNew("--no-steps", "CHECKRUN_LATE slow WORK scenario2.txt");
   for (const task of [scenario, behind]) await stateIs(task, "ready", 120);
-  // A wait for another task (`wsx task after`): the Running row says what it waits after
-  // (`flow.phrase`), the sheet's Waits on row and sentence give the reason, and the sheet of the
-  // task waited for lists who waits in its Chain section (docs/tasks.md "After another task").
+  // A wait for another task (`wsx task after`) on a ready task: its row reads "Waiting for #m to
+  // land" with the reason (`status_with_result`), the sheet's Waits on row and sentence give it, and
+  // the sheet of the task waited for lists who waits in its Chain section (docs/tasks.md "After
+  // another task"). Both are ready: a check-run never holds a task.
   wsx("task", "after", behind, scenario, "WORK after.txt", "--because", "check");
-  const reason = `then waits for #${scenario}: its checks fail`;
-  if (show(behind).status.wait !== reason || show(scenario).status.waited_by?.[0]?.task !== behind) await fail(`wsx task show says ${JSON.stringify([show(behind).status, show(scenario).status])}`);
-  await rowReads(behind, (text) => text.includes(`after #${scenario}`), `the waiting task's Running row does not say after #${scenario}`);
+  const reason = "its checks fail";
+  if (show(behind).status.wait !== reason || show(behind).status.label !== `Waiting for #${scenario} to land` || show(scenario).status.waited_by?.[0]?.task !== behind) await fail(`wsx task show says ${JSON.stringify([show(behind).status, show(scenario).status])}`);
+  await rowReads(behind, (text) => text.includes(`#${scenario} to land`), `the waiting task's row does not say it waits for #${scenario} to land`);
   await shot("running-after-reason", ".composer-send");
   await open(scenario);
   await until(`document.querySelector('.story-next')?.textContent.endsWith('Waited for by #${behind}.')`, `#${scenario}'s sheet does not say who waits for it`, 10);
@@ -3633,7 +3634,7 @@ phase("Progress: the top of an open task's sheet at 390x844, for ea");
   }
   await resize(chainSize);
   await open(behind);
-  await until(`/Then it waits for #${scenario} to land\\. Its checks fail on main until #${scenario} lands\\./.test(document.querySelector('.story-next')?.textContent ?? '')`, `#${behind}'s sheet does not say why it waits`, 10);
+  await until(`/Waiting for #${scenario} to land\\b.*Its checks fail on main until #${scenario} lands\\./.test(document.querySelector('.story-next')?.textContent ?? '')`, `#${behind}'s sheet does not say why it waits`, 10);
   const waitsOn = await evaluate("(() => { const term = [...document.querySelectorAll('.task-sheet .task-flow dt')].find((node) => node.textContent === 'Waits on'); return term?.nextElementSibling?.textContent.replace(/\\s+/g, ' ').trim() ?? ''; })()");
   if (!new RegExp(`^#${scenario}\\b.* to land, its checks fail$`).test(waitsOn)) await fail(`#${behind}'s Waits on row reads ${JSON.stringify(waitsOn)}`);
   await shot("task-waits-on", ".composer-send");

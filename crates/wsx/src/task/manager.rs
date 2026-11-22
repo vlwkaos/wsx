@@ -91,7 +91,7 @@ fn one_line(text: &str) -> String {
 }
 
 /// The handover of a fresh conversation: this many last messages and replies, each clipped.
-const HANDOVER_ENTRIES: usize = 4;
+const HANDOVER_ENTRIES: usize = 8;
 /// A quote by id reads this much of the log's end first, more until it reaches the id.
 const QUOTE_READ_BYTES: u64 = 256 * 1024;
 const HANDOVER_CHARS: usize = 600;
@@ -183,8 +183,10 @@ pub(super) const CONTEXT_FILE: &str = "context.md";
 /// The owner's decisions, one line each, appended by the manager as they are made.
 pub(super) const DECISIONS_FILE: &str = "decisions.md";
 /// A conversation idle past `PROMPT_CACHE_MS` lost Claude's prompt cache: past this context, a
-/// fresh conversation costs less than the cold resume.
-const IDLE_ROTATE_TOKENS: u64 = 60_000;
+/// fresh conversation costs less than the cold resume. Below it the resume keeps what a fresh
+/// start loses (11-15 to 11-22: 27 of 32 wsx rotations were idle ones at 66k to 270k, and the
+/// owner said "context broke again" a minute after one).
+const IDLE_ROTATE_TOKENS: u64 = 150_000;
 /// Changed instructions go to a warm conversation under this context as a message.
 const INSTRUCTION_MESSAGE_TOKENS: u64 = 100_000;
 // ^ The agent writes the notes: a link or a huge file must not reach the host's read.

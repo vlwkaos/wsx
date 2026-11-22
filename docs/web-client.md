@@ -5,11 +5,17 @@
 The panels have their own contracts: the chat in [web-client-chat.md](web-client-chat.md), manager mode in [web-client-tasks.md](web-client-tasks.md), the terminal in [web-client-terminal.md](web-client-terminal.md). This file holds the site, its security, the screens and what they share.
 
 ```sh
+wsx web                                # open the site that serves now in the browser (= wsx web open)
+wsx web open    [<site>] [--pair] [--print]
 wsx web vapid                          # print a new Web Push key pair for a site file
 wsx web serve   [<site>]               # serve on 127.0.0.1:<port> until SIGINT or SIGTERM
 wsx web pair    [<site>]               # print a one-time pairing code (10 minutes, one use)
 wsx web devices [<site>] [--revoke <id>] [--json]
 ```
+
+## Open
+
+`wsx web` (or `wsx web open [<site>]`) opens the site's public URL (`public_origin` plus the base path) in the browser and prints it. A site serves when its loopback port answers `manifest.webmanifest` with 200 for the site's own `Host`: a server refuses every other host, so a 200 is that site and not another one on the same port. With no `<site>` it looks at every site file of the site folder: one serving site opens; with several, a terminal asks which by number, and a script gets the list and exit 1. A named site that does not serve, or no serving site, is an error that says to start it with `wsx web serve`. `--pair` adds a fresh pairing code as `#pair=<code>`, so an unpaired browser pairs with one tap (the fragment reaches no server); `--print` only prints. `WSX_BROWSER` names the opener instead of `open` (macOS) or `xdg-open`.
 
 ## Site file
 
@@ -303,4 +309,4 @@ Each part runs against its own isolated `wsxd`, real PTYs and served sites, with
 
 The exact steps are the scripts; each prints the scenarios it passed.
 
-A run that has not ended after 35 min (`RUN_SECONDS`, about 1.5 times a CI run) prints every thread's stack and fails, and its cleanup still runs. A SIGTERM or SIGINT to the run runs the cleanup too. A SIGKILL (the check runner's timeout sends it to the run's whole group) cannot: every helper runs in its own process group, and a reaper process in its own session, told each group, ends them when the run dies without having said it is done. A process that left those groups still names the run's folder in its arguments or environment: the run's cleanup stops it with `wsx task reap <folder>` (libproc, no `ps`), and a later run in the checkout reaps a dead run's folder the same way (`sweep`). A fixture agent runs in its PTY's own session, in none of those groups: it ignores the hangup of a closed PTY so a write in progress finishes, then reads the end of input and exits, as a real agent does, so a wsxd killed with SIGKILL leaves no agent behind (the run starts with that check, `killed_daemon_leaves_no_agent`). The Chrome checks start every page at `prefers-reduced-motion: no-preference` (`setMotion` in `scripts/web-cdp.mjs`), so a CI runner's own motion setting does not change what they see.
+A run that has not ended after 35 min (`RUN_SECONDS`, about 1.5 times a CI run) prints every thread's stack and fails, and its cleanup still runs. A SIGTERM or SIGINT to the run runs the cleanup too. A SIGKILL (the check runner's timeout sends it to the run's whole group) cannot: every helper runs in its own process group, and a reaper process in its own session, told each group, ends them when the run dies without having said it is done. A process that left those groups still names the run's folder in its arguments or environment: the run's cleanup stops it with `wsx task reap <folder>` (libproc, no `ps`; the folder or a path under it, in its `/var` and `/private/var` forms, also after the folder is gone; macOS hides the environment of Apple-signed binaries such as `/bin/sh`, so for those only the arguments count), and a later run in the checkout reaps a dead run's folder the same way (`sweep`). A fixture agent runs in its PTY's own session, in none of those groups: it ignores the hangup of a closed PTY so a write in progress finishes, then reads the end of input and exits, as a real agent does, so a wsxd killed with SIGKILL leaves no agent behind (the run starts with that check, `killed_daemon_leaves_no_agent`). The Chrome checks start every page at `prefers-reduced-motion: no-preference` (`setMotion` in `scripts/web-cdp.mjs`), so a CI runner's own motion setting does not change what they see.

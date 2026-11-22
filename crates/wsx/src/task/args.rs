@@ -237,6 +237,22 @@ pub enum TaskCmd {
     },
     /// Start the project's manager agent, or report the running one
     Manager,
+    /// Ask the owner to run one command outside the boundary, in a session pane the owner can
+    /// watch and type into (sudo); its exit and last lines come back (docs/tasks.md "Approved runs")
+    Run {
+        /// The folder it runs in (default: where this command runs)
+        #[arg(long, value_name = "DIR")]
+        cwd: Option<PathBuf>,
+        /// Why: shown to the owner with the command
+        #[arg(long, value_name = "TEXT")]
+        why: Option<String>,
+        /// The command and its arguments, run as given (no shell): `wsx task run -- killall X`
+        #[arg(required = true, last = true, value_name = "COMMAND")]
+        argv: Vec<String>,
+    },
+    /// Runs an approved run's command on this terminal and records its end (the pane's command)
+    #[command(hide = true)]
+    Ran { id: String },
     /// Add a project to wsx: clone it when the folder is missing (the manager asks the owner first)
     Project {
         #[command(subcommand)]
@@ -571,6 +587,7 @@ impl TaskCmd {
             | Self::Sync
             | Self::Project { .. } => &[Deploy],
             Self::Checkin { .. } => &[Routine],
+            Self::Run { .. } => &[Ask],
             Self::Routine { action, .. } => match action {
                 RoutineCmd::List { .. } | RoutineCmd::Show { .. } | RoutineCmd::Logs { .. } => {
                     &[Read]
@@ -590,6 +607,7 @@ impl TaskCmd {
             | Self::BoundaryProfile { .. }
             | Self::Slot { .. }
             | Self::Reap { .. }
+            | Self::Ran { .. }
             | Self::ChatHost { .. }
             | Self::RepoHost { .. }
             | Self::ManagerHost { .. } => &[Approve],

@@ -217,7 +217,7 @@ impl Viewer {
 pub fn approvals_of(lines: Vec<ApprovalLine>, viewer: &Viewer) -> Vec<ApprovalLine> {
     let mine = |line: &ApprovalLine| match line {
         ApprovalLine::Request { chat, .. } => viewer.owns(chat.as_deref()),
-        ApprovalLine::Decision { .. } => false,
+        ApprovalLine::Decision { .. } | ApprovalLine::Ran { .. } => false,
     };
     let ids: HashSet<String> = lines
         .iter()
@@ -286,6 +286,19 @@ fn write_chat_file(dir: &ManagerDir, file: &ChatFile) -> Result<()> {
 /// The repos the chat runs in; the first is its own.
 pub fn repos(dir: &ManagerDir) -> Vec<String> {
     chat_file(dir).repos
+}
+
+/// A chat that starts work in another project works in it from then on: the project joins its
+/// `repos` after its own, so the project's lists show the chat and its records reach it. True
+/// when it joined now. ref: docs/design/manager-mode.md "Model"
+pub fn join(dir: &ManagerDir, project_id: &str) -> Result<bool> {
+    let mut file = chat_file(dir);
+    if file.repos.is_empty() || file.repos.iter().any(|id| id == project_id) {
+        return Ok(false);
+    }
+    file.repos.push(project_id.to_string());
+    write_chat_file(dir, &file)?;
+    Ok(true)
 }
 
 /// A chat's title as `rename` keeps it: trimmed, one line, at most `MAX_TITLE_CHARS`; empty

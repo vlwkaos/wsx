@@ -524,6 +524,7 @@ fn routine_view(name: &str) -> wsx_core::routine::RoutineView {
             prompt: "hello".into(),
             enabled: true,
             findings_exit: Vec::new(),
+            to: None,
         },
         running: false,
         next_run_epoch: None,

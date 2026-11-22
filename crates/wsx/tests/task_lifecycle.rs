@@ -303,3 +303,51 @@ fn a_task_parked_for_its_files_plans_now_and_builds_after_the_wait() {
         (task["state"] == "ready").then_some(())
     });
 }
+
+/// A background failure that arrives while the checks of the result run waits for them, then
+/// reopens the task once (docs/tasks.md "Check-run").
+#[test]
+fn a_failure_during_the_checks_reopens_the_task_after_them() {
+    let fixture = gated_ci();
+    let checks_gate = fixture.root.join("checks-gate");
+    fs::write(
+        fixture.root.join("project/wsx.config.yml"),
+        fs::read_to_string(fixture.root.join("project/wsx.config.yml"))
+            .expect("read the config")
+            .replace(
+                "tasks:\n",
+                &format!(
+                    "tasks:\n  checks:\n    - \"while [ ! -e {} ]; do sleep 0.2; done\"\n",
+                    checks_gate.display()
+                ),
+            ),
+    )
+    .expect("write the config");
+    fixture.json(&["task", "new", "WORK a.txt CHECKRUN_LATER gate", "--json"]);
+    until("the run started", || {
+        (lines(&fixture, "starts") == 1).then_some(())
+    });
+    fixture.wait("the checks of the result run", |task| {
+        (task["state"] == "checking").then_some(())
+    });
+    fs::write(fixture.root.join("fail"), "").expect("mark the run failed");
+    fs::write(fixture.root.join("gate"), "").expect("open the gate");
+    fixture.wait("the failure is logged", |task| {
+        fixture
+            .log(task)
+            .contains("\"kind\":\"check_run\"")
+            .then_some(())
+    });
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(received(&fixture, "Your check-run ended").is_empty());
+    fs::write(&checks_gate, "").expect("open the checks");
+    until("the failure's turn", || {
+        received(&fixture, "Your check-run ended")
+            .into_iter()
+            .next()
+    });
+    fixture.wait("the task settles again", |task| {
+        (task["state"] == "ready").then_some(())
+    });
+    assert_eq!(received(&fixture, "Your check-run ended").len(), 1);
+}

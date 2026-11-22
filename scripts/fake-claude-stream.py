@@ -37,6 +37,8 @@ Each user message is a small script of words:
                the next message continues this one (also for the manager); with
                CHECKRUN_LATE its check-run starts before the limit
   MLIMIT <s>   (manager, in an events message; once per <s>) like LIMIT; DASH there answers "-"
+  ASKRUN <pid>  (worker) ask the owner to run `kill <pid>` outside the boundary (`wsx task run`) and
+               trace the answer; also try it with -p, which a worker may not
   PROBE <script> <spec> <out>  run the test's boundary probe script (python3 <script> <spec> <out>)
                and trace what it wrote to <out>
   AUTHFAIL <file>  (manager) fail every turn as Claude's expired sign-in does until <file> exists;
@@ -718,6 +720,18 @@ def main():
             denials.append({'tool_name': 'Bash', 'tool_use_id': 'x', 'tool_input': {'command': rule}})
         if 'PROBE' in words:
             probe(*words[words.index('PROBE') + 1:words.index('PROBE') + 4])
+        if 'ASKRUN' in words:
+            pid = words[words.index('ASKRUN') + 1]
+            asked = subprocess.run(['wsx', 'task', 'run', '--why', 'stop the stray helper', '--', 'kill', pid],
+                                   capture_output=True, text=True)
+            elsewhere = subprocess.run(['wsx', 'task', 'run', '-p', 'other', '--', 'kill', pid],
+                                       capture_output=True, text=True)
+            # ^ A word whose shown text differs from what runs (a right-to-left override) is refused.
+            disguised = subprocess.run(['wsx', 'task', 'run', '--', 'echo', 'ok\u202erm -rf'],
+                                       capture_output=True, text=True)
+            trace({'askrun': {'code': asked.returncode, 'out': asked.stdout + asked.stderr,
+                              'elsewhere': elsewhere.returncode, 'elsewhere_out': elsewhere.stderr,
+                              'disguised': disguised.returncode, 'disguised_out': disguised.stderr}})
         if 'rebased' in words and 'onto' in words:
             tip = words[words.index('onto') + 1]
             rebase_env = dict(os.environ, GIT_EDITOR='true', GIT_AUTHOR_NAME='fake', GIT_AUTHOR_EMAIL='fake@example.invalid',

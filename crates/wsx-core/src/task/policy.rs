@@ -73,10 +73,13 @@ pub enum Capability {
     Remember,
     /// Write a `rule` record, which needs the owner's word (`owner:<id>`).
     Decide,
+    /// `run`: ask the owner to run one command outside the boundary (docs/tasks.md
+    /// "Approved runs").
+    Ask,
 }
 
 /// Every capability, in bit order.
-pub const ALL: [Capability; 18] = [
+pub const ALL: [Capability; 19] = [
     Capability::Read,
     Capability::Notify,
     Capability::Answer,
@@ -95,6 +98,7 @@ pub const ALL: [Capability; 18] = [
     Capability::Recall,
     Capability::Remember,
     Capability::Decide,
+    Capability::Ask,
 ];
 
 /// What the strict profile takes from an untrusted agent: it reads memory and writes none.
@@ -189,7 +193,7 @@ pub const ROLES: [(Role, RoleInfo); 3] = [
         Role::Worker,
         RoleInfo {
             name: "worker",
-            caps: &[Result, Recall, Remember],
+            caps: &[Result, Recall, Remember, Ask],
             reach: &[],
         },
     ),
@@ -319,7 +323,9 @@ impl Policy {
     /// needs no `may`, and an untrusted agent writes none. ref: docs/memory.md "Agents"
     pub fn of(trust: Trust, role: Role, may: Option<&[Capability]>) -> Self {
         let passed = role.caps().and(may.map_or(Caps::ALL, Caps::of));
-        let granted = passed.or(Caps::of(&[Capability::Recall]).and(role.caps()));
+        // ^ `recall` reads and `ask` only asks the owner, who decides: an agent's `may` list,
+        // which predates both, never takes them away.
+        let granted = passed.or(Caps::of(&[Capability::Recall, Capability::Ask]).and(role.caps()));
         Self {
             trust,
             role,

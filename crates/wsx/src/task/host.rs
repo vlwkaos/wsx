@@ -441,6 +441,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         host.record.project_id.clone(),
         host.record.working_copy.clone(),
     );
+    let (task_id, project_name) = (host.record.id, host.record.project.clone());
     std::thread::spawn(move || {
         broker::serve(brokered, move |request| {
             // ^ A `wsx memory` command runs for the worker in its project's scope.
@@ -452,9 +453,13 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
                     Err(error) => broker::refused(format!("cannot find the wsx binary: {error}")),
                 };
             }
-            // ^ The worker's role grants `result` and `check-run`, nothing else.
+            // ^ The worker's role grants `result`, `check-run` and `run`, nothing else.
             if let Err(error) = broker::allowed(&request.argv, policy.get()) {
                 return broker::refused(format!("{error:#}"));
+            }
+            // ^ A run request names this task as the asker, in this task's project only.
+            if request.argv.get(1).is_some_and(|sub| sub == "run") {
+                return ask_run(&request.argv, &copy, &project_name, task_id);
             }
             let (reply, answer) = channel();
             // ^ An adapter without structured output returns its result here (docs/tasks.md
@@ -846,28 +851,62 @@ impl Host {
     }
 
     /// Whether the task planned and its build waits for the `after` task (`build_step`).
+    /// The build step has never run: a stop or a restart while parked keeps it parked, and a
+    /// worker that ran it and asks the owner is not parked.
     fn build_parked(&self) -> bool {
-        self.build_step() == Some(self.record.step as usize)
-            && self.record.agent_session.is_some()
+        let Some(build) = self
+            .build_step()
+            .filter(|at| *at == self.record.step as usize)
+        else {
+            return false;
+        };
+        let name = self.record.steps.get(build).map(|step| step.name.clone());
+        let ran = self.dir.last_event(|event| match event {
+            LogEvent::Result { step, .. } => Some(step.clone()),
+            _ => None,
+        });
+        self.record.agent_session.is_some()
             && self.record.state == TaskState::Waiting
-            && self
-                .record
-                .waiting
-                .as_ref()
-                .is_some_and(|w| w.on == WaitOn::Owner && w.reason != STOPPED_BY_REQUEST)
+            && self.record.waits_on(WaitOn::Owner)
+            && ran.ok().flatten() != Some(name)
+    }
+
+    /// The adds since the worker's last result: they wait for the parked build. They are in the
+    /// log, so a host restart loses none.
+    fn adds_since_result(&self) -> Vec<String> {
+        let log = self.dir.read_log().unwrap_or_default();
+        let from = log
+            .iter()
+            .rposition(|entry| matches!(entry.event, LogEvent::Result { .. }))
+            .map_or(0, |at| at + 1);
+        log[from..]
+            .iter()
+            .filter_map(|entry| match &entry.event {
+                LogEvent::Message {
+                    mode: MessageKind::Add,
+                    text,
+                } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The copy follows the default branch, where the task waited for landed. A conflict is
     /// left to the worker: its words join the turn that starts.
     fn follow_default_branch(&mut self) -> Result<Option<String>> {
         let tip = self.default_tip()?;
-        let note = match copy::rebase(&self.record.working_copy, &tip)? {
-            Rebase::Conflict(paths) => Some(format!(
+        let note = match copy::rebase(&self.record.working_copy, &tip) {
+            Ok(Rebase::Conflict(paths)) => Some(format!(
                 "Your branch does not rebase cleanly onto {} at {tip:.12} ({}): rebase it first.",
                 self.record.default_branch,
                 paths.join(", ")
             )),
-            _ => None,
+            // ^ A dirty copy refuses the rebase: the worker rebases it with its changes.
+            Err(error) => Some(format!(
+                "Your copy did not move onto {} at {tip:.12} ({error:#}): rebase it first.",
+                self.record.default_branch
+            )),
+            Ok(_) => None,
         };
         // ^ The copy moved without a revision: the stored fork point follows it.
         let working_copy = &self.record.working_copy;
@@ -885,7 +924,14 @@ impl Host {
     /// wait.
     fn start_parked_build(&mut self, text: Option<String>) -> Result<String> {
         let note = self.follow_default_branch()?;
+        // ^ A ping's text waits in `pending`; the adds are read from the log, less those already
+        // queued as notices for the turn (a land notice is both).
         let mut words: Vec<String> = self.pending.drain(..).collect();
+        words.extend(
+            self.adds_since_result()
+                .into_iter()
+                .filter(|text| !self.notices.contains(text)),
+        );
         words.extend(note);
         words.extend(text);
         words.extend(self.step_text());
@@ -1221,7 +1267,10 @@ impl Host {
         if self.record.after.is_none() && wait.is_none() {
             return Ok("unchanged".into());
         }
-        let parked = self.build_parked();
+        // ^ The build starts while the wait is still set: a failure keeps it for the next try.
+        if task.is_none() && self.build_parked() {
+            self.start_parked_build(None)?;
+        }
         self.record.after = wait;
         self.save();
         let message = match task {
@@ -1237,8 +1286,6 @@ impl Host {
         self.say(&message);
         if task.is_none() && self.awaits_start() {
             self.start_after_wait()?;
-        } else if task.is_none() && parked {
-            self.start_parked_build(None)?;
         }
         Ok(message)
     }
@@ -1255,6 +1302,9 @@ impl Host {
             return Ok("unchanged".into());
         }
         let parked = self.build_parked();
+        if parked {
+            self.start_parked_build(text.clone())?;
+        }
         self.record.after = None;
         self.save();
         self.log(LogEvent::AfterEnded {
@@ -1268,7 +1318,7 @@ impl Host {
             return Ok(format!("#{task} is over: the first turn started"));
         }
         if parked {
-            return self.start_parked_build(text);
+            return Ok(format!("#{task} is over: the build started"));
         }
         match text {
             Some(text) => self.add(text, Vec::new(), None),
@@ -1283,8 +1333,8 @@ impl Host {
         if unstarted && self.record.after.is_some() {
             return "queued: it follows the prompt when the wait ends".into();
         }
+        // ^ The add is in the log: the build turn reads it from there (`adds_since_result`).
         if self.build_parked() {
-            self.pending.push_back(text);
             return "queued: the build starts with it when the wait ends".into();
         }
         self.check_retries = 0;
@@ -1998,6 +2048,7 @@ impl Host {
         };
         let commit = head(&self.record.working_copy);
         if !done
+            || !self.record.state.is_open()
             || self.stopped
             || self.record.plan
             || self.check_run.is_some()
@@ -4790,6 +4841,42 @@ fn rotation_prompt(
     text.extend(pending);
     text.push(notes.to_string());
     text.join("\n\n")
+}
+
+/// A worker's `wsx task run`: the CLI records the request with this task as the asker
+/// (`WORKER_ENV`), in the task's own project. ref: docs/tasks.md "Approved runs"
+fn ask_run(argv: &[String], copy: &Path, project: &str, task: u32) -> broker::Response {
+    let names_project = argv[2..]
+        .iter()
+        .take_while(|word| *word != "--")
+        .any(|word| word.starts_with("-p") || word.starts_with("--project"));
+    if names_project {
+        return broker::refused("a worker asks for a run in its own project only".into());
+    }
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => return broker::refused(format!("cannot find the wsx binary: {error}")),
+    };
+    // ^ `-p` goes before the run's own words: after `--` it would be part of the command.
+    let output = std::process::Command::new(exe)
+        .args(&argv[..2])
+        .arg("-p")
+        .arg(project)
+        .args(&argv[2..])
+        .current_dir(copy)
+        .env(super::cmd::run::WORKER_ENV, task.to_string())
+        .env_remove(wsx_core::task::owner::ACTOR_ENV)
+        .env_remove(broker::BROKER_ENV)
+        .stdin(std::process::Stdio::null())
+        .output();
+    match output {
+        Ok(output) => broker::Response {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            code: output.status.code().unwrap_or(1),
+        },
+        Err(error) => broker::refused(format!("cannot run wsx: {error}")),
+    }
 }
 
 #[cfg(test)]

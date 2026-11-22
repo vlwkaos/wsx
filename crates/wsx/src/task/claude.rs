@@ -456,7 +456,7 @@ fn claude_args(launch: &Launch, session: &str, resume: bool) -> Vec<std::ffi::Os
     let mut settings =
         json!({ "attribution": { "commit": "", "pr": "" }, "includeCoAuthoredBy": false });
     // ^ No agent loads Claude's auto memory: its index of past tasks was 27% of a worker's first
-    // call, and 7 of 20 workers read one of its files (docs/design/work-model.md section 7).
+    // call, and 7 of 20 workers read one of its files (measured 2026-11; docs/tasks.md "Agents").
     settings["autoMemoryEnabled"] = json!(false);
     let manager = launch.boundary.policy().role == Role::Manager;
     if manager {

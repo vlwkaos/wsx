@@ -294,12 +294,14 @@ pub fn run(cmd: Command) -> Result<()> {
         } => cmd_memory(subcommand, scope, json),
         Command::Task { common, subcommand } => crate::task::run(subcommand, common),
         Command::Web { subcommand } => match subcommand {
-            WebCmd::Serve { site } => wsx_web::serve(site.named()),
-            WebCmd::Pair { site } => wsx_web::pair(site.named()),
-            WebCmd::Devices { site, revoke, json } => {
+            None => wsx_web::open(None, false, false),
+            Some(WebCmd::Open { site, pair, print }) => wsx_web::open(site.named(), pair, print),
+            Some(WebCmd::Serve { site }) => wsx_web::serve(site.named()),
+            Some(WebCmd::Pair { site }) => wsx_web::pair(site.named()),
+            Some(WebCmd::Devices { site, revoke, json }) => {
                 wsx_web::devices(site.named(), revoke.as_deref(), json)
             }
-            WebCmd::Vapid => wsx_web::vapid(),
+            Some(WebCmd::Vapid) => wsx_web::vapid(),
         },
     }
 }
