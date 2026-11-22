@@ -1,9 +1,10 @@
 //! `wsx task new`: a task and its worker (docs/tasks.md).
 
 use crate::cli::{load_full_workspace, resolve_project};
+use crate::runtime_util::print_json;
 use crate::task::agent;
 use crate::task::args::NewArgs;
-use crate::task::{actor, ask_host, ask_host_ok, print_json, wait_for_host};
+use crate::task::{actor, ask_host, ask_host_ok, wait_for_host};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use wsx_core::config::project::load_task_config;

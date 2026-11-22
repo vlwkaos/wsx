@@ -81,12 +81,6 @@ pub fn run(cmd: Command) -> Result<()> {
                 json,
                 scope,
             } => cmd_session_restart(&session, json, &scope),
-            SessionCmd::SendKeys {
-                session: s,
-                keys,
-                no_enter,
-                scope,
-            } => cmd_session_send_text(&s, &keys, no_enter, &scope),
             SessionCmd::SendText {
                 session,
                 text,
@@ -280,9 +274,6 @@ pub fn run(cmd: Command) -> Result<()> {
         Command::Plugin { subcommand } => match subcommand {
             PluginCmd::List { json } => cmd_plugin_list(json),
             PluginCmd::Reload => cmd_plugin_reload(),
-        },
-        Command::Runtime { subcommand } => match subcommand {
-            RuntimeCmd::Status { json } => cmd_runtime_status(json),
         },
         Command::Daemon { subcommand } => match subcommand {
             DaemonCmd::Status { json } => cmd_runtime_status(json),

@@ -1,6 +1,7 @@
 //! Bounded, read-only projections of provider-native session history.
 //! ^ Native records are untrusted evidence, not model context or exchange receipts.
 //! See docs/agent-orchestration.md. No provider process or model is started here.
+use crate::memory::manage::clip_to as clip;
 use crate::runtime::{AgentSessionRef, AgentSessionRefKind};
 use serde::Serialize;
 use serde_json::Value;
@@ -1071,11 +1072,4 @@ fn content_text(content: Option<&Value>) -> String {
             .join("\n"),
         _ => String::new(),
     }
-}
-fn clip(text: &str, bytes: usize) -> String {
-    let mut end = bytes.min(text.len());
-    while !text.is_char_boundary(end) {
-        end -= 1
-    }
-    text[..end].to_owned()
 }

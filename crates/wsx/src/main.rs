@@ -43,7 +43,6 @@ fn main() -> Result<()> {
             cli::Command::Routine { .. }
                 | cli::Command::Memory { .. }
                 | cli::Command::Web { .. }
-                | cli::Command::Runtime { .. }
                 | cli::Command::Daemon { .. }
                 | cli::Command::Agent {
                     subcommand: cli::AgentCmd::Install { .. }
@@ -151,11 +150,8 @@ mod tests {
 
     #[test]
     fn managed_terminal_allows_explicit_subcommands() {
-        // ^ `runtime status` is the hidden old name of `daemon status`.
-        for argv in [["wsx", "daemon", "status"], ["wsx", "runtime", "status"]] {
-            let args = cli::Args::try_parse_from(argv).unwrap();
-            assert!(reject_nested_tui(args.command.as_ref(), Some(OsStr::new("42"))).is_ok());
-        }
+        let args = cli::Args::try_parse_from(["wsx", "daemon", "status"]).unwrap();
+        assert!(reject_nested_tui(args.command.as_ref(), Some(OsStr::new("42"))).is_ok());
     }
 
     #[test]

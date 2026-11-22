@@ -1,8 +1,9 @@
 //! `wsx task push`, `sync`, `deploy`, `release` and `deployed` (docs/tasks.md).
 
 use super::approve::{after_landing, ask_covering, request_of};
+use crate::runtime_util::print_json;
 use crate::task::args::{DeployArgs, PushArgs};
-use crate::task::{acting_as_manager, actor, print_json, project_entry};
+use crate::task::{acting_as_manager, actor, project_entry};
 use crate::task::{asks_owner, outward_said};
 use crate::task::{host, hosting};
 use anyhow::{bail, Context, Result};

@@ -48,6 +48,8 @@ impl Kind {
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Active,
+    /// The answer of `supersede`: the old record as it was deleted. A store keeps none; an old
+    /// log's line is deleted by the sweep (`manage::sweep`).
     Superseded,
     Failed,
 }
@@ -87,8 +89,8 @@ pub struct Record {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
-    /// wsx extension: the globs or paths the record is about (search marks the fact stale when
-    /// they changed since its commit). A landed task's fact holds its diff's files.
+    /// wsx extension: the globs or paths the record is about. A landed task's fact holds its
+    /// diff's files; a later land deletes it when they are gone or its fact holds them all.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
     /// wsx extension, a `rule`'s: unix ms of the decision, which a view shows as its date. It

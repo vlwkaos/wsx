@@ -269,8 +269,8 @@ impl Store {
         Ok(Some(file))
     }
 
-    /// The current records. A line that does not parse is skipped with a notice, never fatal.
-    fn load(&self) -> Result<Folded> {
+    /// The log's bytes; none when it does not exist yet.
+    fn read_log(&self) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         match open(&self.log_path(), OpenOptions::new().read(true)) {
             Ok(file) => {
@@ -285,7 +285,12 @@ impl Store {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        let folded = fold(&bytes);
+        Ok(bytes)
+    }
+
+    /// The current records. A line that does not parse is skipped with a notice, never fatal.
+    fn load(&self) -> Result<Folded> {
+        let folded = fold(&self.read_log()?);
         if folded.skipped > 0 {
             eprintln!(
                 "wsx: memory: skipped {} unreadable line(s) in {}",
@@ -453,7 +458,8 @@ impl Store {
         Ok(record)
     }
 
-    /// `old` is replaced by the active record `new`.
+    /// `old` is replaced by the active record `new`: it is deleted at once. The answer is `old`
+    /// as it was deleted, `superseded` by `new`. ref: docs/memory.md "Store behavior"
     pub fn supersede(&self, old: &str, new: &str, source: &str) -> Result<Record> {
         check_source(source)?;
         if old == new {
@@ -465,17 +471,59 @@ impl Store {
         let newer = records.get(new).ok_or_else(|| self.missing(new))?;
         self.may_write(record.kind)?;
         self.may_write(newer.kind)?;
-        if newer.status != Status::Active || record.status == Status::Superseded {
-            return usage(format!(
-                "{new} must be active and {old} must not be superseded already"
-            ));
+        if newer.status != Status::Active {
+            return usage(format!("{new} must be active"));
         }
+        self.remove(&mut |r: &Record| r.slug == old)?;
         record.status = Status::Superseded;
         record.superseded_by = Some(new.into());
         record.source = source.into();
         record.updated = now_unix_ms();
-        self.append("supersede", &record)?;
         Ok(record)
+    }
+
+    /// Delete every record `gone` picks, with all its lines, and return them: the one rewrite of
+    /// the log, under the store's lock. A store with nothing to delete is read, not written.
+    /// ref: docs/memory.md "Store behavior"
+    pub fn delete(&self, mut gone: impl FnMut(&Record) -> bool) -> Result<Vec<Record>> {
+        if !self.dir.is_dir() {
+            return Ok(Vec::new());
+        }
+        let _lock = self.lock(true)?;
+        self.remove(&mut gone)
+    }
+
+    /// `delete` with the lock held: the log without the lines of the picked slugs, written to a
+    /// temp file and renamed over it. A line that does not parse stays as it is.
+    fn remove(&self, gone: &mut dyn FnMut(&Record) -> bool) -> Result<Vec<Record>> {
+        #[derive(serde::Deserialize)]
+        struct Slug {
+            slug: String,
+        }
+        let bytes = self.read_log()?;
+        let deleted: Vec<Record> = fold(&bytes)
+            .records
+            .into_values()
+            .filter(|r| gone(r))
+            .collect();
+        if deleted.is_empty() {
+            return Ok(deleted);
+        }
+        let slugs: std::collections::HashSet<&str> =
+            deleted.iter().map(|r| r.slug.as_str()).collect();
+        let mut kept = Vec::with_capacity(bytes.len());
+        for line in bytes.split_inclusive(|b| *b == b'\n') {
+            let slug = serde_json::from_slice::<Slug>(line.trim_ascii_end()).ok();
+            if !slug.is_some_and(|s| slugs.contains(s.slug.as_str())) {
+                kept.extend_from_slice(line);
+            }
+        }
+        crate::fs_util::write_atomic(
+            &self.log_path(),
+            &kept,
+            crate::fs_util::AtomicWrite::replace().mode(0o600),
+        )?;
+        Ok(deleted)
     }
 
     /// Run `f` on the current records with the store locked, so no write lands meanwhile.

@@ -451,15 +451,16 @@ fn claude_args(launch: &Launch, session: &str, resume: bool) -> Vec<std::ffi::Os
     // which older builds still read.
     let mut settings =
         json!({ "attribution": { "commit": "", "pr": "" }, "includeCoAuthoredBy": false });
+    // ^ No agent loads Claude's auto memory: its index of past tasks was 27% of a worker's first
+    // call, and 7 of 20 workers read one of its files (docs/design/work-model.md section 7).
+    settings["autoMemoryEnabled"] = json!(false);
     let manager = launch.boundary.policy().role == Role::Manager;
     if manager {
-        // ^ The owner's CLAUDE.md files (user, project and the folders above it) and the auto
-        // memory index are 7K to 14K tokens at the start of every fresh conversation; the
-        // instructions carry the rules a manager needs. A 12-turn blind replay judged its
-        // decisions no worse.
+        // ^ The owner's CLAUDE.md files (user, project and the folders above it) are 7K to 14K
+        // tokens at the start of every fresh conversation; the instructions carry the rules a
+        // manager needs. A 12-turn blind replay judged its decisions no worse.
         settings["claudeMdExcludes"] =
             json!(["**/CLAUDE.md", "**/CLAUDE.local.md", "**/AGENTS.md"]);
-        settings["autoMemoryEnabled"] = json!(false);
     }
     let mut args: Vec<std::ffi::OsString> = [
         "-p",

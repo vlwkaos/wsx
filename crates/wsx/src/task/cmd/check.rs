@@ -2,8 +2,9 @@
 
 use super::approve::owner_only;
 use super::new::{create, NewTask, Steps};
+use crate::runtime_util::print_json;
 use crate::task::args::{CheckAction, Chosen};
-use crate::task::{acting_as_manager, actor, print_json, project_entry};
+use crate::task::{acting_as_manager, actor, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use wsx_core::task::checks::{self, CheckItem, CheckState};

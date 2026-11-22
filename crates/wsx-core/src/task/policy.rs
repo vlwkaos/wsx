@@ -49,7 +49,7 @@ pub enum Capability {
     Handoff,
     /// `new`.
     CreateTask,
-    /// `add`, `steer`, `stop`, `move`, `preview`: act on a task.
+    /// `add`, `stop`, `move`, `preview`: act on a task.
     Direct,
     /// `close` without `--discard`.
     Close,
@@ -152,8 +152,8 @@ pub struct RoleInfo {
 }
 
 /// What the manager, and so every chat, runs in another project.
-const MANAGER_REACH: [&str; 9] = [
-    "new", "show", "list", "add", "steer", "stop", "hold", "land", "close",
+const MANAGER_REACH: [&str; 8] = [
+    "new", "show", "list", "add", "stop", "hold", "land", "close",
 ];
 
 /// The one role enum: a launch site's role, and the job a fallback choice fills.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Model-free `wsx task` journey on an isolated wsxd with a stream-json fake Claude.
 
-Covers new, steer during a turn, add after it, a blocked result then allow, checks that
+Covers new, add --now during a turn, add after it, a blocked result then allow, checks that
 pass and fail, report content, a daemon live handoff while a host runs, stop and resume,
 close with and without unlanded commits, failure cleanup, and that no process, socket,
 worktree or branch is left. Build adjacent wsx and wsxd first. `--part core|worker|deploy|host|agents|chats` (or
@@ -282,14 +282,14 @@ def import_notes(store, notes):
     memory = store / 'memory'
     memory.mkdir(exist_ok=True)
     now = int(time.time() * 1000)
-    lines, names = [], ('decisions.md', 'decisions-archive.md', 'context-archive.md', 'context.md')
+    lines, names = [], ('decisions.md', 'context.md')
     text = {name: (notes / name).read_text() if (notes / name).is_file() else '' for name in names}
 
     def add(slug, kind, status, body, updated, **more):
         lines.append(json.dumps(dict(op='import', slug=slug, kind=kind, status=status, text=body, source='path:fixture',
                                      updated=updated, **more)) + '\n')
 
-    for name, status in (('decisions.md', 'active'), ('decisions-archive.md', 'superseded')):
+    for name, status in (('decisions.md', 'active'),):
         rows = text[name].splitlines()
         for at, row in enumerate(rows):
             body = row[2:].strip() if row.startswith('- ') else ''
@@ -306,7 +306,7 @@ def import_notes(store, notes):
             add('rule-' + hashlib.sha256(row.strip().encode()).hexdigest()[:16], 'rule', status, words, updated,
                 words=words, decided=updated, **({} if dated else {'undated': True}))
     index = 0
-    for name in ('context-archive.md', 'context.md'):
+    for name in ('context.md',):
         for row in text[name].splitlines():
             if not row.strip():
                 continue
@@ -861,7 +861,7 @@ def manager_up(created):
     assert os.readlink(plugin / 'skills') == str(owner_skills), os.readlink(plugin / 'skills')
     # ^ No prompts inside wsx's boundary (docs/tasks.md "Permissions").
     assert launch['mode'] == 'bypassPermissions' and 'permissions' not in launch['settings'], launch['settings']
-    # ^ A manager leaves out the owner's CLAUDE.md files and the auto memory (context-split option 2); a worker keeps them.
+    # ^ A manager leaves out the owner's CLAUDE.md files (context-split option 2) and, as a worker, the auto memory.
     assert launch['settings']['autoMemoryEnabled'] is False and '**/CLAUDE.md' in launch['settings']['claudeMdExcludes'], launch['settings']
     assert launch['model'] == 'fake-manager' and Path(page).read_text().startswith('# demo\n\n## Goal')
     # ^ A manager turn that leaves the overview over the cap (60 lines, 4,000 characters) gets one
@@ -1003,7 +1003,7 @@ def manager_up(created):
                  'say how both hold', 'A turn of only Events is your work', 'or with exactly `-` when nothing',
                  "never to a line 'for the owner'", 'Never hand the owner chores or ask them to wait',
                  'open with `> message <id>`', "Judge from the owner's words whether the owner wants to talk it over",
-                 'no task, `add` or `steer` until the owner agrees, then one `new` or `add` with all', 'Work starts at once', 'as a mermaid diagram',
+                 'no task or `add` until the owner agrees, then one `new` or `add` with all', 'Work starts at once', 'as a mermaid diagram',
                  'Similar work or the same area goes to the open task', 'Every new task names its files',
                  'stands alone, since a worker cannot ask', 'every project and agent adapter', 'runs with `--size small`',
                  'one read-only audit task per area', '`--into <n>`', 'for lean code', "its prompt and each later add",
@@ -1485,11 +1485,12 @@ def part_core(created=None):
     assert "put in the result's memo a short, lean memo of durable" in launch['instructions'], launch['instructions']
     assert 'memo' in launch['schema_required'], launch['schema_required']
     # One permission model (docs/tasks.md "Permissions"): wsx's boundary, no agent settings for it.
-    assert launch['settings'] == {'attribution': {'commit': '', 'pr': ''}, 'includeCoAuthoredBy': False}, launch
+    # ^ No auto memory: its index of past tasks is not in a worker's first call (docs/tasks.md "Claude adapter").
+    assert launch['settings'] == {'attribution': {'commit': '', 'pr': ''}, 'includeCoAuthoredBy': False, 'autoMemoryEnabled': False}, launch
 
     # 2. Steer during the turn: Claude does not save it, so the host logs it.
     mark('2')
-    steered = js('task', 'steer', '1', 'use capitals')
+    steered = js('task', 'add', '1', '--now', 'use capitals')
     assert steered['ok'] and 'steered' in steered['message'], steered
     ready = wait_state(1, 'ready', 'failed')
     assert ready['state'] == 'ready', ready
@@ -1821,7 +1822,8 @@ def part_core(created=None):
     assert any('Step 2 of 2, build: WORK r.txt' in t['message'] and t['session'] == fresh[0]['session'] for t in sent), sent[-3:]
     # ^ The handoff turn is not a result: one per step.
     assert len([e for e in log(rotated) if e['kind'] == 'result']) == 2, log(rotated)
-    # ^ The notes are also an episode of the project's memory, written by the host (docs/memory.md "Capture").
+    # ^ The notes are also an episode of the project's memory, written by the host (docs/memory.md "Capture");
+    # the repo service deletes it when the task has ended (checked in section 22, "Deletion").
     episodes = [h for h in memory_records(cli('memory', 'search', 'NOTES fixture', '--json').stdout) if h['slug'].startswith('rotation-%s-' % rotated)]
     assert len(episodes) == 1 and episodes[0]['kind'] == 'episode' and 'NOTES from the fixture' in episodes[0]['excerpt'], episodes
     js('task', 'close', rotated, '--discard')
@@ -2720,9 +2722,9 @@ def part_core(created=None):
     routines = opened.split('\nRoutine results (')[1].split('\n\n')[0].split('\n')[1:]
     assert routines == ['routine nightly failed (exit 3); 3 failures, never succeeded'], opened
     assert 'keep the store in sqlite' in opened and 'SECRET-OUTSIDE' not in opened, opened
-    # ^ The handover is also an episode of the project's memory, written in that turn (docs/memory.md "Capture").
+    # ^ The handover is no record of the project's memory: its lines are the chat log's, which search reads (docs/memory.md "Deletion").
     handovers = [h for h in memory_records(cli('memory', 'search', 'Handover new conversation exchanges', '--json').stdout) if h['slug'].startswith('handover-')]
-    assert handovers and handovers[0]['kind'] == 'episode' and 'Handover (this is a new conversation' in handovers[0]['excerpt'], handovers
+    assert not handovers, handovers
 
     # Continuity (docs/tasks.md "Manager"): notes share their budget, idle large conversations
     # rotate, and a warm small one takes changed instructions as a message.
@@ -2844,8 +2846,8 @@ def part_core(created=None):
     reply_to(js('task', 'say', 'GLOBETROTTER plain')['id'])
     assert 'Memory records that match' not in turn_with('GLOBETROTTER plain')['message']
     assert re.search(r'NOT SHOWN: context\.md lines [0-9, -]+ of 60 .*Read /\S+/notes/context\.md for them, or find them with `wsx task search`\.', matched), matched
-    # ^ Memo lines: one line of at most 240 characters, no 60-line cap, and past 32 KiB the
-    # oldest go to context-archive.md, which the fresh conversation is told about.
+    # ^ Memo lines: one line of at most 240 characters, no 60-line cap and no size ceiling: past
+    # 32 KiB every memo stays in context.md, and the fresh conversation names what it leaves out.
     put('context.md', '# stubborn\n' + ''.join('- #%d: short memo %d\n' % (n, n) for n in range(100, 175)))
     long_memo = 'x' * 400
     long_task = js('task', 'new', 'WORK long.txt MEMO ' + long_memo)['id']
@@ -2860,18 +2862,14 @@ def part_core(created=None):
     big_task = js('task', 'new', 'WORK big.txt MEMO the newest memo')['id']
     assert wait_state(big_task, 'ready', 'failed')['state'] == 'ready'
     js('task', 'close', big_task, '--discard')
-    # ^ The archive is written first and context.md after it: wait for the file read next.
-    archive = notes / 'context-archive.md'
     wait(lambda: '- #%d: the newest memo' % big_task in (notes / 'context.md').read_text(), 'the newest memo in context.md')
     kept = (notes / 'context.md').read_text()
-    moved = archive.read_text()
-    assert len(kept.encode()) <= 32 * 1024 and '- #1: ' not in kept and moved.startswith('- #1: ') and '- #%d: the newest memo' % big_task in kept, (len(kept), moved[:40])
-    assert len(kept.splitlines()) + len(moved.splitlines()) == 141, (len(kept.splitlines()), len(moved.splitlines()))
+    assert len(kept.encode()) > 32 * 1024 and '- #1: ' in kept and len(kept.splitlines()) == 141, (len(kept.encode()), len(kept.splitlines()))
+    assert not (notes / 'context-archive.md').exists()
     edit_state(instructions=None)
-    reply_to(js('task', 'say', 'STATUS after the archive')['id'])
-    opened_archive = turn_with('STATUS after the archive')['message']
-    assert re.search(r'in (/\S+/notes/context-archive\.md)\.', opened_archive) and 'NOT SHOWN: context.md' in opened_archive, opened_archive
-    put('context-archive.md')
+    reply_to(js('task', 'say', 'STATUS after the big context')['id'])
+    opened_big = turn_with('STATUS after the big context')['message']
+    assert 'NOT SHOWN: context.md' in opened_big and 'context-archive' not in opened_big, opened_big
     put('context.md', 'PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
     # ^ Idle past 60 min with a context over 60k: a fresh conversation, with the reason logged.
     edit_state(last_reply_ms=int((time.time() - 7200) * 1000), context_tokens=70000)
@@ -2907,9 +2905,9 @@ def part_core(created=None):
     assert after_reset and after_reset[0]['session'] == limited_turn['session'], (limited_turn, after_reset)
     put('decisions.md', '- 2026-10-22 keep the store in sqlite\n')
     # 21a3. decisions.md over what a fresh conversation shows (docs/tasks.md "Notes budget"): the rules
-    # that fit the larger part of the start budget show, what is left out is named with the archive, and
-    # an owner message whose rare word is only in an archived rule gets that line. wsx asks the manager
-    # to rewrite nothing: the rules are records, and decisions-archive.md holds the replaced ones.
+    # that fit the larger part of the start budget show, what is left out is named with its lines, and
+    # `wsx task search` finds a rule that is not shown. wsx asks the manager to rewrite nothing: the
+    # rules are records, and a replaced rule is deleted (docs/memory.md "Deletion").
     mark('21a3')
 
     def rules(count, first=0):
@@ -2917,10 +2915,7 @@ def part_core(created=None):
         day = lambda n: datetime.date(2026, 10, 1) + datetime.timedelta(days=n)
         return ['- %s rule %03d: %s' % (day(n), n, 'owner words ' * 6) for n in range(first, first + count)]
 
-    old_rules = rules(90)
-    old_rules[3] = '- 2026-10-04 rule 003: never render the 3d scene with tessellation'
     put('context.md', 'PROJECT-SECTION line\n- #1: memo 1\n')
-    put('decisions-archive.md', '\n'.join(old_rules) + '\n')
     put('decisions.md', '\n'.join(rules(50, 200)) + '\n')
     # ^ Between 4 and 6 KiB beside a long context.md: every rule is in the first message.
     put('context.md', pizza('# stubborn'))
@@ -2929,22 +2924,23 @@ def part_core(created=None):
     mid = turn_with('RULES mid')['message']
     assert 'rule 200' in mid and 'rule 249' in mid and 'NOT SHOWN: decisions.md' not in mid, mid
     # ^ Still over after the rewrite: the newest rules fill 6 KiB, context.md keeps at least 3.5 KiB,
-    # and what is left out is named with the archive.
-    put('decisions.md', '\n'.join(rules(110, 300)) + '\n')
+    # and what is left out is named with its lines.
+    over = rules(110, 300)
+    over[3] = '- 2026-10-04 rule 303: never render the 3d scene with tessellation'
+    put('decisions.md', '\n'.join(over) + '\n')
     edit_state(instructions=None)
     reply_to(js('task', 'say', 'RULES big')['id'])
     big = turn_with('RULES big')['message'].split('\n\nHandover')[0]
     shown = big.split('Your project context (context.md):')[0]
     assert 'rule 409' in shown and 'rule 300' not in shown and 5800 < len(shown.encode()) < 7000, (len(shown), shown[:300])
     assert re.search(r'NOT SHOWN: decisions\.md lines 1-\d+ of 110 .*Read /\S+/notes/decisions\.md', shown), shown
-    assert re.search(r'Older lines that left decisions\.md for its size are in /\S+/notes/decisions-archive\.md\.', shown), shown
+    assert 'tessellation' not in shown and 'decisions-archive' not in shown, shown
     context_part = big.split('Your project context (context.md):')[1]
     assert 'Shopfront sells pizza.' in context_part and len(context_part.split('NOT SHOWN')[0].encode()) > 3500, context_part[:200]
-    # ^ `wsx task search` finds the rule of the archive.
+    # ^ `wsx task search` finds the rule that is not shown.
     kept = js('task', 'search', '-p', 'demo', 'tessellation')['hits']
     assert [h['kind'] for h in kept if h['by'] == 'notes'] == ['decision'], kept
     put('decisions.md', '- 2026-10-22 keep the store in sqlite\n')
-    put('decisions-archive.md')
     put('context.md', 'PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
     # ^ The size limit by adapter (docs/tasks.md "Manager"): with no tasks.manager.rotateTokens a
     # manager on Claude keeps its conversation to 400000, one on Pi to 150000; a set value wins.
@@ -3464,9 +3460,13 @@ def part_worker(created=None):
                 'the memo of the landed task as a fact')
     record = json.loads(cli('memory', 'get', fact['slug'], '--json').stdout)
     assert record['verified_by'] == 'task:%d' % free and record['source'] == 'task:%d' % free, record
-    assert record['paths'] == ['free.txt'] and record['commit'] == landed_tip and not fact.get('stale'), (record, landed_tip)
+    assert record['paths'] == ['free.txt'] and record['commit'] == landed_tip and 'stale' not in fact, (record, landed_tip)
+    # ^ The repo service deleted the handoff notes record of each task that ended (docs/memory.md "Deletion").
+    rotation_of = lambda: [int(h['slug'].split('-')[1]) for h in memory_records(cli('memory', 'search', 'NOTES fixture', '--json').stdout)
+                           if h['slug'].startswith('rotation-')]
+    wait(lambda: not [n for n in rotation_of() if show(n)['state'] in ('landed', 'closed')], 'no notes record of an ended task', 30)
     # A worker on that file starts without the fact (no fact record joins a prompt: docs/memory.md "Start set");
-    # once main changes the file, search marks the fact stale.
+    # after main changes the file, search marks nothing (no stale mark).
     def first_prompt(files, *title):
         n = js('task', 'new', '--size', 'small', '--files', files, *title, 'NOOP')['id']
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
@@ -3476,8 +3476,8 @@ def part_worker(created=None):
     assert fact['slug'] not in first_prompt('free.txt', '--title', 'landing brings it')
     (project / 'free.txt').write_text('moved on\n')
     git('commit', '-q', '-am', 'free.txt moves')
-    stale = next(h for h in memory_records(cli('memory', 'search', 'landing brings it', '--json').stdout) if h['slug'] == fact['slug'])
-    assert stale.get('stale') is True, stale
+    moved = next(h for h in memory_records(cli('memory', 'search', 'landing brings it', '--json').stdout) if h['slug'] == fact['slug'])
+    assert 'stale' not in moved, moved
     after = first_prompt('free.txt', '--title', 'landing brings it')
     assert fact['slug'] not in after and 'stale' not in after and 'Records about' not in after, after
     configure((project / 'wsx.config.yml').read_text().replace(
@@ -5104,7 +5104,7 @@ def part_deploy(created=None):
     # Nothing starts while by hand: messages and land are refused, the old turn's gate
     # opens on no one, and no check runs.
     gate.write_text('open')
-    for argv, word in ((('add', handed, 'WORK no.txt'), '--back'), (('steer', handed, 'x'), '--back'),
+    for argv, word in ((('add', handed, 'WORK no.txt'), '--back'), (('add', handed, '--now', 'x'), '--back'),
                        (('land', handed), '--back')):
         refused = cli('task', *argv, '--json', ok=False)
         assert word in refused.stdout + refused.stderr, refused
@@ -8605,7 +8605,7 @@ def part_chats(created=None):
     assert started(False)[-1][1:] == (True, first[2]) and len(started(False)) == 2, started(False)
     # ^ The file moves in the middle of the turn: the steer reaches the running process.
     point('2.1.3')
-    steered = js('task', 'steer', updated, 'keep going')
+    steered = js('task', 'add', updated, '--now', 'keep going')
     assert 'steered' in steered['message'], steered
     settled(2, 'the second turn')
     assert len(started(False)) == 2 and any(t.get('steer_in_turn') == 'keep going' for t in traces()), started(False)

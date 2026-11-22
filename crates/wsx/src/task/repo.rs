@@ -187,6 +187,9 @@ pub fn run(project_id: &str) -> Result<()> {
         reexec: false,
     };
     repo.restore()?;
+    // ^ What a task's end or an older release left in the memory goes once at the start; a store
+    // with nothing past is only read. ref: docs/memory.md "Deletion"
+    repo.sweep_memory(None);
     let requests = events.clone();
     std::thread::spawn(move || {
         hosting::serve(
@@ -1190,9 +1193,9 @@ impl Repo {
                 if !record.state.is_open() {
                     let memo = result["result"]["memo"].as_str().unwrap_or_default();
                     let memo = memo.split_whitespace().collect::<Vec<_>>().join(" ");
+                    let memo = clip(&memo, ledger::MEMO_CHARS);
+                    self.fold_memo(&record, &dir, &memo);
                     if !memo.is_empty() {
-                        let memo = clip(&memo, ledger::MEMO_CHARS);
-                        self.fold_memo(&record, &dir, &memo);
                         summary.push_str(&format!("; memo: {memo}"));
                     }
                 }
@@ -1253,26 +1256,57 @@ impl Repo {
         }
     }
 
-    /// Add a finished task's memo to the manager's notes: a record (a landed task's fact holds
-    /// its landed commit and the paths of its diff), then `notes/context.md` from the records.
-    /// ref: docs/tasks.md "Memo", docs/memory.md "Capture"
+    /// A task that ended: its memo joins the manager's notes as a record (a landed task's fact
+    /// holds its landed commit and the paths of its diff), then `notes/context.md` from the
+    /// records; then the memory deletes what the end made past.
+    /// ref: docs/tasks.md "Memo", docs/memory.md "Capture", "Deletion"
     fn fold_memo(&self, record: &TaskRecord, dir: &wsx_core::task::store::TaskDir, memo: &str) {
         let task = record.id;
         let landed = wsx_core::memory::manage::landed_commit(dir, record);
         let landed = landed
             .as_deref()
             .map(|commit| (commit, record.paths.as_slice()));
-        let done = memory_store(&self.project_id, &self.project, &self.main)
-            .and_then(|store| notes::record_memo(&store, None, task, memo, landed))
-            .map(|drift| self.say_drift(&drift));
-        // ^ The manager that ran the task from another project keeps the fact too, in its own
-        // scope. ref: docs/memory.md "Capture"
-        let done = done.and_then(|()| match self.origin_repo(record) {
-            Some(origin) => self.record_memo_at(&origin, task, memo, landed),
-            None => Ok(()),
+        if !memo.is_empty() {
+            let done = memory_store(&self.project_id, &self.project, &self.main)
+                .and_then(|store| notes::record_memo(&store, None, task, memo, landed))
+                .map(|drift| self.say_drift(&drift));
+            // ^ The manager that ran the task from another project keeps the fact too, in its own
+            // scope. ref: docs/memory.md "Capture"
+            let done = done.and_then(|()| match self.origin_repo(record) {
+                Some(origin) => self.record_memo_at(&origin, task, memo, landed),
+                None => Ok(()),
+            });
+            if let Err(error) = done {
+                self.say(&format!("cannot add the memo: {error:#}"));
+            }
+        }
+        // ^ The land's own fact holds its paths only when the memo left one.
+        let land = landed.map(|(commit, paths)| wsx_core::memory::manage::Land {
+            task,
+            commit,
+            paths: if memo.is_empty() { &[] } else { paths },
         });
-        if let Err(error) = done {
-            self.say(&format!("cannot add the memo: {error:#}"));
+        self.sweep_memory(land.as_ref());
+    }
+
+    /// Delete what is past in the project's memory (`manage::sweep`), and say what went.
+    fn sweep_memory(&self, land: Option<&wsx_core::memory::manage::Land>) {
+        let swept = memory_store(&self.project_id, &self.project, &self.main)
+            .and_then(|store| Ok(wsx_core::memory::manage::sweep(&store, land)?));
+        match swept {
+            Ok(swept) => {
+                if !swept.records.is_empty() || !swept.files.is_empty() {
+                    self.say(&format!(
+                        "memory: deleted {} past record(s) and {} file(s)",
+                        swept.records.len(),
+                        swept.files.len()
+                    ));
+                }
+                for problem in swept.problems {
+                    self.say(&format!("memory: cannot delete {problem}"));
+                }
+            }
+            Err(error) => self.say(&format!("cannot sweep the memory: {error:#}")),
         }
     }
 

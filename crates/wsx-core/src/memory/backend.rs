@@ -7,7 +7,6 @@
 
 use super::index::{self, Doc, Target};
 use super::record::{self, Record, Status, EXCERPT_CHARS};
-use super::start;
 use super::store::{Error, Store};
 use crate::process::{run_bounded, Bound, Options, Stderr};
 use crate::task::manager::QUOTE_REF;
@@ -157,17 +156,10 @@ impl Backend for Builtin {
             Some(r) => r.updated,
             None => docs[at - records.len()].at,
         };
-        // ^ Only the hits that stay are built: a fact with a commit costs one git call to check.
         Ok(best(kept, newest, query.limit)
             .into_iter()
             .filter_map(|(score, at)| match (records.get(at), &target) {
-                (Some(r), _) => {
-                    let mut hit = record_hit(store, r, score);
-                    if start::stale(store, r) {
-                        hit.extra.insert("stale".into(), Value::Bool(true));
-                    }
-                    Some(hit)
-                }
+                (Some(r), _) => Some(record_hit(store, r, score)),
                 (None, Some(target)) => Some(line_hit(
                     store.scope(),
                     target,

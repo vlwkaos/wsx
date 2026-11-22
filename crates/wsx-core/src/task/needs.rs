@@ -168,26 +168,6 @@ impl ChatCounts {
     pub fn waits(&self) -> bool {
         self.needs + self.check > 0
     }
-
-    /// What waits, in the owner's words: "1 question, 1 check", the other needs (a task, an
-    /// approval) as "to decide".
-    pub fn waits_words(&self) -> String {
-        let plural = |n: usize, one: &str, many: &str| match n {
-            1 => format!("1 {one}"),
-            n => format!("{n} {many}"),
-        };
-        let mut words = Vec::new();
-        if self.asks > 0 {
-            words.push(plural(self.asks, "question", "questions"));
-        }
-        if self.needs > self.asks {
-            words.push(format!("{} to decide", self.needs - self.asks));
-        }
-        if self.check > 0 {
-            words.push(plural(self.check, "check", "checks"));
-        }
-        words.join(", ")
-    }
 }
 
 /// One thing that waits for the owner in a chat: the For you list's item, in the TUI, in

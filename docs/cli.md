@@ -26,10 +26,10 @@ wsx daemon stop [--force] [--json]
 wsx daemon recover
 wsx web serve|pair|devices [<site>]
 wsx web vapid
-wsx task new|list|show|add|stop|move|land|after|hold|close|hand|dismiss|check|deploy|release|push|ledger|deployed|checkin|routine|manager|project|say|chat|search|approve|deny|preview|steer [-p <project>] [--json]
+wsx task new|list|show|add|stop|move|land|after|hold|close|hand|dismiss|check|deploy|release|push|ledger|deployed|checkin|routine|manager|project|say|chat|search|approve|deny|preview [-p <project>] [--json]
 ```
 
-Hidden from `wsx --help`, still run: `wsx runtime status` (now `wsx daemon status`), `wsx task handback <n>` (now `wsx task hand <n> --back`), `wsx task steer`, `wsx task check-run`, `digest` and `post` (a worker's and the routines' commands), `wsx memory capture|start|import` (the task host's), `wsx session send-keys` (an alias of `send-text`), `wsx group` and `wsx plugin`. A hidden command keeps its argv, so scripts, hooks, stored routines and a running manager's older prompt work without a change.
+Hidden from `wsx --help`, still run: `wsx task handback <n>` (now `wsx task hand <n> --back`), `wsx task check-run`, `digest` and `post` (a worker's and the routines' commands), `wsx memory capture|start|import` (the task host's), `wsx group` and `wsx plugin`. A hidden command keeps its argv, so scripts, hooks, stored routines and a running manager's older prompt work without a change.
 
 Chats ([tasks.md](tasks.md) "Chats"): `wsx task chat new <name> [--goal <file>|-] [--agent <entry>]`, `chat list` and `chat close <name>` are the owner's. `wsx task chat [--chat <name>] [--after <id>|--around <id>]` reads a chat. `wsx task say [--to <name>] "<text>"` writes to a chat (the first when `--to` is missing). `wsx task move <n>... --chat <name>` hands open and landed tasks to another open chat of the repo: their events, waits and To check items go there; the owner, or a chat's agent for its own tasks. A chat's agent adds `--from-chat [--reply]` to write to another chat of its project (`--to`), or with `-p <project>` to that project's first chat.
 

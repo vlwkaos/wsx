@@ -4,12 +4,13 @@ use super::approve::{after_landing, ask_covering, owner_only, request_of};
 use super::chat::chat_of_repo;
 use crate::cli::PromptSource;
 use crate::cli::{existing_daemon_snapshot, load_config};
+use crate::runtime_util::print_json;
 use crate::task::args::OwnerSaidAfter;
 use crate::task::manager::plain_event;
 use crate::task::preview;
 use crate::task::repo::say_chat;
 use crate::task::{acting_as_manager, actor, open, outward_said, send};
-use crate::task::{ask_host_ok, print_json, project_entry};
+use crate::task::{ask_host_ok, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use std::path::Path;
@@ -649,30 +650,22 @@ pub(crate) fn delete_revision_refs(main: &Path, id: u32) {
     }
 }
 
-/// `wsx task steer`: a message into the running turn.
-pub(crate) fn steer_command(
-    task: &str,
-    text: PromptSource,
-    project: Option<&str>,
-    json: bool,
-) -> Result<()> {
-    let dir = open(project, task)?;
-    let text = text.read(MAX_MESSAGE_BYTES)?;
-    send(&dir, HostRequest::Steer { text }, json)
-}
-
 /// `wsx task add`: a message after the current turn, with more paths it expects to change and
-/// the title of what it now carries.
+/// the title of what it now carries. `now` types it into the running turn instead.
 pub(crate) fn add_command(
     task: &str,
     text: PromptSource,
     files: &[String],
     title: Option<&str>,
+    now: bool,
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let dir = open(project, task)?;
     let text = text.read(MAX_MESSAGE_BYTES)?;
+    if now {
+        return send(&dir, HostRequest::Steer { text }, json);
+    }
     let files = checked_files(&dir.read_record()?.files, files)?;
     let title = title.map(checked_title).transpose()?;
     send(&dir, HostRequest::Add { text, files, title }, json)

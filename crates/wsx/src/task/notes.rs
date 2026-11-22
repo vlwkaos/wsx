@@ -14,9 +14,6 @@ const MAX_NOTES_BYTES: usize = 10 * 1024;
 /// What `context.md` keeps of that budget when `decisions.md` is long: the owner's rules come
 /// first, so `decisions.md` takes the rest (6 KiB), and a short file leaves its part to the other.
 const CONTEXT_FLOOR_BYTES: usize = 4 * 1024;
-const ARCHIVE_FILE: &str = "context-archive.md";
-/// The rules a later one replaced; a view of the records.
-const DECISIONS_ARCHIVE_FILE: &str = "decisions-archive.md";
 /// Ranges named in one notice.
 const NOTICE_RANGES: usize = 4;
 /// The records an owner message gets from the memory.
@@ -26,8 +23,6 @@ const MATCH_RECORDS: usize = 5;
 struct View {
     name: &'static str,
     path: PathBuf,
-    /// The file the lines that left this one for its size are in.
-    archive: &'static str,
     lines: Vec<String>,
     /// In display order.
     shown: Vec<usize>,
@@ -118,14 +113,12 @@ fn split(notes: &Path) -> (View, View) {
         View {
             name: DECISIONS_FILE,
             path: notes.join(DECISIONS_FILE),
-            archive: DECISIONS_ARCHIVE_FILE,
             shown: decisions_shown,
             lines: decisions,
         },
         View {
             name: CONTEXT_FILE,
             path: notes.join(CONTEXT_FILE),
-            archive: ARCHIVE_FILE,
             shown: section.into_iter().chain(memos).collect(),
             lines: context,
         },
@@ -162,14 +155,6 @@ pub(super) fn preamble(notes: &Path) -> String {
                 view.ranges(&hidden),
                 view.lines.len(),
                 view.path.display()
-            ));
-        }
-        let archive = notes.join(view.archive);
-        if !read_note(&archive).trim().is_empty() {
-            out.push_str(&format!(
-                "Older lines that left {} for its size are in {}.\n",
-                view.name,
-                archive.display()
             ));
         }
         out.push('\n');

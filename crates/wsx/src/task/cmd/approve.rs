@@ -1,6 +1,7 @@
 //! The owner's approvals: a request, `approve` and `deny` (docs/tasks.md "Approvals").
 
-use crate::task::{acting_as_manager, actor, print_json, project_entry};
+use crate::runtime_util::print_json;
+use crate::task::{acting_as_manager, actor, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use std::path::Path;

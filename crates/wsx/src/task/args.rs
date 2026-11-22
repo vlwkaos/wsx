@@ -71,23 +71,20 @@ pub enum TaskCmd {
     Why { task: String },
     /// A task's prompt and adds with its commits and diff against its base, for review
     Review { task: String },
-    /// Send a message into the running turn
-    Steer {
-        task: String,
-        #[command(flatten)]
-        text: PromptSource,
-    },
-    /// Send a message after the current turn
+    /// Send a message after the current turn; --now sends it into the running turn
     Add {
         task: String,
         #[command(flatten)]
         text: PromptSource,
         /// Add a glob of the paths it expects to change (repeatable)
-        #[arg(long, value_name = "GLOB")]
+        #[arg(long, value_name = "GLOB", conflicts_with = "now")]
         files: Vec<String>,
         /// Rename the task to what it now carries (at most 60 characters)
-        #[arg(long, value_name = "WORDS")]
+        #[arg(long, value_name = "WORDS", conflicts_with = "now")]
         title: Option<String>,
+        /// Type it into the running turn at once; with no turn running it is a plain add
+        #[arg(long)]
+        now: bool,
     },
     /// Interrupt the worker; the next add resumes the same conversation
     Stop { task: String },
@@ -557,11 +554,9 @@ impl TaskCmd {
             Self::Post { .. } | Self::Digest { .. } | Self::Say { .. } => &[Notify],
             Self::CheckRun { .. } => &[Result],
             Self::After { .. } | Self::Hold { .. } => &[Backlog],
-            Self::Steer { .. }
-            | Self::Add { .. }
-            | Self::Stop { .. }
-            | Self::Move { .. }
-            | Self::Preview { .. } => &[Direct],
+            Self::Add { .. } | Self::Stop { .. } | Self::Move { .. } | Self::Preview { .. } => {
+                &[Direct]
+            }
             Self::New(_) => &[CreateTask],
             Self::Close { discard: true, .. } => &[Discard],
             Self::Close { .. } => &[Close],

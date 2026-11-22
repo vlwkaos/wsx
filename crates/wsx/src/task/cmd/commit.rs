@@ -2,8 +2,9 @@
 //! project's light checks pass on that commit. The manager's one way to write main besides a
 //! land: its boundary denies the checkout (docs/tasks.md "Manager", "Permissions").
 
+use crate::runtime_util::print_json;
 use crate::task::host::{light, run_check};
-use crate::task::{acting_as_manager, actor, owner_said, print_json, project_entry};
+use crate::task::{acting_as_manager, actor, owner_said, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use std::time::Duration;

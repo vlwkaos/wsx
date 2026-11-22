@@ -313,17 +313,12 @@ fn show_hits(answer: backend::Answer, json: bool) -> MemResult<()> {
     }
     for hit in &answer.hits {
         println!(
-            "{:.2} {}/{} [{}, {}{}] {}",
+            "{:.2} {}/{} [{}, {}] {}",
             hit.score,
             hit.scope,
             hit.slug,
             hit.kind,
             hit.status,
-            if hit.extra.contains_key("stale") {
-                ", stale"
-            } else {
-                ""
-            },
             hit.excerpt.replace('\n', " ")
         );
     }

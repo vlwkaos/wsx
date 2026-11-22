@@ -69,12 +69,6 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: PluginCmd,
     },
-    /// The old name of `daemon status`
-    #[command(hide = true)]
-    Runtime {
-        #[command(subcommand)]
-        subcommand: RuntimeCmd,
-    },
     /// Control the wsx terminal daemon without starting it
     Daemon {
         #[command(subcommand)]
@@ -465,15 +459,6 @@ pub enum PluginCmd {
 }
 
 #[derive(Subcommand)]
-pub enum RuntimeCmd {
-    /// Report socket, protocol, epoch, revision, and resource counts
-    Status {
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-#[derive(Subcommand)]
 pub enum DaemonCmd {
     /// Report socket, protocol, epoch, revision, and resource counts; never starts wsxd
     Status {
@@ -833,16 +818,6 @@ pub enum SessionCmd {
         session: String,
         #[arg(long)]
         json: bool,
-        #[command(flatten)]
-        scope: SessionScope,
-    },
-    /// Deprecated alias for send-text
-    #[command(hide = true)]
-    SendKeys {
-        session: String,
-        keys: String,
-        #[arg(long)]
-        no_enter: bool,
         #[command(flatten)]
         scope: SessionScope,
     },

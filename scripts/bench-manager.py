@@ -24,7 +24,7 @@ the host rotated for) three ways: today's fresh start, the fresh start with note
 wrote at the warm moment, and a cold resume of a copy of the real transcript cut at the gap; read-only
 tools, a sonnet judge per return (`--returns`, `--budget`; a return already in the out file is skipped).
 `discussion` is two owner turns (review points one by one, then 'agreed on A and C, do them') and checks
-the tool calls: no `wsx task new`/`add`/`steer` in the first turn, exactly one new or add in the second.
+the tool calls: no `wsx task new`/`add` in the first turn, exactly one new or add in the second.
 `events` prints what `eventModel: sonnet` would cost on the logged
 turns, cache switches counted, then replays real event-only turns on Opus and Sonnet from a fork of the
 manager's transcript (`--samples`, `--budget`; `--probe`: one turn across a model change) for a blind
@@ -91,7 +91,7 @@ elif verb == 'new':
     state['created'] = title
     json.dump(state, open(state_file, 'w'))
     print(json.dumps({'id': 7, 'title': title, 'state': 'working', 'message': 'started task t7'}))
-elif verb in ('add', 'steer', 'land', 'allow'):
+elif verb in ('add', 'land', 'allow'):
     state.setdefault('actions', []).append(args[1:])
     json.dump(state, open(state_file, 'w'))
     print(json.dumps({'ok': True, 'message': '%s done' % verb}))
@@ -120,7 +120,7 @@ def source_at(commit):
 
 # ^ The manager's lend_line(true) and reach_line() of wsx-core task/policy.rs.
 LEND = '`new --skills` lends a worker the ones its task needs. '
-REACH = ("`-p <project>` runs new, show, list, add, steer, stop, hold, land, close in another project, not its deploys, "
+REACH = ("`-p <project>` runs new, show, list, add, stop, hold, land, close in another project, not its deploys, "
          "releases or pushes. Consult its manager ('@<project>') with `wsx task say -p <project> --from-chat`.")
 
 
@@ -235,7 +235,7 @@ def discussion():
 
 def check_discussion(rows):
     """The calls of the two turns, by the fake wsx's tool names."""
-    edits = ('wsx new', 'wsx add', 'wsx steer')
+    edits = ('wsx new', 'wsx add')
     first = {k: n for k, n in rows[0]['tools'].items() if k in edits}
     second = {k: n for k, n in rows[1]['tools'].items() if k in edits}
     if first or sum(second.values()) != 1 or not ({'wsx new', 'wsx add'} & set(second)):
@@ -514,7 +514,7 @@ def run_once(mode, number, out, cases, before):
     # ^ The task set: every call that starts, changes or ends a task, to compare `before` and `after`.
     writes = [call for call in map(json.loads, calls.read_text().splitlines()) if call['argv'][:1] == ['task'] and
               '--help' not in call['argv'] and
-              call['argv'][1:2] and call['argv'][1] in ('new', 'add', 'steer', 'land', 'after', 'hold', 'close', 'stop')] \
+              call['argv'][1:2] and call['argv'][1] in ('new', 'add', 'land', 'after', 'hold', 'close', 'stop')] \
         if calls.exists() else []
     out.write(json.dumps({'mode': mode, 'run': number, 'cases': cases, 'tasks': writes}) + '\n')
     print(json.dumps({'mode': mode, 'run': number, 'tasks': [call['argv'][1:] for call in writes]}), flush=True)
@@ -834,7 +834,7 @@ REPLAY_NOTE = ("\n\n(wsx bench replay, not from the host: this turn runs again o
                "made then, with their output:\n%s\nDecide and answer as you would have then.)")
 EVENT_JUDGE = """You judge turns of a software project manager agent. The manager runs coding tasks
 for its owner: it reviews a ready task's result and diff, then lands it (`land`), sends it back
-with a change (`add`, `steer`), closes it, starts a task (`new`), asks the owner, or does nothing
+with a change (`add`), closes it, starts a task (`new`), asks the owner, or does nothing
 when the events need nothing. `events` is what woke the turn, `reads` what the turn could read
 then, `later` what the log shows afterwards (the owner's next messages and the tasks' later events:
 hindsight, not always caused by the turn). Each of `answers` is one run of the same turn: the
@@ -1340,7 +1340,7 @@ VALID_FROM_MS = 1793977200000
 ROUTINES = Path.home() / '.local/state/wsx/routines/projects'
 ROTATION_JUDGE = """You judge turns of a software project manager agent. The manager runs coding tasks
 for its owner: it reviews a ready task's result and diff, then lands it (`land`), sends it back
-(`add`, `steer`), closes it, starts a task (`new`), asks the owner, answers the owner, or does
+(`add`), closes it, starts a task (`new`), asks the owner, answers the owner, or does
 nothing. `earlier` is the chat before the turn, `prompt` what the turn got, `reads` what it could read
 then, `later` what the log shows afterwards (hindsight, not always caused by the turn). Each of
 `answers` is one run of the same turn by agents that knew different amounts of the earlier work:

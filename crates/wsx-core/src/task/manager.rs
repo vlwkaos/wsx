@@ -643,7 +643,7 @@ pub struct Checkin {
     pub why: String,
 }
 
-fn is_zero(value: &u64) -> bool {
+pub(crate) fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 

@@ -3,9 +3,10 @@
 use super::approve::owner_only;
 use crate::cli::load_config;
 use crate::cli::PromptSource;
+use crate::runtime_util::print_json;
 use crate::task::args::ChatCmd;
 use crate::task::manager;
-use crate::task::{acting_as_manager, actor, launch_manager, open, print_json, project_entry};
+use crate::task::{acting_as_manager, actor, launch_manager, open, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};

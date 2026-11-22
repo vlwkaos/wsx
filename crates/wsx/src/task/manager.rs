@@ -1717,9 +1717,7 @@ impl Manager {
                 self.state.turn_seen = None;
                 self.state.session_cost_micro_usd = 0;
                 if self.state.handover {
-                    let handover = self.handover();
-                    self.remember_handover(&handover);
-                    text = handover + &text;
+                    text = self.handover() + &text;
                     self.state.handover = false;
                 }
                 text = self.notes_preamble() + &text;
@@ -2200,27 +2198,6 @@ impl Manager {
              ledger for the state):\n{}\n{routines}\n",
             lines.join("\n")
         )
-    }
-
-    /// The handover as an episode of the project's memory, in the turn that carries it: no turn
-    /// of its own. A chat's notes stay files. ref: docs/memory.md "Capture"
-    fn remember_handover(&self, handover: &str) {
-        if !self.dir.is_main() {
-            return;
-        }
-        let done = super::repo::memory_store(&self.dir.project_id, &self.project, &self.main)
-            .and_then(|store| {
-                Ok(wsx_core::memory::manage::add_episode(
-                    &store.without_rules(),
-                    "handover",
-                    &format!("path:chats/{}/log.jsonl", self.dir.name()),
-                    handover,
-                    &self.dir.path.join(wsx_core::task::store::LOG_FILE),
-                )?)
-            });
-        if let Err(error) = done {
-            self.say(&format!("cannot remember the handover: {error:#}"));
-        }
     }
 
     fn save(&mut self) {

@@ -1,4 +1,4 @@
-//! `wsx task`: start a headless worker and steer, read and close it.
+//! `wsx task`: start a headless worker, message, read and close it.
 //! ref: docs/tasks.md
 
 mod agent;
@@ -24,6 +24,7 @@ mod slot;
 mod stream_tests;
 
 use crate::cli::load_config;
+use crate::runtime_util::print_json;
 use anyhow::{bail, Context, Result};
 pub use args::{Common, TaskCmd};
 use args::{DeployArgs, ReleaseArgs};
@@ -40,7 +41,7 @@ use cmd::project::project;
 use cmd::routine::{checkin, digest, post, routine_command};
 use cmd::work::{
     add_command, close_command, hand, handback, list, move_command, preview_command, review, show,
-    steer_command, stop_command, why,
+    stop_command, why,
 };
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -71,13 +72,13 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
             message,
             said,
         } => commit(&files, &message, said.owner_said, project, json),
-        TaskCmd::Steer { task, text } => steer_command(&task, text, project, json),
         TaskCmd::Add {
             task,
             text,
             files,
             title,
-        } => add_command(&task, text, &files, title.as_deref(), project, json),
+            now,
+        } => add_command(&task, text, &files, title.as_deref(), now, project, json),
         TaskCmd::Stop { task } => stop_command(&task, project, json),
         TaskCmd::Check { action } => check(action, project, json),
         TaskCmd::Land { task, said } => land_command(task, said, project, json),
@@ -237,11 +238,6 @@ fn open(project: Option<&str>, task: &str) -> Result<TaskDir> {
         &store::project_id(&name, &path),
         store::parse_task_number(task)?,
     )
-}
-
-fn print_json(value: &serde_json::Value) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(value)?);
-    Ok(())
 }
 
 fn wait_for_host(dir: &TaskDir) -> Option<HostResponse> {

@@ -122,21 +122,20 @@ exits(1, 'update', '--slug', 'no-such', '--text-file', '-', '--source', 'task:2'
 exits(2, 'update', '--slug', 'indent-rule', '--source', 'task:2')
 exits(2, 'update', '--slug', 'indent-rule', '--status', 'failed', '--source', 'task:2')
 
-# INVALIDATE and supersede: out of search unless --include-inactive
+# INVALIDATE: out of search unless --include-inactive. supersede deletes the old record at once.
 failed = ok('update', '--slug', 'owner-rule', '--status', 'failed', '--lesson', 'It slowed review.', '--source', 'task:3')
 check(failed['status'] == 'failed' and failed['lesson'] == 'It slowed review.', failed)
 check(slugs('ship') == [] and slugs('ship', '--include-inactive') == ['owner-rule'], 'failed record')
 add('newer', 'Spaces everywhere, in the shell scripts too.', kind='episode')
 old = ok('supersede', 'indent-rule', 'newer', '--source', 'task:4')
-check(old['status'] == 'superseded' and old['superseded_by'] == 'newer', old)
-check('indent-rule' not in slugs('indent') and 'indent-rule' in slugs('indent', '--include-inactive'), 'superseded record')
-inactive = [h for h in ok('search', 'indent', '--include-inactive') if h['slug'] == 'indent-rule']
-check(inactive and inactive[0]['status'] == 'superseded', inactive)
+check(old['slug'] == 'indent-rule' and old['status'] == 'superseded' and old['superseded_by'] == 'newer', old)
+check('indent-rule' not in slugs('indent', '--include-inactive'), 'a superseded record is deleted')
+exits(1, 'get', 'indent-rule')
+exits(1, 'supersede', 'indent-rule', 'newer', '--source', 'task:4')
 exits(1, 'supersede', 'no-such', 'newer', '--source', 'task:4')
 exits(1, 'supersede', 'newer', 'no-such', '--source', 'task:4')
 exits(2, 'supersede', 'newer', 'newer', '--source', 'task:4')
-exits(2, 'supersede', 'newer', 'indent-rule', '--source', 'task:4')
-check(counts() == {'active': 2, 'superseded': 1, 'failed': 1}, counts())
+check(counts()['active'] == 2 and counts()['failed'] == 1 and not counts().get('superseded'), counts())
 
 # status, reindex, list
 status = ok('status')
@@ -204,7 +203,7 @@ check(ok('update', '--slug', 'release-0.10.0', '--description', 'Cut notes', '--
 check(ok('get', 'release-0.10.0')['keywords'] == ['hotfix', 'backport'], 'an update without keywords keeps them')
 exits(2, 'update', '--slug', 'release-0.10.0', '--description', 'two\nlines', '--source', 'task:2')
 exits(2, 'add', '--kind', 'episode', '--slug', 'long-keyword', '--text-file', '-', '--source', 'task:1', '--keywords', 'k' * 65, text='x')
-check(ok('get', 'indent-rule').get('keywords', []) == [] and 'description' not in ok('get', 'indent-rule'), 'a record without them shows none')
+check(ok('get', 'newer').get('keywords', []) == [] and 'description' not in ok('get', 'newer'), 'a record without them shows none')
 for slug in ('v1.2', 'a.b.c-1'):
     check(add(slug, 'Dotted slug %s.' % slug)['slug'] == slug, slug)
 for bad in ('.a', 'a.', 'a..b', '-a', 'A.b', 'a_b', 'a b', 'ü'):
@@ -350,15 +349,16 @@ def notes_part(pid, notes):
           text='x y z', scope=pid)
     check(view('decisions.md').count('\n') == 4, 'a refused rule writes no line')
 
-    # supersede, by command and in one call with --supersedes: the old line leaves decisions.md for the archive
+    # supersede, by command and in one call with --supersedes: the old record and its line in decisions.md are deleted
     old = ok('supersede', rule['slug'], 'no-secrets', '--source', 'msg:7', scope=pid)
     check(old['status'] == 'superseded' and old['superseded_by'] == 'no-secrets', old)
-    check('never   paste secrets  in chat' not in view('decisions.md') and view('decisions-archive.md').endswith('- %s never   paste secrets  in chat\n' % today), 'archive view')
+    check('never   paste secrets  in chat' not in view('decisions.md') and not os.path.exists(os.path.join(notes, 'decisions-archive.md')), 'no archive view')
+    exits(1, 'get', rule['slug'], scope=pid)
     again = ok('add', '--kind', 'rule', '--slug', 'no-secrets-2', '--text-file', '-', '--source', 'msg:7', '--verified-by', 'owner:7',
                '--words', 'never paste secrets', '--supersedes', 'no-secrets', text='Never paste secrets, tokens or keys into chat or logs.', scope=pid)
     check(again['status'] == 'active' and again['slug'] == 'no-secrets-2', again)
-    check(ok('get', 'no-secrets', scope=pid)['status'] == 'superseded' and view('decisions.md').endswith('- %s never paste secrets\n' % today), view('decisions.md'))
-    check(view('decisions-archive.md').endswith('- %s never paste secrets in chat\n' % today), view('decisions-archive.md'))
+    exits(1, 'get', 'no-secrets', scope=pid)
+    check(view('decisions.md').endswith('- %s never paste secrets\n' % today), view('decisions.md'))
     exits(1, 'add', '--kind', 'rule', '--slug', 'r3', '--text-file', '-', '--source', 'msg:7', '--verified-by', 'owner:7', '--supersedes', 'no-such',
           text='A third rule.', scope=pid)
     check(view('decisions.md').count('\n') == 3, 'a refused supersedes stores nothing')
@@ -380,17 +380,15 @@ def notes_part(pid, notes):
     check('sneaky' not in view('decisions.md') and '- 2026-11-05 sneaky hand edit' in view('decisions.md.drift'), 'the edit is kept in the .drift file')
     check(ok('status', scope=pid)['drift'] == [], 'the views are whole again')
 
-    # the context view has a ceiling: the oldest memos show in context-archive.md only
+    # the context view has no ceiling and no archive: every memo stays in context.md
     text = lambda n: 'memo %03d ' % n + 'word ' * 45
     with ThreadPoolExecutor(8) as pool:
         done = list(pool.map(lambda n: run('add', '--kind', 'episode', '--slug', 'memo-%d-x' % (100 + n), '--text-file', '-', '--source', 'task:5',
                                            text=text(n) + str(n), scope=pid)[0], range(150)))
     check(set(done) == {0}, done)
-    main, archive = view('context.md'), view('context-archive.md')
-    check(len(main.encode()) <= 32 * 1024 and archive.startswith('- #1: oldest memo\n'), (len(main), archive[:60]))
-    present = [n for n in range(150) if ('- #%d: memo %03d ' % (100 + n, n)) in main + archive]
-    check(present == list(range(150)), 'every memo is in one view')
-    check(not any(('- #%d: memo %03d ' % (100 + n, n)) in main and ('- #%d: memo %03d ' % (100 + n, n)) in archive for n in range(150)), 'in one only')
+    main = view('context.md')
+    check(len(main.encode()) > 32 * 1024 and main.startswith('# proj\n') and not os.path.exists(os.path.join(notes, 'context-archive.md')), len(main))
+    check(all(('- #%d: memo %03d ' % (100 + n, n)) in main for n in range(150)), 'every memo is in context.md')
 
     # message ids are per chat: a rule added from a topic chat takes its words from that chat's owner message
     chat = os.path.join(os.path.dirname(os.path.dirname(notes)), 'topic')
@@ -413,8 +411,7 @@ def notes_part(pid, notes):
 
 
 def start_part(pid, project):
-    """The start set and the stale rule (docs/memory.md "Start set"): wsx only. The project is a git
-    repository; a fact with `commit` and `paths` is stale once those paths differ at HEAD."""
+    """The start set (docs/memory.md "Start set"): wsx only. The project is a git repository."""
     def git(*args):
         env = {**ENV, 'GIT_AUTHOR_NAME': 't', 'GIT_AUTHOR_EMAIL': 't@t', 'GIT_COMMITTER_NAME': 't', 'GIT_COMMITTER_EMAIL': 't@t'}
         return subprocess.run(['git', '-C', project, *args], check=True, capture_output=True, text=True, env=env).stdout.strip()
@@ -439,14 +436,12 @@ def start_part(pid, project):
     check(text.startswith('Area brief briefs/api.md (files src/**):\nAPI brief: keys are trimmed.') and 'a-fact' not in text and 'a-episode' not in text, text)
     check(start('docs/x.md') == '', 'no area meets the files: no block')
     check(start('src/**').count('Area brief') == 1, 'a glob meets the area once')
-    # ^ A later commit on the fact's paths: stale in search; the block stays the same.
+    # ^ A later commit on the fact's paths: the block stays the same, and search marks nothing (no stale mark).
     open(os.path.join(project, 'src/a.rs'), 'w').write('a changed\n')
     git('commit', '-qam', 'two')
-    check(start('src/a.rs') == text, 'the block does not change with a stale fact')
+    check(start('src/a.rs') == text, 'the block does not change after a commit')
     hits = {h['slug']: h for h in ok('search', 'parser keys sorts', scope=pid)}
-    check(hits['a-fact'].get('stale') is True and 'stale' not in hits['b-fact'], hits)
-    plain = subprocess.run(PREFIX + ['search', 'parser', '--scope', pid], capture_output=True, text=True, env=ENV, cwd=WORK).stdout
-    check('a-fact' in plain and 'stale' in plain, 'the text form says stale: ' + plain)
+    check({'a-fact', 'b-fact'} <= set(hits) and not any('stale' in h for h in hits.values()), hits)
     # ^ Too many for the budget: a brief is cut and says so, the rest is named.
     briefs = {'big1.md': 'one ' * 750, 'big2.md': 'two ' * 750, 'big3.md': 'three ' * 750}
     for name, body in briefs.items():
@@ -501,6 +496,68 @@ def start_part(pid, project):
     check(done['kind'] == 'episode' and 'commit' not in done and 'paths' not in done, done)
 
 
+def sweep_part(pid):
+    """The deletion rule (docs/memory.md "Deletion"): the repo's service (`wsx task repo-host`) sweeps the
+    project's memory at its start. The handoff notes record of an ended task, a manager handover, an old
+    store's superseded rule and the files no code reads go; the rest stays; a second start writes nothing."""
+    wsx = PREFIX[:-1]
+    tasks_root = os.path.join(ENV['XDG_STATE_HOME'], 'wsx', 'tasks')
+    store, chat = os.path.join(tasks_root, pid), os.path.join(tasks_root, 'chats', 'proj')
+    project = os.path.realpath(os.path.join(TMP, 'proj'))
+    for n, state in ((55, 'closed'), (56, 'working')):
+        folder = os.path.join(store, str(n))
+        os.makedirs(folder, mode=0o700)
+        record = {'id': n, 'project': 'proj', 'project_id': pid, 'project_path': project, 'default_branch': 'main', 'base': 'HEAD',
+                  'branch': 'wsx/t%d' % n, 'working_copy': folder, 'pane_id': None, 'adapter': 'claude', 'model': 'm', 'checks': [],
+                  'agent_session': None, 'state': state, 'revision': 1, 'created_unix_ms': 1, 'updated_unix_ms': 1}
+        open(os.path.join(folder, 'task.json'), 'w').write(json.dumps(record))
+        ok('add', '--kind', 'episode', '--slug', 'rotation-%d-abc' % n, '--text-file', '-', '--source', 'task:%d' % n,
+           text='Handoff notes of task %d.' % n, scope=pid)
+    ok('add', '--kind', 'episode', '--slug', 'handover-abc', '--text-file', '-', '--source', 'path:chats/proj/log.jsonl',
+       text='Handover (this is a new conversation).', scope=pid)
+    log = os.path.join(store, 'memory', 'records.jsonl')
+    # ^ A rule an older release superseded and kept.
+    with open(log, 'a') as file:
+        file.write(json.dumps({'op': 'supersede', 'slug': 'old-rule', 'kind': 'rule', 'status': 'superseded', 'text': 'An old rule.',
+                               'source': 'msg:1', 'updated': 1, 'superseded_by': 'readme'}) + '\n')
+    notes = os.path.join(chat, 'notes')
+    gone = [os.path.join(notes, name) for name in ('decisions-archive.md', 'context-archive.md', 'context.md.pre-memory', 'plan-55.md')]
+    gone += [os.path.join(chat, 'threads-placed')] + [os.path.join(store, name) for name in ('grants.json', 'trial.lock', 'batch-check-1.log')]
+    kept = [os.path.join(notes, name) for name in ('plan-56.md', 'retro-2026-11-20.md', 'plan.md')]
+    for path in gone + kept:
+        open(path, 'w').write('x\n')
+    active = ok('status', scope=pid)['counts']['active']
+
+    def start_host():
+        """Start the repo's service, wait for its start line (after the sweep), and stop it."""
+        out = os.path.join(TMP, 'repo-host.out')
+        with open(out, 'w') as sink:
+            host = subprocess.Popen(wsx + ['task', 'repo-host', pid], stdout=sink, stderr=subprocess.STDOUT, cwd=WORK, env=ENV)
+        try:
+            for _ in range(300):
+                if 'service of proj' in open(out).read() or host.poll() is not None:
+                    break
+                time.sleep(0.1)
+        finally:
+            host.terminate()
+            host.wait(10)
+        said = open(out).read()
+        check('service of proj' in said, said)
+        return said
+
+    said = start_host()
+    check('memory: deleted 4 past record(s) and 8 file(s)' in said, said)
+    # ^ `handover-early` of the notes part is a handover too.
+    for slug in ('rotation-55-abc', 'handover-abc', 'handover-early', 'old-rule'):
+        exits(1, 'get', slug, scope=pid)
+    check(ok('get', 'rotation-56-abc', scope=pid)['status'] == 'active', 'the notes of a task that works stay')
+    check(ok('status', scope=pid)['counts']['active'] == active - 3 and '"old-rule"' not in open(log).read(), 'the lines of a deleted record are gone')
+    check([p for p in gone if os.path.exists(p)] == [] and all(os.path.exists(p) for p in kept), [p for p in gone + kept if os.path.exists(p)])
+    before = (open(log).read(), os.stat(log).st_mtime_ns)
+    said = start_host()
+    check('memory: deleted' not in said and (open(log).read(), os.stat(log).st_mtime_ns) == before, 'a second sweep writes nothing: ' + said)
+
+
 def project_scope():
     """A registered project: --scope defaults to the project of the current folder."""
     import hashlib
@@ -552,12 +609,14 @@ def project_scope():
     notes_part(pid, notes)
     backend_part()
     start_part(pid, project)
+    sweep_part(pid)
 
 
 # the store's log (wsx): the old text stays, a torn last line is skipped
 log = os.path.join(status['store'], 'records.jsonl')
 if os.path.exists(log):
-    check('Indent with tabs' in open(log).read(), 'the old text stays in the log')
+    # ^ The old keywords of an update stay in the log; every line of a superseded record is deleted.
+    check('"tagging"' in open(log).read() and 'Indent with' not in open(log).read(), 'the old text stays in the log, a deleted record leaves none')
     with open(log, 'a') as file:
         file.write('{"op":"add","slug":"torn","kind":"epis')
     code, out, err = run('search', 'zebra')

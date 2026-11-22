@@ -2,8 +2,9 @@
 
 use super::approve::{ask_covering, request_of};
 use crate::cli::load_config;
+use crate::runtime_util::print_json;
 use crate::task::args::ProjectCmd;
-use crate::task::{acting_as_manager, print_json, project_entry};
+use crate::task::{acting_as_manager, project_entry};
 use anyhow::Result;
 use serde_json::json;
 use wsx_core::task::manager::{ApprovalAction, ApprovalLine};

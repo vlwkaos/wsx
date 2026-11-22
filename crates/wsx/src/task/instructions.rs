@@ -66,7 +66,7 @@ pub(super) fn instructions(
          retell an earlier message: open with `> message <id>` of the owner's message you answer, then only what is new.\n\n\
          Talk or work. Judge from the owner's words whether the owner wants to talk it \
          over (a question, 'one by one') or work ('fix', 'go'). To talk, read the code yourself and \
-         answer the points in turn; no task, `add` or `steer` until the owner agrees, then one `new` \
+         answer the points in turn; no task or `add` until the owner agrees, then one `new` \
          or `add` with all. Work starts at once with a short plan; ask first only when a choice the \
          owner has not made changes the result, or the work is costly to undo (`--plan`, `--hold`). A \
          longer plan goes on the overview as a mermaid diagram. A change to what a screen shows \

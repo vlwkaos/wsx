@@ -50,7 +50,7 @@ pub enum Kind {
     /// A line of the manager's `notes/decisions.md`; read from the file, never kept. Not while the
     /// file is a view of the records: they are searched themselves.
     Decision,
-    /// A line of the manager's `notes/context.md` or its archive; read from the file.
+    /// A line of the manager's `notes/context.md`; read from the file.
     Memo,
     /// The newest id a catch-up scanned, so the next one stops there; no text.
     Mark,
@@ -100,12 +100,8 @@ pub(super) struct Doc {
     pub text: String,
     /// A `History` line: the byte offset after it in the task's log, so a catch-up reads the log
     /// from the newest one it has.
-    #[serde(default, skip_serializing_if = "is_zero")]
+    #[serde(default, skip_serializing_if = "crate::task::manager::is_zero")]
     pub end: u64,
-}
-
-fn is_zero(value: &u64) -> bool {
-    *value == 0
 }
 
 /// A project to search: its registered name and its store id.
@@ -614,12 +610,7 @@ fn notes(project_id: &str, records_apart: bool) -> Vec<Doc> {
         true => super::manage::rendered_names(project_id),
         false => Vec::new(),
     };
-    for (name, kind) in [
-        ("decisions.md", Kind::Decision),
-        ("decisions-archive.md", Kind::Decision),
-        ("context.md", Kind::Memo),
-        ("context-archive.md", Kind::Memo),
-    ] {
+    for (name, kind) in [("decisions.md", Kind::Decision), ("context.md", Kind::Memo)] {
         if views.iter().any(|view| view == name) {
             continue;
         }
