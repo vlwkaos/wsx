@@ -2572,7 +2572,11 @@ impl Host {
             match taken {
                 Ok(taken) => self.disk_slot = Some((taken, Instant::now())),
                 Err(reason) => {
-                    if self.record.waiting.as_ref().map(|w| &w.reason) != Some(&reason) {
+                    // ^ Not again for new CPU figures in a load reason (`schedule::wait_key`).
+                    let same = self.record.waiting.as_ref().is_some_and(|w| {
+                        schedule::wait_key(&w.reason) == schedule::wait_key(&reason)
+                    });
+                    if !same {
                         self.say(&reason);
                         let on = self.record.waiting.as_ref().map_or(WaitOn::Disk, |w| w.on);
                         self.wait(on, reason);

@@ -5,6 +5,7 @@
 //! ref: docs/design/scheduler.md "Sample"
 
 use super::store::{self, TaskDir};
+use crate::process::root_forms;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, PoisonError};
@@ -227,7 +228,7 @@ impl State {
                 let value = known.remove(&key).or_else(|| {
                     let record = TaskDir::open(&project, id).ok()?.read_record().ok()?;
                     Some((
-                        forms(&record.working_copy),
+                        root_forms(&record.working_copy),
                         format!("{} t{}", record.project, record.id),
                     ))
                 });
@@ -237,16 +238,9 @@ impl State {
         self.known = next;
         Owners {
             tasks: self.known.values().cloned().collect(),
-            store: forms(&store::state_dir().join("tasks")),
+            store: root_forms(&store::state_dir().join("tasks")),
         }
     }
-}
-
-/// A folder as given and as the system reports it (a symlinked parent resolves).
-fn forms(path: &Path) -> Vec<PathBuf> {
-    let mut forms = vec![path.to_path_buf()];
-    forms.extend(path.canonicalize().ok().filter(|real| real != path));
-    forms
 }
 
 struct Row {

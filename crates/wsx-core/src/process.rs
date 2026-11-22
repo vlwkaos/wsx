@@ -615,7 +615,7 @@ pub fn stopped_words(stopped: &[Stopped]) -> String {
 
 /// A root as the system may report a path below it: as given, and with its nearest existing
 /// parent resolved (`/tmp` is `/private/tmp`; the folder itself may be gone).
-fn root_forms(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn root_forms(root: &Path) -> Vec<PathBuf> {
     let mut rest = Vec::new();
     let mut head = root;
     let resolved = loop {
