@@ -13,7 +13,7 @@ Owner, 2026-11-22: manager mode is a superset of **session mode** (the project �
 
 A routine of one project reaches a goal chat by name: `wsx routine add ... --to mac-health`. Memory stays keyed by project: a chat writes its home's scope (a folder home writes the named scope `chat-<name>`) and reads any scope.
 
-## Abilities to gain (from the 11-22 Mac-health day in session mode)
+## Abilities to gain (from the 11-22 machine-health day in session mode)
 
 | # | Ability | Design |
 |---|---|---|
@@ -59,12 +59,12 @@ The TUI opens on manager mode's Home, the web's first screen; `s` switches to se
  ─────────────────────────────────────────────────────────────────────────
  ! For you 3   Approve run: killall fseventsd · land #551 · check #540
  ● mac-health  !1 …2   Approved run a12 ended (exit 0)                  2m
-     this Mac's disk and memory health · ~ · shopfront, dotfiles
+     this Mac's disk and memory health · ~ · shop, dotfiles
  ● wsx         ✓3 …1   I committed the review fixes and opened step 4    5m
      manager mode as a superset of session mode
- ○ studio-app          #112 waits for you: discard?                     1d
+ ○ studio              #112 waits for you: discard?                     1d
  ── side projects ───────────────────────────────────────────────────────
- ○ projk                no news                                           3d
+ ○ notes               no news                                           3d
  ─────────────────────────────────────────────────────────────────────────
  Enter open · n new chat · Tab next ask · s sessions · / search
 ```
@@ -72,7 +72,7 @@ The TUI opens on manager mode's Home, the web's first screen; `s` switches to se
 A chat, with the transcript drawn from `text::blocks` (tables, code, diagrams as boxes):
 
 ```
- ← mac-health   ~ · shopfront, dotfiles             Tasks 2 · To check 1
+ ← mac-health   ~ · shop, dotfiles             Tasks 2 · To check 1
  ─────────────────────────────────────────────────────────────────────────
  You 17:20   free the disk first
  mac-health 17:21
