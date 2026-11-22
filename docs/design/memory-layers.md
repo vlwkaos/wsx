@@ -86,7 +86,7 @@ Limit: the eval kept hand-written briefs. The scribe's notes were scored on ques
 | Daemon and sessions | `crates/wsx-daemon/**` | `wsxd` state, leases | daemon-*.md |
 | Terminal | `crates/wsx-terminal/**` | PTY runtime | terminal-*.md |
 | TUI | `crates/wsx/src/{app,ui}/**` | `app.rs` | ui-state-ownership.md (docs/) |
-| CLI | `crates/wsx/src/cli/**` | `cli.rs` | [cli-lean](cli-lean.md), cli.md |
+| CLI | `crates/wsx/src/cli/**` | `cli.rs` | cli.md |
 | Web server | `crates/wsx-web/src/**` | `wsx web serve` | web-client.md |
 | Web client | `crates/wsx-web/web/**` | embedded files | web-client-*.md, web-themes.md |
 | Scenarios and CI | `scripts/**`, `.github/workflows/ci.yml` | `scripts/ci-scenario.py` | tasks.md "Check slot" |
