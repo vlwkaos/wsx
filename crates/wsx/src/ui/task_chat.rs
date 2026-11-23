@@ -1,16 +1,16 @@
 //! The manager chat: the conversation with the newest at the bottom, the owner's open
 //! items under it and the message line last. ref: docs/tasks.md "TUI"
 use super::{
-    chat_table,
+    chat_table, diagram,
     tasks::muted,
-    text::{cells, truncate_to_width, wrap_cells},
+    text::{self, cells, hard_wrap, truncate_to_width, wrap_cells},
     theme,
 };
-use crate::task_chat::{links, parts, Focus, Item, ManagerChat, Part};
+use crate::task_chat::{diagram_key, links, mermaid_at, parts, Focus, Item, ManagerChat, Part};
 use ratatui::{
     layout::Rect,
     prelude::Stylize,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Clear, Paragraph},
     Frame,
@@ -546,13 +546,57 @@ pub fn chat_lines(
             ]));
             nth = 1;
         }
-        let body = match &row.provisional {
-            Some(agent) => format!("Stand-in {agent}, not checked: {}", row.text),
-            None => row.text.clone(),
-        };
+        let body = crate::task_chat::shown_text(row);
         let source: Vec<&str> = body.lines().collect();
-        let (mut at, mut fenced) = (0, false);
+        let (mut at, mut fenced, mut diagrams) = (0, false, 0);
         while at < source.len() {
+            // ^ A mermaid block is drawn when it fits (`diagram::draw`), its source one link
+            // under it; one that does not draw is that link alone. The link shows the source.
+            // `links` counts the block as one link the same way (`message_targets`).
+            if let Some((diagram, used)) = (!fenced).then(|| mermaid_at(&source[at..])).flatten() {
+                at += used;
+                let key = diagram_key(&row.key, diagrams);
+                diagrams += 1;
+                let room = width.saturating_sub(2).max(1);
+                let open = opened.contains(&key);
+                let count = diagram.lines().count();
+                let drawn = diagram::draw(&diagram, room);
+                let label = match (open, drawn.is_some()) {
+                    (true, _) => format!("▾ mermaid source ({count} lines)"),
+                    (false, true) => format!("▸ mermaid source ({count} lines)"),
+                    (false, false) => format!("▸ diagram not drawn (mermaid, {count} lines)"),
+                };
+                let plain = |text: String| -> Vec<text::Cell> {
+                    text.chars().map(|char| (char, None)).collect()
+                };
+                let mut shown: Vec<chat_table::Shown> = drawn
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|row| (plain(row), Style::default().fg(theme::TEXT_MUTED)))
+                    .collect();
+                shown.push((
+                    label.chars().map(|char| (char, Some(nth))).collect(),
+                    Style::default(),
+                ));
+                nth += 1;
+                if open {
+                    shown.extend(
+                        diagram
+                            .lines()
+                            .flat_map(|line| hard_wrap(line, room))
+                            .map(|line| (plain(line), Style::default().fg(theme::TEXT_MUTED))),
+                    );
+                }
+                push_shown(
+                    &mut lines,
+                    &mut selected_line,
+                    shown,
+                    bar,
+                    row.unix_ms,
+                    selected,
+                );
+                continue;
+            }
             // ^ The table rule of `chat_table` holds anywhere but in a fenced block, which shows
             // as written.
             if source[at].trim_start().starts_with("```") {
@@ -582,29 +626,49 @@ pub fn chat_lines(
                         .collect()
                 }
             };
-            for (part, base) in shown {
-                let mut spans = vec![match bar {
-                    Some(color) => Span::styled("│ ", Style::default().fg(color)),
-                    None => Span::raw("  "),
-                }];
-                for (link, run) in chunk_by_link(&part) {
-                    let style = match link {
-                        None => base,
-                        Some(link) => {
-                            let on = selected == Some((row.unix_ms, link));
-                            if on {
-                                selected_line = Some(lines.len());
-                            }
-                            link_style(on)
-                        }
-                    };
-                    spans.push(Span::styled(run, style));
-                }
-                lines.push(Line::from(spans));
-            }
+            push_shown(
+                &mut lines,
+                &mut selected_line,
+                shown,
+                bar,
+                row.unix_ms,
+                selected,
+            );
         }
     }
     (lines, selected_line)
+}
+
+/// A message's shown pieces as lines after its bar (or indent), links styled and the
+/// selected one's line noted.
+fn push_shown(
+    lines: &mut Vec<Line<'static>>,
+    selected_line: &mut Option<usize>,
+    shown: Vec<chat_table::Shown>,
+    bar: Option<Color>,
+    unix_ms: u64,
+    selected: Option<(u64, usize)>,
+) {
+    for (part, base) in shown {
+        let mut spans = vec![match bar {
+            Some(color) => Span::styled("│ ", Style::default().fg(color)),
+            None => Span::raw("  "),
+        }];
+        for (link, run) in chunk_by_link(&part) {
+            let style = match link {
+                None => base,
+                Some(link) => {
+                    let on = selected == Some((unix_ms, link));
+                    if on {
+                        *selected_line = Some(lines.len());
+                    }
+                    link_style(on)
+                }
+            };
+            spans.push(Span::styled(run, style));
+        }
+        lines.push(Line::from(spans));
+    }
 }
 
 /// A muted row: an event line or a note as one line; a reply to events as the marks of those

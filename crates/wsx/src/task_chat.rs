@@ -109,6 +109,65 @@ pub fn parts(text: &str) -> Vec<Part<'_>> {
     out
 }
 
+/// A fenced mermaid block that opens at `lines[0]` (not inside another fence): its source and
+/// how many lines it takes, both fences included; an unclosed block runs to the end. The chat
+/// draws it as a diagram with one link, its source (`diagram_key`).
+pub fn mermaid_at(lines: &[&str]) -> Option<(String, usize)> {
+    let lang = lines.first()?.trim_start().strip_prefix("```")?;
+    if !lang
+        .split_whitespace()
+        .next()?
+        .eq_ignore_ascii_case("mermaid")
+    {
+        return None;
+    }
+    let end = lines[1..]
+        .iter()
+        .position(|line| line.trim_start().starts_with("```"))
+        .map(|at| at + 1);
+    let body = &lines[1..end.unwrap_or(lines.len())];
+    Some((body.join("\n"), end.map_or(lines.len(), |end| end + 1)))
+}
+
+/// A message's words as the chat shows them: a stand-in's reply names itself first.
+pub fn shown_text(row: &ChatRow) -> String {
+    match &row.provisional {
+        Some(agent) => format!("Stand-in {agent}, not checked: {}", row.text),
+        None => row.text.clone(),
+    }
+}
+
+/// The `opened` key of the `nth` mermaid block of a message: its link shows the source.
+pub fn diagram_key(row: &str, nth: usize) -> String {
+    format!("{row}#diagram{nth}")
+}
+
+/// A message's links in order, line by line as `chat_lines` draws them: a mermaid block is one
+/// link (`Target::More` of its `diagram_key`), any other line its `parts`.
+fn message_targets(key: &str, text: &str) -> Vec<Target> {
+    let lines: Vec<&str> = text.lines().collect();
+    let (mut found, mut at, mut fenced, mut diagrams) = (Vec::new(), 0, false, 0);
+    while at < lines.len() {
+        if !fenced {
+            if let Some((_, used)) = mermaid_at(&lines[at..]) {
+                found.push(Target::More(diagram_key(key, diagrams)));
+                diagrams += 1;
+                at += used;
+                continue;
+            }
+        }
+        if lines[at].trim_start().starts_with("```") {
+            fenced = !fenced;
+        }
+        found.extend(parts(lines[at]).into_iter().filter_map(|part| match part {
+            Part::Link { target, .. } => Some(target),
+            Part::Text(_) => None,
+        }));
+        at += 1;
+    }
+    found
+}
+
 /// The links of the conversation, oldest first: the message's time, the link's place in it and
 /// what it opens. The time and place name a link while rows come and go.
 pub fn links(rows: &[ChatRow]) -> Vec<(u64, usize, Target)> {
@@ -128,14 +187,10 @@ pub fn links(rows: &[ChatRow]) -> Vec<(u64, usize, Target)> {
             id: row.quoted_id,
             check: row.quoted_check.clone(),
         });
-        let targets = parts(&row.text).into_iter().filter_map(|part| match part {
-            Part::Link { target, .. } => Some(target),
-            Part::Text(_) => None,
-        });
         found.extend(
             quoted
                 .into_iter()
-                .chain(targets)
+                .chain(message_targets(&row.key, &shown_text(row)))
                 .enumerate()
                 .map(|(nth, target)| (row.unix_ms, nth, target)),
         );

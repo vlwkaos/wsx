@@ -3,6 +3,7 @@
 mod chat_table;
 pub mod config_modal;
 pub mod confirm;
+mod diagram;
 pub mod global_settings;
 pub mod group_manager;
 pub mod help;

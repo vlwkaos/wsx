@@ -250,7 +250,26 @@ pub fn render_overview(frame: &mut Frame, area: Rect, project: &str, overview: &
 fn overview_lines(text: &str, width: usize) -> Vec<Line<'static>> {
     let mut fenced = false;
     let mut lines = Vec::new();
-    for line in text.lines() {
+    let source: Vec<&str> = text.lines().collect();
+    let mut at = 0;
+    while at < source.len() {
+        // ^ A mermaid block that draws in the width shows as its diagram, as in the chat
+        // (`diagram::draw`); one that does not keeps its source below.
+        if let Some((diagram, used)) = (!fenced)
+            .then(|| crate::task_chat::mermaid_at(&source[at..]))
+            .flatten()
+        {
+            if let Some(rows) = super::diagram::draw(&diagram, width) {
+                at += used;
+                lines.extend(
+                    rows.into_iter()
+                        .map(|row| Line::styled(row, Style::default().fg(theme::TEXT_MUTED))),
+                );
+                continue;
+            }
+        }
+        let line = source[at];
+        at += 1;
         let fence = line.trim_start().starts_with("```");
         let (style, pieces) = if fence {
             fenced = !fenced;

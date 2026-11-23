@@ -1192,6 +1192,17 @@ def manager_up(created):
         (r'(?m)^ You +\d\d:\d\d\n   STATUS$', b'\x1b'),
         (r'(?m)^ MANAGER +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
     assert 'jump' in jumped[2] and 'jump' not in jumped[4], jumped[4]
+    # ^ A mermaid block the chat can draw shows as its diagram, its source one link under it; Enter
+    # on that link shows the source. A type it does not draw is the link alone (docs/tasks.md "TUI").
+    reply_to(js('task', 'say', 'not drawn\n\n```mermaid\nzenuml\n  title Demo\n```')['id'])
+    reply_to(js('task', 'say', 'drawn\n\n```mermaid\nflowchart TD\n  Plan --> Land\n```')['id'])
+    diagrams = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
+        (r'(?s)▸ diagram not drawn \(mermaid, 2 lines\).*│ Plan │.*│ Land │.*▸ mermaid source \(2 lines\)', b'['),
+        (r'(?m)^ MANAGER +Enter: open', b'\r'),
+        (r'(?s)▾ mermaid source \(2 lines\)\n +flowchart TD\n +Plan --> Land', b'\x1b'),
+        (r'(?m)^ MANAGER +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+    assert 'zenuml' not in diagrams[2] and 'flowchart TD' not in diagrams[2], diagrams[2]
     # ^ After the jump: the owner's Reply (web *Reply*, TUI `r`) sends `> message <id>` too: stored in the same
     # format with the id, and the agent reads the line.
     said_back = js('task', 'say', '> message 1\n\nthe owner answers')
