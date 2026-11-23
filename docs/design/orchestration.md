@@ -284,13 +284,22 @@ How to get there, in order:
 5. **Then a mockup to discuss,** then build phone-first (390x844 and 390x420 with the keyboard up) and the TUI at 80 columns and wide, with the design lint on each capture.
 6. **Human verify** what code cannot judge: after one day of real use, the owner clears the inbox in under 2 minutes and never asks a thread for its status.
 
-### The owner's choices
+### The owner's decisions (2026-11-23; step 0 skipped, build B)
 
-1. **Desk lead:** an always-open lead thread per desk that never watches events (recommended, since you asked for an
-   anchored manager and like talk between managers), or a desk that is code only.
-2. **Router autonomy:** fork without asking and show an undo chip (recommended), or ask before each fork.
-3. **Landing default:** `local` for all projects with `pr` as an opt-in (recommended), or `pr` by default.
-4. **Contract files:** who may change a scenario assert: only the owner's approved diff (recommended), or a desk's review.
+1. **Desk lead: yes.** One always-open lead thread per project. Events about a thread's own work go to code and to that
+   thread; the lead takes a turn only for a message from the owner or from another project's lead, and forks every goal.
+2. **Router: automatic with undo.** Rules first (`/new`, `@thread`, a reply-quote decide with no model), then a small
+   model (Haiku, or the local model while Claude is limited) that reads only the message and the open threads' goal
+   lines and answers `stay`, `thread:<id>` or `new:<title>`. A moved message dims in place under "⑂ moved to *name* ·
+   undo · open"; focus stays; a long-press moves any message by hand.
+3. **Landing: `local`, `pr` per project** in its `wsx.config.yml`.
+4. **Ask items, closed by code only.** Every suggestion, question or approval is one inbox item with a basis (subject,
+   commit, files); prose cannot ask. Code closes an item when a newer item of the same thread and subject replaces it,
+   when a land changes its basis files ("stale: X changed", re-ask from FYI), when its thread ends, or after 3 days; at
+   most 20 open per project, oldest first out; closed items stay 30 days, then only in the log. No agent gardens them.
+   Contract files: a stricter contract (asserts only added) lands as FYI; a changed assert is a Decide item.
+   **Autonomy is off by default** per project; on, a higher-tier reviewer may approve a changed assert and the owner gets
+   it as Review with a one-tap revert for 24 h.
 
 ### Steps, each proven by a scenario through the real entry point
 
