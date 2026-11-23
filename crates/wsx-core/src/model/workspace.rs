@@ -145,8 +145,6 @@ pub struct TaskConfig {
     /// before the deploy after a land runs, so a burst of lands deploys once; 0 deploys at each
     /// land (docs/tasks.md "Deploy and release").
     pub deploy_quiet_secs: u64,
-    /// `tasks.preview`: how a task is tried on request (docs/tasks.md "Preview").
-    pub preview: Option<TaskPreview>,
     pub release_approve: bool,
     /// Shell commands that deploy or release one default-branch commit.
     pub deploy_command: Option<String>,
@@ -212,17 +210,6 @@ impl Default for TaskWorkflow {
             steps: Vec::new(),
         }
     }
-}
-
-/// A command that serves one task on `$PORT`, the path that answers once it is up, and
-/// the ports it may use.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskPreview {
-    pub command: String,
-    pub ready: String,
-    pub ports: (u16, u16),
-    /// `tasks.preview.local`: serve on 127.0.0.1 only, without `tailscale serve`.
-    pub local: bool,
 }
 
 /// How long a task the manager must act on may wait with no action: 30 minutes.
@@ -293,7 +280,6 @@ impl Default for TaskConfig {
             deploy_public: false,
             deploy_auto: false,
             deploy_quiet_secs: DEFAULT_DEPLOY_QUIET_SECS,
-            preview: None,
             release_approve: true,
             deploy_command: None,
             release_command: None,

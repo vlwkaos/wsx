@@ -384,13 +384,11 @@ pub fn agent_label(agent: &Value) -> Option<String> {
 
 /// The owner's actions on a task that its state allows; the web's buttons and the TUI's keys
 /// read this and no client makes its own rule. The host still decides; this only picks what
-/// is offered. `status_kind` is the status's `kind`, `preview` whether the project sets
-/// `tasks.preview`.
+/// is offered. `status_kind` is the status's `kind`.
 /// - `land`: a ready task with no pending approval of its own.
 /// - `hand`, `handback`: take a build over in its working copy and give it back
 ///   (docs/tasks.md "By hand").
 /// - `answer`: the owner talks to the manager: a wait for the owner or a failure.
-/// - `try`: start the task's preview (docs/tasks.md "Preview").
 ///
 /// Hold stays a command for the manager: the owner's message to the worker goes
 /// through the manager (docs/web-client-tasks.md "Task sheet").
@@ -398,7 +396,6 @@ pub fn owner_actions(
     state: TaskState,
     waiting: Option<WaitOn>,
     status_kind: Option<&str>,
-    preview: bool,
 ) -> Vec<&'static str> {
     let mut actions = Vec::new();
     if (matches!(waiting, Some(WaitOn::Owner | WaitOn::Asks)) && status_kind != Some("after"))
@@ -419,10 +416,18 @@ pub fn owner_actions(
         (TaskState::Working | TaskState::Waiting | TaskState::Failed, _) => actions.push("hand"),
         (TaskState::Checking | TaskState::Landed | TaskState::Closed, _) => {}
     }
-    if preview && state != TaskState::Closed {
-        actions.push("try");
-    }
     actions
+}
+
+/// The `wsx task` argv that runs owner action `action` on task `task`, for the actions that run
+/// as a command (`hand`, `handback`); the web and the TUI both use it.
+pub fn action_argv(action: &str, task: u64) -> Vec<String> {
+    let mut argv = vec!["task".to_string(), action.to_string(), task.to_string()];
+    if action == "handback" {
+        argv[1] = "hand".into();
+        argv.push("--back".into());
+    }
+    argv
 }
 
 pub fn task_summary(dir: &TaskDir, record: &TaskRecord) -> Value {

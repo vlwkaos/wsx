@@ -3450,7 +3450,7 @@ impl Host {
         };
         std::thread::spawn(move || {
             let queued = std::time::Instant::now();
-            let (mut held, mut ci, mut width) = (None, None, 0);
+            let (mut held, mut ci) = (None, None);
             match place {
                 Place::Free => {}
                 Place::Ci(why) => ci = Some(why),
@@ -3463,10 +3463,6 @@ impl Host {
                         Ok(Taken::Ci(why)) => ci = Some(why),
                         taken => {
                             let _ = events.send(Event::CheckSlot(error, of_run));
-                            width = match &taken {
-                                Ok(Taken::Slot(slot)) => slot.width,
-                                _ => 0,
-                            };
                             held = taken.ok();
                         }
                     }
@@ -3484,11 +3480,7 @@ impl Host {
                     timeout = timeout.max(schedule::CI_TIMEOUT);
                 }
                 let ran = run_check(&working_copy, command, &env, timeout, log);
-                CheckResult {
-                    queued_ms,
-                    width: if on_ci { 0 } else { width },
-                    ..ran
-                }
+                CheckResult { queued_ms, ..ran }
             };
             let on_ci = |why: &str| {
                 let _ = events.send(Event::CheckQueued(
@@ -4736,7 +4728,6 @@ pub(super) fn run_check(
         output: joined([log_tail(log).unwrap_or_default(), said]),
         ms: started.elapsed().as_millis() as u64,
         queued_ms: 0,
-        width: 0,
         stored: false,
     }
 }

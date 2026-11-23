@@ -372,62 +372,12 @@ pub fn typical_ms(project_id: &str, command: &str) -> u64 {
         .unwrap_or(LOCAL_ROUND_MS)
 }
 
-/// What the recorded scenario runs say of each part at each lane width: `(part, width, runs,
-/// failed runs)`, in that order. A run counts when its `check_run` record has a width and its
-/// output ends with scenario.py's summary line (`== task scenario: core passed 653 s, ... ==`).
-pub fn widths(project_id: &str) -> Vec<(String, u32, usize, usize)> {
-    let mut rows: std::collections::BTreeMap<(String, u32), (usize, usize)> = Default::default();
-    for (dir, _) in project_tasks(project_id).unwrap_or_default() {
-        for entry in dir.read_log().unwrap_or_default() {
-            let LogEvent::CheckRun { results } = entry.event else {
-                continue;
-            };
-            for result in results.iter().filter(|r| r.width > 0 && !r.stored) {
-                for (part, failed) in summary_parts(&result.output) {
-                    let row = rows
-                        .entry((
-                            format!("{} {part}", scenario_of(&result.command)),
-                            result.width,
-                        ))
-                        .or_default();
-                    row.0 += 1;
-                    row.1 += usize::from(failed);
-                }
-            }
-        }
-    }
-    rows.into_iter()
-        .map(|((part, width), (runs, failed))| (part, width, runs, failed))
-        .collect()
-}
-
 /// The scenario a command runs: the word after `scenario.py`, else the command.
 fn scenario_of(command: &str) -> &str {
     let mut words = command
         .split_whitespace()
         .skip_while(|w| !w.ends_with("scenario.py"));
     words.nth(1).unwrap_or(command)
-}
-
-/// The parts of the last summary line of a scenario run: `(name, failed)`.
-fn summary_parts(output: &str) -> Vec<(&str, bool)> {
-    output
-        .lines()
-        .rev()
-        .find_map(|line| {
-            let list = line.trim().strip_prefix("== ")?.strip_suffix(" ==")?;
-            Some(list.split_once(" scenario: ")?.1)
-        })
-        .map(|list| {
-            list.split(", ")
-                .filter_map(|part| {
-                    let mut words = part.split_whitespace();
-                    let (name, state) = (words.next()?, words.next()?);
-                    matches!(state, "passed" | "failed").then_some((name, state == "failed"))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -511,17 +461,6 @@ mod tests {
         assert!(since.is_none());
         free.waited = LOAD_WAIT;
         assert_eq!(decide(&smoke, &free), Verdict::Go);
-    }
-
-    #[test]
-    fn a_summary_line_gives_each_part_and_whether_it_failed() {
-        let output = "[core] ok\n== task scenario: core passed 653 s, worker failed 100 s, 653 s ==\nFAILED section 3";
-        assert_eq!(
-            summary_parts(output),
-            vec![("core", false), ("worker", true)]
-        );
-        assert_eq!(scenario_of("python3 -B scripts/scenario.py web"), "web");
-        assert!(summary_parts("no summary").is_empty());
     }
 
     #[test]

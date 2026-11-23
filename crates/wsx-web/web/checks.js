@@ -26,32 +26,6 @@ export function checkQuote(item) {
   return chars.length <= 120 ? line : `${chars.slice(0, 119).join("").trimEnd()}…`;
 }
 
-// Try: start the task's preview, or find the running one, then a link to open it. A link
-// the person opens keeps popup blockers out of the way. Only for projects with
-// `tasks.preview` (docs/tasks.md "Preview").
-export function TryButton({ project, task, icon = false }) {
-  const store = useStore();
-  const [state, setState] = useState({ busy: false, url: null, error: "" });
-  if (!store.tasks[project]?.preview || !can("task_act")) return null;
-  const start = async () => {
-    setState({ busy: true, url: null, error: "" });
-    try {
-      const answer = await api(`api/tasks/${project}/t/${task}/preview`, { method: "POST", json: {} });
-      setState({ busy: false, url: answer.url, error: "" });
-    } catch (failure) {
-      setState({ busy: false, url: null, error: failure.message });
-    }
-  };
-  const label = icon ? "icon-button check-act" : "button need-action";
-  return html`
-    ${state.url
-      ? html`<a class=${label} href=${state.url} target="_blank" rel="noopener" title="Open the preview"
-          aria-label=${`Open the preview of #${task}`}>${icon ? html`<${Icon} name="open" />` : "Open"}</a>`
-      : html`<button class=${label} type="button" disabled=${state.busy} onClick=${start} title="Try it on a preview"
-          aria-label=${`Try #${task} on a preview`}>${icon ? html`<${Icon} name="play" />` : state.busy ? "Starting…" : "Try"}</button>`}
-    ${state.error && html`<span class="error" role="alert">${state.error}</span>`}`;
-}
-
 // Where a person looks: a link when it is a URL or a page path, else the words.
 function Place({ where }) {
   if (!where) return null;
@@ -62,7 +36,7 @@ function Place({ where }) {
 }
 
 // One item: the task chip with what the task did as its title, then the check, where to look,
-// its capture and when it passes as labeled lines. Try, Reply, Fail and Pass are icons in one place
+// its capture and when it passes as labeled lines. Reply, Fail and Pass are icons in one place
 // on every item: the bottom right on a phone, a column right of the words on a wide screen.
 // Pass and Fail close the item at once and open nothing. Reply opens the manager's composer as a
 // reply to the item (`onReply`, the quote `> check <id>`): the sent words close it as replied and
@@ -126,7 +100,6 @@ export function CheckRow({ project, item: listed, revision, onChanged, onReply, 
         </div>
         ${acting && html`
           <span class="check-acts">
-            <${TryButton} project=${project} task=${item.task} icon />
             ${onReply && html`<button class="icon-button check-act" type="button" disabled=${busy} title="Reply"
               aria-label=${`Reply: ${item.check}`} onClick=${reply}><${Icon} name="reply" /></button>`}
             <button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy} title="Fail"

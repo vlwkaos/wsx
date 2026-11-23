@@ -781,7 +781,6 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
                 (has("answer"), "(a)nswer"),
                 (has("handback"), "(H)and back"),
                 (has("hand") && !has("handback"), "(H)and"),
-                (has("try"), "(T)ry"),
             ] {
                 if shown {
                     hints.push(hint.into());

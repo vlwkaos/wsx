@@ -560,21 +560,16 @@ impl TaskList {
     }
 
     /// The owner's actions on the task whose detail shows: the web's rule (`owner_actions`),
-    /// read off the ledger row and the project's `tasks.preview`.
+    /// read off the ledger row.
     pub fn detail_actions(&self) -> Vec<&'static str> {
-        let (Some(task), Some(ledger)) = (self.detail_task(), &self.ledger) else {
+        let Some(task) = self.detail_task() else {
             return Vec::new();
         };
         let Ok(state) = serde_json::from_value::<TaskState>(task["state"].clone()) else {
             return Vec::new();
         };
         let waiting = serde_json::from_value::<WaitOn>(task["waiting"]["on"].clone()).ok();
-        view::owner_actions(
-            state,
-            waiting,
-            task["status"]["kind"].as_str(),
-            ledger["preview"].as_bool().unwrap_or(false),
-        )
+        view::owner_actions(state, waiting, task["status"]["kind"].as_str())
     }
 
     /// One key in a task's detail. False when it is not an action's key. A land or a hand
@@ -603,11 +598,6 @@ impl TaskList {
         match action {
             Action::Land => self.confirm = offered(&["land"]),
             Action::ConfirmHalt => self.confirm = offered(&["handback", "hand"]),
-            Action::GroupManager => {
-                if let Some(what) = offered(&["try"]) {
-                    self.run(id, what);
-                }
-            }
             Action::NextActive => {
                 if actions.contains(&"answer") {
                     self.open_chat(None);
@@ -627,13 +617,12 @@ impl TaskList {
         if self.acting.is_some() {
             return;
         }
-        let (doing, verb) = match what {
-            "land" => ("Landing", "land"),
-            "hand" => ("Taking over", "hand"),
-            "handback" => ("Handing back", "handback"),
-            _ => ("Starting the preview of", "preview"),
+        let doing = match what {
+            "land" => "Landing",
+            "hand" => "Taking over",
+            _ => "Handing back",
         };
-        let argv = vec!["task".to_string(), verb.into(), id.to_string()];
+        let argv = view::action_argv(what, id);
         let project = self.project.clone();
         let (tx, rx) = mpsc::sync_channel(1);
         self.acting = Some(format!("{doing} #{id}…"));
@@ -647,7 +636,6 @@ impl TaskList {
                     done["message"]
                         .as_str()
                         .map(str::to_string)
-                        .or_else(|| done["url"].as_str().map(|url| format!("Preview: {url}")))
                         .unwrap_or_else(|| format!("#{id} {what} done")),
                     false,
                 ),

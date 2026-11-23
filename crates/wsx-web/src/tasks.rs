@@ -109,8 +109,8 @@ pub struct OverviewKey {
     stamp: store::Stamp,
     /// The open chats and the main chat: a chat that opens or closes moves tasks between views.
     chats: (Vec<String>, Option<String>),
-    /// `land.auto`, the manager's shown name, `preview` set.
-    settings: Option<(bool, String, bool)>,
+    /// `land.auto` and the manager's shown name.
+    settings: Option<(bool, String)>,
 }
 
 /// A built overview and when, by project and the chat that looks ("" is the main chat).
@@ -175,7 +175,6 @@ fn overview_in(
             (
                 settings.land_auto,
                 settings.manager_shown_name(&scope.name).to_string(),
-                settings.preview.is_some(),
             )
         }),
     };
@@ -406,8 +405,6 @@ fn build_overview(
         "default_agent": settings.map(view::default_agent),
         "asks": asks,
         "last_unix_ms": last_unix_ms,
-        // ^ Tasks can be tried on a preview link (docs/tasks.md "Preview").
-        "preview": settings.is_some_and(|settings| settings.preview.is_some()),
     })
 }
 
@@ -648,9 +645,6 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
             record.state,
             on,
             summary["status"]["kind"].as_str(),
-            settings
-                .as_ref()
-                .is_ok_and(|settings| settings.preview.is_some()),
         ))
     } else {
         json!([])
@@ -1334,16 +1328,10 @@ pub fn dismiss(scope: &Scope, id: u64) -> Outcome<Value> {
     run_wsx(scope, vec!["task".into(), "dismiss".into(), id.to_string()])
 }
 
-/// `wsx task <command> <task>`: `preview` starts a preview or answers the running one
-/// (`{url, port, until_unix_ms}`); `hand` and `handback` (`hand --back`) open and close the hand session the
-/// way the CLI does (docs/tasks.md "By hand").
+/// `wsx task <command> <task>`: `hand` and `handback` (`hand --back`) open and close the hand
+/// session the way the CLI does (docs/tasks.md "By hand").
 pub fn run_task(scope: &Scope, command: &str, task: u32) -> Outcome<Value> {
-    let mut argv = vec!["task".into(), command.into(), task.to_string()];
-    if command == "handback" {
-        argv[1] = "hand".into();
-        argv.push("--back".into());
-    }
-    run_wsx(scope, argv)
+    run_wsx(scope, view::action_argv(command, task.into()))
 }
 
 /// Run `wsx <argv> -p <project> --json` as the owner and return its JSON answer.

@@ -15,7 +15,6 @@ import datetime
 import fcntl
 import hashlib
 import http.server
-import urllib.request
 import json
 import os
 import pwd
@@ -5072,59 +5071,6 @@ def part_deploy(created=None):
     assert [r['commit'] for r in deploy_records()[records_before:]] == [lost_tip], deploy_records()[records_before:]
     wait_closed(lost)
 
-    # 29. A preview on request (docs/tasks.md "Preview"): a fake tailscale records its argv.
-    mark('29')
-    tailscale_log = work / 'tailscale.log'
-    (bin_dir / 'tailscale').write_text('#!/bin/sh\necho "$@" >> ' + str(tailscale_log) + '\n'
-                                       'if [ "$1" = status ]; then echo \'{"Self":{"DNSName":"host.example.ts.net."}}\'; fi\n')
-    (bin_dir / 'tailscale').chmod(0o755)
-    preview_config = LAND_CONFIG + """  preview:
-    command: 'exec python3 -m http.server "$PORT" --bind 127.0.0.1'
-    ports: 9150-9199
-"""
-    configure(preview_config, 'preview')
-    pv = js('task', 'new', 'WORK pv.txt')['id']
-    assert wait_state(pv, 'ready', 'failed')['state'] == 'ready'
-
-    def answers(port, name='pv.txt'):
-        try:
-            with urllib.request.urlopen('http://127.0.0.1:%d/%s' % (port, name), timeout=3) as response:
-                return response.status == 200
-        except OSError:
-            return False
-
-    running_preview = js('task', 'preview', pv)
-    port = running_preview['port']
-    assert running_preview['url'] == 'https://host.example.ts.net:%d/' % port and 9150 <= port <= 9199, running_preview
-    assert answers(port) and ('serve --bg --https=%d http://127.0.0.1:%d' % (port, port)) in tailscale_log.read_text()
-    assert js('task', 'preview', pv)['port'] == port and any(e['kind'] == 'preview' for e in log(pv))
-    assert js('task', 'preview', pv, '--stop')['stopped'] is True
-    assert not answers(port) and ('serve --bg --https=%d off' % port) in tailscale_log.read_text()
-    assert 'reset' not in tailscale_log.read_text()
-    # Closing the task stops a running preview.
-    again = js('task', 'preview', pv)['port']
-    js('task', 'close', pv, '--discard')
-    assert not answers(again) and tailscale_log.read_text().count('--https=%d off' % again) >= 1
-    # `local: true`, and a machine without tailscale: the url is local and tailscale never runs.
-    calls = tailscale_log.read_text()
-    configure(preview_config + "    local: true\n", 'local preview')
-    lp = js('task', 'new', 'WORK lp.txt')['id']
-    assert wait_state(lp, 'ready', 'failed')['state'] == 'ready'
-    local = js('task', 'preview', lp)
-    assert local['url'] == 'http://127.0.0.1:%d/' % local['port'] and answers(local['port'], 'lp.txt'), local
-    assert js('task', 'preview', lp, '--stop')['stopped'] is True and not answers(local['port'], 'lp.txt')
-    (bin_dir / 'tailscale').unlink()
-    configure(preview_config, 'preview without tailscale')
-    absent = js('task', 'preview', lp)
-    assert absent['url'] == 'http://127.0.0.1:%d/' % absent['port'] and answers(absent['port'], 'lp.txt'), absent
-    js('task', 'close', lp, '--discard')
-    assert not answers(absent['port'], 'lp.txt') and tailscale_log.read_text() == calls
-    configure(LAND_CONFIG, 'no preview')
-    plain = js('task', 'new', 'WORK plain.txt')['id']
-    assert wait_state(plain, 'ready', 'failed')['state'] == 'ready'
-    assert 'configures no tasks.preview' in cli('task', 'preview', plain, ok=False).stderr
-    js('task', 'close', plain, '--discard')
-
     # 30. By hand (docs/tasks.md "By hand"): the owner takes a running build over in its own
     mark('30')
     # working copy with a fork of the worker's conversation; nothing else writes there until
@@ -5138,7 +5084,7 @@ def part_deploy(created=None):
     assert 'only a task worked by hand' in cli('task', 'hand', handed, '--back', '--json', ok=False).stderr
     queued = js('task', 'add', handed, 'WORK queued.txt')
     assert 'queued' in queued['message'], queued
-    for argv in (('hand',), ('hand', '--back'), ('handback',)):
+    for argv in (('hand',), ('hand', '--back')):
         refused = subprocess.run([str(wsx), 'task', argv[0], str(handed), *argv[1:]], cwd=project, env=manager_env,
                                  capture_output=True, text=True)
         assert refused.returncode != 0 and 'for the owner' in refused.stderr, refused.stderr
@@ -5188,7 +5134,7 @@ def part_deploy(created=None):
     (hand_copy / 'hand.txt').write_text('made by hand\n')
     git('add', 'README', 'hand.txt', cwd=hand_copy)
     git('commit', '-q', '-m', 'by hand', cwd=hand_copy)
-    back = js('task', 'handback', handed)  # the hidden old name of `hand --back`
+    back = js('task', 'hand', handed, '--back')
     assert back['ok'] and len(back['sessions_closed']) == 1 and '1 commit' in back['message'], back
     assert not hand_sessions()
     assert [e['commits'] for e in log(handed) if e['kind'] == 'handback'] == [1]

@@ -49,7 +49,7 @@ pub enum Capability {
     Handoff,
     /// `new`.
     CreateTask,
-    /// `add`, `stop`, `move`, `preview`: act on a task.
+    /// `add`, `stop`, `move`: act on a task.
     Direct,
     /// `close` without `--discard`.
     Close,
@@ -62,7 +62,7 @@ pub enum Capability {
     /// `routine add|edit|delete|enable|disable|run|cancel|fire`, `checkin`.
     Routine,
     /// The owner's commands, which the CLI judges itself for a manager: `approve`, `deny`,
-    /// `hand` (also `--back`, and its old name `handback`), `dismiss`, and the hidden host commands.
+    /// `hand` (also `--back`), `dismiss`, and the hidden host commands.
     Approve,
     /// A worker's `result` and `check-run`.
     Result,

@@ -17,7 +17,6 @@ pub(crate) mod limit;
 pub mod manager;
 mod notes;
 mod pi;
-mod preview;
 mod repo;
 mod slot;
 #[cfg(test)]
@@ -40,8 +39,7 @@ use cmd::new::new;
 use cmd::project::project;
 use cmd::routine::{checkin, digest, post, routine_command};
 use cmd::work::{
-    add_command, close_command, hand, handback, list, move_command, preview_command, review, show,
-    stop_command, why,
+    add_command, close_command, hand, handback, list, move_command, review, show, stop_command, why,
 };
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -101,9 +99,7 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
             said,
         } => close_command(&task, discard, said, project, json),
         TaskCmd::Hand { task, back: false } => hand(&open(project, &task)?, json),
-        TaskCmd::Hand { task, back: true } | TaskCmd::Handback { task } => {
-            handback(&open(project, &task)?, json)
-        }
+        TaskCmd::Hand { task, back: true } => handback(&open(project, &task)?, json),
         TaskCmd::Approve { id } => approve(project, &id, json),
         TaskCmd::Deny { id, note } => deny(project, &id, note, json),
         TaskCmd::Deploy(args) => deploy(DeployKind::Deploy, args, project, json),
@@ -131,7 +127,6 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
         TaskCmd::Run { cwd, why, argv } => cmd::run::ask(project, cwd, why, argv, json),
         TaskCmd::Ran { id } => cmd::run::ran(project, &id),
         TaskCmd::Ledger => ledger::ledger(project),
-        TaskCmd::Widths => ledger::widths(project),
         TaskCmd::Routine {
             mut action,
             owner_said,
@@ -174,10 +169,6 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
         // ^ Under a task host's broker the CLI forwards it before parsing (broker.rs).
         TaskCmd::CheckRun { .. } => {
             bail!("`wsx task check-run` runs only inside a task's worker, through its host")
-        }
-        TaskCmd::Preview { task, stop } => preview_command(&task, stop, project, json),
-        TaskCmd::PreviewHost { project_id, task } => {
-            preview::host(&project_id, store::parse_task_number(&task)?)
         }
         TaskCmd::ManagerHost { project_id, chat } => manager::run_old(&project_id, chat.as_deref()),
         TaskCmd::ChatHost { chat } => manager::run(&chat),

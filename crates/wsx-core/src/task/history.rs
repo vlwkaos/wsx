@@ -63,7 +63,7 @@ pub fn timeline(log: &[LogEntry], cap: usize) -> Timeline<'_> {
 }
 
 /// An event in words, with its label; none for the events that are no step of the task's story
-/// (progress, waits, pings, previews). The one wording of the digest and of `read`.
+/// (progress, waits, pings). The one wording of the digest and of `read`.
 pub fn line(event: &LogEvent) -> Option<(&'static str, String)> {
     Some(match event {
         LogEvent::Created { base, branch } => ("start", format!("branch {branch} from {base}")),

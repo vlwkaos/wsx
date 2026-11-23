@@ -12,42 +12,6 @@ use std::process::Command;
 pub(crate) const MAX_MIN_FREE_GB: u64 = 100_000;
 const MAX_CAPTURE_BUDGET_MB: u64 = 1_048_576;
 
-/// `tasks.preview` checked: a command, a path that answers 200, a port range above 1023 and
-/// whether it stays local.
-fn preview_config(file: TaskPreviewFile) -> Result<crate::model::workspace::TaskPreview, String> {
-    let command = file.command.trim().to_string();
-    if command.is_empty() || command.len() > MAX_DEFAULT_COMMAND_BYTES {
-        return Err(format!(
-            "tasks.preview.command must be 1..={MAX_DEFAULT_COMMAND_BYTES} bytes"
-        ));
-    }
-    let ready = file.ready.unwrap_or_else(|| "/".into());
-    if !ready.starts_with('/')
-        || ready.len() > 1024
-        || ready.chars().any(|c| c.is_control() || c == ' ')
-    {
-        return Err("tasks.preview.ready must be a path such as /health".into());
-    }
-    let ports = file.ports.unwrap_or_else(|| "9100-9199".into());
-    let range = ports
-        .split_once('-')
-        .and_then(|(first, last)| {
-            Some((
-                first.trim().parse::<u16>().ok()?,
-                last.trim().parse::<u16>().ok()?,
-            ))
-        })
-        .filter(|(first, last)| *first > 1023 && first <= last)
-        .ok_or_else(|| {
-            format!("tasks.preview.ports must be <first>-<last> above 1023, not {ports}")
-        })?;
-    Ok(crate::model::workspace::TaskPreview {
-        command,
-        ready,
-        ports: range,
-        local: file.local.unwrap_or(false),
-    })
-}
 const PROJECT_CONFIG_FILE: &str = "wsx.config.yml";
 const LEGACY_CONFIG_FILE: &str = ".gtrconfig";
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
@@ -191,8 +155,6 @@ struct TasksFile {
     manager: Option<TaskManagerFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prune: Option<TaskPruneFile>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    preview: Option<TaskPreviewFile>,
     /// `owner` or `none`.
     #[serde(skip_serializing_if = "Option::is_none")]
     skills: Option<String>,
@@ -218,19 +180,6 @@ struct TaskWorkflowFile {
 
 /// At most this many workflow steps, each a turn of the worker.
 const MAX_WORKFLOW_STEPS: usize = 12;
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
-struct TaskPreviewFile {
-    command: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ready: Option<String>,
-    /// `<first>-<last>`, such as `9100-9199`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ports: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    local: Option<bool>,
-}
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -697,9 +646,6 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
     config.scenarios = validate_scenarios(file.scenarios, file.scenario_paths)?;
     config.scenario_free = validate_globs(file.scenario_free, "tasks.scenarioFree")?;
     config.env = validate_env(file.env)?;
-    if let Some(preview) = file.preview {
-        config.preview = Some(preview_config(preview)?);
-    }
     config.writable = match file.boundary {
         Some(boundary) => validate_writable(boundary.writable)?,
         None => Vec::new(),

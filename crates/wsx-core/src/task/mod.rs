@@ -392,10 +392,6 @@ pub struct CheckResult {
     /// How long its run waited for the check slot before it, in ms.
     #[serde(default)]
     pub queued_ms: u64,
-    /// The runs that held the scenarios lane when this one started, itself included: the width
-    /// it ran at (`wsx task widths`). 0 for a run that held no slot of this Mac.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub width: u32,
     /// The result came from an earlier run on the same tree; `ms` is that run's.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stored: bool,
@@ -519,11 +515,6 @@ pub enum LogEvent {
     /// The checks wait for the machine's check slot (docs/tasks.md "Checks, revisions and report").
     CheckQueued {
         reason: String,
-    },
-    /// A preview of the task answers at `url` (docs/tasks.md "Preview").
-    Preview {
-        url: String,
-        port: u16,
     },
     /// The worker ran checks with `wsx task check-run`; no revision is recorded.
     CheckRun {

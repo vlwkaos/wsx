@@ -3642,9 +3642,6 @@ TASK_CONFIG = '''tasks:
     - "test ! -e broken.txt"
   manager: { model: fake-manager, rotateTokens: 100000 }
   deploy: { command: 'test -z "$FIXTURE_DEPLOY_FAIL" || { seq -f "deploy step %g" 60; exit 3; }' }
-  preview:
-    command: 'exec python3 -m http.server "$PORT" --bind 127.0.0.1'
-    ports: 9150-9199
 '''
 
 # An agent session for Home's session words: report one state as Claude, then stay or end.
@@ -3729,10 +3726,6 @@ def task_journey(args):
         fake = bin_dir / 'claude'
         fake.write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(ROOT / 'scripts/fake-claude-stream.py') + ' "$@"\n')
         fake.chmod(0o755)
-        # ^ The preview's tailscale: it records its argv and names this machine.
-        (bin_dir / 'tailscale').write_text('#!/bin/sh\necho "$@" >> ' + str(work / 'tailscale.log') + '\n'
-                                           'if [ "$1" = status ]; then echo \'{"Self":{"DNSName":"host.example.ts.net."}}\'; fi\n')
-        (bin_dir / 'tailscale').chmod(0o755)
         path = state / 'wsx/wsx.sock'
         watch_wsxd(path, work)
         env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
@@ -4249,7 +4242,7 @@ merge_seconds = 3
         everything = steady(owner, 'GET', '/api/tasks')[1]
         assert sorted(item['project'] for item in everything) == sorted(ids.values()), everything
         detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
-        assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'hand', 'try'], detail['actions']
+        assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'hand'], detail['actions']
         assert re.match(r'Ready, waiting for you to land it for [^:]+: checks 1 of 1 passed\. Land it to put it on main\.$', detail['status']['sentence']), detail['status']
         assert detail['to_check'] == [] and detail['fixes'] is None, detail
         assert detail['result']['human_verify'] == [{'check': 'open the file', 'where': 'a real device', 'captures': [], 'poster': '', 'pass_if': 'it has text'}]
@@ -4304,7 +4297,7 @@ merge_seconds = 3
         held = steady(trier, 'GET', '/api/tasks/%d/t/2' % demo)[1]
         assert held['hold'] == 'the owner holds it' and held['status']['label'] == 'Held', held
         assert held['status']['sentence'].endswith(': the owner holds it. It lands only when you say so.'), held['status']
-        assert held['actions'] == ['land', 'hand', 'try'], held['actions']
+        assert held['actions'] == ['land', 'hand'], held['actions']
         # ^ Where it goes (wsx-core `view::flow`): the label says Held, so the row adds the reason only.
         assert held['flow']['held'] == 'the owner holds it' and held['flow']['into'] == 'main', held['flow']
         assert held['flow']['phrase'] == 'the owner holds it', held['flow']
@@ -4329,7 +4322,7 @@ merge_seconds = 3
         assert steady(owner, 'GET', '/api/tasks/%d/checks/c1/capture' % demo)[0] == 404
         assert steady(owner, 'GET', '/api/tasks/%d/checks/c99/capture' % demo)[0] == 404
         landed = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
-        assert landed['stage'] == 'done' and [i['id'] for i in landed['to_check']] == ['c1'] and landed['actions'] == ['try'], landed
+        assert landed['stage'] == 'done' and [i['id'] for i in landed['to_check']] == ['c1'] and landed['actions'] == [], landed
         js('task', 'add', 1, 'NOOP', '-p', 'demo')
         wait_state(1, 'ready')
         js('task', 'add', 1, 'NOOP and again', '-p', 'demo')
@@ -4363,7 +4356,7 @@ merge_seconds = 3
         status, body = act(4, 'hand', {})
         assert status == 200 and body['state'] == 'waiting' and body['session'] == 'task-4-hand', body
         handed = steady(owner, 'GET', '/api/tasks/%d/t/4' % demo)[1]
-        assert handed['stage'] == 'working' and handed['actions'] == ['handback', 'try'], handed['actions']
+        assert handed['stage'] == 'working' and handed['actions'] == ['handback'], handed['actions']
         assert all(item.get('task') != 4 for item in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['needs'])
         assert '--back' in cli('task', 'add', 4, 'NOOP', '-p', 'demo', '--json', expect=1).stdout
         status, body = act(4, 'handback', {})
@@ -4909,14 +4902,14 @@ merge_seconds = 3
         assert [row['name'] for row in steady(viewer, 'GET', '/api/tasks/usage')[1]['projects']] == ['demo']
         ok('brief: the ledger with deploys and the main checkout; refusals: task_act and task_view per site, ungranted project 404, actions hidden without task_act')
 
-        # --- A task that waits for the owner's answer: the need, its actions (`owner_actions`: answer, hand, try), and an add that
+        # --- A task that waits for the owner's answer: the need, its actions (`owner_actions`: answer, hand), and an add that
         # resumes it. No brief and no start route are left.
         planned = ids['plans']
         view = steady(owner, 'GET', '/api/tasks/%d' % planned)[1]
         assert [(item['kind'], item['task']) for item in view['needs']] == [('waiting', 1), ('land', 2)], view['needs']
         assert view['needs'][0]['waiting']['on'] == 'owner', view['needs'][0]
         detail = steady(owner, 'GET', '/api/tasks/%d/t/1' % planned)[1]
-        assert detail['actions'] == ['answer', 'hand', 'try'] and detail['talk'] == [] and 'brief' not in detail and 'phase' not in detail, detail
+        assert detail['actions'] == ['answer', 'hand'] and detail['talk'] == [] and 'brief' not in detail and 'phase' not in detail, detail
         assert steady(owner, 'POST', '/api/tasks/%d/t/1/start' % planned, {})[0] == 404
         ok('a waiting task: its need and reason, hand, no brief or start')
         # ^ Three holds of one reason with nothing shown between them are one row with the count, the newest
@@ -5069,9 +5062,6 @@ merge_seconds = 3
                                   str(plans), LONG_NAME, str(work / 'relay'), str(work / 'wsx-cli.json'), str(news_file)], timeout=900)
             assert result.returncode == 0, result.stdout + result.stderr
             print('\n'.join(line for line in result.stderr.splitlines() if line.startswith('phase ')))
-            # ^ Try started #7's preview: its mapping goes with it.
-            assert js('task', 'preview', 7, '--stop', '-p', 'ui')['stopped'] is True
-            assert 'serve --bg --https=' in (work / 'tailscale.log').read_text() and ' off' in (work / 'tailscale.log').read_text()
             # ^ The server restarted: the event stream starts again for the checks after.
             assert (work / 'restart-owner.done').exists()
             events = Events(owner)

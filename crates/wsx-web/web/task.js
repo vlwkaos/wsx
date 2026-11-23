@@ -11,7 +11,7 @@ import { Bubble } from "./bubbles.js";
 import { quoteSplit } from "./reply.js";
 import { SheetBar } from "./ui.js";
 import { TaskStory } from "./story.js";
-import { CheckRow, TryButton } from "./checks.js";
+import { CheckRow } from "./checks.js";
 import { usageLine } from "./usage.js";
 
 const TRIAL_WORDS = {
@@ -192,7 +192,6 @@ export function TaskPage({ project, task, onClose, onMention, onReply, grip }) {
     // ^ The tooltip says the rest (docs/web-client-tasks.md "Task sheet").
     actions.includes("hand") && button(action.busy === "hand" ? "Taking over…" : "Take over", () => action.run("hand"), { title: "Stops the worker; you continue in its session" }),
     actions.includes("handback") && button(action.busy === "handback" ? "Handing back…" : "Hand back", () => action.run("handback")),
-    actions.includes("try") && html`<${TryButton} project=${project} task=${task} />`,
   ].filter(Boolean) : [];
   // ^ The main checkout's changed files this land would overwrite, said before the press
   // (docs/tasks.md "Landing"); Land stays, it refuses until they are committed or stashed.

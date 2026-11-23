@@ -137,7 +137,6 @@ const TASKS: &[&str] = &[
     "  L             Land; asks first",
     "  a             Answer: the manager chat, starting #n",
     "  H             Take over, or hand back; asks first",
-    "  T             Try it on a preview",
     "  Esc / Enter   Back",
     "",
     " Chat (list focus)",

@@ -1004,13 +1004,4 @@ mod task_global_args_tests {
         action.inherit(Some("demo"), true);
         assert!(action.json());
     }
-
-    #[test]
-    fn handback_stays_as_the_old_name_of_hand_back() {
-        let (_, _, command) = task(&["task", "hand", "3", "--back"]);
-        assert!(matches!(command, TaskCmd::Hand { back: true, .. }));
-        let (_, _, old) = task(&["task", "handback", "3"]);
-        assert!(matches!(old, TaskCmd::Handback { .. }));
-        assert_eq!(command.needs(), old.needs());
-    }
 }

@@ -1,4 +1,4 @@
-# Orchestration: threads, desks and slots
+# Orchestration: threads, desks and workbenches
 
 Status: proposal, 2026-11-23. No code. Owner mandate: a complete refactor of the aligned orchestration system that
 replaces manager chat. It replaces `manager-mode.md` (goal chats, which the owner no longer wants; removed, see git history) and
@@ -30,7 +30,7 @@ messages (section 10).
 - **Goal beyond the goal:** the owner ships across many projects with less attention than one focused session, and the
   machine never fills up.
 - **Hard targets:** a small change goes from first message to landed in p50 15 min or less (now 65.9 min). No LLM turn
-  is started only by an event. Disk for working copies is bounded by a slot count, not by a task count. The owner learns
+  is started only by an event. Disk for working copies is bounded by a workbench count, not by a task count. The owner learns
   5 concepts or fewer. The owner gets 10 or fewer decision items per day.
 - **Outside judge:**
   - **Replay:** a logged day's owner messages from a chat log, replayed through the new router and engine with the fake
@@ -50,16 +50,16 @@ These four parts are the same whichever approach wins. They carry most of the me
    - Scenarios run by changed path, and once on main after each batch of lands.
    - A red result that is not the task's own (main already red, an infrastructure failure) is triaged by code against
      main's last result. It is never charged to the task.
-2. **Slots, not worktrees per task.**
-   - Each project has N working-copy slots (default 2, a machine cap across projects).
-   - A slot is a git worktree plus its own `target/`, and it is reused: a new line of work runs `git switch -c` in a free
-     slot. Its build stays warm, and disk is N times one build. The Rust project measured one dev `target/` at 3,151 MiB.
+2. **Workbenches, not worktrees per task.**
+   - Each project has N workbenches (default 2, a machine cap across projects).
+   - A workbench is a git worktree plus its own `target/`, and it is reused: a new line of work runs `git switch -c` in a free
+     workbench. Its build stays warm, and disk is N times one build. The Rust project measured one dev `target/` at 3,151 MiB.
    - A shared `CARGO_TARGET_DIR` is rejected: builds lock it one at a time. sccache does not cache bin or proc-macro crates.
    - The existing scheduler (`wsx_core::task::schedule`, `crates/wsx/src/task/slot.rs`) stays the one owner of heavy runs.
-   - A slot idle 1 h drops its `target/` (an open item of the removed manager-mode.md).
-   - A thread keeps its slot until it lands, or until it waits on the owner for over 1 h. A reopen takes any free slot
+   - A workbench idle 1 h drops its `target/` (an open item of the removed manager-mode.md).
+   - A thread keeps its workbench until it lands, or until it waits on the owner for over 1 h. A reopen takes any free workbench
      and resumes its conversation by session id. Claude finds a session by folder (work-model), so wsx must move the
-     session to the new slot's path, or keep slot paths stable per thread. Which one works for Claude and Pi is
+     session to the new workbench's path, or keep workbench paths stable per thread. Which one works for Claude and Pi is
      [unverified].
 3. **Memory: canon plus search, nothing injected.**
    - Canon: what the owner accepted (`CLAUDE.md`, `docs/`, the desk's decision list, 4 KiB or less).
@@ -72,7 +72,7 @@ These four parts are the same whichever approach wins. They carry most of the me
    - the commands run and their exit codes
    - for a visual project, captures of each option at the project's widths
    - for a non-visual project, the output excerpt that proves the behavior
-   - while the slot runs, a **preview**: the project's `watch` or `dev` command on a leased port, the same watch script as before
+   - while the workbench runs, a **preview**: the project's `watch` or `dev` command on a leased port, the same watch script as before
 
 ## 4. Approach A: Company (long-lived agents hold the context)
 
@@ -95,7 +95,7 @@ flowchart TD
   Leads watching events is the 49% spend again.
 - **Owner:** one voice, which feels calm. Status is second-hand, though: the owner hears what the chief of staff
   understood, and the "relayed worker claims taken without checking" failure (manager-reliability) has two more hops.
-- **Concepts:** chief of staff, lead, role, worker, task, mailbox, inbox, slot, proof (9).
+- **Concepts:** chief of staff, lead, role, worker, task, mailbox, inbox, workbench, proof (9).
 
 ## 5. Approach B: Threads and desks (the owner's conversations hold the context)
 
@@ -108,8 +108,8 @@ flowchart LR
   T1 -. mail .-> D2[Desk: shop]
   D2 -->|needs action| T3[Thread in shop]
   D2 -->|info only| I[Inbox digest]
-  T1 --> S[(Slot)]
-  T3 --> S2[(Slot)]
+  T1 --> S[(Workbench)]
+  T3 --> S2[(Workbench)]
 ```
 
 - **Thread:** one goal, one agent conversation, as capable as a single session: same tools, skills, boundary and
@@ -121,7 +121,7 @@ flowchart LR
   - A part of the current goal ("do the tests for this in parallel"): the current thread writes the brief in one short
     turn, while it still has the context, so there is no seed search later.
   The owner sees a chip, "forked to *thread name*", that undoes the fork in one tap.
-- **Desk:** one per project. Its core is code: a memory scope, a mailbox, the slot pool, the policy and the deterministic
+- **Desk:** one per project. Its core is code: a memory scope, a mailbox, the workbench pool, the policy and the deterministic
   event handling. It grows from today's repo service (`wsx task repo-host`), which already owns the store watch, stalls,
   approvals, deploys and routines. A desk starts an LLM turn only for mail that asks for action. Then it opens a thread
   in that project with the mail as the brief. The security fan-out works this way: one thread mails every desk, each
@@ -138,7 +138,7 @@ flowchart LR
 - **Inside:** no relay hop; the thread that talks is the thread that builds. Conversations stay small because each has
   one goal. Risk: a long synchronous thread still rotates, and the fork brief must be good.
 - **Owner:** talks to the work directly. Background threads appear in the inbox only as decide, review or FYI items.
-- **Concepts:** thread, desk, slot, proof card, inbox (5).
+- **Concepts:** thread, desk, workbench, proof card, inbox (5).
 
 ## 6. Approach C: Board (records hold the context, agents are stateless)
 
@@ -158,7 +158,7 @@ flowchart LR
 
 - The owner shapes an **intent** in a short synchronous session: the goal plus the proof that counts as done. A
   deterministic controller reconciles intents toward done, as a Kubernetes controller does. It runs stateless agent
-  jobs (plan, build, verify) against slot and token budgets. It handles failure with a restart budget that escalates to
+  jobs (plan, build, verify) against workbench and token budgets. It handles failure with a restart budget that escalates to
   the owner after K tries in T minutes (the OTP rule).
 - **Inside:** no long conversation, so no rotation loss. Every job starts from the record. Cost is predictable. Risk:
   every job pays a cold start, which is the 36% fixed base of a fresh conversation (manager-context-split), and design
@@ -171,11 +171,11 @@ flowchart LR
 
 | Scenario | A Company | B Threads and desks | C Board |
 |---|---|---|---|
-| 1 Quick sync UX change (the gate is the same for all) | 3 relays (CoS, lead, worker); 4 conversations take a turn | 0 relays; the thread that talks edits in its slot while the owner watches the preview | 0 relays; 3 cold-start jobs (shape, build, verify) |
+| 1 Quick sync UX change (the gate is the same for all) | 3 relays (CoS, lead, worker); 4 conversations take a turn | 0 relays; the thread that talks edits in its workbench while the owner watches the preview | 0 relays; 3 cold-start jobs (shape, build, verify) |
 | 2 Unrelated aside mid-talk | CoS opens a task; the lead's context takes it in | router forks; the owner's message is the brief; the current thread takes no turn | the owner opens a new shaping session by hand |
 | 3 Security fan-out to all projects | lead to lead messages; each lead's context grows | one mail to every desk; matching desks open threads; grouped in the inbox | one intent with a child per project |
 | 4 Multi-day goal | the lead holds it and rotates (loss risk) | goal thread with `plan.md` and child threads | the intent record holds it; strongest here |
-| 5 Five Rust builds at once | slots (shared ground) | slots (shared ground) | slots (shared ground) |
+| 5 Five Rust builds at once | workbenches (shared ground) | workbenches (shared ground) | workbenches (shared ground) |
 | 6 Red check not the task's own | triage (shared ground) | triage (shared ground) | triage (shared ground) |
 | 7 Owner back after 8 h | the CoS summary, second-hand | inbox: decide first, then proof cards, then FYI digest | board diff since last visit |
 | LLM turns on events | high: leads watch | none: desks are code | none: the controller is code |
@@ -194,14 +194,14 @@ A plain session lacks these things, and only these are worth building:
 
 | A plain Claude session lacks | Smallest answer |
 |---|---|
-| Several sessions at once without watching terminals and worktrees | slots with cleanup |
+| Several sessions at once without watching terminals and worktrees | workbenches with cleanup |
 | One place on the phone for what needs you | an inbox fed by session hooks |
 | Recovery from a usage limit | wait, the stand-in lane, a code-built brief (section 9) |
 | A notice to other projects (the security case) | mail between desks |
 | Search across projects' history | `wsx search` |
 
 So there is a fourth approach. **D: plain sessions with rails.** Keep session mode. Each piece of work is a Claude Code
-session (or Codex, or Pi) in a slot, as today. Add only the five rails above, through hooks and the CLI. There is no
+session (or Codex, or Pi) in a workbench, as today. Add only the five rails above, through hooks and the CLI. There is no
 router and no thread engine. Threads and desks (B) are D plus the router, the fork and the desk lead.
 
 **Step 0, before any refactor:** work one week in D. Measure what the audits measured: time from first message to
@@ -219,10 +219,10 @@ What goes, against today (verify each count before deleting):
 |---|---|
 | manager and chat hosts, event turns, stalls report, keep-warm pings, rotation handovers | desk (code) plus threads |
 | task, revision, step, hold, after, parent, check-run, by hand | thread phases: Talking, Working, Waiting{on}, Proof ready, Landed, Closed |
-| a worktree per task, stale-worktree sweeps | slots |
+| a worktree per task, stale-worktree sweeps | workbenches |
 | `memory start` blocks, notes budget | canon plus `wsx search` |
 | `manager-mode.md` goal chats | threads at a desk; a folder home is a desk with no repo |
-| session mode (project, worktree, session tree) and `hand` | stays one key away as the Sessions view; each slot is a session there; `hand` becomes "take over": the owner attaches to the thread's slot session |
+| session mode (project, worktree, session tree) and `hand` | stays one key away as the Sessions view; each workbench is a session there; `hand` becomes "take over": the owner attaches to the thread's workbench session |
 
 ### Presentation (mockup to discuss before building)
 
@@ -236,8 +236,8 @@ What goes, against today (verify each count before deleting):
    ✓ wsx   tab pill width            +18 −6  plain checks ok   [Land] [Open]
    ✓ notes  fix sync crash            +4 −1  repro test green  [Land] [Open]
  ── Threads ────────────────────────────────────────────────────────────────
- ▶ wsx   orchestration design       talking now            slot 1 · 12 min
- ◐ wsx   tab pill width             proof ready            slot 2
+ ▶ wsx   orchestration design       talking now            workbench 1 · 12 min
+ ◐ wsx   tab pill width             proof ready            workbench 2
  ◐ shop  openssl advisory           waits on you           forked from wsx
  ○ dotfiles  zsh startup            landed 2 h ago         reopens on add
  ───────────────────────────────────────────────────────────────────────────
@@ -269,11 +269,11 @@ flowchart LR
 | 5 | Status is a word from code, the same in web, TUI and CLI: state plus what it waits on | `task::status` and `chat_rows` already do this for tasks | owner messages that ask "status?" drop to near 0 |
 | 6 | Proof before prose. A Review item opens on its proof card; the thread's summary sits under it; Land is the primary action | every surveyed tool hands over one artifact per unit of work (section 10) | time from opening to land |
 | 7 | Options are choices, not text. Visual options are captures side by side (a swipe on the phone); other options are a table of trade-offs; a pick is a message to the thread | the owner liked image options; "presentation needs polishing" | picks made without typing |
-| 8 | A preview is a link with a state: live, starting or stopped. It lives while the slot runs | the watch-script workflow of session mode | preview opens on the first tap |
+| 8 | A preview is a link with a state: live, starting or stopped. It lives while the workbench runs | the watch-script workflow of session mode | preview opens on the first tap |
 | 9 | Coming back is a summary, not a replay. Decide first, then Review, then one FYI line per thread that changed | a "Since you left" line exists on Home today | taps to clear the inbox after 8 h |
 | 10 | A fan-out is one row. One origin, N child threads under it, counts per state | the security case of the brief | one row per origin |
-| 11 | The desk view is rare. It shows slots in use, threads, canon and policy, and the owner rarely opens it | desks are code | |
-| 12 | Session mode stays one key away, and "take over" attaches to a thread's slot | owner and agents both use sessions today | |
+| 11 | The desk view is rare. It shows workbenches in use, threads, canon and policy, and the owner rarely opens it | desks are code | |
+| 12 | Session mode stays one key away, and "take over" attaches to a thread's workbench | owner and agents both use sessions today | |
 
 How to get there, in order:
 
@@ -300,13 +300,19 @@ How to get there, in order:
    Contract files: a stricter contract (asserts only added) lands as FYI; a changed assert is a Decide item.
    **Autonomy is off by default** per project; on, a higher-tier reviewer may approve a changed assert and the owner gets
    it as Review with a one-tap revert for 24 h.
+5. **Names (2026-11-23).** A reusable working copy is a **workbench**; a desk has workbenches. *Slot* keeps its one
+   meaning, the machine's check lane (`wsx task slot`, `crates/wsx/src/task/slot.rs`).
+6. **Preview: designed from scratch.** Only the word stays. The old `wsx task preview` (`tasks.preview`, a tailnet
+   link on request, 0 uses in 30 days) is removed; step 5 designs the preview of a workbench.
+7. **Command surface: the minimum B needs.** Each step removes the commands its replacement makes unused (the
+   manager chat with steps 3 and 4, the owner's ask commands with step 5).
 
 ### Steps, each proven by a scenario through the real entry point
 
 | # | Step | Proof |
 |---|---|---|
 | 1 | Gate: contract files, triage of reds that are not the task's own, scenarios by path | replay of the 227 red `web` runs: the script-only reds no longer block |
-| 2 | Slots with a warm `target/` and idle drop | five parallel builds keep disk at or below N times one build |
+| 2 | Workbenches with a warm `target/` and idle drop | five parallel builds keep disk at or below N times one build |
 | 3 | Thread engine on the lean phase table; desk as code; no event turns | the replayed day: zero event-only LLM turns |
 | 4 | Router and fork with brief | the replayed day's owner messages against hand labels: 90% routed right (target) |
 | 5 | Proof card, preview on a leased port, inbox | scenario 1 of section 7 under 15 min end to end |
@@ -336,11 +342,11 @@ stateDiagram-v2
 | Part | Rule |
 |---|---|
 | Catalog | Each entry: client (Claude Code, Codex, Pi, local server), model, account, trust, cost, and **tier** |
-| Tier | Read (search, status, summaries), Operate (wsx commands that change no code: hold, note, queue a message, start a preview), Build (edit in a slot, produce a proof card), Lead (open threads, land under policy). A tier is passed by an eval set with an outside judge, rerun when the model id changes. Today the owner writes `may` by hand after a tier test |
+| Tier | Read (search, status, summaries), Operate (wsx commands that change no code: hold, note, queue a message, start a preview), Build (edit in a workbench, produce a proof card), Lead (open threads, land under policy). A tier is passed by an eval set with an outside judge, rerun when the model id changes. Today the owner writes `may` by hand after a tier test |
 | Permission | What a thread may do = its role's needs, cut to the agent's tier, inside its trust profile. The broker refuses the rest, as `Policy::of` does now |
 | No switching | A thread keeps one agent for life. On a limit it waits and resumes the same conversation. Measured: one conversation is the cheaper path (work-model) |
 | Stand-in desk role | During a wait, and for plain lookups at any time, the cheapest Read or Operate agent answers in a side lane: it searches records and canon, reports status from code, and queues messages. Its replies are marked "stand-in, not checked" and never enter the thread's conversation as the thread's own. On resume the thread gets them as unchecked notes (this generalizes today's stand-in) |
-| Re-dispatch | A long wait becomes a Decide item: "continue on *peer* as a new thread?". The new thread gets a brief built by code from the record: goal, plan, the slot's diff as a work-in-progress commit, the last proof, your messages. No agent continues another agent's conversation |
+| Re-dispatch | A long wait becomes a Decide item: "continue on *peer* as a new thread?". The new thread gets a brief built by code from the record: goal, plan, the workbench's diff as a work-in-progress commit, the last proof, your messages. No agent continues another agent's conversation |
 | Lower tier output | A proof card from a lower tier, or from an untrusted agent, is offered for Land only after a review by a higher tier agent or by you |
 | Circuit breaker | An agent whose results you undo or reject 3 times in 1 day drops one tier until it passes its eval again (the OTP rule) |
 | Provenance | Every message and proof card shows its agent and tier |
@@ -366,11 +372,11 @@ stateDiagram-v2
 ## 11. Prompt for the manager, after the owner accepts B
 
 ```
-Build approach B of docs/design/orchestration.md: threads, desks and slots.
+Build approach B of docs/design/orchestration.md: threads, desks and workbenches.
 Start with step 1 (the gate), because check-run waits are half of a task's time.
 Raw material: the chat and task logs of the last 30 days, the 227 red web runs, and the slot scheduler.
 Methods: replay a logged day through the router and the engine with the fake agents; a scenario per walkthrough row.
 Hard targets: a small change lands in p50 15 min or less; no LLM turn starts only from an event;
-working-copy disk stays at or below the slot count times one build; 5 owner concepts.
+working-copy disk stays at or below the workbench count times one build; 5 owner concepts.
 Pass: the replay and the scenarios show these numbers. A miss with real numbers is a result; report it as one.
 ```

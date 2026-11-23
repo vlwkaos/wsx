@@ -1172,8 +1172,7 @@ for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
   await openReservoir();
   await evaluate(`${rowOf("#3")}.querySelector('.row-open').click()`);
   await until("!!document.querySelector('dialog.task-sheet .task-next button[aria-label=\"Approve land #3\"]')", `#3's sheet shows no Approve at ${width} px`);
-  // ^ Try stays: the project sets a preview, as for the ready task below ("Land,Take over,Try").
-  if ((await nextButtons()).join() !== "Deny,Approve,Take over,Try") await fail(`#3 with a pending land approval offers ${await nextButtons()} at ${width} px`);
+  if ((await nextButtons()).join() !== "Deny,Approve,Take over") await fail(`#3 with a pending land approval offers ${await nextButtons()} at ${width} px`);
   if ((await evaluate(`fetch('api/tasks/${project}/t/3').then((r) => r.json()).then((task) => task.actions)`)).includes("land")) await fail("the API offers Land beside a pending land approval");
   await closeSheet("#3's sheet", chat);
   await openReservoir("tasks");
@@ -2492,7 +2491,7 @@ if (parts.join("|") !== "Changes|Evidence|To check · 1 after it lands|Left open
 const sheetWords = await evaluate("document.querySelector('dialog.task-sheet').innerText");
 if (/Asked|Human Verify|Decisions|Review|Pass r\d|Verified/.test(sheetWords)) await fail(`the sheet still shows the verdict or old sections: ${sheetWords}`);
 if (await count(".task-sheet .label, .task-sheet .story-explain, .verify, .verify-note")) await fail("the sheet still has labels, Explain or the Verify panel");
-if ((await text(".task-next button")).join() !== "Land,Take over,Try") await fail(`a ready task offers ${await text(".task-next button")}`);
+if ((await text(".task-next button")).join() !== "Land,Take over") await fail(`a ready task offers ${await text(".task-next button")}`);
 const handHint = await evaluate("[...document.querySelectorAll('.task-next button')].find((node) => node.textContent === 'Take over')?.title ?? ''");
 if (handHint !== "Stops the worker; you continue in its session" || await count(".task-hint")) await fail(`Take over does not say what it does in its title: ${handHint}`);
 await resize([1280, 800, 1]);
@@ -2548,7 +2547,7 @@ if (told.next !== "On main; the last deploy does not have it yet.") await fail(`
 await until("[...document.querySelectorAll('.task-sheet .scroll > .task-section > .task-heading')].some((node) => node.textContent === 'To check · 1 open')", "#2's item is not open under To check, outside the folds", 60);
 const offers = await evaluate("[...document.querySelectorAll('.task-sheet .scroll > .task-section .check-item .check-act')].map((node) => node.title).join()");
 if (await count(".task-sheet .progress, .task-sheet .progress-now, .task-sheet .progress-steps")) await fail("a finished task still shows the progress view, its steps or a now line");
-if (offers !== "Try it on a preview,Reply,Fail,Pass") await fail(`#2's item offers ${offers}`);
+if (offers !== "Reply,Fail,Pass") await fail(`#2's item offers ${offers}`);
 await evaluate("document.querySelector('.timeline > .fold-head').click()");
 const history = await text(".timeline-what");
 if ((await text(".timeline > .fold-head")).join() !== "History" || !history.includes("Landed") || history.some((line) => /Verified|without verification/.test(line))) await fail(`the history reads ${history}`);
@@ -2811,7 +2810,7 @@ await send("Network.setCacheDisabled", { cacheDisabled: false });
 await closeSheet("the To check list on a slow network", chat);
 await resize([1280, 800, 1]);
 await oneMotion("To check on a wide screen", () => go(`#/p/${project}/checks`));
-// ^ Wide, Try, Fail, Skip and Pass are a column right of each item's words, level with its title line.
+// ^ Wide, Fail, Skip and Pass are a column right of each item's words, level with its title line.
 const wideRoom = await evaluate(`[...document.querySelectorAll('.check-list .check-item')].map((node) => { const box = (part) => node.querySelector(part).getBoundingClientRect();
   return [Math.round(box('.check-acts').left - box('.check-words').right), Math.round(box('.check-acts').top - box('.check-task').top), Math.round(box('.check-acts').right)]; })`);
 if (!wideRoom.every(([gap, top, right]) => gap >= 8 && Math.abs(top) <= 12 && Math.abs(right - wideRoom[0][2]) <= 1)) await fail(`the wide To check buttons are not in one column: ${JSON.stringify(wideRoom)}`);
@@ -2840,7 +2839,7 @@ const fitted = await evaluate(`(() => { const sheet = document.querySelector('di
 const [low, band, high, scrolls] = fitted;
 if (Math.abs(low) > 1 || (high < 84 ? scrolls || band < 0 || band > 48 : high > 85 || !scrolls)) await fail(`the To check sheet does not fit its rows: ${JSON.stringify(fitted)}`);
 // ^ On a phone the item's words use the list's width: the chip starts the title line, the labels
-// are muted, and Try, Fail, Skip and Pass are a row under the words at the same right edge on every
+// are muted, and Fail, Skip and Pass are a row under the words at the same right edge on every
 // item, also under #2's long pass line. All passed is in the top bar.
 await evaluate(`document.querySelectorAll('.check-list .check-item')[2].querySelector('.check-pass').append(' and the words of the page'.repeat(4))`);
 const room = await evaluate(`(() => { const list = document.querySelector('.check-list').getBoundingClientRect(); const box = (node) => node.getBoundingClientRect();
@@ -2880,14 +2879,10 @@ await key("Escape", 27);
 await until("!document.querySelector('dialog.viewer') && !!document.querySelector('dialog.task-sheet[open]')", "Escape did not close the video viewer alone");
 await shot("to-check", ".composer-send");
 await viewImages("to-check", ".check-list .check-item:first-child .check-capture", 1, true);
-// ^ Try starts the preview of the item's task and becomes a link to it (docs/tasks.md "Preview").
-await evaluate(`${firstItem}.querySelector('.check-act[title="Try it on a preview"]').click()`);
-await until(`!!${firstItem}.querySelector('a.check-act[href^="https://host.example.ts.net:"]')`, "Try did not become a preview link", 300);
-await shot("to-check-try", ".composer-send");
 await replyQuotesAndCloses(`#/p/${project}/checks`);
 await closeSheet("the To check list after a reply", chat);
 // ^ Each To check item is also a bubble in the chat at the time it was added: its words, its
-// capture (the image viewer opens it) and Try, Reply, Fail and Pass; a decided one shows its result
+// capture (the image viewer opens it) and Reply, Fail and Pass; a decided one shows its result
 // (docs/web-client-tasks.md "Project screen").
 const checkBubbles = "[...document.querySelectorAll('.log .check-bubble')]";
 // ^ The chat renders its newest rows; these items are older, so show the earlier ones. The wide
@@ -2902,7 +2897,7 @@ const inChat = await evaluate(`(() => { const open = ${bubbleOf(8)}, failed = ${
   return { tag: open?.querySelector('.bubble-tag')?.textContent, author: open?.querySelector('.bubble-author')?.textContent, image: open?.querySelector('.check-capture img')?.naturalWidth ?? 0,
     acts: [...(open?.querySelectorAll('.check-acts .check-act') ?? [])].map((node) => node.title), failed: failed?.querySelector('.check-state')?.textContent ?? '',
     failedActs: failed?.querySelectorAll('.check-acts').length ?? -1, unread: open?.hasAttribute('data-in') }; })()`);
-if (inChat.tag !== "To check" || inChat.author !== "Atlas" || inChat.image !== 480 || inChat.acts.filter((act) => act !== "Try it on a preview").join() !== "Reply,Fail,Pass"
+if (inChat.tag !== "To check" || inChat.author !== "Atlas" || inChat.image !== 480 || inChat.acts.join() !== "Reply,Fail,Pass"
   || inChat.failed !== "Replied: the text is cut off" || inChat.failedActs !== 0 || !inChat.unread) await fail(`the To check bubbles read ${JSON.stringify(inChat)}`);
 await evaluate(`${bubbleOf(8)}.scrollIntoView({ block: 'center' })`);
 await pause(300);
@@ -4973,7 +4968,7 @@ phase("Media a message names (docs/web-client-chat.md Markdown, doc");
 const rates = requestRates(cdp);
 if (rates.own > REQUESTS_PER_MINUTE || rates.refused) await fail(`the page asked ${rates.own} times in its busiest 60 s (limit ${REQUESTS_PER_MINUTE}) and the server refused ${rates.refused}: ${JSON.stringify(rates)}`);
 phase("end");
-console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail closing the item and its reply kept as the note, Pass in a bubble that stays in place, Skip), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Chats (a Home row under its project with its unread dot, none in the ⋯ menu, its chat at #/p/<project>/c/<chat> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures; the page's own API requests in its busiest 60 s: ${rates.own} (limit ${REQUESTS_PER_MINUTE}; ${rates.busiest} with this check's reads, of ${rates.total} in ${rates.minutes} min)`);
+console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail closing the item and its reply kept as the note, Pass in a bubble that stays in place, Skip), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Chats (a Home row under its project with its unread dot, none in the ⋯ menu, its chat at #/p/<project>/c/<chat> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures; the page's own API requests in its busiest 60 s: ${rates.own} (limit ${REQUESTS_PER_MINUTE}; ${rates.busiest} with this check's reads, of ${rates.total} in ${rates.minutes} min)`);
 await linter.finish(fail);
 await cleanup();
 process.exit(0);

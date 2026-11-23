@@ -1153,7 +1153,7 @@ fn with_scope<T>(app: &App, project: u64, work: impl FnOnce(&Scope) -> Outcome<T
     blocking(|| work(&crate::tasks::scope(app, project)?))
 }
 
-/// `with_scope` for a call that may take minutes (a landing, a preview): `work` runs off
+/// `with_scope` for a call that may take minutes (a landing, a hand): `work` runs off
 /// the runtime workers, after the scope is found.
 async fn with_scope_long<T: Send + 'static>(
     app: &App,
@@ -1576,9 +1576,8 @@ async fn task_act(
 ) -> Outcome<Json<Value>> {
     use wsx_core::task::HostRequest;
     tasks_allowed(&app, true)?;
-    if matches!(action.as_str(), "preview" | "hand" | "handback") {
+    if matches!(action.as_str(), "hand" | "handback") {
         act_budget(&app, &device)?;
-        // ^ A preview waits for its command to answer, up to minutes.
         return with_scope_long(&app, project, move |scope| {
             crate::tasks::run_task(&scope, &action, task)
         })

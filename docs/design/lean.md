@@ -47,9 +47,9 @@ measurements of the code, the logs of the last 30 days and the test runs of this
 4. **E2E tiers.** `scripts/scenario.py` runs no browser by default. Critical e2e, on changes to its area and before a
    release: live daemon handoff, the Seatbelt boundary, land and deploy, one web journey, one TUI smoke. The rest of the
    Python scenarios and browser checks run by hand.
-5. **Deletions with evidence** (0 uses in 30 days or a proven replacement): `task preview` and its host and
-   `tasks.preview`; `.gtrconfig` and the old `config.toml` imports; `memory recall|update|reindex`; `task widths`; the
-   `handback` alias; `manager-host` and `run_old` once no saved session names them; the old web `#/p/...` routes and
+5. **Deletions with evidence** (0 uses in 30 days or a proven replacement): done for `task preview` and its host and
+   `tasks.preview`, `task widths` and the `handback` alias; still to do: `.gtrconfig` and the old `config.toml` imports; `memory recall|update|reindex`;
+   `manager-host` and `run_old` with the manager chat (orchestration.md step 3, since 0.43.0 sessions store that argv); the old web `#/p/...` routes and
    the second asset route. Merges: `wsx routine` and `wsx task routine` into one; the three ways to add a project into
    `ops::add_project`. To ask the owner first (no evidence either way): dev analysis scripts, the `wsx agent
    request|start|...` CLI, the TUI routine editor and integration manager.

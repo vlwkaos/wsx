@@ -49,7 +49,9 @@ pub(crate) fn ask(
     }
     let why = why.unwrap_or_default();
     // ^ One line: a second line could pose as the owner's or wsx's words on the card.
-    if why.chars().count() > MAX_WHY_CHARS || why.chars().any(wsx_core::task::owner::misleading_char) {
+    if why.chars().count() > MAX_WHY_CHARS
+        || why.chars().any(wsx_core::task::owner::misleading_char)
+    {
         bail!("--why is one line of at most {MAX_WHY_CHARS} characters; nothing was asked");
     }
     let cwd = match cwd {

@@ -131,8 +131,6 @@ pub enum Taken {
 pub struct Slot {
     #[allow(dead_code)]
     file: File,
-    /// The runs that held the lane when it was taken, itself included.
-    pub width: u32,
 }
 
 fn try_lock(file: &File) -> bool {
@@ -337,10 +335,7 @@ impl Ticket {
                     let _ = holder
                         .set_len(0)
                         .and_then(|()| holder.write_all(label.as_bytes()));
-                    return Ok(Taken::Slot(Slot {
-                        file: holder,
-                        width: held.len() as u32 + 1,
-                    }));
+                    return Ok(Taken::Slot(Slot { file: holder }));
                 }
                 None
             }

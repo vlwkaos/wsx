@@ -7,7 +7,6 @@ use crate::cli::{existing_daemon_snapshot, load_config};
 use crate::runtime_util::print_json;
 use crate::task::args::OwnerSaidAfter;
 use crate::task::manager::plain_event;
-use crate::task::preview;
 use crate::task::repo::say_chat;
 use crate::task::{acting_as_manager, actor, open, outward_said, send};
 use crate::task::{ask_host_ok, project_entry};
@@ -521,8 +520,6 @@ pub(crate) fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
             );
         }
     }
-    // ^ A preview runs in the working copy: it stops before the copy goes.
-    preview::stop(dir).with_context(|| format!("task t{} is unchanged", record.id))?;
     // ^ The host is the writer while it runs: ask it to close and wait for it to exit.
     let socket = dir.socket_path();
     if call_host(&socket, &HostRequest::Close { discard }, HOST_TIMEOUT).is_ok() {
@@ -788,36 +785,4 @@ pub(crate) fn close_command(
         return Ok(());
     }
     close(&dir, discard, json)
-}
-
-/// `wsx task preview`: serve the task for a person to try, or stop the preview.
-pub(crate) fn preview_command(
-    task: &str,
-    stop: bool,
-    project: Option<&str>,
-    json: bool,
-) -> Result<()> {
-    let dir = open(project, task)?;
-    let (value, message) = if stop {
-        let stopped = preview::stop(&dir)?;
-        let message = match stopped {
-            true => "stopped the preview",
-            false => "no preview was running",
-        };
-        (
-            json!({ "stopped": stopped, "message": message }),
-            message.to_string(),
-        )
-    } else {
-        let running = preview::start(&dir)?;
-        let message = format!("try it at {} until it stops in an hour", running.url);
-        let mut value = serde_json::to_value(&running)?;
-        value["message"] = json!(message);
-        (value, message)
-    };
-    if json {
-        return print_json(&value);
-    }
-    println!("{message}");
-    Ok(())
 }

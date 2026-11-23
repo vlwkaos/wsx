@@ -180,7 +180,7 @@ impl App {
                 }
                 return Ok(());
             }
-            // ^ The detail's actions: land, answer, hand, try (docs/tasks.md "TUI").
+            // ^ The detail's actions: land, answer, hand (docs/tasks.md "TUI").
             if list.detail_key(&action) || list.close_chat_key(&action) {
                 self.needs_redraw = true;
                 return Ok(());

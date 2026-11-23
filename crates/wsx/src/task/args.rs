@@ -150,9 +150,6 @@ pub enum TaskCmd {
         #[arg(long)]
         back: bool,
     },
-    /// The old name of `hand --back`
-    #[command(hide = true)]
-    Handback { task: String },
     /// The owner dismisses an open question of the manager by its reply id: it asks no more (owner)
     Dismiss { id: u64 },
     /// List what the owner has to check of the landed tasks, or pass, skip or fail items (owner; the manager passes with --owner-said)
@@ -181,9 +178,6 @@ pub enum TaskCmd {
     },
     /// Print the bounded project state a manager reads first (JSON, at most 16 KiB)
     Ledger,
-    /// Scenario runs by part and lane width: runs and failures, from the task records
-    /// (docs/design/scheduler.md)
-    Widths,
     /// Show the last deployed and released commits and how far each is behind
     Deployed,
     #[command(hide = true)]
@@ -327,16 +321,6 @@ pub enum TaskCmd {
         #[arg(long)]
         part: Option<String>,
     },
-    /// Serve the task for a person to try on its own tailnet or local port (tasks.preview);
-    /// for a change the live site cannot roll back from (a daemon, a migration)
-    Preview {
-        task: String,
-        /// Stop the running preview
-        #[arg(long)]
-        stop: bool,
-    },
-    #[command(hide = true)]
-    PreviewHost { project_id: String, task: String },
     #[command(hide = true)]
     Host { project_id: String, task: String },
     /// Runs a command in the machine's scenario lane, as a task's scenario does: the deploy's
@@ -573,7 +557,6 @@ impl TaskCmd {
             | Self::Why { .. }
             | Self::Review { .. }
             | Self::Ledger
-            | Self::Widths
             | Self::Deployed
             | Self::TouchedScenarios { .. }
             | Self::Chat { action: None, .. }
@@ -583,9 +566,7 @@ impl TaskCmd {
             Self::Post { .. } | Self::Digest { .. } | Self::Say { .. } => &[Notify],
             Self::CheckRun { .. } => &[Result],
             Self::After { .. } | Self::Hold { .. } => &[Backlog],
-            Self::Add { .. } | Self::Stop { .. } | Self::Move { .. } | Self::Preview { .. } => {
-                &[Direct]
-            }
+            Self::Add { .. } | Self::Stop { .. } | Self::Move { .. } => &[Direct],
             Self::New(_) => &[CreateTask],
             Self::Close { discard: true, .. } => &[Discard],
             Self::Close { .. } => &[Close],
@@ -604,14 +585,12 @@ impl TaskCmd {
                 _ => &[Routine],
             },
             Self::Hand { .. }
-            | Self::Handback { .. }
             | Self::Dismiss { .. }
             | Self::Chat {
                 action: Some(_), ..
             }
             | Self::Approve { .. }
             | Self::Deny { .. }
-            | Self::PreviewHost { .. }
             | Self::Host { .. }
             | Self::BoundaryProfile { .. }
             | Self::Slot { .. }
@@ -644,7 +623,6 @@ impl TaskCmd {
                 }
                 | Self::Close { .. }
                 | Self::Hand { .. }
-                | Self::Handback { .. }
                 | Self::Manager
                 | Self::Move { .. }
                 | Self::Say { .. }
