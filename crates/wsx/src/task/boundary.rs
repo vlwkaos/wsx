@@ -116,6 +116,20 @@ impl Boundary {
         Ok(boundary)
     }
 
+    /// A review job: the worker's boundary, but the task's working copy is read-only; it
+    /// writes only its own folder. ref: docs/tasks.md "Review"
+    pub fn reviewer(record: &TaskRecord, own: &Path, policy: Policy) -> Result<Self> {
+        let mut boundary = Self::worker(record, own, policy)?;
+        let copy = real(&record.working_copy);
+        boundary.own.retain(|path| *path != copy);
+        // ^ Denied, not only left out of `own`: the default profile allows a write it does not
+        // deny. The worker's boundary also opens the repository's git folder for its commits; a
+        // reviewer makes none.
+        let common = boundary.common.clone();
+        boundary.deny_write.extend([copy, common]);
+        Ok(boundary)
+    }
+
     /// The manager: its folder and the project overview; never the main checkout or its git
     /// folder. Its `wsx task` commands run in its host through the broker, outside this
     /// boundary: `land` and `wsx task commit` write main, `wsx task push` the remote.

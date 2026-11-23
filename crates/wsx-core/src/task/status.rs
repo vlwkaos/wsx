@@ -6,7 +6,7 @@
 use super::manager::ApprovalLine;
 use super::store::TaskDir;
 use super::view::{check_outcomes, clip, read_result, resolving_conflict};
-use super::{Actor, AfterKind, LogEvent, TaskRecord, TaskState, WaitOn, Waiting};
+use super::{AfterKind, LogEvent, ReviewVerdict, TaskRecord, TaskState, WaitOn, Waiting};
 use crate::config::project::load_task_config;
 use serde::Serialize;
 use serde_json::Value;
@@ -20,7 +20,7 @@ pub struct Status {
     /// Which row of the table in docs/tasks.md "Status" matched: "check_slot", "review",
     /// "owner". A client picks its tone or icon by it, never by the words.
     pub kind: &'static str,
-    /// "Waiting for the check slot", "Ready, waiting for the manager's review".
+    /// "Waiting for the check slot", "Ready, under review".
     pub label: String,
     /// The label, how long, the facts and what comes next: "Waiting for the scenario test
     /// slot for 4 min: #233 runs its scenario tests now, 2 more tasks ahead. Its scenario
@@ -85,7 +85,8 @@ fn upper_first(text: &str) -> String {
 #[serde(rename_all = "snake_case")]
 pub enum Holder {
     Owner,
-    Manager,
+    /// The review job of a ready task runs (docs/tasks.md "Review").
+    Review,
     /// Another task's landing (`after`): `WaitsOn::task` names it.
     Task,
     /// Its own host: the worker's turn runs.
@@ -108,12 +109,12 @@ pub struct WaitsOn {
 }
 
 /// The one rule of who an open task waits on, read from its `state`, `waiting`, `hold` and
-/// `after`; none for a landed or closed task. A ready task waits for the manager's review when
-/// the manager or a chat created it (the creator reviews it), or when the project lands by
-/// itself (`land_auto`, `tasks.land.auto`) and checks prove it: an owner task never lands by
-/// itself. A held one, a stopped landing, a result that asks the owner and a failed task wait
-/// on the owner; one that waits for another task (`after`) waits on that task, also a plan or a
-/// pause the manager answered with an `after`. ref: docs/tasks.md "Status", "Landing"
+/// `after`; none for a landed or closed task. A ready task waits for its review job while the
+/// project lands by itself (`land_auto`, `tasks.land.auto`), checks prove it and no review of
+/// this revision has ended (`under_review`); else it waits on the owner, as a held one, a
+/// stopped landing, a result that asks the owner, a plan, a pause and a failed task do. One
+/// that waits for another task (`after`) waits on that task.
+/// ref: docs/tasks.md "Status", "Landing", "Review"
 pub fn waits_on(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Option<WaitsOn> {
     let entered = record.state_unix_ms.max(record.created_unix_ms);
     let on = |kind| WaitsOn {
@@ -126,7 +127,6 @@ pub fn waits_on(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Option<W
         task: Some(after.task),
         since_unix_ms: after.since_unix_ms,
     });
-    let reviewed = record.created_by != Actor::Owner || (land_auto && !record.checks.is_empty());
     Some(
         match (record.state, record.waiting.as_ref().map(|w| w.on)) {
             (TaskState::Landed | TaskState::Closed, _) => return None,
@@ -144,20 +144,56 @@ pub fn waits_on(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Option<W
             (_, Some(WaitOn::Load)) => on(Holder::Queue),
             (_, Some(WaitOn::Limit)) => on(Holder::Limit),
             (_, Some(WaitOn::Hand | WaitOn::LandStopped | WaitOn::Asks)) => on(Holder::Owner),
-            (_, Some(WaitOn::Plan | WaitOn::Paused)) => after.unwrap_or(on(Holder::Manager)),
+            (_, Some(WaitOn::Plan | WaitOn::Paused)) => after.unwrap_or(on(Holder::Owner)),
             (_, Some(WaitOn::Owner)) if owner_waits_after(dir, record) => {
                 after.unwrap_or(on(Holder::Owner))
             }
             (_, Some(WaitOn::Owner)) => on(Holder::Owner),
             (TaskState::Ready, None) if record.hold.is_some() => on(Holder::Owner),
-            (TaskState::Ready, None) => after.unwrap_or(on(match reviewed {
-                true => Holder::Manager,
-                false => Holder::Owner,
-            })),
+            (TaskState::Ready, None) => {
+                after.unwrap_or(on(match under_review(dir, record, land_auto) {
+                    true => Holder::Review,
+                    false => Holder::Owner,
+                }))
+            }
             (TaskState::Failed, None) => on(Holder::Owner),
             (TaskState::Working | TaskState::Waiting, None) => on(Holder::Host),
         },
     )
+}
+
+/// Whether the task's project lands by itself (`tasks.land.auto`); an unreadable config does
+/// not. ref: docs/tasks.md "Landing"
+pub fn land_auto(record: &TaskRecord) -> bool {
+    load_task_config(&record.project_path).is_ok_and(|settings| settings.land_auto)
+}
+
+/// Whether a ready task is the review job's: the project lands by itself, checks prove the
+/// task, nothing holds it, and no review of this revision has ended. The host starts the job
+/// on these same terms (host.rs `start_review`). ref: docs/tasks.md "Review"
+pub fn under_review(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> bool {
+    land_auto
+        && record.state == TaskState::Ready
+        && record.waiting.is_none()
+        && record.hold.is_none()
+        && record.after.is_none()
+        && !record.checks.is_empty()
+        && last_review(dir, record.revision).is_none()
+}
+
+/// The review that ended on `revision`, if any: its verdict and findings.
+fn last_review(dir: &TaskDir, revision: u32) -> Option<(ReviewVerdict, Vec<String>)> {
+    dir.last_event(|event| match event {
+        LogEvent::Review {
+            revision: of,
+            verdict,
+            findings,
+            ..
+        } if *of == revision => Some((*verdict, findings.clone())),
+        _ => None,
+    })
+    .ok()
+    .flatten()
 }
 
 /// When the task's checks began to wait for the check slot (`waiting` on `check_slot`, since
@@ -262,8 +298,7 @@ pub fn status_with_result(
     result: Option<&Option<Value>>,
     now_ms: u64,
 ) -> Status {
-    let land_auto = record.state == TaskState::Ready
-        && load_task_config(&record.project_path).is_ok_and(|s| s.land_auto);
+    let land_auto = record.state == TaskState::Ready && land_auto(record);
     let waits_on = waits_on(dir, record, land_auto);
     let mut status = status_of(dir, record, facts, result, waits_on, now_ms);
     status.waits_on = waits_on;
@@ -428,7 +463,7 @@ fn stop_reason(dir: &TaskDir) -> Option<String> {
 }
 
 /// Whether the task is stopped by request and a check-run of its worker ended after the stop:
-/// nothing wakes the worker, so the manager hears of it (`state_wakes`). The answer joins the
+/// nothing wakes the worker, so its event line says so. The answer joins the
 /// worker's next turn. ref: docs/tasks.md "Check-run"
 pub fn answered_after_stop(dir: &TaskDir, record: &TaskRecord) -> bool {
     record.state == TaskState::Waiting
@@ -536,18 +571,18 @@ fn waiting_on(
         }
         WaitOn::Paused => words(
             "paused",
-            "Paused, the manager continues it",
+            "Paused, waiting for you",
             Some(entered),
             &waiting.reason,
-            "The turn ended with a status, not a question: nothing is asked of you.",
+            "The turn ended with a status, not a question. Tell it to go on or what to change.",
             now_ms,
         ),
         WaitOn::Plan => words(
             "plan",
-            "Plan ready, waiting for the manager's review",
+            "Plan ready, waiting for you",
             Some(entered),
             "the worker wrote its plan",
-            "The manager answers go or what to change, then the build starts.",
+            "Answer go or what to change, then the build starts.",
             now_ms,
         ),
         WaitOn::Hand => words(
@@ -694,24 +729,39 @@ fn ready(
     if record.simplify_missing() {
         checks.push_str(&format!("; {}", super::SIMPLIFY_MISSING));
     }
-    match waits_on.is_some_and(|on| on.kind == Holder::Manager) {
-        true => words(
+    if waits_on.is_some_and(|on| on.kind == Holder::Review) {
+        return words(
             "review",
-            "Ready, waiting for the manager's review",
+            "Ready, under review",
             Some(entered),
             &checks,
-            "The manager reads the diff, then lands it or asks for changes.",
+            "A reviewer reads the diff, then lands it or sends its findings to the worker.",
             now_ms,
-        ),
-        false => words(
-            "ready",
-            "Ready, waiting for you to land it",
-            Some(entered),
-            &checks,
-            &format!("Land it to put it on {}.", record.default_branch),
-            now_ms,
-        ),
+        );
     }
+    // ^ A review that ended without a land leaves the task to the owner: say why.
+    if let Some((verdict, findings)) = last_review(dir, record.revision) {
+        match (verdict, findings.first()) {
+            (ReviewVerdict::Changes, Some(first)) => checks.push_str(&format!(
+                "; the review still asks for changes: {}",
+                clip(first, FACT_CHARS)
+            )),
+            (ReviewVerdict::Land, _) => {}
+            (_, Some(why)) => checks.push_str(&format!(
+                "; the review ended without a verdict: {}",
+                clip(why, FACT_CHARS)
+            )),
+            _ => checks.push_str("; the review ended without a verdict"),
+        }
+    }
+    words(
+        "ready",
+        "Ready, waiting for you to land it",
+        Some(entered),
+        &checks,
+        &format!("Land it to put it on {}.", record.default_branch),
+        now_ms,
+    )
 }
 
 /// The checks after a result wait for the machine's check slot, since their `check_queued`.

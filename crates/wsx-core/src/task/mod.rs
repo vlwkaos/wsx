@@ -115,14 +115,14 @@ pub enum WaitOn {
     /// time. ref: docs/tasks.md "Claude adapter"
     Limit,
     /// The worker's turn ended with `status: paused`: something outside goes on and nothing is
-    /// asked of the owner. The manager continues it with an `add`.
+    /// asked. The owner (or the manager on the owner's word) continues it with an `add`.
     /// ref: docs/tasks.md "Status"
     Paused,
     /// A landing that started stopped (a dirty main checkout): the task stays `ready` and the
     /// owner lands it again once that is fixed; `reason` says why. ref: docs/tasks.md "Landing"
     LandStopped,
     /// A ready task whose worker's result ends with a question for the owner (`asks_owner` of
-    /// its summary): the owner's need, not the manager's review. `reason` is the question; the
+    /// its summary): the owner's need, never the review job's. `reason` is the question; the
     /// next move out of `ready` ends it. ref: docs/tasks.md "Manager"
     Asks,
 }
@@ -323,8 +323,8 @@ pub struct TaskRecord {
     /// The `checks.jsonl` item whose fail started this task (docs/tasks.md "To check").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixes: Option<String>,
-    /// Who ran `task new`. A ready task the manager created waits for its review
-    /// (docs/tasks.md "Landing").
+    /// Who ran `task new`: the chat that owns its events (`chats::owner`) and the ledger's
+    /// maker. ref: docs/tasks.md "Chats"
     #[serde(default)]
     pub created_by: Actor,
     /// `task move --chat`: the chat that owns the task now, whoever made it. `created_by` stays
@@ -377,6 +377,17 @@ pub enum MessageKind {
     Prompt,
     Steer,
     Add,
+}
+
+/// What a review decided. ref: docs/tasks.md "Review"
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewVerdict {
+    Land,
+    Changes,
+    /// The review ended with no verdict (an error, a limit, no structured answer): the owner
+    /// lands the task.
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,6 +455,19 @@ pub enum LogEvent {
     LockCleared {
         path: String,
         age_s: u64,
+    },
+    /// The review job read ready `revision` (round `round`): `land` lands it, `changes` sends
+    /// `findings` back to the worker. `agent` is `adapter/model`. ref: docs/tasks.md "Review"
+    Review {
+        revision: u32,
+        round: u32,
+        verdict: ReviewVerdict,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        findings: Vec<String>,
+        agent: String,
+        /// The reviewer's spend, counted in the task's usage as part `review`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<TurnUsage>,
     },
     /// Failed checks of `revision` went back to the worker as turn `attempt`.
     CheckRetry {
@@ -591,6 +615,8 @@ pub enum TurnTrigger {
     Restart,
     /// A no-op turn that keeps the prompt cache warm while the host waits; logged as `ping`.
     Ping,
+    /// A review's findings sent back to the worker (docs/tasks.md "Review").
+    Review,
 }
 
 fn is_zero(value: &u32) -> bool {
@@ -1236,6 +1262,49 @@ pub(crate) fn one_or_many<'de, D: serde::Deserializer<'de>>(
     .into_iter()
     .filter(|path| !path.trim().is_empty())
     .collect())
+}
+
+/// JSON Schema of a review job's answer: `land` or `changes`, with the findings a change
+/// needs (empty for `land`). ref: docs/tasks.md "Review"
+pub fn review_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["verdict", "findings"],
+        "properties": {
+            "verdict": { "type": "string", "enum": ["land", "changes"] },
+            "findings": { "type": "array", "items": { "type": "string" }, "maxItems": 10 },
+        },
+    })
+}
+
+/// A review job's answer: its structured result, else the last JSON object in its text (an
+/// adapter without structured output). `None` for no answer of that shape, and for
+/// `changes` with no finding to send back.
+pub fn parse_review(
+    structured: Option<&serde_json::Value>,
+    text: &str,
+) -> Option<(ReviewVerdict, Vec<String>)> {
+    let from_text = || {
+        let start = text.rfind("{\"verdict\"")?;
+        let mut stream = serde_json::Deserializer::from_str(&text[start..]).into_iter();
+        stream.next()?.ok()
+    };
+    let value: serde_json::Value = structured.cloned().or_else(from_text)?;
+    let findings: Vec<String> = value["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|finding| finding.as_str())
+        .map(|finding| finding.trim().to_string())
+        .filter(|finding| !finding.is_empty())
+        .take(10)
+        .collect();
+    match value["verdict"].as_str()? {
+        "land" => Some((ReviewVerdict::Land, Vec::new())),
+        "changes" if !findings.is_empty() => Some((ReviewVerdict::Changes, findings)),
+        _ => None,
+    }
 }
 
 /// JSON Schema given to the adapter for `WorkerResult`.

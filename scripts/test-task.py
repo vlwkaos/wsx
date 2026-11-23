@@ -624,9 +624,11 @@ def run(wsx, wsxd, work, owned, part):
              and not git('branch', '--list', 'wsx/t%d' % n), 't%s closed after landing' % n, 60)
 
     def reviewed(n):
-        """Wait for a ready task that stays ready, and land it as the manager's review would."""
-        assert wait_state(n, 'ready', 'landed', 'failed')['state'] == 'ready', show(n)
-        return land(n)
+        """Wait for the review job to land a task (docs/tasks.md "Review"): the fake reviewer lands
+        unless the prompt says REVIEWNO or REVIEWMUTE. The task as `show` gives it."""
+        assert wait_state(n, 'landed', 'failed')['state'] == 'landed', log(n)
+        assert [e['verdict'] for e in log(n) if e['kind'] == 'review'][-1:] == ['land'], log(n)
+        return show(n)
 
     manager_env = dict(env, WSX_TASK_ACTOR='chat:demo')
     # ^ The repo's own chat is named after the repo; a task's agent of that chat acts as `chat:demo` (docs/tasks.md "Chats").
@@ -1014,7 +1016,7 @@ def manager_up(created):
                  "only when the owner's message of this turn says", '`--owner-said <id>` (on `land`, `close --discard`, `deploy`, `release`, `push`)', 'never name a message that did not ask',
                  'name the files and ask the owner; on yes, `wsx task commit <files>`', 'Read `wsx task review <n>`',
                  'Start a stall from `wsx task why <n>`.',
-                 'Continue a `paused` task.', 'Never touch a task on `hand`', '`wsx task checkin`',
+                 'Review, when asked (auto land has a review job).', 'Never touch a task on `hand`', '`wsx task checkin`',
                  'read-only git', 'The owner\'s skills are not listed: read `%s/<name>/SKILL.md`' % (plugin / 'skills'), 'Skills: other, scribe. ', 'check rather than guess', '`wsx memory add --kind rule`',
                  '/chats/demo/notes/decisions.md', '/chats/demo/notes/context.md', 'update a section in place',
                  '--from-chat --reply', "do not answer 'Chat <name> replies'", "'@<chat>'", '`wsx task say --to <chat> --from-chat`',
@@ -1157,10 +1159,12 @@ def manager_up(created):
     mine = raw_reply(js('task', 'say', 'QUOTE %d keeps mine' % asked_promise['id'])['id'])
     assert mine['quote'] == asked_promise['id'] and mine['text'].startswith('> STATUS promise\n\nkeeps mine'), mine
     # ^ A task event logged during its turn would sit between: the events of earlier tasks land first.
+    # They start no turn of their own (docs/tasks.md "Manager"), so they join this one before it.
     manager_settled('the events before one owner message')
     one = js('task', 'say', 'STATUS one owner message')
     own_words = raw_reply(one['id'])
-    assert own_words['to'] == [one['id']] and 'quote' not in own_words, own_words
+    owner_ids = {e['id'] for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'owner'}
+    assert [i for i in own_words['to'] if i in owner_ids] == [one['id']] and 'quote' not in own_words, own_words
     # ^ A reply under its one message is no quote; one with a chat item between is. A message that
     # comes in during a long turn waits for the next turn and sits between the first and its reply.
     apart = js('task', 'say', 'ASK LONG apart')
@@ -1172,35 +1176,6 @@ def manager_up(created):
     assert far['id'] in js('task', 'chat')['asks'], js('task', 'chat')['asks']
     js('task', 'dismiss', str(far['id']))
     reply_to(second['id'], 60)
-    # ^ A reply to an events turn has no quote, whether or not the manager's earlier reply promised
-    # the task and other chat items lie between: no owner message is answered
-    # (`chat::quoted_message`). The task waits for a release file, so the promise comes first.
-    def event_of(task):
-        return next((e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
-                     and '#%d ready r1' % task in e['text']), None)
-
-    def follow_up(label, between_words):
-        release = work / ('release-' + label)
-        task = js('task', 'new', 'NOOP ASK WAIT %s' % release)['id']
-        pledge = reply_to(js('task', 'say', 'BLOCKS I will land #%d once CI passes.' % task)['id'])
-        assert '#%d once CI passes' % task in pledge['text'], pledge
-        if between_words:
-            reply_to(js('task', 'say', between_words)['id'])
-        release.write_text('go')
-        event = wait(lambda: event_of(task), 'the ready event of the promised task', 60)
-        report = raw_reply(event['id'])
-        assert report.get('asks') is True, report
-        items = [e for e in manager_entries(raw=True)
-                 if pledge['id'] < (e.get('id') or 0) < event['id'] and e['kind'] in ('message', 'reply')]
-        js('task', 'dismiss', str(report['id']))
-        js('task', 'close', task, '--discard')
-        return pledge, report, items
-
-    pledge, report, items = follow_up('direct', None)
-    assert not items and 'quote' not in report, (items, report)
-    pledge, report, items = follow_up('apart', 'QUOTE OWNER_SAID between')
-    assert items and 'quote' not in report and report['text'].endswith('Should I land it now?'), (pledge, report)
-    assert not report['text'].startswith('> '), report
     heard = js('task', 'say', 'QUOTE OWNER_SAID noted')
     assert raw_reply(heard['id'])['text'] == '> QUOTE OWNER_SAID noted\n\nnoted'
     for bad in ('abc', '0', '99999999', '99999999999999999999', '-3'):
@@ -1225,12 +1200,6 @@ def manager_up(created):
     reply_to(said_back['id'])
     assert not any(e['kind'] == 'rotated' for e in manager_entries()), 'four 50k calls do not rotate'
     assert len(replies) > 3 and {e['usage']['cost_micro_usd'] for e in replies} == {1000}, replies
-    # Event-only turns run on tasks.manager.eventModel unless a ready task the manager created
-    # waits for its review: the manager's own model reviews it.
-    review = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
-                                and '#%d ready' % manager_task in e['text']), None), 'review event')
-    review_turn = wait(lambda: turn_with('Events (message %d)' % review['id']), 'review turn')
-    assert review_turn['model'] == 'fake-manager', review_turn
     # Rotation: past rotateTokens the next turn starts a fresh conversation.
     # ^ Without a skills folder the next launch has no plugin, keeps the Skill tool and
     # the generic guidance.
@@ -2257,20 +2226,16 @@ def part_core(created=None):
     for n in (p, q):
         wait_closed(n)
 
-    # 16. Auto land (the default; docs/tasks.md "Landing"): a ready task the owner created waits
+    # 16. Auto land (the default; docs/tasks.md "Landing", "Review"): a ready task goes to its review
     mark('16')
-    # for the manager's review instead of landing by itself, the review's land needs no other
-    # step, its Human Verify items join the To check list, and a landing that conflicts lands by
-    # itself after the worker's fix. With main not checked out, the ref moves with the old tip
-    # as guard.
+    # job, whose land needs no other step, its Human Verify items join the To check list, and a
+    # landing that conflicts lands by itself after the worker's fix. With main not checked out, the
+    # ref moves with the old tip as guard.
     configure(LAND_CONFIG.replace('  land: { auto: false }\n', ''), 'auto land')
 
     # ^ The task records main as its default branch at `new`; main is left during the turn.
     hv = js('task', 'new', 'SLOW WORK z.txt HV')['id']
     git('switch', '-q', '-c', 'parking')
-    assert wait_state(hv, 'ready', 'landed', 'failed')['state'] == 'ready'
-    time.sleep(1.5)
-    assert show(hv)['state'] == 'ready' and not main_has('z.txt'), 'an owner task landed without a review'
     assert reviewed(hv)['state'] == 'landed' and main_has('z.txt')
     assert git('rev-parse', '--abbrev-ref', 'HEAD') == 'parking'
     assert [e['kind'] for e in log(hv)].count('landed') == 1
@@ -2287,12 +2252,10 @@ def part_core(created=None):
     a1 = js('task', 'new', 'WORK x.txt alpha HV')['id']
     a2 = js('task', 'new', 'WORK x.txt beta HV')['id']
     for n in (a1, a2):
-        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', show(n)
-    assert land(a1)['state'] == 'landed'
-    assert 'lands when its checks pass' in land(a2)['message']
-    assert wait_state(a2, 'landed', 'failed')['state'] == 'landed', show(a2)
+        reviewed(n)
     conflicts = [n for n in (a1, a2) if any(e['kind'] == 'conflict' for e in log(n))]
-    assert conflicts == [a2] and git('show', 'main:x.txt') == 'resolved', conflicts
+    assert len(conflicts) == 1 and git('show', 'main:x.txt') == 'resolved', conflicts
+    assert [e['kind'] for e in log(conflicts[0])].count('review') == 1, log(conflicts[0])
     assert len(js('task', 'check')['open']) == 3
     # An item keeps where to look and its capture, copied into the task folder before the copy
     # goes. An item that names a command and one about a page without a capture go back to the
@@ -2302,12 +2265,14 @@ def part_core(created=None):
     assert reviewed(shot)['state'] == 'landed', show(shot)
     # ^ command branched before shot landed: its land rebases, reruns the checks and lands when
     # they pass (docs/tasks.md "Landing" 3).
-    assert 'checks run on the new revision' in reviewed(command)['message'], show(command)
-    assert wait_state(command, 'landed', 'ready', 'failed')['state'] == 'landed', show(command)
+    assert reviewed(command)['state'] == 'landed', show(command)
+    assert [e['kind'] for e in log(command)].count('revision') >= 2, log(command)
     for n in (shot, command):
         wait_closed(n)
     assert [e['kind'] for e in log(command)].count('result') == 2, log(command)
-    sent = [t['message'] for t in traces() if 'yours to prove' in str(t.get('message'))]
+    # ^ A review job's message quotes the task's messages: not a send-back of its own.
+    sent = [t['message'] for t in traces() if 'yours to prove' in str(t.get('message'))
+            and not str(t.get('message')).startswith('Review round')]
     assert len(sent) == 1 and 'wsx task list' in sent[0] and 'the page reads well' in sent[0], sent
     kept = [i for i in js('task', 'check')['open'] if i['task'] in (shot, command)]
     assert [(i['task'], i['where'], i['captures']) for i in kept] == [(shot, '/#/x', ['captures/r1-1-1.png'])], kept
@@ -2335,10 +2300,9 @@ def part_core(created=None):
     # `wsx task check --json`. An item whose words name an image file it has no capture of is
     # reported in the log (docs/tasks.md "To check"); the ready event names it too (part 32ak).
     multi = js('task', 'new', 'WORK m.txt CAPTURES3 NAMEDHV')['id']
-    assert wait_state(multi, 'ready', 'failed')['state'] == 'ready', show(multi)
+    assert reviewed(multi)['state'] == 'landed', show(multi)
     said = "a To check item names tasks-390x844-home-dark.png but has no capture of it"
     assert any(said in str(e) for e in log(multi)), log(multi)
-    assert land(multi)['state'] == 'landed', show(multi)
     wait_closed(multi)
     three = [i for i in js('task', 'check')['open'] if i['task'] == multi and i['check'] == 'the three sizes']
     folder = Path(show(multi)['report']).parent
@@ -2584,32 +2548,33 @@ def part_core(created=None):
     assert len(merged) == 1, merged
     # ^ An event names the host's checks before the worker's own words.
     assert '#%d ready r1: NOOP; checks 1 of 1 passed; worker says (unchecked): did: NOOP' % first in merged[0]['text'], merged
-    # ^ A turn takes every waiting message of one author: an earlier events message may share it.
-    # ^ The events wait for the 25 s LONG turn to end.
-    delivered = wait(lambda: (lambda ids: ids if any(merged[0]['id'] in batch for batch in ids) else None)(
-        [e['ids'] for e in manager_entries() if e['kind'] == 'delivered']), 'merged events delivered', 60)
-    batch = lambda message_id: next(n for n, ids in enumerate(delivered) if message_id in ids)
-    assert delivered[batch(waiting['id'])] == [waiting['id']] and batch(waiting['id']) < batch(merged[0]['id']), (
-        delivered, waiting['id'], merged[0]['id'],
-        [(e.get('id'), e['kind'], e.get('from'), e.get('text', '')[:60]) for e in manager_entries() if e['kind'] in ('message', 'reply')][-12:])
-    event_reply = reply_to(merged[0]['id'])
-    # ^ A reply to a turn of only events is quiet: the chat shows it as a muted line.
-    assert 'noted events' in event_reply['text'] and event_reply.get('quiet') is True, event_reply
-    # ^ Nothing waits for the manager's review: the events turn runs on eventModel in the same
-    # process, and the next owner turn switches back (docs/tasks.md "Manager").
-    event_turn = turn_with('Events (message %d)' % merged[0]['id'])
-    assert event_turn['model'] == 'fake-events', event_turn
-    # ^ The owner turn before it already showed both tasks as changed; the events turn has no change.
+    # ^ Task events start no turn (docs/tasks.md "Manager"): they go with the next owner turn.
+    after_events = js('task', 'say', 'STATUS after events')
+    reply_to(after_events['id'], 60)
+    delivered = [e['ids'] for e in manager_entries() if e['kind'] == 'delivered']
+    batch = next(ids for ids in delivered if merged[0]['id'] in ids)
+    owner_ids = {e['id'] for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'owner'}
+    assert owner_ids & set(batch), (batch, delivered[-4:])
+    # ^ The owner turn showed both tasks as changed.
     status_turn = turn_with('Owner (message %d)' % waiting['id'])['message']
     assert '- changed since your last turn:\n' in status_turn and '#%d ready r1' % first in status_turn, status_turn
+    # ^ A waking event alone (a routine's failure) runs a turn of only events on eventModel in the
+    # same process, and the next owner turn switches back (docs/tasks.md "Manager").
+    manager_settled('the manager idle before the routine event')
+    js('task', 'routine', 'run', 'nightly', '-p', 'demo')
+    routine_event = wait(lambda: (lambda found: found[-1] if len(found) == 4 else None)(
+        events_with('routine nightly failed (exit 3)')), 'the fourth routine event', 60)
+    event_reply = reply_to(routine_event['id'], 60)
+    # ^ The fake answers a routine event for the owner with a short message, never quiet.
+    assert event_reply['text'].startswith('About routine nightly failed (exit 3)') and event_reply['to'] == [routine_event['id']], event_reply
+    event_turn = turn_with('Events (message %d)' % routine_event['id'])
+    assert event_turn['model'] == 'fake-events', event_turn
     assert '- open: 2 ready;' in event_turn['message'] and 'changed since' not in event_turn['message'], event_turn
     assert event_reply['usage']['model'] == 'fake-events' and event_reply['usage']['cost_micro_usd'] == 1000, event_reply
-    after_events = js('task', 'say', 'STATUS after events')
-    reply_to(after_events['id'])
-    owner_turn = turn_with('STATUS after events')
+    back = js('task', 'say', 'STATUS after the routine')
+    reply_to(back['id'])
+    owner_turn = turn_with('STATUS after the routine')
     assert owner_turn['model'] == 'fake-manager' and owner_turn['session'] == event_turn['session'], owner_turn
-    switches = [t['set_model'] for t in traces() if 'set_model' in t and t['session'] == event_turn['session']]
-    assert switches[-2:] == ['fake-events', 'fake-manager'], switches
     # ^ One thought in two owner messages: the second comes while the first's turn runs and goes into
     # it at the turn's next tool call, so one reply answers both (docs/tasks.md "Manager", Messages
     # during a turn). The turn above (LONG) had no tool call after its message: that one waited.
@@ -2661,8 +2626,8 @@ def part_core(created=None):
     assert [p.name for p in captures_of[recent].iterdir()] == ['r1-1-1.png'] and [p.name for p in captures_of[shot].iterdir()] == ['r1-1-1.png']
     after_sweep = [json.loads(line) for line in checks_file.read_text().splitlines()]
     assert [r for r in after_sweep if r['id'] == video_item['id']][-1]['captures'] == ['captures/r1-1-1.mp4'], after_sweep
-    late_reply = reply_to(late[0]['id'])
-    assert 'noted events' in late_reply['text']
+    # ^ A task's event starts no turn: the owner's message is the restarted process's first turn.
+    late_reply = reply_to(js('task', 'say', 'STATUS after the restart')['id'])
     # ^ The resumed process restored the session's spend: the reply still costs only its own turn.
     resumed_usage = late_reply['usage']
     assert resumed_usage['cost_micro_usd'] == 1000 and resumed_usage['session_cost_micro_usd'] > 5000, resumed_usage
@@ -2735,10 +2700,7 @@ def part_core(created=None):
     assert rows.rindex("(New conversation: the manager's instructions changed") < rows.index('[%d] You: STATUS after the change' % changed['id']), rows[-800:]
     opened = turn_with('STATUS after the change')['message']
     # ^ The notes come first, then the handover.
-    assert opened.startswith("The owner's decisions") and '\n\nHandover (this is a new conversation' in opened and re.search(r'You \(reply \d+\): noted events', opened) and 'Owner (message ' in opened, opened
-    # ^ The three failures before the rotation are one line: the newest and how many.
-    routines = opened.split('\nRoutine results (')[1].split('\n\n')[0].split('\n')[1:]
-    assert routines == ['routine nightly failed (exit 3); 3 failures, never succeeded'], opened
+    assert opened.startswith("The owner's decisions") and '\n\nHandover (this is a new conversation' in opened and 'Owner (message ' in opened, opened
     assert 'keep the store in sqlite' in opened and 'SECRET-OUTSIDE' not in opened, opened
     # ^ The handover is no record of the project's memory: its lines are the chat log's, which search reads (docs/memory.md "Deletion").
     handovers = [h for h in memory_records(cli('memory', 'search', 'Handover new conversation exchanges', '--json').stdout) if h['slug'].startswith('handover-')]
@@ -3050,12 +3012,8 @@ def part_core(created=None):
     assert 'cannot be used with' in refused.stderr, refused.stderr
     js('task', 'routine', 'add', 'closed', '-p', 'demo', '--event', 'task.closed', '--arg=sh', '--arg=-c',
        '--arg=printf "%%s" "$WSX_EVENT_PAYLOAD" | %s task post -p demo --title closed' % wsx)
-    # ^ Only a short reply to events is quiet: one with a table is a message (docs/tasks.md "Manager").
-    tabled = js('task', 'new', 'NOOP TABLE')['id']
+    tabled = js('task', 'new', 'NOOP')['id']
     wait_state(tabled, 'ready')
-    table_reply = reply_to(wait(lambda: events_with('#%d ready r1' % tabled), 'the event of a task that asks for a table')[0]['id'])
-    stored_reply = next(e for e in manager_entries() if e['kind'] == 'reply' and e['id'] == table_reply['id'])
-    assert 'Where things stand' in stored_reply['text'] and 'quiet' not in stored_reply and 'quiet' not in table_reply, stored_reply
     js('task', 'close', tabled)
     closed = wait(lambda: posted('closed'), 'the closed event routine post', 60)[0]
     assert json.loads(closed['text'])['task'] == tabled, closed
@@ -3308,13 +3266,14 @@ def part_core(created=None):
                          and '(session/%d)' % held in e.get('text', '')), 'the post waits for the turn'
     for name in ('gone', 'stuck', 'task-99', 'worker', 'held'):
         cli('session', 'delete', name, '-p', 'demo')
-    # ^ A reply that ends with a question asks the owner and is never quiet, also to a turn of
-    # only events; a reply that ends with a table, or a report, does not ask (docs/tasks.md "Manager").
+    # ^ A reply that ends with a question asks the owner and is never quiet; a reply that ends with
+    # a table, or a report, does not ask (docs/tasks.md "Manager"). A task's event starts no turn,
+    # so the owner's message takes the task's ready line along.
     asking = js('task', 'new', 'NOOP ASK')['id']
     wait_state(asking, 'ready')
-    asked = reply_to(wait(lambda: events_with('#%d ready r1' % asking), 'the event of a task that asks')[0]['id'])
-    assert asked['text'] == 'Should I land it now?' and asked.get('asks') is True and 'quiet' not in asked, asked
-    assert 'quote' not in next(e for e in chat(raw=True) if e.get('id') == asked['id']), 'a turn of only events quotes no owner message'
+    wait(lambda: events_with('#%d ready r1' % asking), 'the event of a task that asks')
+    asked = reply_to(js('task', 'say', 'STATUS with the asking task')['id'])
+    assert asked['text'].endswith('Should I land it now?') and asked.get('asks') is True and 'quiet' not in asked, asked
     # ^ An open question shows in the next turn's input ("Open questions", docs/tasks.md "Questions"):
     # a message that quotes another message answers none. A dismiss, or an owner message that
     # quotes it, ends it; with none open the section is absent.
@@ -3425,13 +3384,14 @@ def part_core(created=None):
     context = (notes / 'context.md').read_text()
     for i, n in enumerate(memo_tasks):
         assert context.count('lesson %d kept' % i) == 1 and '- #%d: ' % n in context, context
-    # ^ One close alone, after the turns above have ended, is the case that costs no turn. A stop
-    # by request costs none either: its wait on owner is a chat line that joins the next turn,
-    # while a ready event still starts one (docs/tasks.md "Manager", `state_wakes`).
+    # ^ One close alone, after the turns above have ended, is the case that costs no turn. No task
+    # event costs one: a ready task and a stop by request are chat lines that join the next turn
+    # (docs/tasks.md "Manager").
     lone = js('task', 'new', 'WORK lone.txt')['id']
     halted = js('task', 'new', 'WAIT %s NOOP' % (base / 'never'))['id']
     assert wait_state(lone, 'ready', 'failed')['state'] == 'ready'
-    reply_to(wait(lambda: events_with('#%d ready r1' % lone), 'the ready event')[0]['id'])
+    ready_event = wait(lambda: events_with('#%d ready r1' % lone), 'the ready event')[0]
+    assert [x.get('wakes', True) for x in ready_event['short'] if x.get('task') == lone] == [False], ready_event
     wait(lambda: show(halted)['state'] == 'working', 'the halted worker')
     time.sleep(5)
     assert js('task', 'stop', halted)['ok']
@@ -3883,14 +3843,15 @@ def part_worker(created=None):
     by_task = {i['task']: i for i in js('task', 'check')['open']}
     first, second, third, fourth, fifth = (by_task[n] for n in replied)
     reply_to(js('task', 'say', 'STATUS')['id'])
-    # ^ The landings' events, and the manager's turn on them, come before what follows: an event
-    # turn after the quote below would put its fold under it, and `[` would take the fold.
+    # ^ The landings' events, and the owner turn that takes them, come before what follows: events
+    # after the quote below would put their fold under it, and `[` would take the fold.
     def landing_events():
         lines = [e for e in events_with('landed') if any('#%d landed' % n in e['text'] for n in replied)]
         if not all(any('#%d landed' % n in e['text'] for e in lines) for n in replied):
             return None
         return lines
-    reply_to(wait(landing_events, 'the five landing events', 60)[-1]['id'])
+    wait(landing_events, 'the five landing events', 60)
+    reply_to(js('task', 'say', 'STATUS')['id'])
     # ^ Only the turns that take an owner message: an event turn (a landed task's ready line) can come
     # at any time in this section and is not what it counts.
     manager_turns = lambda: len([t for t in traces() if t.get('manager') and 'Owner (message' in str(t.get('message', ''))])
@@ -4743,18 +4704,14 @@ def part_worker(created=None):
     assert stalls(dw) == stalled, stalls(dw)
     assert 'waiting' not in show(dw)['record'] and not any(e['kind'] == 'check_retry' for e in log(dw))
     js('task', 'close', dw, '--discard')
-    # A task the manager must act on and does not is a stall once `tasks.manager.reviewMinutes`
-    # passed since it entered the state; a land, or an add and a close, before that end the
-    # wait (docs/tasks.md "Manager", Stalls). The fake manager reviews nothing by itself.
-    configure(LAND_CONFIG.replace('tasks:\n', 'tasks:\n  manager: { reviewMinutes: 0.2 }\n'), 'review wait')
-
-    idle, landed_first, added, stopped = (manager_new('WORK rw%d.txt' % i) for i in range(4))
-    for n in (landed_first, added, stopped):
-        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', show(n)
-    assert land(landed_first)['state'] == 'landed'
-    # ^ A landing that stops on the main checkout (a file in its way) waits on the owner, not
-    # the manager: `ready` on `land_stopped`, and no manager-review stall after it
-    # (docs/tasks.md "Landing").
+    # A landing that stops on the main checkout (a file in its way) waits on the owner: `ready` on
+    # `land_stopped` (docs/tasks.md "Landing").
+    stopped = manager_new('WORK rw3.txt')
+    assert wait_state(stopped, 'ready', 'failed')['state'] == 'ready', show(stopped)
+    # ^ main moves first, so the land rebases and checks, and stops at its fast-forward.
+    (project / 'rw-moved.txt').write_text('moved\n')
+    git('add', 'rw-moved.txt')
+    git('commit', '-q', '-m', 'main moves')
     (project / 'rw3.txt').write_text('in the way\n')
     land(stopped)
     wait(lambda: kinds(stopped, 'land_stopped'), 'the landing stops', 120)
@@ -4762,23 +4719,8 @@ def part_worker(created=None):
     assert stopped_row['state'] == 'ready' and stopped_row['waiting']['on'] == 'land_stopped' and 'rw3.txt' in stopped_row['waiting']['reason'], stopped_row
     assert stopped_row['status']['kind'] == 'land_stopped' and stopped_row['status']['waits_on']['kind'] == 'owner', stopped_row['status']
     assert stopped_row['flow']['waits_on'] == stopped_row['status']['waits_on'], stopped_row['flow']
-    stopped_stalls = stalls(stopped)
-    js('task', 'add', added, 'WORK rw-more.txt')
-    js('task', 'close', added, '--discard')
-    waited = wait(lambda: stalls(idle), 'the manager-wait stall event', 150)
-    assert len(waited) == 1 and re.search(r'^#%d stalled r1: .*; ready for .*; the manager has not reviewed it$' % idle, waited[0]), waited
-    # ^ Its host answers, so the stall starts no manager turn (`stall_wakes`): it goes along with the next.
-    stall_event = events_with('#%d stalled r1' % idle)[0]
-    assert unmarked(x for x in stall_event['short'] if x.get('task') == idle) == [{'text': '#%d stalled' % idle, 'task': idle, 'wakes': False}], stall_event
-    sweeps(1)
-    assert stalls(idle) == waited and not stalls(landed_first) and not stalls(added), (stalls(idle), stalls(landed_first), stalls(added))
-    stays(lambda: time.time() * 1000 - show(stopped)['record']['state_unix_ms'] > (12 + STALL_GRACE + 2 * SWEEP + 2) * 1000,
-          lambda: stalls(stopped) == stopped_stalls, 'a stopped landing is no manager wait', 150)
-    assert next(r for r in js('task', 'ledger')['open'] if r['id'] == idle)['status']['waits_on']['kind'] == 'manager'
     (project / 'rw3.txt').unlink()
-    js('task', 'close', idle, '--discard')
     js('task', 'close', stopped, '--discard')
-    configure(LAND_CONFIG, 'review wait over')
     # A silent worker is one stall per silence: its turn record (`turn.json`, docs/tasks.md
     # "Agents") is past its deadline and still open, so its host did not end it. What the manager
     # or the host writes (an add, a land notice) moves no deadline; a line of the worker's does
@@ -4984,7 +4926,9 @@ def part_worker(created=None):
     stale_release.write_text('')
     assert wait_state(stale, 'ready', 'failed')['state'] == 'ready', log(stale)
     # ^ The task's last event line is current: no line says what it already says.
-    stale_ready = wait(lambda: turn_with('#%d ready r1' % stale), 'the ready turn', 30)['message']
+    wait(lambda: events_with('#%d ready r1' % stale), 'the ready event', 30)
+    reply_to(js('task', 'say', 'STATUS after the stale ready')['id'])
+    stale_ready = turn_with('#%d ready r1' % stale)['message']
     assert 'since then:' not in stale_ready, stale_ready
     js('task', 'close', stale, '--discard')
 
@@ -5723,7 +5667,6 @@ def part_host(created=None):
     # wait with the text as an add, a close ends it with one event, and a wait past 24 h is one
     # stall.
     mark('32af')
-    configure(LAND_CONFIG.replace('tasks:\n', 'tasks:\n  manager: { reviewMinutes: 0.2 }\n'), 'after wait')
     after_gate = base / 'after-gate'
 
     def manager_after(*argv, because='files', ok=True):
@@ -5781,18 +5724,13 @@ def part_host(created=None):
     record = json.loads(record_file.read_text())
     record['after']['since_unix_ms'] -= 25 * 3600 * 1000
     record_file.write_text(json.dumps(record))
-    # ^ Past the review limit (0.2 min) and the grace: a task that waits for a landing is no
-    # "ready, not reviewed", and one that waits past 24 h is the only stall reported.
-    # ^ a and c are ready past the review limit for two sweeps after the grace, and the sweep that
-    # reports the stalls of unparked and e looked at them too.
+    # ^ Past the grace a task that waits for a landing is no stall, nor is a plan (the owner's wait,
+    # which reminds: 32ow), and one that waits past 24 h is the only stall reported. a and c are
+    # ready for two sweeps after the grace, and the sweep that reports e's stall looked at them too.
     aged = lambda: all(time.time() * 1000 - show(n)['record']['state_unix_ms'] > (12 + STALL_GRACE + 2 * SWEEP + 2) * 1000
                        for n in (a, c))
-    stays(lambda: aged() and stalls(unparked) and stalls(e), lambda: not stalls(a) and not stalls(c),
-          'the plan and the long wait stall, a and c do not', 150)
-    # ^ The `after` is the manager's review of a plan too; a plan that is not parked still stalls.
-    assert not stalls(parked), stalls(parked)
-    plan_stall = stalls(unparked)
-    assert len(plan_stall) == 1 and re.search(r'^#%d stalled r\d+: .*; waiting on plan for .*; the manager has not reviewed it$' % unparked, plan_stall[0]), plan_stall
+    stays(lambda: aged() and stalls(e), lambda: not any(stalls(n) for n in (a, c, parked, unparked)),
+          'the long wait stalls, a, c and the plans do not', 150)
     long = stalls(e)
     assert len(long) == 1 and re.search(r'^#%d stalled r1: .*; ready for 1 d [01] h; waiting for #%d to land$' % (e, f), long[0]), long
     sweeps(1)
@@ -5820,7 +5758,6 @@ def part_host(created=None):
     assert wait_state(w, 'ready', 'failed')['state'] == 'ready' and 'after' not in show(w)['record'], log(w)
     for n in (a, w, c, e, f, g, parked, unparked):
         js('task', 'close', n, '--discard')
-    configure(LAND_CONFIG, 'after wait over')
     # 32ow. A task that waits on the owner reminds the owner (docs/tasks.md "Manager", Stalls): one
     # push once the wait lasted 4 h, then one a day, each once (a service restart sends none twice),
     # with only the project, the number, the wait's time and its reason line, and no manager turn.
@@ -5926,7 +5863,7 @@ def part_host(created=None):
     line = [x for x in quiet['text'].split('\n') if x.startswith('#%d waiting' % idle)][0]
     assert 'waits on owner' not in line and 'waits for #%d to land' % wanted in line, line
     loud = wait(lambda: events_with('#%d waiting r' % asking, 'waits on owner: '), 'the asking worker event')[0]
-    assert [x for x in loud['short'] if x.get('task') == asking] == [{'text': '#%d waiting' % asking, 'task': asking, 'state': 'waiting'}], loud
+    assert [x for x in loud['short'] if x.get('task') == asking] == [{'text': '#%d waiting' % asking, 'task': asking, 'wakes': False, 'state': 'waiting'}], loud
     # ^ The landing of the task it waits for sends its text, as before.
     assert land(wanted)['state'] == 'landed'
     wait(lambda: kinds(idle, 'after_ended'), 'the idle wait ends', 40)
@@ -5981,17 +5918,17 @@ def part_host(created=None):
     for n in (follower, freed, orphan, base_b):
         js('task', 'close', n, '--discard')
     wait_closed(base_a)
-    # 32aj. A worker whose turn ends on a status (`status: paused`, the fake's PAUSE) asks nobody:
-    # the task reads paused in the event, the ledger count, `show`, `list` and the ledger row, the
-    # agent is idle, and the manager continues it with an add. A worker that asks a real question
+    # 32aj. A worker whose turn ends on a status (`status: paused`, the fake's PAUSE) asks no
+    # question: the task reads paused in the event, the ledger count, `show`, `list` and the ledger
+    # row, the agent is idle, it waits for the owner, and an add continues it. A worker that asks a real question
     # (`blocked`) still reads "Waiting for your answer" (docs/tasks.md "Status").
     mark('32aj')
     pausing, questioning = manager_new('PAUSE WORK aj-p.txt'), manager_new('NEEDS WebSearch WORK aj-q.txt')
     for n in (pausing, questioning):
         wait_state(n, 'waiting')
     status = show(pausing)['status']
-    assert status['kind'] == 'paused' and status['label'] == 'Paused, the manager continues it', status
-    assert 'Waiting for your answer' not in status['sentence'] and 'nothing is asked of you' in status['sentence'], status
+    assert status['kind'] == 'paused' and status['label'] == 'Paused, waiting for you', status
+    assert 'Waiting for your answer' not in status['sentence'] and 'Tell it to go on' in status['sentence'], status
     assert show(pausing)['record']['waiting']['on'] == 'paused' and show(questioning)['status']['kind'] == 'owner', show(pausing)
     assert re.search(r'^t%d paused ' % pausing, cli('task', 'show', str(pausing)).stdout), cli('task', 'show', str(pausing)).stdout
     assert re.search(r'^t%d +paused ' % pausing, cli('task', 'list').stdout, re.M), cli('task', 'list').stdout
@@ -6000,12 +5937,14 @@ def part_host(created=None):
     assert row_of[pausing]['status']['kind'] == 'paused' and row_of[pausing]['waiting']['on'] == 'paused', row_of[pausing]
     wait(lambda: (pane_agent(pausing) or {}).get('state') == 'idle', 'the paused worker reports idle')
     wait(lambda: (pane_agent(questioning) or {}).get('state') == 'blocked', 'the asking worker reports blocked')
-    quiet = wait(lambda: events_with('#%d paused r' % pausing, 'waits on paused: Paused, the manager continues it'), 'the paused event')[0]
+    quiet = wait(lambda: events_with('#%d paused r' % pausing, 'waits on paused: Paused, waiting for you'), 'the paused event')[0]
     assert 'waits on owner' not in [x for x in quiet['text'].split('\n') if x.startswith('#%d paused' % pausing)][0], quiet
-    assert [x for x in quiet['short'] if x.get('task') == pausing] == [{'text': '#%d paused' % pausing, 'task': pausing, 'state': 'paused'}], quiet
+    assert [x for x in quiet['short'] if x.get('task') == pausing] == [{'text': '#%d paused' % pausing, 'task': pausing, 'wakes': False, 'state': 'paused'}], quiet
     loud = wait(lambda: events_with('#%d waiting r' % questioning, 'waits on owner: Waiting for your answer'), 'the question event')[0]
-    assert [x for x in loud['short'] if x.get('task') == questioning] == [{'text': '#%d waiting' % questioning, 'task': questioning, 'state': 'waiting'}], loud
-    turn = wait(lambda: turn_with('#%d paused r' % pausing), 'the manager turn that read the paused event')
+    assert [x for x in loud['short'] if x.get('task') == questioning] == [{'text': '#%d waiting' % questioning, 'task': questioning, 'wakes': False, 'state': 'waiting'}], loud
+    # ^ No task event starts a turn: the owner's next message takes them.
+    reply_to(js('task', 'say', 'STATUS after the paused event')['id'])
+    turn = turn_with('#%d paused r' % pausing)
     assert re.search(r'- open: [^\n]*\b1 paused', turn['message']), turn['message']
     assert js('task', 'add', pausing, 'WORK aj-p2.txt')['ok']
     assert wait_state(pausing, 'ready', 'failed')['state'] == 'ready', log(pausing)
@@ -6056,10 +5995,9 @@ def part_host(created=None):
     js('task', 'close', paused, '--discard')
     wait_state(paused, 'closed')
     configure(LAND_CONFIG, 'scenario for 32ap over')
-    # 32wk. One wake rule (docs/tasks.md "Manager"; the one wake rule): a ready task
-    # parked behind another and a ready result that asks the owner start no manager turn; they
-    # go along with the next one, here the review of a third ready task. The asking task waits
-    # ready on the owner.
+    # 32wk. One wake rule (docs/tasks.md "Manager"): no task event starts a manager turn, here a
+    # ready task parked behind another, a ready result that asks the owner and a plain ready task;
+    # they go along with the owner's next message. The asking task waits ready on the owner.
     mark('32wk')
     hold_gate, quiet_gate, review_gate = (base / ('wk-%s-gate' % name) for name in ('hold', 'quiet', 'review'))
     holder = manager_new('WAIT %s WORK wk-h.txt' % hold_gate)
@@ -6084,9 +6022,12 @@ def part_host(created=None):
     assert len(manager_turns()) == before, manager_turns()[before:]
     review_gate.touch()
     assert wait_state(review, 'ready', 'failed')['state'] == 'ready', log(review)
-    turn = wait(lambda: turn_with('#%d ready r' % review), 'the review turn')
-    assert '#%d ready r' % parked in turn['message'] and '#%d ready r' % asking in turn['message'], turn['message']
-    manager_settled('after the review turn')
+    wait(lambda: events_with('#%d ready r' % review), 'the plain ready event')
+    manager_settled('after the plain ready event')
+    assert len(manager_turns()) == before, [t['message'][:120] for t in manager_turns()[before:]]
+    reply_to(js('task', 'say', 'STATUS after the burst')['id'])
+    turn = turn_with('STATUS after the burst')
+    assert all('#%d ready r' % n in turn['message'] for n in (parked, asking, review)), turn['message']
     assert len(manager_turns()) == before + 1, [t['message'][:120] for t in manager_turns()[before:]]
     for n in (holder, parked, asking, review):
         js('task', 'close', n, '--discard')
@@ -6284,11 +6225,11 @@ def part_host(created=None):
     planned = js('task', 'new', '--plan', 'NOOP plan the change')['id']
     waiting = wait_state(planned, 'waiting', 'ready', 'failed')
     assert waiting['record']['waiting'] == {'on': 'plan', 'reason': 'the worker wrote its plan'}, waiting['record']
-    assert waiting['status']['label'] == "Plan ready, waiting for the manager's review", waiting['status']
+    assert waiting['status']['label'] == "Plan ready, waiting for you", waiting['status']
     assert 'plan' not in waiting['record'], waiting['record']
     assert not kinds(planned, 'checks', 'revision'), log(planned)
     assert 'First write a short plan and stop' in next(e for e in log(planned) if e['kind'] == 'result')['summary']
-    wait(lambda: events_with('#%d waiting r0' % planned, "waits on plan: Plan ready, waiting for the manager's review for "), 'the plan event')
+    wait(lambda: events_with('#%d waiting r0' % planned, "waits on plan: Plan ready, waiting for you for "), 'the plan event')
     js('task', 'add', planned, 'go WORK planned.txt')
     assert wait_state(planned, 'ready', 'failed')['state'] == 'ready'
     assert kinds(planned, 'checks', 'revision') == ['checks', 'revision']
@@ -6555,28 +6496,28 @@ def part_host(created=None):
     gate.touch()
     assert wait_state(parent, 'ready', 'failed')['state'] == 'ready' and show(parent)['record']['revision'] == 2
     assert 'has open child tasks #%d' % second in land(parent, ok=False)['message']
-    # ^ The held parent that is ready again because a child landed with its checks passed wakes
-    # no manager turn (`state_wakes`); its first ready, from its own worker, did.
+    # ^ No ready event of the held parent wakes a manager turn: its own first one, nor the one after a
+    # child landed with its checks passed (docs/tasks.md "Manager").
     def ready_short(n, revision):
         event = wait(lambda: events_with('#%d ready r%d' % (n, revision)), 'the ready event of r%d' % revision)[0]
         # ^ A message of several events holds one short per line (r1 and r2 of the parent can share
         # one): this task's only, oldest first.
         return [x for x in event['short'] if x.get('task') == n]
-    assert ready_short(parent, 1)[0].get('wakes', True), 'the held parent\'s own first ready wakes'
+    assert not ready_short(parent, 1)[0].get('wakes', True), ready_short(parent, 1)
     assert unmarked(ready_short(parent, 2))[-1] == {'text': '#%d ready' % parent, 'task': parent, 'wakes': False}, ready_short(parent, 2)
     # The second child rebases onto the moved parent, is checked, lands, and the parent checks again;
-    # with a broken.txt in the parent's copy its checks fail, and that wakes.
+    # with a broken.txt in the parent's copy its checks fail; that event wakes no turn either.
     broken = Path(show(parent)['record']['working_copy']) / 'broken.txt'
     broken.touch()
     assert 'checks run on the new revision' in land(second)['message']
     assert wait_state(second, 'landed', 'ready', 'failed')['state'] == 'landed', log(second)
     assert wait_state(parent, 'failed')['state'] == 'failed' and show(parent)['record']['revision'] == 3
     failed_event = wait(lambda: events_with('#%d failed r3' % parent), 'the failed event of r3')[0]
-    assert [x.get('wakes', True) for x in failed_event['short'] if x.get('task') == parent][-1], failed_event
+    assert not [x.get('wakes', True) for x in failed_event['short'] if x.get('task') == parent][-1], failed_event
     broken.unlink()
     assert js('task', 'add', parent, 'HV WORK again.txt')['ok']
     wait(lambda: (r := show(parent))['state'] == 'ready' and r['record']['revision'] == 4, 'the parent r4', 60)
-    assert ready_short(parent, 4)[-1].get('wakes', True), ready_short(parent, 4)
+    assert not ready_short(parent, 4)[-1].get('wakes', True), ready_short(parent, 4)
     for n in (first, second):
         wait_closed(n)
     ours = lambda: [i for i in js('task', 'check')['open'] if i['task'] in (parent, first, second)]
@@ -8554,7 +8495,7 @@ def part_chats(created=None):
     idle = wait(idle_tasks, 'the idle task after a new session note', 150)
     assert len(idle) == 1 and len(other_tasks()) == 3 and len(recaps()) == 1, (other_tasks(), recaps())
     idle_shown = other_state(idle[0]['id'], 'ready', 'failed')
-    # ^ The manager's own task: it waits for the manager's review, never lands by itself.
+    # ^ The manager's own task, ready: a project without auto land and checks has no review job.
     assert idle_shown['state'] == 'ready' and idle_shown['record']['created_by'] == 'chat:other', idle_shown
     prompt = json.loads(Path(idle_shown['log']).read_text().splitlines()[1])
     assert prompt['kind'] == 'message' and prompt['text'] == idle_text, prompt

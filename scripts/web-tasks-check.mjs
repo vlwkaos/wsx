@@ -4394,31 +4394,17 @@ phase("A * next to punctuation is no emphasis (docs/web-client-chat");
   if (marks.globs !== want || marks.emphasis || marks.em.join() !== "word,x" || marks.strong.join() !== "two words,Note:") await fail(`the markdown with globs reads ${JSON.stringify(marks)}`);
 }
 await toLatest("390 px");
-// A ready task the manager created waits for the manager's review: under Running, with those words and a calm dot.
+// A ready task the manager created, in a project that does not land by itself, is the owner's to land: under For
+// you with wsx-core's words, as any ready task (docs/tasks.md "Review": only auto land with checks has a review job).
 const asked = await say('RUN wsx task new "WORK z.txt" -p ui');
 if (asked !== 200) await fail(`the manager was not asked for a task: ${asked}`);
-await openReservoir("tasks");
-await until(`!![...document.querySelectorAll('.reservoir-list[aria-label=Tasks] .need')].find((row) => /waiting for the manager's review/.test(row.textContent))`, "a manager-created ready task is not under Running with the review words", 900);
+await openReservoir("you");
+await until(`!![...document.querySelectorAll('.reservoir-list[aria-label="For you"] .need')].find((row) => /z\\.txt/.test(row.textContent) && /waiting for you to land it/.test(row.textContent))`, "a manager-created ready task is not under For you with the land words", 900);
 // ^ The manager turn, the worker's build and its checks on a loaded CI runner took over 30 s once.
-const reviewed = await evaluate(`(() => { const row = [...document.querySelectorAll('.reservoir-list[aria-label=Tasks] .need')].find((row) => /waiting for the manager's review/.test(row.textContent));
-  return { running: row.querySelector('.row-glyph')?.dataset.tone === 'working', needs: !!document.querySelector('.reservoir-list[aria-label="For you"]')?.contains(row) } })()`);
-if (reviewed.running || reviewed.needs) await fail(`the review-waiting row is ${JSON.stringify(reviewed)}`);
-// ^ The row shows wsx-core's label and the sheet its sentence, as the task's JSON has them (docs/tasks.md "Status").
 {
-  const id = Number((await evaluate(`[...document.querySelectorAll('.reservoir-list[aria-label=Tasks] .need')].find((row) => /waiting for the manager's review/.test(row.textContent)).querySelector('.task-number').textContent.match(/#\\d+/)[0]`)).replace("#", ""));
-  const rowWords = (await rows()).find((row) => row[0] === `#${id}`)[2];
-  await go(page(id));
-  await until("!!document.querySelector('dialog.task-sheet[open] .story-next')", "the review-waiting sheet did not open");
-  const sheetWords = await story();
+  const id = Number((await evaluate(`[...document.querySelectorAll('.reservoir-list[aria-label="For you"] .need')].find((row) => /z\\.txt/.test(row.textContent)).querySelector('.task-number').textContent.match(/#\\d+/)[0]`)).replace("#", ""));
   const json = await evaluate(`fetch('api/tasks/${project}/t/${id}').then((r) => r.json()).then((view) => view.status)`);
-  if (json.kind !== "review" || json.label !== "Ready, waiting for the manager's review" || !rowWords.startsWith(json.label) || await sheetState() !== json.label
-    || !json.sentence.endsWith(sheetWords.next.slice(1))
-    || !/^(Checks \d+ of \d+ passed|No checks prove it)\. The manager reads the diff, then lands it or asks for changes\.$/.test(sheetWords.next)) {
-    await fail(`the review-waiting task reads ${JSON.stringify({ rowWords, sheetWords, json })}`);
-  }
-  await shot("review-sheet", ".composer-send");
-  await go(chat);
-  await until("!document.querySelector('dialog.task-sheet')", "the review-waiting sheet did not close");
+  if (json.kind !== "ready" || json.label !== "Ready, waiting for you to land it") await fail(`the manager-created ready task reads ${JSON.stringify(json)}`);
 }
 phase("An overview over the cap: the sheet cuts it to 60 lines and ");
 // --- An overview over the cap: the sheet cuts it to 60 lines and 4,000 characters and says so.

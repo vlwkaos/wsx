@@ -116,7 +116,7 @@ impl Chains {
             let (dir, record) = all[&id];
             let held = matches!(
                 status::waits_on(dir, record, land_auto).map(|on| on.kind),
-                Some(Holder::Task | Holder::Manager | Holder::Queue)
+                Some(Holder::Task | Holder::Queue)
             );
             // ^ A chain that waits for the owner is Waiting: the For you list holds what waits for the owner.
             match held || needs::stage(dir, record, land_auto).need().is_some() {

@@ -6,6 +6,8 @@ Releases 0.40.4 and older are in [docs/changelog-archive.md](docs/changelog-arch
 
 ### Changed
 
+- Tasks: a ready task under auto land with checks gets a review job instead of the manager's review. Its host starts one fresh agent of the manager's settings (role `reviewer`, read-only on the working copy) with `wsx task review`'s text and `report.md`; it answers `land`, and the host lands, or `changes` with at most 10 findings, which go to the worker as a turn. After 2 rounds of changes, or with no verdict, the owner lands it. The log has `review{revision, round, verdict, findings, agent, usage}` (its spend counts as the task's `review` part), and the status reads "Ready, under review". A task without checks, or with `land.auto: false`, waits for the owner, also one the manager created. See docs/tasks.md "Review".
+- Tasks: a task's events start no manager turn. They reach the chat at once and its agent with its next turn. A plan and a paused task are the owner's: they show under *For you*, push, and remind after 4 h ("Plan ready, waiting for you", "Paused, waiting for you").
 - Tasks: a revision's report lists the `assert` lines it removed or changed ("Edited test checks", at most 10), so a change that passes by editing its tests shows at review.
 - Deploy: wsx's deploy gate also runs the end-to-end scenarios that the default branch's change since the last good deploy touches (hidden `wsx task touched-scenarios`), so a land that breaks main is caught once, not by each task after it.
 - Release: `scripts/release.sh` refuses a version whose CHANGELOG.md section, which becomes the GitHub release body, is over 20000 bytes. 0.43.0's was 122,669. CHANGELOG.md keeps a summary of 0.43.0, and releases 0.40.4 and older moved to `docs/changelog-archive.md` without their commit links, nearly all of which no longer resolve.
@@ -24,6 +26,7 @@ Releases 0.40.4 and older are in [docs/changelog-archive.md](docs/changelog-arch
 - Tasks: `wsx task preview` and `tasks.preview` (a tailnet link to try a task, unused in 30 days), with the web's *Try* and the TUI's `T` in a task's detail. A config that still sets `tasks.preview` loads with an "unknown keys ignored" warning. A preview is designed again for the orchestration's workbenches (`docs/design/orchestration.md`).
 - Tasks: the hidden `wsx task handback <n>`; run `wsx task hand <n> --back`.
 - Tasks: `wsx task widths` and the lane width that check-run records carried (both unreleased); old log lines with `width` still load.
+- Tasks: `tasks.manager.reviewMinutes` and the "waits on the manager" stall, which the review job replaces. A config that still sets it loads with an "unknown keys ignored" warning.
 
 ## [0.43.0] - 2026-11-16
 

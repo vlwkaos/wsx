@@ -164,10 +164,6 @@ pub struct TaskConfig {
     /// Quiet seconds after which the manager writes the owner a recap; 0 is off. The config
     /// says minutes (`recapMinutes`, a fraction allowed). ref: docs/tasks.md "Recap"
     pub manager_recap_secs: u64,
-    /// Seconds a task the manager must act on (ready for its review, or waiting on `plan`) may
-    /// wait with no action before it is a stall; 0 is off. The config says minutes
-    /// (`reviewMinutes`, a fraction allowed). ref: docs/tasks.md "Manager" (Stalls)
-    pub manager_review_secs: u64,
     /// `tasks.prune.idleDays` in seconds: a session idle this long is closed; 0 is off.
     /// ref: docs/tasks.md "Stale worktrees"
     pub prune_idle_secs: u64,
@@ -182,7 +178,7 @@ pub struct TaskConfig {
 pub struct TaskWorkflow {
     /// Added to every worker's instructions.
     pub build: String,
-    /// Added to the manager's review of a ready task.
+    /// Added to the review job's instructions (docs/tasks.md "Review").
     pub review: String,
     /// The prompt of the task the manager host starts when session notes are newer than the
     /// last one; empty is off.
@@ -211,9 +207,6 @@ impl Default for TaskWorkflow {
         }
     }
 }
-
-/// How long a task the manager must act on may wait with no action: 30 minutes.
-pub const DEFAULT_MANAGER_REVIEW_SECS: u64 = 30 * 60;
 
 /// The effort levels both Claude Code (`--effort`) and Pi (`--thinking`) take.
 pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
@@ -291,7 +284,6 @@ impl Default for TaskConfig {
             manager_event_model: None,
             manager_rotate_tokens: None,
             manager_recap_secs: 0,
-            manager_review_secs: DEFAULT_MANAGER_REVIEW_SECS,
             prune_idle_secs: 14 * 24 * 60 * 60,
             prune_remove_secs: 30 * 24 * 60 * 60,
         }

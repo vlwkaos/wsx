@@ -220,6 +220,54 @@ impl Launch {
     }
 }
 
+impl Launch {
+    /// A review job of a ready task: the project's manager agent (`tasks.manager.adapter`,
+    /// `model`, `effort`), a fresh conversation, read-only on the working copy, ending with
+    /// `review_schema` (or that JSON as its last text, for Pi). `folder`: its own folder.
+    /// ref: docs/tasks.md "Review"
+    pub fn reviewer(record: &TaskRecord, folder: &Path) -> Result<(String, Self)> {
+        let settings = load_task_config(&record.project_path).map_err(anyhow::Error::msg)?;
+        let root = config_root(&record.project_path)?;
+        let adapter = settings.manager_adapter.clone();
+        let model = settings.manager_model.clone();
+        let env: Vec<(String, std::ffi::OsString)> =
+            account_env(root.clone()).into_iter().collect();
+        let policy = super::agent::policy(Role::Reviewer, &adapter, &model, &env);
+        let boundary = Boundary::reviewer(record, folder, policy)?
+            .adapter(&adapter, root.as_deref())
+            .reach(&adapter, &model, &env);
+        let structured = adapter == "claude";
+        let mut instructions = format!(
+            "You review a task before it lands on {}. You read; you change nothing. The user \
+             message holds what the task was asked and its diff; read more of the working copy \
+             ({}) when the diff alone does not show whether the change is right. Land it when it \
+             does what was asked, its checks prove it, and it adds no bug, no security hole and no \
+             dead code. Otherwise ask for changes: each finding names the file and line, what is \
+             wrong and what to do, at most 10, most important first. Do not ask for style changes \
+             or for work the task was not asked to do.",
+            record.default_branch,
+            record.working_copy.display()
+        );
+        if !settings.workflow.review.trim().is_empty() {
+            instructions.push_str(&format!(
+                " The project says: {}",
+                settings.workflow.review.trim()
+            ));
+        }
+        if !structured {
+            instructions.push_str(&format!(
+                " End with one JSON object that matches this JSON Schema as your last text: {}",
+                wsx_core::task::review_schema()
+            ));
+        }
+        let mut launch = Self::new(&record.working_copy, boundary, &model, instructions);
+        launch.effort = settings.manager_effort.clone();
+        launch.schema = structured.then(wsx_core::task::review_schema);
+        launch.env = env;
+        Ok((adapter, launch))
+    }
+}
+
 /// `CLAUDE_CONFIG_DIR` over the host's own, when the project's profile sets one.
 pub(super) fn account_env(root: Option<PathBuf>) -> Option<(String, std::ffi::OsString)> {
     root.map(|root| ("CLAUDE_CONFIG_DIR".into(), root.into_os_string()))

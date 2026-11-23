@@ -6,7 +6,6 @@ use super::status::{self, span};
 use super::store::{self, TaskDir};
 use super::{call_host, test_secs, view, HostRequest, LogEvent, TaskRecord, TaskState, WaitOn};
 use crate::config::project::load_task_config;
-use crate::model::workspace::DEFAULT_MANAGER_REVIEW_SECS;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
@@ -44,15 +43,11 @@ pub struct Stall {
     pub words: String,
     /// The cause alone, for the owner: never a quoted log line.
     pub why: String,
-    /// Its task's host does not answer: no process acts on the task (`manager::stall_wakes`).
-    pub host_gone: bool,
 }
 
 /// The stall of an open task, if it has one now.
 pub fn find(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
-    running(dir, record, now_ms)
-        .or_else(|| manager_wait(dir, record, now_ms))
-        .or_else(|| after_wait(record, now_ms))
+    running(dir, record, now_ms).or_else(|| after_wait(record, now_ms))
 }
 
 /// A reminder due for the owner: one push per `step` of an owner wait.
@@ -69,9 +64,8 @@ pub struct OwnerReminder {
 /// guess from state names) for `OWNER_FIRST`, and again each `OWNER_REPEAT` while it waits.
 /// A wait that ended (answered, closed, landed) has none. ref: docs/tasks.md "Manager" (Stalls)
 pub fn owner_wait(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<OwnerReminder> {
-    let land_auto = load_task_config(&record.project_path).is_ok_and(|s| s.land_auto);
-    let on =
-        status::waits_on(dir, record, land_auto).filter(|on| on.kind == status::Holder::Owner)?;
+    let on = status::waits_on(dir, record, status::land_auto(record))
+        .filter(|on| on.kind == status::Holder::Owner)?;
     let waited = Duration::from_millis(now_ms.saturating_sub(on.since_unix_ms));
     let after_first = waited.checked_sub(OWNER_FIRST)?;
     // ^ The reason line is the worker's or host's own first line, clipped: never the log.
@@ -105,59 +99,6 @@ fn after_wait(record: &TaskRecord, now_ms: u64) -> Option<Stall> {
             after.task
         ),
         why: format!("waiting for #{} to land", after.task),
-        host_gone: false,
-    })
-}
-
-/// A task the manager must act on (ready for its review, or waiting on `plan`) that has had
-/// no action of the manager for `tasks.manager.reviewMinutes` since it entered the state. An
-/// owner wait is none, and neither is a task the manager parked with `wsx task after`: that
-/// is its review, and `after_wait` reports a long wait.
-/// ref: docs/tasks.md "Manager" (Stalls)
-fn manager_wait(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
-    let settings = load_task_config(&record.project_path).ok();
-    let limit_ms = settings
-        .as_ref()
-        .map_or(DEFAULT_MANAGER_REVIEW_SECS, |s| s.manager_review_secs)
-        * 1000;
-    if limit_ms == 0
-        || status::waits_on(dir, record, settings.is_none_or(|s| s.land_auto))
-            .is_none_or(|on| on.kind != status::Holder::Manager)
-    {
-        return None;
-    }
-    let entered = record.state_unix_ms.max(record.created_unix_ms);
-    // ^ A manager's `add`, steer, land or close changes the state, so the state's start counts.
-    // A `message` entry does not count: the log keeps no author, and the host writes its own
-    // (a land notice). `check_run` and `hold` count; `check_run` has no author either, but the
-    // worker's turn is over while the task waits, so a late one is rare.
-    let acted = dir
-        .last_entry(|entry| {
-            matches!(
-                entry.event,
-                LogEvent::CheckRun { .. } | LogEvent::Hold { .. }
-            )
-            .then_some(entry.unix_ms)
-        })
-        .ok()
-        .flatten()
-        .unwrap_or(0);
-    (now_ms.saturating_sub(entered.max(acted)) >= limit_ms).then(|| {
-        let state = match &record.waiting {
-            Some(w) if record.state == TaskState::Waiting => {
-                format!("waiting on {}", w.on.as_str())
-            }
-            _ => record.state.as_str().to_string(),
-        };
-        Stall {
-            marker: format!("manager {entered}"),
-            words: format!(
-                "{state} for {}; the manager has not reviewed it",
-                span(now_ms.saturating_sub(entered))
-            ),
-            why: "the manager has not reviewed it".into(),
-            host_gone: false,
-        }
     })
 }
 
@@ -169,6 +110,8 @@ fn running(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
         TaskState::Waiting => {
             waiting.is_some_and(|w| matches!(w.on, WaitOn::Disk | WaitOn::Limit | WaitOn::Load))
         }
+        // ^ Its host runs the review job (docs/tasks.md "Review").
+        TaskState::Ready => status::under_review(dir, record, status::land_auto(record)),
         _ => false,
     };
     if !hosted {
@@ -184,21 +127,17 @@ fn running(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
         marker,
         words: format!("{state} for {lasted}; {evidence}"),
         why,
-        host_gone: false,
     };
     let progress = progress_ms(dir, record);
     if !host_answers(dir) {
-        return Some(Stall {
-            host_gone: true,
-            ..stall(
-                format!("host {progress}"),
-                format!(
-                    "its host does not answer; {}",
-                    last_entry(dir, progress, now_ms)
-                ),
-                "its host does not answer".into(),
-            )
-        });
+        return Some(stall(
+            format!("host {progress}"),
+            format!(
+                "its host does not answer; {}",
+                last_entry(dir, progress, now_ms)
+            ),
+            "its host does not answer".into(),
+        ));
     }
     let Some(waiting) = waiting else {
         return Turn::overdue(&dir.path, now_ms).map(|turn| {

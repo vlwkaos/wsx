@@ -43,6 +43,7 @@ use wsx_core::task::{
     HumanVerify, LogEvent, MessageKind, TaskRecord, TaskState, TurnTrigger, WaitOn, Waiting,
     WorkerResult, MAX_MESSAGE_BYTES,
 };
+use wsx_core::task::{ReviewVerdict, TurnUsage};
 
 /// A shared failure is posted once in this long (the store keeps a key for a day).
 const SHARED_WINDOW_SECS: u64 = 24 * 60 * 60;
@@ -83,7 +84,26 @@ enum Event {
     CheckQueued(String, bool),
     /// Checks took the slot, or run without it after this error; true for a `check-run`'s.
     CheckSlot(Option<String>, bool),
+    /// A line of the review job of that generation; `None` when its process ended.
+    Review(u64, Option<AgentLine>),
 }
+
+/// The review job of a ready revision: one fresh agent call that lands it or sends findings
+/// back (`start_review`). ref: docs/tasks.md "Review"
+struct ReviewJob {
+    generation: u64,
+    agent: Agent,
+    revision: u32,
+    round: u32,
+    /// `adapter/model`, logged with the verdict.
+    label: String,
+    started: Instant,
+}
+
+/// The most rounds of changes a review sends back before the owner decides.
+const MAX_REVIEW_ROUNDS: u32 = 2;
+/// The longest a review job runs before it ends without a verdict.
+const REVIEW_LIMIT: Duration = Duration::from_secs(20 * 60);
 
 /// What waits for free disk, resumed once `tasks.minFreeGb` is free again; a turn held for the
 /// load (`wait_for_load`) rides the same wait.
@@ -322,6 +342,10 @@ struct Host {
     pings: u32,
     after_ping: Option<TurnTrigger>,
     started: Instant,
+    /// The running review job of the ready revision, and the count of jobs started: a line of
+    /// an older job is dropped. The worker's `generation` stays its own.
+    review: Option<ReviewJob>,
+    reviews: u64,
 }
 
 /// A host that cannot load its record posts one alert to the project's main chat (`wsx task
@@ -386,6 +410,8 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         last_result: None,
         last_denials: Vec::new(),
         check_retries: 0,
+        review: None,
+        reviews: 0,
         result_asked: false,
         binary: Binary::capture(),
         reexec: false,
@@ -490,6 +516,10 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
     if let Some(agent) = host.agent.take() {
         agent.stop();
     }
+    // ^ A replaced host's review job starts again in the new one (`resume_state`).
+    if let Some(job) = host.review.take() {
+        job.agent.stop();
+    }
     let _ = std::fs::remove_file(&socket);
     let _ = std::fs::remove_file(&broker_socket);
     if let (true, Some(binary)) = (host.reexec, &host.binary) {
@@ -566,6 +596,10 @@ impl Host {
             // ^ A turn with no output for the quiet bound ends: a hung agent must not hold the
             // task forever. ref: docs/tasks.md "Agents"
             let quiet_due = self.turn.as_ref().map(stall::Turn::left);
+            let review_due = self
+                .review
+                .as_ref()
+                .map(|job| REVIEW_LIMIT.saturating_sub(job.started.elapsed()));
             let event = match disk_due
                 .into_iter()
                 .chain(limit_due)
@@ -573,6 +607,7 @@ impl Host {
                 .chain(settle_due)
                 .chain(ping_due)
                 .chain(quiet_due)
+                .chain(review_due)
                 .min()
             {
                 None => receiver.recv().ok(),
@@ -590,6 +625,12 @@ impl Host {
                             self.ping();
                         } else if quiet_due == Some(due) {
                             self.turn_hung();
+                        } else if review_due == Some(due) {
+                            let why = format!(
+                                "it took longer than {}",
+                                status::span(REVIEW_LIMIT.as_millis() as u64)
+                            );
+                            self.finish_review(None, &why, None);
                         } else {
                             self.resume_after_limit();
                         }
@@ -636,6 +677,7 @@ impl Host {
                 }
                 Event::CheckQueued(reason, run) => self.check_queued(reason, run),
                 Event::CheckSlot(error, run) => self.check_slot(error, run),
+                Event::Review(generation, line) => self.on_review(generation, line),
             }
         }
         Ok(())
@@ -1007,6 +1049,7 @@ impl Host {
                         until_ms: None,
                     });
                 self.move_to(TaskState::Ready, waiting);
+                self.start_review();
             }
             state => {
                 self.set_state(state);
@@ -2123,8 +2166,8 @@ impl Host {
         if let Some((_, newer)) = &mut self.gate {
             *newer = true;
         }
-        // ^ A status is no question: the task waits for the manager, who continues it. No checks
-        // run. ref: docs/tasks.md "Status"
+        // ^ A status is no question: the task waits for the owner, whose add continues it. No
+        // checks run. ref: docs/tasks.md "Status"
         if result.status == "paused" {
             self.wait(WaitOn::Paused, question(&result.summary));
             return;
@@ -3734,7 +3777,7 @@ impl Host {
                 let text = check_retry_request(&failed, attempt);
                 self.start_turn(&text, TurnTrigger::CheckRetry);
             }
-            // ^ Every ready task waits for the manager's review; one that resolved
+            // ^ A ready task goes to its review job (`start_review`); one that resolved
             // the conflict of a landing lands again at once when the project lands
             // by itself and has checks to prove it, from checking to landed without
             // a stop at ready. A message that waits for the worker comes first: its
@@ -3751,7 +3794,7 @@ impl Host {
                 self.finish_landing(landed, state);
             }
             // ^ A result that ends with a question for the owner is the owner's need, not the
-            // manager's review: the task waits ready on the answer. ref: docs/tasks.md "Manager"
+            // review job's: the task waits ready on the answer. ref: docs/tasks.md "Manager"
             None if state == TaskState::Ready && asks_owner(&result.summary) => {
                 let question = result.summary.trim_end().lines().last().unwrap_or_default();
                 self.move_to(
@@ -3763,7 +3806,10 @@ impl Host {
                     }),
                 );
             }
-            None => self.set_state(state),
+            None => {
+                self.set_state(state);
+                self.start_review();
+            }
             Some(AfterRebase::Land) => {
                 let finished = if state == TaskState::Ready {
                     self.land_on_tip()
@@ -3771,6 +3817,209 @@ impl Host {
                     Err(anyhow::anyhow!("checks failed on the rebased revision"))
                 };
                 self.finish_landing(finished, state);
+            }
+        }
+    }
+
+    /// Start the review job of a ready revision when it is due (`status::under_review`: the
+    /// project lands by itself, checks prove the task, nothing holds it, no review of this
+    /// revision ended) and no message waits for the worker. A fresh agent of the project's
+    /// manager reads what the task was asked and its diff and answers `land` or `changes`.
+    /// After `MAX_REVIEW_ROUNDS` rounds of changes the owner decides. ref: docs/tasks.md "Review"
+    fn start_review(&mut self) {
+        if self.review.is_some()
+            || !self.pending.is_empty()
+            || !status::under_review(&self.dir, &self.record, self.auto_land())
+        {
+            return;
+        }
+        let revision = self.record.revision;
+        // ^ The rounds of changes since the last prompt, add or steer: a person's word starts
+        // a new chain of rounds.
+        let mut earlier: Vec<Vec<String>> = Vec::new();
+        for entry in self.dir.read_log().unwrap_or_default() {
+            match entry.event {
+                LogEvent::Message { .. } => earlier.clear(),
+                LogEvent::Review {
+                    verdict: ReviewVerdict::Changes,
+                    findings,
+                    ..
+                } => earlier.push(findings),
+                _ => {}
+            }
+        }
+        let round = earlier.len() as u32 + 1;
+        if round > MAX_REVIEW_ROUNDS {
+            let why = format!(
+                "the review asked for changes {} times; you decide",
+                earlier.len()
+            );
+            return self.no_verdict(revision, round, why);
+        }
+        let started = (|| -> Result<ReviewJob> {
+            let material = super::cmd::work::ReviewMaterial::read(&self.dir)?.text();
+            let folder = self.dir.path.join("review");
+            std::fs::create_dir_all(&folder)?;
+            let (adapter, launch) = Launch::reviewer(&self.record, &folder)?;
+            let label = format!("{adapter}/{}", launch.model);
+            self.reviews += 1;
+            let generation = self.reviews;
+            let mut agent = Agent::spawn(
+                &adapter,
+                &launch,
+                &new_session_id()?,
+                false,
+                0,
+                self.events.clone(),
+                move |line| Event::Review(generation, line),
+            )?;
+            let mut prompt = format!("Review round {round} of {MAX_REVIEW_ROUNDS}.\n\n");
+            if let Some(last) = earlier.last() {
+                prompt += &format!(
+                    "Your findings of the round before, which the worker answered with this revision:\n- {}\n\n",
+                    last.join("\n- ")
+                );
+            }
+            if let Ok(Some(report)) = self.dir.read_file(store::REPORT_FILE, 64 * 1024) {
+                prompt += &format!(
+                    "== report.md ==\n{}\n\n",
+                    String::from_utf8_lossy(&report).trim_end()
+                );
+            }
+            prompt += &material;
+            agent.send(prompt.trim_end())?;
+            Ok(ReviewJob {
+                generation,
+                agent,
+                revision,
+                round,
+                label,
+                started: Instant::now(),
+            })
+        })();
+        match started {
+            Ok(job) => {
+                self.say(&format!(
+                    "review round {round} of r{revision} on {}",
+                    job.label
+                ));
+                self.review = Some(job);
+            }
+            Err(error) => self.no_verdict(
+                revision,
+                round,
+                format!("the review could not start: {error:#}"),
+            ),
+        }
+    }
+
+    /// A review of `revision` that ended before any agent answered: the owner decides.
+    fn no_verdict(&mut self, revision: u32, round: u32, why: String) {
+        self.log(LogEvent::Review {
+            revision,
+            round,
+            verdict: ReviewVerdict::None,
+            findings: vec![why],
+            agent: String::new(),
+            usage: None,
+        });
+        self.save();
+    }
+
+    /// A line of the review job: its result ends the review; a process that ended without
+    /// one ends it with no verdict.
+    fn on_review(&mut self, generation: u64, line: Option<AgentLine>) {
+        if self.review.as_ref().map(|job| job.generation) != Some(generation) {
+            return;
+        }
+        match line {
+            Some(AgentLine::Result(result)) => {
+                if result.limit.is_some() {
+                    return self.finish_review(
+                        None,
+                        "the reviewer's agent is at its usage limit",
+                        None,
+                    );
+                }
+                let answer = (!result.is_error)
+                    .then(|| wsx_core::task::parse_review(result.structured.as_ref(), &result.text))
+                    .flatten();
+                match answer {
+                    Some(answer) => self.finish_review(Some(answer), "", Some(result.usage)),
+                    None => {
+                        self.finish_review(None, "the reviewer gave no verdict", Some(result.usage))
+                    }
+                }
+            }
+            Some(_) => {}
+            None => {
+                self.finish_review(None, "the reviewer's process ended without a verdict", None)
+            }
+        }
+    }
+
+    /// Log the review's end and act on it: `land` lands the revision, `changes` sends the
+    /// findings to the worker as a turn, no verdict leaves the task ready for the owner.
+    fn finish_review(
+        &mut self,
+        answer: Option<(ReviewVerdict, Vec<String>)>,
+        why: &str,
+        usage: Option<TurnUsage>,
+    ) {
+        let Some(job) = self.review.take() else {
+            return;
+        };
+        job.agent.stop();
+        // ^ A land would run the old code: the new host reviews the revision again and lands
+        // it (the same rule as a `land` request, `must_follow_binary`).
+        if matches!(answer, Some((ReviewVerdict::Land, _))) && self.must_follow_binary() {
+            self.say(
+                "the wsx binary was replaced: the host restarts with it before the review's land",
+            );
+            self.reexec = true;
+            return;
+        }
+        // ^ The task moved on while the reviewer read (a new revision, a hold, a wait, a message
+        // for the worker): its verdict is logged and decides nothing. Read before the log, which
+        // ends `under_review` for this revision.
+        let current = self.record.revision == job.revision
+            && self.pending.is_empty()
+            && status::under_review(&self.dir, &self.record, self.auto_land());
+        let (verdict, findings) = answer.unwrap_or((ReviewVerdict::None, vec![why.to_string()]));
+        self.log(LogEvent::Review {
+            revision: job.revision,
+            round: job.round,
+            verdict,
+            findings: findings.clone(),
+            agent: job.label,
+            usage,
+        });
+        if !current {
+            return;
+        }
+        match verdict {
+            ReviewVerdict::Land => {
+                self.say(&format!("the review lands r{}", job.revision));
+                let landed = self.land(true);
+                self.finish_landing(landed, TaskState::Ready);
+            }
+            ReviewVerdict::Changes => {
+                self.say(&format!(
+                    "the review sent {} finding(s) on r{} back to the worker",
+                    findings.len(),
+                    job.revision
+                ));
+                let text = format!(
+                    "A review of your revision r{} asks for changes before it lands. Fix each, \
+                     commit, and return your result:\n- {}",
+                    job.revision,
+                    findings.join("\n- ")
+                );
+                self.start_turn(&text, TurnTrigger::Review);
+            }
+            ReviewVerdict::None => {
+                self.say(&format!("the review ended without a verdict: {why}"));
+                self.save();
             }
         }
     }
@@ -3800,7 +4049,7 @@ impl Host {
         // ^ A host that started again at ready has no last_result: the stored one is the worker's.
         let result = self.current_result();
         let passed = result.status == "done" && results.iter().all(|check| check.exit == Some(0));
-        // ^ Read before this revision is logged: the manager reviewed and landed it already.
+        // ^ Read before this revision is logged: its review job (or the owner) landed it already.
         let relands = view::resolving_conflict(&self.dir);
         match self.record_revision() {
             Ok((revision, commit)) => {
@@ -3818,7 +4067,7 @@ impl Host {
 
     /// Whether the project lands ready tasks by itself (`tasks.land.auto`).
     fn auto_land(&self) -> bool {
-        load_task_config(&self.record.project_path).is_ok_and(|settings| settings.land_auto)
+        status::land_auto(&self.record)
     }
 
     /// Say what a landing did, or log why it stopped and settle the task in `state`.
@@ -4389,6 +4638,13 @@ impl Host {
         }
         if !matches!(state, TaskState::Working | TaskState::Checking) {
             self.disk_slot = None;
+        }
+        // ^ A review reads one ready revision: any other move ends it unheard.
+        if state != TaskState::Ready {
+            if let Some(job) = self.review.take() {
+                job.agent.stop();
+                self.say("the review stopped: the task left ready");
+            }
         }
         self.save();
         if changed {

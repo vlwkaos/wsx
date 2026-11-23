@@ -191,7 +191,7 @@ fn a_failed_check_run_reopens_the_settled_task() {
 }
 
 #[test]
-fn a_check_run_that_ends_after_a_stop_wakes_the_manager() {
+fn a_check_run_that_ends_after_a_stop_reaches_the_chat_and_the_next_turn() {
     let fixture = gated_ci();
     with_a_manager(&fixture);
     worker_with_a_run_out(&fixture);
@@ -205,12 +205,15 @@ fn a_check_run_that_ends_after_a_stop_wakes_the_manager() {
             .then_some(())
     });
 
-    // ^ The stopped worker gets no turn; the manager hears of the answer.
+    // ^ The stopped worker gets no turn; the chat's event line says the answer waits for it
+    // (a task's event starts no manager turn, docs/tasks.md "Manager").
     assert!(received(&fixture, "Your check-run ended").is_empty());
-    until("the manager's wake", || {
-        messages(&fixture)
-            .into_iter()
-            .find(|(manager, text)| *manager && text.contains("check-run ended after the stop"))
+    let chat_log = fixture.root.join("state/wsx/tasks/chats/demo/log.jsonl");
+    until("the chat's event line", || {
+        fs::read_to_string(&chat_log)
+            .ok()?
+            .contains("check-run ended after the stop")
+            .then_some(())
     });
     // ^ The answer joins the turn the next add starts.
     let added = fixture.wsx(&["task", "add", "1", "NOOP go on"]);
@@ -389,4 +392,94 @@ fn the_report_names_the_test_checks_a_revision_edited() {
     assert!(!edited.contains("in a comment"), "{edited}");
     let untouched = report("2");
     assert!(!untouched.contains("Edited test checks"), "{untouched}");
+}
+
+/// Code owns a task's events (docs/design/orchestration.md step 3): with `tasks.land.auto` a
+/// ready task's review job, a fresh read-only agent, decides. Round 1 asks for changes, which
+/// go to the worker as a turn; round 2 lands the new revision. The manager, running for the
+/// owner's message, takes no turn of task events through it all. ref: docs/tasks.md "Review"
+#[test]
+fn a_review_job_lands_a_ready_task_and_no_event_wakes_the_manager() {
+    let fixture = Fixture::with_tasks_config("  checks:\n    - \"true\"\n");
+    let config = fixture.root.join("project/wsx.config.yml");
+    let text = fs::read_to_string(&config).expect("read the project config");
+    fs::write(
+        &config,
+        text.replace("land: { auto: false }", "land: { auto: true }"),
+    )
+    .expect("turn auto land on");
+    fixture.git(&["commit", "-qam", "auto land"]);
+    with_a_manager(&fixture);
+    until("the manager's first turn", || {
+        messages(&fixture)
+            .iter()
+            .any(|(manager, text)| *manager && text.contains("hello"))
+            .then_some(())
+    });
+    fixture.json(&["task", "new", "REVIEWNO REVIEWWRITE WORK a.txt", "--json"]);
+    let landed = fixture.wait_task("1", "the review lands the task", |task| {
+        (task["state"] == "landed").then(|| task.clone())
+    });
+    let log = fixture.log(&landed);
+    let reviews: Vec<serde_json::Value> = log
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|entry| entry["kind"] == "review")
+        .collect();
+    let verdicts: Vec<(u64, &str)> = reviews
+        .iter()
+        .map(|review| {
+            (
+                review["round"].as_u64().unwrap_or_default(),
+                review["verdict"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(verdicts, [(1, "changes"), (2, "land")], "{log}");
+    assert_eq!(reviews[0]["findings"][0], "WORK reviewfix.txt", "{log}");
+    // ^ Each verdict carries the reviewer's spend, which the task's usage counts as `review`.
+    assert!(
+        reviews.iter().all(|review| review["usage"].is_object()),
+        "{log}"
+    );
+    assert_ne!(reviews[0]["revision"], reviews[1]["revision"], "{log}");
+    // ^ The worker did the finding: both files are on main.
+    for file in ["a.txt", "reviewfix.txt"] {
+        let shown = fixture.git(&["show", &format!("main:{file}")]);
+        assert!(!shown.is_empty(), "{file} is not on main");
+    }
+    // ^ The reviewer reads only: its write to the working copy was refused by its boundary.
+    let writes: Vec<String> = fixture
+        .traces()
+        .iter()
+        .filter_map(|trace| trace["review_write"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(writes, ["refused", "refused"], "{writes:?}");
+    // ^ The task's events reach the main chat after the repo service's quiet window; a chat
+    // they woke would take its turn at once.
+    let chat_log = fixture.root.join("state/wsx/tasks/chats/demo/log.jsonl");
+    until("the land event reaches the manager's chat", || {
+        fs::read_to_string(&chat_log)
+            .ok()?
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .any(|entry| {
+                entry["from"] == "events"
+                    && entry["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("#1 landed"))
+            })
+            .then_some(())
+    });
+    std::thread::sleep(Duration::from_secs(3));
+    // ^ The manager's only message is the owner's: no turn of task events.
+    let manager: Vec<String> = messages(&fixture)
+        .into_iter()
+        .filter(|(manager, _)| *manager)
+        .map(|(_, text)| text)
+        .collect();
+    assert!(
+        manager.iter().all(|text| !text.starts_with("Events")),
+        "the manager took a turn of events: {manager:?}"
+    );
 }

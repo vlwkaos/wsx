@@ -281,75 +281,107 @@ fn turn_line(turn: &wsx_core::task::stall::Turn, now: u64) -> String {
 /// Most bytes of the diff `review` prints.
 const REVIEW_DIFF_BYTES: usize = 256 * 1024;
 
-/// `wsx task review <n>`: what the task was asked (its prompt, each add and steer) and what
-/// it changed against its base: its commits, the diff's stat and the diff.
-/// ref: docs/tasks.md "Manager"
-pub(crate) fn review(dir: &TaskDir, json: bool) -> Result<()> {
-    let record = dir.read_record()?;
-    let main = &record.project_path;
-    let asked: Vec<(u64, MessageKind, String)> = dir
-        .read_log()?
-        .into_iter()
-        .filter_map(|entry| match entry.event {
-            LogEvent::Message { mode, text } => Some((entry.unix_ms, mode, text)),
-            _ => None,
-        })
-        .collect();
-    let head = match record.revision {
-        0 => format!("refs/heads/{}", record.branch),
-        revision => format!("refs/wsx/task/{}/r{revision}", record.id),
-    };
-    let head = copy::resolve_commit(main, &head)?;
-    let base = copy::fork_point(main, &head, &record.default_branch)?;
-    let range = format!("{base}..{head}");
-    let commits = copy::read(main, &["log", "--oneline", "--no-decorate", &range])?;
-    let stat = copy::read(main, &["diff", "--stat", &range])?;
-    let mut diff = copy::read(main, &["diff", &range])?;
-    let whole = diff.len();
-    if whole > REVIEW_DIFF_BYTES {
-        let mut cut = REVIEW_DIFF_BYTES;
-        while !diff.is_char_boundary(cut) {
-            cut -= 1;
+/// What a task was asked (its prompt, each add and steer) and what it changed against its
+/// base: its commits, the diff's stat and the diff (cut at `REVIEW_DIFF_BYTES`).
+pub(crate) struct ReviewMaterial {
+    record: wsx_core::task::TaskRecord,
+    base: String,
+    head: String,
+    asked: Vec<(u64, MessageKind, String)>,
+    commits: String,
+    stat: String,
+    diff: String,
+}
+
+impl ReviewMaterial {
+    pub(crate) fn read(dir: &TaskDir) -> Result<Self> {
+        let record = dir.read_record()?;
+        let main = &record.project_path;
+        let asked = dir
+            .read_log()?
+            .into_iter()
+            .filter_map(|entry| match entry.event {
+                LogEvent::Message { mode, text } => Some((entry.unix_ms, mode, text)),
+                _ => None,
+            })
+            .collect();
+        let head = match record.revision {
+            0 => format!("refs/heads/{}", record.branch),
+            revision => format!("refs/wsx/task/{}/r{revision}", record.id),
+        };
+        let head = copy::resolve_commit(main, &head)?;
+        let base = copy::fork_point(main, &head, &record.default_branch)?;
+        let range = format!("{base}..{head}");
+        let commits = copy::read(main, &["log", "--oneline", "--no-decorate", &range])?;
+        let stat = copy::read(main, &["diff", "--stat", &range])?;
+        let mut diff = copy::read(main, &["diff", &range])?;
+        let whole = diff.len();
+        if whole > REVIEW_DIFF_BYTES {
+            let mut cut = REVIEW_DIFF_BYTES;
+            while !diff.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            diff.truncate(cut);
+            diff += &format!(
+                "\n[the diff has {whole} bytes; the rest: git -C {} diff {range}]\n",
+                main.display()
+            );
         }
-        diff.truncate(cut);
-        diff += &format!(
-            "\n[the diff has {whole} bytes; the rest: git -C {} diff {range}]\n",
-            main.display()
-        );
+        Ok(Self {
+            record,
+            base,
+            head,
+            asked,
+            commits,
+            stat,
+            diff,
+        })
     }
+
+    /// The material as text: the head line, then each part under `== <part> ==`.
+    pub(crate) fn text(&self) -> String {
+        let mut out = format!(
+            "t{} r{}  {}..{}\n",
+            self.record.id,
+            self.record.revision,
+            short_commit(&self.base),
+            short_commit(&self.head)
+        );
+        for (unix_ms, mode, text) in &self.asked {
+            let mode = serde_json::to_value(mode).unwrap_or_default();
+            out += &format!(
+                "\n== {} {} ==\n{}\n",
+                mode.as_str().unwrap_or_default(),
+                wsx_core::task::history::stamp(*unix_ms),
+                text.trim_end()
+            );
+        }
+        out += &format!("\n== commits ==\n{}\n", self.commits.trim_end());
+        out += &format!("\n== stat ==\n{}\n", self.stat.trim_end());
+        out += &format!("\n== diff ==\n{}\n", self.diff.trim_end());
+        out
+    }
+}
+
+/// `wsx task review <n>`: the task's `ReviewMaterial`, the same text its review job reads.
+/// ref: docs/tasks.md "Manager", "Review"
+pub(crate) fn review(dir: &TaskDir, json: bool) -> Result<()> {
+    let material = ReviewMaterial::read(dir)?;
     if json {
         return print_json(&json!({
-            "task": record.id,
-            "revision": record.revision,
-            "base": base,
-            "head": head,
-            "asked": asked.iter().map(|(unix_ms, mode, text)| json!({
+            "task": material.record.id,
+            "revision": material.record.revision,
+            "base": material.base,
+            "head": material.head,
+            "asked": material.asked.iter().map(|(unix_ms, mode, text)| json!({
                 "unix_ms": unix_ms, "mode": mode, "text": text,
             })).collect::<Vec<_>>(),
-            "commits": commits.lines().collect::<Vec<_>>(),
-            "stat": stat,
-            "diff": diff,
+            "commits": material.commits.lines().collect::<Vec<_>>(),
+            "stat": material.stat,
+            "diff": material.diff,
         }));
     }
-    println!(
-        "t{} r{}  {}..{}",
-        record.id,
-        record.revision,
-        short_commit(&base),
-        short_commit(&head)
-    );
-    for (unix_ms, mode, text) in &asked {
-        let mode = serde_json::to_value(mode)?;
-        println!(
-            "\n== {} {} ==\n{}",
-            mode.as_str().unwrap_or_default(),
-            wsx_core::task::history::stamp(*unix_ms),
-            text.trim_end()
-        );
-    }
-    println!("\n== commits ==\n{}", commits.trim_end());
-    println!("\n== stat ==\n{}", stat.trim_end());
-    println!("\n== diff ==\n{}", diff.trim_end());
+    print!("{}", material.text());
     Ok(())
 }
 

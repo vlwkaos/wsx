@@ -68,6 +68,7 @@ impl Usage {
 const PARTS: [&str; 7] = [
     "build", "plan", "context", "review", "memo", "other", "manager",
 ];
+const PART_REVIEW: usize = 3;
 const PART_OTHER: usize = 5;
 const PART_MANAGER: usize = 6;
 
@@ -248,7 +249,7 @@ fn cached(files: &[PathBuf], read: impl FnOnce() -> Vec<Turn>) -> Turns {
     turns
 }
 
-/// The worker turns of a task: its log's `result` and `ping` lines. A line from before
+/// The worker turns of a task: its log's `result`, `ping` and `review` lines. A line from before
 /// `adapter` counts under the task's adapter. ref: docs/tasks.md "Usage"
 pub fn task_turns(dir: &TaskDir) -> Turns {
     cached(&[dir.file(store::LOG_FILE)], || {
@@ -267,6 +268,10 @@ pub fn task_turns(dir: &TaskDir) -> Turns {
             }
             // ^ A keep-warm ping is no step's work. ref: docs/tasks.md "Context rotation"
             LogEvent::Ping { usage } => Some((entry.unix_ms, PART_OTHER, usage.as_ref(), true)),
+            // ^ The review job's call. ref: docs/tasks.md "Review"
+            LogEvent::Review { usage, .. } => {
+                Some((entry.unix_ms, PART_REVIEW, usage.as_ref(), false))
+            }
             _ => None,
         });
         turns(lines, &adapter)

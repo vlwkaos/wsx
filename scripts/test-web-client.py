@@ -3950,7 +3950,7 @@ def task_journey(args):
 
             # A deploy of the default branch tip: the brief says it is up to date until a task lands.
             # A deploy by hand answers that it started; its detached run records the result.
-            # ^ A landing wakes no turn (`state_wakes`; the host sees a task that is ready and lands
+            # ^ A task event wakes no turn (docs/tasks.md "Manager"; the host sees a task that is ready and lands
             # within one second only as landed), so the lands wait for a waking event. The deploy's
             # is one, and it comes before any message of another manager, whose turn would take the
             # lands along and answer them in its own reply (manager.rs `accept`).
@@ -4331,15 +4331,15 @@ merge_seconds = 3
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         kinds = [(item['kind'], item.get('task')) for item in overview['needs']]
         assert kinds == [('land', 3), ('land', 1)], kinds  # oldest first within a kind; landed #2 is no need
-        # ^ A worker whose turn ends on a status, not a question, is paused: no need, no Answer, one
-        # word in the row and the sheet; the manager's add ends it (docs/tasks.md "Status").
+        # ^ A worker whose turn ends on a status, not a question, is paused: the owner's waiting need,
+        # first; an add ends it (docs/tasks.md "Status").
         js('task', 'add', 1, 'PAUSE NOOP', '-p', 'demo')
         wait_state(1, 'waiting')
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
-        assert [item.get('task') for item in overview['needs']] == [3], overview['needs']
+        assert [(item['kind'], item.get('task')) for item in overview['needs']] == [('waiting', 1), ('land', 3)], overview['needs']
         paused = next(row for row in overview['tasks'] if row['id'] == 1)
-        assert paused['stage'] == 'working' and paused['waiting']['on'] == 'paused' and paused['status']['kind'] == 'paused', paused
-        assert paused['status']['label'] == 'Paused, the manager continues it' and 'nothing is asked of you' in paused['status']['sentence'], paused['status']
+        assert paused['stage'] == 'needs_you' and paused['waiting']['on'] == 'paused' and paused['status']['kind'] == 'paused', paused
+        assert paused['status']['label'] == 'Paused, waiting for you' and 'Tell it to go on' in paused['status']['sentence'], paused['status']
         js('task', 'add', 1, 'NOOP', '-p', 'demo')
         wait_state(1, 'ready')
         # A steer reaches the running turn.

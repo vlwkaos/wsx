@@ -4,8 +4,8 @@
 //! task, asks for the recap and keeps the check-ins. Each event goes to its owner chat
 //! (`chats::owner`), else to the repo's main chat, or to none when it has none; `owner::say` starts that chat's host when it
 //! is not running, and the service marks the event seen only after the chat took it, so a
-//! deploy or a crash loses none. An event that needs no decision (`state_wakes`) is logged in
-//! the chat as a message that starts no turn. ref: docs/tasks.md "Chats"
+//! deploy or a crash loses none. A task's event, and any other that needs no decision, is
+//! logged in the chat as a message that starts no turn. ref: docs/tasks.md "Chats", "Manager"
 
 use super::manager::plain_event;
 use super::{hosting, notes};
@@ -21,8 +21,8 @@ use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
 use wsx_core::stale;
 use wsx_core::task::build;
 use wsx_core::task::manager::{
-    decided_request, open_requests, stall_wakes, state_wakes, ApprovalLine, Author, Checkin, Level,
-    ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse, RepoState, Seen, Short,
+    decided_request, open_requests, ApprovalLine, Author, Checkin, Level, ManagerEntry,
+    ManagerEvent, ManagerRequest, ManagerResponse, RepoState, Seen, Short,
 };
 use wsx_core::task::owner::ACTOR_ENV;
 use wsx_core::task::replace::Binary;
@@ -100,7 +100,7 @@ struct Repo {
     /// was taken.
     state: RepoState,
     events: Sender<Event>,
-    /// `tasks.deploy.auto`: a deploy that worked starts no turn. ref: `state_wakes`
+    /// `tasks.deploy.auto`: a deploy that worked starts no turn. ref: docs/tasks.md "Manager"
     deploy_auto: bool,
     /// Event lines not yet sent, by the chat that hears them (empty: the main chat), and when
     /// the last one came.
@@ -1310,8 +1310,7 @@ impl Repo {
                 _ => state_word,
             };
             let counts = (!checks.is_empty()).then_some([passed as u32, checks.len() as u32]);
-            let mut short = Short::task(record.id, words).with_state(state_word, counts);
-            short.wakes = state_wakes(&dir, &record);
+            let short = Short::task(record.id, words).with_state(state_word, counts);
             self.task_event(&record, &open_chats, line, short);
             let state = record.state.as_str();
             self.fire(
@@ -1496,8 +1495,7 @@ impl Repo {
                 clip(&title, EVENT_TITLE_CHARS),
                 found.words
             );
-            let mut short = Short::task(record.id, "stalled");
-            short.wakes = stall_wakes(&found);
+            let short = Short::task(record.id, "stalled");
             self.observed_stalls.insert(record.id, found.marker);
             self.task_event(&record, &open_chats, line, short);
         }
@@ -1661,7 +1659,7 @@ impl Repo {
 
     /// When session notes in the main checkout's `knowledge/sessions/<project>/` are newer
     /// than the last idle task's start and that task is not open, start one task with
-    /// `tasks.workflow.idle` as the manager would, so it waits for the manager's review.
+    /// `tasks.workflow.idle` as the manager would, so it lands through its review job.
     /// Otherwise nothing, not even a line. ref: docs/tasks.md "Workflow"
     fn start_idle(&mut self) {
         let prompt = load_task_config(&self.main)

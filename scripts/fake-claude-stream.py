@@ -56,6 +56,7 @@ Each user message is a small script of words:
   THREEQ       (worker) end the turn blocked, the summary three numbered questions on lines of their own
   SIMPLIFY     (worker) a Skill tool call of owner:simplify in the turn; SIMPLIFYLATE does it only in
                the host's send-back ("The simplify skill did not run ...")
+  REVIEWNO, REVIEWMUTE, REVIEWWRITE  (in a task's prompt) what its review job answers: see `review_turn`
 The host's request for handoff notes ("Write <path> for that fresh conversation") makes it
 write "NOTES from the fixture" to <path>; "for that conversation" (the task goes home) too.
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
@@ -532,6 +533,30 @@ def interactive(options):
         time.sleep(60)
 
 
+def review_turn(session, text):
+    """A review job's one turn (docs/tasks.md "Review"): the task's words decide the verdict.
+    REVIEWNO asks for changes in round 1 with the finding `WORK reviewfix.txt`, which the
+    worker's fake then does; REVIEWMUTE answers with no verdict; anything else lands.
+    REVIEWWRITE first tries to write the working copy (its cwd) and traces whether it could."""
+    words = text.split()
+    if 'REVIEWWRITE' in words:
+        try:
+            with open('reviewer-wrote.txt', 'w') as out:
+                out.write('written by the reviewer\n')
+            trace({'review_write': 'written'})
+        except OSError as error:
+            trace({'review_write': 'refused', 'error': str(error)})
+    structured = {'verdict': 'land', 'findings': []}
+    if 'REVIEWNO' in words and 'Review round 1 of' in text:
+        structured = {'verdict': 'changes', 'findings': ['WORK reviewfix.txt']}
+    trace({'review': structured['verdict'], 'session': session, 'round_1': 'Review round 1 of' in text})
+    result = {'type': 'result', 'subtype': 'success', 'is_error': False, 'result': structured['verdict'],
+              'session_id': session, 'permission_denials': []}
+    if 'REVIEWMUTE' not in words:
+        result['structured_output'] = structured
+    emit(result)
+
+
 def main():
     global SESSION, MODEL, SPENT, THOUGHT, LATE_SIMPLIFY
     options = parse_args(sys.argv[1:])
@@ -557,6 +582,8 @@ def main():
            'plugin_dir': options.get('--plugin-dir'),
            'claude_config_dir': os.environ.get('CLAUDE_CONFIG_DIR'),
            'cwd': os.getcwd()})
+    # ^ A review job's launch asks for a verdict (docs/tasks.md "Review").
+    review_schema = 'verdict' in (json.loads(options['--json-schema']).get('required') or []) if '--json-schema' in options else False
     # ^ The host stops an agent with SIGTERM to its process group.
     signal.signal(signal.SIGTERM, lambda *_: (trace({'interrupted': True}), sys.exit(143)))
     SESSION, MODEL = session, options.get('--model')
@@ -582,6 +609,9 @@ def main():
         text = request['message']['content']
         trace({'message': text, 'session': session, 'manager': project is not None, 'model': model})
         transcript(session, text)
+        if review_schema:
+            review_turn(session, text)
+            continue
         if limited is not None:
             text, limited = limited + '\n\n' + text, None
         elif project is not None and text.startswith('Events') and (seconds := next(

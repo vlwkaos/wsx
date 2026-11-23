@@ -1028,27 +1028,15 @@ impl Manager {
         }
     }
 
-    /// The model of a turn: `eventModel` for one with only events while no ready task the
-    /// manager created waits for its review, else the manager's. ref: docs/tasks.md "Manager"
+    /// The model of a turn: `eventModel` for one with only events, else the manager's.
+    /// ref: docs/tasks.md "Manager"
     fn turn_model(&self, events_only: bool) -> String {
-        let review_due = || {
-            let land_auto = load_task_config(&self.main).is_ok_and(|settings| settings.land_auto);
-            project_tasks(&self.dir.project_id)
-                .unwrap_or_default()
-                .into_iter()
-                .any(|(dir, record)| {
-                    record.is_ok_and(|record| {
-                        status::waits_on(&dir, &record, land_auto)
-                            .is_some_and(|on| on.kind == status::Holder::Manager)
-                    })
-                })
-        };
         // ^ A fallback runs its own model: the event model names one of the own agent's.
         if let Some(agent) = &self.state.agent {
             return agent.model.clone();
         }
         match &self.event_model {
-            Some(model) if events_only && !review_due() => model.clone(),
+            Some(model) if events_only => model.clone(),
             _ => self.model.clone(),
         }
     }

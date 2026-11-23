@@ -166,13 +166,16 @@ pub enum Role {
     Manager,
     Organizer,
     Worker,
+    /// The review job of a ready task: reads its copy and decides land or changes.
+    /// ref: docs/tasks.md "Review"
+    Reviewer,
 }
 
 use Capability::*;
 
 /// The one table of roles. Every chat of docs/tasks.md "Chats" runs as the manager; the organizer
 /// is the stand-in's job.
-pub const ROLES: [(Role, RoleInfo); 3] = [
+pub const ROLES: [(Role, RoleInfo); 4] = [
     (
         Role::Manager,
         RoleInfo {
@@ -194,6 +197,14 @@ pub const ROLES: [(Role, RoleInfo); 3] = [
         RoleInfo {
             name: "worker",
             caps: &[Result, Recall, Remember, Ask],
+            reach: &[],
+        },
+    ),
+    (
+        Role::Reviewer,
+        RoleInfo {
+            name: "reviewer",
+            caps: &[Read, Recall],
             reach: &[],
         },
     ),
@@ -261,12 +272,15 @@ impl Role {
     /// Whether an `[[agents]]` entry whose `may` is `may` fills this role in a fallback choice:
     /// with no `may` it is a full fallback (the manager's turns and a task's steps); with one,
     /// it fills each role whose own capability it lists: `create_task` the manager, `answer`
-    /// the organizer (the stand-in), `result` a worker. ref: docs/tasks.md "Agents"
+    /// the organizer (the stand-in), `result` a worker. The reviewer runs on the project's own
+    /// manager agent and no fallback fills it (docs/design/orchestration.md section 9).
+    /// ref: docs/tasks.md "Agents"
     pub fn filled_by(self, may: Option<&[Capability]>) -> bool {
         let need = match self {
             Self::Manager => CreateTask,
             Self::Organizer => Answer,
             Self::Worker => Result,
+            Self::Reviewer => return false,
         };
         may.map_or(self != Self::Organizer, |may| may.contains(&need))
     }

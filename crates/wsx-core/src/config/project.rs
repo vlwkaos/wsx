@@ -198,8 +198,6 @@ struct TaskManagerFile {
     rotate_tokens: Option<u64>,
     #[serde(rename = "recapMinutes", skip_serializing_if = "Option::is_none")]
     recap_minutes: Option<f64>,
-    #[serde(rename = "reviewMinutes", skip_serializing_if = "Option::is_none")]
-    review_minutes: Option<f64>,
     /// Agents of the global `[[agents]]` the manager moves to when its own is at a long
     /// usage limit, in order. ref: docs/tasks.md "Agents"
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -855,9 +853,6 @@ fn validate_task_manager(manager: TaskManagerFile, config: &mut TaskConfig) -> R
     }
     if let Some(minutes) = manager.recap_minutes {
         config.manager_recap_secs = minutes_to_secs(minutes, "tasks.manager.recapMinutes")?;
-    }
-    if let Some(minutes) = manager.review_minutes {
-        config.manager_review_secs = minutes_to_secs(minutes, "tasks.manager.reviewMinutes")?;
     }
     Ok(())
 }

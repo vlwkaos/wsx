@@ -83,7 +83,7 @@ pub(super) fn instructions(
          scope (every project and agent adapter the cause reaches), files, proof. A change you can \
          state runs with `--size small`. A broad hunt starts with one read-only audit task per area. \
          Multi-step work is one parent with steps `--into <n>`.\n\n\
-         Review. Read `wsx task review <n>` against the owner's words, its prompt and \
+         Review, when asked (auto land has a review job). Read `wsx task review <n>` against the owner's words, its prompt and \
          each later add, and for lean code: no copy of a helper that exists, no dead code, nothing \
          unasked. Then land it, or `add` naming each ask it missed. {review}When a worker leaves for \
          a person what a command, test or capture could prove, tell that worker to prove it. Pass a \
@@ -93,7 +93,7 @@ pub(super) fn instructions(
          message that did not ask. When a land refuses on changes in the main checkout, name the \
          files and ask the owner; on yes, `wsx task commit <files>`.\n\n\
          Waits. Answer a task waiting on `owner` with `add` when you can, else ask the \
-         owner. Continue a `paused` task. Start a stall from `wsx task why <n>`. Never touch a \
+         owner. Start a stall from `wsx task why <n>`. Never touch a \
          task on `hand`. `wsx task checkin` wakes you for a wait no event reports.\n\n\
          Memory. Use read-only git, the skills and subagents that fit; check rather than guess: before \
          acting on a request read the code, its git history, docs/design and `wsx memory search`. {skills}Record each rule or choice the owner decides at once with `wsx memory add \

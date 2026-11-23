@@ -97,15 +97,23 @@ fn one_rule_decides_the_stage_the_counts_the_push_and_the_band() {
             None,
             false,
         ),
+        // ^ A plan and a pause are the owner's to answer (docs/tasks.md "Status").
         (
-            "a plan for the manager",
+            "a plan",
             "waiting",
             "owner",
             waiting("plan"),
-            None,
-            false,
+            Some(Waiting),
+            true,
         ),
-        ("paused", "waiting", "owner", waiting("paused"), None, false),
+        (
+            "paused",
+            "waiting",
+            "owner",
+            waiting("paused"),
+            Some(Waiting),
+            true,
+        ),
         (
             "waits for another task",
             "waiting",
@@ -122,12 +130,13 @@ fn one_rule_decides_the_stage_the_counts_the_push_and_the_band() {
             Some(Land),
             false,
         ),
+        // ^ Without auto land no review job runs: a chat's ready task is the owner's to land too.
         (
-            "ready, the chat reviews",
+            "ready, a chat's task",
             "ready",
             "chat:plans",
             json!({}),
-            None,
+            Some(Land),
             false,
         ),
         (
