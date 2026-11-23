@@ -378,7 +378,30 @@ pub fn touched_scenarios(
         return Ok(Default::default());
     }
     let base = fork_point(repo, head, default_branch)?;
-    let (paths, total) = changed_paths(repo, &base, head)?;
+    touched_since(repo, Some(&base), head, config)
+}
+
+/// `touched_scenarios` for the change from `since` to `head`: the deploy gate's tests on the
+/// default branch since its last good deploy (`wsx task touched-scenarios`). No `since`, or one
+/// git does not know (a first deploy, a rewritten history), touches every scenario with paths.
+pub fn touched_since(
+    repo: &Path,
+    since: Option<&str>,
+    head: &str,
+    config: &crate::model::workspace::TaskConfig,
+) -> Result<std::collections::BTreeMap<String, bool>> {
+    let known = since.filter(|commit| {
+        !commit.is_empty() && resolve_commit(repo, &format!("{commit}^{{commit}}")).is_ok()
+    });
+    let Some(base) = known else {
+        return Ok(config
+            .scenarios
+            .iter()
+            .filter(|(_, scenario)| !scenario.paths.is_empty())
+            .map(|(name, _)| (name.clone(), true))
+            .collect());
+    };
+    let (paths, total) = changed_paths(repo, base, head)?;
     let names =
         |globs: &[String], path: &str| globs.iter().any(|glob| super::view::meet(glob, path));
     let scenarios = config.scenarios.iter().filter(|(_, s)| !s.paths.is_empty());

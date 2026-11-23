@@ -33,6 +33,94 @@ fn fenced(out: &mut String, text: &str) {
     let _ = writeln!(out, "{fence}\n{text}\n{fence}");
 }
 
+const CHECK_DIFF_BYTES: usize = 256 * 1024;
+const SHOWN_CHECKS: usize = 10;
+
+/// An `assert` that starts a word (Python `assert`, Rust `assert!`/`assert_eq!`, JS
+/// `assert.equal`), outside a line comment.
+fn is_assert(line: &str) -> bool {
+    let line = line.trim_start();
+    if line.starts_with('#') || line.starts_with("//") {
+        return false;
+    }
+    line.match_indices("assert").any(|(at, _)| {
+        !line[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
+}
+
+/// "Edited test checks": the `assert` lines the revision removed or changed, so the reviewer sees
+/// a change that made its tests pass by editing them. Added asserts are not listed.
+/// ref: docs/tasks.md "Checks, revisions and report"
+fn edited_checks(out: &mut String, repo: &Path, range: &str) {
+    let diff = match output_with_timeout_limit(
+        // ^ Paths as written: no `a/` or mnemonic prefix, no quoting (`diff.mnemonicPrefix`,
+        // `core.quotePath` of the owner's config).
+        git_cmd(repo).args([
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--no-prefix",
+            "-U0",
+            "--no-color",
+            "--no-ext-diff",
+            "-Gassert",
+            range,
+        ]),
+        Duration::from_secs(30),
+        CHECK_DIFF_BYTES,
+    ) {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        }
+        Ok(_) | Err(_) => {
+            let _ = writeln!(
+                out,
+                "Edited test checks: unknown, the diff could not be read (`git diff -Gassert {range}`).\n"
+            );
+            return;
+        }
+    };
+    let mut file = "";
+    // ^ A file's header runs from `diff --git` to its first hunk; only there is `--- ` the old
+    // path, since a removed line may itself start with `--`.
+    let mut header = false;
+    let mut edited: Vec<(&str, &str)> = Vec::new();
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") {
+            header = true;
+        } else if line.starts_with("@@") {
+            header = false;
+        } else if header {
+            // ^ git ends a path that has a space with a tab.
+            if let Some(path) = line.strip_prefix("--- ") {
+                file = path.trim_end_matches('\t');
+            }
+        } else if let Some(removed) = line.strip_prefix('-').filter(|text| is_assert(text)) {
+            edited.push((file, removed.trim()));
+        }
+    }
+    if edited.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "Edited test checks: {} `assert` line{} removed or changed (`git diff -Gassert {range}`):\n",
+        edited.len(),
+        if edited.len() == 1 { "" } else { "s" }
+    );
+    for (file, text) in edited.iter().take(SHOWN_CHECKS) {
+        let text: String = text.chars().take(160).collect();
+        let _ = writeln!(out, "- `{file}`: `{}`", text.replace('`', "'"));
+    }
+    if edited.len() > SHOWN_CHECKS {
+        let _ = writeln!(out, "- +{} more", edited.len() - SHOWN_CHECKS);
+    }
+    out.push('\n');
+}
+
 /// Render the report of revision `revision` at `commit`.
 pub fn render(
     record: &TaskRecord,
@@ -83,6 +171,7 @@ pub fn render(
         fenced(&mut out, &stat);
         out.push('\n');
     }
+    edited_checks(&mut out, &record.working_copy, &range);
     let dirty = git_text(&record.working_copy, &["status", "--short"]);
     if !dirty.is_empty() {
         out.push_str("Not committed:\n\n");

@@ -192,6 +192,28 @@ pub(crate) fn push(args: PushArgs, project: Option<&str>, json: bool) -> Result<
     Ok(())
 }
 
+/// `wsx task touched-scenarios`: the scenarios the default branch's change since `since` touches,
+/// as `name<TAB>command` lines, read in the current folder (the deploy's copy of one commit).
+/// No `since`, or one git does not know (a first deploy, a rewritten history), lists every
+/// scenario with paths. ref: docs/tasks.md "Deploy and release"
+pub(crate) fn touched_scenarios(since: Option<&str>) -> Result<()> {
+    let here = std::env::current_dir().context("cannot read the current folder")?;
+    // ^ The deployed commit's own scenario list, as its deploy command is its own.
+    let config = load_task_config(&here).map_err(|error| anyhow::anyhow!(error))?;
+    let touched = copy::touched_since(&here, since, "HEAD", &config)?;
+    for (name, scenario) in &config.scenarios {
+        if !touched.get(name).copied().unwrap_or(false) {
+            continue;
+        }
+        // ^ One line per scenario: a tab or newline in the command would split it.
+        if scenario.command.contains(['\t', '\n']) {
+            bail!("tasks.scenarios.{name} has a tab or a newline; it cannot be listed");
+        }
+        println!("{name}\t{}", scenario.command);
+    }
+    Ok(())
+}
+
 /// Whether the last successful deploy or release of `kind` ran `commit`.
 fn last_deployed(project_id: &str, kind: DeployKind, commit: &str) -> Result<bool> {
     Ok(store::read_deploys(project_id)?

@@ -346,6 +346,14 @@ pub enum TaskCmd {
         #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+    /// Prints `name<TAB>command` for each `tasks.scenarios` entry with paths that the change from
+    /// `--since` to HEAD of the current folder touches; with no `--since`, or one git does not
+    /// know, every such scenario. The deploy gate runs them (scripts/deploy-web-live.sh).
+    #[command(hide = true)]
+    TouchedScenarios {
+        #[arg(long)]
+        since: Option<String>,
+    },
     /// Stops every process whose arguments or environment name a path under the folder, with
     /// its descendants: a scenario part's end, so no helper outlives its run (docs/tasks.md
     /// "Scenarios").
@@ -567,6 +575,7 @@ impl TaskCmd {
             | Self::Ledger
             | Self::Widths
             | Self::Deployed
+            | Self::TouchedScenarios { .. }
             | Self::Chat { action: None, .. }
             | Self::Search { .. }
             | Self::Check { .. }

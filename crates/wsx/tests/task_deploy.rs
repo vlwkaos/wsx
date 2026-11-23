@@ -465,3 +465,48 @@ fn waiting_pushes_replace_one_another_and_run_one_at_a_time() {
     }
     assert_eq!(origin_tip(), newer, "{}{}", text(&one), text(&two));
 }
+
+/// The deploy gate's list: `wsx task touched-scenarios` prints `name<TAB>command` for each
+/// scenario with paths that the change since `--since` touches, nothing for a change no scenario
+/// reads, and every scenario with paths when the commit is missing or git does not know it
+/// (docs/tasks.md "Deploy and release").
+#[test]
+fn touched_scenarios_lists_what_the_change_since_a_commit_touches() {
+    let fixture = Fixture::new("true");
+    let project = fixture.root.join("project");
+    fs::write(
+        project.join("wsx.config.yml"),
+        "tasks:\n  scenarios:\n    ui: echo ui\n    api: echo api\n    named: echo named\n  \
+         scenarioPaths:\n    ui: [web]\n    api: [server]\n  scenarioFree: [docs]\n",
+    )
+    .expect("write the scenarios");
+    fixture.git(&["commit", "-q", "-am", "scenarios"]);
+    let listed = |since: Option<&str>| -> Vec<String> {
+        let mut args = vec!["task", "touched-scenarios"];
+        if let Some(since) = since {
+            args.extend(["--since", since]);
+        }
+        let output = fixture.wsx(&args);
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect()
+    };
+    let start = fixture.git(&["rev-parse", "HEAD"]);
+    for (folder, file) in [("web", "web/page.js"), ("docs", "docs/notes.md")] {
+        fs::create_dir_all(project.join(folder)).expect("create the folder");
+        fs::write(project.join(file), "x").expect("write the file");
+        fixture.git(&["add", file]);
+        fixture.git(&["commit", "-q", "-m", file]);
+    }
+    let docs_only = fixture.git(&["rev-parse", "HEAD~1"]);
+    assert_eq!(listed(Some(&start)), ["ui\techo ui"]);
+    assert!(listed(Some(&docs_only)).is_empty());
+    let every = ["api\techo api", "ui\techo ui"];
+    assert_eq!(listed(None), every);
+    assert_eq!(
+        listed(Some("0123456789abcdef0123456789abcdef01234567")),
+        every
+    );
+}

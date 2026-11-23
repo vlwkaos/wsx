@@ -351,3 +351,42 @@ fn a_failure_during_the_checks_reopens_the_task_after_them() {
     });
     assert_eq!(received(&fixture, "Your check-run ended").len(), 1);
 }
+
+/// The report names the `assert` lines a revision removed or changed, and only those: a comment
+/// that says assert and an added assert stay out (docs/tasks.md "Checks, revisions and report").
+#[test]
+fn the_report_names_the_test_checks_a_revision_edited() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.root.join("project/checks.py"),
+        "x = 1\nassert x == 1, 'the decided value'\n# assert in a comment\n",
+    )
+    .expect("write the checks");
+    fixture.git(&["add", "checks.py"]);
+    fixture.git(&["commit", "-q", "-m", "checks"]);
+    // ^ The owner's own git config may name paths `c/` and `w/`; the report shows them as written.
+    fixture.git(&["config", "diff.mnemonicPrefix", "true"]);
+    fixture.json(&["task", "new", "LINE checks.py 2", "--json"]);
+    // ^ Replaces `x = 1` with a line that adds an assert: an added check is not an edited one.
+    fixture.json(&["task", "new", "LINE checks.py 1 assert y", "--json"]);
+    let report = |id: &str| -> String {
+        let path = fixture.wait_task(id, "the task is ready with a report", |task| {
+            (task["state"] == "ready")
+                .then(|| task["report"].as_str().map(str::to_string))
+                .flatten()
+        });
+        fs::read_to_string(&path).expect("read report.md")
+    };
+    let edited = report("1");
+    assert!(
+        edited.contains("Edited test checks: 1 `assert` line removed or changed"),
+        "{edited}"
+    );
+    assert!(
+        edited.contains("- `checks.py`: `assert x == 1, 'the decided value'`"),
+        "{edited}"
+    );
+    assert!(!edited.contains("in a comment"), "{edited}");
+    let untouched = report("2");
+    assert!(!untouched.contains("Edited test checks"), "{untouched}");
+}

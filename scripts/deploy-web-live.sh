@@ -24,17 +24,27 @@ step=start
 step() { step=$1; echo "== deploy step: $1 ($(date '+%H:%M:%S'))"; }
 trap 'code=$?; [ $code -eq 0 ] || echo "deploy failed at step: $step (exit $code); full output in $live/deploy.log"' EXIT
 
-# ^ The deploy gate is the PTY and stream smoke test and the live handoff scenario only, so a land
-# reaches the live site in minutes. The task and web end-to-end scripts are `tasks.scenarios`: the worker whose change
-# touches their area runs them by name (wsx.config.yml `workflow.build`).
+# ^ The deploy gate is the PTY and stream smoke test, the live handoff scenario, and the
+# `tasks.scenarios` that the default branch's change since the last good deploy touches: a land
+# that breaks main is caught once here, not by each task after it (docs/tasks.md "Deploy and release").
 step "debug build"
 cargo build --locked -p wsx -p wsx-daemon
-# ^ The gate holds the host-wide scenario test slot once, for both steps, and goes before every
+here=$(pwd)
+since=$(cd "$main" && "$here/target/debug/wsx" task deployed --json \
+  | python3 -c 'import json, sys; print((json.load(sys.stdin).get("deploy") or {}).get("commit") or "")')
+# ^ An assignment keeps its command's exit, so a failed listing stops the deploy (set -e).
+touched=$("$here/target/debug/wsx" task touched-scenarios --since "$since")
+# ^ `smoke` is runtime-smoke.py, which the gate runs anyway.
+touched=$(printf '%s\n' "$touched" | grep -v '^smoke	' || true)
+echo "end-to-end tests touched since ${since:-no good deploy}: $(printf '%s\n' "$touched" | cut -f1 | tr '\n' ' ')"
+# ^ The gate holds the host-wide scenario test slot once, for every step, and goes before every
 # task round (`wsx task slot`, Priority::Deploy): a second queue entry for the handoff sat behind
-# task rounds until the 2 h timeout. The `wsx task slot` inside terminal-context-check.sh runs at
-# once, as the slot is held.
-step "gate: runtime-smoke.py, test-terminal-context.py"
-target/debug/wsx task slot sh -c 'python3 -B scripts/runtime-smoke.py && sh scripts/terminal-context-check.sh'
+# task rounds until the 2 h timeout. A `wsx task slot` inside the steps runs at once, as the slot is held.
+step "gate: runtime-smoke.py, test-terminal-context.py, touched end-to-end tests"
+target/debug/wsx task slot sh -c 'python3 -B scripts/runtime-smoke.py && sh scripts/terminal-context-check.sh &&
+  printf "%s\n" "$1" | while IFS="	" read -r name command; do
+    [ -n "$name" ] || continue; echo "== end-to-end: $name"; sh -c "$command" </dev/null || exit 1
+  done' gate "$touched"
 step "release build"
 cargo build --release --locked -p wsx -p wsx-daemon
 # ^ wsxd sits next to wsx so the web build and the daemon it hands off to stay one revision.

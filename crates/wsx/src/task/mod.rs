@@ -183,6 +183,7 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
         TaskCmd::ChatHost { chat } => manager::run(&chat),
         TaskCmd::RepoHost { project_id } => repo::run(&project_id),
         TaskCmd::Slot { command } => std::process::exit(slot::run(&command)?),
+        TaskCmd::TouchedScenarios { since } => cmd::deploy::touched_scenarios(since.as_deref()),
         TaskCmd::Reap { folder } => {
             let stopped = wsx_core::process::stop_naming(&folder, wsx_core::process::STOP_GRACE)?;
             println!("stopped {stopped} process(es) naming {}", folder.display());
