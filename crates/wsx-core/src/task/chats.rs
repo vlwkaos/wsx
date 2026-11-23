@@ -290,7 +290,7 @@ pub fn repos(dir: &ManagerDir) -> Vec<String> {
 
 /// A chat that starts work in another project works in it from then on: the project joins its
 /// `repos` after its own, so the project's lists show the chat and its records reach it. True
-/// when it joined now. ref: docs/design/manager-mode.md "Model"
+/// when it joined now. ref: docs/tasks.md "Chats"
 pub fn join(dir: &ManagerDir, project_id: &str) -> Result<bool> {
     let mut file = chat_file(dir);
     if file.repos.is_empty() || file.repos.iter().any(|id| id == project_id) {

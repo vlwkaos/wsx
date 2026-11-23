@@ -444,7 +444,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         .as_ref()
         .is_some_and(|chat| chat.project_id != record.project_id);
     if let Some(chat) = asking_chat.as_ref().filter(|_| from_elsewhere) {
-        // ^ The goal now spans this project too (docs/design/manager-mode.md "Model").
+        // ^ The goal now spans this project too (docs/tasks.md "Chats").
         if let Err(error) = wsx_core::task::chats::join(chat, &record.project_id) {
             eprintln!("wsx: the chat did not join {}: {error:#}", project.name);
         }

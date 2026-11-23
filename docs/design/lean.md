@@ -72,4 +72,4 @@ measurements of the code, the logs of the last 30 days and the test runs of this
 | Hand | Handback | Checking |
 | any open | Close | Closed |
 
-Manager mode (`manager-mode.md`) resumes after step 2: approved runs, the boundary and chat joins are on main already.
+The orchestration redesign (`orchestration.md`, step 0 first) follows step 2; approved runs, the boundary and chat joins are on main already.

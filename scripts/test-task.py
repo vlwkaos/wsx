@@ -4104,7 +4104,7 @@ def part_worker(created=None):
         stray.kill()
         js('task', 'close', n, '--discard')
     # The same for a Pi worker, which wsx runs under the strict boundary: asking and the run are
-    # wsx's, not the adapter's (docs/design/manager-mode.md "Every agent, not only Claude").
+    # wsx's, not the adapter's (docs/tasks.md "Permissions": one rule, role, agent, trust).
     config_before = (project / 'wsx.config.yml').read_text()
     configure(config_before.replace('tasks:\n', 'tasks:\n  agent: { adapter: pi, model: fake/pi-model }\n', 1), 'pi workers')
     stray = subprocess.Popen(['sleep', '600'])
