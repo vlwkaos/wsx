@@ -30,7 +30,7 @@ messages (section 10).
 - **Goal beyond the goal:** the owner ships across many projects with less attention than one focused session, and the
   machine never fills up.
 - **Hard targets:** a small change goes from first message to landed in p50 15 min or less (now 65.9 min). No LLM turn
-  is started only by an event. Disk for working copies is bounded by a workbench count, not by a task count. The owner learns
+  is started only by an event. Disk for working copies is bounded by copy-on-write clones and a workbench cap, not by full builds per task. The owner learns
   5 concepts or fewer. The owner gets 10 or fewer decision items per day.
 - **Outside judge:**
   - **Replay:** a logged day's owner messages from a chat log, replayed through the new router and engine with the fake
@@ -50,17 +50,20 @@ These four parts are the same whichever approach wins. They carry most of the me
    - Scenarios run by changed path, and once on main after each batch of lands.
    - A red result that is not the task's own (main already red, an infrastructure failure) is triaged by code against
      main's last result. It is never charged to the task.
-2. **Workbenches, not worktrees per task.**
-   - Each project has N workbenches (default 2, a machine cap across projects).
-   - A workbench is a git worktree plus its own `target/`, and it is reused: a new line of work runs `git switch -c` in a free
-     workbench. Its build stays warm, and disk is N times one build. The Rust project measured one dev `target/` at 3,151 MiB.
+2. **A workbench per thread, warm by copy-on-write (measured 2026-11-23; no pool).**
+   - A workbench is the thread's working copy at a fixed path, as a task's copy is today (`copy::create`): a git worktree
+     whose files and `target/` are a copy-on-write clone of the main checkout (`cp -c`, `build::clone_groups`). Its blocks
+     are shared until a build writes, so it starts warm.
+   - Measured on wsx (5 copies, one change each, built at once): 2.8 GB in all, about 560 MiB each, 6 of 198 crates
+     rebuilt per copy, against about 2.2 GB for one build without `incremental`. A reused copy after `git switch -c`
+     rebuilt 2 crates in 11 s and wrote 33 MiB. A pool would save about 500 MiB and under a minute per thread; it would
+     cost a lease mechanism and moving conversations between folders (Claude finds a session by folder). So no pool.
+   - The fixed path keeps `--resume` working: a thread reopened within 24 h finds its conversation.
    - A shared `CARGO_TARGET_DIR` is rejected: builds lock it one at a time. sccache does not cache bin or proc-macro crates.
    - The existing scheduler (`wsx_core::task::schedule`, `crates/wsx/src/task/slot.rs`) stays the one owner of heavy runs.
-   - A workbench idle 1 h drops its `target/` (an open item of the removed manager-mode.md).
-   - A thread keeps its workbench until it lands, or until it waits on the owner for over 1 h. A reopen takes any free workbench
-     and resumes its conversation by session id. Claude finds a session by folder (work-model), so wsx must move the
-     session to the new workbench's path, or keep workbench paths stable per thread. Which one works for Claude and Pi is
-     [unverified].
+   - Left for step 3, owned by the desk: a cap on open workbenches per machine, and the idle drop of a workbench's
+     `target/` at any disk level (today `build::reclaim` drops it only below `tasks.minFreeGb`, or 15 GB each hour).
+   - Not measured: how warm main's `target/` stays on the host, where main builds less often than here.
 3. **Memory: canon plus search, nothing injected.**
    - Canon: what the owner accepted (`CLAUDE.md`, `docs/`, the desk's decision list, 4 KiB or less).
    - Record: every log, decision, proof and diff, append-only and source-linked, found with `wsx search`.
@@ -121,7 +124,7 @@ flowchart LR
   - A part of the current goal ("do the tests for this in parallel"): the current thread writes the brief in one short
     turn, while it still has the context, so there is no seed search later.
   The owner sees a chip, "forked to *thread name*", that undoes the fork in one tap.
-- **Desk:** one per project. Its core is code: a memory scope, a mailbox, the workbench pool, the policy and the deterministic
+- **Desk:** one per project. Its core is code: a memory scope, a mailbox, the workbench cap, the policy and the deterministic
   event handling. It grows from today's repo service (`wsx task repo-host`), which already owns the store watch, stalls,
   approvals, deploys and routines. A desk starts an LLM turn only for mail that asks for action. Then it opens a thread
   in that project with the mail as the brief. The security fan-out works this way: one thread mails every desk, each
@@ -300,7 +303,7 @@ How to get there, in order:
    Contract files: a stricter contract (asserts only added) lands as FYI; a changed assert is a Decide item.
    **Autonomy is off by default** per project; on, a higher-tier reviewer may approve a changed assert and the owner gets
    it as Review with a one-tap revert for 24 h.
-5. **Names (2026-11-23).** A reusable working copy is a **workbench**; a desk has workbenches. *Slot* keeps its one
+5. **Names (2026-11-23).** A thread's working copy is a **workbench**; a desk has workbenches. *Slot* keeps its one
    meaning, the machine's check lane (`wsx task slot`, `crates/wsx/src/task/slot.rs`).
 6. **Preview: designed from scratch.** Only the word stays. The old `wsx task preview` (`tasks.preview`, a tailnet
    link on request, 0 uses in 30 days) is removed; step 5 designs the preview of a workbench.
@@ -312,8 +315,8 @@ How to get there, in order:
 | # | Step | Proof |
 |---|---|---|
 | 1 | Gate: contract files, triage of reds that are not the task's own, scenarios by path | replay of the 227 red `web` runs: the script-only reds no longer block |
-| 2 | Workbenches with a warm `target/` and idle drop | five parallel builds keep disk at or below N times one build |
-| 3 | Thread engine on the lean phase table; desk as code; no event turns | the replayed day: zero event-only LLM turns |
+| 2 | Workbenches with a warm `target/` | met by today's copy-on-write copies, measured (section 3 item 2): five parallel builds 2.8 GB against 11 GB; the cap and idle drop move to step 3 |
+| 3 | Thread engine on the lean phase table; desk as code (workbench cap, idle drop); no event turns | the replayed day: zero event-only LLM turns |
 | 4 | Router and fork with brief | the replayed day's owner messages against hand labels: 90% routed right (target) |
 | 5 | Proof card, preview on a leased port, inbox | scenario 1 of section 7 under 15 min end to end |
 | 6 | Mail between desks | scenario 3: one notice opens threads only in matching desks |
