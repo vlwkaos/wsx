@@ -202,7 +202,7 @@ jobs:
           TAG: ${{ env.RELEASE_TAG }}
         run: |
           VERSION=${TAG#v}
-          awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md | tee release-notes.md
+          sh scripts/changelog-section.sh "$VERSION" < CHANGELOG.md | tee release-notes.md
           test -s release-notes.md
           gh release create "$TAG" --verify-tag --title "wsx ${VERSION}" --notes-file release-notes.md release-assets/*
 

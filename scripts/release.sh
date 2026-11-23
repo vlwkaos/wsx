@@ -22,6 +22,11 @@ version=$(git show "$commit:Cargo.toml" | awk -F '"' '/^version =/ { print $2; e
 tag="v$version"
 echo "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || fail "version '$version' is not a stable release (release.yml takes vX.Y.Z)"
 git show "$commit:CHANGELOG.md" | grep -q "^## \[$version\]" || fail "CHANGELOG.md has no [$version] section"
+# ^ The section becomes the GitHub release body (release.yml uses the same extractor).
+# A cap keeps it a summary and far under GitHub's body limit; 0.43.0's was 122,669 bytes.
+notes_bytes=$(git show "$commit:CHANGELOG.md" | sh "$(dirname "$0")/changelog-section.sh" "$version" | wc -c | tr -d ' ')
+[ "$notes_bytes" -le 20000 ] \
+  || fail "CHANGELOG.md [$version] is $notes_bytes bytes and a release takes at most 20000: summarize it"
 # ^ A rerun of one version: a failed tag run publishes nothing, so origin's tag may move to the fixed
 # commit. It moves only while nothing of the version is published: no GitHub release, no crates.io version.
 move=

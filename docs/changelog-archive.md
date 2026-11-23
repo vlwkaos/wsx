@@ -1,0 +1,1273 @@
+# Changelog archive
+
+Releases 0.40.4 and older, moved from [CHANGELOG.md](../CHANGELOG.md) as written, without commit links: nearly all pointed at commits that are no longer in the history. Each release is also on [GitHub Releases](https://github.com/vlwkaos/wsx/releases).
+
+## [0.40.4] - 2026-10-28
+
+### Added
+
+- `wsx task new --skip <step>` leaves a `tasks.workflow.steps` step out of one task. The manager now picks the worker by the work: a change it has read and can state exactly runs on Sonnet without the context and plan steps, with a prompt that carries the files, the change and its proof; deep exploration, an unknown cause or a module redesign stays on the default model with every step; a broad bug hunt becomes one read-only audit per area, then one task per fix ([docs/tasks.md](docs/tasks.md) "Workflow").
+- Tasks: a To check item can carry a short MP4 video (at most 25 MiB) with a `poster` image; the web plays it in the image viewer, served with byte ranges for iPhone Safari. Captures of items passed or failed more than 7 days ago are removed; their rows stay.
+- Each To check item shows once in the web manager chat, as a bubble from the manager at the time it was added: what to check, its capture (a tap opens the image viewer) and Try, Fail and Pass, so the owner checks it right in the chat. A decided item's bubble shows its result. The To check list over the composer stays.
+- A project's row on the web Home marks a manager message this device has not read (a reply that is not quiet, or a To check item): an accent mark before the name and the message's first line under it. Opening the project's chat clears it.
+
+### Fixed
+
+- `wsx daemon stop --force` ends a wsxd whose live handoff never finished. A daemon before revision 35 whose rollback failed answers every request with `daemon_replacing` for ever, so the stop was refused, although the notice named it as the way out. The client now takes the daemon's pid from the socket's peer, checks that it runs as the same user and started when the daemon says it did, and sends SIGTERM, then SIGKILL; the next command starts a new wsxd ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "A stuck handoff").
+- A successful deploy reaches the manager as an event (`deploy of <commit> succeeded after <s> s`), as a release did. Before, a manager that waited for a deploy before it started work never heard that it could go on.
+- Web: a `Range` request for an empty To check capture or media file no longer panics the handler; it answers with the whole, empty file.
+- The web manager chat's decision list keeps *Running* at its top while what needs you and To check scroll under it. Its rows, the answer field and the To check list use one small size, and a row's task sheet opens on its content at once, read ahead when the list opens.
+- The task sheet's *Work by hand* is *Take over*, with a line that says what it does: the worker stops and you continue in its working copy with its conversation, and *Hand back* returns the task to the worker, which checks your work.
+- The web manager chat shows replies and the end of a turn after a phone sleeps or changes networks, without a reload. Its event stream could stay open and silent, so the typing dots stayed and replies showed only after a reload. The server now sends a ping every 10 s; a stream that says nothing for 25 s opens again, and a page that comes back opens its stream at once.
+- A request on a dead connection no longer freezes the manager chat or its composer. A chat read gives up after 20 s and a message after 60 s, and the chat reads again when a change came while a read hung; before, one hung read held every later read until a reload, and Send stayed disabled.
+- A device no longer stays on "Connection lost" when streams it left behind fill its four event streams. A page's new stream ends its older one, and a fifth stream ends the device's oldest instead of being refused.
+- The home row's typing dots and last reply follow the manager's turns. A change to only the manager's log was read as a worker's progress, so the overview was not sent and the dots could stay after the turn ended.
+- Older status lines in the manager chat no longer slide in again, and an open fold no longer closes, when a new decision or answer arrives. Those lines were keyed by their place in the list, so each new one re-made the rows below it and could move the chat.
+- The manager's typing bubble fits its three dots with even padding, and every dot shows whole. Its box took the width of the manager's name, which left an empty space right of the dots. The dots now rise and brighten in turn.
+- The working pulses and typing dots move again after a swipe back on iPhone, a return from the background or a page from the back-forward cache. WebKit could leave them standing still; the page now starts every looping animation again after each route change and return.
+- The To check sheet rises once and stays when its captures come late. It opened after a second and then grew as the images arrived; a PNG capture's box now has its size before the image comes, and the sheet opens when its list is read.
+- A resumed agent gets back the profile it ran with. After a crash or restart, wsxd resumed Claude with wsxd's own environment and PATH in the worktree root, so a session that ran with a work profile (`CLAUDE_CONFIG_DIR`) came back with the personal one. The agent's report now records its cwd and its config-root variables (`CLAUDE_CONFIG_DIR`, `CODEX_HOME` and the others wsx installs into), and the resume sets them on the agent; a variable the agent did not have is removed. Daemon revision 36, [docs/agent-orchestration.md](docs/agent-orchestration.md) "Resumed agents".
+- Web chat: a message to a Claude session no longer fails or lands in a busy editor while Claude compacts its conversation. Claude Code 2.1.310 compacts an idle conversation by itself about 54 minutes after a turn, a turn of its own of up to a minute. wsx reported only `/compact`, so wsxd showed the session done, and the message failed after 30 s ("not visibly idle") or was typed into Claude while it worked. Every compaction is now reported: an automatic one inside a turn keeps the turn, and one outside a turn shows "Compacting the conversation" and returns to the earlier state (daemon revision 37, Claude integration 27; run `wsx agent install claude` and restart Claude when it is idle) ([docs/agent-reporting.md](docs/agent-reporting.md) "Claude compaction").
+- Web chat: a sent message no longer vanishes for a moment when Claude takes it. It stays until the conversation shows it ([docs/web-client-chat.md](docs/web-client-chat.md) "Queue and Stop").
+- Web chat: the summary of a compacted conversation no longer disappears during the first long turn after the compaction ([docs/web-client-chat.md](docs/web-client-chat.md) "Timeline").
+- Web chat: a chat read that fails is read again after 2 s, so an answer no longer needs a reload to show, and a sent message shows at once from the send's answer.
+- A web terminal on a phone resumes after the phone slept. The socket could stay open while it carried nothing, so the page kept a stale screen and its keys went nowhere, and the server kept the pane's lease and, behind a full socket, one of the device's four terminal slots, until the page could not open a terminal at all. The server now pings each page every 5 s and closes one that answers nothing for 15 s; the page reconnects when it heard nothing for 12 s or when it is shown again ([docs/web-client-terminal.md](docs/web-client-terminal.md) "Liveness"). Keys typed right after a reconnect are no longer lost: the server could take them before it had the new stream to send them to.
+- A pane whose program stops reading its input no longer freezes. Typing or pasting into it held wsxd's input write until the program read again: the pane sent no frames, its window lost the terminal, and closing the session hung. The write now gives up after 1 s ([docs/terminal-raw-stream.md](docs/terminal-raw-stream.md) "Input"). wsxd is at daemon revision 38, so the first start of this release hands the running daemon off to the new one.
+- A wsx window or web page that stops reading no longer stalls other terminals. When its stream ended, wsxd wrote the last error while it held all of its state, so every terminal waited up to 5 s and other windows' leases ran out. wsxd now holds no state while it writes.
+- A TUI whose lease ran out while wsxd was busy reattaches once by itself, as the web terminal does, instead of leaving Terminal mode.
+
+## [0.40.3] - 2026-10-28
+
+0.40.1 and 0.40.2 were tagged but never published: their release tests failed (a lint, then a test that hangs on Linux), so this release carries everything listed here.
+
+### Added
+
+- A project's manager can use routines: `wsx task routine` is `wsx routine` behind `wsx task`, the ledger lists the project's routines with next and last run, and each run that ends reaches the manager as an event, a failure with the end of its output. The manager adds, edits or deletes a routine only with `--owner-said` ([docs/tasks.md](docs/tasks.md) "Routines").
+- `wsx routine add`, `edit`, `delete`, `enable`, `disable` and `cancel` take `--json`.
+
+### Changed
+
+- A task worker whose context passes `tasks.agent.rotateTokens` (default 350000) continues in a fresh conversation. It first writes handoff notes in its task folder; the fresh conversation opens with the task's prompt, those notes and the current step, and loads the project knowledge again. Each model call reads the whole context, so a long task no longer pays for 450k tokens on every call. A host started again after a session limit knows the size from the log and rotates on its first turn ([docs/tasks.md](docs/tasks.md) "Context rotation").
+- Internals: wsxd, the TUI and the CLI are split into modules by responsibility, with their tests in separate files, and repeated code (state saves, pane cleanup, event pushes, lease checks, daemon reply checks, text-form keys) is shared. No behavior change.
+
+## [0.40.1] - 2026-10-27
+
+### Fixed
+
+- The TUI shows routines again when the scheduler has no project registry: it now follows the scheduler, which then runs every project's routines.
+- A task agent can no longer write the routine scheduler's folder, whose routines wsxd runs outside the agent boundary.
+- A live handoff of wsxd always ends. A rollback that cannot rewrite its marker or bind its socket again at once now serves again and binds the socket when it can. Before, such a daemon answered every request with "wsxd live handoff is in progress" for ever, while its sessions ran where no window could see them. A successor that exits after the commit, before it reports that it owns the sessions, gives them back to the source daemon, which keeps serving; before, the source left and every session ended. Daemon revision 35 ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "A stuck handoff", "A successor that dies").
+- A wsx window or command no longer waits on a handoff that cannot finish. When the running wsxd still refuses requests after its handoff marker went stale, wsx says that the handoff did not finish, that the sessions still run inside that wsxd, and that `wsx daemon stop --force` ends them and starts over. The window checks again each second and opens on whichever wsxd serves. A daemon of 0.31 to 0.40 whose rollback failed stays in that state until it is stopped.
+- A task whose worker hits Claude's usage limit ("You've hit your session limit · resets 12:10am") no longer fails. It waits on `limit` with "session limit; resumes at <time>", runs no checks and spends no check retry. At the reset time its host continues the same session by itself. Several tasks resume one at a time, oldest first. The manager gets one waiting event instead of a `failed` one. The manager's own turn waits the same way, and the messages that came during the limit are answered after the reset. Only the `claude` adapter has this signal ([docs/tasks.md](docs/tasks.md) "Claude adapter").
+
+## [0.40.1] - 2026-10-27
+
+### Fixed
+
+- Web: an approval the owner gives in the manager chat no longer shows a false "<Action> #n did not run" failure notice. The manager runs that action itself and replies with its result in the chat ([docs/web-client.md](docs/web-client.md) "Notices").
+- wsxd no longer stalls a pane on a program that stops reading its input. The terminal answered queries such as "which terminal are you" with a write that waited inside the emulator lock; a program that printed a lot while it read no input then waited on wsxd while wsxd waited on it, and every window of that pane froze. Replies now go out on their own thread.
+- A slow or stalled wsx window no longer holds up typing, resize and takeover in the same pane: the frame stream writes to its socket after it lets go of the pane lock, as the raw stream already did.
+- A burst of program output no longer floods wsxd's event list with one "terminal changed" event per read, which pushed real changes out and made windows reload everything. Daemon revision 35.
+- wsxd keeps no lock entry for a pane id that does not exist, and closing a session also drops the pane's agent presence.
+- The TUI no longer blocks on three daemon round trips when it sends one key from the workspace view (for example Ctrl-C to a pane); it no longer panics when a snapshot removes the project, worktree or session an action is about to change, and says that the item is no longer available; a finished background job clears only its own busy marker.
+- The cache no longer falls back to a shared fixed folder under /tmp when the system has no cache folder; it reports an error.
+- A task that is removed while the task list is read no longer blanks the whole list in `wsx task` and on the web; the list skips it. `deploys.jsonl` rolls over at 4 MiB instead of growing without end. The web server reads only the end of a task log to find a task's last land reason, conflict state, context size and cost.
+- Web: the manager, task, project and To check pages no longer show an answer for the page you left when you switch while a read is in flight.
+- Every atomic file write in wsx uses one helper with a unique temporary name, so two threads that write the same file no longer share one temporary file.
+
+## [0.40.0] - 2026-10-27
+
+**Not stable, use 0.40.3.** A wsxd live handoff in 0.40.0 can fail to end, after which wsxd refuses every request and its sessions run where no window can see them; a pane can also stall on a program that stops reading its input. 0.40.1 and 0.40.2 were tagged but never published.
+
+The task workers and the manager are the headline of this release. A worker builds one change in its own working copy inside a boundary that wsx owns, runs the project's checks and returns a result; the manager plans requests in a chat, lands and deploys passing work, and asks the owner only where something goes public or is lost ([docs/tasks.md](docs/tasks.md)). The hosted web client has the manager's home: its chat, the task reservoir and the To check list of what only the owner can judge, with an image viewer for their captures ([docs/web-client.md](docs/web-client.md)). Lands and deploys are steadier: a land rebases and checks again when the default branch moved, and the live site gets each land within minutes. wsxd is at daemon revision 34 with protocol 16: the first start of 0.40.0 hands a running 0.31 daemon's terminals off to the new one. A 0.31 daemon cannot hand off a pane whose program exited, so restart or close such panes before the upgrade ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "Exited panes").
+
+### Added
+
+- Manager mode: headless worker tasks ([docs/tasks.md](docs/tasks.md)). `wsx task new "<prompt>" -p <project>` starts a Claude worker on branch `wsx/t<n>` in its own copy-on-write working copy, which reuses the main checkout's build. Nobody types into it. You steer it, add work, stop it, read its result and close it, each in one call with `--json`. After each result wsx runs the project's `tasks.checks` and records a revision. A worker that says done while a check fails gets the failure back. A task is `working`, `waiting` (on `owner`, `disk` or `hand`, with a reason), `checking`, `ready`, `failed`, `landed` or `closed`. Settings live in a `tasks:` section of `wsx.config.yml`. No wsxd protocol change.
+  - Landing: `wsx task land` rebases a ready task, runs the checks and fast-forwards the default branch. A conflict goes back to the worker. When the default branch moves during the checks, the land rebases and checks again. Uncommitted files in the main checkout stop a land only when the land changes them too. After a land the task closes itself (its copy, build and branch go), and `tasks.deploy.auto` deploys the new commit. `task deploy`, `task release` and `task deployed` run and record the declared commands in a temporary copy of one commit.
+  - Checks: `wsx task check-run [<n>...]` lets a worker run the checks outside its boundary, exactly as after its result. A run on the same clean tree answers from the stored result. Each check's whole output goes to a log in the task folder. One check slot per machine runs one check at a time. Below `tasks.minFreeGb` a task waits for disk, and waiting tasks resume one at a time.
+  - To check: what only a person can judge waits in one list per project (`wsx task check`), with the worker's capture of the state. `check fail <id> --note` starts a task that fixes it. A worker must prove itself what a test, an assert or a capture can show.
+  - `--plan` makes the first turn write a plan and stop. `--hold`, `task hold` and `task trial` let the owner try a change, also on the live site, before it lands. `task hand` and `task handback` let the owner work on a task by hand with the worker's conversation. `task preview` serves a task on its own tailnet port (`tasks.preview`).
+  - `tasks.workflow.steps` sends your own workflow (for example context, plan, build, review, memo) as one turn per step. `tasks.skills: owner` lends workers the owner's skills. `tasks.env` sets environment variables for the worker and its checks.
+  - Workers and the manager run inside one macOS Seatbelt boundary that wsx owns, with Claude in its no-prompt mode, so no task waits on a permission. The boundary refuses `~/.ssh`, `~/.aws`, `~/.gnupg`, keychain writes, wsx's config and state, other tasks' copies and the default branch's ref (lands stay with wsx). On Linux an agent start fails with a clear error ([docs/tasks.md](docs/tasks.md) "Permissions").
+- The manager: one Claude agent per project (`wsx task manager|say|chat|ledger|approve|deny`) that delegates work to tasks and never edits files itself. It starts a request at once and says its plan in the same reply. It asks first only for a choice that is the owner's, or for large or costly work. Before it opens a task, it checks the open tasks for similar work. It reviews the tasks it created before it lands them. Each turn's message ends with a ledger summary. A release and `close --discard` wait for the owner's approval. When the owner said it in the running turn, the manager passes `--owner-said <message>` and wsx does not ask again. A manager may message another project's manager ("Managers talk"). It keeps the owner's decisions in `notes/decisions.md`. An optional quiet-period recap is off by default (`tasks.manager.recapMinutes`). A manager without `tasks.manager.name` reads as its project's name ([docs/tasks.md](docs/tasks.md) "Manager").
+- Manager mode on the web, with the site capabilities `task_view` and `task_act` ([docs/web-client-tasks.md](docs/web-client-tasks.md)):
+  - Home has one row per project: what needs the owner first, how many tasks work and when it last changed. The tabs are Home, Sessions and Settings.
+  - A project opens on its manager chat. Each wsx event is its own muted line ("#7 done"), and the chat has live `#n` chips, a `#` task picker, `@` for another project and `/` for the owner's skills. The strip over the composer is the one list of decisions; each one has its own action and the running tasks follow.
+  - A task opens in a sheet with what happens next and its buttons (*Land*, *Answer*, *Work by hand*, *Try*). The project overview has the deploy, the release and the main checkout. The To check list has the worker's captures and *Try*, *Fail* and *Pass* on each item.
+  - Notifications reach you only when you must act. Settings > Notifications has "Manager needs me", "An agent needs me" and a "Daily digest" at a time you pick. A notice names the project, the task or session and what it asks. The installed app shows a badge with what needs you ([docs/web-client.md](docs/web-client.md) "Notifications").
+- The TUI shows a project's tasks read-only: `t` on a project, worktree or session. The list puts open tasks first and follows them as they change, and `Enter` shows a task's checks, waiting reason and summary ([docs/tasks.md](docs/tasks.md) "TUI").
+- `wsx agent start <branch> -p <project>` creates the worktree when it is missing and one session that runs the agent. It waits until the agent can take a prompt, delivers the request and prints the worktree, session, pane and exchange together. A late failure prints what exists and what to run next, and deletes nothing. The agent's folder trust question stops the start with `folder_trust_question`, unless you pass `--accept-folder-trust` ([docs/agent-orchestration.md](docs/agent-orchestration.md)).
+- `wsx agent wait --result` returns the agent's final message of the exchange's current round, from the provider's saved history, and never an older one. `wsx agent wait --any [<exchange>...]` waits for the first of several workers that is blocked or finished.
+- `--key <text>` on `agent request`, `agent continue` and `agent start` makes a repeated call return the existing exchange instead of a second delivery (daemon revision 29). `agent start`, `agent request`, `agent continue` and `session prompt` take the prompt from `--prompt-file <path>` or `-` (standard input).
+- `wsx agent install claude` writes the Claude output style `wsx` and selects it when no style is chosen. The manager and the workers present replies by one rule: the answer first, assumptions on the first line, each fact once, about one phone screen ([docs/agent-reporting.md](docs/agent-reporting.md) "Output style").
+- Web chat:
+  - Reply to one message: swipe it right, or long-press it (right-click on a computer) and choose Reply.
+  - Typing `/` lists the agent's commands: built-ins and, for Claude, the skills and commands of the project, the user and enabled plugins. A picked command is typed into the agent as written (daemon revision 27, `exchange_command`).
+  - A one-line `!` message to Claude runs in Claude's shell mode, and the composer shows that with its border and a *Run* button (daemon revision 30, `exchange_shell`).
+  - **Send now** puts a waiting message into a working Claude's turn (wsxd `AgentSteer`, daemon revision 33).
+  - The chats open at the first reply this device has not read, under a "New" line, with "↓ 3 new" to go to the end.
+  - A file or a screenshot pasted into the text box is attached. An image larger than 2000 px is made smaller before the upload.
+  - A tap on an image opens it full screen over the page, with zoom and the other images of its set ([docs/web-client.md](docs/web-client.md) "Image viewer").
+- Web: the Files screen opens a Markdown file rendered, with **Source** for the text and the editor. A session row slides left to show Remove (`DELETE api/sessions/<id>`). Settings shows the wsx version, its commit, the page build and when the server started, and offers a reload when the server runs a newer build.
+
+### Changed
+
+- Release: the `v*` tag run now runs the CI tests (ubuntu-24.04 and macos-15) first, and nothing is built or published when a test fails. `scripts/release.sh` no longer waits for `ci.yml` on main. It pushes main and the tag, then watches `release.yml`. A test failure ends with "NOT PUBLISHED: tests failed" and says how to delete the tag and release again.
+- `wsx task release` still refuses while To check items are open, except when the owner's own message asked for the release (`--owner-said`). Some items can be checked only on the released build, so the release runs and its answer lists them as still to check on the release ([docs/tasks.md](docs/tasks.md) "Deploy and release").
+- A wsx older than its project's `wsx.config.yml` keeps working. An unknown key is now a warning that names its path and the file, not an error that refuses the whole file. A known key with a wrong type or value still fails.
+- Claude started in a wsx pane uses its full-screen renderer (`CLAUDE_CODE_NO_FLICKER=1`, unless you set the variable), so a resize no longer leaves copies of a tall reply in the scrollback.
+- `wsx status --json` adds `exchange` to each session and `work` to each worktree (uncommitted paths, and commits the default branch does not have). `wsx session create --json` adds `pane_id` and `agent`, and `wsx session list --json` rows add `project`, `branch` and `worktree`.
+- `wsx web pair`, `wsx web devices` and `wsx web serve` no longer need `--site` when there is only one site file. A site can also be named by its id or file name.
+- The newest person wins a session. A web chat message, Stop or answer takes the pane from a wsx window or web terminal that holds it, instead of failing with `terminal_busy`. A reconnect never takes over, and CLI exchanges never take the pane (daemon revision 28).
+- Web chat:
+  - Every message goes through the session's queue, one delivery at a time. A delivered message stays above the composer until the agent's conversation shows it, with Copy, Send again and Remove.
+  - A message is done only when the agent took it. Claude's hook reports which prompt each turn took (integration version 23, daemon revision 31). A message Claude did not take is sent again once, then kept as failed with Copy and Send again.
+  - The chat outlives the agent. When Claude exits, the session keeps its conversation, and a message resumes Claude in the same conversation. A conversation started again by hand reads "Same conversation, continued", and a new one "New conversation".
+  - The chat names more of what holds a session: "Compacting the conversation" during a `/compact`, and the last rows of the terminal for a question the chat cannot read or a message that waits more than 10 s.
+  - Chat messages no longer fold. A compacted conversation shows the start of its summary, open, where the compaction happened.
+  - The page reads the timeline from its last turn, one read at a time: about 16 KB per read instead of 215 KB on a long conversation.
+  - Tables, code blocks and Mermaid diagrams may use the width of the conversation. On a phone a table's columns narrow and wrap, and a markdown table takes its full height.
+  - On a phone the composer is one rounded card with attach and a round Send inside it, and every control has a 44 px hit area.
+- Web:
+  - A shell session opens on the terminal and has no chat tab; the inbox lists agent sessions only.
+  - A project in Projects opens its worktrees and their sessions, and Back returns to where you came from.
+  - Inbox rows show project and worktree first and keep their order.
+  - Every working state has one color, `--color-working` ([docs/web-themes.md](docs/web-themes.md) "Tokens").
+  - In the manager chat, three or more event lines and quiet manager replies in a row fold into one row. The row shows each task once with its newest state and the number of rows it hides ("#89 done  #91 done  #88 done  10 updates"). The newest event and its reply stay below it, and a tap shows or hides the rest ([docs/web-client-tasks.md](docs/web-client-tasks.md) "Project screen").
+  - The home-screen icon shows split panes.
+  - Modules load from `assets/<build>/`, so no cache mixes builds.
+  - On a phone the terminal's Enter sits at the right of the second key row, with `^J` left of it.
+- The web terminal no longer flickers while Claude redraws its input box. wsxd holds the raw stream's bytes of an open synchronized update (`CSI ? 2026`) until it ends or after 1 s. A "Jump to latest" button shows while the terminal is scrolled back ([docs/terminal-synchronized-output.md](docs/terminal-synchronized-output.md)).
+
+### Fixed
+
+- A long `wsx task release` or `wsx task deploy` finishes. The manager's commands stop after 15 minutes, which cut wsx's own release (about 30 minutes) while it waited for CI. Now a deploy or release started by hand answers at once that it started, runs detached under the deploy lock, and its result arrives in `wsx task deployed` and, for the manager, as an event (a successful release too). A second one by hand while one runs is refused.
+- A long manager reply after a turn of only events (a table, a list, several paragraphs) shows as a whole bubble in the web chat. It showed as one muted line with its first sentence and More, and could fold into a run of event lines. Only a reply of one line of at most 200 characters is quiet now, also in logs written before ([docs/tasks.md](docs/tasks.md) "Manager").
+- A session whose program exited (Claude after `/exit`, a shell after Ctrl-D) can be used at once in the TUI. It showed an empty screen that took no keys, and Enter opened that dead screen again. Now the TUI says "Terminal process exited. Enter starts it again; d closes the session", and Enter starts the saved command again in the same pane, resuming the agent's conversation ([docs/terminal-exit-ordering.md](docs/terminal-exit-ordering.md) "In the TUI").
+- Quitting a resumed Claude (or another resumed agent) leaves a working shell. The pane kept the agent's keyboard modes, so typed keys reached the shell as escape codes, and when wsxd could not clear the agent's record the pane ended as an empty, dead screen. The supervisor now resets the modes and always opens the shell (daemon revision 34, [docs/agent-orchestration.md](docs/agent-orchestration.md) "Resumed agents").
+- The TUI keeps the session you look at. A refresh kept the cursor's row number, so when a task session or worktree above it closed or opened, the view moved to another session by itself; in Terminal mode the title named that other session while keys still went to the open pane. The cursor now follows the session and stays at its row number only when that session is gone ([docs/ui-state-ownership.md](docs/ui-state-ownership.md) "Selected row").
+- An open web page no longer says "Connection lost. Reconnecting…" after every land. The auto-deploy restarts the web server, and the page showed the notice at once, in the chat and in the terminal. The page now opens the stream again within about a second, reads what it missed, and shows the notice only when the server stays away 5 s ([docs/web-client.md](docs/web-client.md) "Notices"). wsxd itself is not restarted by a deploy: it hands off only when its daemon revision rises.
+- wsxd no longer ends every session when agents in many panes report at once. wsxd started from a macOS GUI terminal keeps launchd's limit of 256 open files, and each pane holds about five. A burst of hook reports then made `accept` fail with `Too many open files`, and wsxd treated every accept error as fatal: it stopped and ended every PTY, and the TUI reconnected to a restarted daemon. Now wsxd raises its open-file limit toward the hard limit at start (at most 10240), and an accept error for one connection or a short resource shortage drops that connection only. Panes started by wsxd inherit the higher limit. Verified by `scripts/runtime-smoke.py` ("Concurrent agent reports").
+- A Claude session no longer shows a hook error on each tool call after a daemon restart or upgrade. The status hook exited 1 when wsxd refused a report, for a stale runtime generation, a gone pane or an unreachable socket, and with the 0.30.1 inspection on it also printed a `wsx inspect {...}` line; a legacy `if [ -x .../wsx-agent-status.sh ]` binding beside the managed one showed each error twice. These expected refusals, and `terminal_unavailable`, now exit 0 quietly. An installed integration at the same version now counts as current only when its file matches this build, so every shell provider's hook is offered for refresh, not only Claude's and Codex's. `wsx agent install claude` (Claude integration 25, Codex 16) rewrites the legacy binding to the managed one and keeps the person's other hooks. The opt-in inspection (`wsx-agent-inspect.py`, `WSX_INSPECT`, `docs/claude-inspection.md`) is removed, and install deletes its files ([docs/agent-reporting.md](docs/agent-reporting.md) "Hook exit").
+- One user has one wsxd whatever directory a client starts in. A shell profile that changes `XDG_STATE_HOME` or `HOME` per directory sent `wsx` and hook reports in a pane to another socket, and an empty `XDG_STATE_HOME` made the socket relative to the current directory, so the TUI said "Runtime disconnected; retrying" without end. A second `WSX_SOCKET` on the same state root started a wsxd that found the first one's lock. Now panes keep their daemon's socket (`WSX_SOCKET`), a daemon keeps its state and lock beside its socket, empty or relative XDG and HOME values are ignored, and the notice names the error kind and the socket it tried ([docs/daemon-discovery.md](docs/daemon-discovery.md)). The agent hook reporters follow the same rule, so every integration version goes up by one and wsx offers the update.
+- Hand off a pane whose program exited. Before, `wsx daemon restart` and every automatic upgrade failed while any pane had exited. From daemon revision 32 an exited pane goes to the new daemon as its last screen and stays exited ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "Exited panes").
+- Say why a handoff rolled back: `last_handoff_error` in the lifecycle status, printed by `wsx runtime status` and `wsx daemon restart`. A newer `wsx` whose automatic upgrade rolled back keeps working with the running daemon when the protocol matches, and says "wsxd upgrade failed: <reason>; sessions keep running" ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "A failed automatic upgrade").
+- A slow exchange delivery no longer blocks wsxd. The prompt is written without wsxd's state or mutation lock, and the write ends after 10 seconds with `delivery_failed`. `wsx agent request` no longer fails with `Resource temporarily unavailable` when the agent reads its prompt slowly (daemon revision 29).
+- Claude's wake heartbeat ends within seconds of its prompt, pane or wsxd. Before, every prompt left heartbeat processes alive.
+- Claude after a compaction: wsx showed the agent idle while it still worked, so the web chat delivered the next message into a busy editor. Claude integration 22 reports `/compact` as working, then done. Run `wsx agent install claude`, then restart Claude when it is idle.
+- A web chat message to an idle Claude with a draft, a dimmed next-prompt suggestion or a stashed text is delivered again (daemon revision 28). Claude Code 2.1.3xx draws up to seven footer rows, and wsxd looked for the editor only in the last eight rows.
+- A Claude question in a narrow pane, such as the web terminal at phone size, is seen as blocked, so the web chat shows it.
+- The web chat shows older sessions' conversations. It read past an attachment whose parent Claude Code 2.1.302 to 2.1.310 never saved, and up to 16 MiB to find the person's message before a long turn of tool results ([docs/web-client-chat.md](docs/web-client-chat.md) "Timeline").
+- The web chat no longer shows a Claude background-task notice as the person's message, and shows the answer Claude kept through a compaction after the summary.
+- A failed web chat message no longer holds back later ones; "not yet" refusals keep a message waiting for up to 30 s. A file that uploads shows "Uploading…" and Send waits. The draft and its files survive a reload.
+- The web chat and the manager chat no longer jump. A diagram or an image that draws late keeps a reader at the end, and a reader who scrolled up stays on the same message. A long chat no longer drops its top row when a new row arrives.
+- In the web chat, the first message of a new conversation no longer shows above its "New conversation" line.
+- The working time of a web session counts from when the agent entered its state, not from the start of `wsx web serve` (daemon revision 28).
+- A web terminal whose lease ran out reconnects by itself instead of waiting for *Take control*. On iOS its key row no longer blurs the terminal, so the keyboard does not flicker.
+- Opening the terminal of an exited pane no longer fails now and then on macOS with "Invalid argument".
+- `wsx routine` commands no longer fail now and then on macOS with "Invalid argument" or "Socket is not connected".
+- A client that connected to wsxd just as it started no longer fails with "wsxd socket is not an owner-only same-user socket".
+- wsx's git and plugin commands end 2 seconds after their shell when they leave a process behind.
+- A failed `wsx worktree create <branch> --from <ref>` no longer leaves the branch behind, so the retry works. A branch that existed before is never removed.
+- `wsx agent exchanges` applies `-p` and `-w` without a session.
+- `wsx web serve` exits on SIGTERM or SIGINT while a page holds an event stream or a terminal.
+- Web on a phone: half of the inbox no longer stays empty after the keyboard closes, and the "Loading…" placeholder no longer stays after a reload.
+
+### Breaking Changes
+
+- Rust callers that construct `Request::AgentReport` must provide `received` (`None` keeps the old meaning). `AgentCapabilities` has `prompt_receipts`. `POST api/chat/<session>/send` answers `{queued, exchange}` instead of the bare exchange.
+- Rust callers that construct `AgentExchange` must provide `command`, `key`, `continue_key` and `failure`. `Request` has the new variants `AgentExchangeCreateKeyed` and `AgentExchangeContinueKeyed`. `AgentExchangeCreate`, `AgentExchangeCreateStashingDraft`, `AgentExchangeContinue` and `AgentExchangeContinueStashingDraft` need `command` and `takeover`, and `AgentExchangeCancel` needs `takeover`. `Capabilities` has `exchange_command` and `exchange_shell`.
+- Rust callers that construct `DaemonLifecycle` must provide `last_handoff_error`, a `match` on `Availability` must handle `UpgradeFailed { reason }`, and `AgentInfo` needs `state_since_unix_ms`.
+- `wsx_core::integration::memory::Timeline` has no `checkpoint` field: the newest compaction summary is an `ItemKind::Summary` item, and the web timeline API no longer sends `checkpoint`.
+- In every case above, older JSON without the new fields decodes as before.
+
+## [0.31.0] - 2026-10-14
+
+### Breaking Changes
+
+- `wsx daemon stop` refuses while sessions are running. Scripts that stop a daemon with live sessions must pass `--force`.
+- Rust callers that construct `TuiClientPresence` must provide `follows`, and callers that construct `Request::PrepareHandoff` must provide `restart`. `Capabilities` has the new `daemon_restart` flag, and `DaemonPhase` and `ReplacementBlocker` have an `Unknown` variant. Older JSON without the new fields decodes as before.
+- The web client was not part of a published release. A site made with a development build must follow these changes:
+  - The web client's `GET api/terminal/<session>` and `POST api/terminal/<session>/input` routes are removed with the text-snapshot terminal. `terminal_view` now allows watching the live terminal; `terminal_input` allows typing, resizing the pane and taking control.
+  - A web site file names its projects under `[access]`: `projects = "all"` or a list of 1 to 32 absolute paths, with `capabilities` and `agent_command`. The old `[project]` table is refused. The files API and `POST api/sessions` now take a `project` id.
+  - The built-in `retro` web theme is removed. A site file with `theme = "retro"`, or a custom theme that extends it, is refused; use `default`.
+  - The web client's Activity panel is removed; the inbox replaces it. A site file that lists `"activity"` under `panels` is refused.
+  - The web theme contract changed with the new page: 60 tokens (`color-raised`, `color-hairline`, `color-faint`, `color-attention`, `color-ansi-0` to `color-ansi-15`, `font-terminal`, `tracking-*`, `size-row`, `size-bar`, `size-rail`, `size-prose` and others are new; the component color, shadow, `color-border`, `color-sunken`, `color-ok` and `color-focus` tokens are gone) and new component hooks. A custom theme must be updated; the server names the first token it refuses. See `docs/web-themes.md`.
+  - `GET api/chat/<session>/history` is replaced by `GET api/chat/<session>/timeline`.
+
+### Features
+
+- Add the hosted web client. `wsx web serve --site <site.toml>` hosts one web site for the projects its site file grants, on a loopback port, for use behind `tailscale serve`. A paired phone or browser can chat with the project's agents, attach files to a prompt, download files the agent produced and see images inline. Optional panels show project files and a live terminal.
+  - One site file per process sets the public origin, optional base path, name, icon, theme, panels, capability bits, media limits and push keys. The file must be owner-only, and unknown fields are refused. A second site, for example a simpler chat for a family member, is the same binary with fewer panels and capability bits.
+  - `wsx web pair` prints a one-time code that pairs one device. The device keeps an `HttpOnly` credential; the server stores only its hash. `wsx web devices` lists and revokes devices. There is no shared token. The server checks the exact `Host` and `Origin`, sends a strict CSP and limits requests per device.
+  - Chat sends through the agent exchange broker and shows the agent's own saved conversation, including Claude's. Terminal output is never read into chat. The page states delivery evidence as it is: a PTY delivery is shown as typed into the terminal, not as accepted by the agent.
+  - A page receives updates over one server-sent event stream and has no polling timer.
+  - Media is stored per site under its SHA-256, with a maximum file size, a total quota with oldest-first eviction, and a time limit. File types are detected from content against an allowlist.
+  - The page is an installable PWA with an offline shell. Web Push is off until a device opts in, per topic: agent needs input, agent finished, agent error. Tapping a notification opens that session.
+  - Styling is a token and component contract. A theme supplies validated tokens and, optionally, component CSS, fonts and icons; the server serves them under content-hash URLs and the CSP stays strict. `default` (light and dark) is built in, and a deployer can supply a theme directory. The PWA manifest colors and icons follow the theme. See `docs/web-themes.md`.
+  - The default deployment is one Tailscale Service hostname per site, served at the root. Every browser URL is relative, so the same build also works at an alt-port root and under a sub-path such as `/app/wsx/`.
+  - The wire protocol stays 16. The web server never starts `wsxd`. See `docs/web-client.md` and `docs/web-deploy.md`. Verified with `scripts/test-web-client.py`; a real push service and a phone are not covered by that script. `scripts/web-real-agent-check.py` runs a real Claude turn and is not part of CI.
+- Make the web client an inbox of agent sessions. The home screen lists sessions by what they need: needs you, running (with the current activity and elapsed time), finished (new ones first), then the rest by project. A session has one top row with a Chat or Terminal switch. A phone has a bottom tab bar (Inbox, Projects, Settings); a wide window has a left column. The chat shows the user's messages as blocks and the agent's text plain, folds tool steps into one line, shows a working row with Stop, and keeps the reader's place with a "Jump to latest" button. The page is Preact and htm, vendored, with no build step. On a phone the page does not zoom on focus or on a double tap.
+- Ship terminal fonts with the web client: JetBrains Mono 2.304 and Symbols Nerd Font Mono 3.4.0. Powerline separators and Nerd Font icons show without an installed font, and operators such as `=>` and `!=` are drawn as ligatures while cells, selection and copied text stay the same. `[terminal] ligatures = false` in the site file turns ligatures off. The terminal's 16 ANSI colors come from the theme.
+- Render the agent's messages in the web chat as markdown: headings, lists, task lists, quotes, tables with a fixed header row, links, and code blocks with a Copy action and colors for 13 languages. A message cannot load a remote resource or add live markup; raw HTML stays text. See `docs/web-client.md` "Markdown".
+- Draw Mermaid diagrams in the web chat. A `mermaid` code block becomes a diagram in the theme's colors; it is scaled down to the message column, and scrolls sideways only when its text would become too small to read; a tap opens it full screen with zoom. The library (1 MB compressed) is downloaded only when the first diagram appears. The page's content security policy is unchanged. A block that does not parse shows its source. See `docs/web-client.md` "Diagrams".
+- Answer a blocked agent from the web chat. With the new `chat_answer` capability the chat shows the dialog the agent drew, with one button per numbered choice and keys for Enter, Esc and the arrows, where the composer was. An answer is bound to the screen it was read from and is refused when the dialog changed. The "needs input" notification opens that sheet. The docs and the example site file start page sessions with `claude --permission-mode auto`, so only the remaining prompts reach the chat. See `docs/web-client.md` "Answering".
+- Queue web chat messages while the agent works: up to five per session, delivered in order when the agent is ready, kept across a restart of the web server. A delivery that wsxd refuses stays in the queue with the reason until it is retried or removed.
+- Show what the agent is doing in the web chat: the timeline now carries tool calls with their outcome and thinking markers from the agent's own saved conversation, for Claude, Pi, omp and Codex. Tool input, tool output and thinking text are not sent.
+- Let one web site reach several projects, or every project wsx manages. Anything outside the grant answers 404.
+- Show the web client dark by default when its theme has a dark scheme. A device can choose light under Settings. The operating system preference is no longer read.
+- Make the web client's terminal panel a real terminal. It is xterm.js on the pane's own byte stream over a WebSocket, with a key row, paste, an arrow drag pad and touch scrolling on phones, Korean and other IME input, and reconnect after a lost connection. A pane still has one controller: the page shows when a wsx window holds the terminal and takes it only on request. *Fit screen* resizes the pane to the browser; *Host size* scales the view instead. The text-snapshot terminal and its `api/terminal` routes are removed. See `docs/web-client.md`.
+- Add a raw terminal stream to wsxd for clients that run their own emulator: a replay of the current screen, then the PTY bytes, with the same single-writer lease as the TUI stream. The wire protocol stays 16: the stream is an added request, announced by the capability `raw_terminal_stream` (daemon revision 23). The TUI's frame stream is unchanged, and an open 0.30 TUI does not defer the daemon upgrade. Against a daemon without the capability the web client's terminal panel says that the daemon must be upgraded; the other panels work. A running `wsx web serve` sends client presence with its poll, so it does not defer the upgrade either. See `docs/terminal-raw-stream.md`.
+
+### Improvements
+
+- Keep wsx windows open through a wsxd upgrade. A window whose installed `wsx` was replaced now re-executes into it in the same terminal, with the same process ID, and returns to the same project, worktree, session and mode, Terminal mode included. It waits while a form, prompt or search is open. When the installed `wsx` cannot start, the window keeps running the old code and says so. A window that follows no longer defers a handoff, even below the target protocol. Daemon revision 25. See `docs/daemon-live-upgrade.md`.
+- Upgrade wsxd before a starting wsx opens. A start that finds an older wsxd with live handoff shows an upgrade screen with both versions, the number of running terminals and the step, instead of the workspace on the old daemon. While another window defers the upgrade it says which window to quit, asks again by itself and opens when the upgrade is done; `Enter` opens on the old wsxd and `q` quits. A handoff that rolls back is detected at once instead of after the 35-second wait, and the window opens on the running daemon with a notice. CLI commands are unchanged.
+- Add `wsx daemon restart [--json]`. It replaces wsxd with the installed build through a live handoff, also when it is the build that is running. Sessions, shells and agents keep running. A wsxd of 0.30.1 or older cannot restart into its own build: the command says so and stops nothing.
+- Make `wsx daemon stop` safe. With running sessions it prints how many would end and that `wsx daemon restart` keeps them; `--force` stops anyway. The help text now says that a stop ends running programs. `--json` reports the result.
+- Say what to do when an upgrade waits. The notice names the window to quit, says that sessions keep running, and says that the upgrade then continues by itself. For a wsxd without live handoff it says that the upgrade will restart the sessions.
+- Make the Terminal title bar readable at a glance. Project, worktree and session each have one look: the project is a filled chip, a worktree is an accent heading on the bar with no chip and no state icon, and a session is a chip that starts with its state icon. A dim rule takes the cell between two worktree groups, so a second worktree name no longer reads as one more session. Widths, order, truncation and overflow counts are unchanged. The project preview marks a worktree that needs attention with that session's own state icon instead of `●`, and the Terminal footer names the session and group keys only while another session or group exists. See `docs/terminal-context.md`.
+- Recover the wsx screen and mouse after the terminal loses its modes. A terminal reset, such as Ghostty's `reset` action, cleared the screen and every mode without telling wsx, and the screen stayed blank until something forced a full draw. After a sleep, mouse capture could be gone, so the wheel scrolled the terminal and a drag selected across the whole window. wsx now writes its modes again and draws a full frame on wake, on focus gained and on resize, and an idle window asks the terminal about once a second and repairs within about a second of a reset. wsx now enables focus reporting and keeps a scroll margin that leaves out the last row; both are restored on quit. A terminal that answers no query is never asked again. See `docs/ui-state-ownership.md`.
+- Treat a finished session as checked when you leave it. Entering a `done` session already cleared it to idle. A session that finished while you were inside it stayed `done` after you went back to the workspace, so `n` offered it again. Leaving Terminal mode, or switching to another session with a prefix key, now acknowledges that exact done report. A later working then done shows `done` again.
+- State the protocol rule: the protocol number changes only when an older client can no longer talk to the new daemon. Additions use `Capabilities` and the daemon revision. wsxd now answers an unknown request on a mismatched connection with an error instead of closing the connection.
+
+### Bug Fixes
+
+- See a Claude permission dialog in a fresh session, and for a file. wsxd read only the last 12 rows of the screen, so a new Claude in a tall pane was never reported as "needs input", and it knew only "Do you want to proceed?", not "Do you want to create ...?". Daemon revision 26.
+- End an exchange when its turn was interrupted. After Escape in the agent's terminal, or a denied dialog, the exchange stayed active until its deadline and every later request to that pane waited. It now becomes `interrupted` when the agent is idle again. See `docs/agent-orchestration.md`.
+- Stop an agent turn with the provider's own interrupt. `wsx agent cancel` and the web client's Stop now send Escape to Claude, Pi and omp; Ctrl+C did not stop a working Pi, and in Claude its second press quits. An exchange no longer stays in `cancel_requested` after a working Claude was stopped: wsxd now re-reads Claude's screen after the interrupt and settles the exchange from it. Daemon revision 24. See `docs/agent-orchestration.md`.
+- Deliver a request to a freshly started Claude. Its empty editor shows a dimmed suggestion (`Try "..."`), which wsxd refused as a possible draft, so the first message to a new Claude session failed with `editor_unavailable`. The dimmed line now counts as empty.
+- Start a new exchange for the first web chat message after a stop. The web client tried to continue the cancelled exchange, which wsxd refuses.
+
+### Packaging and verification
+
+- Add `scripts/test-web-client.py`: one journey against an isolated wsxd and real web servers, with headless Chrome under `--browser`. `scripts/web-real-agent-check.py` checks a real Claude turn, a permission dialog and a question; it is run by hand.
+- Vendor the browser files with pinned versions and checksums: `scripts/vendor-preact.sh`, `vendor-xterm.sh`, `vendor-fonts.sh`, `vendor-markdown.sh` and `vendor-mermaid.sh`. `THIRD-PARTY-NOTICES.md` lists them with their license texts.
+- Extend `scripts/runtime-smoke.py`, `scripts/test-terminal-context.py` and `scripts/test-ui-state.py` for the raw terminal stream, the upgrade screen, a released-build upgrade, daemon restart, the TUI re-exec and the terminal mode repair.
+- Keep routine test socket paths below the macOS path limit in a long worktree path. `AGENTS.md` and `CLAUDE.md` describe the web crate, the sandboxed Zig build and one in-process test flake.
+
+## [0.30.1] - 2026-10-12
+
+### Breaking Changes
+
+- Rust callers that construct `TuiClientPresence` must provide its new `max_protocol` field. Older JSON without the field decodes as a legacy TUI.
+
+### Improvements
+
+- Make the CLI easier for an agent to drive. `wsx worktree create --from <ref>` starts the branch from a chosen commit, tag or branch instead of the default branch. A branch that already exists is checked out instead of failing, and a git failure now shows git's own error instead of only the exit status. `wsx worktree create --json` prints the worktree path, branch, project, session ID and pane ID. `wsx session current [--json]` reports the calling pane from `WSX_PANE_ID` with its session, project, worktree and agent status, without starting wsxd. Commands called with `--json` no longer print the runtime notice on stderr, and other commands print it on one line.
+- Upgrade wsxd while wsx windows stay open. A TUI now tells the daemon the newest protocol it can reconnect to, and a live handoff no longer waits for such a TUI to quit. The daemon marks the whole transition, so attached windows wait for the successor without an error notice and without starting a competing daemon. A window in Terminal mode reattaches to the same PTY and keeps its screen; keys typed during the reattach are dropped. Older TUIs, and any TUI older than the target protocol, still defer the handoff until they quit. The running daemon applies its own rule, so this takes effect from the upgrade after this one. Daemon revision 22. See `docs/daemon-live-upgrade.md`.
+- Retain successful and failed Claude and Codex inspection records in an owner-only bounded journal. The shared helper reads only validated metadata, refuses symlinks and unsafe files, retains at most 32 records/64 KiB, and never changes the original reporting result. Claude integration is 21; Codex is 15. Source-verified 0.29.3 reporter observations support existing sessions without restarting them.
+- Add opt-in Claude and Codex diagnostics with bounded hook, reporter and daemon version observations, report error codes and environment-marker presence. A private hook-directory marker also enables diagnostics for existing sessions that call the refreshed hook. Agent launch version and startup environment remain unknown; installing files alone does not prove that old sessions loaded them.
+- Preserve default hook output, report-once behavior, generation fences and transcript settings. These diagnostics do not fix or verify the reported Claude Stop-hook, Codex hook-exit, prompt-submission or transcript-saving failures. See `docs/claude-inspection.md` for installation and existing-session instructions.
+
+### Bug Fixes
+
+- Stop a live daemon handoff from writing the visible screen twice. The keyboard-state transfer also carried the screen text, so the last lines of a shell session appeared doubled after an upgrade.
+
+- Stop a terminal session from staying blank after an interrupted program. A program that enables synchronized output (mode 2026) and is ended by Ctrl+C before it releases the mode no longer hides all later output: the mode now expires after one second, as in Ghostty. Daemon revision 21 records this runtime-owned repair; the fix reaches a session after its daemon upgrades. See `docs/terminal-synchronized-output.md`.
+- Keep a resumed agent pane alive when a repeated Ctrl+C arrives after the agent has ended and before its fallback shell starts. The resume supervisor now ignores interactive signals until the shell replaces it.
+
+### Packaging and verification
+
+- Resolve release-workflow validation against the validator's own checkout, so running it from another directory cannot inspect an unrelated workflow.
+- Promote the two source-only inspection increments to stable 0.30.1, with matching workspace versions and exact internal pins; registry dependency versions remain unchanged. Installed-hook reporting/journal integration coverage includes both providers, current and released reporters, successful and rejected reports, privacy bounds, malformed records, unsafe paths, generation fencing and private-runtime cleanup.
+
+## [0.30.0] - 2026-10-08
+
+### Breaking Changes
+
+- Rust callers that construct `AgentExchange` must provide its new optional `delivery_sha256` and `native_input_id` fields. `Capabilities` construction also needs `agent_exchange_bound_receipts`. Older JSON without these fields still decodes as no native input binding or support.
+
+### Fixes
+
+- Keep an accepted native request active when the pane reports DoneObserved. Daemon revision 20 preserves its one-active-exchange fence, writer claims, expiry and cold-recovery interruption until a request-bound result or explicit terminal failure. Legacy unbound observations remain compatible.
+- Enforce an active exchange's deadline when a native receipt arrives, even without a preceding read probe. Daemon revision 19 records expiry before refusing the late receipt.
+
+### Improvements
+
+- Connect Pi's native input and expanded prompt to guarded receipts when the loaded observer, Projp Goal Run owner and daemon bound-receipt support are available. Hold completion through automatic Task continuations and compatible steering; withhold it after abort, error, Task/session/runtime replacement or disposal. Other installations stay lifecycle-only. Deterministic SDK fixtures are not a real-model orchestration trial.
+- Add guarded native receipt submission with exact pane, live runtime, round and delivery digest checks. Bind completion to a prior accepted native input ID; reject overdue DoneObserved completion and legacy receipt bypass after binding. Older daemons refuse the distinct request instead of silently dropping its guards.
+- Bind each successful exchange delivery round to the SHA-256 of its exact terminal input without persisting prompt text in receipts. Clear the binding before continuation and on failed delivery; legacy responses remain unbound. Native adapter correlation and completion remain separate requirements.
+- Add machine-facing `agent exchange-receipt` submission through the existing generation/round/capability-bound daemon contract. Require the injected generation and an existing daemon; do not bootstrap, retry, infer completion from lifecycle or enable an unconnected provider adapter.
+- Add scoped `wsx agent context --metadata-only` discovery with bounded identities and advisory readiness, without reading native transcripts. Default native-history projection remains available.
+- Generate portable shell-hook configuration from provider root environment variables and `HOME`, using the same root declaration as installation. Migrate owned legacy bindings from another device while retaining unrelated hooks and compound commands. Preserve quoted paths, stdin and repeated-install behavior. Install integration assets separately on each device; already-running agent environments are unchanged.
+
+### Documentation
+
+- Update both READMEs for metadata-first discovery and conditional native Pi completion. State that arbitrary-provider submission, structured questions and the reported Claude handoff repair remain outside the verified increment.
+
+## [0.29.3] - 2026-10-06
+
+### Fixes
+
+- Preserve final Unix PTY output and clipboard effects before announcing natural pane exit. Let the reader publish exit after draining; the child waiter still reaps and cleans up the process group. Daemon revision 18 records this runtime repair.
+- Wait through routine scheduler retirement replies and read-only probe disconnects before starting the adjacent replacement. Observe the existing singleton lock without creating or removing it, refuse replacement when its path disappears, and bound polling and trickled response reads by the startup deadline. Never replay a mutation or shutdown after uncertain delivery. Validation, malformed responses and unsupported protocols still fail closed.
+- Show terminal context as project and worktree background groups with `›`, stable session order and a brighter current session. Preserve provider identity, Unicode width, overflow counts and the complete terminal viewport.
+- Count Workspace search matches inside folded projects, worktrees and routine headers without unfolding them. Highlight visible text matches, underline folded ancestors and show logical counts. Respect the selected group and clear feedback when search ends.
+
+### Navigation
+
+- Make `Prefix+h/l` the primary previous/next session keys. Keep `j/k` and arrow aliases, bare terminal input and attention navigation. An explicitly configured h/l Workspace escape suffix takes precedence.
+
+### Verification
+
+- Run native routine retirement, held-lock and trickled-response timeouts, missing-lock refusal, genuine-error and no-replay CLI scenarios on both CI platforms. Local macOS scenarios and the real wide/mobile TUI journey passed. Publication requires passing branch CI on Linux and macOS for the exact release commit.
+
+## [0.29.2] - 2026-10-05
+
+### Fixes
+
+- Use padded backgrounds instead of literal brackets around terminal title session chips. Keep the current session brighter and bold, with quiet backgrounds for neighbors. Preserve provider labels, Unicode truncation, overflow counts, navigation and terminal dimensions.
+
+### Release verification
+
+- Pour generated bottles through trusted formula metadata and checksum-verified Homebrew cache bytes, retaining the existing native receipt/test/version/architecture gates without bypassing package-path policy.
+- Make the synthetic legacy scheduler retire explicitly after a read-only status probe, with bounded fixture I/O. This removes its connection-reset race during CI without changing runtime behavior or claiming abrupt production shutdown resilience.
+
+### Documentation
+
+- Clarify the background-only chip contract and retain candidate verification, viewport/navigation checks and release-boundary limitations.
+
+### Known limitations
+
+- Existing Codex identity and already-loaded integration recovery still need provider-specific verification or a supported reload. This presentation-only patch does not change daemon revision or force a live daemon restart.
+
+## [0.29.1] - 2026-10-05
+
+### Fixes
+
+- Recover removed versioned agent reporters through a validated current CLI when an older daemon cannot publish its stable entry or that entry points to a removed keg. Retain generation checks, reject unsafe entries, and never retry a delivered or rejected report. Already-loaded older integrations still require their provider's reload or restart mechanism.
+- Reserve session-row width for reported provider identity before truncating long names or showing ports.
+- Prevent live Working agents and ordinary foreground jobs from causing inactivity collapse or displaying `stale`. Preserve manual folding, stored collapse provenance, and trusted activity-credit rules.
+- Compact folded project/worktree activity badges to the state indicator and active-session count, without repeating the word `active`.
+
+### Navigation
+
+- Use one `Prefix+j/k` (or Down/Up) cycle across the current project's sessions in stable Workspace order. Remove duplicate `Prefix+h/l` and Left/Right cycle bindings and release `h/l` as custom Workspace escape suffixes. Attention jumps and bare terminal input are unchanged.
+- Replace the spread-out title with a project prefix and highlighted current worktree/session chip in a sliding session preview. Preserve provider identity, cross-worktree attribution, hidden counts and tiny-view position without changing the terminal rectangle.
+
+### Release verification
+
+- Pour each generated Homebrew bottle on its native CI runner before uploading it. Require Homebrew's poured receipt, formula tests, the exact CLI version and both universal companion architectures.
+
+### Known limitations
+
+- The missing identity of one already-running Codex session remains under separate investigation. Current hook discovery reports trusted handlers, but does not expose that session's cached authorization. This release fixes removed-reporter ENOENT recovery, not every cause of missing agent identity. See [Codex reporting follow-up](https://github.com/vlwkaos/wsx/blob/v0.29.1/docs/codex-reporting-followup.md).
+
+### Documentation
+
+- Require exact ownership records, retained results and verified removal when cleaning up task-created orchestration sessions. User-owned sessions are never removed based on `done` state alone.
+
+## [0.29.0] - 2026-10-03
+
+### Breaking Changes
+
+- Replace `WorkspaceCacheSnapshot`/`save_cache` with `WorkspaceCacheChanges`; `AppliedCache` gains saved worktree expansion. Rust callers must update cache APIs and tuple destructuring. `AgentSessionRef` gains optional `transcript_path`; use constructors or initialize that field. Legacy JSON still decodes.
+- Reserve `h` and `l` as Terminal prefix suffixes. Custom Workspace escape bindings using those keys must change.
+
+### Features
+
+- Add a colored terminal context bar with the current session, attention-ranked same-project peers, cross-worktree attribution and overflow. Prefix+h/l and Prefix+Left/Right cycle the full ranked ring, including folded worktrees. Existing attention and sibling navigation stay unchanged. Worktree preview ports appear on their owning session rows rather than in terminal titles.
+- Add `wsx agent context [target] --json` for exact target discovery, project/worktree metadata, advisory readiness, and bounded provider-native Claude, Pi/OMP and Codex history. Missing, unreadable, unsupported and ambiguous history is explicit; tools and reasoning stay excluded.
+- Add opt-in `--stash-draft` to Claude request/continuation. Preserve an idle multiline draft with the documented stash binding and require fresh empty editor evidence before delivery. Intent stays persisted when preparation or PTY delivery fails; protocol 16 is unchanged and separate request variants fail closed on older daemons.
+- Show dominant descendant status and an active-session count on folded project/worktree rows, including unfocused panes, without changing runtime authority or stale provenance.
+
+### Bug Fixes
+
+- Publish an upgrade-stable daemon-owned reporter link after ownership commits. Recover removed legacy reporter paths in updated adapters without replaying rejected reports. Accept integration updates and restart agents to load the recovery; live shells and PTYs stay running.
+- Release daemon state while waiting for a draft-stash ACK so fragmented PTY frames can finish in both initial and continued exchanges. Keep mutation and pane-operation fences.
+- Pin `anyhow` to `1.0.103`, which fixes the `Error::downcast_mut` unsoundness reported by RUSTSEC-2026-0190.
+- Observe foreground jobs promptly without inferring provider identity. Reject stale runtime scans, preserve event-reported Working until an interrupt has fresh terminal evidence, remove inherited Claude child-session markers from fresh panes, and report bounded shell-hook failures.
+- Keep exact pane lifecycle callbacks and context reads from starting or replacing a missing daemon. Preserve same-session transcript paths and refuse stale-generation updates.
+- Persist per-key UI intent under a bounded lock instead of complete window snapshots. Fence stale collapse, merge adaptive activity against durable state, preserve removals and revision acknowledgements, and load asynchronous worktree expansion once. Import the v2 cache into v3 without rewriting predecessors or allowing old writers to overwrite v3.
+- Keep terminal modes owned by the TUI thread. Restore them after startup/partial-init failures, owner panics and failed external editors; worker panics return bounded notices instead of changing terminal modes. Retain a private bounded metadata journal, never terminal contents.
+
+### Maintenance
+
+- Prepare the isolated non-web 0.29.0 workspace/pins/lock metadata, update integration version markers, add reporter and fragmented-PTY regressions, and repair isolated fixture setup. Preserve web, bridge and structured-conversation work for 0.30.0.
+
+## [0.28.2] - 2026-09-24
+
+### Bug Fixes
+
+- Complete deferred live daemon upgrades from protocol 11 through 15 without replacing live PTYs. Same-target retries remain idempotent, and a newer release can convert an older pending cold replacement into a live handoff; same-version different builds and newer pending targets remain protected. `wsx runtime status` now shows legacy lifecycle details for incompatible daemons.
+- Clear stale agent labels and Working indicators when a resident Pi or OMP adapter stops renewing its pane-bound presence for 30 seconds. Renewals do not write persisted state; expiry retains resume metadata. Hook-only and server-global integrations continue using lifecycle events and `wsx agent detach` rather than an unsafe idle timeout.
+
+### Maintenance
+
+- Prepare exact 0.28.2 workspace version pins and document path-sensitive rebuilds and binary overrides for isolated release checks.
+
+## [0.28.1] - 2026-09-22
+
+### Bug Fixes
+
+- Replace legacy standalone routine schedulers automatically by advancing the routine protocol for the `wsxd` ownership boundary. This closes the `0.26.2` to `0.27.0` migration gap where both processes advertised protocol 3 and the obsolete scheduler was reused indefinitely.
+- Keep runtime lifecycle changes readable. TUI notices now queue bounded bursts for a two-second minimum, report successful or deferred daemon upgrades with blocker details, and retain the first disconnect message through a fast reconnect.
+- Report daemon state truthfully from `wsx runtime status`: stopped, unavailable, incompatible but running, upgrade available, replacement deferred, or ready, with client and daemon version, protocol, and revision evidence when available.
+
+## [0.28.0] - 2026-09-22
+
+### Features
+
+- Reorder worktrees within a project with the existing `m` then `j/k` Workspace flow. The order persists by stable worktree path across refreshes and restarts, while newly discovered worktrees remain visible.
+- Temporarily expand a compact desktop sidebar while Terminal waits for the key after its prefix, without leaving Terminal mode. The behavior defaults on, can be disabled in Global Settings or with `terminal_prefix_shows_sidebar = false`, and preserves the existing persistent Prefix+B sidebar toggle.
+
+### Bug Fixes
+
+- Stop unrelated Pi post-answer maintenance from leaving completed sessions marked Working. Pi integration version 16 binds delayed completion to the exact agent run, lets a real continuation supersede it, and retries transient lifecycle-report failures instead of silently retaining stale state.
+- Stop exited or explicitly detached agents from retaining a live provider indication. Runtime exit now detaches preserved resume identity, while `wsx agent detach` provides an exact generation-bound repair when an agent misses its shutdown event but leaves the managed shell running.
+- Keep Korean, CJK, emoji, and other width-2 terminal glyphs inside the terminal viewport when a sidebar or resize crops away their spacer cell, instead of allowing the orphaned glyph to wrap into the next screen row.
+
+### Maintenance
+
+- Prepare the 0.28.0 workspace versions and exact internal dependency pins for tag-driven publication.
+- Keep vendored scheduler startup-descriptor contract tests with the `asched-core` validator they cover so the excluded scheduler suite compiles and runs in release validation.
+
+## [0.27.0] - 2026-09-21
+
+### Features
+
+- Replace the single automatic-collapse timeout with typed disabled, flat, and adaptive policies. New configurations start with a 24-hour adaptive window, gain one bounded 12-hour credit on the first trusted activity of each UTC day, persist earned windows by project, reset after expiry, and cap at 28 days. Existing numeric values retain fixed-window behavior, with zero mapped to disabled.
+- Finish Workspace filtering when Enter confirms the sole search result, while retaining Enter-based cycling when several results match.
+- Prompt at TUI startup before updating installed agent integrations whose embedded version is outdated. Missing integrations remain demand-driven, and declined updates prompt again on the next launch.
+- Add provider-neutral, runtime-generation-bound agent exchanges with durable delivery receipts, lifecycle-observed state, bounded terminal-frame fallback, multi-round continuation, cancellation requests, and non-overlapping writer claims. Pi, Claude, Codex, OpenCode, Hermes, and future terminal agents share the same wsx contract; optional native adapters may strengthen evidence without changing commands.
+
+### Bug Fixes
+
+- Keep macOS wake mode active through long Claude responses with an asynchronous five-minute heartbeat bound to the exact prompt and runtime generation. Completed, blocked, failed, detached, replaced, and superseded turns revoke old heartbeat authority instead of letting stale helpers prevent sleep.
+- Revive an exited session pane instead of leaving a listed but hollow session after Ctrl+C or an agent crash. `wsx session restart` restarts the exact exited pane with its saved command or persisted native agent session, accepts only an exited pane at the caller's expected revision, fences the dead pane's old stream, and leaves the pane unchanged when a start fails. An exited pane also stops reporting a live foreground job or listener, and generation-bound callbacks prevent a replaced or abandoned runtime from publishing change or exit observations for a pane it no longer owns.
+- Run routine scheduling through the shipped adjacent `wsxd` binary instead of trying to launch an unshipped standalone `asched` executable during periodic refreshes. A newer client now safely stops an older internal scheduler with that scheduler's protocol before starting the adjacent replacement, while refusing to downgrade a newer scheduler.
+- Clear a project's persisted `stale` marker on the first explicit interaction, including expanding the project or entering one of its sessions, instead of requiring a later manual collapse.
+- Reconcile known Claude sessions with bounded OSC title and live prompt evidence so immediate Escape or Ctrl+C interruption cannot leave a delayed lifecycle hook active. Preserve event-reported completion and errors, ignore ambiguous terminal text, and keep heuristic working state outside wake-mode authority.
+- Start cold recovery only after lifecycle reporting is available, restore ordinary shells first, and load lifecycle-capable resumable agents one at a time so several large Claude histories do not compete for startup memory. Keep pending identity detached until the resumed runtime reports its generation, and continue safely after failure, timeout, deletion, or shutdown.
+- Restore live-handoff terminal histories with bounded parallel workers so protocol-15 daemons can transfer a full 43-pane cohort within the legacy readiness window without changing PTYs or process IDs.
+
+### Maintenance
+
+- Prepare the 0.27.0 workspace pins and locked package metadata, align runtime smoke and latency harnesses with protocol 16, keep generated Task Context sessions out of the release tree, and add evaluated operating guidance for provider-neutral agent exchanges.
+
+## [0.26.2] - 2026-09-13
+
+### Bug Fixes
+
+- Bridge live daemon handoff from affected protocol-15 daemons whose cross-version executable check used the source daemon's version, preserving live PTYs while allowing lifecycle reports and runtime refreshes to reach the successor.
+- Persist `stale` as the cause of the last automatic project collapse, retain it through restart and expansion, clear it after a manual project collapse, and recover the identifiable `0.26.1` migration cohort.
+
+## [0.26.1] - 2026-09-13
+
+### Bug Fixes
+
+- Preserve each project's expanded or collapsed state across restarts until the configured inactivity period expires, and reset that period when the user interacts with the project.
+
+### Maintenance
+
+- Document the managed-terminal marker required when running isolated outer-TUI smoke probes from a wsx session.
+- Set workspace package versions and exact internal dependency pins to `0.26.1`.
+
+## [0.26.0] - 2026-09-12
+
+### Features
+
+- Add standalone session creation and deletion to the CLI, with cwd and sole-target inference, explicit project/worktree scoping, reusable session IDs, and JSON output for low-turn agent control.
+
+### Bug Fixes
+
+- Report the session created with a worktree as `session:` instead of incorrectly labeling its ID as a pane.
+- Collapse projects without an available session instead of treating missing activity timestamps as permanently fresh.
+- Hide agent identity after a teardown-capable integration exits back to the shell while retaining native conversation metadata for recovery.
+
+- Clear stale Claude working state when Workspace sends Ctrl+C, matching Terminal Escape interruption while preserving newer lifecycle reports.
+- Prevent embedded full-screen applications from scrolling the outer wsx display when dense frames reach the physical bottom-right terminal cell.
+- Keep drag selection aligned with terminal history by forwarding captured vertical boundary motion and driving Ghostty viewport autoscroll with synchronized selection ticks.
+
+### Maintenance
+
+- Make cold-recovery integration assertions wait for daemon readiness before reading the persisted startup state.
+- Add evaluated agent-development guidance for low-turn wsx session control, refresh bundled release and reader-briefing workflows, let release audits continue on proven non-secret scanner matches, and link runtime ownership boundaries to canonical knowledge.
+
+## [0.25.0] - 2026-09-10
+
+### Breaking Changes
+
+- Retire the unused wsxd-owned structured Pi RPC conversation API while preserving terminal-hosted Pi lifecycle reporting and native session identity.
+
+### Improvements
+
+- Replace restart-based wsxd upgrades with transactional Unix live handoff. Running shells, terminal agents, foreground jobs, and listening servers keep their PTYs and process IDs while the successor reconstructs functional terminal state.
+- Keep protocol-11 through protocol-14 daemons usable during the one-time transition to handoff-capable wsxd, preserving workspace sessions, activity timestamps, and stale-project folding until safe replacement.
+- Keep routine daemon reuse, deferred replacement, handoff, and cold restoration silent in the TUI. Opening wsx continues to show the existing workspace while only incompatible newer-daemon action remains visible.
+- Prioritize Blocked sessions when `N` or `Shift+N` navigates attention by default, with a typed Global Settings choice to restore Workspace order. Group navigation remains unchanged.
+
+### Compatibility
+
+- Protocol 15 adds bounded live-handoff registration and capability negotiation. The old daemon retains ownership until the successor imports PTY descriptors, binds the canonical socket, and reports ready; pre-commit failure resumes the old daemon.
+
+### Maintenance
+
+- Exclude repository-local `.work` test scratch at every package depth so CI package verification remains clean after the test suite.
+- Wake pausable PTY readers through a control descriptor instead of periodic polling, avoiding platform-specific rewrite latency during live-handoff-capable operation.
+
+## [0.24.0] - 2026-09-09
+
+### Features
+
+- Add a versioned executable worktree-review API and an external read-only Git provider.
+- Enter Local file review with Tab without changing tree expansion keys. Inspect unified diffs, navigate hunks, and refresh changed snapshots without replacing the text being read.
+- Preserve the existing preview style and metadata where space permits. Review stays outside the live agent terminal.
+- Add a bounded wsxd-owned structured conversation API for Pi RPC, including typed events, interactions, command discovery, persistence, and native session restoration.
+- Add prefixed Terminal group navigation that selects the first session needing attention, then an idle agent fallback, without leaving the current terminal when no target qualifies.
+- Transfer writable terminal control to the latest explicit wsx instance while generation-fencing the displaced stream and returning it to Workspace with a concise notice.
+
+### Compatibility
+
+- Protocol 13 adds worktree review requests, cancellation, and provider availability. Existing event-only and passive-sidecar manifests remain valid, and stale sidecar responses cannot replace a newer view.
+- Protocol 14 adds structured conversation requests, events, capabilities, and restart restoration. Attachments and model selection remain explicitly unsupported.
+
+### Maintenance
+
+- Keep runtime smoke and terminal latency clients synchronized with protocol 14.
+
+## [0.23.0] - 2026-09-08
+
+### Features
+
+- Add project-configured worktree branch prefixes and optional default shell sessions with startup commands.
+- Extend trusted executable plugins with one versioned, bounded Terminal sidecar contribution while keeping layout, styling, PTY geometry, and input ownership inside wsx.
+- Reorder worktree preview details into branch, path, sessions, remote, commits, nested sources, and local changes, with local files using the remaining visible height.
+
+### Compatibility
+
+- Preserve event-only version 1 plugin manifests through additive sidecar defaults, and reject malformed, oversized, timed-out, or stale plugin views without replacing the last valid snapshot.
+
+### Maintenance
+
+- Keep terminal-stream test sockets portable in long linked-worktree paths.
+
+## [0.22.3] - 2026-09-08
+
+### Improvements
+
+- Reuse wsxd across UI-only wsx releases, and defer required daemon replacement while an agent works, a foreground job runs, or a local server listens.
+- Show deferred daemon replacement only once at TUI startup, then report completed replacement immediately after reconnect or on the next startup with a warning that terminal sessions restarted from saved commands.
+- Clear Claude working state when its session ends, keep rate limits blocked rather than active, and retry one transient release lookup without adding periodic update notifications.
+- Keep session mutation revisions separate from focused-pane lifecycle revisions so newly created agent sessions can be reordered immediately.
+- Keep release validation and Unix socket tests compatible with macOS system constraints.
+
+## [0.22.2] - 2026-09-07
+
+### Features
+
+- Place the full terminal breadcrumb below terminal content by default in Workspace previews and Terminal mode, with a typed setting to restore top placement.
+
+### Bug Fixes
+
+- Preserve cached project expansion when a legacy daemon cannot provide authoritative activity timestamps, while continuing to auto-collapse projects with known stale activity.
+- Tell users to stop a legacy daemon explicitly when its persistent terminal runtimes prevent automatic replacement, and explain that saved sessions restart on the next launch.
+- Synchronize clipboard-before-exit runtime smoke after terminal subscription instead of relying on a fixed child-process delay.
+
+## [0.22.1] - 2026-09-07
+
+### Bug Fixes
+
+- Retry project discovery and daemon synchronization once when session creation races a worktree refresh, while preserving the existing refusal for genuinely absent worktrees.
+- Set Claude turns stopped by rate limits to blocked and other terminal API failures to error, and invalidate stale working state after Claude's adapter-declared Esc interruption without restoring the unpaired permission-request state.
+- Clarify that an exited older TUI's replacement presence expires within three seconds while working agents remain explicit upgrade blockers.
+- Harden Homebrew recovery by validating its job graph and trust ordering, isolating source checksums from prior bottles, and publishing bottle tarballs under the canonical filenames declared by Homebrew metadata.
+
+### Maintenance
+
+- Keep daemon replacement tests independent of the current package version and document exact CLI test-filter discovery.
+
+## [0.22.0] - 2026-09-07
+
+### Features
+
+- Add documented one-shot agent templates to routine creation while keeping generated argv visible and editable; Custom starts with an empty command.
+- Add a selectable agent-integration manager under Global Settings and offer setup only after explicit agent-template use. Per-agent declines remain suppressed until manual installation.
+- Report authoritative Codex lifecycle state through non-destructive hooks for idle, working, blocked, done, and interrupted turns when Codex 0.150.0 or newer is available.
+
+### Bug Fixes
+
+- Keep approved Claude tool execution working instead of leaving it blocked after an interactive permission request; adapter upgrades remove only the stale wsx-owned permission hook.
+- Reduce foreground Terminal polling and daemon presentation cadence from 8 ms to 4 ms, and measure added p95 over 100 samples so shared-runner outliers do not decide the existing 16.7 ms performance gate.
+
+### Documentation
+
+- Condense the English and Korean READMEs and present the product tour as parallel screenshot tables.
+
+## [0.21.0] - 2026-09-06
+
+### Breaking Changes
+
+- Remove the Workspace `c` clean command because merged worktrees could still contain uncommitted or untracked files that its forced removal discarded; use confirmed `d` deletion instead.
+- Reserve `a` and `i` as two-chord Terminal command suffixes; configurations using either as the Workspace-focus suffix must choose another key.
+
+### Features
+
+- Add prefixed next/previous idle and active session iteration in Terminal mode while preserving unprefixed PTY input.
+
+### Bug Fixes
+
+- Reject nested TUI startup inside wsx-managed terminals with an actionable error while keeping explicit CLI subcommands available.
+- Limit startup integration prompts to detected agent executables and return explicitly aborted Pi turns to idle instead of marking them done.
+- Keep Pi sessions working across automatic continuations by reconciling deferred settlement with Pi's authoritative idle state.
+- Report standard blocking Pi extension dialogs as blocked without requiring extension-specific wsx integration.
+- Re-prompt for detected agent integrations when their expected adapter versions change, even within the same wsx development version.
+- Let protocol-compatible wsx versions share one daemon without downgrades. Version and build-aware TUI presence now blocks migration only while another TUI build or a fresh authoritative `working` agent remains; newer targets supersede stale queued builds, idle PTYs restore from saved recipes, and legacy replacement conflicts keep the workspace snapshot visible with an actionable notice.
+- Keep the host-and-user-owned wsxd, terminal buffers, and agent processes alive across SSH disconnects and later same-user logins instead of cold-resuming conversations in replacement PTYs.
+- Let an immediately exiting recovered agent wait for wsxd startup publication before it clears its generation and opens the configured fallback shell.
+- Persist project, worktree, and routine expansion changes before the next input wait so abrupt TUI loss restores the complete Workspace tree state.
+
+### Documentation
+
+- Add a bilingual current-product tour with six privacy-safe screenshots covering Workspace, session iteration, groups, Terminal panes, routines, and settings.
+
+### Maintenance
+
+- Add project-local headless terminal, capture, GitHub, and manual release workflow guidance.
+- Keep terminal latency smoke isolated from an outer wsx-managed terminal.
+- Separate branch-only CI from stable tag publication, with pinned Rust, Zig, and Nextest setup, universal adjacent binaries, checksum and bottle verification, OIDC `wsx-core` publishing, and a validated two-binary Homebrew update.
+
+## [0.20.0] - 2026-09-03
+
+### Breaking Changes
+
+- Replace the interim Herdr runtime with wsx-owned `wsxd`, `wsx-terminal`, typed project/session/pane APIs, and pinned `libghostty-vt`. Existing external-runtime sessions are not imported.
+- Replace foreground attach and captured previews with a writable semantic terminal viewport and Workspace/Terminal modes. The default configurable focus sequence is `Ctrl+A`, then `W`; double the prefix to send it literally.
+- Change `SessionInfo` to wsx `SessionId`, `PaneId`, and `TerminalId` identities with normalized `AgentState`, pane layouts, and subordinate pane projections.
+- Replace `wsx herdr status` with side-effect-free `wsx runtime status` and replace `WSX_HERDR_BIN` with `WSX_DAEMON_BIN`.
+- Bump the local wsxd protocol to version 11. Version 2 introduced mandatory same-connection handshakes and persistent terminal streams; version 3 added authoritative cell-width occupancy and initial viewport dimensions; version 4 added ephemeral pane listener metadata; version 5 added private restart launch recipes and bounded initial commands; version 6 added persisted project activity and terminal-entry timestamps; version 7 added typed native agent-session references and restoration capability; version 8 added daemon-owned session reordering and ephemeral clipboard-write delivery; version 9 added ephemeral PTY foreground-job metadata; version 10 added controller-local terminal selection ranges and pointer-boundary metadata; version 11 binds agent mutations to the current runtime generation.
+- Replace tab commands, flags, config, cache, and single-membership behavior with canonical multi-group selection. Stored tab data migrates once; legacy CLI surfaces are removed.
+- Reserve suffixes `b`, `j`, `k`, `n`, and `q` in two-chord `terminal_escape_chord` values for Terminal commands. Existing configurations that used one of these suffixes to focus Workspace must choose another suffix; single-chord focus configurations remain unchanged.
+- Move 0.20 global configuration and UI cache state to `config-v2.toml` and `workspace-v2.toml`. First launch imports legacy tabs/groups and active-tab cache data once without modifying the old files, preventing wsx 0.17 from erasing 0.20 fields.
+
+### Features
+
+- Add a persistent same-user daemon that owns PTYs, Ghostty terminal state, revisions, bounded snapshots/events, writable leases, persistence, pane mutations, normalized agent reports, and executable plugins.
+- Add secure wsx-owned integrations for the 17 agent targets supported by the former Herdr runtime, with `wsx agent install <target>`, a version-scoped TUI startup prompt for detected missing integrations, authoritative lifecycle state for Pi, OMP, Claude, Kimi, OpenCode, Kilo, and MastraCode, honest identity-only reporting elsewhere, stable pane identity from wsxd, parenthesized session identity such as `(pi)`, and typed native session references for cold conversation restoration.
+- Add semantic keyboard and mouse encoding against authoritative terminal modes, styled cell frames, application-requested cursor shape, viewport resize, explicit lease takeover, and pane split/focus/close operations.
+- Add Ghostty-authoritative terminal text selection with drag copy, word selection on double-click, line selection on triple-click, Shift override for mouse-reporting applications, semantic frame highlights, ordered clipboard effects, and cleanup across viewport, geometry, screen, stream, and exact lease-generation boundaries.
+- Add confirmed Workspace `Q` hard quit, `wsx daemon stop`, and explicit crash-budget override `wsx daemon recover`; graceful shutdown recreates saved session commands on the next launch.
+- Show sessions directly below worktrees and optional pane rows below multi-pane sessions; use state icons plus authoritative agent names and aggregate automatically detected TCP listeners into sessions and worktrees. Ordinary shells with a distinct PTY foreground job show a static light-green `●`, authoritative working agents pulse light-green `◎ ◉ ● ◉`, idle agents show yellow `○`, blocked agents show red `◐`, and completed agents show green `✓` until explicit interaction acknowledges that report revision, without conflating process activity and agent lifecycle. App notices now share a configurable positive `notification_timeout_seconds` value, including error notices, while runtime-health banners remain state-driven.
+- Add a responsive categorized global settings view with typed toggle, single-choice, validated keybinding, number, text, and editable multi-list controls. Configure the terminal prefix through separate modifier and key rows, footer release visibility, a compact or expanded desktop Terminal sidebar, and session port visibility as hidden, non-agentic only (default), or all while keeping branch-detail ports authoritative and visible.
+- Add default-on macOS wake mode with a footer `☕` indicator. Generation-authorized Working reports hold continuously renewed, ten-minute `caffeinate` assertions while adapter heartbeats, a 30-minute freshness lease, fixed command arguments, retry throttling, and child reaping prevent stale or orphaned assertions from running indefinitely.
+- Collapse the desktop Terminal sidebar to a two-column mirrored status rail by default, preserving authoritative session-state glyphs, row selection, scrolling, click targets, and full-width mobile Terminal behavior; retain the previous 32-column tree through `terminal_sidebar = "expanded"`, and toggle modes for the current TUI run with `Prefix+B` without rewriting config.
+- Switch directly between current-worktree sibling sessions with `Prefix+k`/`Prefix+Up` and `Prefix+j`/`Prefix+Down`, or iterate active-group attention sessions with `Prefix+N` and `Prefix+n`, while preserving the exact resized-baseline gate before target input. Keep lowercase, case-accurate prefix commands visible in the Terminal footer, accent the prefix hint while the sequence is pending, and expose Escape cancellation without forwarding the sequence.
+- Add multi-membership project Groups with one optional Workspace/CLI filter, multi-toggle assignment, a virtual lowercase `ungrouped` view, a canonical header/content/footer layout with one persistent full-width horizontally scrollable chip header and no Workspace spacer, a left-sidebar scrollbar, a stable full focus frame around Workspace navigation, and green push-ready Git status.
+- Keep exactly one Workspace group active, restore the last valid selection from an independently written cache, and use the first virtual **ungrouped** anti-group when selection data is absent, malformed, renamed, or deleted. Remove the no-filter **all** control, continue discarding historical selector fields, and prevent unrelated stale-client cache writes from publishing old in-memory group intent. Derive a readable `stale` project state from persisted authoritative agent-working and terminal-entry activity, automatically collapse stale expanded projects after a configurable inactivity period, and treat explicit expansion as a process-local freshness override.
+- Add canonical bounded `wsx.config.yml` project settings, edit-time schema templates, atomic `.gtrconfig` migration without deleting the legacy file, Workspace shortcuts for project and global config editing, and default-on `resume_agents_on_restore` policy with a fail-closed opt-out.
+- Show Git submodules in a dedicated worktree-preview section with local parent-gitlink, initialization, conflict, modified-content, and untracked-content status. Add explicit validated `git.subtrees` project configuration so subtree changes are separated from ordinary local files without unreliable history inference.
+- Package adjacent universal `wsx` and `wsxd` executables and provide dependency-free `cargo xtask run` and `cargo xtask build` workflows.
+- Add pinned Nextest 0.9.143 and strict Clippy gates on Linux and macOS CI, with doctests and the production-equivalent runtime smoke kept as explicit steps.
+
+### Bug Fixes
+
+- Keep the published `wsx-core` crate self-contained by packaging the canonical agent-integration assets it embeds.
+- Make the first Workspace `x` press on an unacknowledged done session acknowledge that exact revision and remove it from attention iteration; later presses retain local mute toggling.
+- Tail-crop observational Workspace terminal previews when authoritative frames are taller than the panel, top-align shorter frames for natural shell placement, and keep Workspace visible after subscription acknowledgment until an exact resized full baseline activates Terminal.
+- Persist TUI session reordering through daemon refresh and restart with stable identities, optimistic revisions, same-worktree validation, and transactional state saves.
+- Forward bounded standard text clipboard writes from attached terminal applications to the outer terminal, restoring Projp drag-copy without replaying stale writes after reconnect.
+- Attribute TCP listeners launched in descendant process groups to their unique wsx PTY, show the actual port numbers that fit without a leading dot, and include the compact project/worktree/session/pane target in terminal-stream errors.
+- Serialize daemon probe, recovery, replacement, spawn, and readiness with an owner-only coordinator lock while retaining the daemon singleton fence. Automatically recover a genuinely missing daemon with a shared three-start-per-minute crash budget, preserve authenticated same-login daemons that hang or return unsafe data, and keep intentional stops from being undone by background clients. Lifecycle-capable daemons expose binary identity and quiescence across protocol mismatch, defer replacement until zero live runtimes, then stop themselves; compatible pre-lifecycle daemons remain usable until their next natural stop and incompatible pre-lifecycle daemons remain protected. On macOS, authenticate the connected daemon's UID and audit session from its kernel peer token, then automatically restart a daemon inherited from an earlier login so new PTYs regain the current Keychain and trust context.
+- Preserve stable session, pane, terminal, and known-agent identity across daemon restart; resume valid unique integration-reported conversations with direct vendor argv for all 17 supported agents, safely fall back for invalid or duplicate references, and retain failed panes as exited. Use persisted agent identity only to plan resume, require a generation-matched adapter report to restore live projection, and rotate that authority before the resume supervisor opens a fallback shell. Delayed reports therefore cannot relabel a replacement runtime; 0.20 clients reject a same-protocol daemon that does not advertise shell fallback without stopping it automatically.
+- Harden daemon lifecycle boundaries with SIGHUP/SIGTERM cleanup, secure primary and last-known-good state files, malformed-primary quarantine, file and directory sync, save-before-publish user mutations, truthful retrying runtime observations, deduplicated aggregate-bounded terminal views, one-shot process-group teardown, generation-scoped stream leases and agent mutations, and coordinator-backed snapshot-first terminal reconnection after suspend/resume.
+- Keep PTY spawn, terminal I/O, process termination, and plugin callbacks outside daemon-state locks.
+- Keep accepted terminal surfaces in one epoch-, pane-, and terminal-keyed TUI projection, independent of workspace metadata revisions, so agent reports cannot blank live terminals while daemon restart and terminal replacement still discard stale content.
+- Retain existing asynchronous Git/worktree operations, exact deletion tombstones, routines, group selections, cache state, and responsive TUI behavior during the runtime migration.
+- Refresh local Git status for the selected worktree within about one second and sweep remaining worktrees every 15 seconds, without changing the independent remote-fetch interval or failure backoff.
+- Replace per-key request/handshake round trips and 500 ms full-frame polling with a persistent duplex terminal stream, bounded asynchronous input, event-driven Ghostty dirty-row updates, and an 8 ms foreground wake and producer cadence. Add a production-equivalent direct-PTY versus wsxd-stream-to-wsx-render latency gate that reports narrow, wide, and erase-rewrite p50/p95 values and enforces a 16.7 ms added-p95 budget. Full runtime smoke requires two independent latency passes so transient shared-runner scheduling does not override deterministic performance evidence.
+- Preserve Ghostty wide-cell and spacer occupancy through compact wire cells and ratatui projection so erase and wide-to-narrow redraws invalidate the correct columns.
+- Buffer large terminal-frame reads, resize during subscription before the first baseline, and suppress intermediate frames while child synchronized-output mode is active.
+- Keep saturated terminal update queues interruptible during shutdown, atomically sample synchronized-output state with frame revisions, preserve up to 64 accepted bounded clipboard writes in FIFO order outside frame cadence and reject overflow without overwriting accepted effects, and recheck stream wake predicates under the daemon mutex so output notifications cannot be stranded until the fallback timeout.
+- Make `Ctrl+A`, then `W` the default Terminal-to-Workspace focus sequence; accept `W` while the prefix modifier remains held, reserve prefix then `Q` for TUI-only quit, double the prefix to send literal `Ctrl+A`, and preserve unprefixed `q` and other suffixes as terminal input.
+- Keep the bottom status bar to one context-aware line with parenthesized key hints, add consistent `(i/I)idle`, `(a/A)active`, and `(n/N)attention` iteration plus capability-aware routine hints, use semantic mode-badge color families, keep the running version right-aligned, query the bounded GitHub latest-release endpoint at startup, expand it to `v{current} ↑ v{latest}` when a newer release exists, keep quit in the right-side global hints with `(q)uit` in Workspace, format multi-chord actions as `(Ctrl+A W)workspace`, place popup-specific controls on bottom border titles, keep unprefixed Terminal `q` available to applications, remove TUI send-text while preserving CLI automation, restore the one-row terminal breadcrumb, let terminal content fill the remaining right panel, and treat a left-panel click as one Workspace-mode selection action.
+- Route bounded chrome backgrounds through semantic theme roles, keep primary surfaces and default terminal backgrounds transparent while preserving explicit ANSI cell backgrounds, and derive sidebar rendering and mouse hit-testing from one geometry contract.
+- Size the Workspace scrollbar from rendered rows, scroll the tree by mouse wheel, right-align session listeners, limit idle-session navigation to agent sessions, and keep agent labels neutral while restoring semantic state colors.
+- Route terminal wheel input through authoritative Ghostty modes, wake frame streaming immediately after local viewport changes, and remove stale pre-update and duplicate-clear redraws that made scroll bursts lag until later PTY input.
+- Render the TUI's config-backed workspace immediately while daemon readiness and one-pass Git discovery continue in the background; remove duplicate startup worktree scans.
+- Move compact notifications above the bottom-right status line and suppress obvious Terminal/Workspace mode-change notifications.
+- Wait for runtime-smoke daemon socket removal on normal and failure cleanup so repeated tests cannot leave orphan daemons.
+
+### Maintenance
+
+- Import the pinned asched boundary, the reference-only Herdr source snapshot, and the vendored Ghostty and portable-pty runtime sources while keeping Herdr excluded from the workspace and release artifacts.
+- Synchronize English and Korean user documentation plus recurring maintainer invariants with the final runtime, Workspace, and Terminal behavior.
+
+## [0.17.0] - 2026-08-15
+
+### Breaking Changes
+
+- Move project scheduling to the separately installed asched 0.2 daemon. wsx no longer embeds, starts, stops, or exposes the former routine daemon API; register canonical project paths with `asched project add` before managing their routines. The initial unreleased embedded scheduler and its lifecycle, IPC, persistence, execution, and security hardening were superseded before publication by the shared `asched-core` boundary.
+
+### Features
+
+- Add project-scoped cron and provider-neutral event routines through asched, including optimistic revisions, enable/disable state, manual run and cancellation, retained logs, event deduplication/no-match results, and background TUI requests. The project-level collection is rendered as `sched`, with routine rows aligned to sessions. New routines use an explicit Codex, Claude, Pi, or Custom runner picker instead of hidden function-key presets, while agents can create the same validated direct-argv routines through the CLI.
+- Recognize Pi coding-agent processes, including Pi's Node launcher tree, and derive provider-neutral agent activity from bounded semantic pane-tail motion. Settled agents become yellow attention targets after three seconds, runtime and interactive processes remain active, and capture failures fall back to tmux activity.
+- Apply `extended-keys on`, CSI-u extended-key formatting, and `tmux-256color` as wsx tmux server defaults.
+
+### Bug Fixes
+
+- Keep intentionally unregistered projects out of routine refresh requests so asched's scheduling allowlist does not make the entire TUI report routines unavailable; retain typed conflict, protocol-mismatch, and already-running diagnostics for registered projects.
+- Avoid full-terminal clears when navigating project, worktree, and routine previews, eliminating visible flicker while preserving ghost-cell cleanup around captured session previews.
+- Abort conflicts from the default internal `git pull --rebase` path instead of leaving worktrees mid-operation, and keep deleted worktrees hidden until a live Git refresh confirms removal.
+
+### Maintenance
+
+- Record workspace-release, review-tool, warning-baseline, and issue-progress guidance accumulated while the unreleased routine implementation was developed and audited.
+
+## [0.16.2] - 2026-06-25
+
+### Bug Fixes
+
+- Adding a project that is already registered is now rejected instead of creating a duplicate tree entry. Re-adding a project after removing it (or re-adding with a trailing slash) previously appended a second item because the workspace was not deduped and trailing-slash paths bypassed the config dedup. Project paths now run through a single normalizer before registration, and duplicates are refused with a status message.
+- Keep git status visible during explicit git operations instead of blanking it on refresh, and pick the newest crash-restore session source so a stale snapshot no longer overrides a more recent cache.
+
+## [0.16.1] - 2026-06-16
+
+### Bug Fixes
+
+- Recompute tab visibility whenever the workspace tree is rebuilt, so unregistering a project from one tab no longer lets a shifted project from another tab appear in the active tab.
+
+## [0.16.0] - 2026-06-06
+
+### Refactor
+
+- Split the codebase into a Cargo workspace with two crates: `wsx` (TUI/CLI binary) and `wsx-core` (ratatui-free library). External orchestrators can now depend on `wsx-core` directly for worktree, tmux, git, hooks, config, and model primitives. All moves used `git mv` so file history is preserved. The binary's behaviour is unchanged.
+- `git_fetch` in `wsx-core/src/git/info.rs` promoted from `pub(crate)` to `pub` so the binary can reach it across the new crate boundary.
+
+## [0.15.11] - 2026-05-26
+
+### Features
+
+- Add-project repo cache survives modal opens. The git-repo walker now runs at app start and continues in the background between modal opens, so re-opening "add project" is instant and newly created repos appear automatically without restarting wsx.
+- Add-project scan depth raised from 6 to 8 so deeper layouts like `~/work/<org>/<year>/<project>` are now discovered. Walks still short-circuit at any `.git`, so this only widens trees that have no repos.
+
+### Bug Fixes
+
+- Add-project completion falls back to filesystem path mode when the input contains `/` or starts with `~`, so paths the background walker can't reach (outside `$HOME`, under `node_modules` / `target`, beyond the depth limit) are now reachable by typing them directly.
+- The "scanning..." indicator no longer sticks around once you start typing; combined with the persistent cache it should rarely appear at all now.
+
+## [0.15.10] - 2026-05-25
+
+### Bug Fixes
+
+- Reworks the v0.15.9 session-state model that rendered "everything green" in real usage. The Active green state now requires either recent output (for agents) or a long-running process kind (Runtime / InteractiveApp); a quiet long-running agent renders **yellow** (AgentDone, "see the result") instead of green.
+- Foreground classification now walks the process tree under each pane's PID via one `ps -ax` snapshot per refresh. Previously tmux's `pane_current_command` reported the deepest spawned child, so `claude` / `codex` showed up as a node subprocess named `2.1.x` and fell through to InteractiveApp. The agent is now detected correctly even when nested under shells or subprocesses.
+- Shell foreground now distinguishes "prompt just returned" (yellow ●, `ShellPrompt`) from "long idle" (gray ○, `ShellIdle`). Recent activity in a shell signals "do the next thing", not "active app".
+- Mute is sticky: pane output no longer auto-unmutes a session (this reverts the 0.15.5 behavior, which fought against the user's intent on noisy sessions). Mute is cleared only when the user interacts with the session in wsx — attach, send command, send Ctrl-C, or rename.
+
+### Refactor
+
+- New `src/proc_tree.rs` module wraps a single `ps` snapshot per refresh and exposes `descendants(pane_pid)` for foreground classification. Single-source-of-truth: derive only walks the tree.
+- Added a realistic-workspace fixture test (`session_state::tests::given_realistic_workspace_when_classified_then_each_session_state_matches_spec`) as a permanent regression guard. It pins the per-session outcome for a 10-session fixture covering the full taxonomy; the v0.15.9 "running → Active" rule would have produced Active≈6 instead of 4 and failed this test before release.
+
+## [0.15.9] - 2026-05-23
+
+### Refactor
+
+- Session state collapsed into a single deriver. `SessionInfo` carries only raw inputs (bell, foreground, pane_capture, muted) and every UI/CLI consumer reads the same 3-state projection through `session_state::derive`
+- **Behavior change**: a session running a foreground process (agent, runtime, interactive app) now renders **green** Active, including when quiet. This reverses the 0.15.7 behavior that forced background runtimes (`node`, `bun`, `npm`, ...) to yellow. Under the new 3-state model green means "a process is running"; yellow is reserved for the tmux bell or a detected interactive prompt
+- A bare shell is always Idle (gray); recent typing alone no longer flips a shell to Active
+- An `[y/n]` confirm or `waiting for user` prompt detected in the captured pane text escalates to NeedsAttention (yellow) regardless of which foreground kind is running. Previously detected but inert
+
+### Bug Fixes
+
+- Project move (`m` + `j`/`k`) now jumps across projects hidden by the tab filter instead of silently swapping with an invisible neighbor
+- Multi-window foreground classification is now order-independent. A session with `node` then `claude` across different windows is recognized as Agent, not Runtime
+- `wsx status --json` drops the `has_running_app` field (it was a stored mirror of `foreground.is_running()`); use the `foreground` field instead
+
+## [0.15.8] - 2026-05-14
+
+### Bug Fixes
+
+- Mobile mode no longer triggers preview-driven pane capture and forced full redraws while the preview is hidden, which reduces active-session flicker in xtermjs and other portrait SSH terminals
+- The preview pane now clears before redraw, which prevents wrapped session output from leaving stale cells behind when line layout changes
+
+## [0.15.7] - 2026-05-05
+
+### Bug Fixes
+
+- Sessions with background runtimes (`node`, `bun`, `deno`, `npm`, `pnpm`, `yarn`, `npx`, `dotenvx`, `watchexec`, `entr`, `reflex`) now show yellow instead of always-green — activity timestamp was being refreshed on every poll for these processes, making them perpetually "active" regardless of actual terminal use
+
+## [0.15.5] - 2026-04-29
+
+### Features
+
+- `--mobile` flag: collapses preview panel for portrait SSH sessions, shows compact key hints
+- `mobile_detach_key` config option: bind a no-prefix tmux key to detach-client when `--mobile` is active, e.g. `mobile_detach_key = "C-q"`
+
+### Bug Fixes
+
+- Muted sessions now auto-unmute when new output streams to the pane — mute is "suppress for now", not permanent
+
+## [0.15.4] - 2026-04-24
+
+### Features
+
+- `focus-events on` applied per session on attach — terminals and editors receive focus in/out signals from tmux
+- `extended-keys on` set globally at startup instead of per-attach — correctly enables kitty keyboard protocol at the server level
+
+### Bug Fixes
+
+- Project search no longer shows "scanning..." indefinitely — repos now stream to the picker as they are found instead of waiting for the full scan to complete
+
+## [0.15.3] - 2026-04-21
+
+### Features
+
+- `extended-keys on` applied to every session on attach — enables kitty keyboard protocol passthrough for richer key event support in modern terminals
+
+## [0.15.2] - 2026-04-21
+
+### Bug Fixes
+
+- Projects deleted from outside wsx no longer persist as stale entries until restart — on the first refresh after deletion the project is shown as `(missing)` in gray; on the second refresh (~6 s later) it is removed from the tree
+
+### UI
+
+- Externally deleted projects display a `(missing)` indicator in the tree so users know why interactions fail during the brief window before removal
+
+## [0.15.1] - 2026-04-17
+
+### Bug Fixes
+
+- Previewing a session running wsx no longer causes an infinite render loop — `pane_current_command` is tracked per session via the activity monitor and capture is suppressed when wsx is the foreground process; sentinel character (⅋ U+214B) in the status bar provides a fallback for renamed binaries
+
+### UI
+
+- Update available badge now reads `↑ update available: v{N}` instead of just `↑ v{N}`
+
+---
+
+## [0.15.0] - 2026-04-17
+
+### Bug Fixes
+
+- Session kill/rename no longer reverts when a stale background refresh arrives mid-operation — pending session ops are filtered/remapped so user intent wins over in-flight tmux snapshots
+- Session rename now persists to cache immediately instead of waiting for the next periodic refresh
+- Idle time counter updates every ~1 second instead of only on state changes
+
+### Performance
+
+- git fetch deduped across concurrent wsx instances via per-worktree advisory lockfile; skipped fetches report success so backoff stays low
+- slow_timer staggered by PID-derived jitter (0–499ms) so concurrent instances don't hammer tmux/git simultaneously
+
+### Improvements
+
+- Muted and suppressed session flags stored as tmux user options (`@wsx-muted`, `@wsx-suppressed`) — shared across all concurrent instances without cache coordination; one-time migration from old cache format on startup
+
+---
+
+## [0.14.7] - 2026-04-10
+
+### Performance
+
+- Eliminate main-thread blocking on worktree delete, clean, session kill, and create ops — synchronous subprocess calls replaced with optimistic UI removal and async background execution via existing `spawn_bg`/`spawn_tmux_refresh` infrastructure
+
+### Bug Fixes
+
+- Preview ghost cells on tab switch — `{`/`}` navigation did not trigger `force_redraw`, leaving stale session preview fragments when switching tabs
+
+---
+
+## [0.14.6] - 2026-04-06
+
+### Bug Fixes
+
+- Preview ghost cells on navigation — PUA-width-shifted cells from session capture persisted when switching to project/worktree preview; move `force_redraw` into `update_scroll` so every navigation triggers a full terminal clear
+- Bell sessions skipped by attention navigation — `n/N` (next/prev pending) missed sessions with `has_activity` (bell) when they were also recently active; bell now triggers attention regardless of active state
+
+---
+
+## [0.14.5] - 2026-04-04
+
+### Features
+
+- `wsx tab` subcommand — `ls`, `create`, `rename`, `own <tab> <project>` for managing tab assignments from the CLI; `own default <project>` unassigns
+- `wsx status` normal output prefixes each project with `[tab]` when tabs are configured
+
+---
+
+## [0.14.4] - 2026-04-03
+
+### Features
+
+- `--tab <name>` filter for `wsx status`, `wsx worktree list`, and `wsx session list`; `--tab default` matches projects with no tab assigned
+
+---
+
+## [0.14.3] - 2026-04-01
+
+### Bug Fixes
+
+- Status bar corruption after navigation — `terminal.clear()` resets only the back buffer, leaving stale cell values in the front buffer; ratatui's diff skips cells that match the old content even though the screen was cleared, producing blank gaps in the hint text (e.g. `(e)config` rendered as ` e config`); fix draws an empty frame after `clear()` to flush the front buffer before the real frame
+
+---
+
+## [0.14.2] - 2026-04-01
+
+### Features
+
+- `wsx session peek` — new subcommand replacing `capture`; adds `-n <lines>` scrollback depth, `-o <offset>` to skip lines from bottom, and `-a` to strip ANSI/box-drawing for agent/LLM consumption
+- Session snapshot (`~/.config/wsx/sessions.toml`) — written on every state change and on quit; survives tmux SIGBUS/crash so sessions are restored even when the cache never flushed
+
+### Bug Fixes
+
+- Terminal resize and sleep/wake layout corruption — `Event::Resize` was silently discarded, so ratatui repainted over a stale buffer after tmux resized the window; now triggers `terminal.clear()`
+- Session snapshot stale on normal quit — `flush_cache()` on the quit path never wrote `sessions.toml`; snapshot could lag by up to 3s on clean exit
+- Deleted sessions phantom-restored after crash — `do_delete_session` removed the session from the workspace model but never set `cache_dirty`, so the snapshot still listed it and restore recreated it
+
+---
+
+## [0.14.1] - 2026-03-26
+
+### Bug Fixes
+
+- Fix worktree delete flicker — optimistic removal raced with the 3s timer refresh which read stale git worktree list and briefly re-added the deleted entry; guard with `pending_deletions` set filtered from both `apply_tmux_refresh` and `refresh_all`
+
+---
+
+## [0.14.0] - 2026-03-26
+
+### Features
+
+- `i` / `I` keys jump to next/prev idle session (○ gray state), consistent with `a`/`A` for active and `n`/`N` for attention
+- CLI `-f compact` / `--format compact` flag on `status`, `worktree list`, `session list` — labeled fixed-width tabular output with worktree as row unit and sessions inlined as `name[state]`; designed for AI agent stdout consumption with fewer tokens
+
+---
+
+## [0.13.0] - 2026-03-25
+
+### Features
+
+- Add project now uses recursive fuzzy search over git repos instead of directory-by-directory navigation — type a partial name (e.g. `wsx`) to find `~/code/wsx/` directly; scan runs in background with incremental results
+
+---
+
+## [0.12.1] - 2026-03-24
+
+### Features
+
+- `session send-keys` CLI gains `--no-enter` flag — sends keys to a pane without appending Enter, enabling single-key navigation (e.g. selecting numbered Claude suggestions)
+
+---
+
+## [0.12.0] - 2026-03-24
+
+### Features
+
+- Restore tmux sessions after server restart — on startup, compares cached tmux server PID to the current one; if they differ (reboot, crash, kill-server), silently recreates all cached sessions in their worktree directories
+- Headless CLI subcommands for agent/scripting use
+
+---
+
+## [0.11.3] - 2026-03-20
+
+### Bug Fixes
+
+- Inactive tab labels now use the terminal default foreground instead of `DarkGray` — readable on dark themes
+
+---
+
+## [0.11.2] - 2026-03-19
+
+### Bug Fixes
+
+- Worktree no longer flashes on screen for 1+ frames after confirming delete — optimistically remove from model before spawning async cleanup
+
+### Docs
+
+- Add tab grouping to guide and key reference
+- Restructure README — install first, collapsible usage/config sections
+
+---
+
+## [0.11.1] - 2026-03-19
+
+### Other
+
+- Homebrew formula: replace `--version` test with `assert_predicate :executable?` — wsx is a TUI with no CLI flags
+- Release binary built with `MACOSX_DEPLOYMENT_TARGET=11.0` (arm64) — sets explicit `minos` instead of inheriting from build SDK
+
+---
+
+## [0.11.0] - 2026-03-19
+
+### Features
+
+- Tab grouping: filter projects into named tabs with `{`/`}` to cycle, `T` to manage (add/rename/delete/reorder), `m`+`h`/`l` to move a project between tabs
+- Compact tab bar in the workspace block title — active tab shown full with highlight, inactive tabs truncated to 2 chars
+
+---
+
+## [0.10.1] - 2026-03-11
+
+### Bug Fixes
+
+- Replace `Mutex::lock().unwrap()` with `unwrap_or_else(|e| e.into_inner())` in `GitSemaphore` — prevents panic cascade if a git-info thread panics while holding the lock
+- Config TOML parse errors no longer exit before TUI starts — falls back to defaults and shows a 10-second warning in the status bar
+- Cache save failures are now surfaced as TUI status messages instead of `eprintln` to hidden stderr
+- Add file path context to config save IO errors
+
+---
+
+## [0.10.0] - 2026-03-10
+
+### Features
+
+- Check crates.io for a newer version once at startup; highlight the bottom-right version badge in yellow with an up-arrow when an update is available
+- Add `A`/`Shift+Tab` for backward navigation through active sessions and suggestions
+
+### Bug Fixes
+
+- Restore powerline glyphs in preview — stop replacing PUA chars (U+E000–U+F8FF) with spaces; instead force a full terminal clear on every capture content change to prevent bleed
+
+### UI
+
+- Redesign input suggestion list as an inline dropdown instead of a floating overlay
+
+---
+
+## [0.9.9] - 2026-03-09
+
+### Bug Fixes
+
+- Subprocess process-group isolation — child processes get their own PGID via `process_group(0)`, so `killpg` on timeout reaps git + ssh + credential helpers instead of leaking orphans
+- Add `ConnectTimeout=5` to `GIT_SSH_COMMAND` so SSH fails fast for unreachable hosts instead of hanging 60s+
+- Join reader threads after kill in `output_with_timeout` to prevent thread leaks on the timeout path
+- Consolidate `git_fetch` onto `output_with_timeout` — removes duplicate timeout loop and blocking `stderr_thread.join()` that hung when SSH survived kill
+- Protect `current_branch`, `list_worktrees`, `recent_commits` with `output_with_timeout` — no more bare `.output()` that could block indefinitely
+
+### Refactor
+
+- Move periodic `list_worktrees` and tmux session refresh off the main thread — `spawn_tmux_refresh` now runs all subprocess calls in a background thread and sends results via channel
+- Add `refresh_workspace_with_worktrees` that takes pre-computed worktree entries, keeping synchronous `refresh_workspace` for user-triggered actions only
+- Fetch failure tracking with `FetchFailReason` (auth/timeout/network), per-worktree fail count, and exponential backoff
+
+---
+
+## [0.9.8] - 2026-03-07
+
+### Bug Fixes
+
+- Fix character bleed in preview panel on session navigation — replace PUA chars (U+E000–U+F8FF, powerline/Nerd Font symbols) with space to prevent unicode-width mismatch that caused ratatui diff to leave stale terminal cells
+- Force full terminal clear inside synchronized update block on nav up/down so any stale content is overwritten atomically without flash
+- Strip ANSI escapes before empty-line detection in `trim_capture`; pop trailing whitespace-only lines after ANSI parse
+
+---
+
+## [0.9.7] - 2026-03-06
+
+### Bug Fixes
+
+- Restore session icon 4-branch priority: active output shows green `◉`, running-but-quiet shows yellow `●` (regression from 0.9.6)
+- Strip ANSI OSC sequences (hyperlinks, window titles) and bare control chars that caused display artifacts
+- attention_candidates now cycles to both bell and running-app sessions; send_command_history deduplicates by moving to end
+
+---
+
+## [0.9.6] - 2026-03-06
+
+### Refactor
+
+- Merge bell alert and running-app-quiet into single "needs attention" state — both show yellow `●`
+- Remove worktree-level activity rollup indicator (white `●`)
+- Clear stale `has_activity`/`has_running_app` flags when session is absent from tmux
+- Include bell alerts in attention candidates and dismiss action
+
+### Docs
+
+- Add Korean README
+
+---
+
+## [0.9.5] - 2026-03-05
+
+### Bug Fixes
+
+- Skip non-git directories when loading workspace
+- Handle render, tick, and register errors gracefully instead of crashing the TUI
+
+### Refactor
+
+- Simplify error handling in event loop — use dispatch-level error catch instead of per-method match
+
+---
+
+## [0.9.4] - 2026-03-05
+
+### Features
+
+- Status notifications (spinner during processing, checkmark on completion) now overlay the bottom of the workspace tree column instead of the status bar
+
+### Refactor
+
+- Unified Tab/Up/Down completion navigation for both path and command history inputs — Tab cycles, Up/Down navigate the list, dropdown scrolls to keep selection visible
+- Panic hook restores terminal before printing errors so the shell isn't left in raw mode
+
+---
+
+## [0.9.3] - 2026-03-05
+
+### Features
+
+- Send-command history persisted across restarts via workspace cache
+
+### Performance
+
+- Consolidate git-info from 5 subprocesses to 1 per worktree (`git status --porcelain=2 --branch`) with 15s TTL to skip redundant refreshes
+- Cap concurrent git threads to CPU count via counting semaphore
+- Skip redraw on `Action::None` and unchanged activity ticks
+- Cache parsed ANSI pane previews — re-parse only when capture text changes
+- Remove blocking 2s startup wait — render immediately with cached data, fill git info async
+- O(1) worktree lookup for async result application via path index
+- Pre-indexed session/ordering lookups in `refresh_workspace`
+- Cache writes gated by dirty flag; `sync_all` only on quit
+
+### Refactor
+
+- `clean_merged` uses `HashSet` instead of `Vec::contains`
+- Flatten tree passed into renderer instead of recomputing per frame
+- Status hints computed once per frame instead of twice
+- Search text cached alongside flat tree, rebuilt only on tree changes
+
+---
+
+## [0.9.2] - 2026-03-04
+
+### Features
+
+- Send Command (`S`) now shows history as a fuzzy-filtered suggestion dropdown while typing, matching the path autocomplete UX — Tab/Up/Down navigate entries
+- Dropdown opens immediately on `S` showing recent commands (newest first), even before typing
+
+---
+
+## [0.9.1] - 2026-03-04
+
+### Features
+
+- Send Command (`S`) history is now persisted across restarts — commands survive wsx exit and are restored from cache on next launch
+
+---
+
+## [0.9.0] - 2026-03-04
+
+### Features
+
+- Background thread execution for clean, delete/create worktree, and all git ops (pull/push/rebase/merge) — UI stays responsive during long operations
+- Braille spinner in the status bar right corner replaces the version badge while a job runs — key hints remain fully visible
+- Up/Down arrow navigation in the Send Command (`S`) input recalls previously sent commands, capped at 50 entries
+
+### Bug Fixes
+
+- Batch clean (`c` on project or root) now kills associated tmux sessions for removed worktrees — previously only single-worktree clean did this
+
+---
+
+## [0.8.3] - 2026-03-03
+
+### Features
+
+- Detect when another wsx instance writes the cache — pauses writes and shows a popup; any key reloads expand states and cursor from the updated cache
+
+### Bug Fixes
+
+- Cursor no longer drifts across sessions — position is now persisted as a stable path identity (project/worktree/session path) rather than a raw flat-tree index
+- Expand state for projects with trailing slashes in config paths (`notes/`, `app/`) now persists correctly — paths are normalized on load
+- Cache save errors are now visible in the terminal — `flush_cache` runs after `tui::restore` instead of while the alternate screen is active
+
+---
+
+## [0.8.2] - 2026-03-01
+
+### Bug Fixes
+
+- Git status indicators (`↑N`/`↓N`/`*`) no longer flicker every 3s — redraws are skipped when git info is unchanged
+- Git indicators stay visible after detaching from a session — previously cleared to blank while the refresh was in flight
+- Initial git info load is now async, preventing the event loop from blocking on git CLI calls at first worktree selection
+- Idle timer in session list now updates every 1s instead of every 2s
+- Fix potential panic on non-ASCII branch names in git popup
+
+---
+
+## [0.8.1] - 2026-02-28
+
+### Bug Fixes
+
+- Refresh local diff indicator (`*`) every 3s for the selected worktree — previously cached until a fetch or session attach
+
+### Other
+
+- Add MIT license
+- Add `cargo install wsx` to README install instructions
+
+---
+
+## [0.8.0] - 2026-02-28
+
+### Features
+
+- Add git popup (`g` key on a worktree) with pull, push, pull-rebase, merge-from, and merge-into operations; `p`/`P` run immediately, `r`/`m`/`M` prompt for a branch pre-filled with the project default
+
+---
+
+## [0.7.0] - 2026-02-27
+
+### Features
+
+- Add remote tracking state to worktree display — background `git fetch` per selected worktree (60s interval, 10s timeout), ahead/behind counts updated silently after fetch
+- Show `↑N` / `↓N` / `↓N↑M` git state indicators in tree with colors (cyan/red/magenta); `*` for local changes replaces `✎`; `~` prefix marks the main worktree
+- Reorganize worktree preview into Remote / Local Changes / Commits sections with remote branch name and sync status
+
+### Docs
+
+- Document git state icon vocabulary; compact README guide
+
+---
+
+## [0.6.3] - 2026-02-27
+
+### Bug Fixes
+
+- Fix asymmetric tree scrolling — up/down now use 1/4 and 3/4 thresholds
+
+---
+
+## [0.6.2] - 2026-02-27
+
+### Bug Fixes
+
+- Invalidate worktree git status on session detach so it re-fetches on return
+
+---
+
+## [0.6.1] - 2026-02-27
+
+### UI
+
+- Align help panel text wraps to description column
+- Align session preview to bottom of panel so latest output is always visible
+
+### Docs
+
+- Add remote control, tmux status bar, `.gtrconfig` guide, and inspired-by section
+
+---
+
+## [0.6.0] - 2026-02-27
+
+### Features
+
+- Set tmux `status-right` to `project/alias` on session attach; expose `@wsx_project` / `@wsx_alias` session options
+- Add `(a)` to cycle through active (◉) sessions
+- Keep search active until explicit Esc — no auto-exit on single match
+- Add `S` to send command to session without entering it
+- Add `C` to send Ctrl+C to session without entering it
+
+### UI
+
+- Show version number in status bar bottom-right
+- Hide worktree/session counts when expanded
+- Show `✎` on worktrees with uncommitted changes
+- Rebound project jump from `Ctrl+d/u` to `[` / `]`

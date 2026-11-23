@@ -33,7 +33,7 @@ git init -q --bare -b main "$root/origin.git"
 git clone -q "$root/origin.git" "$root/work" 2>/dev/null
 cd "$root/work"
 mkdir scripts
-cp "$here/release.sh" scripts/release.sh
+cp "$here/release.sh" "$here/changelog-section.sh" scripts/
 printf '#!/bin/sh\nexit 0\n' > scripts/terminal-context-check.sh
 printf '[workspace.package]\nversion = "0.43.0"\n' > Cargo.toml
 printf '## [0.43.0]\n' > CHANGELOG.md
@@ -85,4 +85,17 @@ git tag -fa v0.43.0 -m third HEAD
 if git push --force-with-lease="refs/tags/v0.43.0:$first" origin refs/tags/v0.43.0 >/dev/null 2>&1; then bad "a stale lease pushed"; fi
 [ "$(remote_tag)" = "$second" ] || bad "the stale lease moved the tag"
 check "a stale lease is refused by git"
+
+# 6 the version's own section may hold 20000 bytes, not one more (100-byte lines; awk counts no heading)
+section() { printf '## [0.43.0]\n'; awk -v n="$1" -v w="$2" 'BEGIN { for (i = 0; i < n; i++) printf "- %0*d\n", (i ? 97 : w), i }'; printf '## [0.42.0]\n'; awk 'BEGIN { for (i = 0; i < 400; i++) printf "- %097d\n", i }'; }
+section 200 98 > CHANGELOG.md   # 199 lines of 100 bytes and one of 101: 20001 bytes
+git add -A; git commit -qm long
+release X=1 && bad "a section of 20001 bytes did not refuse"
+grep -q "is 20001 bytes and a release takes at most 20000: summarize it" "$root/out" || bad "no size refusal text"
+[ "$(remote_tag)" = "$second" ] || bad "an oversized section moved the tag"
+check "a section of 20001 bytes refuses"
+section 200 97 > CHANGELOG.md   # 200 lines of 100 bytes: 20000
+git add -A; git commit -qm fits
+release WSX_RELEASE_DRY_RUN=1 || bad "a section of 20000 bytes, with a longer older one, refused"
+check "a section of exactly 20000 bytes passes; only its own section counts"
 echo "release rerun scenario passed"
