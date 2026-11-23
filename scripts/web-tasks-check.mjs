@@ -3629,7 +3629,8 @@ phase("Progress: the top of an open task's sheet at 390x844, for ea");
   }
   await resize(chainSize);
   await open(behind);
-  await until(`/Waiting for #${scenario} to land\\b.*Its checks fail on main until #${scenario} lands\\./.test(document.querySelector('.story-next')?.textContent ?? '')`, `#${behind}'s sheet does not say why it waits`, 10);
+  // ^ The label is the state line under the title; More's next line gives the reason (story.js `State`, `status.rest`).
+  await until(`document.querySelector('.task-sheet .progress-health')?.textContent === 'Waiting for #${scenario} to land' && /Its checks fail on main until #${scenario} lands\\./.test(document.querySelector('.story-next')?.textContent ?? '')`, `#${behind}'s sheet does not say why it waits`, 10);
   const waitsOn = await evaluate("(() => { const term = [...document.querySelectorAll('.task-sheet .task-flow dt')].find((node) => node.textContent === 'Waits on'); return term?.nextElementSibling?.textContent.replace(/\\s+/g, ' ').trim() ?? ''; })()");
   if (!new RegExp(`^#${scenario}\\b.* to land, its checks fail$`).test(waitsOn)) await fail(`#${behind}'s Waits on row reads ${JSON.stringify(waitsOn)}`);
   await shot("task-waits-on", ".composer-send");

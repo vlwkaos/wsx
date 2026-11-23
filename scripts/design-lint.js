@@ -181,7 +181,10 @@
   const layerOf = (el) => {
     if (!layerCache.has(el)) {
       const s = styleOf.get(el);
-      layerCache.set(el, !s ? null : el.matches(LAYER) || /fixed|sticky/.test(s.position) ? el : layerOf(el.parentElement));
+      // ^ An absolute box with its own z-index is an overlay, as a fixed one is: the web's floating tab bar,
+      // which a scrolled list passes behind by design (docs/web-client.md).
+      const overlay = /fixed|sticky/.test(s?.position) || (s?.position === 'absolute' && s.zIndex !== 'auto');
+      layerCache.set(el, !s ? null : el.matches(LAYER) || overlay ? el : layerOf(el.parentElement));
     }
     return layerCache.get(el);
   };
