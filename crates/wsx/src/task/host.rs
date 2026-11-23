@@ -3958,7 +3958,7 @@ impl Host {
         }
     }
 
-    /// Log the review's end and act on it: `land` lands the revision, `changes` sends the
+    /// Act on the review's end, then log it: `land` lands the revision, `changes` sends the
     /// findings to the worker as a turn, no verdict leaves the task ready for the owner.
     fn finish_review(
         &mut self,
@@ -3980,30 +3980,31 @@ impl Host {
             return;
         }
         // ^ The task moved on while the reviewer read (a new revision, a hold, a wait, a message
-        // for the worker): its verdict is logged and decides nothing. Read before the log, which
-        // ends `under_review` for this revision.
+        // for the worker): its verdict is logged and decides nothing.
         let current = self.record.revision == job.revision
             && self.pending.is_empty()
             && status::under_review(&self.dir, &self.record, self.auto_land());
         let (verdict, findings) = answer.unwrap_or((ReviewVerdict::None, vec![why.to_string()]));
-        self.log(LogEvent::Review {
+        let review = LogEvent::Review {
             revision: job.revision,
             round: job.round,
             verdict,
             findings: findings.clone(),
             agent: job.label,
             usage,
-        });
-        if !current {
-            return;
-        }
+        };
+        // ^ The verdict is logged after the act: a logged verdict ends `under_review`, and a
+        // ready task out of review is the owner's, so logged first, a landing or a sent-back
+        // revision showed as a need (a push counted it, 2026-11-23). A host that dies before the
+        // log reviews the revision again.
         match verdict {
-            ReviewVerdict::Land => {
+            ReviewVerdict::Land if current => {
                 self.say(&format!("the review lands r{}", job.revision));
                 let landed = self.land(true);
+                self.log(review);
                 self.finish_landing(landed, TaskState::Ready);
             }
-            ReviewVerdict::Changes => {
+            ReviewVerdict::Changes if current => {
                 self.say(&format!(
                     "the review sent {} finding(s) on r{} back to the worker",
                     findings.len(),
@@ -4016,9 +4017,13 @@ impl Host {
                     findings.join("\n- ")
                 );
                 self.start_turn(&text, TurnTrigger::Review);
+                self.log(review);
             }
-            ReviewVerdict::None => {
-                self.say(&format!("the review ended without a verdict: {why}"));
+            _ => {
+                if current {
+                    self.say(&format!("the review ended without a verdict: {why}"));
+                }
+                self.log(review);
                 self.save();
             }
         }

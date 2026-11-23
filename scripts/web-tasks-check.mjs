@@ -4066,6 +4066,15 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   // ^ One For you list (docs/web-client-tasks.md "Home"): the row on top of Home counts what waits in every chat, and
   // the list it opens holds exactly those items by chat: the first chat's questions, approvals and checks, and billing's approval.
   const youRow = '.home-rows [data-key="for-you"]';
+  // ^ The first chat's item is staged here: its earlier approvals and checks are settled by now, and a worker that
+  // ended by chance (ui #6, a WAIT that gave up mid-run) was what the list counted before (2026-11-23).
+  {
+    const state = JSON.parse(fs.readFileSync(wsxCli)).env.XDG_STATE_HOME;
+    const found = fs.readdirSync(state, { recursive: true }).find((file) => file.endsWith(path.join("chats", "billing", "log.jsonl")));
+    const repo = JSON.parse(fs.readFileSync(path.join(state, path.dirname(found), "chat.json"))).repos[0];
+    const approvals = path.join(state, path.dirname(path.dirname(path.dirname(found))), repo, "approvals.jsonl");
+    fs.appendFileSync(approvals, `${JSON.stringify({ kind: "request", id: "a9002", action: "push", chat: "ui", unix_ms: Date.now() })}\n`);
+  }
   await until(`!!document.querySelector('${youRow}')`, "Home has no For you row while chats wait for the owner", 300);
   const homeWords = await evaluate(`document.querySelector('${youRow} .row-context').textContent`);
   const [, homeItems, homeChats] = /^(\d+) items? in (\d+) chats?: \d+ (?:questions?|approvals?|checks?|stopped)/.exec(homeWords) ?? [];

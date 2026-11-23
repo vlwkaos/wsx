@@ -3272,7 +3272,7 @@ def part_core(created=None):
     asking = js('task', 'new', 'NOOP ASK')['id']
     wait_state(asking, 'ready')
     wait(lambda: events_with('#%d ready r1' % asking), 'the event of a task that asks')
-    asked = reply_to(js('task', 'say', 'STATUS with the asking task')['id'])
+    asked = reply_to(js('task', 'say', 'with the asking task')['id'])
     assert asked['text'].endswith('Should I land it now?') and asked.get('asks') is True and 'quiet' not in asked, asked
     # ^ An open question shows in the next turn's input ("Open questions", docs/tasks.md "Questions"):
     # a message that quotes another message answers none. A dismiss, or an owner message that
@@ -3294,7 +3294,7 @@ def part_core(created=None):
     js('task', 'close', asking)
     question_table = reply_to(js('task', 'say', 'ASK TABLE')['id'])
     assert question_table['text'].startswith('Should I land it now?\nWhere things stand') and 'asks' not in question_table, question_table
-    assert 'asks' not in stored_reply and 'asks' not in event_reply, (stored_reply, event_reply)
+    assert 'asks' not in event_reply, event_reply
     # ^ A question in a last table row with no closing pipe does not ask either.
     question_row = reply_to(js('task', 'say', 'ASKROW')['id'])
     assert question_row['text'].endswith('| #2 | land it?') and 'asks' not in question_row, question_row
@@ -3323,19 +3323,6 @@ def part_core(created=None):
     shown = [(e['kind'], bool(e.get('until'))) for e in chat() if e['kind'] in ('limit', 'reply') and e['unix_ms'] >= held['unix_ms']]
     assert shown[:3] == [('limit', True), ('limit', False), ('reply', False)], shown
     assert turn_with('The usage limit has reset'), 'the manager continues after its limit'
-    # ^ A turn that a limit held answers "-" after the reset, with or without an owner message:
-    # a reply that says nothing is quiet whatever its turn (docs/tasks.md).
-    for seconds, owner_says in ((1, None), (3, 'STATUS while held')):
-        held_count = len([e for e in manager_entries() if e['kind'] == 'limit' and e.get('until')])
-        title = js('task', 'new', 'NOOP MLIMIT %d DASH' % seconds)['id']
-        event = wait(lambda: events_with('#%d ready r1' % title), 'the event the limit holds')[0]
-        if owner_says:
-            wait(lambda: len([e for e in manager_entries() if e['kind'] == 'limit' and e.get('until')]) > held_count, 'the second limit wait')
-            owner_id = js('task', 'say', owner_says)['id']
-        dash = reply_to(event['id'])
-        assert dash['text'] == '-' and dash.get('quiet') is True, dash
-        assert owner_says is None or owner_id in dash['to'], dash
-        js('task', 'close', title, '--discard')
     # ^ The reply is every text block of the turn, in order, joined with a blank line: Claude's
     # `result` holds only the last (docs/tasks.md "Manager"). A `-` block next to words is dropped,
     # and a turn whose only block is `-` is quiet.

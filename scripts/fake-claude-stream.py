@@ -19,7 +19,7 @@ Each user message is a small script of words:
   NAMEDHV      another item that names an image file in its words with no capture
   CMDHV        return a Human Verify item that names a command
   BAREHV       return a Human Verify item about a page without a capture
-  WAIT <file>  keep working until <file> exists, at most 10 minutes
+  WAIT <file>  keep working until <file> exists, at most an hour
   MEMORY       run a few `wsx memory` commands through the host's broker and trace each answer
   CHECKRUN_AGAIN  start `wsx task check-run`, kill it after 1 s, run it again and trace that answer (`queued` while it waits)
   CHECKRUN_TWICE  run `wsx task check-run` twice on the same tree and trace both answers
@@ -734,7 +734,9 @@ def main():
             emit({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'First I read the parser. Now I change it.'}]}})
             tool_use('wait-tool', 'cd /tmp && ls -la')
             tool_result('wait-tool', 'ok', False)
-            deadline = time.monotonic() + 600
+            deadline = time.monotonic() + 3600
+            # ^ Longer than a whole run: a worker that should work until the run ends (web ui #6)
+            # gave up at 10 minutes mid-run, and its ready task joined the owner's counts (2026-11-23).
             while not os.path.exists(release) and time.monotonic() < deadline:
                 time.sleep(0.2)
         # ^ A worker loads the simplify skill with the Skill tool: SIMPLIFY in a turn, or, after
