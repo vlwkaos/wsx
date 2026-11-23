@@ -553,9 +553,18 @@ impl Tree {
 
     /// Every member has ended (a child of the caller is reaped), or its pid is a newer process.
     fn gone(&self) -> bool {
-        self.0
-            .iter()
-            .all(|(pid, start)| pid_gone(*pid) || born(*pid).is_none_or(|(_, now)| now != *start))
+        self.0.iter().all(|(pid, start)| {
+            // SAFETY: waitpid with WNOHANG and no status pointer touches no memory.
+            match unsafe { libc::waitpid(*pid, std::ptr::null_mut(), libc::WNOHANG) } {
+                // ^ The caller's child is gone only once reaped: while it exits, `born` already
+                // finds no process, and a member counted gone then stayed a zombie of the caller
+                // (the reap test under load, 4 of 30 runs, 2026-11-23).
+                reaped if reaped == *pid => true,
+                0 => false,
+                // ^ Not the caller's child (ECHILD): its own parent reaps it.
+                _ => pid_gone(*pid) || born(*pid).is_none_or(|(_, now)| now != *start),
+            }
+        })
     }
 }
 

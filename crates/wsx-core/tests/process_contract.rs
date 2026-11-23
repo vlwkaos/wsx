@@ -31,7 +31,15 @@ fn assert_ends(pid: i32) {
     while alive(pid) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(!alive(pid), "process {pid} is still running");
+    if alive(pid) {
+        // ^ Which process and in what state (a zombie, stopped, still the forked test binary).
+        let ps = Command::new("ps")
+            .args(["-o", "pid,ppid,stat,command", "-p", &pid.to_string()])
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+            .unwrap_or_default();
+        panic!("process {pid} is still running:\n{ps}");
+    }
 }
 
 fn pid_of(file: &Path) -> i32 {
