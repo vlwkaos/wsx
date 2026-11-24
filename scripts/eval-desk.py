@@ -11,13 +11,15 @@ A case is the parent commit, the request (the commit message) and the hidden tes
 crates/*/tests/**/*.rs files, absent or older in the parent).
 
 Each case runs in two arms, each in its own copy of the parent at .work/eval/<run>/<case>/<arm>:
-  solo  one `claude -p "<request>" --output-format json` in a `git worktree add --detach` copy, edits and
+  solo  one `claude -p "<request>" --output-format json` in an isolated copy (`isolated_copy`), edits and
         Bash allowed, --minutes wall limit.
   desk  an isolated wsx (own HOME, XDG folders, socket and wsxd; built binaries of this checkout) with the
-        copy registered as a project. The request goes to the lead with `wsx chat say`. The run ends when the
+        copy registered as a project. The request goes to the lead with `wsx chat say`. The owner answers a
+        question, or a reply that started no task, with one plain go (`--owner-turns`, default 2), as in a real
+        session where the lead sizes a request before it works. The run ends when the
         lead answered and no task is open, when only the owner could move the open tasks on (approvals are
-        never given: that counts as unfinished), or at the limit. The copy is a local clone on branch main,
-        not a worktree: wsx creates branches, workbenches and landings in it, and none may reach this repo.
+        never given: that counts as unfinished), or at the limit. Both arms work in a copy that holds only the
+        parent's history (`isolated_copy`): no ref, tag or object of the answer commit, and nothing reaches this repo.
         Project config (wsx.config.yml) is replaced by a small one: auto land, checks = build + the crate's
         visible tests (--desk-check, repeatable; {crate} is replaced).
 
@@ -43,6 +45,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import statistics
@@ -191,6 +194,14 @@ def cleanup_all():
 
 
 def run_cleanups(mark):
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)  # a second Ctrl-C must not leave half a folder
+    try:
+        _run_cleanups(mark)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def _run_cleanups(mark):
     while STOPS:
         try:
             STOPS.pop()()
@@ -231,13 +242,20 @@ def fake_bin(folder):
     return folder
 
 
-def worktree(case, arm_dir):
-    git('worktree', 'add', '-q', '--detach', str(arm_dir), case['parent'])
+def isolated_copy(case, arm_dir):
+    """A repository at the case's parent that holds only its history: one branch `main`, no tags, no
+    remote. A worktree or a clone of this repo would show the answer commit (`git log main`, a tag)."""
+    git('init', '-q', '-b', 'main', str(arm_dir))
+    git('fetch', '-q', '--no-tags', str(ROOT), '%s:refs/heads/start' % case['parent'], cwd=arm_dir)
+    git('checkout', '-q', '-B', 'main', 'start', cwd=arm_dir)
+    git('branch', '-q', '-D', 'start', cwd=arm_dir)
+
+
+def solo_copy(case, arm_dir):
+    isolated_copy(case, arm_dir)
 
     def drop():
-        git('worktree', 'remove', '--force', str(arm_dir), check=False)
         shutil.rmtree(arm_dir, ignore_errors=True)
-        git('worktree', 'prune', check=False)
     CLEANUPS.append(drop)
     return drop
 
@@ -269,7 +287,7 @@ def tokens_of(usage):
 
 def arm_solo(case, arm_dir, args, evidence):
     started = time.monotonic()
-    worktree(case, arm_dir)
+    solo_copy(case, arm_dir)
     seed_target(arm_dir, args)
     env = clean_env()
     claude = 'claude'
@@ -312,13 +330,15 @@ def arm_solo(case, arm_dir, args, evidence):
         row['tokens'] = None
         row['error'] = 'no JSON result' + (' (time limit)' if timed_out else ': ' + err[-200:])
     git('add', '-A', cwd=arm_dir, check=False)
-    row['diff'] = diff_size(arm_dir, case['parent'], '--cached')
+    row['diff'] = diff_size(arm_dir, case['parent'])
     return row, arm_dir
 
 
-def diff_size(tree, parent, *extra):
+def diff_size(tree, parent, tip=None):
+    """Changed files and lines from the parent to `tip`, or to the index (solo stages everything first)."""
     files = added = deleted = 0
-    out = git('diff', '--numstat', *extra, parent, '--', '.', ':!wsx.config.yml', cwd=tree, check=False).stdout
+    span = [parent, tip] if tip else ['--cached', parent]
+    out = git('diff', '--numstat', *span, '--', '.', ':!wsx.config.yml', cwd=tree, check=False).stdout
     for row in out.splitlines():
         a, d, _ = row.split('\t', 2)
         files += 1
@@ -353,13 +373,11 @@ def arm_desk(case, arm_dir, args, evidence):
     CLEANUPS.append(lambda: [shutil.rmtree(p, ignore_errors=True) for p in (home, state, cfg, cache, tmp, bindir)])
     for folder in (home, state, cfg, cache, tmp):
         folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    # ^ A clone, not `git worktree add`: wsx makes branches, workbenches and landings in the project, and
+    # ^ An isolated copy, not a worktree: wsx makes branches, workbenches and landings in the project, and
     # none of that may reach this repository.
-    git('clone', '-q', '--local', '--no-checkout', str(ROOT), str(arm_dir))
+    isolated_copy(case, arm_dir)
     CLEANUPS.append(lambda: [shutil.rmtree(p, ignore_errors=True) for p in [arm_dir, *base.glob('desk-t*')]])
     # ^ wsx puts each task's workbench beside the project folder: desk-t1, desk-t2.
-    git('remote', 'remove', 'origin', cwd=arm_dir)
-    git('checkout', '-q', '-B', 'main', case['parent'], cwd=arm_dir)
     seed_target(arm_dir, args)
     ident = ['-c', 'user.name=eval', '-c', 'user.email=eval@example.invalid']
     (arm_dir / 'wsx.config.yml').write_text(desk_config(case, args))
@@ -375,12 +393,20 @@ def arm_desk(case, arm_dir, args, evidence):
         fake_bin(bindir)
         extra_path = str(bindir)
     else:
-        # ^ The Claude login lives in the real home: link it, as scripts/dev.sh does.
-        for item in ('.claude', '.claude.json', '.claude-work', 'bin', '.local/bin'):
-            if (real / item).exists():
-                (home / item).parent.mkdir(parents=True, exist_ok=True)
-                (home / item).symlink_to(real / item)
-        extra_path = ''
+        # ^ The Claude login needs the real HOME, which would also give every command Claude runs the real
+        # HOME: the shell prefix puts the scratch one back (AGENTS.md "Real task runs with a HOME wrapper").
+        claude = shutil.which('claude')
+        if not claude:
+            raise RuntimeError('claude is not on PATH')
+        bindir.mkdir(parents=True, exist_ok=True)
+        prefix = bindir / 'shell-prefix'
+        prefix.write_text('#!/bin/sh\nHOME=%s exec /bin/zsh -c "$1"\n' % shlex.quote(str(home)))
+        prefix.chmod(0o755)
+        wrapper = bindir / 'claude'
+        wrapper.write_text('#!/bin/sh\nHOME=%s CLAUDE_CODE_SHELL_PREFIX=%s exec %s "$@"\n' % (
+            shlex.quote(str(real)), shlex.quote(str(prefix)), shlex.quote(str(Path(claude).resolve()))))
+        wrapper.chmod(0o755)
+        extra_path = str(bindir)
     env = clean_env({
         'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(cfg),
         'XDG_CACHE_HOME': str(cache), 'TMPDIR': str(tmp), 'WSX_SOCKET': str(base / 'dh/d.sock'),
@@ -402,10 +428,16 @@ def arm_desk(case, arm_dir, args, evidence):
     request = DRY_REQUEST if args.dry_run else case['request']
     asked = wsx_json(wsx, env, arm_dir, 'chat', 'say', request, '-p', 'eval')
     deadline = time.monotonic() + args.minutes * 60
-    outcome, quiet = 'limit', 0
+    outcome, quiet, said, goes = 'limit', 0, asked['id'], 0
     while time.monotonic() < deadline:
         time.sleep(POLL)
-        verdict = desk_state(wsx, env, arm_dir, asked['id'])
+        verdict = desk_state(wsx, env, arm_dir, said)
+        # ^ The owner's go, as in a real session: the lead sizes a request and asks before it starts
+        # work. A question or a reply that started nothing gets one plain yes, at most --owner-turns times.
+        if verdict in ('done', 'owner') and goes < args.owner_turns and owner_should_answer(wsx, env, arm_dir):
+            said = wsx_json(wsx, env, arm_dir, 'chat', 'say', OWNER_GO, '-p', 'eval')['id']
+            goes, quiet = goes + 1, 0
+            continue
         if verdict == 'done':
             quiet += 1
             if quiet >= 2:
@@ -422,8 +454,15 @@ def arm_desk(case, arm_dir, args, evidence):
     open_tasks = [t for t in task_items(wsx_json(wsx, env, arm_dir, 'task', 'list'))
                   if t.get('state') not in DONE_TASK]
     row = {'minutes': round(minutes, 2), 'timed_out': outcome == 'limit', 'finished': outcome == 'done',
-           'outcome': outcome, 'open_tasks': len(open_tasks)}
+           'outcome': outcome, 'open_tasks': len(open_tasks), 'owner_turns': goes}
+    chat = wsx_json(wsx, env, arm_dir, 'chat', 'read')
+    (evidence / 'chat.json').write_text(json.dumps(chat, indent=1))
+    replies = [e.get('text', '') for e in chat.get('entries', []) if e.get('kind') == 'reply']
+    row['lead_last_reply'] = replies[-1][:400] if replies else None
+    row['open_asks'] = len(chat.get('asks') or [])
     row.update(desk_usage(state, evidence))
+    if row.get('tasks') == 0:
+        row['finished'] = False  # the lead answered and started no task: nothing was built
     # ^ Landed means the default branch moved: judge main as it is, not a task copy.
     git('reset', '-q', '--hard', 'main', cwd=arm_dir, check=False)
     row['diff'] = diff_size(arm_dir, case['parent'], 'main')
@@ -443,6 +482,19 @@ def find_key(obj, key):
             if found is not None:
                 return found
     return None
+
+
+OWNER_GO = 'Yes, go ahead: do it as you proposed, and decide the open points yourself.'
+
+
+def owner_should_answer(wsx, env, cwd):
+    """Whether the owner would answer now: a question of the lead is open, or no task was ever started."""
+    try:
+        chat = wsx_json(wsx, env, cwd, 'chat', 'read')
+        tasks = task_items(wsx_json(wsx, env, cwd, 'task', 'list', '--all'))
+    except (RuntimeError, ValueError, subprocess.TimeoutExpired):
+        return False
+    return bool(chat.get('asks')) or not tasks
 
 
 def desk_state(wsx, env, cwd, said_id):
@@ -545,6 +597,7 @@ def main():
     ap.add_argument('--ref', default='main', help='history to take cases from (default main)')
     ap.add_argument('--arms', default='solo,desk', help='comma list (default solo,desk)')
     ap.add_argument('--minutes', type=float, default=40, help='wall limit of one arm (default 40)')
+    ap.add_argument('--owner-turns', type=int, default=2, help='desk: times the owner answers a question or a reply that started nothing with a plain go (default 2)')
     ap.add_argument('--test-minutes', type=float, default=45, help='wall limit of one judged test file')
     ap.add_argument('--model', help='claude model for solo and for every desk agent (default: each one\'s own)')
     ap.add_argument('--desk-check', action='append', help='desk check command, repeatable; {crate} is the case crate')
