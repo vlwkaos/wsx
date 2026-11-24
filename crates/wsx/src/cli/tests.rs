@@ -775,16 +775,14 @@ mod session_resolution_tests {
 #[cfg(test)]
 mod task_global_args_tests {
     use crate::cli::{Args, Command};
-    use crate::task::TaskCmd;
+    use crate::task::{ProjectGroup, TaskCmd};
     use clap::{CommandFactory, Parser};
 
-    fn task(argv: &[&str]) -> (Option<String>, bool, TaskCmd) {
-        let args = Args::try_parse_from(std::iter::once("wsx").chain(argv.iter().copied()))
-            .unwrap_or_else(|error| panic!("{argv:?}: {error}"));
-        match args.command {
-            Some(Command::Task { common, subcommand }) => (common.project, common.json, subcommand),
-            _ => panic!("{argv:?} is no task command"),
-        }
+    fn parse(argv: &[&str]) -> Command {
+        Args::try_parse_from(std::iter::once("wsx").chain(argv.iter().copied()))
+            .unwrap_or_else(|error| panic!("{argv:?}: {error}"))
+            .command
+            .unwrap_or_else(|| panic!("{argv:?} is no command"))
     }
 
     #[test]
@@ -795,20 +793,28 @@ mod task_global_args_tests {
             ["task", "-p", "demo", "--json", "show", "3"],
             ["task", "--json", "show", "-p", "demo", "3"],
         ] {
-            let (project, json, command) = task(&argv);
-            assert_eq!(project.as_deref(), Some("demo"), "{argv:?}");
-            assert!(json && matches!(command, TaskCmd::Show { .. }), "{argv:?}");
+            let Command::Task { common, subcommand } = parse(&argv) else {
+                panic!("{argv:?} is no task command");
+            };
+            assert_eq!(common.project.as_deref(), Some("demo"), "{argv:?}");
+            assert!(
+                common.json && matches!(subcommand, TaskCmd::Show { .. }),
+                "{argv:?}"
+            );
         }
         // ^ `digest`, `checkin` and `post` accept --json and ignore it.
-        task(&["task", "digest", "-p", "demo", "--json"]);
-        task(&["task", "post", "--json"]);
-        task(&["task", "check", "pass", "c1", "-p", "demo", "--json"]);
+        parse(&["task", "digest", "-p", "demo", "--json"]);
+        parse(&["task", "post", "--json"]);
+        parse(&["chat", "checkin", "--in", "1h", "--why", "x", "--json"]);
+        parse(&["project", "check", "pass", "c1", "-p", "demo", "--json"]);
     }
 
     #[test]
     fn a_routine_takes_the_groups_flags_from_either_place() {
-        let (_, _, TaskCmd::Routine { mut action, .. }) =
-            task(&["task", "-p", "demo", "--json", "routine", "list"])
+        let Command::Project {
+            subcommand: ProjectGroup::Routine { mut action, .. },
+            ..
+        } = parse(&["project", "-p", "demo", "--json", "routine", "list"])
         else {
             panic!("not a routine");
         };

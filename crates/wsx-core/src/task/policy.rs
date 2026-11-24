@@ -233,7 +233,7 @@ impl Role {
         match self.info().reach {
             [] => "Stay in your own project.".into(),
             reach => format!(
-                "`-p <project>` runs {} in another project, not its deploys, releases or pushes. An owner's '@<chat>' means: consult that chat's manager with `wsx task say --to <chat> --from-chat`.",
+                "`-p <project>` runs {} in another project, not its deploys, releases or pushes. An owner's '@<chat>' means: consult that chat's manager with `wsx chat say --to <chat> --from-chat`.",
                 reach.join(", ")
             ),
         }
@@ -243,11 +243,11 @@ impl Role {
     pub fn reach_refusal(self, other: &str) -> String {
         match self.info().reach {
             [] => format!(
-                "a {} acts only in its own project (for {other} it may read `wsx task ledger -p {other}`)",
+                "a {} acts only in its own project (for {other} it may read `wsx chat ledger -p {other}`)",
                 self.info().name
             ),
             reach => format!(
-                "a manager acts in another project only with {}, never --discard or an approved action; for {other} it may also read `wsx task ledger -p {other}` and `wsx task say -p {other} --from-chat`",
+                "a manager acts in another project only with {}, never --discard or an approved action; for {other} it may also read `wsx chat ledger -p {other}` and `wsx chat say -p {other} --from-chat`",
                 reach.join(", ")
             ),
         }

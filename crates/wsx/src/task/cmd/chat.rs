@@ -37,7 +37,7 @@ pub(crate) fn ensure_repo(project: Option<&str>) -> Result<bool> {
     owner::ensure_repo(&name, &main, &exe, launch_manager(&main))
 }
 
-/// `wsx task say --uses <dep>`: one message to the main chat of every registered project whose
+/// `wsx chat say --uses <dep>`: one message to the main chat of every registered project whose
 /// lockfile or manifest names `dep` (`deps::uses`), from the owner, or with `from_chat` from the
 /// acting chat, which it does not reach itself. Each lead answers it or forks what it asks of its
 /// project ("Lead and forks"). `-p` names none: every project is looked at.
@@ -131,7 +131,7 @@ pub(crate) fn mail_command(
     Ok(())
 }
 
-/// `wsx task say`: to the manager, or to the open chat `to`, from the owner or a chat.
+/// `wsx chat say`: to the manager, or to the open chat `to`, from the owner or a chat.
 /// `from_chat`: this host's agent sends it (`reply`: as a reply); the sender is the acting chat
 /// (the first as `manager`), and for another project (`-p`) its first chat is the one reached.
 pub(crate) fn say_command(
@@ -266,7 +266,7 @@ pub(crate) fn chat(
     Ok(())
 }
 
-/// `wsx task search <words>`: ranked hits in one project or every registered one, each with
+/// `wsx chat search <words>`: ranked hits in one project or every registered one, each with
 /// the reference to quote it by. ref: docs/tasks.md "Search"
 pub(crate) fn search(
     project: Option<&str>,
@@ -347,12 +347,12 @@ pub(crate) fn search(
     Ok(())
 }
 
-/// The lines of `wsx task search --task <n>` shown without `--limit`, and the hits of a search.
+/// The lines of `wsx chat search --task <n>` shown without `--limit`, and the hits of a search.
 pub(crate) const HISTORY_LINES: usize = 40;
 
 pub(crate) const SEARCH_HITS: usize = 10;
 
-/// `wsx task search --task <n>`: the task's story as dated lines, newest last.
+/// `wsx chat search --task <n>`: the task's story as dated lines, newest last.
 /// ref: docs/tasks.md "Search"
 pub(crate) fn history(dir: &TaskDir, limit: usize, json: bool) -> Result<()> {
     let history = wsx_core::task::history::read(dir, limit)?;
@@ -377,7 +377,7 @@ pub(crate) fn history(dir: &TaskDir, limit: usize, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `wsx task dismiss <id>`: the owner's; the manager answers a question, it does not close it.
+/// `wsx chat dismiss <id>`: the owner's; the manager answers a question, it does not close it.
 /// ref: docs/tasks.md "Manager"
 pub(crate) fn dismiss(project: Option<&str>, id: u64, json: bool) -> Result<()> {
     owner_only("dismiss")?;
@@ -392,7 +392,7 @@ pub(crate) fn dismiss(project: Option<&str>, id: u64, json: bool) -> Result<()> 
     Ok(())
 }
 
-/// `wsx task chat new|list|close|goal|main`: the owner's; a chat's agent opens and closes a chat when
+/// `wsx chat new|list|close|goal|main`: the owner's; a chat's agent opens and closes a chat when
 /// the owner's message of its turn asks (`--owner-said`, as for `land`). ref: docs/tasks.md "Chats"
 pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -> Result<()> {
     match action {
@@ -448,7 +448,7 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
                 }
             };
             chats::create(&project_id, &name, goal.as_deref(), agent.as_deref())?;
-            let message = format!("chat {name} is open; `wsx task say --to {name}` talks to it");
+            let message = format!("chat {name} is open; `wsx chat say --to {name}` talks to it");
             if json {
                 return print_json(&json!({ "chat": name, "state": "open", "message": message }));
             }
@@ -584,11 +584,8 @@ fn fork(
     let (Some(asker), Some(said)) = (asker, said) else {
         bail!("--brief forks the owner's message of the lead's turn; nothing was done");
     };
-    let project_id = store::project_id(project, main);
     let origin = ManagerDir::existing(&asker)?.context("the asking chat has no folder")?;
-    if store::main_chat(&project_id).as_deref() != Some(asker.as_str())
-        || !chats::goal(&origin).trim().is_empty()
-    {
+    if !chats::is_lead(&origin) {
         bail!("only the lead forks: the project's main chat with no goal; nothing was done");
     }
     let name = chats::checked_name(name)?;
@@ -641,7 +638,7 @@ fn lifecycle(command: &str, project: Option<&str>, said: Option<u64>) -> Result<
     let asker = actor().chat().map(str::to_string).unwrap_or_default();
     let said = crate::task::owner_said(said).with_context(|| {
         format!(
-            "wsx task {command} is the owner's; a chat's agent runs it when the owner's message of this turn asks: pass --owner-said <id>; nothing was done"
+            "wsx chat {command} is the owner's; a chat's agent runs it when the owner's message of this turn asks: pass --owner-said <id>; nothing was done"
         )
     })?;
     let own = ManagerDir::existing(&asker)?.context("the asking chat has no folder")?;
@@ -675,7 +672,7 @@ pub(crate) fn read_goal(path: &Path) -> Result<String> {
     Ok(goal)
 }
 
-/// `wsx task manager`: start the project's manager, or say that it runs.
+/// `wsx chat lead`: start the project's manager, or say that it runs.
 pub(crate) fn manager_command(project: Option<&str>, json: bool) -> Result<()> {
     let (started, dir) = ensure_manager(project)?;
     let state = if started { "started" } else { "running" };

@@ -169,7 +169,7 @@ pub enum Closed {
     ForkUndone,
 }
 
-/// Close the open chat `name` of the repo (`wsx task chat close`, the web's and the TUI's Close
+/// Close the open chat `name` of the repo (`wsx chat close`, the web's and the TUI's Close
 /// chat) and hand it back: its goal, open tasks and last decisions go to the repo's main chat
 /// as one message of wsx, which the main chat reads with no turn. The open tasks are the main
 /// chat's from then on (`chats::owner`). Closing the main chat leaves the repo with none, and
@@ -572,7 +572,7 @@ pub fn action_name(action: ApprovalAction) -> &'static str {
 }
 
 /// A character that could make a shown command read as another: a control, a format (zero
-/// width, bidi) or a line break. `wsx task run` refuses words with one.
+/// width, bidi) or a line break. `wsx project run` refuses words with one.
 pub fn misleading_char(c: char) -> bool {
     c.is_control()
         || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}' | '\u{2028}' | '\u{2029}')
@@ -772,7 +772,7 @@ pub fn find_request<'a>(lines: &'a [ApprovalLine], id: &str) -> Result<&'a Appro
                 ),
                 (Some(outcome), _) => format!("approval {id} was decided: {outcome}; nothing ran"),
                 (None, _) => {
-                    format!("no pending approval {id}; `wsx task ledger` lists the pending ones")
+                    format!("no pending approval {id}; `wsx chat ledger` lists the pending ones")
                 }
             }
         })
@@ -860,7 +860,12 @@ fn run_request(
             bail!("{outcome}");
         }
     }
-    let mut argv: Vec<String> = vec!["task".into()];
+    // ^ Land and discard are `wsx task` commands; the rest are `wsx project`'s.
+    let group = match action {
+        ApprovalAction::Land | ApprovalAction::Discard => "task",
+        _ => "project",
+    };
+    let mut argv: Vec<String> = vec![group.into()];
     match action {
         ApprovalAction::Land => {
             argv.extend(["land".into(), task.unwrap_or_default().to_string()]);
@@ -871,7 +876,7 @@ fn run_request(
             "--discard".into(),
         ]),
         ApprovalAction::Project => {
-            argv.extend(["project".into(), "add".into(), path.unwrap_or_default()]);
+            argv.extend(["add".into(), path.unwrap_or_default()]);
             if let Some(url) = url {
                 argv.extend(["--clone".into(), url]);
             }

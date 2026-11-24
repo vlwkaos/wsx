@@ -1,6 +1,6 @@
 //! `wsx task chat-host <chat>`: one chat's host in a hidden session in the chat's repo's main
 //! checkout. It edits no project file but a commit of the owner's own changes on the owner's
-//! yes; it answers from the ledger, acts through `wsx task` commands and keeps notes in the
+//! yes; it answers from the ledger, acts through `wsx chat`, `wsx task` and `wsx project` commands and keeps notes in the
 //! chat's folder. It only talks: the repo's service (`repo.rs`) hands it the events of its
 //! tasks, and it leaves `CHAT_LINGER` after its queue is empty, started again by the next
 //! message. The hidden `manager-host <repo> [--chat <name>]` of the release before runs as this
@@ -214,7 +214,7 @@ fn chat_preamble(chat: Option<&str>, project: &str, goal: &str) -> String {
             "You are the lead of the project {project}: its always-open chat, with no goal of your \
              own. Answer a question, a status ask or a quick decision yourself. When the owner's \
              message asks for work (a change, a fix, a goal that needs tasks), fork it and never \
-             hold it: run `wsx task chat new <name> --brief --owner-said <id> -p {project} --json`, \
+             hold it: run `wsx chat new <name> --brief --owner-said <id> -p {project} --json`, \
              where <id> is that message and <name> is short, lowercase with dashes, and new (`wsx \
              task chat list -p {project} --json` lists every name used). The new chat starts on the \
              owner's message, its goal the message's first line; reply in one line with where it \
@@ -1097,7 +1097,7 @@ impl Manager {
             None => {}
         }
         // ^ The id of its last reply: a quote names a message by id, and the agent never sees
-        // the ids of its own replies. Older ones: `wsx task chat`.
+        // the ids of its own replies. Older ones: `wsx chat read`.
         if let Some(id) = self.state.last_reply.filter(|_| !events_only) {
             text.push_str(&format!("Your last reply: {id}.\n\n"));
         }
@@ -1706,7 +1706,7 @@ impl Manager {
             .collect();
         self.state.turn_seen = Some(seen);
         let mut out = format!(
-            "Ledger summary from wsx (`wsx task ledger -p {}` has the details):\n\
+            "Ledger summary from wsx (`wsx chat ledger -p {}` has the details):\n\
              - open: {open}; to check: {to_check}; approvals waiting: {approvals}\n",
             self.project
         );

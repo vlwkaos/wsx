@@ -14,7 +14,6 @@ fn a_chat_opened_at_a_role_owns_its_paths() {
     let goal = fixture.root.join("goal.md");
     std::fs::write(&goal, "Ship the dark theme.\n").unwrap();
     let made = fixture.wsx(&[
-        "task",
         "chat",
         "new",
         "web-desk",
@@ -24,7 +23,7 @@ fn a_chat_opened_at_a_role_owns_its_paths() {
         goal.to_str().unwrap(),
     ]);
     assert!(made.status.success(), "{made:?}");
-    let chats = fixture.json(&["task", "chat", "list", "--json"]);
+    let chats = fixture.json(&["chat", "list", "--json"]);
     let row = chats["chats"]
         .as_array()
         .and_then(|rows| rows.iter().find(|row| row["name"] == "web-desk"))
@@ -38,7 +37,7 @@ fn a_chat_opened_at_a_role_owns_its_paths() {
     );
 
     // ^ Its agent reads the whole goal: the role, its purpose, then the owner's goal.
-    fixture.json(&["task", "say", "--to", "web-desk", "hello", "--json"]);
+    fixture.json(&["chat", "say", "--to", "web-desk", "hello", "--json"]);
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let read = fixture.traces().iter().any(|trace| {
@@ -57,14 +56,14 @@ fn a_chat_opened_at_a_role_owns_its_paths() {
     }
 
     // ^ A role the config does not name: refused with the names it has, no chat made.
-    let refused = fixture.wsx(&["task", "chat", "new", "api-desk", "--role", "api"]);
+    let refused = fixture.wsx(&["chat", "new", "api-desk", "--role", "api"]);
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(
         !refused.status.success() && said.contains("no role api in tasks.roles (it has: web)"),
         "{said}"
     );
     assert!(!fixture
-        .json(&["task", "chat", "list", "--json"])
+        .json(&["chat", "list", "--json"])
         .to_string()
         .contains("api-desk"));
 }

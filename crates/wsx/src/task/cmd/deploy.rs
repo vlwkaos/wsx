@@ -1,4 +1,4 @@
-//! `wsx task push`, `sync`, `deploy`, `release` and `deployed` (docs/tasks.md).
+//! `wsx project push`, `sync`, `deploy`, `release` and `deployed` (docs/tasks.md).
 
 use super::approve::{after_landing, ask_covering, request_of};
 use crate::runtime_util::print_json;
@@ -240,12 +240,12 @@ pub(crate) fn spawn_quiet_deploy(project: &str, project_id: &str, main: &Path) -
     }
     let quiet = settings.deploy_quiet_secs.to_string();
     let args = [
-        "task", "deploy", "-p", project, "--if-new", "--quiet", &quiet, "--json",
+        "project", "deploy", "-p", project, "--if-new", "--quiet", &quiet, "--json",
     ];
     hosting::spawn_wsx(&args, store::follow_up_log(project_id)?, None)
 }
 
-/// `wsx task sync`: the default branch follows origin when the owner asks, with no approval and
+/// `wsx project sync`: the default branch follows origin when the owner asks, with no approval and
 /// no `--force`, since it moves only when no commit or file is lost. ref: docs/tasks.md "Sync"
 pub(crate) fn sync(project: Option<&str>, json: bool) -> Result<()> {
     let (project_name, main) = project_entry(project)?;
@@ -358,7 +358,7 @@ pub(crate) fn deploy(
         match (kind, owner_said) {
             (DeployKind::Release, Some(said)) => owner::check_owner_said(&project_id, actor().chat(), said)?,
             _ => bail!(
-                "{to_check} item(s) to check are open; the owner checks them first (`wsx task check`). Nothing was run"
+                "{to_check} item(s) to check are open; the owner checks them first (`wsx project check`). Nothing was run"
             ),
         }
     }
@@ -385,7 +385,7 @@ pub(crate) fn deploy(
                 waited = true;
                 store::lock_deploys(&project_id)?
             }
-            None => bail!("a deploy or release of {project_name} runs; its result arrives in `wsx task deployed`. Nothing was run"),
+            None => bail!("a deploy or release of {project_name} runs; its result arrives in `wsx project deployed`. Nothing was run"),
         },
         None => store::lock_deploys(&project_id)?,
     };
@@ -418,7 +418,7 @@ pub(crate) fn deploy(
         let log = store::follow_up_log(&project_id)?;
         let fd = running.as_raw_fd().to_string();
         let args = [
-            "task",
+            "project",
             name,
             "-p",
             &project_name,
@@ -430,7 +430,7 @@ pub(crate) fn deploy(
         ];
         hosting::spawn_wsx(&args, log, Some(&running))?;
         let message = format!(
-            "{name} of {commit:.12} started{}; its output goes to {}, its result to `wsx task deployed`{}",
+            "{name} of {commit:.12} started{}; its output goes to {}, its result to `wsx project deployed`{}",
             if waited { " after waiting for the deploy or release that ran" } else { "" },
             store::follow_up_log_path(&project_id)?.display(),
             check_suffix

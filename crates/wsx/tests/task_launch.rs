@@ -53,7 +53,7 @@ fn a_host_inside_another_sandbox_fails_with_the_reason() {
     let log = fixture.log(&task);
     assert!(log.contains("another sandbox"), "{log}");
     assert!(fixture.traces().is_empty(), "the fake started");
-    let ledger = fixture.json(&["task", "ledger", "--json"]);
+    let ledger = fixture.json(&["chat", "ledger", "--json"]);
     assert!(ledger.to_string().contains("another sandbox"), "{ledger}");
 }
 
@@ -132,7 +132,7 @@ fn usage_sums_a_tasks_turns_and_older_running_totals() {
     assert_eq!(shown["pings"].as_u64(), Some(2), "{shown}");
     assert_eq!(shown["turns"].as_u64(), Some(sum("turns", 5)), "{shown}");
 
-    let ledger = fixture.json(&["task", "ledger", "--json"]);
+    let ledger = fixture.json(&["chat", "ledger", "--json"]);
     let row = ledger["open"]
         .as_array()
         .into_iter()
@@ -165,7 +165,7 @@ fn a_host_that_cannot_load_its_record_posts_one_alert() {
     fs::create_dir_all(&dir).expect("create the task folder");
     fs::write(dir.join("task.json"), "garbage").expect("write it");
     // ^ The manager host receives the post; it runs the project's main chat.
-    let started = fixture.wsx(&["task", "manager"]);
+    let started = fixture.wsx(&["chat", "lead"]);
     assert!(started.status.success(), "{started:?}");
 
     let alerts = || -> Vec<String> {

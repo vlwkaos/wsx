@@ -1,7 +1,7 @@
 //! The project manager's conversation and state: `tasks/chats/<name>/`, the chat's own folder (the main chat's too).
 //! ref: docs/tasks.md "Manager"
 //!
-//! The manager host is the only writer of these files; `wsx task chat` reads the log.
+//! The manager host is the only writer of these files; `wsx chat read` reads the log.
 
 use super::status::answered_after_stop;
 use super::store::TaskDir;
@@ -202,7 +202,7 @@ pub enum ManagerEvent {
     },
     /// The agent process ended outside a reply.
     Stopped { reason: String },
-    /// The owner dismissed the question of reply `id` (`wsx task dismiss`): it asks no more.
+    /// The owner dismissed the question of reply `id` (`wsx chat dismiss`): it asks no more.
     /// No turn reads it. ref: docs/tasks.md "Manager"
     Answered { id: u64 },
     /// This chat forked the owner's message `message` into the new chat `to` (`chat new

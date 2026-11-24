@@ -5128,7 +5128,7 @@ fn rotation_prompt(
     text.join("\n\n")
 }
 
-/// A worker's `wsx task run`: the CLI records the request with this task as the asker
+/// A worker's `wsx project run`: the CLI records the request with this task as the asker
 /// (`WORKER_ENV`), in the task's own project. ref: docs/tasks.md "Approved runs"
 fn ask_run(argv: &[String], copy: &Path, project: &str, task: u32) -> broker::Response {
     let names_project = argv[2..]

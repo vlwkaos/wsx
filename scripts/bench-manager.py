@@ -71,8 +71,8 @@ stdin = sys.stdin.read() if '-' in sys.argv[2:] else None
 with open(os.environ['BENCH_CALLS'], 'a') as out:
     out.write(json.dumps({'argv': sys.argv[1:], 'stdin': stdin}) + '\n')
 args = [a for a in sys.argv[1:] if a not in ('--json',)]
-if args[:1] != ['task']:
-    print('wsx: only `wsx task` commands run here', file=sys.stderr); sys.exit(2)
+if args[:1] not in (['chat'], ['task'], ['project']):
+    print('wsx: only `wsx chat`, `wsx task` and `wsx project` commands run here', file=sys.stderr); sys.exit(2)
 verb = args[1] if len(args) > 1 else ''
 def task(n):
     found = next((t for t in state['tasks'] if t['id'] == n), None)
@@ -121,7 +121,7 @@ def source_at(commit):
 # ^ The manager's lend_line(true) and reach_line() of wsx-core task/policy.rs.
 LEND = '`new --skills` lends a worker the ones its task needs. '
 REACH = ("`-p <project>` runs new, show, list, add, stop, hold, land, close in another project, not its deploys, "
-         "releases or pushes. Consult its manager ('@<project>') with `wsx task say -p <project> --from-chat`.")
+         "releases or pushes. Consult its manager ('@<project>') with `wsx chat say -p <project> --from-chat`.")
 
 
 def skills_sentence(source, folder, names):
@@ -345,7 +345,7 @@ def summary(state, baseline):
     rows = ['#%d %s r%d: %s' % (t['id'], t['row']['state'], t['row']['revision'], t['row']['title'][:60])
             for t in state['tasks']
             if (baseline is None and t['open']) or (baseline is not None and baseline.get(t['id']) != seen[t['id']])]
-    out = ('Ledger summary from wsx (`wsx task ledger -p bench` has the details):\n- open: %s; to check: 1; '
+    out = ('Ledger summary from wsx (`wsx chat ledger -p bench` has the details):\n- open: %s; to check: 1; '
            'approvals waiting: 0\n' % ', '.join('%d %s' % (n, s) for s, n in sorted(counts.items())))
     if rows:
         out += '- %s:\n' % ('open tasks' if baseline is None else 'changed since your last turn')
@@ -435,7 +435,7 @@ def tool_kind(block):
     if block['name'] != 'Bash':
         return block['name']
     command = block['input'].get('command', '')
-    found = re.search(r'wsx task (\w+)', command)
+    found = re.search(r'wsx (?:chat|task|project) (\w+)', command)
     # ^ `--help` reads a command's options (the instructions point there): no task call.
     if found:
         return 'wsx help' if '--help' in command else 'wsx ' + found.group(1)
@@ -807,8 +807,9 @@ def home_chat(project):
 CLAUDE_PROJECTS = Path.home() / '.claude/projects'
 CACHE_MS = 3_600_000
 DAY_MS = 86_400_000
-# ^ `wsx task` verbs that only read (crates/wsx/src/task/args.rs); every other verb acts.
-READ_VERBS = 'list show why review ledger deployed digest search chat help manager'
+# ^ Verbs of `wsx chat|task|project` that only read (crates/wsx/src/task/args.rs `Invocation::needs`);
+# every other verb acts. `chat` and `manager` are the old `wsx task` reads of a transcript before the split.
+READ_VERBS = 'list show why review ledger deployed digest search chat help manager read lead'
 KINDS = ('failure', 'question', 'ready', 'landed', 'deploy', 'other')
 EVENT_WSX = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -829,7 +830,7 @@ else:
     print(json.dumps({'ok': True, 'message': 'wsx bench replay: recorded, not run'}, indent=1))
 '''
 REPLAY_NOTE = ("\n\n(wsx bench replay, not from the host: this turn runs again on a copy of the conversation. "
-               "`wsx task` commands that act are recorded, not run, and answer ok. `wsx task` reads cannot "
+               "`wsx chat|task|project` commands that act are recorded, not run, and answer ok. Their reads cannot "
                "run, and git and files show today's checkout, not the state of then. The reads this turn "
                "made then, with their output:\n%s\nDecide and answer as you would have then.)")
 EVENT_JUDGE = """You judge turns of a software project manager agent. The manager runs coding tasks
@@ -838,7 +839,7 @@ with a change (`add`), closes it, starts a task (`new`), asks the owner, or does
 when the events need nothing. `events` is what woke the turn, `reads` what the turn could read
 then, `later` what the log shows afterwards (the owner's next messages and the tasks' later events:
 hindsight, not always caused by the turn). Each of `answers` is one run of the same turn: the
-`wsx task` commands that act (`acts`) and the reply to the owner. For each answer give `decision`
+`wsx chat|task|project` commands that act (`acts`) and the reply to the owner. For each answer give `decision`
 (a few words); `same_as`, the labels of the other answers that decided the same in substance (the
 same tasks landed, sent back, closed, started or asked about; wording and extra reads do not
 matter); `wrong`: "none", "minor" (a needless or missing small step, or a reply that misleads a
@@ -987,7 +988,7 @@ def event_bursts(projects, rng):
 def acts(command):
     """The acting `wsx task` calls of one shell command, as 'verb #n'."""
     found = []
-    for verb, rest in re.findall(r'wsx task ([a-z][\w-]*)([^|;&\n]*)', command):
+    for verb, rest in re.findall(r'wsx (?:chat|task|project) ([a-z][\w-]*)([^|;&\n]*)', command):
         if verb not in READ_VERBS.split() and '--help' not in rest:
             number = re.search(r'(?<![\w-])#?(\d+)\b', rest)
             found.append(verb + (' #' + number.group(1) if number else ''))
@@ -1044,7 +1045,7 @@ def later(turn, projects_log):
 
 
 def recorded_acts(calls):
-    """The acting `wsx task` commands the recorder wrote to `calls`, sorted."""
+    """The acting `wsx chat|task|project` commands the recorder wrote to `calls`, sorted."""
     return sorted(acts(' ; '.join(' '.join(['wsx'] + json.loads(line)['argv'])
                                   for line in calls.read_text().splitlines() if line.strip())))
 
@@ -1344,7 +1345,7 @@ for its owner: it reviews a ready task's result and diff, then lands it (`land`)
 nothing. `earlier` is the chat before the turn, `prompt` what the turn got, `reads` what it could read
 then, `later` what the log shows afterwards (hindsight, not always caused by the turn). Each of
 `answers` is one run of the same turn by agents that knew different amounts of the earlier work:
-the `wsx task` commands that act (`acts`) and the reply. For each answer give `decision` (a few
+the `wsx chat|task|project` commands that act (`acts`) and the reply. For each answer give `decision` (a few
 words); `same_as`, the labels of the other answers that decided the same in substance (the same tasks
 landed, sent back, closed, started or asked about, and the same verdict on the owner's question;
 wording and extra reads do not matter); `wrong`: "none", "minor" (a needless or missing small step,
@@ -1488,7 +1489,7 @@ def interleaved(found, seed):
 
 
 def served_reads(before, ms):
-    """The newest output of each `wsx task ledger` and `wsx task show <n>` the conversation read
+    """The newest output of each `wsx chat ledger` and `wsx task show <n>` the conversation read
     before the turn, keyed as the recorder looks them up, with its age."""
     uses, served = {}, {}
     for line in before:
@@ -1497,7 +1498,7 @@ def served_reads(before, ms):
             if block.get('type') == 'tool_use' and block.get('name') == 'Bash':
                 uses[block['id']] = block['input'].get('command', '')
             elif block.get('type') == 'tool_result' and block.get('tool_use_id') in uses:
-                read = re.search(r'wsx task (ledger|show)\b([^|;&\n]*)', uses[block['tool_use_id']])
+                read = re.search(r'wsx (?:chat|task) (ledger|show)\b([^|;&\n]*)', uses[block['tool_use_id']])
                 if not read:
                     continue
                 number = re.search(r'(?<![\w-])#?(\d+)\b', read.group(2)) if read.group(1) == 'show' else None

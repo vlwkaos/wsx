@@ -17,7 +17,7 @@ Owner: build wsx's memory on `ir` at its full use, apart from the owner's skills
   as a hard dependency). On, wsx checks `ir --version` at use and refuses with the install line (`brew install vlwkaos/tap/ir`).
   Off (default): the built-in BM25 as today.
 - **One engine for every reader.** It implements `memory::backend::Backend` and answers `wsx memory search|recall`, the records
-  per chat message (`notes.rs`, which before reached no backend), `wsx task search` and `similar`. Built: all but `similar`.
+  per chat message (`notes.rs`, which before reached no backend), `wsx chat search` and `similar`. Built: all but `similar`.
   Whether it replaces the external `[memory] backend` program (search only) is the owner's call.
 - **Corpus.** wsx writes markdown that ir indexes, from the truths it already keeps: `records/<slug>.md` (frontmatter
   `kind`, `status`, `paths`, `keywords`, `source`, `commit`; body the text) on each write, and one file per digest entry of
@@ -50,7 +50,7 @@ a Korean query, the active filter, a deleted record that no search finds, and a 
 | L3 map | One screen: each area, its globs, the owner function of each concern, links to its model and docs | wsx, after a land that adds or removes a path an area covers; the owner may edit | an area's globs match no file, or a changed path matches no area | 1.5 KiB | Manager: its first message, always. Worker: not shown |
 | L2 area model | One per area: how it works, lifecycle (mermaid), owner function per concern, invariants, the owner's rules for it, links to design and research docs that hold the why | wsx's scribe, every 5 lands whose diffs meet the area's globs | `git diff --quiet <verified> HEAD -- <globs>` fails (`start::stale_of`, the rule facts use) | 3 KiB | Worker: start block, by `--files`. Manager: the message that hits the area (words or paths), up to 2 |
 | L1 records | `rule`, `fact`, `episode` ([memory.md](../memory.md)) | Owner, worker memo, capture | as today | per search | `wsx memory search` / `recall`, on demand |
-| L0 raw | Transcripts, logs, code, git | nobody | never | none | `wsx task search`, `rg`, `git log`, on demand |
+| L0 raw | Transcripts, logs, code, git | nobody | never | none | `wsx chat search`, `rg`, `git log`, on demand |
 
 Each layer is the summary of the one below and names it: an L2 line cites the record, doc or function it came from, so a reader who needs more resolution drops one layer.
 
@@ -97,7 +97,7 @@ flowchart TD
 | Manager turn start | L3 (1.5 KiB) then `decisions.md` newest first. Not the `context.md` memo lines | `task/notes.rs` `preamble` |
 | Owner message | Its top record matches (today), and the L2 models of up to 2 areas it hits: a path in the words that meets a glob, else the best BM25 matches over the models (`memory::index` indexes them with the records). Events, recaps and replies get none | `task/notes.rs` `matching` |
 | Worker start | The L2 models whose globs meet `--files`, then #520's rules whose paths meet them. No fact records: the paid evaluation (#392) found none gave a gain and likely harm | `memory/start.rs` |
-| Any agent, any time | `wsx memory search`, `recall`, `wsx task search`, `rg`, `git log` | CLI |
+| Any agent, any time | `wsx memory search`, `recall`, `wsx chat search`, `rg`, `git log` | CLI |
 
 Limit: the eval kept hand-written briefs. The scribe's notes were scored on questions only; the replay of plan steps with them was not run (budget), so step 6 measures it before anything is deleted.
 

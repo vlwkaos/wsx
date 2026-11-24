@@ -164,16 +164,20 @@ function speakerWords(project, peer, home) {
 
 // A message's author above its box. A chat of another project is a link to that chat, the route a Home row opens
 // (docs/web-client-tasks.md "Project screen").
-const Author = ({ name, target }) => target
+// ^ `lead`: the project's lead speaks (the main chat, no goal): the stylesheet draws "lead" after
+// its name, if shown; the bubble's own label says it, so the author's text stays the name.
+const Author = ({ name, target, lead }) => target
   ? html`<a class="bubble-author" href=${`#/c/${encodeURIComponent(target)}`} aria-label=${`Open chat ${target}`}>${name}</a>`
-  : html`<p class="bubble-author" aria-hidden="true">${name}</p>`;
+  : html`<p class="bubble-author" aria-hidden="true" data-role=${lead ? "lead" : null}>${name}</p>`;
 
 // One message. `home` turns its text runs into task chips; a message of another project's chat
 // reads its bare `#n` as that project's task.
 // `plain`: the project chat's own manager has no name of its own, the project's, which the top row
 // shows: its bubbles keep no author line.
-export function Bubble({ project, row, words: home, fresh, onNeed, plain }) {
+export function Bubble({ project, row, words: home, fresh, onNeed, plain, lead }) {
   const out = row.author === "owner";
+  const own = row.author === "manager";
+  const role = lead && own;
   const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
   const { words, target } = speakerWords(project, peer, home);
   const id = `bubble-${row.key}`;
@@ -194,8 +198,8 @@ export function Bubble({ project, row, words: home, fresh, onNeed, plain }) {
       data-at=${row.pending ? null : row.at} data-key=${row.key} data-in=${out || row.pending ? null : ""}
       data-quote=${row.quote ?? null} data-id=${row.quote != null ? row.id ?? null : null}
       data-pending=${row.pending ? "" : null} data-asks=${row.asks ? "" : null} data-routine=${row.post ? "" : null} data-level=${row.level ?? null}
-      aria-label=${`${row.name}, ${clock(row.at)}${row.asks ? ", Asks you" : row.level ? `, ${tag}` : row.post ? ", Routine" : ""}`}>
-      ${!out && (row.first || target) && !(plain && row.author === "manager") && html`<${Author} name=${row.name} target=${target} />`}
+      aria-label=${`${row.name}${role ? ", lead" : ""}, ${clock(row.at)}${row.asks ? ", Asks you" : row.level ? `, ${tag}` : row.post ? ", Routine" : ""}`}>
+      ${!out && (row.first || target) && (!(plain && own) || role) && html`<${Author} name=${plain && own ? null : row.name} target=${target} lead=${role} />`}
       <div class="bubble-box">${mark && html`<p class="bubble-tag" role="img" aria-label=${mark[1]} title=${mark[1]}><${Icon} name=${mark[0]} /></p>`}${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>
       ${row.last && html`<p class="bubble-time" aria-hidden="true">${row.pending ? "Sending…" : clock(row.at)}</p>`}
     </article>`;
@@ -217,9 +221,9 @@ export function CheckBubble({ project, row, names, fresh, onReply, plain }) {
 
 // The manager writes: three dots, still where the user asked for less motion.
 export const Dots = () => html`<span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span>`;
-export const Typing = ({ name, plain }) => html`
+export const Typing = ({ name, plain, lead }) => html`
   <article class="bubble" data-side="in" data-speaker="manager" data-first="" data-last="" role="status">
-    ${!plain && html`<p class="bubble-author" aria-hidden="true">${name}</p>`}
+    ${(!plain || lead) && html`<${Author} name=${plain ? null : name} lead=${lead} />`}
     <div class="bubble-box typing"><span class="visually-hidden">${name} is typing</span><${Dots} /></div>
   </article>`;
 
@@ -246,13 +250,13 @@ export function StatusLine({ project, row, fresh }) {
 // The manager's reply to events or to another chat: a muted line under its name, the marks of the
 // events it answers first, then its words in full when it is one sentence, else its first
 // sentence and More.
-export function QuietReply({ project, row, words, fresh, plain }) {
+export function QuietReply({ project, row, words, fresh, plain, lead }) {
   const [open, setOpen] = useState(false);
   // ^ Its first sentence (wsx-core `first_sentence`, none when that is all of it), never cut inside.
   const whole = open || row.first_sentence == null;
   return html`
-    <article class="reply-line" data-speaker="manager" data-fresh=${fresh ? "" : null} data-key=${row.key} data-at=${row.at} aria-label=${`${row.name}, ${clock(row.at)}`}>
-      ${row.first && !plain && html`<p class="bubble-author" aria-hidden="true">${row.name}</p>`}
+    <article class="reply-line" data-speaker="manager" data-fresh=${fresh ? "" : null} data-key=${row.key} data-at=${row.at} aria-label=${`${row.name}${lead ? ", lead" : ""}, ${clock(row.at)}`}>
+      ${row.first && (!plain || lead) && html`<${Author} name=${plain ? null : row.name} lead=${lead} />`}
       ${row.tokens?.length > 0 && html`<p class="reply-tokens"><${Tokens} project=${project} tokens=${row.tokens} /></p>`}
       ${open
         ? html`<div class="reply-text reply-open"><${Markdown} text=${row.text} words=${words} relative=${relativeOf(project)} prose /></div>`

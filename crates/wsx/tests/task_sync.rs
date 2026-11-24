@@ -1,4 +1,4 @@
-//! `wsx task sync` moves the local default branch to origin's tip after a merge there, with no
+//! `wsx project sync` moves the local default branch to origin's tip after a merge there, with no
 //! approval and no `--force`, and refuses, naming what it names, when a commit or a file
 //! could be lost (docs/tasks.md "Sync"). Drives the public CLI on an isolated HOME and state,
 //! with real git repositories and a bare repository as origin; it needs no wsxd.
@@ -140,9 +140,9 @@ impl Fixture {
 
     fn sync(&self) -> Output {
         self.command(Path::new(env!("CARGO_BIN_EXE_wsx")))
-            .args(["task", "sync", "-p", "demo", "--json"])
+            .args(["project", "sync", "-p", "demo", "--json"])
             .output()
-            .expect("run wsx task sync")
+            .expect("run wsx project sync")
     }
 
     fn text(output: &Output) -> String {

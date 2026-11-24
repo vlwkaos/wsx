@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 /// The raw log entries of chat `chat`.
 fn entries(fixture: &Fixture, chat: &str) -> Vec<Value> {
-    fixture.json(&["task", "chat", "--chat", chat, "--json"])["entries"]
+    fixture.json(&["chat", "read", "--chat", chat, "--json"])["entries"]
         .as_array()
         .cloned()
         .unwrap_or_default()
@@ -51,9 +51,9 @@ fn kinds(entries: &[Value], kind: &str) -> Vec<Value> {
 /// main chat `demo`) runs, then the `more` lines.
 fn ask_the_lead(fixture: &Fixture, name: &str, goal: &str, more: &str) -> u64 {
     let text = format!(
-        "{goal}\nRUN wsx task chat new {name} --brief --owner-said OWNER_SAID -p demo --json{more}"
+        "{goal}\nRUN wsx chat new {name} --brief --owner-said OWNER_SAID -p demo --json{more}"
     );
-    fixture.json(&["task", "say", &text, "--json"])["id"]
+    fixture.json(&["chat", "say", &text, "--json"])["id"]
         .as_u64()
         .expect("a message id")
 }
@@ -68,16 +68,14 @@ fn brief_taken(fixture: &Fixture, chat: &str) -> u64 {
 }
 
 fn chat_names(fixture: &Fixture) -> String {
-    fixture
-        .json(&["task", "chat", "list", "--json"])
-        .to_string()
+    fixture.json(&["chat", "list", "--json"]).to_string()
 }
 
 #[test]
 fn the_lead_forks_a_goal_into_a_new_chat_that_starts_on_it() {
     let fixture = Fixture::new();
     // ^ The same message forked a second time, by its second RUN line: refused.
-    let again = "\nRUN wsx task chat new fees-twice --brief --owner-said OWNER_SAID -p demo --json";
+    let again = "\nRUN wsx chat new fees-twice --brief --owner-said OWNER_SAID -p demo --json";
     let asked = ask_the_lead(&fixture, "fees-csv", "CSV export for fees", again);
     let answer = reply_to(&fixture, "demo", asked);
     assert!(answer.contains("forked message"), "{answer}");
@@ -89,7 +87,7 @@ fn the_lead_forks_a_goal_into_a_new_chat_that_starts_on_it() {
 
     // ^ The new chat: open, its goal the owner's first line, its first message the owner's own
     // words, marked as forked from the lead; the lead's log notes the fork.
-    let chats = fixture.json(&["task", "chat", "list", "--json"]);
+    let chats = fixture.json(&["chat", "list", "--json"]);
     let row = chats["chats"]
         .as_array()
         .and_then(|rows| rows.iter().find(|row| row["name"] == "fees-csv"))
@@ -138,14 +136,14 @@ fn the_lead_forks_a_goal_into_a_new_chat_that_starts_on_it() {
     assert_eq!(kinds(&entries(&fixture, "demo"), "forked").len(), 1);
 
     // ^ A chat with no goal that is not the main chat is no lead either.
-    let opened = fixture.wsx(&["task", "chat", "new", "side"]);
+    let opened = fixture.wsx(&["chat", "new", "side"]);
     assert!(opened.status.success(), "{opened:?}");
     let side = fixture.json(&[
-        "task",
+        "chat",
         "say",
         "--to",
         "side",
-        "Side work\nRUN wsx task chat new from-side --brief --owner-said OWNER_SAID -p demo --json",
+        "Side work\nRUN wsx chat new from-side --brief --owner-said OWNER_SAID -p demo --json",
         "--json",
     ])["id"]
         .as_u64()
@@ -156,7 +154,6 @@ fn the_lead_forks_a_goal_into_a_new_chat_that_starts_on_it() {
 
     // ^ Only the lead's agent forks: the owner's own --brief is refused and makes no chat.
     let owner = fixture.wsx(&[
-        "task",
         "chat",
         "new",
         "by-hand",
@@ -182,7 +179,7 @@ fn closing_a_fork_before_it_owns_a_task_undoes_it_and_no_later() {
 
     // ^ Undo: the owner closes it with no task. The lead gets a note no turn reads, and no
     // hand-back message whose goal it would fork again.
-    let closed = fixture.wsx(&["task", "chat", "close", "docs-fix"]);
+    let closed = fixture.wsx(&["chat", "close", "docs-fix"]);
     let said = String::from_utf8_lossy(&closed.stdout);
     assert!(
         closed.status.success() && said.contains("the fork is undone"),
@@ -211,9 +208,9 @@ fn closing_a_fork_before_it_owns_a_task_undoes_it_and_no_later() {
     );
 
     // ^ Undone once: the name reopened by the owner and closed again is only closed.
-    let reopened = fixture.wsx(&["task", "chat", "new", "docs-fix"]);
+    let reopened = fixture.wsx(&["chat", "new", "docs-fix"]);
     assert!(reopened.status.success(), "{reopened:?}");
-    let closed = fixture.wsx(&["task", "chat", "close", "docs-fix"]);
+    let closed = fixture.wsx(&["chat", "close", "docs-fix"]);
     let said = String::from_utf8_lossy(&closed.stdout);
     assert!(
         closed.status.success() && said.contains("open tasks are the main chat's"),
@@ -231,7 +228,7 @@ fn closing_a_fork_before_it_owns_a_task_undoes_it_and_no_later() {
     reply_to(&fixture, "demo", asked);
     brief_taken(&fixture, "worker-fork");
     let task = fixture.json(&[
-        "task",
+        "chat",
         "say",
         "--to",
         "worker-fork",
@@ -242,7 +239,7 @@ fn closing_a_fork_before_it_owns_a_task_undoes_it_and_no_later() {
         .expect("a message id");
     let made = reply_to(&fixture, "worker-fork", task);
     assert!(made.contains("\"id\""), "{made}");
-    let closed = fixture.wsx(&["task", "chat", "close", "worker-fork"]);
+    let closed = fixture.wsx(&["chat", "close", "worker-fork"]);
     assert!(closed.status.success(), "{closed:?}");
     let lead = entries(&fixture, "demo");
     assert_eq!(kinds(&lead, "fork_undone").len(), 1, "{lead:?}");
@@ -265,45 +262,31 @@ fn launched_models(fixture: &Fixture) -> Vec<String> {
 #[test]
 fn the_lead_runs_on_its_own_model_and_goal_chats_on_the_managers() {
     let fixture = Fixture::new();
-    let id = fixture.json(&["task", "say", "hello", "--json"])["id"]
+    let id = fixture.json(&["chat", "say", "hello", "--json"])["id"]
         .as_u64()
         .unwrap();
     reply_to(&fixture, "demo", id);
     assert_eq!(launched_models(&fixture), ["sonnet"]);
     let goal = fixture.root.join("goal.md");
     std::fs::write(&goal, "Invoices and VAT\n").unwrap();
-    let made = fixture.wsx(&[
-        "task",
-        "chat",
-        "new",
-        "billing",
-        "--goal",
-        goal.to_str().unwrap(),
-    ]);
+    let made = fixture.wsx(&["chat", "new", "billing", "--goal", goal.to_str().unwrap()]);
     assert!(made.status.success(), "{made:?}");
-    let id = fixture.json(&["task", "say", "--to", "billing", "hi", "--json"])["id"]
+    let id = fixture.json(&["chat", "say", "--to", "billing", "hi", "--json"])["id"]
         .as_u64()
         .unwrap();
     reply_to(&fixture, "billing", id);
     assert_eq!(launched_models(&fixture), ["sonnet", "opus"]);
     // ^ A goal set on the main chat ends its lead role: its agent starts again on the manager's model.
-    let set = fixture.wsx(&[
-        "task",
-        "chat",
-        "goal",
-        "demo",
-        "--goal",
-        goal.to_str().unwrap(),
-    ]);
+    let set = fixture.wsx(&["chat", "goal", "demo", "--goal", goal.to_str().unwrap()]);
     assert!(set.status.success(), "{set:?}");
-    let id = fixture.json(&["task", "say", "again", "--json"])["id"]
+    let id = fixture.json(&["chat", "say", "again", "--json"])["id"]
         .as_u64()
         .unwrap();
     reply_to(&fixture, "demo", id);
     assert_eq!(launched_models(&fixture), ["sonnet", "opus", "opus"]);
 
     let same = Fixture::with_tasks_config("  lead:\n    model: same\n");
-    let id = same.json(&["task", "say", "hello", "--json"])["id"]
+    let id = same.json(&["chat", "say", "hello", "--json"])["id"]
         .as_u64()
         .unwrap();
     reply_to(&same, "demo", id);

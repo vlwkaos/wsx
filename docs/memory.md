@@ -35,7 +35,7 @@ A reader ignores fields it does not know, and a program keeps the fields of its 
 
 `slug`, `scope`, `path` (the file the record lives in), `kind`, `status`, `score` 0..1 (higher is better), `excerpt` (at most 240 characters), and `description` and `keywords` when the record has them.
 
-wsx also searches the transcripts of a project scope (a chat message or reply, a task's prompt, result and story, the manager's decision and memo lines; "Search" in [tasks.md](tasks.md)) and returns them as hits: `slug` is the line's `reference` (`<project>:<id>`, `<project>#<task>`, `<project>:notes/decisions.md`), `kind` one of `message`, `reply`, `task`, `result`, `history`, `decision`, `memo`, `status` `active`, `path` the log or note file it was read from, and the keys of a `wsx task search` hit (`project`, `chat`, `id`, `task`, `unix_ms`, `by`, `line`, `reference`, `quote`, `outcome`); both commands print the same `Hit`. A reader ignores the keys it does not know and treats a `kind` it does not know as opaque. `--kind` takes any of these kinds.
+wsx also searches the transcripts of a project scope (a chat message or reply, a task's prompt, result and story, the manager's decision and memo lines; "Search" in [tasks.md](tasks.md)) and returns them as hits: `slug` is the line's `reference` (`<project>:<id>`, `<project>#<task>`, `<project>:notes/decisions.md`), `kind` one of `message`, `reply`, `task`, `result`, `history`, `decision`, `memo`, `status` `active`, `path` the log or note file it was read from, and the keys of a `wsx chat search` hit (`project`, `chat`, `id`, `task`, `unix_ms`, `by`, `line`, `reference`, `quote`, `outcome`); both commands print the same `Hit`. A reader ignores the keys it does not know and treats a `kind` it does not know as opaque. `--kind` takes any of these kinds.
 
 ## Commands
 
@@ -62,7 +62,7 @@ wsx also searches the transcripts of a project scope (a chat message or reply, a
 
 ## Search backend
 
-The engine ranks a scope. `memory.engine` in the global config picks it: `builtin` (default), the index of `wsx_core::memory::index` (the digest both `wsx task search` and `wsx memory search` read), or `ir`:
+The engine ranks a scope. `memory.engine` in the global config picks it: `builtin` (default), the index of `wsx_core::memory::index` (the digest both `wsx chat search` and `wsx memory search` read), or `ir`:
 
 ```toml
 [memory]
@@ -71,7 +71,7 @@ engine = "ir"   # needs the ir command (brew install vlwkaos/tap/ir, or cargo in
 
 - With `ir`, wsx writes the scope's records and its project's transcripts as markdown into the store folder's `corpus/` (`records/`, `lines/`; each file named by its content's digest, `kind` and `status` in its frontmatter) and runs `ir` with its own `IR_CONFIG_DIR` (`$XDG_STATE_HOME/wsx/ir`, collection `wsx-<scope>`), BM25 only: no daemon, no model. The owner's ir folder is read for its `ko` preprocessor alone, copied once into wsx's ir config.
 - Each search first brings the corpus up to the truths: it writes missing files, deletes the ones no record or transcript names (a superseded or deleted record leaves no file), registers the collection when wsx's ir has none or its index file is gone, and runs `ir update` when anything changed. `reindex` drops the corpus and the collection and builds both again.
-- It answers `wsx memory search|recall|status|reindex`, the records an owner message gets ([tasks.md](tasks.md) "Notes budget") and `wsx task search` (the transcript lines only, `-f path~lines/`, `--task` as `meta.task`; each project's collection ranks apart, so `--all` merges 0..1 scores). The `similar` check of `add` keeps the built-in until ir's scores are measured for it (docs/design/memory-layers.md "Search engine: ir").
+- It answers `wsx memory search|recall|status|reindex`, the records an owner message gets ([tasks.md](tasks.md) "Notes budget") and `wsx chat search` (the transcript lines only, `-f path~lines/`, `--task` as `meta.task`; each project's collection ranks apart, so `--all` merges 0..1 scores). The `similar` check of `add` keeps the built-in until ir's scores are measured for it (docs/design/memory-layers.md "Search engine: ir").
 - An ir that is missing, too old or failing leaves the answer to the built-in, with `wsx: memory engine ir unavailable (<why>); the built-in answered` on stderr; `status` names it as `backend_error`. A query with no words is exit 2 as for the built-in.
 
 The global config can also add one program that follows this contract's `search`, `reindex` and `status` (wsx names no tool):

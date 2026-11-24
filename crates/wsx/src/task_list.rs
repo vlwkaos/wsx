@@ -408,7 +408,7 @@ impl TaskList {
     }
 
     /// A key on the list for a chat row's close: `d` asks, `y` or `Enter` closes it through
-    /// `chats::close` (as `wsx task chat close`), `n` or `Esc` drops it. False when the key is not
+    /// `chats::close` (as `wsx chat close`), `n` or `Esc` drops it. False when the key is not
     /// for it.
     pub fn close_chat_key(&mut self, action: &Action) -> bool {
         // ^ How the last close ended shows until the next key.
@@ -426,7 +426,7 @@ impl TaskList {
         };
         if matches!(action, Action::ConfirmYes | Action::Select) {
             // ^ The CLI's own path: it hands the chat back to the main chat (`owner::close_chat`).
-            let argv = ["task", "chat", "close", &name].map(String::from).to_vec();
+            let argv = ["chat", "close", &name].map(String::from).to_vec();
             let closed = std::env::current_exe()
                 .map_err(|error| error.to_string())
                 .and_then(|wsx| owner::run_as_owner(&wsx, &self.project, argv));

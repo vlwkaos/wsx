@@ -24,12 +24,12 @@ fn wait_state(fixture: &Fixture, id: &str, want: &str) {
 
 /// The main chat's reply to the owner's message `text`, which runs a command in its turn.
 fn chat_runs(fixture: &Fixture, text: &str) -> String {
-    let id = fixture.json(&["task", "say", text, "--json"])["id"]
+    let id = fixture.json(&["chat", "say", text, "--json"])["id"]
         .as_u64()
         .expect("message id");
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        let log = fixture.json(&["task", "chat", "--json"])["entries"]
+        let log = fixture.json(&["chat", "read", "--json"])["entries"]
             .as_array()
             .cloned()
             .unwrap_or_default();
@@ -88,7 +88,7 @@ fn a_changed_contract_line_lands_only_by_the_owner() {
     wait_state(&fixture, "2", "landed");
     let deadline = Instant::now() + Duration::from_secs(30);
     let note: Value = loop {
-        let log = fixture.json(&["task", "chat", "--json"])["entries"]
+        let log = fixture.json(&["chat", "read", "--json"])["entries"]
             .as_array()
             .cloned()
             .unwrap_or_default();

@@ -30,6 +30,10 @@ use clap::Parser;
 fn main() -> Result<()> {
     // ^ The manager agent's commands go to its host before anything else runs (broker.rs).
     task::broker::forward_if_brokered();
+    // ^ A `wsx task` command that moved to `wsx chat` or `wsx project` is refused with its new form.
+    if let Some(refusal) = task::moved(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        bail!("{refusal}");
+    }
     let args = cli::Args::parse();
     reject_nested_tui(
         args.command.as_ref(),
@@ -56,8 +60,12 @@ fn main() -> Result<()> {
                     subcommand: cli::SessionCmd::Current { .. },
                 }
         )
-    ) || matches!(&args.command, Some(cli::Command::Task { subcommand, .. }) if subcommand.without_daemon())
-    {
+    ) || match &args.command {
+        Some(cli::Command::Chat { subcommand, .. }) => subcommand.without_daemon(),
+        Some(cli::Command::Task { subcommand, .. }) => subcommand.without_daemon(),
+        Some(cli::Command::Project { subcommand, .. }) => subcommand.without_daemon(),
+        _ => false,
+    } {
         return cli::run(args.command.expect("matched Some"));
     }
     match args.command {

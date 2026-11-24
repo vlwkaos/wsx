@@ -794,6 +794,8 @@ pub fn chat(
     // ^ The chat's purpose (docs/tasks.md "Chats"), whole: the Purpose sheet edits it.
     manager["id"] = dir.name().into();
     manager["goal"] = task::chats::goal(&dir).into();
+    // ^ The lead's replies carry a "lead" tag (docs/web-client-tasks.md "Project screen").
+    manager["lead"] = task::chats::is_lead(&dir).into();
     // ^ The agent in use now, a fallback's while one runs; a chat's own, else the manager's.
     manager["agent"] = view::manager_agent(&dir, &settings);
     let window = task::chat::Window::new(find, after, around);
@@ -1121,7 +1123,7 @@ pub fn since(scope: &Scope, after: u64) -> Value {
 
 /// What the manager composer lists: the owner's skills (`/`) and the open chats of every granted
 /// project (`@`) but the one the owner writes in (`chat`, else this project's main chat), each as
-/// `{id, name, project}`: `id` is what `wsx task say --to` takes, `name` the shown name. The
+/// `{id, name, project}`: `id` is what `wsx chat say --to` takes, `name` the shown name. The
 /// rows are the Home list's (`chat_contacts`). ref: docs/web-client-tasks.md "Project screen"
 pub fn mentions(app: &App, scope: &Scope, chat: Option<&str>) -> Outcome<Value> {
     let skills = crate::commands::owner_skills(&scope.path);
@@ -1292,7 +1294,7 @@ pub fn check_capture(
     ))
 }
 
-/// Pass, skip or fail an item as the owner, through `wsx task check`; a fail with a note starts
+/// Pass, skip or fail an item as the owner, through `wsx project check`; a fail with a note starts
 /// its task the way the CLI does. `all` with `pass` or `skip` closes every open item.
 pub fn check(scope: &Scope, id: &str, decision: &str, note: Option<String>) -> Outcome<Value> {
     let valid_id = id == "all"
@@ -1302,7 +1304,7 @@ pub fn check(scope: &Scope, id: &str, decision: &str, note: Option<String>) -> O
     if !valid_id {
         return Err(Fault::not_found());
     }
-    let mut argv: Vec<String> = vec!["task".into(), "check".into()];
+    let mut argv: Vec<String> = vec!["project".into(), "check".into()];
     match (decision, id) {
         ("pass" | "skip", "all") => argv.extend([decision.into(), "--all".into()]),
         ("pass" | "skip", id) => argv.extend([decision.into(), id.into()]),
@@ -1322,10 +1324,10 @@ pub fn check(scope: &Scope, id: &str, decision: &str, note: Option<String>) -> O
     run_wsx(scope, argv)
 }
 
-/// The owner dismisses an open question: `wsx task dismiss <id>` without `WSX_TASK_ACTOR`
+/// The owner dismisses an open question: `wsx chat dismiss <id>` without `WSX_TASK_ACTOR`
 /// (docs/tasks.md "Manager"); a reply that is not an open question is a 409.
 pub fn dismiss(scope: &Scope, id: u64) -> Outcome<Value> {
-    run_wsx(scope, vec!["task".into(), "dismiss".into(), id.to_string()])
+    run_wsx(scope, vec!["chat".into(), "dismiss".into(), id.to_string()])
 }
 
 /// `wsx task <command> <task>`: `hand` and `handback` (`hand --back`) open and close the hand

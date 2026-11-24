@@ -2311,7 +2311,7 @@ try:
                    r"^#3 landed 4 of 4 checks\s+#3 is on main\.$", r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.",
                    r"^Talked to elsewhere\s+Show$", r"^Talked to peer0\s+Show$"])
     # ^ What another chat said folds to one line per chat that opens to the words; there is no peer
-    # key: a chat names its peer in `wsx task say`. The two messages of "elsewhere" are one line.
+    # key: a chat names its peer in `wsx chat say`. The two messages of "elsewhere" are one line.
     assert "(P)eer chat" not in remove_tui.text() and "Hello from elsewhere" not in remove_tui.text(), remove_tui.text()
     remove_tui.send(b"\x1b")
     wait_for(lambda: "press i to write a message" not in remove_tui.text(), "Esc did not close the manager chat", seconds=60)
@@ -2426,7 +2426,7 @@ try:
     remove_tui.send(b"y")
     wait_for(lambda: "chat qa is closed" in remove_tui.text() and "Check the notes" not in remove_tui.text(),
              lambda: f"y did not close qa and drop its row:\n{remove_tui.text()}", seconds=60)
-    listed = wsx("task", "chat", "list", "-p", "keep-me", "--json")
+    listed = wsx("chat", "list", "-p", "keep-me", "--json")
     assert listed.returncode == 0 and {row["name"]: row["state"] for row in json.loads(listed.stdout)["chats"]}.get("qa") == "closed", listed.stdout + listed.stderr
     remove_tui.send(b"q")
     wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close the Tasks view after New chat", seconds=60)

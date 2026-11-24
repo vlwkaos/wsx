@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 
-/// The chat's purpose, in the manager's instructions (`wsx task chat goal`); a changed goal
+/// The chat's purpose, in the manager's instructions (`wsx chat goal`); a changed goal
 /// reaches the agent at its next turn. Every chat has one.
 pub const GOAL_FILE: &str = "goal.md";
 /// Written by `chat close`; its host leaves. The notes and the log stay.
@@ -146,7 +146,7 @@ pub fn route_rule(text: &str, here: &str) -> Result<Option<Route>> {
 pub fn open_chat(name: &str) -> Result<ManagerDir> {
     match ManagerDir::existing(name)? {
         Some(dir) if is_open(&dir) => Ok(dir),
-        _ => bail!("there is no open chat {name}; `wsx task chat list` names them"),
+        _ => bail!("there is no open chat {name}; `wsx chat list` names them"),
     }
 }
 
@@ -532,6 +532,12 @@ pub struct Runs {
     pub rotate_tokens: Option<u64>,
 }
 
+/// Whether the chat is its project's lead: the main chat, with no goal. The chat screens tag
+/// its replies with it. ref: docs/tasks.md "Lead and forks"
+pub fn is_lead(dir: &ManagerDir) -> bool {
+    dir.is_main() && goal(dir).trim().is_empty()
+}
+
 /// The chat's own agent; else, for the lead, `tasks.lead.model` and its shorter context;
 /// else `tasks.chats`'s. ref: docs/tasks.md "Lead and forks"
 pub fn runs_on(dir: &ManagerDir, settings: &crate::model::workspace::TaskConfig) -> Runs {
@@ -544,8 +550,7 @@ pub fn runs_on(dir: &ManagerDir, settings: &crate::model::workspace::TaskConfig)
             rotate_tokens: settings.manager_rotate_tokens,
         };
     }
-    let lead = store::main_chat(&dir.project_id).as_deref() == Some(dir.chat.as_str())
-        && goal(dir).trim().is_empty();
+    let lead = is_lead(dir);
     Runs {
         adapter: settings.manager_adapter.clone(),
         model: if lead {
@@ -626,7 +631,7 @@ fn write_goal(dir: &ManagerDir, goal: &str) -> Result<()> {
     }
 }
 
-/// Close an open chat (`wsx task chat close`, the web's and the TUI's Close chat): its host sees
+/// Close an open chat (`wsx chat close`, the web's and the TUI's Close chat): its host sees
 /// the file and leaves. The notes and the log stay; `create` of the same name opens it again.
 /// An unknown or a closed name is refused. Returns the repo's main chat that is left, which gets
 /// the hand-back (`hand_back`, the caller says it there); closing the main chat clears the
@@ -646,11 +651,10 @@ pub fn close(name: &str) -> Result<Option<String>> {
 /// another project's `say` reaches. An error names `chat main` when there is none.
 pub fn open_main(project_id: &str) -> Result<ManagerDir> {
     let name = store::main_chat(project_id).context(
-        "the project has no main chat; `wsx task chat main <chat>` makes one of its chats the main chat",
+        "the project has no main chat; `wsx chat main <chat>` makes one of its chats the main chat",
     )?;
-    open_chat(&name).with_context(|| {
-        format!("its main chat {name} is closed; `wsx task chat main` sets another")
-    })
+    open_chat(&name)
+        .with_context(|| format!("its main chat {name} is closed; `wsx chat main` sets another"))
 }
 
 /// Make the open chat `name` the main chat of `project_id`, which it must name in its `repos`.

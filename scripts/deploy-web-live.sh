@@ -1,7 +1,7 @@
 #!/bin/sh
 # tasks.deploy.command for wsx: put this commit's wsx on the hosted web site that runs from
 # <main checkout>/.work/web-live under pm2 app wsx-web (docs/tasks.md "Deploy and release").
-# `wsx task deploy` runs it in a temporary copy of one default-branch commit.
+# `wsx project deploy` runs it in a temporary copy of one default-branch commit.
 # Back to the previous build:  mv .work/web-live/wsx.previous .work/web-live/wsx && pm2 restart wsx-web
 set -eu
 main=$(git worktree list --porcelain | sed -n '1s/^worktree //p')
@@ -60,7 +60,7 @@ mv "$live/wsx.new" "$live/wsx"
 echo "installed ${WSX_DEPLOY_COMMIT:-this commit} at $live/wsx"
 
 # ^ The deploy may run under the web server itself (an approval tapped in the web client), and pm2
-# kills the app's process tree on restart. Restart once `wsx task deploy` has recorded the deploy
+# kills the app's process tree on restart. Restart once `wsx project deploy` has recorded the deploy
 # and removed this temporary copy (at most 120 s), from a process outside that tree.
 copy=$(pwd)
 log="$live/restart.log"

@@ -539,6 +539,48 @@ pub fn check_add_project(
     Ok(path)
 }
 
+/// Where `project add <git url>` clones when no folder is named: `<root>/<repo>`, `<repo>` the
+/// URL's last part without `.git`. The root is the folder that holds `beside` (the project the
+/// command runs from), else the one that holds the most registered projects (the first such in
+/// the config), else `~/ws`. ref: docs/tasks.md "Approvals"
+pub fn clone_place(config: &GlobalConfig, url: &str, beside: Option<&Path>) -> Result<PathBuf> {
+    git::check_clone_url(url)?;
+    let name = url
+        .trim_end_matches('/')
+        .rsplit(['/', ':'])
+        .next()
+        .map(|last| last.strip_suffix(".git").unwrap_or(last))
+        .filter(|name| {
+            !name.is_empty()
+                && !name.starts_with('.')
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        })
+        .ok_or_else(|| anyhow!("clone URL '{url}' names no repository folder (letters, digits, '.', '_', '-')"))?;
+    let mut roots: Vec<(&Path, usize)> = Vec::new();
+    for parent in config.projects.iter().filter_map(|entry| entry.path.parent()) {
+        match roots.iter_mut().find(|(root, _)| *root == parent) {
+            Some((_, count)) => *count += 1,
+            None => roots.push((parent, 1)),
+        }
+    }
+    let most = roots
+        .iter()
+        .fold(None::<(&Path, usize)>, |best, &(root, count)| match best {
+            Some((_, most)) if most >= count => best,
+            _ => Some((root, count)),
+        })
+        .map(|(root, _)| root.to_path_buf());
+    let root = beside
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .or(most)
+        .or_else(|| dirs::home_dir().map(|home| home.join("ws")))
+        .ok_or_else(|| anyhow!("cannot find the owner's home folder"))?;
+    Ok(root.join(name))
+}
+
 /// `project add`: check, clone when the folder is missing, register and save. A clone
 /// that registration then refuses is removed. The caller tells wsxd (`synchronize_discovery`).
 /// The web's Add project and the TUI's `p` call `register_project` alone: they take any path.

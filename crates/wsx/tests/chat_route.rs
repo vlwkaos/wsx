@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 /// The raw log entries of chat `chat`; none while it does not exist yet (a fork goes on from
 /// its host's own thread).
 fn entries(fixture: &Fixture, chat: &str) -> Vec<Value> {
-    let out = fixture.wsx(&["task", "chat", "--chat", chat, "--json"]);
+    let out = fixture.wsx(&["chat", "read", "--chat", chat, "--json"]);
     serde_json::from_slice::<Value>(&out.stdout)
         .ok()
         .and_then(|v| v["entries"].as_array().cloned())
@@ -40,7 +40,7 @@ fn wait_for<T>(fixture: &Fixture, chat: &str, mut test: impl FnMut(&[Value]) -> 
 
 /// The owner's message `text` to chat `to` (none: the main chat `demo`); its id there.
 fn say(fixture: &Fixture, to: Option<&str>, text: &str) -> u64 {
-    let mut args = vec!["task", "say"];
+    let mut args = vec!["chat", "say"];
     if let Some(to) = to {
         args.extend(["--to", to]);
     }
@@ -102,7 +102,7 @@ fn the_router_forks_and_moves_the_owners_message() {
         "/new fees-csv CSV export for fees\nwith totals",
     );
     let brief = taken(&fixture, "fees-csv", "CSV export for fees\nwith totals");
-    let chats = fixture.json(&["task", "chat", "list", "--json"]);
+    let chats = fixture.json(&["chat", "list", "--json"]);
     let row = chats["chats"]
         .as_array()
         .and_then(|rows| rows.iter().find(|row| row["name"] == "fees-csv"))
@@ -143,7 +143,7 @@ fn the_router_forks_and_moves_the_owners_message() {
     untaken(&fixture, "fees-csv", home);
 
     // ^ A restart of the main chat's host takes none of the routed messages.
-    let socket = fixture.json(&["task", "manager", "--json"])["socket"]
+    let socket = fixture.json(&["chat", "lead", "--json"])["socket"]
         .as_str()
         .map(std::path::PathBuf::from)
         .expect("the main chat's socket");
@@ -174,7 +174,7 @@ fn the_router_forks_and_moves_the_owners_message() {
         ("@fees-csv", "write the message after `@fees-csv`"),
     ] {
         let before = kinds(&entries(&fixture, "demo"), "message").len();
-        let out = fixture.wsx(&["task", "say", text, "--json"]);
+        let out = fixture.wsx(&["chat", "say", text, "--json"]);
         let said = format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),
@@ -188,7 +188,7 @@ fn the_router_forks_and_moves_the_owners_message() {
         );
     }
     assert!(!fixture
-        .json(&["task", "chat", "list", "--json"])
+        .json(&["chat", "list", "--json"])
         .to_string()
         .contains("empty-one"));
 }
@@ -219,14 +219,7 @@ fn the_router_model_picks_a_prefix_and_stays_when_unsure() {
     let fixture = Fixture::with_tasks_config("  router: { model: fake-router }\n");
     let goal = fixture.root.join("goal.md");
     std::fs::write(&goal, "Invoices and VAT\n").unwrap();
-    let made = fixture.wsx(&[
-        "task",
-        "chat",
-        "new",
-        "billing",
-        "--goal",
-        goal.to_str().unwrap(),
-    ]);
+    let made = fixture.wsx(&["chat", "new", "billing", "--goal", goal.to_str().unwrap()]);
     assert!(made.status.success(), "{made:?}");
 
     // ^ The model names an open chat: the message goes there, as `@billing` would send it.

@@ -3,7 +3,7 @@
 //! command that follows the contract's `search`, `reindex` and `status`. Some engine always
 //! answers: an ir that cannot run leaves it to the built-in with a notice; a backend adds hits,
 //! and a backend that fails (exit 3, 10 s, bad output) is named in a notice and left out.
-//! `lines` is the built-in over the transcripts alone, for `wsx task search`; all answer with
+//! `lines` is the built-in over the transcripts alone, for `wsx chat search`; all answer with
 //! the one `Hit`. ref: docs/memory.md "Search backend"
 
 use super::index::{self, Doc, Target};
@@ -30,7 +30,7 @@ const MAX_ANSWER_BYTES: usize = 4 << 20;
 const RECALL_POOL: usize = 20;
 const RECALL_KEEP: usize = 5;
 
-/// A hit of the contract, and of `wsx task search`. `kind` is a record kind, or for a transcript
+/// A hit of the contract, and of `wsx chat search`. `kind` is a record kind, or for a transcript
 /// of a project the kind of the line (`message`, `reply`, `task`, `result`, `history`,
 /// `decision`, `memo`), with `project`, `chat`, `id`, `task`, `unix_ms`, `by`, `line`,
 /// `reference`, `quote` and `outcome` in `extra`; a reader ignores what it does not know.

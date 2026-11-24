@@ -25,7 +25,7 @@ mod stream_tests;
 use crate::cli::load_config;
 use crate::runtime_util::print_json;
 use anyhow::{bail, Context, Result};
-pub use args::{Common, TaskCmd};
+pub use args::{moved, ChatGroup, Common, Invocation, ProjectGroup, TaskCmd};
 use args::{DeployArgs, ReleaseArgs};
 use cmd::approve::{approve, deny};
 use cmd::chat::{
@@ -56,54 +56,58 @@ use wsx_core::{ops, runtime};
 /// manager's ready event repeats it. ref: docs/tasks.md "Check-run"
 const RECORDED_BY_HOST: &str = "(recorded by the host)";
 const HOST_START_WAIT: Duration = Duration::from_secs(10);
-pub fn run(command: TaskCmd, common: Common) -> Result<()> {
+pub fn run(command: Invocation, common: Common) -> Result<()> {
     let Common { project, json } = common;
     let project = project.as_deref();
     match command {
-        TaskCmd::New(args) => new(args, project, json),
-        TaskCmd::List { all } => list(project, all, json),
-        TaskCmd::Show { task } => show(&open(project, &task)?, json),
-        TaskCmd::Why { task } => why(&open(project, &task)?, json),
-        TaskCmd::Review { task } => review(&open(project, &task)?, json),
-        TaskCmd::Commit {
+        Invocation::Task(TaskCmd::New(args)) => new(args, project, json),
+        Invocation::Task(TaskCmd::List { all }) => list(project, all, json),
+        Invocation::Task(TaskCmd::Show { task }) => show(&open(project, &task)?, json),
+        Invocation::Task(TaskCmd::Why { task }) => why(&open(project, &task)?, json),
+        Invocation::Task(TaskCmd::Review { task }) => review(&open(project, &task)?, json),
+        Invocation::Project(ProjectGroup::Commit {
             files,
             message,
             said,
-        } => commit(&files, &message, said.owner_said, project, json),
-        TaskCmd::Add {
+        }) => commit(&files, &message, said.owner_said, project, json),
+        Invocation::Task(TaskCmd::Add {
             task,
             text,
             files,
             title,
             now,
-        } => add_command(&task, text, &files, title.as_deref(), now, project, json),
-        TaskCmd::Stop { task } => stop_command(&task, project, json),
-        TaskCmd::Check { action } => check(action, project, json),
-        TaskCmd::Land { task, said } => land_command(task, said, project, json),
-        TaskCmd::Move { task, chat } => move_command(&task, &chat, project, json),
-        TaskCmd::Hold {
+        }) => add_command(&task, text, &files, title.as_deref(), now, project, json),
+        Invocation::Task(TaskCmd::Stop { task }) => stop_command(&task, project, json),
+        Invocation::Project(ProjectGroup::Check { action }) => check(action, project, json),
+        Invocation::Task(TaskCmd::Land { task, said }) => land_command(task, said, project, json),
+        Invocation::Task(TaskCmd::Move { task, chat }) => move_command(&task, &chat, project, json),
+        Invocation::Task(TaskCmd::Hold {
             task,
             reason,
             off: _,
-        } => hold_command(&task, reason, project, json),
-        TaskCmd::After {
+        }) => hold_command(&task, reason, project, json),
+        Invocation::Task(TaskCmd::After {
             task,
             on,
             then,
             because,
             off: _,
-        } => after_command(project, &task, on, then, because, json),
-        TaskCmd::Close {
+        }) => after_command(project, &task, on, then, because, json),
+        Invocation::Task(TaskCmd::Close {
             task,
             discard,
             said,
-        } => close_command(&task, discard, said, project, json),
-        TaskCmd::Hand { task, back: false } => hand(&open(project, &task)?, json),
-        TaskCmd::Hand { task, back: true } => handback(&open(project, &task)?, json),
-        TaskCmd::Approve { id } => approve(project, &id, json),
-        TaskCmd::Deny { id, note } => deny(project, &id, note, json),
-        TaskCmd::Deploy(args) => deploy(DeployKind::Deploy, args, project, json),
-        TaskCmd::Release(ReleaseArgs { commit, run, said }) => deploy(
+        }) => close_command(&task, discard, said, project, json),
+        Invocation::Task(TaskCmd::Hand { task, back: false }) => hand(&open(project, &task)?, json),
+        Invocation::Task(TaskCmd::Hand { task, back: true }) => {
+            handback(&open(project, &task)?, json)
+        }
+        Invocation::Chat(ChatGroup::Approve { id }) => approve(project, &id, json),
+        Invocation::Chat(ChatGroup::Deny { id, note }) => deny(project, &id, note, json),
+        Invocation::Project(ProjectGroup::Deploy(args)) => {
+            deploy(DeployKind::Deploy, args, project, json)
+        }
+        Invocation::Project(ProjectGroup::Release(ReleaseArgs { commit, run, said })) => deploy(
             DeployKind::Release,
             DeployArgs {
                 commit,
@@ -115,55 +119,56 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
             project,
             json,
         ),
-        TaskCmd::Push(args) => push(args, project, json),
-        TaskCmd::Sync => sync(project, json),
-        TaskCmd::Deployed => deployed(project, json),
-        TaskCmd::Digest { since } => digest(project, since),
-        TaskCmd::Post { title, level, key } => post(project, &title, &level, key.as_deref()),
-        TaskCmd::Checkin { after, at, why } => {
+        Invocation::Project(ProjectGroup::Push(args)) => push(args, project, json),
+        Invocation::Project(ProjectGroup::Sync) => sync(project, json),
+        Invocation::Project(ProjectGroup::Deployed) => deployed(project, json),
+        Invocation::Task(TaskCmd::Digest { since }) => digest(project, since),
+        Invocation::Task(TaskCmd::Post { title, level, key }) => {
+            post(project, &title, &level, key.as_deref())
+        }
+        Invocation::Chat(ChatGroup::Checkin { after, at, why }) => {
             checkin(project, after.as_deref(), at.as_deref(), &why)
         }
-        TaskCmd::Project { action } => self::project(action, project, json),
-        TaskCmd::Run { cwd, why, argv } => cmd::run::ask(project, cwd, why, argv, json),
-        TaskCmd::Ran { id } => cmd::run::ran(project, &id),
-        TaskCmd::Ledger => ledger::ledger(project),
-        TaskCmd::Routine {
+        Invocation::Project(ProjectGroup::Manage(action)) => self::project(action, project, json),
+        Invocation::Project(ProjectGroup::Run { cwd, why, argv }) => {
+            cmd::run::ask(project, cwd, why, argv, json)
+        }
+        Invocation::Task(TaskCmd::Ran { id }) => cmd::run::ran(project, &id),
+        Invocation::Chat(ChatGroup::Ledger) => ledger::ledger(project),
+        Invocation::Project(ProjectGroup::Routine {
             mut action,
             owner_said,
-        } => {
+        }) => {
             action.inherit(project, json);
             routine_command(action, owner_said)
         }
-        TaskCmd::Manager => manager_command(project, json),
-        TaskCmd::Say {
+        Invocation::Chat(ChatGroup::Lead) => manager_command(project, json),
+        Invocation::Chat(ChatGroup::Say {
             text,
             from_chat,
             uses: Some(dep),
             ..
-        } => cmd::chat::mail_command(project, &dep, text, from_chat, json),
-        TaskCmd::Say {
+        }) => cmd::chat::mail_command(project, &dep, text, from_chat, json),
+        Invocation::Chat(ChatGroup::Say {
             text,
             to,
             from_chat,
             reply,
             uses: None,
-        } => say_command(project, to.as_deref(), text, (from_chat, reply), json),
-        TaskCmd::Chat {
+        }) => say_command(project, to.as_deref(), text, (from_chat, reply), json),
+        Invocation::Chat(ChatGroup::Read {
             after,
             around,
             chat: name,
-            action,
-        } => match action {
-            Some(action) => chat_command(action, project, json),
-            None => chat(project, name.as_deref(), (after, around), json),
-        },
-        TaskCmd::Search {
+        }) => chat(project, name.as_deref(), (after, around), json),
+        Invocation::Chat(ChatGroup::Manage(action)) => chat_command(action, project, json),
+        Invocation::Chat(ChatGroup::Search {
             words,
             task,
             all,
             limit,
             reindex,
-        } => search(
+        }) => search(
             project,
             &words.join(" "),
             task.as_deref(),
@@ -172,23 +177,29 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
             reindex,
             json,
         ),
-        TaskCmd::Dismiss { id } => dismiss(project, id, json),
+        Invocation::Chat(ChatGroup::Dismiss { id }) => dismiss(project, id, json),
         // ^ Under a task host's broker the CLI forwards it before parsing (broker.rs).
-        TaskCmd::CheckRun { .. } => {
+        Invocation::Task(TaskCmd::CheckRun { .. }) => {
             bail!("`wsx task check-run` runs only inside a task's worker, through its host")
         }
-        TaskCmd::ManagerHost { project_id, chat } => manager::run_old(&project_id, chat.as_deref()),
-        TaskCmd::ChatHost { chat } => manager::run(&chat),
-        TaskCmd::RepoHost { project_id } => repo::run(&project_id),
-        TaskCmd::Slot { command } => std::process::exit(slot::run(&command)?),
-        TaskCmd::TouchedScenarios { since } => cmd::deploy::touched_scenarios(since.as_deref()),
-        TaskCmd::Reap { folder } => {
+        Invocation::Task(TaskCmd::ManagerHost { project_id, chat }) => {
+            manager::run_old(&project_id, chat.as_deref())
+        }
+        Invocation::Task(TaskCmd::ChatHost { chat }) => manager::run(&chat),
+        Invocation::Task(TaskCmd::RepoHost { project_id }) => repo::run(&project_id),
+        Invocation::Task(TaskCmd::Slot { command }) => std::process::exit(slot::run(&command)?),
+        Invocation::Task(TaskCmd::TouchedScenarios { since }) => {
+            cmd::deploy::touched_scenarios(since.as_deref())
+        }
+        Invocation::Task(TaskCmd::Reap { folder }) => {
             let stopped = wsx_core::process::stop_naming(&folder, wsx_core::process::STOP_GRACE)?;
             println!("stopped {stopped} process(es) naming {}", folder.display());
             Ok(())
         }
-        TaskCmd::BoundaryProfile { untrusted } => boundary_profile(project, untrusted),
-        TaskCmd::Host { project_id, task } => {
+        Invocation::Task(TaskCmd::BoundaryProfile { untrusted }) => {
+            boundary_profile(project, untrusted)
+        }
+        Invocation::Task(TaskCmd::Host { project_id, task }) => {
             host::run(&project_id, store::parse_task_number(&task)?)
         }
     }

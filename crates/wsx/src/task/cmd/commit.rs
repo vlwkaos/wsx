@@ -1,4 +1,4 @@
-//! `wsx task commit`: commit files of the main checkout on the default branch once the
+//! `wsx project commit`: commit files of the main checkout on the default branch once the
 //! project's light checks pass on that commit. The manager's one way to write main besides a
 //! land: its boundary denies the checkout (docs/tasks.md "Manager", "Permissions").
 

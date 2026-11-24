@@ -176,7 +176,7 @@ impl Ir {
         Ok(corpus)
     }
 
-    /// `wsx task search` in one project: the transcript lines of `store` that match `words`, at
+    /// `wsx chat search` in one project: the transcript lines of `store` that match `words`, at
     /// most `limit`, `only` one task's; with the number of lines searched. ref: docs/tasks.md "Search"
     pub(super) fn lines(
         &self,

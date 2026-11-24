@@ -84,7 +84,7 @@ impl Fixture {
         fixture.git(&["commit", "-q", "-m", "start"]);
         // ^ A repo has no chat of its own: the project's first chat is its main chat, which hears
         // what no chat owns (docs/tasks.md "Chats").
-        let made = fixture.wsx(&["task", "chat", "new", "demo"]);
+        let made = fixture.wsx(&["chat", "new", "demo"]);
         assert!(made.status.success(), "{made:?}");
         fixture
     }

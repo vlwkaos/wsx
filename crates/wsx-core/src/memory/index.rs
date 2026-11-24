@@ -1,7 +1,7 @@
 //! The built-in index: what can be searched and how it scores. The chats, the manager's notes
 //! and each task's title, story and results. One digest per project keeps the words of what was
 //! said, not the tool noise; it is built from the logs, caught up on read and rebuilt on request.
-//! `backend` ranks it (`rank`) alone for `wsx task search` and with the memory records for
+//! `backend` ranks it (`rank`) alone for `wsx chat search` and with the memory records for
 //! `wsx memory search`. ref: docs/tasks.md "Search", docs/memory.md "Search"
 
 use super::manage::clip_to;
@@ -331,7 +331,7 @@ pub(super) fn gather(target: &Target, reindex: bool, records_apart: bool) -> Res
 /// skipped.
 fn load(path: &Path) -> Result<(Vec<Doc>, bool)> {
     let Some(bytes) = store::read_bounded_if_exists(path, MAX_DIGEST_BYTES).context(
-        "cannot read the search digest (too large? `wsx task search --reindex` builds it again)",
+        "cannot read the search digest (too large? `wsx chat search --reindex` builds it again)",
     )?
     else {
         return Ok((Vec::new(), false));
@@ -605,7 +605,7 @@ fn notes(project_id: &str, records_apart: bool) -> Vec<Doc> {
         return Vec::new();
     };
     let mut docs = Vec::new();
-    // ^ A view of the records: `wsx task search` reads its lines, `wsx memory search` the records.
+    // ^ A view of the records: `wsx chat search` reads its lines, `wsx memory search` the records.
     let views = match records_apart {
         true => super::manage::rendered_names(project_id),
         false => Vec::new(),

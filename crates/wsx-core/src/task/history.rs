@@ -1,6 +1,6 @@
 //! A task's history from its log: each event in words (`line`, which the search digest also
 //! indexes), the log without agent progress (`timeline`, which the web sheet shows as it is),
-//! the dated lines of one task (`read`, `wsx task search --task`) and where the task ended up
+//! the dated lines of one task (`read`, `wsx chat search --task`) and where the task ended up
 //! (`outcome`, on every task hit of a search). ref: docs/tasks.md "Search"
 
 use super::store::TaskDir;

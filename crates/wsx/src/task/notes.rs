@@ -151,7 +151,7 @@ pub(super) fn preamble(notes: &Path) -> String {
         if !hidden.is_empty() {
             out.push_str(&format!(
                 "NOT SHOWN: {} {} of {} (over the start budget). Read {} for them, or find them \
-                 with `wsx task search`.\n",
+                 with `wsx chat search`.\n",
                 view.name,
                 view.ranges(&hidden),
                 view.lines.len(),

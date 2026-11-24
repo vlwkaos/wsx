@@ -212,7 +212,7 @@ pub(crate) fn submit(
 
 pub(crate) fn owner_only(command: &str) -> Result<()> {
     if acting_as_manager() {
-        bail!("wsx task {command} is for the owner; the manager cannot decide its own requests");
+        bail!("wsx chat {command} is for the owner; the manager cannot decide its own requests");
     }
     Ok(())
 }

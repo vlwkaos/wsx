@@ -1,4 +1,4 @@
-//! Mail between projects: `wsx task say --uses <dependency>` reaches the main chat of every
+//! Mail between projects: `wsx chat say --uses <dependency>` reaches the main chat of every
 //! registered project whose lockfile or manifest names it, and no other, from the owner or from a
 //! chat. Through the real CLI and the fake manager agent. ref: docs/tasks.md "Managers talk"
 mod common;
@@ -9,7 +9,7 @@ use std::fs;
 use std::time::{Duration, Instant};
 
 fn entries(fixture: &Fixture, project: &str, chat: &str) -> Vec<Value> {
-    fixture.json(&["task", "chat", "--chat", chat, "-p", project, "--json"])["entries"]
+    fixture.json(&["chat", "read", "--chat", chat, "-p", project, "--json"])["entries"]
         .as_array()
         .cloned()
         .unwrap_or_default()
@@ -63,7 +63,7 @@ fn shop(fixture: &Fixture) {
         shop.to_str().unwrap()
     ));
     fs::write(&config, text).unwrap();
-    let made = fixture.wsx(&["task", "chat", "new", "shop-lead", "-p", "shop"]);
+    let made = fixture.wsx(&["chat", "new", "shop-lead", "-p", "shop"]);
     assert!(made.status.success(), "{made:?}");
 }
 
@@ -94,7 +94,7 @@ fn mail_reaches_only_the_projects_that_use_the_dependency() {
 
     // ^ From the owner: the one project that names openssl, with the file that names it.
     let sent = fixture.json(&[
-        "task",
+        "chat",
         "say",
         "--uses",
         "openssl",
@@ -123,12 +123,12 @@ fn mail_reaches_only_the_projects_that_use_the_dependency() {
 
     // ^ A name that is only a part of a word, and one no project names, reach no one.
     for dep in ["open", "left-pad"] {
-        let none = fixture.json(&["task", "say", "--uses", dep, "hello", "--json"]);
+        let none = fixture.json(&["chat", "say", "--uses", dep, "hello", "--json"]);
         assert_eq!(none["projects"], serde_json::json!([]), "{dep}: {none}");
     }
 
     // ^ A name of only punctuation would match every manifest: refused, nothing sent.
-    let refused = fixture.wsx(&["task", "say", "--uses", ".", "hello", "--json"]);
+    let refused = fixture.wsx(&["chat", "say", "--uses", ".", "hello", "--json"]);
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(
         !refused.status.success() && said.contains("is not a dependency name"),
@@ -137,9 +137,9 @@ fn mail_reaches_only_the_projects_that_use_the_dependency() {
 
     // ^ An agent's mail without --from-chat would be the owner's words: refused, nothing sent.
     let asked = fixture.json(&[
-        "task",
+        "chat",
         "say",
-        "RUN wsx task say --uses openssl 'as the owner?' --json",
+        "RUN wsx chat say --uses openssl 'as the owner?' --json",
         "--json",
     ]);
     let id = asked["id"].as_u64().expect("message id");
@@ -160,9 +160,9 @@ fn mail_reaches_only_the_projects_that_use_the_dependency() {
 
     // ^ From a chat: demo's agent mails it; shop's lead hears it from demo.
     fixture.json(&[
-        "task",
+        "chat",
         "say",
-        "RUN wsx task say --from-chat --uses openssl 'is your openssl patched?' --json",
+        "RUN wsx chat say --from-chat --uses openssl 'is your openssl patched?' --json",
         "--json",
     ]);
     let got = heard(&fixture, "is your openssl patched?");

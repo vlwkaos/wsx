@@ -1,10 +1,10 @@
-//! A host runs its agent's `wsx task` commands: the manager host every `task` command of the
-//! manager agent, a task host the worker's `check-run`, whatever the command's shape (heredoc,
+//! A host runs its agent's `wsx chat`, `wsx task` and `wsx project` commands: the chat host every
+//! one of its agent, a task host the worker's `check-run`, whatever the command's shape (heredoc,
 //! `;`, `&&`, a pipe), so the host keeps the actor and the check slot; under `WSX_TASK_BROKER` the CLI
-//! sends a `task` command's argv, stdin and folder to the host's socket and prints the host's
+//! sends such a command's argv, stdin and folder to the host's socket and prints the host's
 //! answer. ref: docs/tasks.md "Permissions"
 
-use super::args::TaskCmd;
+use super::args::{Invocation, TaskCmd};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{ErrorKind, Read, Write};
@@ -72,41 +72,60 @@ impl SharedPolicy {
     }
 }
 
-/// Whether a host runs this argv for an agent of `policy`: `task <subcommand> ...`, not a
-/// hidden host command, and a command whose capability the policy grants. An argv that
-/// parses to no command runs nothing in the CLI either (its own parser refuses it, or prints
-/// help), so it is passed on.
+/// Whether a host runs this argv for an agent of `policy`: `chat`, `task` or `project` and a
+/// subcommand, not a hidden host command, and a command whose capability the policy grants. An
+/// argv that parses to no command runs nothing in the CLI either (its own parser refuses it, or
+/// prints help), so it is passed on.
 pub(super) fn allowed(argv: &[String], policy: Policy) -> Result<()> {
     match argv {
-        [task, sub, ..] if task == "task" && !HIDDEN.contains(&sub.as_str()) => {}
-        [task, sub, ..] if task == "task" => bail!("`wsx task {sub}` is not for the manager"),
-        _ => bail!("the manager may run only `wsx task` commands"),
+        [task, sub, ..] if task == "task" && HIDDEN.contains(&sub.as_str()) => {
+            bail!("`wsx task {sub}` is not for an agent")
+        }
+        [group, _, ..] if GROUPS.contains(&group.as_str()) => {}
+        _ => bail!("an agent may run only `wsx chat`, `wsx task` and `wsx project` commands"),
+    }
+    if let Some(refusal) = super::args::moved(argv) {
+        bail!("{refusal}");
+    }
+    let parsed = Invocation::parse_argv(argv);
+    // ^ The parsed command, not argv[1]: `-p` or `--json` may come before a host command.
+    if let Some(Invocation::Task(
+        TaskCmd::Host { .. }
+        | TaskCmd::ManagerHost { .. }
+        | TaskCmd::ChatHost { .. }
+        | TaskCmd::RepoHost { .. },
+    )) = parsed
+    {
+        bail!("a `wsx task` host command is not for an agent");
     }
     // ^ `result` is the worker host's own, not a CLI command.
-    let (needs, what): (&[Capability], String) = match (argv[1].as_str(), TaskCmd::parse_argv(argv))
-    {
-        ("result", _) => (&[Capability::Result], "result".into()),
-        (_, Some(command)) => (command.needs(), command_name(argv)),
-        (_, None) => return Ok(()),
-    };
+    let (needs, what): (&[Capability], String) =
+        match ((argv[0].as_str(), argv[1].as_str()), parsed) {
+            (("task", "result"), _) => (&[Capability::Result], "result".into()),
+            (_, Some(command)) => (command.needs(), command_name(argv)),
+            (_, None) => return Ok(()),
+        };
     if policy.allows_any(needs) {
         return Ok(());
     }
     bail!("{}", policy.refusal(&what, needs))
 }
 
-/// The command as the refusal names it: `chat new`, `routine changes`, `close --discard`.
+/// The command groups an agent runs through its host.
+const GROUPS: [&str; 3] = ["chat", "task", "project"];
+
+/// The command as the refusal names it: `chat new`, `project routine changes`, `close --discard`.
 fn command_name(argv: &[String]) -> String {
-    match (argv[1].as_str(), argv.get(2)) {
-        ("chat", Some(action)) if !action.starts_with('-') => format!("chat {action}"),
-        ("routine", _) => "routine changes".into(),
-        ("checkin", _) => "a check-in".into(),
-        ("close", _) if argv.iter().any(|arg| arg == "--discard") => "close --discard".into(),
-        (sub, _) => sub.to_string(),
+    match (argv[0].as_str(), argv[1].as_str()) {
+        ("project", "routine") => "project routine changes".into(),
+        ("chat", "checkin") => "a check-in".into(),
+        ("task", "close") if argv.iter().any(|arg| arg == "--discard") => "close --discard".into(),
+        ("task", sub) => sub.to_string(),
+        (group, sub) => format!("{group} {sub}"),
     }
 }
 
-/// The CLI under `WSX_TASK_BROKER`: send a `task` or `memory` command to the host and exit
+/// The CLI under `WSX_TASK_BROKER`: send a `chat`, `task`, `project` or `memory` command to the host and exit
 /// with its code; refuse anything else. Called before the arguments are parsed.
 pub fn forward_if_brokered() {
     let Some(socket) = std::env::var_os(BROKER_ENV).filter(|value| !value.is_empty()) else {
@@ -124,8 +143,11 @@ pub fn forward_if_brokered() {
 }
 
 fn forward(socket: &Path, argv: Vec<String>) -> Result<i32> {
-    if !matches!(argv.first().map(String::as_str), Some("task" | "memory")) {
-        bail!("only `wsx task` and `wsx memory` commands run here");
+    if !matches!(
+        argv.first().map(String::as_str),
+        Some("chat" | "task" | "project" | "memory")
+    ) {
+        bail!("only `wsx chat`, `wsx task`, `wsx project` and `wsx memory` commands run here");
     }
     // ^ Only `-` reads standard input (docs/tasks.md); an agent's stdin may never close.
     let stdin = if argv.iter().any(|arg| arg == "-") {
@@ -275,7 +297,7 @@ fn memory_pin(argv: &[String], own_id: &str, policy: Policy) -> Result<bool> {
         subcommand, scope, ..
     }) = args.command
     else {
-        bail!("only `wsx task` and `wsx memory` commands run here");
+        bail!("only `wsx chat`, `wsx task`, `wsx project` and `wsx memory` commands run here");
     };
     let needs = subcommand.needs();
     if !policy.allows_any(needs) {
@@ -349,7 +371,8 @@ fn reach(argv: &[String], own: &str, project_id: &str, role: Role) -> Result<Opt
         Some(other) if sub == "say" && from_chat && !role.info().reach.is_empty() => {
             Ok(Some(Party::Chat(main_of(&other)?)))
         }
-        Some(_) if role.reaches(sub) && !discard => Ok(None),
+        // ^ The reach list names `wsx task` verbs: `chat new -p <other>` is no `task new`.
+        Some(_) if argv[0] == "task" && role.reaches(sub) && !discard => Ok(None),
         Some(other) => bail!("{}", role.reach_refusal(&other)),
     }
 }

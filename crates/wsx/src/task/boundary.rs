@@ -132,7 +132,7 @@ impl Boundary {
 
     /// The manager: its folder and the project overview; never the main checkout or its git
     /// folder. Its `wsx task` commands run in its host through the broker, outside this
-    /// boundary: `land` and `wsx task commit` write main, `wsx task push` the remote.
+    /// boundary: `land` and `wsx project commit` write main, `wsx project push` the remote.
     /// ref: docs/tasks.md "Permissions"
     pub fn manager(main: &Path, own: &Path, overview: &Path, policy: Policy) -> Result<Self> {
         let mut boundary = Self::new(main, own, policy)?;
@@ -411,7 +411,7 @@ impl Boundary {
         }
         if self.policy.role == Role::Manager {
             // ^ No push by hand: git reaches a remote through these programs, and the owner's
-            // approved `wsx task push` runs in the host.
+            // approved `wsx project push` runs in the host.
             rule("deny process-exec", regex(MANAGER_DENIED_EXEC));
         }
         if strict {

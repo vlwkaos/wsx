@@ -435,13 +435,19 @@ fn clock(unix_ms: u64) -> String {
 /// limit or note as one muted line, and a run of quiet replies under the manager's name once
 /// (`chat_rows`). A link shows its words underlined, the selected one reversed; the second
 /// value is the line of the selected link. The heading of the `marked` message is reversed.
+/// `lead`: the other side is the project's lead, and its name is followed by "lead".
 pub fn chat_lines(
     rows: &[ChatRow],
     width: usize,
     selected: Option<(u64, usize)>,
     marked: Option<u64>,
     opened: &HashSet<String>,
+    lead: bool,
 ) -> (Vec<Line<'static>>, Option<usize>) {
+    let role = |row: &ChatRow| {
+        (lead && row.author == Some(Speaker::Manager))
+            .then(|| Span::styled("  lead", Style::default().fg(theme::TEXT_SUBTLE)))
+    };
     let mut lines = Vec::new();
     let mut selected_line = None;
     for (index, row) in rows.iter().enumerate() {
@@ -481,10 +487,9 @@ pub fn chat_lines(
                 lines.push(Line::raw(""));
             }
             if row.kind == RowKind::Quiet && !quiet_run {
-                lines.push(Line::from(Span::styled(
-                    name,
-                    Style::default().fg(color).bold(),
-                )));
+                let mut heading = vec![Span::styled(name, Style::default().fg(color).bold())];
+                heading.extend(role(row));
+                lines.push(Line::from(heading));
             }
             let on = selected == Some((row.unix_ms, 0));
             if on {
@@ -513,6 +518,7 @@ pub fn chat_lines(
             name_style = name_style.add_modifier(Modifier::REVERSED);
         }
         let mut heading = vec![Span::styled(name, name_style)];
+        heading.extend(role(row));
         if let Some(tag) = &row.tag {
             heading.push(Span::styled(
                 format!("  {tag}"),
@@ -938,7 +944,7 @@ fn item_lines(chat: &ManagerChat, width: usize) -> (Vec<Line<'static>>, Option<u
                     )
                     .patch_style(style),
                 );
-                // ^ The kept captures by file name; `wsx task check` prints their paths.
+                // ^ The kept captures by file name; `wsx project check` prints their paths.
                 if !item.captures.is_empty() {
                     let names: Vec<&str> = item
                         .captures

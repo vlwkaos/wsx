@@ -1022,12 +1022,14 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   const names = { manager: chat?.manager.name };
   // ^ The project chat's manager with no name of its own is named as its project: the top row says so already.
   const plain = !room && names.manager === project.name;
+  // ^ The lead's replies say so (docs/web-client-tasks.md "Project screen").
+  const lead = Boolean(chat?.manager.lead);
   const stopped = chat && !chat.running && entries.at(-1)?.danger;
   // ^ The manager's state only when it matters: typing or stopped (docs/web-client-tasks.md "Project screen").
   const managerWord = typing ? "typing" : stopped ? "stopped" : "";
-  const draw = (row, isNew) => row.kind === "message" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} fresh=${isNew} onNeed=${room ? null : showNeed} plain=${plain} />`
+  const draw = (row, isNew) => row.kind === "message" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} fresh=${isNew} onNeed=${room ? null : showNeed} plain=${plain} lead=${lead} />`
     : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} row=${row} fresh=${isNew} />`
-    : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} project=${id} row=${row} words=${words} fresh=${isNew} plain=${plain} />`
+    : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} project=${id} row=${row} words=${words} fresh=${isNew} plain=${plain} lead=${lead} />`
     : row.kind === "talk" ? html`<${TalkLine} key=${row.key} project=${id} row=${row} words=${words} all=${finding} />`
     : row.kind === "fold" ? html`<${Fold} key=${row.key} project=${id} row=${row} render=${show} all=${finding} want=${wanted} />`
     : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${isNew} onReply=${replyTo} plain=${plain} />`
@@ -1079,7 +1081,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
               : "No messages yet. Ask the manager for a task or a status; it answers from the ledger."}</p>` : null}
             ${earlier}
             ${withNewLine(recent, firstNew, show)}
-            ${typing && html`<${Typing} name=${names.manager} plain=${plain} />`}
+            ${typing && html`<${Typing} name=${names.manager} plain=${plain} lead=${lead} />`}
           </div>
           ${away && html`<${JumpButton} unread=${unread} onClick=${around != null ? newest : toEnd} />`}
         </div>

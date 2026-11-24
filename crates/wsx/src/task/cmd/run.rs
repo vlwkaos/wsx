@@ -1,4 +1,4 @@
-//! `wsx task run`: an agent asks the owner to run one command outside its boundary; `wsx task
+//! `wsx project run`: an agent asks the owner to run one command outside its boundary; `wsx task
 //! ran`: the session pane's command once approved. ref: docs/tasks.md "Approved runs"
 
 use super::approve::{ask_covering, request_of};
@@ -31,7 +31,7 @@ pub(crate) fn ask(
         .and_then(|text| text.parse().ok());
     if !acting_as_manager() && worker.is_none() {
         bail!(
-            "wsx task run is how an agent asks the owner; the owner runs the command in a terminal"
+            "wsx project run is how an agent asks the owner; the owner runs the command in a terminal"
         );
     }
     if argv.is_empty() || argv.len() > MAX_WORDS || argv[0].is_empty() {

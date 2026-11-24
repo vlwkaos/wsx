@@ -292,7 +292,15 @@ pub fn run(cmd: Command) -> Result<()> {
             scope,
             json,
         } => cmd_memory(subcommand, scope, json),
-        Command::Task { common, subcommand } => crate::task::run(subcommand, common),
+        Command::Chat { common, subcommand } => {
+            crate::task::run(crate::task::Invocation::Chat(subcommand), common)
+        }
+        Command::Task { common, subcommand } => {
+            crate::task::run(crate::task::Invocation::Task(subcommand), common)
+        }
+        Command::Project { common, subcommand } => {
+            crate::task::run(crate::task::Invocation::Project(subcommand), common)
+        }
         Command::Web { subcommand } => match subcommand {
             None => wsx_web::open(None, false, false),
             Some(WebCmd::Open { site, pair, print }) => wsx_web::open(site.named(), pair, print),

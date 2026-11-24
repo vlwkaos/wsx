@@ -104,7 +104,7 @@ batch, everything else in the digest.
 | 5 | Proof card, preview on a leased port, inbox | not built; mockups first | the inbox projection (`inbox`, `chat_rows`) in wsx-core, checked against a replayed day before any screen |
 | 6 | Mail between desks | built (66b38ffc) | |
 | — | Agents (section 8) | partly: no switching | re-dispatch to a peer as a Decide item (needs the inbox); tiers; circuit breaker; provenance |
-| — | Deletions (decision 7) | partly | `manager-host` and `run_old`, `.gtrconfig` and old `config.toml` imports, old web `#/p/...` routes; merge `wsx routine` into `wsx task routine`; three ways to add a project into `ops::add_project` |
+| — | Deletions (decision 7) | partly | `manager-host` and `run_old`, `.gtrconfig` and old `config.toml` imports, old web `#/p/...` routes; merge `wsx routine` into `wsx project routine`; three ways to add a project into `ops::add_project` |
 
 ## 8. Agents, fallbacks and limits
 

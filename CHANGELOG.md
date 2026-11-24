@@ -4,8 +4,13 @@ Releases 0.40.4 and older are in [docs/changelog-archive.md](docs/changelog-arch
 
 ## [Unreleased]
 
+### Added
+
+- `wsx project add <git url>` clones and registers a project without a folder named: it lands in the folder of the current project, else the folder that holds the most projects, else `~/ws`.
+
 ### Changed
 
+- CLI: `wsx task` splits by what a command acts on. `wsx chat` talks and decides (`say`, `read`, `new`, `list`, `close`, `main`, `goal`, `rename`, `search`, `approve`, `deny`, `dismiss`, `checkin`, `lead`, `ledger`); `wsx task` keeps one task's life (`new` to `land` or `close`); `wsx project` holds the code side (`add`, `push`, `sync`, `commit`, `deploy`, `release`, `deployed`, `check`, `run`, `routine`). An old form such as `wsx task say` is refused with its new one. Agents run all three through their host.
 - Config: `tasks.manager` is split into `tasks.chats` (`adapter`, `model`, `eventModel`, `effort`, `rotateTokens`, `recapMinutes`, and `fallback` as `standIns`) and `tasks.lead` (`name`, and `leadModel` and `leadRotateTokens` as `model` and `rotateTokens`). A project that still has `tasks.manager` is refused with the new keys named; rename the block.
 - Memory: `memory.engine = "ir"` in the global config ranks `wsx memory search|recall` and the records an owner message gets with the `ir` command (BM25, Korean through the owner's `ko` preprocessor), over a corpus wsx writes from the records and transcripts and an index in wsx's own state; without `ir` the built-in answers with a notice. `wsx task search` ranks with it too.
 - Tasks: a task or chat keeps its own agent for life. A usage limit or a failed sign-in is waited out on it and its conversation resumes; no fallback takes over a running conversation, and a new task starts on its own agent. A task waiting on a failed sign-in now pushes once per failure (not on each 5-minute retry), since only the owner can fix it; a chat whose sign-in works again gets the held messages in full. `tasks.agent.fallback` and `tasks.agent.maxWaitMinutes` are refused with the reason; `tasks.chats.standIns` names the stand-in agents only. A task or chat already away on a fallback goes back to its own agent once that is free.
@@ -47,6 +52,10 @@ Releases 0.40.4 and older are in [docs/changelog-archive.md](docs/changelog-arch
 - Tasks: the hidden `wsx task handback <n>`; run `wsx task hand <n> --back`.
 - Tasks: `wsx task widths` and the lane width that check-run records carried (both unreleased); old log lines with `width` still load.
 - Tasks: `tasks.manager.reviewMinutes` and the "waits on the manager" stall, which the review job replaces. A config that still sets it loads with an "unknown keys ignored" warning.
+
+### Fixed
+
+- Tasks: an agent's `wsx task -p <project> host ...` (a flag before the hidden host command) is refused like `wsx task host ...`.
 
 ## [0.43.0] - 2026-11-16
 

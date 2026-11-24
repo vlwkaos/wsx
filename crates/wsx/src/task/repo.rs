@@ -574,7 +574,7 @@ impl Repo {
             }
             self.state.suggested_close.insert(name.clone(), now);
             let (line, short) = plain_event(format!(
-                "chat {name} has had no message and no open task for a while: close it with `wsx task chat close {name}` if it is done, or leave it"
+                "chat {name} has had no message and no open task for a while: close it with `wsx chat close {name}` if it is done, or leave it"
             ));
             self.emit("", (line, short.quiet()));
         }

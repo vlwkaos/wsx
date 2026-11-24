@@ -565,9 +565,6 @@ def run(wsx, wsxd, work, owned, part):
     def kinds(n, *names):
         return [e['kind'] for e in log(n) if e['kind'] in names]
 
-    # ^ A sleep's command line names no folder: its length carries this run's pid, so the sleeps of a run beside this one are not matched (or killed).
-    sleep_37, sleep_47 = '37.%04d' % (os.getpid() % 10000), '47.%04d' % (os.getpid() % 10000)
-
     def leftovers(marker):
         ps = subprocess.run(['ps', '-axo', 'pid=,command='], capture_output=True, text=True).stdout
         return [line for line in ps.splitlines() if marker in line and (not marker.startswith(('task chat-host', 'task repo-host', 'task deploy')) or str(work) in line) and 'ps -axo' not in line]
@@ -760,7 +757,7 @@ def store_up(created):
     def ran(*argv, seconds=20):
         # ^ A deploy or release by hand answers once it started; its detached run records it.
         before = len(deploy_records())
-        started = js('task', *argv)
+        started = js('project', *argv)
         assert started['started'] and ' started; ' in started['message'], started
         wait(lambda: len(deploy_records()) > before and deploy_lock_free(), 'the detached ' + argv[0], seconds)
         assert started['commit'] == deploy_records()[-1]['commit'], started
@@ -808,7 +805,7 @@ def manager_up(created):
     (owner_skills / 'other/SKILL.md').write_text('---\nname: other\ndescription: fixture\n---\nx\n')
 
     def chat(after=None, raw=False):
-        found = js('task', 'chat', *(['--after', after] if after is not None else []))['entries']
+        found = js('chat', 'read', *(['--after', after] if after is not None else []))['entries']
         return found if raw else [unquoted(e) for e in found]
 
     def silent_manager():
@@ -838,17 +835,17 @@ def manager_up(created):
     unwritten = '# demo\n\n## Goal\n\n_Not written yet._\n\n## Tasks\n\n```mermaid\ngraph LR\n  start[No tasks yet]\n```\n\n## Decisions\n\n_None yet._\n\n## Open questions\n\n_None yet._\n'
     old_page.write_text(unwritten)
     running = js('task', 'new', 'SLOW SLOW SLOW WORK r.txt')['id']
-    asked = js('task', 'say', 'STATUS')
+    asked = js('chat', 'say', 'STATUS')
     assert asked['ok'] and asked['id'] == 1, (asked, [(e['kind'], e.get('id'), e.get('from'), str(e.get('text'))[:60]) for e in chat()])
     asked_reply = reply_to(asked['id'])
     assert ('#%d working' % running) in asked_reply['text'] and 'quiet' not in asked_reply, asked_reply
     launch = next(t for t in traces() if t.get('launch') and t.get('manager'))
     # ^ The message ends with the host's ledger summary; a fresh conversation gets every open task.
     opening = next(t['message'] for t in traces() if t.get('manager') and 'message' in t)
-    summary = opening.split('\n\nLedger summary from wsx (`wsx task ledger -p demo` has the details):\n', 1)[1]
+    summary = opening.split('\n\nLedger summary from wsx (`wsx chat ledger -p demo` has the details):\n', 1)[1]
     assert summary.startswith('- open: ') and 'working; to check: ' in summary, summary
     assert '#%d working r' % running in summary.split('- open tasks:\n', 1)[1], summary
-    assert '`wsx task ledger -p demo` are the truth' in launch['instructions'], launch['instructions']
+    assert '`wsx chat ledger -p demo` are the truth' in launch['instructions'], launch['instructions']
     # ^ The manager never commits in the main checkout (docs/tasks.md "Permissions").
     assert 'git commit' not in launch['instructions'] and 'only after the owner says yes' not in launch['instructions']
     page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'overview.md')
@@ -873,7 +870,7 @@ def manager_up(created):
     # ^ A manager turn that leaves the overview over the cap (60 lines, 4,000 characters) gets one
     # follow-up turn that names the sizes; the second over-cap result gets no third
     # (docs/tasks.md "Project overview").
-    long_said = js('task', 'say', 'OVERLONG 70')
+    long_said = js('chat', 'say', 'OVERLONG 70')
     wait(lambda: turn_with('The project overview is 70 lines / ') and reply_to(long_said['id']), 'the overview follow-up')
     time.sleep(4)
     follow = [t for t in traces() if t.get('manager') and 'The project overview is ' in str(t.get('message', ''))]
@@ -889,20 +886,20 @@ def manager_up(created):
     tried = lambda n: [t for t in traces() if t.get('manager') and 'AUTHFAIL' in str(t.get('message', ''))][n - 1:]
     first_launch = len(launches())
     failed_at = lambda: next(e['unix_ms'] for e in entries() if e['kind'] == 'stopped' and 'Sign in again' in e['reason'])
-    failing = js('task', 'say', 'AUTHFAIL %s' % signed_in)
+    failing = js('chat', 'say', 'AUTHFAIL %s' % signed_in)
     wait(lambda: any(e['kind'] == 'stopped' and 'Sign in again' in e.get('reason', '') for e in entries()),
          'the sign-in stopped entry')
-    again = js('task', 'say', 'AUTHFAIL %s again' % signed_in)
+    again = js('chat', 'say', 'AUTHFAIL %s again' % signed_in)
     wait(lambda: tried(2) and len(launches()) >= first_launch + 1, 'the owner message retries in a new process', 20)
     # ^ The hold logs no pause, so the chat has no "resumed" row for it, and an owner message that
     # no turn has taken yet is queued (`waiting_ids`): a turn that fails 4 s after it starts keeps
     # the next message waiting, in the JSON, in the text and in the log.
-    slow = js('task', 'say', 'AUTHFAIL %s AUTHSLOW' % signed_in)
+    slow = js('chat', 'say', 'AUTHFAIL %s AUTHSLOW' % signed_in)
     wait(lambda: turn_with('AUTHSLOW'), 'the slow sign-in turn')
-    waits = js('task', 'say', 'AUTHFAIL %s waits' % signed_in)
-    held = js('task', 'chat')
+    waits = js('chat', 'say', 'AUTHFAIL %s waits' % signed_in)
+    held = js('chat', 'read')
     assert held['waiting'] == [waits['id']], (held['waiting'], waits, slow)
-    text = cli('task', 'chat').stdout
+    text = cli('chat', 'read').stdout
     assert re.search(r'\[%d\] You \(waiting\): AUTHFAIL' % waits['id'], text) and text.count('(waiting)') == 1, text
     assert [e['kind'] for e in entries() if e['kind'] == 'limit' and e['unix_ms'] >= failed_at()] == [], entries()[-12:]
     assert len([e for e in entries() if e['kind'] == 'stopped' and 'Sign in again' in e['reason']]) == 1, entries()[-12:]
@@ -911,13 +908,13 @@ def manager_up(created):
     assert waits['busy'], waits
     time.sleep(6)
     signed_in.touch()
-    after_sign_in = js('task', 'say', 'STATUS')
+    after_sign_in = js('chat', 'say', 'STATUS')
     replied = reply_to(after_sign_in['id'])
     assert {failing['id'], again['id'], slow['id'], waits['id']} <= set(replied['to']), replied
     # ^ A reply to a turn with several owner messages quotes the newest one (docs/tasks.md "A quote").
     several = raw_reply(after_sign_in['id'])
     assert several['quote'] == after_sign_in['id'] and several['text'].startswith('> STATUS\n\n'), several
-    assert js('task', 'chat')['waiting'] == [], 'a message the turn took is a bubble'
+    assert js('chat', 'read')['waiting'] == [], 'a message the turn took is a bubble'
     failed = [e for e in entries() if 'OAuth session expired' in str(e)]
     assert [e['kind'] for e in failed] == ['agent', 'stopped', 'reply'], failed
     # ^ The hold for the sign-in reaches the owner once, at once: a post at level bad with the
@@ -949,7 +946,7 @@ def manager_up(created):
     now_ms = int(time.time() * 1000)
     limit_record.write_text(json.dumps({'since_ms': now_ms, 'until_ms': now_ms + 3 * 3600 * 1000,
                                         'window': 'five_hour', 'model': 'haiku'}))
-    held = js('task', 'say', 'STATUS during a long limit')
+    held = js('chat', 'say', 'STATUS during a long limit')
     wait(lambda: probes(), lambda: 'the limit probe (state %s, agents %s, chat %s)' % (
         (manager_log.parent / 'state.json').read_text()[:600], sorted(p.name for p in agents_dir.iterdir()),
         [(e['kind'], str(e.get('text', e.get('reason', '')))[:80]) for e in entries()[-6:]]))
@@ -995,12 +992,12 @@ def manager_up(created):
     # Its rules (crates/wsx/src/task/instructions.rs): root cause first; facts, not guesses; chat,
     # not reports; talk or work; a complete prompt passed on stdin; a lean review; the owner's word;
     # memory. What commands do or refuse and their options are in `--help`, not here.
-    for rule in ('`wsx task <command> --help` lists the rest', 'with a quoted heredoc or `--prompt-file`',
+    for rule in ('`wsx <group> --help` lists each', 'with a quoted heredoc or `--prompt-file`',
                  "--files <glob> - <<'EOF'\n<prompt>\nEOF\n", 'never in double quotes',
                  'Root cause first. A finding is its cause, the first state that goes wrong (file:line and log proof)',
                  'plus the design step that removes it; never a task that fixes a symptom',
                  'A second fix on one concern stops: name the shared owner of that concern',
-                 'Update local. When the owner asks to update local to origin, run `wsx task sync`',
+                 'Update local. When the owner asks to update local to origin, run `wsx project sync`',
                  'Say as fact only what wsx reported or you checked', '`since then:` line',
                  "state and `checks` from the ledger", 'live only when a deploy event names the task', 'or call it unchecked',
                  'Talk like a person in a chat, not a report', 'Replies are chat messages, not reports', 'Never coin a label',
@@ -1015,12 +1012,12 @@ def manager_up(created):
                  'one read-only audit task per area', '`--into <n>`', 'for lean code', "its prompt and each later add",
                  'naming each ask it missed', 'Check the fixture rule.', 'tell that worker to prove it',
                  "only when the owner's message of this turn says", '`--owner-said <id>` (on `land`, `close --discard`, `deploy`, `release`, `push`)', 'never name a message that did not ask',
-                 'name the files and ask the owner; on yes, `wsx task commit <files>`', 'Read `wsx task review <n>`',
+                 'name the files and ask the owner; on yes, `wsx project commit <files>`', 'Read `wsx task review <n>`',
                  'Start a stall from `wsx task why <n>`.',
-                 'Review, when asked (auto land has a review job).', 'Never touch a task on `hand`', '`wsx task checkin`',
+                 'Review, when asked (auto land has a review job).', 'Never touch a task on `hand`', '`wsx chat checkin`',
                  'read-only git', 'The owner\'s skills are not listed: read `%s/<name>/SKILL.md`' % (plugin / 'skills'), 'Skills: other, scribe. ', 'check rather than guess', '`wsx memory add --kind rule`',
                  '/chats/demo/notes/decisions.md', '/chats/demo/notes/context.md', 'update a section in place',
-                 '--from-chat --reply', "do not answer 'Chat <name> replies'", "'@<chat>'", '`wsx task say --to <chat> --from-chat`',
+                 '--from-chat --reply', "do not answer 'Chat <name> replies'", "'@<chat>'", '`wsx chat say --to <chat> --from-chat`',
                  '`new --skills` lends a worker the ones its task needs'):
         assert rule in launch['instructions'], rule
     # ^ No instruction names a brief or a goal file: only the owner's `chat new` takes one (docs/tasks.md "Chats").
@@ -1030,20 +1027,20 @@ def manager_up(created):
     assert not any(name in launch['instructions'] for name in ('seek', 'recall', '/memo'))
     assert launch['cwd'] == str(project)
     # ^ The name the owner reads, trimmed; the session is labelled `task-<chat name>`.
-    assert js('task', 'manager')['name'] == 'Atlas'
+    assert js('chat', 'lead')['name'] == 'Atlas'
     # ^ The TUI's manager row reads the name; without one the project's (docs/tasks.md "Config").
     named = tui_text(wsx, env, project, r'task-demo\s*\n*\s*\(Atlas\)')
     assert re.search(r'task-demo\s*\n*\s*\(Atlas\)', named) and '(manager)' not in named, named[-3000:]
     config_text = (project / 'wsx.config.yml').read_text()
     (project / 'wsx.config.yml').write_text(config_text.replace('name: "  Atlas ", ', ''))
     plain = tui_text(wsx, env, project, r'task-demo\s*\n*\s*\(demo\)')
-    plain_name = js('task', 'manager')['name']
+    plain_name = js('chat', 'lead')['name']
     (project / 'wsx.config.yml').write_text(config_text)
     assert re.search(r'task-demo\s*\n*\s*\(demo\)', plain) and '(Atlas)' not in plain, plain[-3000:]
     assert plain_name == 'demo', plain_name
-    assert js('task', 'manager')['state'] == 'running'
+    assert js('chat', 'lead')['state'] == 'running'
     # A new task and an add to the running one, each by a wsx task command the manager runs.
-    started = js('task', 'say', 'RUN wsx task new "WORK s1.txt" -p demo --json')
+    started = js('chat', 'say', 'RUN wsx task new "WORK s1.txt" -p demo --json')
     assert 'ran: wsx task new' in reply_to(started['id'])['text']
     manager_task = max(row['id'] for row in js('task', 'list')['tasks'])
     assert wait_state(manager_task, 'ready', 'failed')['state'] == 'ready'
@@ -1071,10 +1068,10 @@ def manager_up(created):
     js('task', 'close', picked, '--discard')
     assert 'is not a skill name' in cli('task', 'new', 'WORK bad.txt', '--skills', 'owner:../x', ok=False).stderr
     configure(unrestricted, 'skills all')
-    added = js('task', 'say', 'RUN wsx task add %d "WORK s2.txt" -p demo --json' % running)
+    added = js('chat', 'say', 'RUN wsx task add %d "WORK s2.txt" -p demo --json' % running)
     assert '-> 0' in reply_to(added['id'])['text']
     # Any command shape reaches the broker: `;`, a heredoc with a multi-line prompt, a pipe.
-    script = js('task', 'say', "SCRIPT\nwsx task ledger -p demo --json >/dev/null; wsx task new -p demo --json - <<'EOF'\n"
+    script = js('chat', 'say', "SCRIPT\nwsx chat ledger -p demo --json >/dev/null; wsx task new -p demo --json - <<'EOF'\n"
                 "WORK h1.txt\nsecond line of the prompt\nEOF\nwsx task list -p demo --json | grep -c '\"id\"' >/dev/null && echo piped")
     answer = reply_to(script['id'])['text']
     assert answer.startswith('script -> 0') and answer.rstrip().endswith('piped'), answer
@@ -1083,13 +1080,13 @@ def manager_up(created):
     assert first['text'] == 'WORK h1.txt\nsecond line of the prompt', first
     assert wait_state(heredoc_task, 'ready', 'failed')['state'] == 'ready'
     # Under the broker no other command runs, neither in the CLI nor at the host.
-    refused = js('task', 'say', 'RUN wsx --version\nRUN wsx task host %s 1' % launch['cwd'])
+    refused = js('chat', 'say', 'RUN wsx --version\nRUN wsx task host %s 1' % launch['cwd'])
     text = reply_to(refused['id'])['text']
-    assert 'ran: wsx --version -> 2 wsx: only `wsx task` and `wsx memory` commands run here' in text, text
-    assert 'ran: wsx task host' in text and "-> 2 wsx: `wsx task host` is not for the manager" in text, text
+    assert 'ran: wsx --version -> 2 wsx: only `wsx chat`, `wsx task`, `wsx project` and `wsx memory` commands run here' in text, text
+    assert 'ran: wsx task host' in text and "-> 2 wsx: `wsx task host` is not for an agent" in text, text
     # The manager's `wsx memory` runs at its host too (docs/memory.md "Agents"): a rule with the owner's word is its own.
     (work / 'manager-rule.txt').write_text('The manager writes the rules.\n')
-    text = reply_to(js('task', 'say', 'RUN wsx memory add --kind rule --slug manager-rule --text-file %s --source msg:1 '
+    text = reply_to(js('chat', 'say', 'RUN wsx memory add --kind rule --slug manager-rule --text-file %s --source msg:1 '
                        '--verified-by owner:1 --json' % (work / 'manager-rule.txt'))['id'])['text']
     assert '-> 0 {"slug":"manager-rule","kind":"rule"' in text, text
     assert [h['slug'] for h in memory_records(cli('memory', 'search', 'rules', '--json').stdout)] == ['manager-rule']
@@ -1101,7 +1098,7 @@ def manager_up(created):
         except OSError:
             pass  # ^ The broker refuses at the first line and may close before this half-close (macOS: ENOTCONN).
         direct = json.loads(raw.makefile().read())
-    assert direct['code'] == 2 and 'only `wsx task` commands' in direct['stderr'], direct
+    assert direct['code'] == 2 and 'only `wsx chat`, `wsx task` and `wsx project` commands' in direct['stderr'], direct
     assert wait_state(running, 'ready', 'failed')['state'] == 'ready'
     assert [e['mode'] for e in log(running) if e['kind'] == 'message'] == ['prompt', 'add']
     manager_log = home_dir(Path(created['task_dir']).parent) / 'log.jsonl'
@@ -1133,7 +1130,7 @@ def manager_up(created):
     # Usage (docs/tasks.md "Manager"): rotation looks at the last main model call's context, not
     # the result's sum over the turn's calls, nor a subagent's; a reply's cost is its own, not the
     # process's running `total_cost_usd`.
-    summed = js('task', 'say', 'SUMMED')
+    summed = js('chat', 'say', 'SUMMED')
     usage = reply_to(summed['id'])['usage']
     # ^ A post (the sign-in alert above) has no usage: only the agent's replies count.
     replies = [e for e in manager_entries() if e['kind'] == 'reply' and not e.get('post')]
@@ -1142,49 +1139,49 @@ def manager_up(created):
     # Quotes (docs/tasks.md "Manager"): a reply that opens with `> message <id>` is stored with
     # that message's first line in the owner's quote format; a bad or unknown id drops the line and
     # the reply stands. The next turn names the id of the manager's last reply.
-    asked_promise = js('task', 'say', 'STATUS promise')
+    asked_promise = js('chat', 'say', 'STATUS promise')
     promise = reply_to(asked_promise['id'])
-    own = reply_to(js('task', 'say', 'QUOTE %d still waiting on #8' % asked_promise['id'])['id'])
+    own = reply_to(js('chat', 'say', 'QUOTE %d still waiting on #8' % asked_promise['id'])['id'])
     assert own['text'] == '> STATUS promise\n\nstill waiting on #8', own
     # ^ The entry keeps the quoted message's id, for a tap that opens the chat there at any age.
     assert own['quote'] == asked_promise['id'], own
     # ^ A quote means "this answers that message": one of the manager's own replies is dropped, and
     # the reply stands (docs/tasks.md "A quote", `resolve_quote`).
-    self_quote = reply_to(js('task', 'say', 'QUOTE %d own words' % promise['id'])['id'])
+    self_quote = reply_to(js('chat', 'say', 'QUOTE %d own words' % promise['id'])['id'])
     assert self_quote['text'] == 'own words' and 'quote' not in self_quote, self_quote
     assert 'Your last reply: %d.' % promise['id'] in turn_with('QUOTE %d still' % asked_promise['id'])['message']
     # ^ wsx quotes the owner message a reply answers when the reply opens with no quote of its own
     # and will not sit under it (docs/tasks.md "A quote", `chat::quoted_message`): the turn
     # held several owner messages (the sign-in turn above: the newest), or a chat item was logged
     # after the message. One a manager wrote wins.
-    mine = raw_reply(js('task', 'say', 'QUOTE %d keeps mine' % asked_promise['id'])['id'])
+    mine = raw_reply(js('chat', 'say', 'QUOTE %d keeps mine' % asked_promise['id'])['id'])
     assert mine['quote'] == asked_promise['id'] and mine['text'].startswith('> STATUS promise\n\nkeeps mine'), mine
     # ^ A task event logged during its turn would sit between: the events of earlier tasks land first.
     # They start no turn of their own (docs/tasks.md "Manager"), so they join this one before it.
     manager_settled('the events before one owner message')
-    one = js('task', 'say', 'STATUS one owner message')
+    one = js('chat', 'say', 'STATUS one owner message')
     own_words = raw_reply(one['id'])
     owner_ids = {e['id'] for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'owner'}
     assert [i for i in own_words['to'] if i in owner_ids] == [one['id']] and 'quote' not in own_words, own_words
     # ^ A reply under its one message is no quote; one with a chat item between is. A message that
     # comes in during a long turn waits for the next turn and sits between the first and its reply.
-    apart = js('task', 'say', 'ASK LONG apart')
+    apart = js('chat', 'say', 'ASK LONG apart')
     wait(lambda: any(e['kind'] == 'delivered' and apart['id'] in e['ids'] for e in manager_entries()), 'apart delivered')
-    second = js('task', 'say', 'STATUS second')
+    second = js('chat', 'say', 'STATUS second')
     far = raw_reply(apart['id'], 60)
     assert second['id'] < far['id'] and far['to'] == [apart['id']] and far['quote'] == apart['id'], (second, far)
     assert far['text'].startswith('> ASK LONG apart\n\n') and far.get('asks') is True, far
-    assert far['id'] in js('task', 'chat')['asks'], js('task', 'chat')['asks']
-    js('task', 'dismiss', str(far['id']))
+    assert far['id'] in js('chat', 'read')['asks'], js('chat', 'read')['asks']
+    js('chat', 'dismiss', str(far['id']))
     reply_to(second['id'], 60)
-    heard = js('task', 'say', 'QUOTE OWNER_SAID noted')
+    heard = js('chat', 'say', 'QUOTE OWNER_SAID noted')
     assert raw_reply(heard['id'])['text'] == '> QUOTE OWNER_SAID noted\n\nnoted'
     for bad in ('abc', '0', '99999999', '99999999999999999999', '-3'):
-        dropped = reply_to(js('task', 'say', 'QUOTE %s words stay' % bad)['id'])
+        dropped = reply_to(js('chat', 'say', 'QUOTE %s words stay' % bad)['id'])
         assert dropped['text'] == 'words stay' and 'quote' not in dropped, (bad, dropped)
     # ^ The TUI shows the quote as one line; `[` selects it and Enter goes to the quoted message,
     # the owner's first one, far above.
-    first = reply_to(js('task', 'say', 'QUOTE 1 jump')['id'])
+    first = reply_to(js('chat', 'say', 'QUOTE 1 jump')['id'])
     assert first['text'] == '> STATUS\n\njump' and first['quote'] == 1, first
     jumped = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
@@ -1195,8 +1192,8 @@ def manager_up(created):
     assert 'jump' in jumped[2] and 'jump' not in jumped[4], jumped[4]
     # ^ A mermaid block the chat can draw shows as its diagram, its source one link under it; Enter
     # on that link shows the source. A type it does not draw is the link alone (docs/tasks.md "TUI").
-    reply_to(js('task', 'say', 'not drawn\n\n```mermaid\nzenuml\n  title Demo\n```')['id'])
-    reply_to(js('task', 'say', 'drawn\n\n```mermaid\nflowchart TD\n  Plan --> Land\n```')['id'])
+    reply_to(js('chat', 'say', 'not drawn\n\n```mermaid\nzenuml\n  title Demo\n```')['id'])
+    reply_to(js('chat', 'say', 'drawn\n\n```mermaid\nflowchart TD\n  Plan --> Land\n```')['id'])
     diagrams = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
         (r'(?s)▸ diagram not drawn \(mermaid, 2 lines\).*│ Plan │.*│ Land │.*▸ mermaid source \(2 lines\)', b'['),
@@ -1208,7 +1205,7 @@ def manager_up(created):
     # it; a number the project does not have says so. From 130 columns the chat rail shows on the
     # left: tab goes chat, task, rail, chat; ^g reaches the rail from the chat; Esc in the task
     # closes it. In the message line, ⌥Enter starts a new line (docs/tasks.md "TUI").
-    mentioned = reply_to(js('task', 'say', 'see #%d and #99999' % manager_task)['id'])
+    mentioned = reply_to(js('chat', 'say', 'see #%d and #99999' % manager_task)['id'])
     assert '#' not in mentioned['text'], mentioned
     beside = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'see #%d and #99999' % manager_task, b'['),
@@ -1243,7 +1240,7 @@ def manager_up(created):
     assert '\u25b8 Manager' not in beside[-1] and 'see #%d' % manager_task not in beside[-1], beside[-1]
     # ^ After the jump: the owner's Reply (web *Reply*, TUI `r`) sends `> message <id>` too: stored in the same
     # format with the id, and the agent reads the line.
-    said_back = js('task', 'say', '> message 1\n\nthe owner answers')
+    said_back = js('chat', 'say', '> message 1\n\nthe owner answers')
     stored = next(e for e in manager_entries() if e['kind'] == 'message' and e['id'] == said_back['id'])
     assert stored['text'] == '> STATUS\n\nthe owner answers' and stored['quote'] == 1, stored
     reply_to(said_back['id'])
@@ -1253,14 +1250,14 @@ def manager_up(created):
     # ^ Without a skills folder the next launch has no plugin, keeps the Skill tool and
     # the generic guidance.
     shutil.rmtree(owner_skills)
-    big = js('task', 'say', 'BIG')
+    big = js('chat', 'say', 'BIG')
     big_reply = reply_to(big['id'])
     assert wait(lambda: any(e['kind'] == 'rotated' for e in chat()), 'rotated')
-    after_rotation = js('task', 'say', 'STATUS')
+    after_rotation = js('chat', 'say', 'STATUS')
     reply_to(after_rotation['id'])
     # ^ A rotation after a reply took no waiting message: its divider keeps its place, under that
     # reply and above the next message (`chat::chat_window`, docs/tasks.md "Manager").
-    shown = [(e['kind'], e.get('id')) for e in js('task', 'chat')['entries']]
+    shown = [(e['kind'], e.get('id')) for e in js('chat', 'read')['entries']]
     divider = max(at for at, (kind, _) in enumerate(shown) if kind == 'rotated')
     assert shown.index(('reply', big_reply['id'])) < divider < shown.index(('message', after_rotation['id'])), shown[-8:]
     manager_launches = [t for t in traces() if t.get('launch') and t.get('manager')]
@@ -1315,7 +1312,7 @@ def manager_up(created):
     ids = {e['id'] for e in pruned_events()}
     assert not [e for e in manager_entries() if e['kind'] == 'reply' and ids & set(e['to'])], 'the news started a turn'
     # ^ The ledger lists what is left (docs/tasks.md "Ledger").
-    strays = {Path(row['path']).name for row in js('task', 'ledger')['stray_worktrees']}
+    strays = {Path(row['path']).name for row in js('chat', 'ledger')['stray_worktrees']}
     assert {'stale-dirty', 'stale-busy'} <= strays and 'stale-clean' not in strays, strays
     configure(manager_config, 'restore the config')
     for name in ('stale-dirty', 'stale-busy'):
@@ -1512,7 +1509,7 @@ def fresh_project():
     """The project as section 17 leaves it, for a part that starts after it: the deploy config and a
     first task, whose folder names the project store."""
     configure(DEPLOY_CONFIG, 'deploy config')
-    js('task', 'chat', 'new', 'demo')  # ^ demo's main chat, which a part run alone has not made (part_core makes it after section 0)
+    js('chat', 'new', 'demo')  # ^ demo's main chat, which a part run alone has not made (part_core makes it after section 0)
     created = js('task', 'new', 'WORK a.txt')  # ^ the task's check wants a.txt
     wait_state(created['id'], 'ready', 'failed')
     js('task', 'close', created['id'], '--discard')
@@ -1525,7 +1522,7 @@ def part_core(created=None):
     mark('0')
     empty, = tui_screens(wsx, env, project, [(r'WORKSPACE', b't'), (r'No tasks', b'')])[1:]
     assert re.search(r'Tasks demo +0 to check  0 approvals', empty) and 'TASKS' in empty, empty
-    js('task', 'chat', 'new', 'demo')  # ^ No repo has a chat of its own: this is demo's main chat (docs/tasks.md "Chats"), as the `chat:demo` asserts below expect.
+    js('chat', 'new', 'demo')  # ^ No repo has a chat of its own: this is demo's main chat (docs/tasks.md "Chats"), as the `chat:demo` asserts below expect.
 
     # 1. New: a working turn in its own working copy.
     mark('1')
@@ -1725,40 +1722,7 @@ def part_core(created=None):
         assert done['revision'] == 3 and done['result']['checks'][0]['exit'] == 1, done
         js('task', 'close', n)
 
-    # 13. A check that runs past tasks.checkTimeoutSeconds is killed and fails the task.
-    mark('13')
-    # ^ `land: { auto: false }`: the uncommitted config no longer stops an auto land, and
-    # these tasks must stay ready (docs/tasks.md "Landing").
-    (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  checks: ["sleep %s"]\n  checkTimeoutSeconds: 1\n' % sleep_37)
-    timed = js('task', 'new', 'NOOP')
-    failed = wait_state(timed['id'], 'failed', 'ready')
-    check = failed['result']['checks'][0]
-    assert failed['state'] == 'failed' and check['timed_out'] and check['exit'] is None, failed['result']
-    assert '`sleep %s`: timed out' % sleep_37 in Path(failed['report']).read_text()
-    # ^ The worker's instructions name the check too: only the check's own process counts.
-    assert not [line for line in leftovers('sleep ' + sleep_37) if line.split(None, 1)[1].startswith(('sleep', '/bin/sh -c sleep'))]
-    js('task', 'close', timed['id'])
-    # A check that prints far past the kept output runs to its end: its exit decides, and the
-    # output it keeps is the end, where a test run puts its summary.
-    (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n'
-        '  checks: ["seq 1 40000; seq 1 40000 >&2; echo tail end"]\n')
-    loud = js('task', 'new', 'NOOP')['id']
-    check = wait_state(loud, 'ready', 'failed')['result']['checks'][0]
-    assert check['exit'] == 0 and 'tail end' in check['output'] and len(check['output']) < 20000, check
-    js('task', 'close', loud, '--discard')
-    # A check that leaves a process holding its output ends with its shell: the leftover
-    # cannot keep the check, and the machine's check slot, waiting for that output to close.
-    (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n'
-        '  checks: ["(sleep %s &); echo left running"]\n' % sleep_47)
-    left = js('task', 'new', 'NOOP')['id']
-    check = wait_state(left, 'ready', 'failed')['result']['checks'][0]
-    assert check['exit'] == 0 and 'left running' in check['output'], check
-    for line in leftovers('sleep ' + sleep_47):
-        os.kill(int(line.split(None, 1)[0]), 9)
-    js('task', 'close', left, '--discard')
+    # ^ A check's timeout, loud output and leftover process: crates/wsx/tests/task_checks.rs.
 
     # 13b. Workflow steps: the owner's own steps apply to a project that names none; the host
     mark('13b')
@@ -1823,7 +1787,7 @@ def part_core(created=None):
     assert done['state'] == 'ready', done
     assert [step['name'] for step in done['record']['steps']] == ['plan', 'build'], done['record']
     assert done['record']['effort'] == 'high', done
-    assert {r['id']: r for r in js('task', 'ledger')['open']}[folded]['agent']['effort'] == 'high'
+    assert {r['id']: r for r in js('chat', 'ledger')['open']}[folded]['agent']['effort'] == 'high'
     assert [t for t in traces() if t.get('launch')][-1]['effort'] == 'high', traces()[-1]
     turns = [entry for entry in log(folded) if entry['kind'] == 'result']
     assert len(turns) == 2, turns
@@ -1847,7 +1811,7 @@ def part_core(created=None):
     assert [step['name'] for step in done['record']['steps']] == ['build'], done['record']
     # ^ The effort goes with the size: on the record, in the launch argv and in the view.
     assert done['record']['effort'] == 'high', done
-    assert {r['id']: r for r in js('task', 'ledger')['open']}[small]['agent']['effort'] == 'high'
+    assert {r['id']: r for r in js('chat', 'ledger')['open']}[small]['agent']['effort'] == 'high'
     assert [t for t in traces() if t.get('launch')][-1]['effort'] == 'high', traces()[-1]
     turns = [entry for entry in log(small) if entry['kind'] == 'result']
     assert len(turns) == 1 and 'If the task context above is not enough: CTX recall' in turns[0]['summary'], turns
@@ -1968,124 +1932,27 @@ def part_core(created=None):
     git('add', 'big.txt')
     git('commit', '-q', '-am', 'land config')
 
-    # 14. Each revision records its paths; list and show report overlap between open tasks.
+    # 14. Each revision records its paths (crates/wsx/tests/task_files.rs); 15 lands x1, y1 and x2, 14d lists memo_task.
     mark('14')
     x1 = js('task', 'new', 'WORK x.txt alpha')['id']
     y1 = js('task', 'new', 'WORK y.txt')['id']
     x2 = js('task', 'new', 'WORK x.txt beta')['id']
     for n in (x1, y1, x2):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
-    # ^ LAND_CONFIG names no model: workers default to opus.
-    assert show(x1)['record']['model'] == 'opus'
-    # `new --model` picks the worker's model; a bad one creates no task (docs/tasks.md).
-    for bad in ('two words', '-x', ''):
-        refused = cli('task', 'new', 'WORK no.txt', '--model=' + bad, ok=False)
-        assert 'model' in refused.stderr, refused.stderr
-    assert max(row['id'] for row in js('task', 'list', '--all')['tasks']) == x2
     memo_task = js('task', 'new', 'WORK memo.txt MEMO fixtures stay small', '--model', 'sonnet')['id']
     assert wait_state(memo_task, 'ready', 'failed')['state'] == 'ready'
-    assert show(memo_task)['record']['model'] == 'sonnet'
-    assert [t for t in traces() if t.get('launch')][-1]['model'] == 'sonnet'
-    # The memo stays in result.json and reaches the ledger's recent tasks once the task is closed.
-    assert show(memo_task)['result']['result']['memo'] == 'fixtures stay small'
     js('task', 'close', memo_task, '--discard')
-    recent = {row['id']: row for row in js('task', 'ledger')['recent']}
-    assert recent[memo_task]['memo'] == 'fixtures stay small', recent
-    assert show(x1)['record']['paths'] == ['x.txt'] and show(x1)['record']['paths_total'] == 1
-    rows = {row['id']: row for row in js('task', 'list')['tasks']}
-    assert rows[x1]['overlaps'] == [{'id': x2, 'count': 1, 'complete': True}], rows[x1]
-    assert rows[y1]['overlaps'] == [] and rows[x2]['overlaps'][0]['id'] == x1
-    assert show(x2)['overlaps'] == [{'id': x1, 'count': 1, 'complete': True, 'paths': ['x.txt']}]
 
-    # 14b. Declared `--files` globs overlap before any revision; disjoint ones do not; bad ones
+    # 14b. Declared `--files` globs overlap before any revision (crates/wsx/tests/task_files.rs); 14d reads these tasks.
     mark('14b')
-    # create no task (docs/tasks.md "Store").
     gate = work / 'files-gate'
     d1 = js('task', 'new', 'WAIT %s' % gate, '--files', 'src/*.rs', '--files', 'docs/a.md')['id']
     d2 = js('task', 'new', 'WAIT %s' % gate, '--files', 'src/**/*.rs')['id']
     d3 = js('task', 'new', 'WAIT %s' % gate, '--files', 'web/*.js')['id']
-    assert show(d1)['record']['files'] == ['src/*.rs', 'docs/a.md'] and show(d1)['record']['revision'] == 0
-    rows = {row['id']: row for row in js('task', 'list')['tasks']}
-    assert rows[d1]['overlaps'] == [{'id': d2, 'count': 1, 'complete': True, 'declared': True}], rows[d1]
-    assert rows[d3]['overlaps'] == [] and rows[x1]['overlaps'] == [{'id': x2, 'count': 1, 'complete': True}]
-    assert show(d2)['overlaps'] == [{'id': d1, 'count': 1, 'complete': True, 'declared': True,
-                                     'paths': ['src/**/*.rs']}]
-    # `add --files` extends; a declared glob meets another task's changed path.
     js('task', 'add', d3, '--files', '*.txt', 'also the text files')
-    assert show(d3)['record']['files'] == ['web/*.js', '*.txt']
-    # `add --title` names what the add made the task carry (docs/tasks.md "Store"); a bad title sends nothing.
     js('task', 'add', d3, '--title', 'Web and text files', 'also the docs')
-    assert show(d3)['record']['title'] == 'Web and text files', show(d3)['record']
-    assert {row['id']: row['title'] for row in js('task', 'list')['tasks']}[d3] == 'Web and text files'
-    for bad in ('', 'x' * 61):
-        assert 'title' in cli('task', 'add', d3, '--title', bad, 'x', ok=False).stderr, bad
-    assert show(d3)['record']['title'] == 'Web and text files'
-    ledger_rows = {row['id']: row for row in js('task', 'ledger')['open']}
-    assert ledger_rows[d3]['overlaps'] == [{'id': n, 'count': 1, 'complete': True, 'declared': True}
-                                           for n in (x1, y1, x2)], ledger_rows[d3]
-    assert {'id': d3, 'count': 1, 'complete': True, 'declared': True} in ledger_rows[x1]['overlaps']
-    # The ledger names the agent in use now (docs/tasks.md "Agents"); no effort.
-    assert ledger_rows[d3]['agent'] == {'adapter': 'claude', 'model': ledger_rows[d3]['agent']['model'], 'effort': 'high', 'fallback': False}, ledger_rows[d3]
-    last = max(row['id'] for row in js('task', 'list', '--all')['tasks'])
-    for bad in ('/abs/*.rs', '../x', 'a/../b', 'x' * 257, '[', ''):
-        refused = cli('task', 'new', 'WORK no.txt', '--files', bad, ok=False)
-        assert '--files' in refused.stderr, (bad, refused.stderr)
-    many = [arg for n in range(65) for arg in ('--files', 'f%d' % n)]
-    assert 'at most 64' in cli('task', 'new', 'WORK no.txt', *many, ok=False).stderr
-    assert '--files' in cli('task', 'add', d1, '--files', '../up', 'x', ok=False).stderr
-    assert max(row['id'] for row in js('task', 'list', '--all')['tasks']) == last
+    # ^ The stray worktrees, one log parse per ledger build and a git that hangs: crates/wsx/tests/task_ledger.rs.
 
-    # 14c. The ledger lists the project's other worktrees with their flags, never a task's copy.
-    mark('14c')
-    git('worktree', 'add', '-q', '-b', 'stray-merged', str(base / 'stray-merged'))
-    git('worktree', 'add', '-q', '-b', 'stray-dirty', str(base / 'stray-dirty'))
-    (base / 'stray-dirty/new.txt').write_text('ahead\n')
-    git('add', 'new.txt', cwd=base / 'stray-dirty')
-    git('commit', '-q', '-m', 'ahead', cwd=base / 'stray-dirty')
-    (base / 'stray-dirty/README').write_text('edited\n')
-    git('worktree', 'add', '-q', '-b', 'stray-gone', str(base / 'stray-gone'))
-    shutil.rmtree(base / 'stray-gone')
-    ledger = js('task', 'ledger')
-    strays = {Path(row['path']).name: row for row in ledger['stray_worktrees']}
-    assert set(strays) == {'stray-merged', 'stray-dirty', 'stray-gone'}, ledger['stray_worktrees']
-    # ^ The sweep's rule (stale::loss): uncommitted files and commits neither merged nor pushed.
-    flags = lambda name: {k: strays[name][k] for k in ('branch', 'dirty', 'unmerged', 'missing', 'sessions')}
-    assert flags('stray-merged') == {'branch': 'stray-merged', 'dirty': 0, 'unmerged': 0,
-                                     'missing': False, 'sessions': 0}, strays
-    assert flags('stray-dirty') == {'branch': 'stray-dirty', 'dirty': 1, 'unmerged': 1,
-                                    'missing': False, 'sessions': 0}, strays
-    assert flags('stray-gone') == {'branch': 'stray-gone', 'dirty': 0, 'unmerged': 0,
-                                   'missing': True, 'sessions': 0}, strays
-    assert ledger['stray_worktrees_omitted'] == 0
-    for name in ('stray-merged', 'stray-dirty'):
-        git('worktree', 'remove', '--force', str(base / name))
-    git('worktree', 'prune')
-    git('branch', '-D', 'stray-merged', 'stray-dirty', 'stray-gone')
-    assert js('task', 'ledger')['stray_worktrees'] == []
-    # 14c1. A ledger build parses each task log once: the agent's fallback flag comes with the
-    # usage, not from a second read (docs/tasks.md "Agents"). It was two reads per open task.
-    mark('14c1')
-    traced = cli_env({'WSX_TRACE_READ_LOG': '1'}, 'task', 'ledger', '--json').stderr.splitlines()
-    reads = [line.split(' ', 2)[2] for line in traced if line.startswith('wsx-trace read_log ')]
-    task_logs = [path for path in reads if path.endswith('/log.jsonl') and '/chats/' not in path]
-    assert task_logs and len(task_logs) == len(set(task_logs)), task_logs
-    print('14c1 task log reads per ledger build: %d for %d logs' % (len(task_logs), len(set(task_logs))), file=sys.stderr)
-    # 14c2. A git that hangs: the ledger answers after the 10 s wait with a note, its rows kept
-    # and the main checkout's changed files left out (docs/tasks.md "Ledger").
-    mark('14c2')
-    real_git = shutil.which('git', path=env['PATH'])
-    hang = tmp / 'hang-git'
-    hang.mkdir()
-    (hang / 'git').write_text('#!/bin/sh\ncase " $* " in *" status "*) exec sleep 60;; esac\nexec ' + real_git + ' "$@"\n')
-    (hang / 'git').chmod(0o755)
-    started = time.monotonic()
-    hung = json.loads(cli_env({'PATH': str(hang) + ':' + env['PATH']}, 'task', 'ledger', '--json').stdout)
-    took = time.monotonic() - started
-    assert 9 < took < 40, took
-    assert len(hung['notes']) == 1 and 'git did not answer in 10 s' in hung['notes'][0], hung.get('notes')
-    assert hung['main']['branch'] == 'main' and hung['main']['changed_files'] is None, hung['main']
-    assert [row['id'] for row in hung['open']] == [row['id'] for row in js('task', 'ledger')['open']]
-    assert 'notes' not in js('task', 'ledger')
     # 14d. The TUI's Tasks view: open tasks in attention order with their state word and what
     # they wait for, then the recent ones; Enter shows one read-only; the list follows the
     # ledger as it changes; a narrow width keeps title and state (docs/tasks.md "TUI").
@@ -2102,8 +1969,8 @@ def part_core(created=None):
         gate.write_text('open')
         return b''
     # ^ The list opens on its first row, in the ledger's chain order: `j` or `k` moves to the row of the task to open.
-    at = [r['id'] for r in js('task', 'ledger')['open']]
-    you_items = js('task', 'ledger')['for_you']  # ^ before the screens: the gate opens in them and the working task joins For you
+    at = [r['id'] for r in js('chat', 'ledger')['open']]
+    you_items = js('chat', 'ledger')['for_you']  # ^ before the screens: the gate opens in them and the working task joins For you
 
     def walk(start, end):
         return (b'j' if end > start else b'k') * abs(at.index(end) - at.index(start))
@@ -2136,7 +2003,7 @@ def part_core(created=None):
     assert asked_status['label'] == 'Waiting for your answer' and reason in asked_status['sentence'], asked_status
     assert asked_status['sentence'].startswith('Waiting for your answer for '), asked_status
     assert re.search(r'Next +Waiting for your answer for ', asked), asked
-    assert next(r for r in js('task', 'ledger')['open'] if r['id'] == asking)['status']['label'] == asked_status['label']
+    assert next(r for r in js('chat', 'ledger')['open'] if r['id'] == asking)['status']['label'] == asked_status['label']
     assert re.search(r'Checks +0 passed, 1 failed', checked) and re.search(r'failed +test ! -e broken.txt', checked), checked
     # ^ The glance rows first, the per-check lines under Details (docs/tasks.md "TUI").
     assert re.search(r'Result +did: The checks failed', checked) and checked.index('Details') < re.search(r'(?m)^ +failed +test ! -e', checked).start(), checked
@@ -2187,7 +2054,7 @@ def part_core(created=None):
         assert re.search(r'(?m)^ MANAGER +\(i\)message +\(/\)find +\(S\)hell +Esc: back +\(j/k\)scroll ', hinted[2]), hinted[2]
     # ^ The rows follow the ledger's open order (Moving chains, then Waiting ones; task_list.rs
     # `rows`), after the "N wait for you" row while the ledger's `for_you` has items.
-    ledger_now = js('task', 'ledger')
+    ledger_now = js('chat', 'ledger')
     to_row = b'j' * ([task['id'] for task in ledger_now['open']].index(sh) + bool(ledger_now['for_you'])) + b'\r'
     shown_task = r'WAIT .*#%d\b' % sh
     tui_screens(wsx, env, project, [
@@ -2275,7 +2142,7 @@ def part_core(created=None):
     wait_state(ask, 'waiting')
     # ^ The list opens on its first row, in the ledger's chain order: `j` moves down to the row of `n`, read when asked.
     # ^ The Tasks list's first row is "N wait for you" while the ledger's `for_you` has items.
-    rows_to = lambda n: b'j' * ([task['id'] for task in js('task', 'ledger')['open']].index(n) + bool(js('task', 'ledger')['for_you'])) + b'\r'
+    rows_to = lambda n: b'j' * ([task['id'] for task in js('chat', 'ledger')['open']].index(n) + bool(js('chat', 'ledger')['for_you'])) + b'\r'
     ready_footer = r'(?m)^ TASK +\(j/k\)scroll +\(S\)hell +\(L\)and +\(H\)and +Esc: back'
     seen = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
@@ -2327,7 +2194,7 @@ def part_core(created=None):
     assert reviewed(hv)['state'] == 'landed' and main_has('z.txt')
     assert git('rev-parse', '--abbrev-ref', 'HEAD') == 'parking'
     assert [e['kind'] for e in log(hv)].count('landed') == 1
-    item = js('task', 'check')['open']
+    item = js('project', 'check')['open']
     assert [(i['id'], i['task'], i['check'], i['pass_if'], i['state']) for i in item] == [
         ('c1', hv, 'open the file', 'it has text', 'open')], item
     assert item[0]['commit'] == git('rev-parse', 'main') and item[0]['revision'] == 1
@@ -2344,7 +2211,7 @@ def part_core(created=None):
     conflicts = [n for n in (a1, a2) if any(e['kind'] == 'conflict' for e in log(n))]
     assert len(conflicts) == 1 and git('show', 'main:x.txt') == 'resolved', conflicts
     assert [e['kind'] for e in log(conflicts[0])].count('review') == 1, log(conflicts[0])
-    assert len(js('task', 'check')['open']) == 3
+    assert len(js('project', 'check')['open']) == 3
     # An item keeps where to look and its capture, copied into the task folder before the copy
     # goes. An item that names a command and one about a page without a capture go back to the
     # worker once, in one message; its next result has none.
@@ -2362,12 +2229,12 @@ def part_core(created=None):
     sent = [t['message'] for t in traces() if 'yours to prove' in str(t.get('message'))
             and not str(t.get('message')).startswith('Review round')]
     assert len(sent) == 1 and 'wsx task list' in sent[0] and 'the page reads well' in sent[0], sent
-    kept = [i for i in js('task', 'check')['open'] if i['task'] in (shot, command)]
+    kept = [i for i in js('project', 'check')['open'] if i['task'] in (shot, command)]
     assert [(i['task'], i['where'], i['captures']) for i in kept] == [(shot, '/#/x', ['captures/r1-1-1.png'])], kept
     stored = Path(show(shot)['report']).parent / 'captures' / 'r1-1-1.png'
     assert stored.read_bytes().startswith(b'\x89PNG'), stored
     assert stored.parent.stat().st_mode & 0o777 == 0o700, oct(stored.parent.stat().st_mode)
-    js('task', 'check', 'pass', kept[0]['id'])
+    js('project', 'check', 'pass', kept[0]['id'])
     # A video capture (MP4 by its `ftyp` box) and its poster are kept as r<k>-<n>.mp4 and
     # r<k>-<n>.poster.png; a video over 25 MiB and a text file named .mp4 are dropped, their
     # items kept without a capture (docs/tasks.md "To check").
@@ -2385,24 +2252,24 @@ def part_core(created=None):
                     {'check': 'the long video plays', 'captures': None, 'poster': None},
                     {'check': 'the text video plays', 'captures': None, 'poster': None}], rows
     # Several captures: one item keeps three files as r<k>-<n>-<m>.png and lists three in
-    # `wsx task check --json`. An item whose words name an image file it has no capture of is
+    # `wsx project check --json`. An item whose words name an image file it has no capture of is
     # reported in the log (docs/tasks.md "To check"); the ready event names it too (part 32ak).
     multi = js('task', 'new', 'WORK m.txt CAPTURES3 NAMEDHV')['id']
     assert reviewed(multi)['state'] == 'landed', show(multi)
     said = "a To check item names tasks-390x844-home-dark.png but has no capture of it"
     assert any(said in str(e) for e in log(multi)), log(multi)
     wait_closed(multi)
-    three = [i for i in js('task', 'check')['open'] if i['task'] == multi and i['check'] == 'the three sizes']
+    three = [i for i in js('project', 'check')['open'] if i['task'] == multi and i['check'] == 'the three sizes']
     folder = Path(show(multi)['report']).parent
     assert [i['captures'] for i in three] == [['captures/r1-1-%d.png' % n for n in (1, 2, 3)]], three
     assert sorted(p.name for p in (folder / 'captures').iterdir()) == ['r1-1-%d.png' % n for n in (1, 2, 3)], folder
-    js('task', 'check', 'skip', *[i['id'] for i in js('task', 'check')['open'] if i['task'] == multi])
+    js('project', 'check', 'skip', *[i['id'] for i in js('project', 'check')['open'] if i['task'] == multi])
     # ^ A third item with a capture for the capture sweep (part 20).
     recent = js('task', 'new', 'WORK r.txt HV CAPTURE')['id']
     assert reviewed(recent)['state'] == 'landed', show(recent)
     wait_closed(recent)
     # ^ Skipped, so the capture sweep (part 20) frees a skipped item's files like a passed one's.
-    js('task', 'check', 'skip', *[i['id'] for i in js('task', 'check')['open'] if i['task'] in (video, recent)])
+    js('project', 'check', 'skip', *[i['id'] for i in js('project', 'check')['open'] if i['task'] in (video, recent)])
     # No checks: nothing proves the work, so a ready task waits for a land by hand.
     configure(LAND_CONFIG.replace('  land: { auto: false }\n', '').replace(
         '  checks:\n    - "test ! -e broken.txt"\n', ''), 'no checks')
@@ -2411,15 +2278,15 @@ def part_core(created=None):
     time.sleep(1)
     assert show(unchecked)['state'] == 'ready' and land(unchecked)['state'] == 'landed'
     # Pass one item, then fail one: the fail starts a linked fix task.
-    passed = js('task', 'check', 'pass', 'c1')
+    passed = js('project', 'check', 'pass', 'c1')
     assert [c['state'] for c in passed['changed']] == ['passed'] and passed['open'] == 2, passed
-    assert 'already passed' in cli('task', 'check', 'pass', 'c1', '--json', ok=False).stderr
-    assert 'no item c99' in cli('task', 'check', 'pass', 'c99', ok=False).stderr
-    refused = subprocess.run([str(wsx), 'task', 'check', 'pass', '--all'], cwd=project, env=manager_env,
+    assert 'already passed' in cli('project', 'check', 'pass', 'c1', '--json', ok=False).stderr
+    assert 'no item c99' in cli('project', 'check', 'pass', 'c99', ok=False).stderr
+    refused = subprocess.run([str(wsx), 'project', 'check', 'pass', '--all'], cwd=project, env=manager_env,
                              capture_output=True, text=True)
     assert refused.returncode != 0 and 'for the owner' in refused.stderr, refused.stderr
-    assert 'needs --note' in cli('task', 'check', 'fail', 'c2', '--note', ' ', ok=False).stderr
-    failed = js('task', 'check', 'fail', 'c2', '--note', 'the text is cut off')
+    assert 'needs --note' in cli('project', 'check', 'fail', 'c2', '--note', ' ', ok=False).stderr
+    failed = js('project', 'check', 'fail', 'c2', '--note', 'the text is cut off')
     (failed_item,) = failed['changed']
     fix = failed_item['fix_task']
     assert failed_item['state'] == 'failed' and failed_item['note'] == 'the text is cut off' and fix, failed
@@ -2429,7 +2296,7 @@ def part_core(created=None):
     task_of_c2 = failed_item['task']
     assert 'the text is cut off' in prompt and show(task_of_c2)['report'] in prompt and 'Pass if: it has text' in prompt, prompt
     wait_state(fix, 'ready', 'landed', 'failed')
-    assert [i['id'] for i in js('task', 'check')['open']] == ['c3']
+    assert [i['id'] for i in js('project', 'check')['open']] == ['c3']
     for n in (hv, a1, a2, unchecked):
         wait_closed(n)
     # ^ No checks prove the fix, so it waits ready; it has no commits and closes plainly.
@@ -2440,16 +2307,16 @@ def part_core(created=None):
     mark('17')
     store_up(created)
 
-    unset = cli('task', 'deploy', ok=False)
+    unset = cli('project', 'deploy', ok=False)
     assert 'tasks.deploy.command is not set' in unset.stderr and 'nothing was run' in unset.stderr
     configure(DEPLOY_CONFIG, 'deploy config')
-    assert js('task', 'deployed')['deploy']['commit'] is None
+    assert js('project', 'deployed')['deploy']['commit'] is None
     # Open items stop only public output: a release, and a deploy marked public.
-    refused = cli('task', 'release', '--json', ok=False)
+    refused = cli('project', 'release', '--json', ok=False)
     assert '1 item(s) to check are open' in refused.stderr and 'Nothing was run' in refused.stderr, refused.stderr
     (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text().replace(
         '  deploy:\n', '  deploy:\n    public: true\n'))
-    assert 'to check are open' in cli('task', 'deploy', ok=False).stderr
+    assert 'to check are open' in cli('project', 'deploy', ok=False).stderr
     git('checkout', '--', 'wsx.config.yml')
     assert not (base / 'deploy.log').exists()
     deployed = ran('deploy')
@@ -2458,19 +2325,19 @@ def part_core(created=None):
     # A skip closes the item without a verdict: it is recorded as skipped, starts no task, refuses
     # the manager, and the release below runs (docs/tasks.md "To check").
     tasks_before = len(js('task', 'list', '--all')['tasks'])
-    refused = subprocess.run([str(wsx), 'task', 'check', 'skip', '--all'], cwd=project, env=manager_env,
+    refused = subprocess.run([str(wsx), 'project', 'check', 'skip', '--all'], cwd=project, env=manager_env,
                              capture_output=True, text=True)
     assert refused.returncode != 0 and 'check skip is for the owner' in refused.stderr, refused.stderr
     # ^ A dismiss of a question is the owner's too (docs/tasks.md "Questions" under "Manager").
-    refused = subprocess.run([str(wsx), 'task', 'dismiss', '1'], cwd=project, env=manager_env,
+    refused = subprocess.run([str(wsx), 'chat', 'dismiss', '1'], cwd=project, env=manager_env,
                              capture_output=True, text=True)
     assert refused.returncode != 0 and 'dismiss is for the owner' in refused.stderr, refused.stderr
-    skipped = js('task', 'check', 'skip', '--all')
+    skipped = js('project', 'check', 'skip', '--all')
     assert [c['state'] for c in skipped['changed']] == ['skipped'] and skipped['open'] == 0, skipped
     assert skipped['message'] == '1 skipped. 0 to check', skipped
     (skipped_item,) = skipped['changed']
     assert skipped_item.get('fix_task') is None and skipped_item.get('note') is None, skipped_item
-    assert 'already skipped' in cli('task', 'check', 'pass', skipped_item['id'], ok=False).stderr
+    assert 'already skipped' in cli('project', 'check', 'pass', skipped_item['id'], ok=False).stderr
     assert next(i for i in show(skipped_item['task'])['to_check'] if i['id'] == skipped_item['id'])['state'] == 'skipped'
     assert len(js('task', 'list', '--all')['tasks']) == tasks_before
     # ^ A release whose process was killed left its copy; the next deploy removes it. A pid
@@ -2495,18 +2362,18 @@ def part_core(created=None):
     assert 'SSH_AUTH_SOCK' not in env
     login_sock = login_agent_socket()
     assert (base / 'deploy-agent.log').read_text() == (login_sock or ''), (base / 'deploy-agent.log').read_text()
-    assert js('task', 'deployed')['deploy']['behind'] == 0
+    assert js('project', 'deployed')['deploy']['behind'] == 0
     later = js('task', 'new', 'WORK w.txt')['id']
     assert wait_state(later, 'ready', 'failed')['state'] == 'ready'
     assert land(later)['state'] == 'landed'
     wait_closed(later)
-    status = js('task', 'deployed')
+    status = js('project', 'deployed')
     assert status['deploy']['commit'] == tip and status['deploy']['behind'] == 1, status
     assert ran('release')['exit'] == 3
     release_log = (project_store / 'follow-up.log').read_text()
     assert 'release broke here' in release_log and 'the failure is recorded' in release_log, release_log[-2000:]
     # ^ A failed attempt keeps the end of its output: the ledger's deploys show its last 40 lines.
-    release_status = js('task', 'deployed')['release']
+    release_status = js('project', 'deployed')['release']
     failed = release_status.pop('failed')
     assert release_status == {'commit': None, 'failed_since': 1, 'configured': True}, release_status
     assert failed['exit'] == 3 and failed['commit'] == git('rev-parse', 'main'), failed
@@ -2517,10 +2384,10 @@ def part_core(created=None):
         assert agent_words.startswith("ssh offered the keys of the login session's ssh agent at %s " % login_sock), agent_words
     else:
         assert agent_words.startswith('ssh had no agent: SSH_AUTH_SOCK is not set'), agent_words
-    assert js('task', 'ledger')['deploys']['release']['failed'] == failed
+    assert js('chat', 'ledger')['deploys']['release']['failed'] == failed
     older = git('rev-parse', 'main~3')
     assert ran('deploy', '--commit', older)['commit'] == older
-    assert js('task', 'deployed')['deploy']['behind'] == 3
+    assert js('project', 'deployed')['deploy']['behind'] == 3
 
     # 18. The ledger: open tasks by attention order, recent ones, deploys, the main checkout.
     mark('18')
@@ -2530,7 +2397,7 @@ def part_core(created=None):
     wait_state(ready_task, 'ready', 'failed')
     wait_state(blocked_task, 'waiting')
     assert 'only a ready task lands' in land(blocked_task, ok=False)['message']
-    raw = cli('task', 'ledger').stdout
+    raw = cli('chat', 'ledger').stdout
     ledger = json.loads(raw)
     assert len(raw.encode()) <= 16 * 1024 and ledger['open_omitted'] == 0
     assert ledger['to_check'] == 0 and ledger['auto_land'] is False and 'verification' not in ledger['open'][0]
@@ -2541,7 +2408,7 @@ def part_core(created=None):
     checked = ledger['open'][0]['checks']
     assert [{k: c[k] for k in ('command', 'outcome')} for c in checked] == [{'command': 'test ! -e broken.txt', 'outcome': 'passed'}], checked
     assert all(isinstance(c['ms'], int) and isinstance(c['queued_ms'], int) for c in checked), checked
-    assert ledger['history'] == 'wsx task search --task <n> | <words>'  # the ledger keeps no history
+    assert ledger['history'] == 'wsx chat search --task <n> | <words>'  # the ledger keeps no history
     assert 0 < len(ledger['recent']) <= 10 and all(row['state'] in ('landed', 'closed') for row in ledger['recent'])
     assert ledger['deploys']['deploy']['commit'] == older and ledger['main']['branch'] == 'main'
     assert ledger['main']['changed_files'] >= 1  # scratch.txt is untracked in the main checkout
@@ -2555,7 +2422,7 @@ def part_core(created=None):
     # message waiting at the same time goes first; a host restart loses no event.
 
     # ^ A failed deploy or release is an event with the end of its output.
-    js('task', 'check', 'pass', '--all')
+    js('project', 'check', 'pass', '--all')
     ran('release')
     wait(lambda: events_with('release of %s failed (exit 3); its output ends:\n    53\n' % git('rev-parse', 'main')[:12],
                              '\n    60\n    release broke here'), 'the failed release event')
@@ -2566,21 +2433,21 @@ def part_core(created=None):
     configure(LAND_CONFIG + "  release:\n    command: 'sleep 6; echo released >> ../long-release.log'\n    approve: false\n", 'long release')
     long_tip = git('rev-parse', 'main')
     records_before = len(deploy_records())
-    started = js('task', 'say', 'RUN wsx task release -p demo --json')
+    started = js('chat', 'say', 'RUN wsx project release -p demo --json')
     text = reply_to(started['id'])['text']
-    assert 'ran: wsx task release -p demo --json -> 0' in text and 'release of %s started; ' % long_tip[:12] in text, text
+    assert 'ran: wsx project release -p demo --json -> 0' in text and 'release of %s started; ' % long_tip[:12] in text, text
     assert not (base / 'long-release.log').exists() and len(deploy_records()) == records_before
-    busy = cli('task', 'release', ok=False).stderr
+    busy = cli('project', 'release', ok=False).stderr
     assert 'a deploy or release of demo runs' in busy and 'Nothing was run' in busy, busy
     # ^ The detached run's flag skips the checks only with the held lock's descriptor.
-    forged = cli('task', 'release', '--run-locked', '0', ok=False).stderr
+    forged = cli('project', 'release', '--run-locked', '0', ok=False).stderr
     assert 'descriptor 0 is not' in forged, forged
     wait(lambda: (base / 'long-release.log').exists(), 'the long release', 30)
     wait(lambda: len(deploy_records()) == records_before + 1, 'the long release record')
     long_release = deploy_records()[-1]
     assert long_release['kind'] == 'release' and long_release['exit'] == 0 and long_release['commit'] == long_tip, long_release
     assert long_release['duration_ms'] >= 6000 and (base / 'long-release.log').read_text() == 'released\n'
-    assert js('task', 'ledger')['deploys']['release']['commit'] == long_tip
+    assert js('chat', 'ledger')['deploys']['release']['commit'] == long_tip
     wait(lambda: events_with('release of %s succeeded after 6 s' % long_tip[:12]), 'the release event')
     wait(deploy_lock_free, 'the deploy lock')
     # ^ A successful deploy is an event too, so a manager that waits for one goes on.
@@ -2593,31 +2460,31 @@ def part_core(created=None):
     # manager block, so a host that left after its linger and came back runs the default model:
     # start the host again for the events turn below.
     configure(release_config, 'release as before')
-    sock = js('task', 'manager')['socket']
+    sock = js('chat', 'lead')['socket']
     stop_repo_service()
     cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(sock).exists() or subprocess.run(['nc', '-zU', sock]).returncode != 0, 'manager down')
-    # ^ Routines (docs/tasks.md "Routines"): the manager's `wsx task routine` writes one only
+    # ^ Routines (docs/tasks.md "Routines"): the manager's `wsx project routine` writes one only
     # with the owner's words; a run that ends is an event and the ledger's row, and the TUI
     # shows it while the scheduler has no project registry.
-    assert js('task', 'ledger')['routines'] == []
-    add = ('wsx task routine add nightly --cron "0 3 * * *" --arg sh --arg=-c --arg "echo boom; exit 3"'
+    assert js('chat', 'ledger')['routines'] == []
+    add = ('wsx project routine add nightly --cron "0 3 * * *" --arg sh --arg=-c --arg "echo boom; exit 3"'
            ' -p demo --json')
-    text = reply_to(js('task', 'say', 'RUN ' + add)['id'])['text']
+    text = reply_to(js('chat', 'say', 'RUN ' + add)['id'])['text']
     assert '-> 1 ' in text and 'nothing was run' in text, text
-    assert js('task', 'routine', 'list')['routines'] == []
-    text = reply_to(js('task', 'say', 'add the nightly routine\nRUN %s --owner-said OWNER_SAID' % add)['id'])['text']
+    assert js('project', 'routine', 'list')['routines'] == []
+    text = reply_to(js('chat', 'say', 'add the nightly routine\nRUN %s --owner-said OWNER_SAID' % add)['id'])['text']
     assert '-> 0 ' in text, text
-    text = reply_to(js('task', 'say', 'RUN wsx task routine run nightly -p demo --json')['id'])['text']
+    text = reply_to(js('chat', 'say', 'RUN wsx project routine run nightly -p demo --json')['id'])['text']
     assert '-> 0 ' in text, text
     # ^ A failure of a routine that posts is an event for the owner: one line, the output in it.
     wait(lambda: events_with('routine nightly failed (exit 3); for the owner; output ends: boom'), 'the routine event')
     # ^ Two more failures: the handover after the rotation below folds all three in one line.
     for count in (2, 3):
-        text = reply_to(js('task', 'say', 'RUN wsx task routine run nightly -p demo --json')['id'])['text']
+        text = reply_to(js('chat', 'say', 'RUN wsx project routine run nightly -p demo --json')['id'])['text']
         assert '-> 0 ' in text, text
         wait(lambda: len(events_with('routine nightly failed (exit 3)')) == count, 'routine event %d' % count)
-    row = js('task', 'ledger')['routines'][0]
+    row = js('chat', 'ledger')['routines'][0]
     assert (row['name'], row['trigger'], row['enabled'], row['running']) == ('nightly', '0 3 * * *', True, False), row
     assert row['next_run_unix_ms'] > time.time() * 1000, row
     assert (row['last']['status'], row['last']['exit']) == ('failed', 3) and row['last']['duration_ms'] >= 0, row
@@ -2625,19 +2492,19 @@ def part_core(created=None):
     # ^ The close events of the tasks above may still run a turn: LONG must start its own.
     # ^ LONG, not SLOW: two tasks reach ready in more than 3 s when the whole scenario's parts load the machine.
     manager_settled('the manager idle before LONG')
-    busy = js('task', 'say', 'LONG')
+    busy = js('chat', 'say', 'LONG')
     first = js('task', 'new', 'NOOP')['id']
     second = js('task', 'new', 'NOOP')['id']
     for n in (first, second):
         wait_state(n, 'ready', 'failed')
-    waiting = js('task', 'say', 'STATUS')
+    waiting = js('chat', 'say', 'STATUS')
     assert waiting['busy'] and 'next turn' in waiting['message'], waiting
     merged = wait(lambda: events_with('#%d ready r1' % first, '#%d ready r1' % second), 'merged events')
     assert len(merged) == 1, merged
     # ^ An event names the host's checks before the worker's own words.
     assert '#%d ready r1: NOOP; checks 1 of 1 passed; worker says (unchecked): did: NOOP' % first in merged[0]['text'], merged
     # ^ Task events start no turn (docs/tasks.md "Manager"): they go with the next owner turn.
-    after_events = js('task', 'say', 'STATUS after events')
+    after_events = js('chat', 'say', 'STATUS after events')
     reply_to(after_events['id'], 60)
     delivered = [e['ids'] for e in manager_entries() if e['kind'] == 'delivered']
     batch = next(ids for ids in delivered if merged[0]['id'] in ids)
@@ -2649,7 +2516,7 @@ def part_core(created=None):
     # ^ A waking event alone (a routine's failure) runs a turn of only events on eventModel in the
     # same process, and the next owner turn switches back (docs/tasks.md "Manager").
     manager_settled('the manager idle before the routine event')
-    js('task', 'routine', 'run', 'nightly', '-p', 'demo')
+    js('project', 'routine', 'run', 'nightly', '-p', 'demo')
     routine_event = wait(lambda: (lambda found: found[-1] if len(found) == 4 else None)(
         events_with('routine nightly failed (exit 3)')), 'the fourth routine event', 60)
     event_reply = reply_to(routine_event['id'], 60)
@@ -2659,7 +2526,7 @@ def part_core(created=None):
     assert event_turn['model'] == 'fake-events', event_turn
     assert '- open: 2 ready;' in event_turn['message'] and 'changed since' not in event_turn['message'], event_turn
     assert event_reply['usage']['model'] == 'fake-events' and event_reply['usage']['cost_micro_usd'] == 1000, event_reply
-    back = js('task', 'say', 'STATUS after the routine')
+    back = js('chat', 'say', 'STATUS after the routine')
     reply_to(back['id'])
     owner_turn = turn_with('STATUS after the routine')
     assert owner_turn['model'] == 'fake-manager' and owner_turn['session'] == event_turn['session'], owner_turn
@@ -2667,9 +2534,9 @@ def part_core(created=None):
     # it at the turn's next tool call, so one reply answers both (docs/tasks.md "Manager", Messages
     # during a turn). The turn above (LONG) had no tool call after its message: that one waited.
     manager_settled('the manager idle before MSTEER')
-    part_one = js('task', 'say', 'MSTEER part one')
+    part_one = js('chat', 'say', 'MSTEER part one')
     wait(lambda: turn_with('MSTEER part one'), 'the MSTEER turn')
-    part_two = js('task', 'say', 'part two')
+    part_two = js('chat', 'say', 'part two')
     joined = reply_to(part_two['id'])
     assert sorted(joined['to']) == [part_one['id'], part_two['id']] and 'part two' in joined['text'], joined
     deliveries = [e['ids'] for e in manager_entries() if e['kind'] == 'delivered' and part_two['id'] in e['ids']]
@@ -2698,7 +2565,7 @@ def part_core(created=None):
     captures_of = {n: Path(show(n)['report']).parent / 'captures' for n in (video, recent, shot)}
     assert sorted(p.name for p in captures_of[video].iterdir()) == ['r1-1-1.mp4', 'r1-1.poster.png']
     # Stop the manager host, finish a task while it is down, start it again.
-    manager_socket = js('task', 'manager')['socket']
+    manager_socket = js('chat', 'lead')['socket']
     assert len(manager_socket) < 104, manager_socket
     stop_repo_service()
     cli('session', 'delete', 'task-demo', '-p', 'demo')
@@ -2706,7 +2573,7 @@ def part_core(created=None):
          subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
     unseen = js('task', 'new', 'WORK late.txt')['id']
     wait_state(unseen, 'ready', 'failed')
-    assert js('task', 'manager')['state'] == 'started'
+    assert js('chat', 'lead')['state'] == 'started'
     append_rows(dict(recent_item, unix_ms=int(time.time() * 1000)))
     late = wait(lambda: events_with('#%d ready r1' % unseen), 'event after restart')
     # ^ The restart swept (the default budget is 1 GiB): nothing decided 8 or 9 days ago went.
@@ -2715,16 +2582,16 @@ def part_core(created=None):
     after_sweep = [json.loads(line) for line in checks_file.read_text().splitlines()]
     assert [r for r in after_sweep if r['id'] == video_item['id']][-1]['captures'] == ['captures/r1-1-1.mp4'], after_sweep
     # ^ A task's event starts no turn: the owner's message is the restarted process's first turn.
-    late_reply = reply_to(js('task', 'say', 'STATUS after the restart')['id'])
+    late_reply = reply_to(js('chat', 'say', 'STATUS after the restart')['id'])
     # ^ The resumed process restored the session's spend: the reply still costs only its own turn.
     resumed_usage = late_reply['usage']
     assert resumed_usage['cost_micro_usd'] == 1000 and resumed_usage['session_cost_micro_usd'] > 5000, resumed_usage
     # ^ An answer to the chat's question, then more exchanges than the handover's last 8: the
     # fresh conversation still gets the question and the answer (manager.rs `handover_answers`).
-    asked_probe = reply_to(js('task', 'say', 'ASK the rename probe')['id'])
-    reply_to(js('task', 'say', 'ANSWER-PROBE yes rename all, refuse the old keys')['id'])
+    asked_probe = reply_to(js('chat', 'say', 'ASK the rename probe')['id'])
+    reply_to(js('chat', 'say', 'ANSWER-PROBE yes rename all, refuse the old keys')['id'])
     for n in range(5):
-        reply_to(js('task', 'say', 'STATUS filler %d' % n)['id'])
+        reply_to(js('chat', 'say', 'STATUS filler %d' % n)['id'])
     # Over the budget the sweep removes the oldest decided captures: padded to 400 KiB each,
     # the three take 1.2 MB of the 1 MB budget. The skipped video (8 days old) goes before the
     # passed shot (9 days old, older), which stays with the open item's capture, as the files
@@ -2734,12 +2601,12 @@ def part_core(created=None):
             pad.write(b'\0' * (400 * 1024))
     plain_config = (project / 'wsx.config.yml').read_text()
     configure(plain_config.replace('  minFreeGb: 0\n', '  minFreeGb: 0\n  captureBudgetMb: 1\n'), 'capture budget')
-    manager_socket = js('task', 'manager')['socket']
+    manager_socket = js('chat', 'lead')['socket']
     stop_repo_service()
     cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or
          subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
-    reply_to(js('task', 'say', 'STATUS budget')['id'])
+    reply_to(js('chat', 'say', 'STATUS budget')['id'])
     wait(lambda: not any(captures_of[video].iterdir()), 'the skipped video capture removed over the budget', 30)
     assert [p.name for p in captures_of[recent].iterdir()] == ['r1-1-1.png'] and [p.name for p in captures_of[shot].iterdir()] == ['r1-1-1.png']
     assert (captures_of[recent] / 'r1-1-1.png').stat().st_size > 400 * 1024
@@ -2749,7 +2616,7 @@ def part_core(created=None):
     # state written by a host from before the instructions digest stands for changed ones.
     launches = [t for t in traces() if t.get('launch') and t.get('manager')]
     assert launches[-1]['resume'], launches[-1]
-    manager_socket = js('task', 'manager')['socket']
+    manager_socket = js('chat', 'lead')['socket']
     cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or
          subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
@@ -2776,7 +2643,7 @@ def part_core(created=None):
     outside.write_text('SECRET-OUTSIDE\n')
     put('context.md')
     (notes / 'context.md').symlink_to(outside)
-    changed = js('task', 'say', 'STATUS after the change')
+    changed = js('chat', 'say', 'STATUS after the change')
     reply_to(changed['id'])
     fresh = [t for t in traces() if t.get('launch') and t.get('manager')][-1]
     assert not fresh['resume'] and fresh['session'] != launches[-1]['session'], fresh
@@ -2787,10 +2654,10 @@ def part_core(created=None):
     raw = manager_entries()
     at_rotation = max(at for at, e in enumerate(raw) if e['kind'] == 'rotated')
     assert next(at for at, e in enumerate(raw) if e.get('id') == changed['id']) < at_rotation, raw[-8:]
-    shown = [(e['kind'], e.get('id')) for e in js('task', 'chat')['entries']]
+    shown = [(e['kind'], e.get('id')) for e in js('chat', 'read')['entries']]
     divider = max(at for at, (kind, _) in enumerate(shown) if kind == 'rotated')
     assert divider < shown.index(('message', changed['id'])), shown[-8:]
-    rows = cli('task', 'chat').stdout
+    rows = cli('chat', 'read').stdout
     assert rows.rindex("(New conversation: the manager's instructions changed") < rows.index('[%d] You: STATUS after the change' % changed['id']), rows[-800:]
     opened = turn_with('STATUS after the change')['message']
     # ^ The notes come first, then the handover.
@@ -2806,7 +2673,7 @@ def part_core(created=None):
     # Continuity (docs/tasks.md "Manager"): notes share their budget, idle large conversations
     # rotate, and a warm small one takes changed instructions as a message.
     def stop_manager():
-        sock = js('task', 'manager')['socket']
+        sock = js('chat', 'lead')['socket']
         stop_repo_service()
         cli('session', 'delete', 'task-demo', '-p', 'demo')
         wait(lambda: not Path(sock).exists() or subprocess.run(['nc', '-zU', sock]).returncode != 0, 'manager down')
@@ -2823,7 +2690,7 @@ def part_core(created=None):
     put('context.md', 'PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
     put('decisions.md', ''.join('- decision %03d %s\n' % (n, 'x' * 50) for n in range(400)))
     edit_state(instructions=None)
-    notes_message = js('task', 'say', 'NOTES BUDGET')
+    notes_message = js('chat', 'say', 'NOTES BUDGET')
     reply_to(notes_message['id'])
     opened = turn_with('NOTES BUDGET')['message']
     head = opened.split('\n\nHandover')[0]
@@ -2837,9 +2704,9 @@ def part_core(created=None):
     # host and its agent are killed after `delivered` is logged.
     mark('21b')
     wait(manager_idle, 'the manager idle before HANG', 60)
-    answered = js('task', 'say', 'STATUS before the kill')
+    answered = js('chat', 'say', 'STATUS before the kill')
     reply_to(answered['id'])
-    hung = js('task', 'say', 'HANG once')
+    hung = js('chat', 'say', 'HANG once')
     wait(lambda: any(e['kind'] == 'delivered' and hung['id'] in e['ids'] for e in manager_entries()), 'HANG delivered')
     assert not [e for e in manager_entries() if e['kind'] == 'reply' and hung['id'] in e['to']]
     chat_host_args = 'task chat-host %s' % manager_log.parent.name
@@ -2851,14 +2718,14 @@ def part_core(created=None):
         pass
     cli('session', 'delete', 'task-demo', '-p', 'demo')
     # ^ The repo service may start the main chat's host first with an event: `started` or `running`.
-    assert js('task', 'manager')['state'] in ('started', 'running')
+    assert js('chat', 'lead')['state'] in ('started', 'running')
     reply_to(hung['id'])
     turns_of = lambda text: [t for t in traces() if t.get('manager') and text in str(t.get('message', ''))]
     assert len(turns_of('HANG once')) == 2 and len(turns_of('STATUS before the kill')) == 1, (
         turns_of('HANG once'), turns_of('STATUS before the kill'))
     # ^ A restart after the reply delivers neither again.
     stop_manager()
-    reply_to(js('task', 'say', 'STATUS after the second start')['id'])
+    reply_to(js('chat', 'say', 'STATUS after the second start')['id'])
     assert len(turns_of('HANG once')) == 2 and len(turns_of('STATUS before the kill')) == 1
     assert len([e for e in manager_entries() if e['kind'] == 'reply' and hung['id'] in e['to']]) == 1
 
@@ -2877,15 +2744,15 @@ def part_core(created=None):
 
     put('decisions.md', '- 2026-10-22 keep the store in sqlite\n')
     put('context.md')
-    reply_to(js('task', 'say', 'ZEBRAFISH quarterly')['id'])
+    reply_to(js('chat', 'say', 'ZEBRAFISH quarterly')['id'])
     edit_state(instructions=None)
     put('context.md', pizza('# shopfront'))
     fixture = (notes / 'context.md').read_text().splitlines()
     # ^ Over the 24 KiB of start notes (`notes::preamble`), so the first turn names what it leaves out.
     assert len(fixture) == 60 and 38000 < len('\n'.join(fixture)) < 41000, len('\n'.join(fixture))
-    reply_to(js('task', 'say', 'NOTES PIZZA')['id'])
+    reply_to(js('chat', 'say', 'NOTES PIZZA')['id'])
     first_turn = turn_with('NOTES PIZZA')['message']
-    reply_to(js('task', 'say', 'STATUS ordinary')['id'])
+    reply_to(js('chat', 'say', 'STATUS ordinary')['id'])
     ordinary_turn = turn_with('STATUS ordinary')['message']
     print('MEASURE first turn %d bytes, ordinary turn %d bytes (~%d and ~%d tokens)' % (
         len(first_turn.encode()), len(ordinary_turn.encode()), len(first_turn.encode()) // 4, len(ordinary_turn.encode()) // 4))
@@ -2909,7 +2776,7 @@ def part_core(created=None):
     # line stays in the file (the NOT SHOWN notice names it); no notes are attached to the message.
     edit_state(instructions=None)
     put('context.md', pizza('# stubborn'))
-    attached = js('task', 'say', 'Did you restart Claude.app yesterday?')
+    attached = js('chat', 'say', 'Did you restart Claude.app yesterday?')
     reply_to(attached['id'])
     matched = turn_with('Did you restart Claude.app yesterday?')['message']
     assert 'Notes that match' not in matched and 'context.md:10: - #7' not in matched, matched
@@ -2918,12 +2785,12 @@ def part_core(created=None):
     # shares no word with a record gets nothing.
     cli('memory', 'add', '--kind', 'rule', '--slug', 'quokka-gate', '--text-file', '-', '--source', 'msg:1',
         '--verified-by', 'owner:1', stdin='The quokkaprotocol gate stays closed on Fridays.\n')
-    reply_to(js('task', 'say', 'quokkaprotocol gate, when does it open?')['id'])
+    reply_to(js('chat', 'say', 'quokkaprotocol gate, when does it open?')['id'])
     block = turn_with('quokkaprotocol gate, when does it open?')['message'].split('Memory records that match this message')[1].split('\n\n')[0]
     assert '- rule quokka-gate: The quokkaprotocol gate stays closed on Fridays.' in block and block.count('\n- ') <= 5, block
-    reply_to(js('task', 'say', 'GLOBETROTTER plain')['id'])
+    reply_to(js('chat', 'say', 'GLOBETROTTER plain')['id'])
     assert 'Memory records that match' not in turn_with('GLOBETROTTER plain')['message']
-    assert re.search(r'NOT SHOWN: context\.md lines [0-9, -]+ of 60 .*Read /\S+/notes/context\.md for them, or find them with `wsx task search`\.', matched), matched
+    assert re.search(r'NOT SHOWN: context\.md lines [0-9, -]+ of 60 .*Read /\S+/notes/context\.md for them, or find them with `wsx chat search`\.', matched), matched
     # ^ Memo lines: one line of at most 240 characters, no 60-line cap and no size ceiling: past
     # 32 KiB every memo stays in context.md, and the fresh conversation names what it leaves out.
     put('context.md', '# stubborn\n' + ''.join('- #%d: short memo %d\n' % (n, n) for n in range(100, 175)))
@@ -2945,13 +2812,13 @@ def part_core(created=None):
     assert len(kept.encode()) > 32 * 1024 and '- #1: ' in kept and len(kept.splitlines()) == 141, (len(kept.encode()), len(kept.splitlines()))
     assert not (notes / 'context-archive.md').exists()
     edit_state(instructions=None)
-    reply_to(js('task', 'say', 'STATUS after the big context')['id'])
+    reply_to(js('chat', 'say', 'STATUS after the big context')['id'])
     opened_big = turn_with('STATUS after the big context')['message']
     assert 'NOT SHOWN: context.md' in opened_big and 'context-archive' not in opened_big, opened_big
     put('context.md', 'PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
     # ^ Idle past 60 min with a context over 150k: a fresh conversation, with the reason logged.
     edit_state(last_reply_ms=int((time.time() - 7200) * 1000), context_tokens=160000)
-    idle_message = js('task', 'say', 'IDLE LARGE')
+    idle_message = js('chat', 'say', 'IDLE LARGE')
     reply_to(idle_message['id'])
     rotated = [e for e in manager_entries() if e['kind'] == 'rotated']
     assert rotated[-1].get('reason') == 'idle over 60 min with 160k context', rotated
@@ -2962,7 +2829,7 @@ def part_core(created=None):
     # ^ Warm and small, with other instructions: the same conversation, the new ones as a message.
     rotations = len([e for e in manager_entries() if e['kind'] == 'rotated'])
     edit_state(instructions='stale-digest')
-    warm_message = js('task', 'say', 'WARM CHANGE')
+    warm_message = js('chat', 'say', 'WARM CHANGE')
     reply_to(warm_message['id'])
     warm_launch = [t for t in traces() if t.get('launch') and t.get('manager')][-1]
     assert warm_launch['resume'], warm_launch
@@ -2974,7 +2841,7 @@ def part_core(created=None):
     # into a conversation that never saw the message.
     edit_state(last_reply_ms=int((time.time() - 7200) * 1000), context_tokens=160000)
     rotations = len([e for e in manager_entries() if e['kind'] == 'rotated'])
-    held_back = js('task', 'say', 'LIMIT 1 BACK INTO A LIMIT')
+    held_back = js('chat', 'say', 'LIMIT 1 BACK INTO A LIMIT')
     reply_to(held_back['id'], 60)
     assert len([e for e in manager_entries() if e['kind'] == 'rotated']) == rotations + 1, manager_entries()[-8:]
     limited_turn = turn_with('BACK INTO A LIMIT')
@@ -2984,7 +2851,7 @@ def part_core(created=None):
     put('decisions.md', '- 2026-10-22 keep the store in sqlite\n')
     # 21a3. decisions.md over what a fresh conversation shows (docs/tasks.md "Notes budget"): the rules
     # that fit the larger part of the start budget show, what is left out is named with its lines, and
-    # `wsx task search` finds a rule that is not shown. wsx asks the manager to rewrite nothing: the
+    # `wsx chat search` finds a rule that is not shown. wsx asks the manager to rewrite nothing: the
     # rules are records, and a replaced rule is deleted (docs/memory.md "Deletion").
     mark('21a3')
 
@@ -2998,7 +2865,7 @@ def part_core(created=None):
     # ^ Between 4 and 6 KiB beside a long context.md: every rule is in the first message.
     put('context.md', pizza('# stubborn'))
     edit_state(instructions=None)
-    reply_to(js('task', 'say', 'RULES mid')['id'])
+    reply_to(js('chat', 'say', 'RULES mid')['id'])
     mid = turn_with('RULES mid')['message']
     assert 'rule 200' in mid and 'rule 249' in mid and 'NOT SHOWN: decisions.md' not in mid, mid
     # ^ Over the budget: the newest rules fill up to 20 KiB (24 KiB less the 4 KiB context.md
@@ -3008,7 +2875,7 @@ def part_core(created=None):
     over[3] = '- 2026-10-04 rule 303: never render the 3d scene with tessellation'
     put('decisions.md', '\n'.join(over) + '\n')
     edit_state(instructions=None)
-    reply_to(js('task', 'say', 'RULES big')['id'])
+    reply_to(js('chat', 'say', 'RULES big')['id'])
     big = turn_with('RULES big')['message'].split('\n\nHandover')[0]
     shown = big.split('Your project context (context.md):')[0]
     assert 'rule 559' in shown and 'rule 300' not in shown and 19000 < len(shown.encode()) < 21500, (len(shown), shown[:300])
@@ -3016,8 +2883,8 @@ def part_core(created=None):
     assert 'tessellation' not in shown and 'decisions-archive' not in shown, shown
     context_part = big.split('Your project context (context.md):')[1]
     assert 'Shopfront sells pizza.' in context_part and len(context_part.split('NOT SHOWN')[0].encode()) > 3500, context_part[:200]
-    # ^ `wsx task search` finds the rule that is not shown.
-    kept = js('task', 'search', '-p', 'demo', 'tessellation')['hits']
+    # ^ `wsx chat search` finds the rule that is not shown.
+    kept = js('chat', 'search', '-p', 'demo', 'tessellation')['hits']
     assert [h['kind'] for h in kept if h['by'] == 'notes'] == ['decision'], kept
     put('decisions.md', '- 2026-10-22 keep the store in sqlite\n')
     put('context.md', 'PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
@@ -3031,15 +2898,15 @@ def part_core(created=None):
         stop_manager()
         configure(limit_config.replace(manager_line_now, manager_line), 'manager limit ' + adapter)
         # ^ A first turn takes whatever a changed adapter or instructions rotate.
-        reply_to(js('task', 'say', 'STATUS start on ' + adapter)['id'])
+        reply_to(js('chat', 'say', 'STATUS start on ' + adapter)['id'])
         before = len(rotated_entries())
         # ^ A second turn after the first shows the conversation went on: a rotation is logged
         # right after the reply that crosses the limit.
         for context in below:
-            reply_to(js('task', 'say', '%s %d' % (ctx_word[adapter], context))['id'])
-            reply_to(js('task', 'say', 'STATUS after %d' % context)['id'])
+            reply_to(js('chat', 'say', '%s %d' % (ctx_word[adapter], context))['id'])
+            reply_to(js('chat', 'say', 'STATUS after %d' % context)['id'])
             assert len(rotated_entries()) == before, (adapter, context, rotated_entries()[before:])
-        reply_to(js('task', 'say', '%s %d' % (ctx_word[adapter], above))['id'])
+        reply_to(js('chat', 'say', '%s %d' % (ctx_word[adapter], above))['id'])
         wait(lambda: len(rotated_entries()) == before + 1, '%s rotated at %d' % (adapter, above))
         assert rotated_entries()[-1]['tokens'] == tokens_of_above, rotated_entries()[-1]
 
@@ -3066,7 +2933,7 @@ def part_core(created=None):
     # ^ Back on Claude with the fixture's config for the parts below.
     stop_manager()
     configure(limit_config, 'manager limit restored')
-    reply_to(js('task', 'say', 'STATUS back on claude')['id'])
+    reply_to(js('chat', 'say', 'STATUS back on claude')['id'])
     # ^ Dynamic routines (docs/tasks.md "Routines"), after the handover above so it lists only
     # nightly: an event routine runs on the task change wsx fires, and `wsx task post` puts its
     # output in the chat with no manager turn.
@@ -3076,7 +2943,7 @@ def part_core(created=None):
         ids = {e['id'] for e in entries if e['kind'] == 'message' and e['from'] == 'events' and e['text'] == title}
         return [e for e in entries if e['kind'] == 'reply' and 'usage' not in e and ids & set(e['to'])]
     for early in ('0m', '8d'):
-        text = reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in %s --why "too soon"' % early)['id'])['text']
+        text = reply_to(js('chat', 'say', 'RUN wsx chat checkin -p demo --in %s --why "too soon"' % early)['id'])['text']
         assert '-> 1 ' in text and 'between 1 minute and 7 days' in text, text
     # ^ A check-in is a timer in the repo service's state (`repo.json`, kept for the chat that set it),
     # not a routine (docs/tasks.md "Check-in"): a second one replaces the first, nothing is listed in
@@ -3084,35 +2951,35 @@ def part_core(created=None):
     # comes due while the service is down.
     repo_state = Path(created['task_dir']).parent / 'repo.json'
     pending = lambda: (json.loads(repo_state.read_text()).get('checkins') or {}).get('demo') if repo_state.exists() else None
-    text = reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in 2h --why "first look"')['id'])['text']
+    text = reply_to(js('chat', 'say', 'RUN wsx chat checkin -p demo --in 2h --why "first look"')['id'])['text']
     assert '-> 0 check-in at ' in text, text
     saved = wait(pending, 'the first check-in is saved')
     assert saved['why'] == 'first look' and saved['at_ms'] > time.time() * 1000 + 3600 * 1000, saved
-    text = reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in 1m --why "look at the nightly failures"')['id'])['text']
+    text = reply_to(js('chat', 'say', 'RUN wsx chat checkin -p demo --in 1m --why "look at the nightly failures"')['id'])['text']
     assert '-> 0 check-in at ' in text, text
     replaced = pending()
     assert replaced['why'] == 'look at the nightly failures' and replaced['at_ms'] < time.time() * 1000 + 70 * 1000, replaced
     # ^ Only `nightly` is listed: a check-in is no routine.
-    listed = lambda: [r['name'] for r in js('task', 'ledger')['routines']] + [r['routine']['name'] for r in js('task', 'routine', 'list')['routines']]
+    listed = lambda: [r['name'] for r in js('chat', 'ledger')['routines']] + [r['routine']['name'] for r in js('project', 'routine', 'list')['routines']]
     assert listed() == ['nightly', 'nightly'], listed()
     wait(lambda: events_with('check-in: look at the nightly failures'), 'the check-in event', 150)
     assert not events_with('first look') and pending() is None, (events_with('first look'), pending())
     # ^ Due while the service is down: it fires late, once, when the service starts.
-    reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in 1m --why "came due while down"')['id'])
+    reply_to(js('chat', 'say', 'RUN wsx chat checkin -p demo --in 1m --why "came due while down"')['id'])
     stop_manager()
     stop_repo_service()
     assert pending()['why'] == 'came due while down'
     wait(lambda: pending()['at_ms'] < time.time() * 1000, 'the check-in is past due', 90)
     assert not events_with('came due while down')
-    reply_to(js('task', 'say', 'STATUS after the check-in came due')['id'])
+    reply_to(js('chat', 'say', 'STATUS after the check-in came due')['id'])
     wait(lambda: events_with('check-in: came due while down'), 'the late check-in event', 30)
     assert pending() is None and listed() == ['nightly', 'nightly'], (pending(), listed())
     # ^ Routines recur: no `--at`, and nothing else names a one-shot.
-    refused = cli('task', 'routine', 'add', 'once', '-p', 'demo', '--at', '23:59', '--arg=true', ok=False)
+    refused = cli('project', 'routine', 'add', 'once', '-p', 'demo', '--at', '23:59', '--arg=true', ok=False)
     assert 'unexpected argument' in refused.stderr, refused.stderr
-    refused = cli('task', 'checkin', '-p', 'demo', '--in', '1m', '--at', '23:59', '--why', 'x', ok=False)
+    refused = cli('chat', 'checkin', '-p', 'demo', '--in', '1m', '--at', '23:59', '--why', 'x', ok=False)
     assert 'cannot be used with' in refused.stderr, refused.stderr
-    js('task', 'routine', 'add', 'closed', '-p', 'demo', '--event', 'task.closed', '--arg=sh', '--arg=-c',
+    js('project', 'routine', 'add', 'closed', '-p', 'demo', '--event', 'task.closed', '--arg=sh', '--arg=-c',
        '--arg=printf "%%s" "$WSX_EVENT_PAYLOAD" | %s task post -p demo --title closed' % wsx)
     tabled = js('task', 'new', 'NOOP')['id']
     wait_state(tabled, 'ready')
@@ -3123,12 +2990,12 @@ def part_core(created=None):
     # ^ The retrospect is one such routine: it posts counts of the chat above (the three
     # `routine run nightly` asks) and prints nothing.
     state_dir = Path(created['task_dir']).parent
-    js('task', 'routine', 'add', 'retrospect', '-p', 'demo', '--cron', '0 6 * * *',
+    js('project', 'routine', 'add', 'retrospect', '-p', 'demo', '--cron', '0 6 * * *',
        *('--arg=%s' % word for word in (sys.executable, '-B', ROOT / 'scripts' / 'retrospect.py', state_dir,
                                         '-p', 'demo', '--no-model', '--wsx', wsx)))
-    js('task', 'routine', 'run', 'retrospect', '-p', 'demo')
+    js('project', 'routine', 'run', 'retrospect', '-p', 'demo')
     report = wait(lambda: posted('retrospect'), 'the retrospect post', 60)[0]['text']
-    assert report.startswith('Since ') and 'You asked 3 times: "RUN wsx task routine run nightly -p demo --json"' in report, report
+    assert report.startswith('Since ') and 'You asked 3 times: "RUN wsx project routine run nightly -p demo --json"' in report, report
     quoting = re.search(r'\nQuotes: (\d+) of (\d+) replies', report)
     assert quoting and 0 < int(quoting[1]) < int(quoting[2]), report
     assert 'not judged (--no-model)' in report and Path(report.split('Detail: ')[1].strip()).is_file(), report
@@ -3140,16 +3007,16 @@ def part_core(created=None):
     board = project / 'routine-out' / 'board.html'
     board.parent.mkdir(exist_ok=True)
     board.write_text('<p>board</p>\n')
-    js('task', 'routine', 'add', 'board', '-p', 'demo', '--cron', '0 5 * * *', '--arg=sh', '--arg=-c',
+    js('project', 'routine', 'add', 'board', '-p', 'demo', '--cron', '0 5 * * *', '--arg=sh', '--arg=-c',
        '--arg=echo "board at routine-out/board.html and missing/none.html"; echo \'{"ok": true}\'')
-    js('task', 'routine', 'add', 'hushed', '-p', 'demo', '--cron', '0 5 * * *', '--no-post', '--arg=echo', '--arg=hushed words')
-    js('task', 'routine', 'add', 'silent', '-p', 'demo', '--cron', '0 5 * * *', '--arg=true')
-    rows = {r['name']: r for r in js('task', 'ledger')['routines']}
+    js('project', 'routine', 'add', 'hushed', '-p', 'demo', '--cron', '0 5 * * *', '--no-post', '--arg=echo', '--arg=hushed words')
+    js('project', 'routine', 'add', 'silent', '-p', 'demo', '--cron', '0 5 * * *', '--arg=true')
+    rows = {r['name']: r for r in js('chat', 'ledger')['routines']}
     assert rows['board']['post'] is True and rows['hushed']['post'] is False, rows
-    js('task', 'routine', 'run', 'board', '-p', 'demo')
+    js('project', 'routine', 'run', 'board', '-p', 'demo')
     event_message = wait(lambda: events_with('routine board succeeded after ', '; for the owner; output ends: '),
                          lambda: 'the board routine event (routine: %s; log end: %s)' % (
-                             next(r for r in js('task', 'ledger')['routines'] if r['name'] == 'board'),
+                             next(r for r in js('chat', 'ledger')['routines'] if r['name'] == 'board'),
                              [(e['kind'], str(e.get('text', ''))[:160]) for e in manager_entries()[-6:]]), 60)[0]
     event = next(line for line in event_message['text'].split('\n') if line.startswith('routine board'))
     assert '{"ok": true}' in event and '\n' not in event, event
@@ -3158,11 +3025,11 @@ def part_core(created=None):
     assert 'usage' in message and not message.get('quiet') and len(message['text']) < 200, message
     assert message['text'].endswith('[board.html](files/routine-out/board.html)'), message
     for name in ('hushed', 'silent'):
-        js('task', 'routine', 'run', name, '-p', 'demo')
+        js('project', 'routine', 'run', name, '-p', 'demo')
     hushed = wait(lambda: events_with('routine hushed succeeded after', 'hushed words'), 'the --no-post event', 60)[0]
     assert 'for the owner' not in hushed['text'], hushed
     assert reply_to(hushed['id']).get('quiet'), 'a --no-post event is the manager\'s own work'
-    wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger')['routines']
+    wait(lambda: all(r['last'] and not r['running'] for r in js('chat', 'ledger')['routines']
                      if r['name'] in ('board', 'hushed', 'silent')), 'the three routines ran', 60)
     time.sleep(3)
     assert len(events_with('routine board')) == 1 and not posted('routine board'), 'one event, no raw post'
@@ -3174,15 +3041,15 @@ def part_core(created=None):
     names = ('found', 'broke', 'clean', 'scan')
     for name, code in (('found', 1), ('broke', 3), ('clean', 0), ('scan', 2)):
         output = '' if name == 'scan' else 'echo %s output; ' % name
-        js('task', 'routine', 'add', name, '-p', 'demo', '--cron', '0 5 * * *', '--findings-exit', '1,2',
+        js('project', 'routine', 'add', name, '-p', 'demo', '--cron', '0 5 * * *', '--findings-exit', '1,2',
            '--arg=sh', '--arg=-c', '--arg=%sexit %d' % (output, code))
-    rows = {r['name']: r for r in js('task', 'ledger')['routines']}
+    rows = {r['name']: r for r in js('chat', 'ledger')['routines']}
     assert rows['found']['findings_exit'] == [1, 2] and 'findings_exit' not in rows['board'], rows
     for name in names:
-        js('task', 'routine', 'run', name, '-p', 'demo')
-    wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger')['routines']
+        js('project', 'routine', 'run', name, '-p', 'demo')
+    wait(lambda: all(r['last'] and not r['running'] for r in js('chat', 'ledger')['routines']
                      if r['name'] in names), 'the exit routines ran', 60)
-    last = {r['name']: r['last'] for r in js('task', 'ledger')['routines'] if r['name'] in names}
+    last = {r['name']: r['last'] for r in js('chat', 'ledger')['routines'] if r['name'] in names}
     assert [(n, last[n]['status'], last[n]['exit']) for n in names] == [
         ('found', 'findings', 1), ('broke', 'failed', 3), ('clean', 'succeeded', 0), ('scan', 'findings', 2)], last
     wait(lambda: events_with('routine found found something (exit 1); for the owner; output ends: found output'),
@@ -3196,7 +3063,7 @@ def part_core(created=None):
     time.sleep(3)
     assert not any(posted('routine ' + n) for n in names), 'no raw post of a run'
     for bad in ('0', '256', '1,x'):
-        cli('task', 'routine', 'add', 'bad', '-p', 'demo', '--cron', '0 5 * * *', '--findings-exit', bad,
+        cli('project', 'routine', 'add', 'bad', '-p', 'demo', '--cron', '0 5 * * *', '--findings-exit', bad,
             '--arg=true', ok=False)
     # ^ The TUI chat shows a link's words and opens it (docs/tasks.md "TUI"): `S` makes sure the
     # project shell lives; a post links to it as the session news does. `[` selects the newest
@@ -3297,7 +3164,7 @@ def part_core(created=None):
     board.unlink()
     board.parent.rmdir()
     for name in ('closed', 'retrospect', 'board', 'hushed', 'silent', 'found', 'broke', 'clean'):
-        js('task', 'routine', 'delete', name, '-p', 'demo')
+        js('project', 'routine', 'delete', name, '-p', 'demo')
     # ^ Session news (docs/tasks.md "Session news"): a project agent session that enters exited,
     # error or blocked is one post with no turn, naming it; a session of a task is no news. A pane
     # reports from inside itself, so the fixture types the report command into a session's shell.
@@ -3355,7 +3222,7 @@ def part_core(created=None):
     time.sleep(6)
     assert not any(news_of(session) for session in ours.values()), manager_entries()[-4:]
     # ^ A turn that runs holds the post: it comes after the turn's reply, never inside it.
-    turn = js('task', 'say', 'LONG STATUS held')['id']
+    turn = js('chat', 'say', 'LONG STATUS held')['id']
     held, held_pane = agent_session('held')
     agent_reports('held', held_pane, 'claude', 'error')
     time.sleep(5)
@@ -3374,31 +3241,31 @@ def part_core(created=None):
     asking = js('task', 'new', 'NOOP ASK')['id']
     wait_state(asking, 'ready')
     wait(lambda: events_with('#%d ready r1' % asking), 'the event of a task that asks')
-    asked = reply_to(js('task', 'say', 'with the asking task')['id'])
+    asked = reply_to(js('chat', 'say', 'with the asking task')['id'])
     assert asked['text'].endswith('Should I land it now?') and asked.get('asks') is True and 'quiet' not in asked, asked
     # ^ An open question shows in the next turn's input ("Open questions", docs/tasks.md "Questions"):
     # a message that quotes another message answers none. A dismiss, or an owner message that
     # quotes it, ends it; with none open the section is absent.
     line = '- %d: Should I land it now?' % asked['id']
-    kept = js('task', 'say', '> message 1\n\nkeeping that open')
+    kept = js('chat', 'say', '> message 1\n\nkeeping that open')
     reply_to(kept['id'])
     assert line in turn_with('keeping that open')['message'].split('Open questions', 1)[1], turn_with('keeping that open')
-    js('task', 'dismiss', str(asked['id']))
-    reply_to(js('task', 'say', 'STATUS nothing open')['id'])
+    js('chat', 'dismiss', str(asked['id']))
+    reply_to(js('chat', 'say', 'STATUS nothing open')['id'])
     assert 'Open questions' not in turn_with('STATUS nothing open')['message'], turn_with('STATUS nothing open')
-    once_more = js('task', 'say', 'ASK once more')
+    once_more = js('chat', 'say', 'ASK once more')
     again = reply_to(once_more['id'])
     assert again.get('asks') is True, again
-    assert again['id'] in js('task', 'chat')['asks'], js('task', 'chat')['asks']
-    reply_to(js('task', 'say', '> message %d\n\nyes, land it' % again['id'])['id'])
+    assert again['id'] in js('chat', 'read')['asks'], js('chat', 'read')['asks']
+    reply_to(js('chat', 'say', '> message %d\n\nyes, land it' % again['id'])['id'])
     answered_turn = turn_with('yes, land it')['message']
     assert 'Open questions' not in answered_turn and '- %d:' % again['id'] not in answered_turn, answered_turn
     js('task', 'close', asking)
-    question_table = reply_to(js('task', 'say', 'ASK TABLE')['id'])
+    question_table = reply_to(js('chat', 'say', 'ASK TABLE')['id'])
     assert question_table['text'].startswith('Should I land it now?\nWhere things stand') and 'asks' not in question_table, question_table
     assert 'asks' not in event_reply, event_reply
     # ^ A question in a last table row with no closing pipe does not ask either.
-    question_row = reply_to(js('task', 'say', 'ASKROW')['id'])
+    question_row = reply_to(js('chat', 'say', 'ASKROW')['id'])
     assert question_row['text'].endswith('| #2 | land it?') and 'asks' not in question_row, question_row
     put('context.md')
     # ^ The config named no manager model since the restart: the manager defaults to opus.
@@ -3406,7 +3273,7 @@ def part_core(created=None):
     # ^ Claude's own turn for a notification is no reply (docs/tasks.md "Claude adapter").
     # ^ The continuity part above restarted the manager since `fresh`: compare with its newest launch.
     running = [t for t in traces() if t.get('launch') and t.get('manager')][-1]
-    resumed = js('task', 'say', 'NOTIFY STATUS again')
+    resumed = js('chat', 'say', 'NOTIFY STATUS again')
     assert reply_to(resumed['id'])['text'], chat()[-3:]
     assert not any(e['kind'] == 'reply' and not e['text'] for e in chat())
     assert not any(t.get('launch') and t.get('manager') and t['session'] != running['session']
@@ -3414,7 +3281,7 @@ def part_core(created=None):
     assert not turn_with('STATUS again')['message'].startswith('Handover')
     # ^ A usage limit is no reply: the message waits and is answered after the reset.
     before_limit = int(time.time() * 1000)
-    limited = js('task', 'say', 'LIMIT 1 STATUS limited')
+    limited = js('chat', 'say', 'LIMIT 1 STATUS limited')
     held = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'limit' and e.get('until') and e['unix_ms'] >= before_limit),
                              None), 'the manager limit wait')
     assert re.fullmatch(r'\d\d:\d\d \(no stand-in answers; .*\)', held['until']), held
@@ -3428,12 +3295,12 @@ def part_core(created=None):
     # ^ The reply is every text block of the turn, in order, joined with a blank line: Claude's
     # `result` holds only the last (docs/tasks.md "Manager"). A `-` block next to words is dropped,
     # and a turn whose only block is `-` is quiet.
-    spoken = js('task', 'say', 'BLOCKS First, the answer.|TOOL|Then, the closing note.')
+    spoken = js('chat', 'say', 'BLOCKS First, the answer.|TOOL|Then, the closing note.')
     spoken_reply = reply_to(spoken['id'])
     assert spoken_reply['text'] == 'First, the answer.\n\nThen, the closing note.', spoken_reply
-    mixed = js('task', 'say', 'BLOCKS -|TOOL|Only this stays.')
+    mixed = js('chat', 'say', 'BLOCKS -|TOOL|Only this stays.')
     assert reply_to(mixed['id'])['text'] == 'Only this stays.', chat()[-2:]
-    silent = js('task', 'say', 'BLOCKS -|TOOL|-')
+    silent = js('chat', 'say', 'BLOCKS -|TOOL|-')
     silent_reply = reply_to(silent['id'])
     assert silent_reply['text'].strip() in ('', '-'), silent_reply
     # ^ A turn whose thinking holds far more than its words gets one follow-up that asks for the
@@ -3443,16 +3310,16 @@ def part_core(created=None):
         return [e for e in chat() if e['kind'] == 'message' and e['from'] == 'recap'
                 and e['id'] > after and 'only in your thinking' in e['text']]
     draft = 'The rewritten Q1 draft, written as thinking only: ' + 'a full answer in prose. ' * 6
-    thought = js('task', 'say', 'BLOCKS THINK %s|TOOL|Saved as a rule.' % draft)
+    thought = js('chat', 'say', 'BLOCKS THINK %s|TOOL|Saved as a rule.' % draft)
     assert reply_to(thought['id'])['text'] == 'Saved as a rule.'
     ask = wait(lambda: thinking_asks(thought['id']), 'the follow-up for the answer in thinking')[0]
     assert 'or reply - if it held nothing for the owner' in ask['text'], ask
     assert reply_to(ask['id'])['text'] == draft, chat()[-3:]
-    nothing = js('task', 'say', 'BLOCKS THINK nothing for the owner, only notes about events and tasks that I read: %s|TOOL|-' % ('x ' * 40))
+    nothing = js('chat', 'say', 'BLOCKS THINK nothing for the owner, only notes about events and tasks that I read: %s|TOOL|-' % ('x ' * 40))
     nothing_ask = wait(lambda: thinking_asks(nothing['id']), 'the follow-up after a quiet turn')[0]
     dash = reply_to(nothing_ask['id'])
     assert dash['text'].strip() in ('', '-') and dash.get('quiet') is True, dash
-    short = js('task', 'say', 'BLOCKS THINK a short thought|TOOL|Hi there.')
+    short = js('chat', 'say', 'BLOCKS THINK a short thought|TOOL|Hi there.')
     assert reply_to(short['id'])['text'] == 'Hi there.'
     time.sleep(4)
     assert len(thinking_asks(thought['id'])) == 2 and not thinking_asks(short['id']), thinking_asks(0)
@@ -3467,7 +3334,7 @@ def part_core(created=None):
         js('task', 'close', n, '--discard')
     for i, n in enumerate(memo_tasks):
         wait(lambda: events_with('#%d closed r1' % n, 'memo: lesson %d kept' % i), 'memo of t%d in its event' % n)
-    assert len(js('task', 'ledger')['recent']) == 10
+    assert len(js('chat', 'ledger')['recent']) == 10
     # ^ wsx writes the memos into the manager's notes, once each, and no turn runs for a close: the
     # events go along with the next turn (docs/tasks.md "Memo", "Manager").
     context = (notes / 'context.md').read_text()
@@ -3493,7 +3360,7 @@ def part_core(created=None):
     time.sleep(5)
     for quiet in (stop_event, last_close):
         assert not any(e['kind'] == 'reply' and quiet['id'] in e['to'] for e in chat()), chat()[-3:]
-    along = js('task', 'say', 'STATUS after the closes')
+    along = js('chat', 'say', 'STATUS after the closes')
     assert {last_close['id'], stop_event['id']} <= set(reply_to(along['id'])['to']), chat()[-3:]
     along_turn = turn_with('STATUS after the closes')['message']
     # ^ The owner's message comes first and the turn says so (docs/tasks.md "Manager").
@@ -3518,7 +3385,7 @@ def part_worker(created=None):
     # ^ By default the manager lands alone: only what goes public or is lost asks.
     free = js('task', 'new', 'WORK free.txt MEMO landing brings it')['id']
     assert wait_state(free, 'ready', 'failed')['state'] == 'ready'
-    landed_alone = js('task', 'say', 'RUN wsx task land %d -p demo --json' % free)
+    landed_alone = js('chat', 'say', 'RUN wsx task land %d -p demo --json' % free)
     assert 'owner was asked' not in reply_to(landed_alone['id'])['text'] and main_has('free.txt')
     wait_closed(free)
     wait(lambda: events_with('#%d landed' % free, 'memo: landing brings it'), 'the land event carries the memo')
@@ -3553,12 +3420,12 @@ def part_worker(created=None):
         '  land: { auto: false }\n', '  land: { auto: false, approve: true }\n'), 'land asks')
     ap = js('task', 'new', 'WORK ap.txt')['id']
     assert wait_state(ap, 'ready', 'failed')['state'] == 'ready'
-    asked = js('task', 'say', 'RUN wsx task land %d -p demo --json' % ap)
+    asked = js('chat', 'say', 'RUN wsx task land %d -p demo --json' % ap)
     assert 'the owner was asked (a1)' in reply_to(asked['id'])['text']
     assert show(ap)['state'] == 'ready'
-    pending = js('task', 'ledger')['approvals']
+    pending = js('chat', 'ledger')['approvals']
     assert [(p['id'], p['action'], p['task'], p['revision']) for p in pending] == [('a1', 'land', ap, 1)], pending
-    approved = js('task', 'approve', 'a1')
+    approved = js('chat', 'approve', 'a1')
     assert approved['ok'] and approved['result']['state'] == 'landed', approved
     assert show(ap)['state'] == 'landed'
     heard = wait(lambda: events_with('approval a1 (land #%d) approved; done' % ap), 'approval event')
@@ -3566,20 +3433,20 @@ def part_worker(created=None):
     # close --discard by the manager always asks; the owner denies it with a note.
     keep = js('task', 'new', 'WORK keep.txt')['id']
     assert wait_state(keep, 'ready', 'failed')['state'] == 'ready'
-    asked = js('task', 'say', 'RUN wsx task close %d --discard -p demo --json' % keep)
+    asked = js('chat', 'say', 'RUN wsx task close %d --discard -p demo --json' % keep)
     assert 'the owner was asked (a2)' in reply_to(asked['id'])['text']
     # The owner sees the newest request of a task only: a second discard replaces the first, which
     # then answers that it was replaced and runs nothing (docs/tasks.md "Approvals").
-    asked = js('task', 'say', 'RUN wsx task close %d --discard -p demo --json' % keep)
+    asked = js('chat', 'say', 'RUN wsx task close %d --discard -p demo --json' % keep)
     assert 'the owner was asked (a3)' in reply_to(asked['id'])['text']
-    assert [p['id'] for p in js('task', 'ledger')['approvals']] == ['a3']
-    assert 'approval a2 was decided: dropped; replaced by a3; nothing ran' in cli('task', 'approve', 'a2', ok=False).stderr
+    assert [p['id'] for p in js('chat', 'ledger')['approvals']] == ['a3']
+    assert 'approval a2 was decided: dropped; replaced by a3; nothing ran' in cli('chat', 'approve', 'a2', ok=False).stderr
     wait(lambda: events_with('approval a2 (discard #%d) dropped; replaced by a3' % keep), 'replace event')
-    js('task', 'deny', 'a3', '--note', 'keep it for now')
+    js('chat', 'deny', 'a3', '--note', 'keep it for now')
     wait(lambda: events_with('approval a3 (discard #%d) denied; keep it for now' % keep), 'deny event')
     assert show(keep)['state'] == 'ready' and Path(show(keep)['record']['working_copy']).exists()
     # The manager cannot decide its own request.
-    asked = js('task', 'say', 'RUN wsx task land %d -p demo --json\nRUN wsx task approve a4 -p demo --json' % keep)
+    asked = js('chat', 'say', 'RUN wsx task land %d -p demo --json\nRUN wsx chat approve a4 -p demo --json' % keep)
     text = reply_to(asked['id'])['text']
     assert 'the owner was asked (a4)' in text and 'is for the owner' in text, text
     # An approval for a revision the task has moved past is dropped, and the manager hears why
@@ -3587,8 +3454,8 @@ def part_worker(created=None):
     js('task', 'add', keep, 'WORK keep2.txt')
     assert wait_state(keep, 'ready', 'failed')['revision'] == 2
     wait(lambda: events_with('approval a4 (land #%d) dropped; #%d moved from r1 to r2' % (keep, keep)), 'the drop event')
-    assert 'approval a4 was decided: dropped; #%d moved from r1 to r2' % keep in cli('task', 'approve', 'a4', ok=False).stderr and show(keep)['state'] == 'ready'
-    assert js('task', 'ledger')['approvals'] == []
+    assert 'approval a4 was decided: dropped; #%d moved from r1 to r2' % keep in cli('chat', 'approve', 'a4', ok=False).stderr and show(keep)['state'] == 'ready'
+    assert js('chat', 'ledger')['approvals'] == []
     wait_closed(ap)
     js('task', 'close', keep, '--discard')
 
@@ -3597,11 +3464,11 @@ def part_worker(created=None):
     # behind. A question in a turn with no request is unchanged: it stays until an owner message,
     # also while a request of an earlier turn is decided.
     def owner_items():
-        return len(js('task', 'chat')['asks']) + len(js('task', 'ledger')['approvals'])
+        return len(js('chat', 'read')['asks']) + len(js('chat', 'ledger')['approvals'])
 
     def ask_and_discard(n):
         """A turn that closes #n with --discard and ends with a question; the request's id."""
-        reply = reply_to(js('task', 'say', 'ASK\nRUN wsx task close %d --discard -p demo --json' % n)['id'])
+        reply = reply_to(js('chat', 'say', 'ASK\nRUN wsx task close %d --discard -p demo --json' % n)['id'])
         assert reply['text'].endswith('Should I land it now?'), reply
         return re.search(r'the owner was asked \((a\d+)\)', reply['text']).group(1)
 
@@ -3609,10 +3476,10 @@ def part_worker(created=None):
         one = js('task', 'new', 'WORK one.txt')['id']
         assert wait_state(one, 'ready', 'failed')['state'] == 'ready'
         request = ask_and_discard(one)
-        assert [p['id'] for p in js('task', 'ledger')['approvals']] == [request] and js('task', 'chat')['asks'] == [], request
-        assert owner_items() == 1, (js('task', 'chat')['asks'], js('task', 'ledger')['approvals'])
-        js('task', decide, request)
-        assert owner_items() == 0, (decide, js('task', 'chat')['asks'], js('task', 'ledger')['approvals'])
+        assert [p['id'] for p in js('chat', 'ledger')['approvals']] == [request] and js('chat', 'read')['asks'] == [], request
+        assert owner_items() == 1, (js('chat', 'read')['asks'], js('chat', 'ledger')['approvals'])
+        js('chat', decide, request)
+        assert owner_items() == 0, (decide, js('chat', 'read')['asks'], js('chat', 'ledger')['approvals'])
         wait(lambda: events_with('approval %s (discard #%d)' % (request, one)), '%s event' % decide)
         if decide == 'approve':
             wait_state(one, 'closed')
@@ -3620,13 +3487,13 @@ def part_worker(created=None):
             js('task', 'close', one, '--discard')
     earlier = js('task', 'new', 'WORK two.txt')['id']
     assert wait_state(earlier, 'ready', 'failed')['state'] == 'ready'
-    request = re.search(r'the owner was asked \((a\d+)\)', reply_to(js('task', 'say', 'RUN wsx task close %d --discard -p demo --json' % earlier)['id'])['text']).group(1)
-    plain = reply_to(js('task', 'say', 'ASK with no request')['id'])
-    assert js('task', 'chat')['asks'] == [plain['id']] and owner_items() == 2
-    js('task', 'deny', request)
-    assert js('task', 'chat')['asks'] == [plain['id']] and owner_items() == 1
-    reply_to(js('task', 'say', 'yes, land it')['id'])
-    assert js('task', 'chat')['asks'] == [], js('task', 'chat')['asks']
+    request = re.search(r'the owner was asked \((a\d+)\)', reply_to(js('chat', 'say', 'RUN wsx task close %d --discard -p demo --json' % earlier)['id'])['text']).group(1)
+    plain = reply_to(js('chat', 'say', 'ASK with no request')['id'])
+    assert js('chat', 'read')['asks'] == [plain['id']] and owner_items() == 2
+    js('chat', 'deny', request)
+    assert js('chat', 'read')['asks'] == [plain['id']] and owner_items() == 1
+    reply_to(js('chat', 'say', 'yes, land it')['id'])
+    assert js('chat', 'read')['asks'] == [], js('chat', 'read')['asks']
     js('task', 'close', earlier, '--discard')
 
     # 22a. Push (docs/tasks.md "Push"): the manager's push asks; a denied one leaves origin, an
@@ -3646,29 +3513,29 @@ def part_worker(created=None):
         return git('--git-dir', str(origin), 'rev-parse', 'main')
 
     def ask_push(argv):
-        text = reply_to(js('task', 'say', 'RUN wsx task push %s-p demo --json' % argv)['id'])['text']
+        text = reply_to(js('chat', 'say', 'RUN wsx project push %s-p demo --json' % argv)['id'])['text']
         return re.search(r'push needs the owner.s approval; the owner was asked \((a\d+)\)', text).group(1), text
 
     denied, _ = ask_push('')
-    assert [(p['id'], p['action'], p['commit']) for p in js('task', 'ledger')['approvals']] == [(denied, 'push', tip)]
+    assert [(p['id'], p['action'], p['commit']) for p in js('chat', 'ledger')['approvals']] == [(denied, 'push', tip)]
     # ^ The ask shows once, as the tag of the manager's reply (`chat_rows`, docs/tasks.md "Approvals"): the host posts no ask line.
-    assert js('task', 'chat')['approvals'] == [denied]
+    assert js('chat', 'read')['approvals'] == [denied]
     assert not events_with('asked the owner') and not [e for e in chat() if e['kind'] == 'reply' and e['text'].startswith('Asked you')], chat()
-    js('task', 'deny', denied)
+    js('chat', 'deny', denied)
     wait(lambda: events_with('approval %s (push) denied' % denied), 'the push deny event')
     assert origin_tip() == before
     # ^ The request says what it brings: the task landed since origin's tip (`ap`) and the one
     # commit; a newer request for the same commit replaces it (docs/tasks.md "Push").
     stale, _ = ask_push('')
     approved, _ = ask_push('')
-    waiting = js('task', 'ledger')['approvals']
+    waiting = js('chat', 'ledger')['approvals']
     assert [p['id'] for p in waiting] == [approved], waiting
     assert (waiting[0]['tasks'], waiting[0]['commits']) == ([ap], 1), waiting
     assert waiting[0]['label'] == 'Approve push #%d (1 commit)' % ap, waiting
-    assert 'replaced by %s; nothing ran' % approved in cli('task', 'approve', stale, ok=False).stderr
+    assert 'replaced by %s; nothing ran' % approved in cli('chat', 'approve', stale, ok=False).stderr
     wait(lambda: events_with('approval %s (push) dropped; replaced by %s' % (stale, approved)), 'the push replace event')
     assert origin_tip() == before
-    done = js('task', 'approve', approved)
+    done = js('chat', 'approve', approved)
     assert done['ok'] and done['result']['pushed'] and done['result']['forced'] is False, done
     assert origin_tip() == tip
     wait(lambda: events_with('approval %s (push) approved; done: pushed main to origin: %s' % (approved, tip[:12])),
@@ -3677,20 +3544,20 @@ def part_worker(created=None):
     on_old = js('task', 'new', 'WORK on-old.txt')['id']
     assert wait_state(on_old, 'ready', 'failed')['state'] == 'ready'
     squash = git('commit-tree', 'main^{tree}', '-m', 'squash')
-    text = reply_to(js('task', 'say', 'RUN wsx task push --commit %s -p demo --json' % squash)['id'])['text']
+    text = reply_to(js('chat', 'say', 'RUN wsx project push --commit %s -p demo --json' % squash)['id'])['text']
     assert 'a rewrite needs --force' in text and 'owner was asked' not in text, text
     forced, _ = ask_push('--commit %s --force ' % squash)
-    pending = js('task', 'ledger')['approvals']
+    pending = js('chat', 'ledger')['approvals']
     assert [(p['id'], p['lease']) for p in pending] == [(forced, tip)], pending
-    done = js('task', 'approve', forced)
+    done = js('chat', 'approve', forced)
     message = done['result']['message']
     assert done['ok'] and 'forced over %s' % tip[:12] in message, done
     assert 'open tasks on the old main: #%d' % on_old in message, message
     assert origin_tip() == squash and git('rev-parse', 'main') == squash
     # ^ The owner pushes the old main back by hand: no request, the same rewrite.
-    back = js('task', 'push', '--commit', tip, '--force')
+    back = js('project', 'push', '--commit', tip, '--force')
     assert back['pushed'] and origin_tip() == tip and git('rev-parse', 'main') == tip, back
-    assert js('task', 'ledger')['approvals'] == []
+    assert js('chat', 'ledger')['approvals'] == []
     js('task', 'close', on_old, '--discard')
     git('remote', 'remove', 'origin')
     # ^ An ssh origin. The fixture's wsxd, and so its manager host, has no SSH_AUTH_SOCK, as a
@@ -3740,15 +3607,15 @@ def part_worker(created=None):
         git('remote', 'add', 'origin', 'ssh://%s@127.0.0.1:%d%s' % (user.pw_name, port, ssh_origin))
         try:
             # ^ The server takes no key of that agent: nothing is asked, the answer names the agent.
-            text = reply_to(js('task', 'say', 'RUN wsx task push -p demo --json')['id'])['text']
+            text = reply_to(js('chat', 'say', 'RUN wsx project push -p demo --json')['id'])['text']
             assert 'Permission denied (publickey)' in text, (text, (keys / 'sshd.log').read_text()[-2000:])
             assert "the login session's ssh agent at %s and the server took none" % login.group(1) in text, text
-            assert 'owner was asked' not in text and js('task', 'ledger')['approvals'] == [], text
+            assert 'owner was asked' not in text and js('chat', 'ledger')['approvals'] == [], text
             # ^ With the key in that agent, ls-remote gets past auth and the approved push moves origin.
             subprocess.run(['ssh-add', '-q', '-t', '600', str(keys / 'user')], env=agent_env, check=True)
             authorized.write_text((keys / 'user.pub').read_text())
             approved, _ = ask_push('')
-            done = js('task', 'approve', approved)
+            done = js('chat', 'approve', approved)
             assert done['ok'] and done['result']['pushed'], done
             assert git('--git-dir', str(ssh_origin), 'rev-parse', 'main') == git('rev-parse', 'main')
         finally:
@@ -3773,7 +3640,7 @@ def part_worker(created=None):
     clone_url = 'file://' + str(bare)
 
     def ask_add(*argv):
-        return reply_to(js('task', 'say', 'RUN wsx task project add %s -p demo --json' % ' '.join(map(str, argv)))['id'])['text']
+        return reply_to(js('chat', 'say', 'RUN wsx project add %s -p demo --json' % ' '.join(map(str, argv)))['id'])['text']
 
     (home / 'plain').mkdir()
     for argv, why in (((work / 'outside', '--clone', clone_url), 'is outside'),
@@ -3785,33 +3652,33 @@ def part_worker(created=None):
                       ((home / 'dash', '--clone=--upload-pack=x'), 'starts with')):
         text = ask_add(*argv)
         assert why in text and 'owner was asked' not in text, (argv, text)
-    assert js('task', 'ledger')['approvals'] == [] and not grown.exists()
+    assert js('chat', 'ledger')['approvals'] == [] and not grown.exists()
     # ^ A second request for the path replaces the first; the owner sees one card.
     stale = re.search(r'\((a\d+)\)', ask_add(grown, '--clone', clone_url)).group(1)
     approved = re.search(r'\((a\d+)\)', ask_add(grown, '--clone', clone_url)).group(1)
-    waiting = js('task', 'ledger')['approvals']
+    waiting = js('chat', 'ledger')['approvals']
     assert [(p['id'], p['action'], p['path'], p['url'], p['label']) for p in waiting] == \
         [(approved, 'project', str(grown), clone_url, 'Approve project add %s' % grown)], waiting
     wait(lambda: events_with('approval %s (project %s) dropped; replaced by %s' % (stale, grown, approved)), 'the project replace event')
-    assert 'replaced by %s; nothing ran' % approved in cli('task', 'approve', stale, ok=False).stderr
+    assert 'replaced by %s; nothing ran' % approved in cli('chat', 'approve', stale, ok=False).stderr
     assert not grown.exists(), 'nothing is cloned before the owner says yes'
-    done = js('task', 'approve', approved)
+    done = js('chat', 'approve', approved)
     assert done['ok'] and done['result']['project'] == 'grown' and done['result']['path'] == str(grown), done
     assert (grown / 'grown.txt').read_text() == 'grown\n' and (grown / '.git').exists()
     wait(lambda: events_with('approval %s (project %s) approved; done: project grown added at %s' % (approved, grown, grown)),
          'the project added event')
     # ^ The new project works: its ledger answers and the manager of `grown` takes a message.
-    assert js('task', 'ledger', '-p', 'grown')['project'] == 'grown'
-    js('task', 'chat', 'new', 'grown', '-p', 'grown')  # ^ its main chat: `say` needs one
-    assert js('task', 'say', '-p', 'grown', 'STATUS')['id']
+    assert js('chat', 'ledger', '-p', 'grown')['project'] == 'grown'
+    js('chat', 'new', 'grown', '-p', 'grown')  # ^ its main chat: `say` needs one
+    assert js('chat', 'say', '-p', 'grown', 'STATUS')['id']
     # ^ Registered paths and names refuse, naming the project; the owner's own run needs no card.
     text = ask_add(grown)
     assert 'project grown is already registered' in text and 'owner was asked' not in text, text
-    owned = js('task', 'project', 'add', home / 'owned', '--clone', clone_url)
-    assert owned['project'] == 'owned' and (home / 'owned' / 'grown.txt').exists() and js('task', 'ledger')['approvals'] == [], owned
+    owned = js('project', 'add', home / 'owned', '--clone', clone_url)
+    assert owned['project'] == 'owned' and (home / 'owned' / 'grown.txt').exists() and js('chat', 'ledger')['approvals'] == [], owned
     # ^ Without the scenario's env the file URL is refused: only ssh and https clone.
     nofile = {key: value for key, value in env.items() if key != 'WSX_TEST_ALLOW_FILE_CLONE'}
-    refused = subprocess.run([str(wsx), 'task', 'project', 'add', str(home / 'nofile'), '--clone', clone_url],
+    refused = subprocess.run([str(wsx), 'project', 'add', str(home / 'nofile'), '--clone', clone_url],
                              cwd=project, env=nofile, capture_output=True, text=True, timeout=60)
     assert refused.returncode != 0 and 'is not ssh or https' in refused.stderr and not (home / 'nofile').exists(), refused
     # ^ The sections below run with one project: unregister `grown` and `owned` in the config.
@@ -3820,7 +3687,7 @@ def part_worker(created=None):
     blocks = registry.read_text().split('[[projects]]')
     assert sum('name = "grown"' in b or 'name = "owned"' in b for b in blocks) == 2, blocks
     registry.write_text('[[projects]]'.join(b for b in blocks if 'name = "grown"' not in b and 'name = "owned"' not in b))
-    js('task', 'ledger')
+    js('chat', 'ledger')
 
     # 22b. The TUI's manager chat (`t`, then `m`; docs/tasks.md "TUI"): the conversation, the
     # open To check item and the waiting approval; a message goes to the manager's log, `r` opens
@@ -3830,14 +3697,14 @@ def part_worker(created=None):
     seen_item = js('task', 'new', 'WORK tui.txt HV')['id']
     assert wait_state(seen_item, 'ready', 'failed')['state'] == 'ready'
     assert js('task', 'land', seen_item)['state'] == 'landed'
-    item = next(i for i in js('task', 'check')['open'] if i['task'] == seen_item)
+    item = next(i for i in js('project', 'check')['open'] if i['task'] == seen_item)
     asks = js('task', 'new', 'WORK asks.txt')['id']
     assert wait_state(asks, 'ready', 'failed')['state'] == 'ready'
-    asked = js('task', 'say', 'RUN wsx task land %d -p demo --json' % asks)
+    asked = js('chat', 'say', 'RUN wsx task land %d -p demo --json' % asks)
     request = re.search(r'the owner was asked \((a\d+)\)', reply_to(asked['id'])['text']).group(1)
     # ^ Nothing else waits: the chat's selection starts at this item and Tab reaches the request.
-    assert [i['id'] for i in js('task', 'check')['open']] == [item['id']]
-    assert [p['id'] for p in js('task', 'ledger')['approvals']] == [request]
+    assert [i['id'] for i in js('project', 'check')['open']] == [item['id']]
+    assert [p['id'] for p in js('chat', 'ledger')['approvals']] == [request]
     checks_file = Path(show(seen_item)['report']).parent.parent / 'checks.jsonl'
 
     # The Workspace row marks what waits for the owner after the project's name: `!N` tasks and
@@ -3845,7 +3712,7 @@ def part_worker(created=None):
     # from the worktree row reaches the project row (docs/tasks.md "TUI"). Not `n`: this
     # project has agent sessions below its worktrees, which `n` would reach first.
     tui_screens(wsx, env, project, [
-        (r'(?s)[▼▶] demo !(?:[2-9]|\d\d) ✓%d\b.*~ main' % len(js('task', 'check')['open']), b'j'),
+        (r'(?s)[▼▶] demo !(?:[2-9]|\d\d) ✓%d\b.*~ main' % len(js('project', 'check')['open']), b'j'),
         (r'WORKSPACE +\(s\)ession', b'N'),
         (r'WORKSPACE +\(t\)asks +\(e\)dit +\(w\)orktree', b'')])
 
@@ -3858,7 +3725,7 @@ def part_worker(created=None):
         (r'WORKSPACE', b't'),
         (r'\(m\)anager', b'm'),
         # ^ The heading names the manager as the chat rows do: its shown name, `Atlas` here.
-        (r'(?s)%s demo · opus high +1 to check  1 approval\n.*▸ %s' % (js('task', 'manager')['name'], item['id']), b'i'),
+        (r'(?s)%s demo · opus high +1 to check  1 approval\n.*▸ %s' % (js('chat', 'lead')['name'], item['id']), b'i'),
         (r'Enter: send', b'hello from the tui'),
         (r'> hello from the tui', b'\r'),
         # ^ "Sent" comes before the next read draws the message: wait for both.
@@ -3877,13 +3744,14 @@ def part_worker(created=None):
     assert re.search(r'(?m)^ +▸ %s +#%d +open the file' % (item['id'], seen_item), opened), opened
     assert re.search(r'pass if: it has text', opened) and re.search(r'%s +Approve land #%d' % (request, asks), opened), opened
     assert re.search(r'(?m)^ You +\d\d:\d\d$', sent) and 'hello from the tui' in sent, sent
-    # ^ The chat names the manager as the web does: its shown name (docs/tasks.md "Config").
-    assert re.search(r'(?m)^ %s +\d\d:\d\d$' % re.escape(js('task', 'manager')['name']), opened) and 'MANAGER' in opened, opened
+    # ^ The chat names the manager as the web does: its shown name (docs/tasks.md "Config"); the
+    # main chat with no goal is the lead, and "lead" follows its name.
+    assert re.search(r'(?m)^ %s  lead +\d\d:\d\d$' % re.escape(js('chat', 'lead')['name']), opened) and 'MANAGER' in opened, opened
     assert owner_said('hello from the tui'), manager_log.read_text()[-2000:]
-    assert item['id'] not in [i['id'] for i in js('task', 'check')['open']]
+    assert item['id'] not in [i['id'] for i in js('project', 'check')['open']]
     rows = [json.loads(line) for line in checks_file.read_text().splitlines() if line.strip()]
     assert [r['state'] for r in rows if r['id'] == item['id']][-1] == 'passed', rows
-    assert js('task', 'ledger')['approvals'] == [] and show(asks)['state'] == 'ready'
+    assert js('chat', 'ledger')['approvals'] == [] and show(asks)['state'] == 'ready'
     narrow = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'(?m)^ You +\d\d:\d\d$', b'\x1b'),
         (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], cols=80)[2]
@@ -3922,16 +3790,16 @@ def part_worker(created=None):
     # its note and reach the manager once, a failed item's marked `To check <id> failed:`. A closed
     # item says so to an "x".
     mark('22c')
-    status_reply = reply_to(js('task', 'say', 'STATUS')['id'])
+    status_reply = reply_to(js('chat', 'say', 'STATUS')['id'])
     replied = []
     for n in range(5):
         replied.append(js('task', 'new', 'WORK x%d.txt HV' % n)['id'])
         assert wait_state(replied[-1], 'ready', 'failed')['state'] == 'ready'
         landed = js('task', 'land', replied[-1])
         assert landed['state'] == 'landed', landed
-    by_task = {i['task']: i for i in js('task', 'check')['open']}
+    by_task = {i['task']: i for i in js('project', 'check')['open']}
     first, second, third, fourth, fifth = (by_task[n] for n in replied)
-    reply_to(js('task', 'say', 'STATUS')['id'])
+    reply_to(js('chat', 'say', 'STATUS')['id'])
     # ^ The landings' events, and the owner turn that takes them, come before what follows: events
     # after the quote below would put their fold under it, and `[` would take the fold.
     def landing_events():
@@ -3940,11 +3808,11 @@ def part_worker(created=None):
             return None
         return lines
     wait(landing_events, 'the five landing events', 60)
-    reply_to(js('task', 'say', 'STATUS')['id'])
+    reply_to(js('chat', 'say', 'STATUS')['id'])
     # ^ Only the turns that take an owner message: an event turn (a landed task's ready line) can come
     # at any time in this section and is not what it counts.
     manager_turns = lambda: len([t for t in traces() if t.get('manager') and 'Owner (message' in str(t.get('message', ''))])
-    open_ids = lambda: [i['id'] for i in js('task', 'check')['open'] if i['task'] in replied]
+    open_ids = lambda: [i['id'] for i in js('project', 'check')['open'] if i['task'] in replied]
     row_of = lambda item: {r['id']: r for r in (json.loads(line) for line in checks_file.read_text().splitlines() if line.strip())}[item['id']]
     # ^ The logged message names the item it answers (`check`, next to `quote`), the item names the
     # message that closed it (`owner_said`) or whose words are its note (`note_said`), and the search
@@ -3953,11 +3821,11 @@ def part_worker(created=None):
         e for e in (json.loads(line) for line in manager_log.read_text().splitlines())
         if e.get('kind') == 'message' and e.get('id') == message_id)
     found_by_item = lambda item, message_id: wait(
-        lambda: any(h['reference'].endswith(':%d' % message_id) for h in js('task', 'search', '-p', 'demo', item['id'])['hits']),
+        lambda: any(h['reference'].endswith(':%d' % message_id) for h in js('chat', 'search', '-p', 'demo', item['id'])['hits']),
         'the search finds message %d by %s' % (message_id, item['id']), 30)
     turns = manager_turns()
     for item, words in ((first, ' X '), (second, 'ㅌ')):
-        said = js('task', 'say', '> check %s\n\n%s' % (item['id'], words))
+        said = js('chat', 'say', '> check %s\n\n%s' % (item['id'], words))
         assert logged_message(said['id'])['check'] == item['id'] and row_of(item)['owner_said'] == said['id'], (logged_message(said['id']), row_of(item))
         found_by_item(item, said['id'])
         answered = reply_to(said['id'])
@@ -3968,13 +3836,13 @@ def part_worker(created=None):
     assert [row_of(i)['state'] for i in (first, second)] == ['skipped', 'skipped'] and row_of(first).get('note') is None
     assert open_ids() == [third['id'], fourth['id'], fifth['id']]
     assert manager_turns() == turns, 'an x reply started a manager turn'
-    again = js('task', 'say', '> check %s\n\nx' % first['id'])
+    again = js('chat', 'say', '> check %s\n\nx' % first['id'])
     assert reply_to(again['id'])['text'] == 'Already skipped: ' + first['check'] and manager_turns() == turns
     # ^ Pass (the button) then a reply: the item is passed with no note until the words come; they
     # are its note and go to the manager once.
-    js('task', 'check', 'pass', third['id'])
+    js('project', 'check', 'pass', third['id'])
     assert row_of(third)['state'] == 'passed' and row_of(third).get('note') is None
-    thanks = js('task', 'say', '> check %s\n\nlooks right, thanks' % third['id'])
+    thanks = js('chat', 'say', '> check %s\n\nlooks right, thanks' % third['id'])
     reply_to(thanks['id'])
     assert manager_turns() == turns + 1
     assert third['check'] in str(turn_with('looks right, thanks')), traces()[-1]
@@ -3982,10 +3850,10 @@ def part_worker(created=None):
     found_by_item(third, thanks['id'])
     assert row_of(third)['state'] == 'passed' and row_of(third)['note'] == 'looks right, thanks', row_of(third)
     # ^ Fail (the button) closes the item with no fix task; its reply is the note, marked for the manager.
-    js('task', 'check', 'fail', fourth['id'])
+    js('project', 'check', 'fail', fourth['id'])
     assert row_of(fourth)['state'] == 'failed' and row_of(fourth).get('note') is None and row_of(fourth).get('fix_task') is None
     assert open_ids() == [fifth['id']]
-    wrong = js('task', 'say', '> check %s\n\nthe text is cut off' % fourth['id'])
+    wrong = js('chat', 'say', '> check %s\n\nthe text is cut off' % fourth['id'])
     reply_to(wrong['id'])
     assert manager_turns() == turns + 2
     assert 'To check %s failed: the text is cut off' % fourth['id'] in str(turn_with('the text is cut off')), traces()[-1]
@@ -3993,13 +3861,13 @@ def part_worker(created=None):
     assert logged_message(wrong['id'])['check'] == fourth['id'] and row_of(fourth)['note_said'] == wrong['id'], (logged_message(wrong['id']), row_of(fourth))
     found_by_item(fourth, wrong['id'])
     # ^ A second reply goes to the manager and leaves the first note.
-    more = js('task', 'say', '> check %s\n\nalso on a phone' % fourth['id'])
+    more = js('chat', 'say', '> check %s\n\nalso on a phone' % fourth['id'])
     reply_to(more['id'])
     assert manager_turns() == turns + 3 and row_of(fourth)['note'] == 'the text is cut off'
     assert logged_message(more['id'])['check'] == fourth['id'] and row_of(fourth)['note_said'] == wrong['id']
     # ^ Words to an open item are the third verdict: it closes as replied with them as its note, and
     # the manager reads them marked as a fail's are. An x that quotes a message is the manager's.
-    wordy = js('task', 'say', '> check %s\n\nx marks the spot' % fifth['id'])
+    wordy = js('chat', 'say', '> check %s\n\nx marks the spot' % fifth['id'])
     reply_to(wordy['id'])
     assert manager_turns() == turns + 4
     assert 'To check %s replied: x marks the spot' % fifth['id'] in str(turn_with('x marks the spot')), traces()[-1]
@@ -4008,12 +3876,12 @@ def part_worker(created=None):
     assert row_of(fifth)['note_said'] == wordy['id'] and 'owner_said' not in row_of(fifth), row_of(fifth)
     assert logged_message(wordy['id'])['check'] == fifth['id'] and open_ids() == []
     assert next(i for i in show(fifth['task'])['to_check'] if i['id'] == fifth['id'])['state'] == 'replied'
-    assert reply_to(js('task', 'say', '> check %s\n\nx' % fifth['id'])['id'])['text'] == 'Already replied: ' + fifth['check']
-    quoting = js('task', 'say', '> message %d\n\nx' % status_reply['id'])
+    assert reply_to(js('chat', 'say', '> check %s\n\nx' % fifth['id'])['id'])['text'] == 'Already replied: ' + fifth['check']
+    quoting = js('chat', 'say', '> message %d\n\nx' % status_reply['id'])
     reply_to(quoting['id'])
     assert manager_turns() == turns + 5
     # ^ An item no one knows: the quote line goes and the words stay.
-    stray = js('task', 'say', '> check c9999\n\nx')
+    stray = js('chat', 'say', '> check c9999\n\nx')
     reply_to(stray['id'])
     assert 'check' not in logged_message(stray['id'])
     assert manager_turns() == turns + 6
@@ -4031,16 +3899,16 @@ def part_worker(created=None):
         with manager_log.open('a') as out:
             out.write(head + pad * lines)
     fill([{'kind': 'rotated', 'tokens': 400000, 'unix_ms': now_ms}])
-    reply_to(js('task', 'say', 'roll one')['id'])
+    reply_to(js('chat', 'say', 'roll one')['id'])
     assert manager_log.with_name('log.1.jsonl').stat().st_size > 8 * 1024 * 1024 and not manager_log.with_name('log.2.jsonl').exists()
     fill([{'kind': 'limit', 'until': '07:45' if n % 2 else None, 'unix_ms': now_ms + n} for n in range(250)])
-    reply_to(js('task', 'say', 'roll two')['id'])
+    reply_to(js('chat', 'say', 'roll two')['id'])
     assert manager_log.with_name('log.1.jsonl').stat().st_size > 8 * 1024 * 1024 and manager_log.with_name('log.2.jsonl').exists()
-    shown = js('task', 'chat')
+    shown = js('chat', 'read')
     assert shown['skipped'] > 0 and all(e.get('id') != 1 for e in shown['entries']), 'message 1 is outside the chat window'
-    around = js('task', 'chat', '--around', '1')
+    around = js('chat', 'read', '--around', '1')
     assert around['skipped'] == 0 and len(around['entries']) == 200 and around['entries'][0]['id'] == 1, around['entries'][:2]
-    old = reply_to(js('task', 'say', 'QUOTE 1 across the rolls')['id'])
+    old = reply_to(js('chat', 'say', 'QUOTE 1 across the rolls')['id'])
     assert old['text'] == '> STATUS\n\nacross the rolls' and old['quote'] == 1, old
     # ^ In the TUI, Enter on that quote reads the part around message 1, marks it and says how to
     # go back; Esc reads the newest part again.
@@ -4057,7 +3925,7 @@ def part_worker(created=None):
     # The Workspace row of a project shows its name in the accent while the manager's last reply
     # asks the owner, and stops when the owner writes after it (docs/tasks.md "TUI"). One TUI run
     # sees both changes live: "ASK" makes the fake manager reply with a question.
-    reply_to(js('task', 'say', 'ASK')['id'])
+    reply_to(js('chat', 'say', 'ASK')['id'])
     accent, plain = (102, 153, 255), (224, 229, 237)
     seen_names = []
 
@@ -4075,7 +3943,7 @@ def part_worker(created=None):
             color = name_color(tui)
             if color == accent and not seen_names:
                 seen_names.append(color)
-                reply_to(js('task', 'say', 'hello again')['id'])
+                reply_to(js('chat', 'say', 'hello again')['id'])
             elif color == plain and seen_names:
                 seen_names.append(color)
             return len(seen_names) == 2
@@ -4128,12 +3996,12 @@ def part_worker(created=None):
     assert len(seen) == 2 and all(a['code'] == 0 and 'needs the owner' in a['out'] for a in seen), seen
     assert all(a['elsewhere'] != 0 and 'own project only' in a['elsewhere_out'] for a in seen), seen
     assert all(a['disguised'] != 0 and 'bidi' in a['disguised_out'] and '\\u{202e}' in a['disguised_out'] for a in seen), seen
-    pending = js('task', 'ledger')['approvals']
+    pending = js('chat', 'ledger')['approvals']
     labels = {p['label']: p['id'] for p in pending}
     run_ok, run_no = (labels['Approve run: kill %d' % stray.pid] for _, stray in asks)
     time.sleep(1)
     assert all(stray.poll() is None for _, stray in asks), 'a run ran before its approval'
-    done = js('task', 'approve', run_ok)
+    done = js('chat', 'approve', run_ok)
     assert done['ok'] and ('running in session run-%s' % run_ok) in done['outcome'], done
     wait(lambda: asks[0][1].poll() is not None, 'the approved kill')
     approvals_file = Path(created['task_dir']).parent / 'approvals.jsonl'
@@ -4144,12 +4012,12 @@ def part_worker(created=None):
     wait(lambda: events_with('Approved run %s ended (exit 0): kill %d' % (run_ok, asks[0][1].pid)), 'the run end event')
     wait(lambda: any('Approved run %s ended (exit 0)' % run_ok in e.get('text', '') for e in log(asks[0][0])),
          'the run end as an add to the task')
-    js('task', 'deny', run_no, '--note', 'not that one')
+    js('chat', 'deny', run_no, '--note', 'not that one')
     wait(lambda: events_with('approval %s (run #%d) denied; not that one' % (run_no, asks[1][0])), 'the run deny event')
     assert asks[1][1].poll() is None, 'a denied run ran'
     assert 'is not approved' in cli('task', 'ran', run_no, ok=False).stderr
     # ^ The owner runs a command in a terminal: `run` is only how an agent asks.
-    assert 'how an agent asks' in cli('task', 'run', '--', 'true', ok=False).stderr
+    assert 'how an agent asks' in cli('project', 'run', '--', 'true', ok=False).stderr
     for n, stray in asks:
         stray.kill()
         js('task', 'close', n, '--discard')
@@ -4164,9 +4032,9 @@ def part_worker(created=None):
     asked = wait(lambda: next((t['askrun'] for t in traces()[::-1] if 'askrun' in t and t['askrun'].get('adapter') == 'pi'), None)
                  if len([t for t in traces() if 'askrun' in t]) > seen else None, 'the pi worker asks', 60)
     assert asked['code'] == 0 and 'needs the owner' in asked['out'], asked
-    pi_run = {p['label']: p['id'] for p in js('task', 'ledger')['approvals']}['Approve run: kill %d' % stray.pid]
+    pi_run = {p['label']: p['id'] for p in js('chat', 'ledger')['approvals']}['Approve run: kill %d' % stray.pid]
     assert stray.poll() is None
-    js('task', 'approve', pi_run)
+    js('chat', 'approve', pi_run)
     wait(lambda: stray.poll() is not None, 'the approved kill of the pi worker')
     wait(lambda: any('Approved run %s ended (exit 0)' % pi_run in e.get('text', '') for e in log(pi_task)),
          'the run end as an add to the pi task')
@@ -4203,7 +4071,7 @@ def part_worker(created=None):
     # The manager's `wsx task` commands run through its broker with no denial.
     held = js('task', 'new', 'WAIT %s NOOP' % (base / 'never'))['id']
     wait(lambda: show(held)['state'] == 'working' and launches_in(held), 'held worker')
-    stopped = js('task', 'say', 'RUN wsx task stop %d -p demo --json' % held)
+    stopped = js('chat', 'say', 'RUN wsx task stop %d -p demo --json' % held)
     assert 'ran: wsx task stop %d -p demo --json -> 0' % held in reply_to(stopped['id'])['text']
     assert wait_state(held, 'waiting')['record']['waiting']['on'] == 'owner'
     # The manager's boundary denies the main checkout, its git folder and a push (docs/tasks.md
@@ -4214,7 +4082,7 @@ def part_worker(created=None):
     git('commit', '-q', '-m', 'shared file')
     shared.write_text('one\ntwo\nthree\nfour\nowner edit\n')
     main_tip = git('rev-parse', 'main')
-    denied = reply_to(js('task', 'say', '\n'.join((
+    denied = reply_to(js('chat', 'say', '\n'.join((
         'RUN echo x > manager-wrote.txt',
         'RUN git -c user.name=o -c user.email=o@example.invalid commit -q -m "owner edit: shared.txt" -- shared.txt',
         'RUN git push %s HEAD:refs/heads/manager-pushed' % origin)))['id'])['text']
@@ -4223,7 +4091,7 @@ def part_worker(created=None):
     assert git('--git-dir', str(origin), 'for-each-ref', 'refs/heads/manager-pushed') == ''
     assert git('status', '--porcelain', 'shared.txt') == 'M shared.txt'
     # A land refused on the owner's uncommitted change on main that the task's change overlaps: on
-    # the owner's yes `wsx task commit`, which runs in the host, commits it once the light checks
+    # the owner's yes `wsx project commit`, which runs in the host, commits it once the light checks
     # pass on that commit (docs/tasks.md "Manager"), and the land passes. It refuses without the
     # owner's message of this turn, and when a light check fails on the commit.
     dirty = js('task', 'new', 'LINE shared.txt 1')['id']
@@ -4237,17 +4105,17 @@ def part_worker(created=None):
                                    % (work / 'cargo.log', cargo_fails))
     (bin_dir / 'cargo').chmod(0o755)
     cargo_fails.write_text('')
-    commit_line = 'RUN wsx task commit shared.txt -m "owner edit: shared.txt" -p demo --json'
-    stale = js('task', 'say', 'RUN wsx task commit shared.txt -m "owner edit: shared.txt" --owner-said 1 -p demo --json')
+    commit_line = 'RUN wsx project commit shared.txt -m "owner edit: shared.txt" -p demo --json'
+    stale = js('chat', 'say', 'RUN wsx project commit shared.txt -m "owner edit: shared.txt" --owner-said 1 -p demo --json')
     assert '--owner-said 1: ' in reply_to(stale['id'])['text'], reply_to(stale['id'])['text']
-    unsaid = reply_to(js('task', 'say', commit_line)['id'])['text']
+    unsaid = reply_to(js('chat', 'say', commit_line)['id'])['text']
     assert '-> 0' not in unsaid and 'pass --owner-said <id>; nothing was committed' in unsaid, unsaid
-    failing = reply_to(js('task', 'say', commit_line + ' --owner-said OWNER_SAID')['id'])['text']
+    failing = reply_to(js('chat', 'say', commit_line + ' --owner-said OWNER_SAID')['id'])['text']
     assert '`cargo fmt --check` failed on the commit (exit 1); nothing was committed' in failing, failing
     assert 'Diff in shared.txt' in failing and git('rev-parse', 'main') == main_tip
     assert not list(base.glob('project-commit-*')), 'the scratch copy is left'
     cargo_fails.unlink()
-    passed = reply_to(js('task', 'say', commit_line + ' --owner-said OWNER_SAID')['id'])['text']
+    passed = reply_to(js('chat', 'say', commit_line + ' --owner-said OWNER_SAID')['id'])['text']
     assert '-> 0' in passed and '"checks": [\n    "cargo fmt --check"\n  ]' in passed, passed
     assert git('log', '-1', '--format=%s', 'main') == 'owner edit: shared.txt' and git('rev-parse', 'main~1') == main_tip
     # ^ Only the named file: the changed config stays uncommitted, and the index matches main again.
@@ -4273,14 +4141,14 @@ def part_worker(created=None):
     ov_first = js('task', 'new', '--files', 'ov*.txt', '--title', 'Overlap first', 'WAIT %s WORK ov-a.txt' % ov_gate)['id']
     ov_new = 'RUN wsx task new --files "ov*.txt" -p demo --json%s NOOP'
     ov_beside = next_task()
-    made = reply_to(js('task', 'say', ov_new % '')['id'])['text']
+    made = reply_to(js('chat', 'say', ov_new % '')['id'])['text']
     assert '-> 0' in made, made
     ov_after = next_task()
-    assert '-> 0' in reply_to(js('task', 'say', ov_new % (' --after %d --because files' % ov_first))['id'])['text']
+    assert '-> 0' in reply_to(js('chat', 'say', ov_new % (' --after %d --because files' % ov_first))['id'])['text']
     why = js('task', 'why', ov_after)
     assert why['after']['task'] == ov_first and why['after']['because'] == 'files' and why['history']['entries'], why
     assert why['last_message']['mode'] == 'prompt' and why['last_message']['text'] == 'NOOP', why
-    said_why = reply_to(js('task', 'say', 'RUN wsx task why %d -p demo' % ov_after)['id'])['text']
+    said_why = reply_to(js('chat', 'say', 'RUN wsx task why %d -p demo' % ov_after)['id'])['text']
     assert '-> 0' in said_why and 'after:   #%d lands (files)' % ov_first in said_why, said_why
     ov_gate.write_text('')
     assert wait_state(ov_first, 'ready', 'failed')['state'] == 'ready'
@@ -4288,7 +4156,7 @@ def part_worker(created=None):
     assert [m['mode'] for m in review['asked']] == ['prompt'] and 'WORK ov-a.txt' in review['asked'][0]['text'], review
     assert review['base'] == git('merge-base', 'main', review['head']) and len(review['commits']) == 1, review
     assert 'ov-a.txt' in review['stat'] and '+++ b/ov-a.txt' in review['diff'], review
-    said_review = reply_to(js('task', 'say', 'RUN wsx task review %d -p demo' % ov_first)['id'])['text']
+    said_review = reply_to(js('chat', 'say', 'RUN wsx task review %d -p demo' % ov_first)['id'])['text']
     assert '-> 0' in said_review and '== prompt ' in said_review, said_review
     for n in (ov_first, ov_beside, ov_after):
         js('task', 'close', n, '--discard')
@@ -4338,8 +4206,8 @@ def part_worker(created=None):
                      'osascript': ['/usr/bin/osascript', '-e', '1'], 'launchctl': ['/bin/launchctl', 'list'],
                      'open': ['/usr/bin/open', '-a', 'NoSuchApplication']},
             'kill': signal_target.pid, 'link_target': str(home / '.zshrc'), 'main': str(project),
-            'wsx': {'approve': ['wsx', 'task', 'approve', 'a1', '-p', 'demo'], 'land': ['wsx', 'task', 'land', '1', '-p', 'demo'],
-                    'new': ['wsx', 'task', 'new', 'weak model task', '-p', 'demo'], 'deploy': ['wsx', 'task', 'deploy', '-p', 'demo']},
+            'wsx': {'approve': ['wsx', 'chat', 'approve', 'a1', '-p', 'demo'], 'land': ['wsx', 'task', 'land', '1', '-p', 'demo'],
+                    'new': ['wsx', 'task', 'new', 'weak model task', '-p', 'demo'], 'deploy': ['wsx', 'project', 'deploy', '-p', 'demo']},
             'control_write': 'weak-control.txt'}
     (work / 'weak-spec.json').write_text(json.dumps(spec))
     configure(LAND_CONFIG + '  agent: { adapter: pi, model: fake/pi-model }\n', 'untrusted worker')
@@ -4363,7 +4231,7 @@ def part_worker(created=None):
     assert (common / 'config').read_text() == config_text and git('rev-parse', 'main') == main_tip
     assert sorted(row['id'] for row in js('task', 'list', '--all')['tasks']) == sorted(tasks_before + [weak]), 'a task was created'
     assert signal_target.poll() is None
-    assert js('task', 'ledger')['approvals'] == []
+    assert js('chat', 'ledger')['approvals'] == []
     assert show(weak)['record']['adapter'] == 'pi' and any(t.get('launch') and t.get('worker') and t.get('model') == 'fake/pi-model' for t in traces())
     js('task', 'close', weak, '--discard')
     # The start set reaches a Pi worker through the same first turn (docs/memory.md "Start set"): the area brief of
@@ -4523,7 +4391,7 @@ def part_worker(created=None):
         stop_manager_now()
         configure(LAND_CONFIG.replace('{ auto: false }', '{ auto: false, approve: false }') + '  chats: { adapter: pi, model: fake/strict-%s }\n' % name,
                   'untrusted manager ' + name)
-        return reply_to(js('task', 'say', '\n'.join('RUN ' + line for line in lines))['id'])['text']
+        return reply_to(js('chat', 'say', '\n'.join('RUN ' + line for line in lines))['id'])['text']
 
     # P6 (manager): an untrusted manager on the remote provider is up, reaches it through the proxy and nothing else.
     probe = work / 'connect-probe.py'
@@ -4534,7 +4402,7 @@ def part_worker(created=None):
     configure(LAND_CONFIG + '  chats: { adapter: pi, model: remote/pi-model }\n', 'untrusted manager on a remote provider')
     lines = ['echo $HTTPS_PROXY', tunnel(lan, provider_port), tunnel(other_ip, provider_port), 'python3 %s %s %d' % (probe, other_ip, provider_port),
              tunnel(lan, other_port), tunnel('127.0.0.1', port), tunnel(lan, provider_port, 'plain')]
-    said = reply_to(js('task', 'say', '\n'.join('RUN ' + line for line in lines))['id'])['text']
+    said = reply_to(js('chat', 'say', '\n'.join('RUN ' + line for line in lines))['id'])['text']
     runs = ['ran: ' + part for part in said.split('ran: ')[1:]]
     # ^ The first line of each answer: the macOS python3 shim may add a stderr line about its cache.
     answers = [run.split(' -> 0 ', 1)[1].splitlines()[0].strip() for run in runs if ' -> 0 ' in run]
@@ -4547,9 +4415,9 @@ def part_worker(created=None):
     ready = js('task', 'new', 'WORK landme.txt')['id']
     assert wait_state(ready, 'ready', 'failed')['state'] == 'ready'
     said = manager_as('m1', 'wsx task land %d -p demo --json' % ready, 'wsx task land %d -p demo --owner-said OWNER_SAID --json' % ready,
-                      'wsx task close %d -p demo --discard --json' % ready, 'wsx task approve a1 -p demo', 'wsx task frobnicate',
+                      'wsx task close %d -p demo --discard --json' % ready, 'wsx chat approve a1 -p demo', 'wsx task frobnicate',
                       'wsx task host demo 1', 'wsx task list -p demo --json',
-                      'wsx task check pass c1 --owner-said OWNER_SAID -p demo', 'wsx task routine delete nightly --owner-said OWNER_SAID -p demo')
+                      'wsx project check pass c1 --owner-said OWNER_SAID -p demo', 'wsx project routine delete nightly --owner-said OWNER_SAID -p demo')
     runs = ['ran: ' + part for part in said.split('ran: ')[1:]]  # ^ A command's JSON answer spans lines.
     assert len(runs) == 9, said
     # ^ The owner's message is no word of a model that may be any model: a pass or a routine (it runs outside the boundary) needs the owner.
@@ -4561,74 +4429,43 @@ def part_worker(created=None):
     # ^ The broker passes the owner's commands and an unknown subcommand on: the CLI refuses them as before.
     assert '-> 1' in runs[3] and 'is for the owner' in runs[3], runs[3]
     assert '-> 2' in runs[4] and 'unrecognized subcommand' in runs[4], runs[4]
-    assert '-> 2' in runs[5] and 'is not for the manager' in runs[5], runs[5]
+    assert '-> 2' in runs[5] and 'is not for an agent' in runs[5], runs[5]
     assert 'wsx task list -p demo --json -> 0' in runs[6], runs[6]
-    asked = js('task', 'ledger')['approvals']
+    asked = js('chat', 'ledger')['approvals']
     assert {p['action'] for p in asked} == {'discard', 'land'}, asked
     assert show(ready)['state'] == 'ready' and git('log', '-1', '--format=%s', 'main') == 'untrusted manager m1' and main_has('landme.txt') is False
     for request in asked:
-        cli('task', 'deny', request['id'], '-p', 'demo')
+        cli('chat', 'deny', request['id'], '-p', 'demo')
     said = manager_as('m2', 'wsx task new tier-two-task -p demo --json', 'wsx task land %d -p demo --json' % ready, 'wsx task list -p demo --json',
                       'wsx task stop %d -p demo --json' % ready)
     runs = ['ran: ' + part for part in said.split('ran: ')[1:]]
     assert all('-> 2' in line and 'is beyond what this agent may do' in line and 'it passed: read, notify, backlog, direct' in line
                for line in runs[:2]), runs
     assert '-> 0' in runs[2] and 'is beyond' not in runs[3], runs
-    assert js('task', 'ledger')['approvals'] == [] and show(ready)['state'] in ('ready', 'waiting')
-    said = manager_as('m3', 'wsx task list -p demo --json', 'wsx task ledger -p demo')
+    assert js('chat', 'ledger')['approvals'] == [] and show(ready)['state'] in ('ready', 'waiting')
+    said = manager_as('m3', 'wsx task list -p demo --json', 'wsx chat ledger -p demo')
     runs = ['ran: ' + part for part in said.split('ran: ')[1:]]
     assert len(runs) == 2 and all('-> 2' in line and 'it passed: answer' in line for line in runs), said
     # ^ A named chat runs as the area group; its agent passed only answer and note, so even `new` and `list` are refused,
     # and the chat's own limit (no deploy) still reads as before.
     goal = work / 'strict-goal.md'
     goal.write_text('Keep the strict area.\n')
-    cli('task', 'chat', 'new', 'strictarea', '--goal', str(goal), '-p', 'demo', '--json')
+    cli('chat', 'new', 'strictarea', '--goal', str(goal), '-p', 'demo', '--json')
     stop_manager_now()
     configure(LAND_CONFIG + '  chats: { adapter: pi, model: fake/strict-a1 }\n', 'untrusted area')
     ids_before = sorted(row['id'] for row in js('task', 'list', '--all')['tasks'])
-    asked = js('task', 'say', '--to', 'strictarea', 'RUN wsx task new area-task -p demo --json\nRUN wsx task list -p demo --json')
-    said = wait(lambda: next((unquoted(e) for e in js('task', 'chat', '--chat', 'strictarea')['entries']
+    asked = js('chat', 'say', '--to', 'strictarea', 'RUN wsx task new area-task -p demo --json\nRUN wsx task list -p demo --json')
+    said = wait(lambda: next((unquoted(e) for e in js('chat', 'read', '--chat', 'strictarea')['entries']
                               if e['kind'] == 'reply' and asked['id'] in e['to']), None), 'the chat answers', 60)['text']
     runs = ['ran: ' + part for part in said.split('ran: ')[1:]]
     assert len(runs) == 2 and all('-> 2' in line and 'is beyond what this agent may do' in line and 'it passed: answer, note' in line
                                   for line in runs), said
     assert sorted(row['id'] for row in js('task', 'list', '--all')['tasks']) == ids_before, 'the chat created a task'
-    cli('task', 'chat', 'close', 'strictarea', '-p', 'demo', '--json')
+    cli('chat', 'close', 'strictarea', '-p', 'demo', '--json')
     stop_manager_now()
     registry.write_text(registry_before)
     configure(config_before, 'strict restored')
     js('task', 'close', ready, '--discard')
-
-    # 24b. A land that meets index.lock in the main checkout: a fresh lock refuses naming it, an
-    # old one that a live process holds open refuses with its pid, an old one with no holder is
-    # cleared (log `lock_cleared`) and the land goes on. Only index.lock is ever removed.
-    mark('24b')
-    locked = js('task', 'new', 'WORK locked.txt')['id']
-    assert wait_state(locked, 'ready', 'failed')['state'] == 'ready'
-    lock, other_lock = common / 'index.lock', common / 'shallow.lock'
-    named = os.path.realpath(common) + '/index.lock'  # ^ git names the real path
-    lock.write_text('')
-    other_lock.write_text('')
-    refused = land(locked, ok=False)
-    assert named in refused['message'] and 'younger than 300 s' in refused['message'], refused
-    assert lock.exists() and not kinds(locked, 'lock_cleared'), log(locked)
-    old = time.time() - 600
-    os.utime(lock, (old, old))
-    with open(lock, 'ab') as held_open:
-        holder = subprocess.Popen(['sleep', '60'], stdout=held_open)
-    try:
-        refused = land(locked, ok=False)
-        assert named in refused['message'] and 'held open by pid %d' % holder.pid in refused['message'], refused
-        assert lock.exists() and not kinds(locked, 'lock_cleared'), log(locked)
-    finally:
-        holder.kill()
-        holder.wait()
-    assert land(locked)['ok']
-    wait_closed(locked)
-    cleared = [e for e in log(locked) if e['kind'] == 'lock_cleared']
-    assert len(cleared) == 1 and cleared[0]['path'].endswith('/.git/index.lock') and cleared[0]['age_s'] >= 600, cleared
-    assert not lock.exists() and other_lock.exists() and main_has('locked.txt')
-    other_lock.unlink()
 
     # 25. A done result whose checks fail goes back to the worker with the failed command and
     mark('25')
@@ -4750,11 +4587,11 @@ def part_worker(created=None):
     item_task = js('task', 'new', 'WORK item27.txt HV')['id']
     assert wait_state(item_task, 'ready', 'failed')['state'] == 'ready'
     assert js('task', 'land', item_task)['state'] == 'landed'
-    item = next(i for i in js('task', 'check')['open'] if i['task'] == item_task)['id']
+    item = next(i for i in js('project', 'check')['open'] if i['task'] == item_task)['id']
     unpassed = subprocess.run([str(wsx), 'memory', 'add', '--kind', 'fact', '--slug', 'unpassed', '--text-file', '-', '--source', 'task:%s' % mem,
                                '--verified-by', 'check:' + item], cwd=project, env=env, input='Not yet.', capture_output=True, text=True)
     assert unpassed.returncode == 2 and 'no passed check item' in unpassed.stderr, unpassed
-    js('task', 'check', 'pass', item)
+    js('project', 'check', 'pass', item)
     cli('memory', 'add', '--kind', 'fact', '--slug', 'passed-fact', '--text-file', '-', '--source', 'task:%s' % mem,
         '--verified-by', 'check:' + item, stdin='A passed item verifies this.')
     # Below tasks.minFreeGb a task waits, says why, and goes on by itself without a retry.
@@ -4766,10 +4603,10 @@ def part_worker(created=None):
     assert waiting['status']['label'] == 'Waiting for disk space', waiting['status']
     assert waiting['status']['sentence'].endswith('It goes on by itself once there is space.'), waiting['status']
     assert any(e['kind'] == 'disk_wait' for e in log(dw))
-    row = next(r for r in js('task', 'ledger')['open'] if r['id'] == dw)
+    row = next(r for r in js('chat', 'ledger')['open'] if r['id'] == dw)
     assert row['waiting']['on'] == 'disk', row
     # Stalls (docs/tasks.md "Manager"): a wait whose cause is real is none, past the grace.
-    js('task', 'manager')
+    js('chat', 'lead')
 
     sweeps(2)
     assert not stalls(dw), stalls(dw)
@@ -4805,7 +4642,7 @@ def part_worker(created=None):
     (project / 'rw3.txt').write_text('in the way\n')
     land(stopped)
     wait(lambda: kinds(stopped, 'land_stopped'), 'the landing stops', 120)
-    stopped_row = next(r for r in js('task', 'ledger')['open'] if r['id'] == stopped)
+    stopped_row = next(r for r in js('chat', 'ledger')['open'] if r['id'] == stopped)
     assert stopped_row['state'] == 'ready' and stopped_row['waiting']['on'] == 'land_stopped' and 'rw3.txt' in stopped_row['waiting']['reason'], stopped_row
     assert stopped_row['status']['kind'] == 'land_stopped' and stopped_row['status']['waits_on']['kind'] == 'owner', stopped_row['status']
     assert stopped_row['flow']['waits_on'] == stopped_row['status']['waits_on'], stopped_row['flow']
@@ -4886,7 +4723,7 @@ def part_worker(created=None):
     waiting = wait(lambda: limited(first), 'limit wait')['record']['waiting']
     assert waiting['on'] == 'limit' and re.fullmatch(r'Claude 5-hour limit, resets \d\d:\d\d', waiting['reason']), waiting
     assert waiting['until_ms'] > time.time() * 1000, waiting
-    row = next(r for r in js('task', 'ledger')['open'] if r['id'] == first)
+    row = next(r for r in js('chat', 'ledger')['open'] if r['id'] == first)
     assert row['waiting']['on'] == 'limit', row
     # ^ Due first, but behind the older wait in the limit queue.
     second = js('task', 'new', 'LIMIT 1 WORK lb.txt')['id']
@@ -4997,7 +4834,7 @@ def part_worker(created=None):
         wait(lambda: limited(stale), 'the task waits on the limit', 30)
         stale_event = wait(lambda: events_with('#%d waiting r0' % stale, 'waits on limit'), 'the limit wait event', 30)[0]
         wait(lambda: show(stale)['state'] == 'working', 'the task works again', 30)
-        asked = js('task', 'say', 'STATUS after the stale wait %d' % attempt)
+        asked = js('chat', 'say', 'STATUS after the stale wait %d' % attempt)
         reply_to(asked['id'])
         stale_turn = turn_with('STATUS after the stale wait %d' % attempt)['message']
         if 'Events (message %d)' % stale_event['id'] in stale_turn:
@@ -5017,7 +4854,7 @@ def part_worker(created=None):
     assert wait_state(stale, 'ready', 'failed')['state'] == 'ready', log(stale)
     # ^ The task's last event line is current: no line says what it already says.
     wait(lambda: events_with('#%d ready r1' % stale), 'the ready event', 30)
-    reply_to(js('task', 'say', 'STATUS after the stale ready')['id'])
+    reply_to(js('chat', 'say', 'STATUS after the stale ready')['id'])
     stale_ready = turn_with('#%d ready r1' % stale)['message']
     assert 'since then:' not in stale_ready, stale_ready
     js('task', 'close', stale, '--discard')
@@ -5045,7 +4882,7 @@ def part_deploy(created=None):
     # ^ A deploy is due while the default branch is ahead of the last deploy: the part starts level
     # with it, so a repo service that starts in the window starts no waiter of its own.
     level = len(deploy_records())
-    js('task', 'deploy')
+    js('project', 'deploy')
     wait(lambda: len(deploy_records()) > level and deploy_lock_free(), 'the deploy by hand that levels the part', 30)
     (base / 'auto-deploy.log').unlink()
     quick = [js('task', 'new', 'WORK d%d.txt' % i)['id'] for i in range(4)]
@@ -5064,7 +4901,7 @@ def part_deploy(created=None):
     time.sleep(1)
     assert deploy_log.read_text().split() == [tips[-1]], (tips, deploy_log.read_text())
     assert [r['commit'] for r in deploy_records()[records_before:]] == [tips[-1]], deploy_records()[records_before:]
-    assert js('task', 'deployed')['deploy']['commit'] == tips[-1]
+    assert js('project', 'deployed')['deploy']['commit'] == tips[-1]
     # ^ A deploy's event names the tasks it put live: those landed since the previous deploy
     # (docs/tasks.md "Deploy and release"), so no one reads `deploys` to say what is live.
     # The first deploy of the part names every earlier land too: those before it deployed none.
@@ -5076,7 +4913,7 @@ def part_deploy(created=None):
     last = wait(lambda: show(quick[3])['state'] == 'landed' and git('rev-parse', 'main'), 'the later land')
     # ^ `ran` is a local of this part below: the by-hand run is spelled out.
     by_hand = len(deploy_records())
-    assert js('task', 'deploy')['commit'] == last
+    assert js('project', 'deploy')['commit'] == last
     wait(lambda: len(deploy_records()) > by_hand and deploy_lock_free(), 'the deploy by hand', 30)
     assert [r['commit'] for r in deploy_records()[records_before:]] == [tips[-1], last]
     for n in quick:
@@ -5098,7 +4935,7 @@ def part_deploy(created=None):
     stop_manager_now()
     stop_repo_service()
     # ^ The service that starts may send the main chat an event first: `started` or `running`.
-    assert js('task', 'manager')['state'] in ('started', 'running')
+    assert js('chat', 'lead')['state'] in ('started', 'running')
     wait(waiters, 'the waiter the starting service started')
     wait(lambda: len(deploy_records()) > records_before and deploy_lock_free(), 'the deploy after the restart', 90)
     time.sleep(2)
@@ -5181,35 +5018,7 @@ def part_deploy(created=None):
     assert any(path.name.startswith('fork-') for path in (home / '.claude/fake-sessions').iterdir())
     configure(LAND_CONFIG, 'land by hand again')
 
-    # 31. `wsx worktree delete` refuses uncommitted work before it closes anything, ignores
-    mark('31')
-    # build output, and keeps a branch with unmerged commits.
-    cli('worktree', 'create', 'feat/keep')
-    keep = Path(next(line.split(' ', 1)[1] for line in git('worktree', 'list', '--porcelain').splitlines()
-                     if line.startswith('worktree ') and line.endswith('-feat-keep')))
-    (keep / 'target').mkdir()
-    (keep / 'target/build').write_text('ignored output')
-
-    def keep_sessions():
-        snapshot = daemon_call('snapshot')['data']
-        ids = [w['id'] for w in snapshot['worktrees'] if Path(w['path']) == keep]
-        return [x for x in snapshot['sessions'] if x['worktree_id'] in ids]
-
-    wait(lambda: keep_sessions(), 'the worktree session')
-    (keep / 'README').write_text('changed\n')
-    refused = cli('worktree', 'delete', 'feat/keep', ok=False)
-    assert 'uncommitted changes: README' in refused.stderr and 'Nothing was removed' in refused.stderr, refused.stderr
-    assert keep.exists() and keep_sessions()
-    git('checkout', '--', 'README', cwd=keep)
-    (keep / 'notes.txt').write_text('draft\n')
-    assert 'untracked files: notes.txt' in cli('worktree', 'delete', 'feat/keep', ok=False).stderr
-    assert keep.exists() and keep_sessions()
-    git('add', 'notes.txt', cwd=keep)
-    git('commit', '-q', '-m', 'unmerged', cwd=keep)
-    deleted = cli('worktree', 'delete', 'feat/keep')
-    assert 'kept branch feat/keep' in deleted.stdout, deleted.stdout
-    assert not keep.exists() and not keep_sessions() and git('branch', '--list', 'feat/keep')
-    git('branch', '-D', 'feat/keep')
+    # ^ `wsx worktree delete` refuses uncommitted work and keeps an unmerged branch: crates/wsx/tests/worktree_delete.rs.
 
     # 32. Hold (docs/tasks.md "Hold"): a held task waits for the owner while pipeline work lands.
     mark('32')
@@ -5221,7 +5030,7 @@ def part_deploy(created=None):
     time.sleep(1.5)
     assert show(held)['state'] == 'ready' and not main_has('held.txt'), 'a held task landed by itself'
     assert [e['reason'] for e in log(held) if e['kind'] == 'hold'] == ['try the held page']
-    assert next(r for r in js('task', 'ledger')['open'] if r['id'] == held)['hold'] == 'try the held page'
+    assert next(r for r in js('chat', 'ledger')['open'] if r['id'] == held)['hold'] == 'try the held page'
     first = js('task', 'new', 'WORK pipe1.txt')['id']
     reviewed(first)
     wait_closed(first)
@@ -5241,7 +5050,7 @@ def part_deploy(created=None):
     mark('32b')
     # ignored with one warning that names them, so the ledger, a new task and its land work.
     configure(LAND_CONFIG + '  futureSetting: { on: true }\nfutureTop: 1\n', 'a newer config')
-    warned = cli('task', 'ledger', '--json')
+    warned = cli('chat', 'ledger', '--json')
     assert 'unknown keys ignored: tasks.futureSetting, futureTop' in warned.stderr and 'wsx.config.yml' in warned.stderr, warned.stderr
     # ^ The TUI shows it as the project notice, not on stderr over its screen.
     notice = tui_text(wsx, env, project, r'futureTop')
@@ -5262,7 +5071,7 @@ def part_deploy(created=None):
     # time on the machine. The run that waits shows queued; a killed holder frees the slot.
 
     def queued_row(pair):
-        rows = [r for r in js('task', 'ledger')['open'] if r['id'] in pair]
+        rows = [r for r in js('chat', 'ledger')['open'] if r['id'] in pair]
         return next((r for r in rows if r['state'] == 'checking' and (r['waiting'] or {}).get('on') == 'check_slot'), None)
 
     slot_config(3)
@@ -5369,30 +5178,7 @@ def part_deploy(created=None):
     assert wait_state(moved, 'landed', 'failed')['state'] == 'landed' and len(kinds(moved, 'checks')) == ran + 1, log(moved)
     assert not kinds(moved, 'land_stopped') and json.loads((Path(show(moved)['report']).parent / 'result.json').read_text())['result']['status'] == 'done', log(moved)
     wait_closed(moved)
-    # 32b1. A check that exits 75 (EX_TEMPFAIL, a failure outside the tree such as the CI runner's
-    # network) is never kept (docs/tasks.md "Check-run"): the next check-run on the same clean tree
-    # runs it again, while a check that exits 1 is answered from its kept result.
-    mark('32b1')
-    temp_runs, hard_runs = base / 'tempfail.log', base / 'hardfail.log'
-    configure(LAND_CONFIG + '  scenarios:\n    tempfail: "echo run >> %s; exit 75"\n    hardfail: "echo run >> %s; exit 1"\n'
-              % (temp_runs, hard_runs), 'tempfail scenarios')
-    flaky = js('task', 'new', 'CHECKRUN_REPEAT tempfail')['id']
-    hard = js('task', 'new', 'CHECKRUN_REPEAT hardfail')['id']
-    for n in (flaky, hard):
-        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
-    first, second = wait(lambda: next((t for t in traces() if 'check_run_repeat_tempfail' in t), None),
-                         'the tempfail answers', 60)['check_run_repeat_tempfail']
-    assert first[0] == 1 and second[0] == 1 and 'stored' not in first[1] + second[1], (first, second)
-    assert 'exit 75 (a temporary failure, not kept: the next check-run runs it again)' in second[1], second
-    assert temp_runs.read_text().count('run') == 2, temp_runs.read_text()
-    first, second = wait(lambda: next((t for t in traces() if 'check_run_repeat_hardfail' in t), None),
-                         'the hardfail answers', 60)['check_run_repeat_hardfail']
-    assert first[0] == 1 and 'exit 1' in first[1] and 'stored' not in first[1], first
-    assert second[0] == 1 and '(stored: it ran on this tree before)' in second[1], second
-    assert hard_runs.read_text().count('run') == 1, hard_runs.read_text()
-    for n in (flaky, hard):
-        js('task', 'close', n, '--discard')
-    configure(LAND_CONFIG, 'no tempfail scenarios')
+    # ^ A check-run that exits 75 is never kept, one that exits 1 is: crates/wsx/tests/task_checks.rs.
     # 32w. Each check's result has its run time and its run's wait for the check slot (ms), in
     # show and the ledger; the checks after a result answer from a check-run on the same clean
     # tree and do not run again (docs/tasks.md "Checks, revisions and report").
@@ -5407,7 +5193,7 @@ def part_deploy(created=None):
     gate = [e for e in log(timed) if e['kind'] == 'checks'][-1]['results']
     assert [c.get('stored') for c in gate] == [True, True] and gate[0]['ms'] == ran[0]['ms'], gate
     assert [c['ms'] for c in show(timed)['result']['checks']] == [c['ms'] for c in gate]
-    row = next(t for t in js('task', 'ledger')['open'] if t['id'] == timed)
+    row = next(t for t in js('chat', 'ledger')['open'] if t['id'] == timed)
     assert row['checks'][0]['ms'] >= 1000 and 'queued_ms' in row['checks'][0], row
     js('task', 'close', timed, '--discard')
     configure(LAND_CONFIG, 'untimed checks')
@@ -5472,70 +5258,6 @@ def part_deploy(created=None):
     named = next(t for t in traces() if 'check_run_with' in t and 'ping' in t['check_run_with'][0][1])['check_run_with'][0]
     assert named[0] == 0, named
     js('task', 'close', meeting, '--discard')
-    # 32t. A check-run never holds the result (docs/tasks.md "Check-run"): a result that comes
-    # before the run's answer settles at once, the task is ready while the run is out, and the
-    # run's pass starts no turn.
-    mark('32t')
-    late_gate = base / 'late-gate'
-    configure(LAND_CONFIG + '  scenarios:\n    slow: %s\n' % gate_cmd(late_gate), 'a slow scenario')
-    late = js('task', 'new', 'CHECKRUN_LATE slow WORK late.txt')['id']
-    assert wait_state(late, 'ready', 'failed')['state'] == 'ready', log(late)
-    assert not kinds(late, 'check_run'), log(late)
-    late_gate.touch()
-    wait(lambda: kinds(late, 'check_run'), 'the run answers in the background', 30)
-    time.sleep(1)
-    assert show(late)['state'] == 'ready' and kinds(late, 'result') == ['result'], log(late)
-    answers = [t['message'] for t in traces() if 'Your check-run ended. Its answer' in t.get('message', '') and str(late_gate) in t['message']]
-    assert not answers, answers
-    js('task', 'close', late, '--discard')
-    # 32t1. A stop outlasts a check-run (docs/tasks.md "Host", Stop): its late answer is logged and
-    # kept, starts no turn, and joins the turn the next add starts.
-    mark('32t1')
-    stop_gate = base / 'stop-gate'
-    configure(LAND_CONFIG + '  scenarios:\n    slow: %s\n' % gate_cmd(stop_gate), 'a stop scenario')
-    parked = js('task', 'new', 'CHECKRUN_LATE slow WORK parked.txt')['id']
-    wait(lambda: kinds(parked, 'result'), 'the result before the answer', 30)
-    assert js('task', 'stop', parked)['state'] == 'waiting'
-    stop_gate.touch()
-    wait(lambda: kinds(parked, 'check_run'), 'the check-run ends while stopped', 30)
-    time.sleep(3)
-    assert show(parked)['state'] == 'waiting' and show(parked)['record']['waiting']['on'] == 'owner', log(parked)
-    assert kinds(parked, 'result') == ['result'] and kinds(parked, 'check_run') == ['check_run'], log(parked)
-    answers = lambda: [t['message'] for t in traces() if 'Your check-run ended. Its answer' in t.get('message', '') and str(stop_gate) in t['message']]
-    assert not answers(), answers()
-    js('task', 'add', parked, 'WORK parked2.txt')
-    assert wait_state(parked, 'ready', 'failed')['state'] == 'ready', log(parked)
-    assert len(answers()) == 1 and 'WORK parked2.txt' in answers()[0], answers()
-    js('task', 'close', parked, '--discard')
-    # 32t2. A check-run that ends after the worker's result settled and passed on a clean tree
-    # starts no turn: the host records it as evidence in the result. A failure reopens the task.
-    mark('32t2')
-    pass_gate, fail_gate = base / 'pass-gate', base / 'fail-gate'
-    configure(LAND_CONFIG + '  scenarios:\n    slow: %s\n'
-              '    slowfail: %s; exit 1\n' % (gate_cmd(pass_gate), gate_cmd(fail_gate)), 'late scenarios')
-    passed = js('task', 'new', 'CHECKRUN_LATER slow WORK later.txt')['id']
-    failed = js('task', 'new', 'CHECKRUN_LATER slowfail WORK laterfail.txt')['id']
-    for n in (passed, failed):
-        wait(lambda: kinds(n, 'result'), 'the result before the answer', 30)
-    for n in (passed, failed):
-        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
-    assert not kinds(passed, 'check_run') and not kinds(failed, 'check_run'), (log(passed), log(failed))
-    pass_gate.touch()
-    fail_gate.touch()
-    wait(lambda: kinds(passed, 'check_run'), 'the pass answers', 30)
-    wait(lambda: [e for e in log(failed) if e['kind'] == 'result' and e.get('trigger') == 'check_run'], 'the failure reopens', 30)
-    for n in (passed, failed):
-        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
-    assert kinds(passed, 'result', 'check_run', 'checks') == ['result', 'checks', 'check_run'], log(passed)
-    assert [e['trigger'] for e in log(passed) if e['kind'] == 'result'] == ['step'], log(passed)
-    proof = [e for e in show(passed)['result']['result']['evidence'] if 'check-run' in e['check']]
-    assert len(proof) == 1 and ': exit 0' in proof[0]['proof'] and str(pass_gate) in proof[0]['proof'], show(passed)['result']
-    assert not [t for t in traces() if 'Your check-run ended' in t.get('message', '') and str(pass_gate) in t['message']]
-    assert [e['trigger'] for e in log(failed) if e['kind'] == 'result'] == ['step', 'check_run'], log(failed)
-    sent = [t for t in traces() if 'Your check-run ended' in t.get('message', '') and str(fail_gate) in t['message']]
-    assert len(sent) == 1 and ': exit 1' in sent[0]['message'], sent
-    for n in (passed, failed):
-        js('task', 'close', n, '--discard')
     # 32t4. A check-run joins a pending run only on the same commit (docs/tasks.md "Check-run"):
     # one on a newer commit answers `queued` and starts when the pending run ends, no result
     # waits for either, and each answer names its own commit, as the run's own output does.
@@ -5679,7 +5401,7 @@ def part_deploy(created=None):
 
 
 def stop_manager_now():
-    sock = js('task', 'manager')['socket']
+    sock = js('chat', 'lead')['socket']
     # ^ The service goes first: it would start the home host again, on the config before the one the caller writes.
     stop_repo_service()
     cli('session', 'delete', 'task-demo', '-p', 'demo')
@@ -5699,7 +5421,7 @@ def chat_helpers(created):
     chats_dir = Path(created['task_dir']).parent.parent / 'chats'
 
     def chats():
-        return {c['name']: c for c in js('task', 'chat', 'list')['chats']}
+        return {c['name']: c for c in js('chat', 'list')['chats']}
 
     def chat_entries(name):
         path = chats_dir / name / 'log.jsonl'
@@ -5794,7 +5516,7 @@ def part_host(created=None):
     assert status['wait'] == 'same files', status
     assert show(a)['record']['after']['because'] == 'files', show(a)['record']
     assert "Its checks fail on main until #%d lands." % d in show(c)['status']['sentence'], show(c)['status']
-    row = next(r for r in js('task', 'ledger')['open'] if r['id'] == a)
+    row = next(r for r in js('chat', 'ledger')['open'] if r['id'] == a)
     assert row['after']['task'] == b and row['after']['because'] == 'files' and row['status']['kind'] == 'after', row
     working = show(w)['status']
     assert working['kind'] == 'working' and working['sentence'].endswith(
@@ -5804,7 +5526,7 @@ def part_host(created=None):
     waited = show(b)['status']
     assert waited['sentence'].endswith('Waited for by #%d (same files), #%d (builds on it).' % (a, w)), waited
     assert waited['waited_by'] == [{'task': a, 'because': 'files'}, {'task': w, 'because': 'needs'}], waited
-    assert next(r for r in js('task', 'ledger')['open'] if r['id'] == b)['status']['waited_by'] == waited['waited_by']
+    assert next(r for r in js('chat', 'ledger')['open'] if r['id'] == b)['status']['waited_by'] == waited['waited_by']
     single = show(d)['status']
     assert single['sentence'].endswith(' Waited for by #%d.' % c) and single['waited_by'] == [{'task': c, 'because': 'check'}], single
     assert show(f)['status']['waited_by'] == [{'task': e, 'because': 'check'}], show(f)['status']
@@ -5887,7 +5609,7 @@ def part_host(created=None):
     assert not [t for t in traces()[ow_traces:] if 'waits on you' in t.get('message', '')], 'a reminder starts no turn'
     # ^ The key is on file: a service that starts again sends it no second time.
     stop_repo_service()
-    assert js('task', 'manager')['state'] in ('started', 'running')
+    assert js('chat', 'lead')['state'] in ('started', 'running')
     time.sleep(3 * SWEEP + 2)
     assert len(reminders()) == 1, reminders()
     age_wait(28 * 60 + 1)
@@ -6023,7 +5745,7 @@ def part_host(created=None):
     assert re.search(r'^t%d paused ' % pausing, cli('task', 'show', str(pausing)).stdout), cli('task', 'show', str(pausing)).stdout
     assert re.search(r'^t%d +paused ' % pausing, cli('task', 'list').stdout, re.M), cli('task', 'list').stdout
     assert re.search(r'^t%d +waiting ' % questioning, cli('task', 'list').stdout, re.M), cli('task', 'list').stdout
-    row_of = {r['id']: r for r in js('task', 'ledger')['open']}
+    row_of = {r['id']: r for r in js('chat', 'ledger')['open']}
     assert row_of[pausing]['status']['kind'] == 'paused' and row_of[pausing]['waiting']['on'] == 'paused', row_of[pausing]
     wait(lambda: (pane_agent(pausing) or {}).get('state') == 'idle', 'the paused worker reports idle')
     wait(lambda: (pane_agent(questioning) or {}).get('state') == 'blocked', 'the asking worker reports blocked')
@@ -6033,7 +5755,7 @@ def part_host(created=None):
     loud = wait(lambda: events_with('#%d waiting r' % questioning, 'waits on owner: Waiting for your answer'), 'the question event')[0]
     assert [x for x in loud['short'] if x.get('task') == questioning] == [{'text': '#%d waiting' % questioning, 'task': questioning, 'wakes': False, 'state': 'waiting'}], loud
     # ^ No task event starts a turn: the owner's next message takes them.
-    reply_to(js('task', 'say', 'STATUS after the paused event')['id'])
+    reply_to(js('chat', 'say', 'STATUS after the paused event')['id'])
     turn = turn_with('#%d paused r' % pausing)
     assert re.search(r'- open: [^\n]*\b1 paused', turn['message']), turn['message']
     assert js('task', 'add', pausing, 'WORK aj-p2.txt')['ok']
@@ -6052,9 +5774,9 @@ def part_host(created=None):
     assert shown['record']['waiting']['on'] == 'owner' and shown['record']['waiting']['reason'].split('\n') == questions, shown['record']['waiting']
     assert '\n' not in shown['status']['sentence'], shown['status']
     assert shown['status']['sentence'].count('Three questions for you:') == 1 and '15 or 13' not in shown['status']['sentence'], shown['status']
-    row = next(r for r in js('task', 'ledger')['open'] if r['id'] == three)
+    row = next(r for r in js('chat', 'ledger')['open'] if r['id'] == three)
     assert row['waiting']['reason'].split('\n') == questions, row
-    assert any(i['task'] == three and i['kind'] == 'waiting' for i in js('task', 'ledger')['for_you']), js('task', 'ledger')['for_you']
+    assert any(i['task'] == three and i['kind'] == 'waiting' for i in js('chat', 'ledger')['for_you']), js('chat', 'ledger')['for_you']
     human = cli('task', 'why', str(three)).stdout
     assert 'waiting: Three questions for you:\n         1. Which type' in human, human
     listed = cli('task', 'list').stdout
@@ -6115,7 +5837,7 @@ def part_host(created=None):
     wait(lambda: events_with('#%d ready r' % review), 'the plain ready event')
     manager_settled('after the plain ready event')
     assert len(manager_turns()) == before, [t['message'][:120] for t in manager_turns()[before:]]
-    reply_to(js('task', 'say', 'STATUS after the burst')['id'])
+    reply_to(js('chat', 'say', 'STATUS after the burst')['id'])
     turn = turn_with('STATUS after the burst')
     assert all('#%d ready r' % n in turn['message'] for n in (parked, asking, review)), turn['message']
     assert len(manager_turns()) == before + 1, [t['message'][:120] for t in manager_turns()[before:]]
@@ -6139,11 +5861,11 @@ def part_host(created=None):
                   '{"kind":"decision","id":"a90","approved":true,"outcome":"done","unix_ms":2}\n')
     said_task = js('task', 'new', 'WORK said.txt')['id']
     assert wait_state(said_task, 'ready', 'failed')['state'] == 'ready'
-    stale = js('task', 'say', 'RUN wsx task close %d --discard --owner-said 1 -p demo --json' % said_task)
+    stale = js('chat', 'say', 'RUN wsx task close %d --discard --owner-said 1 -p demo --json' % said_task)
     text = reply_to(stale['id'])['text']
     assert 'message 1 is not in the running turn; nothing was run' in text, text
     assert show(said_task)['state'] == 'ready'
-    said = js('task', 'say', 'close #%d\nRUN wsx task close %d --discard --owner-said OWNER_SAID -p demo --json'
+    said = js('chat', 'say', 'close #%d\nRUN wsx task close %d --discard --owner-said OWNER_SAID -p demo --json'
               % (said_task, said_task))
     text = reply_to(said['id'])['text']
     assert 'owner was asked' not in text and '--discard --owner-said %d -p demo --json -> 0' % said['id'] in text, text
@@ -6151,17 +5873,17 @@ def part_host(created=None):
     request, decision = approval_lines()[-2:]
     assert (request['kind'], request['id'], request['action'], request['task']) == ('request', 'a91', 'discard', said_task), request
     assert (decision['kind'], decision['id'], decision['approved'], decision['owner_said']) == ('decision', 'a91', True, said['id']), decision
-    assert js('task', 'ledger')['approvals'] == []
+    assert js('chat', 'ledger')['approvals'] == []
     # 32f. A pending request whose task leaves is dropped with the reason, and the manager and
     # the owner read it in the chat.
     gone = js('task', 'new', 'WORK gone.txt')['id']
     assert wait_state(gone, 'ready', 'failed')['state'] == 'ready'
-    asked = js('task', 'say', 'RUN wsx task close %d --discard -p demo --json' % gone)
+    asked = js('chat', 'say', 'RUN wsx task close %d --discard -p demo --json' % gone)
     assert 'the owner was asked (a92)' in reply_to(asked['id'])['text']
-    assert [p['id'] for p in js('task', 'ledger')['approvals']] == ['a92']
+    assert [p['id'] for p in js('chat', 'ledger')['approvals']] == ['a92']
     js('task', 'close', gone, '--discard')
     wait(lambda: events_with('approval a92 (discard #%d) dropped; #%d is closed' % (gone, gone)), 'the dropped request event')
-    assert js('task', 'ledger')['approvals'] == [] and approval_lines()[-1]['outcome'] == 'dropped; #%d is closed' % gone
+    assert js('chat', 'ledger')['approvals'] == [] and approval_lines()[-1]['outcome'] == 'dropped; #%d is closed' % gone
     assert not events_with('approval a91'), 'an approval by the owner message became an event'
     # ^ A release refuses while items are open (docs/tasks.md "Deploy and release"), but one the
     # owner's message asked for runs, and its answer lists the items still to check on the release.
@@ -6169,22 +5891,22 @@ def part_host(created=None):
     assert wait_state(item_task, 'ready', 'failed')['state'] == 'ready'
     assert land(item_task)['state'] == 'landed'
     wait_closed(item_task)
-    open_ids = [i['id'] for i in js('task', 'check')['open']]
-    assert open_ids, js('task', 'check')
+    open_ids = [i['id'] for i in js('project', 'check')['open']]
+    assert open_ids, js('project', 'check')
     configure(LAND_CONFIG + "  release:\n    command: 'echo released >> ../said-release.log'\n    approve: true\n", 'release config')
-    refused = cli('task', 'release', ok=False).stderr
+    refused = cli('project', 'release', ok=False).stderr
     assert 'item(s) to check are open' in refused and 'Nothing was run' in refused, refused
-    asked = js('task', 'say', 'release\nRUN wsx task release --owner-said OWNER_SAID -p demo')
+    asked = js('chat', 'say', 'release\nRUN wsx project release --owner-said OWNER_SAID -p demo')
     text = reply_to(asked['id'])['text']
     assert ' started; ' in text and 'still to check on the release: %s' % ', '.join(open_ids) in text, text
     wait(lambda: (base / 'said-release.log').exists() and deploy_lock_free(), 'the release the owner asked for')
     assert (base / 'said-release.log').read_text() == 'released\n'
-    assert [i['id'] for i in js('task', 'check')['open']] == open_ids
+    assert [i['id'] for i in js('project', 'check')['open']] == open_ids
     # ^ The manager passes an item only on the owner's message of its turn (docs/tasks.md "To check"):
     # named ids, no --all, no skip or fail; the row keeps the message id.
     item = open_ids[0]
     def manager_run(words, *args):
-        return reply_to(js('task', 'say', words + '\nRUN wsx task check ' + args[0] + ' -p demo --json')['id'])['text']
+        return reply_to(js('chat', 'say', words + '\nRUN wsx project check ' + args[0] + ' -p demo --json')['id'])['text']
     text = manager_run('looks good', 'pass %s' % item)
     assert '-> 1 ' in text and 'is for the owner' in text, text
     text = manager_run('looks good', 'pass %s --owner-said 1' % item)
@@ -6193,13 +5915,13 @@ def part_host(created=None):
     for args in ('pass --all --owner-said OWNER_SAID', 'skip %s' % item, 'skip --all', 'fail %s --note no' % item):
         text = manager_run('looks good', args)
         assert '-> 1 ' in text and 'is for the owner' in text, (args, text)
-    assert [i['id'] for i in js('task', 'check')['open']] == open_ids
-    said = js('task', 'say', 'the %s looks good\nRUN wsx task check pass %s --owner-said OWNER_SAID -p demo --json' % (item, item))
+    assert [i['id'] for i in js('project', 'check')['open']] == open_ids
+    said = js('chat', 'say', 'the %s looks good\nRUN wsx project check pass %s --owner-said OWNER_SAID -p demo --json' % (item, item))
     text = reply_to(said['id'])['text']
     assert '--owner-said %d -p demo --json -> 0' % said['id'] in text, text
     rows = [json.loads(line) for line in (project_store / 'checks.jsonl').read_text().splitlines()]
     assert [(r['state'], r.get('owner_said')) for r in rows if r['id'] == item][-1] == ('passed', said['id']), rows[-3:]
-    assert [i['id'] for i in js('task', 'check')['open']] == open_ids[1:]
+    assert [i['id'] for i in js('project', 'check')['open']] == open_ids[1:]
     # 32ha. The owner's go outlives its turn when the action can only run after a task lands
     # (docs/tasks.md "Approvals", "After a landing"): `--owner-said <id> --after <n>` checks the
     # message now and records the request waiting; the manager host runs it once #n has landed.
@@ -6211,7 +5933,7 @@ def part_host(created=None):
         return n
 
     def manager_says(words, command):
-        said = js('task', 'say', '%s\nRUN wsx task %s OWNER_SAID -p demo --json' % (words, command))
+        said = js('chat', 'say', '%s\nRUN wsx task %s OWNER_SAID -p demo --json' % (words, command))
         return said['id'], reply_to(said['id'])['text']
 
     def decision_of(request_id):
@@ -6223,24 +5945,24 @@ def part_host(created=None):
     lines_before = len(approval_lines())
     # ^ A message outside the turn, a task that does not exist, one that is the action's own,
     # and --after with no message refuse with nothing recorded.
-    text = reply_to(js('task', 'say', 'RUN wsx task release --owner-said 1 --after %d -p demo --json' % aft1)['id'])['text']
+    text = reply_to(js('chat', 'say', 'RUN wsx project release --owner-said 1 --after %d -p demo --json' % aft1)['id'])['text']
     assert 'message 1 is not in the running turn' in text and 'nothing was' in text, text
     _, text = manager_says('release when it lands', 'release --after 99999 --owner-said')
     assert '--after 99999: no such task; nothing was recorded' in text, text
     _, text = manager_says('land it after itself', 'land %d --after %d --owner-said' % (aft1, aft1))
     assert 'cannot wait for itself; nothing was recorded' in text, text
-    text = reply_to(js('task', 'say', 'RUN wsx task release --after %d -p demo --json' % aft1)['id'])['text']
+    text = reply_to(js('chat', 'say', 'RUN wsx project release --after %d -p demo --json' % aft1)['id'])['text']
     assert 'required arguments' in text and '--owner-said' in text, text
-    assert len(approval_lines()) == lines_before and js('task', 'ledger')['approvals'] == []
+    assert len(approval_lines()) == lines_before and js('chat', 'ledger')['approvals'] == []
     # ^ The release waits: nothing runs, no card, the ledger says what waits.
     aft_said, text = manager_says('release once #%d has landed' % aft1, 'release --after %d --owner-said' % aft1)
     assert 'runs when #%d lands' % aft1 in text and 'owner was asked' not in text, text
     aft_req = approval_lines()[-1]
     assert (aft_req['kind'], aft_req['action'], aft_req['after'], aft_req['said']) == ('request', 'release', aft1, aft_said), aft_req
     assert len(approval_lines()) == lines_before + 1 and release_log.read_text() == aft_ran
-    aft_rows = js('task', 'ledger')['approvals']
+    aft_rows = js('chat', 'ledger')['approvals']
     assert [(r['id'], r['after'], r['label']) for r in aft_rows] == [(aft_req['id'], aft1, 'release after #%d, approved by the owner' % aft1)], aft_rows
-    aft_refused = cli('task', 'approve', aft_req['id'], ok=False).stderr
+    aft_refused = cli('chat', 'approve', aft_req['id'], ok=False).stderr
     assert 'runs when #%d lands' % aft1 in aft_refused, aft_refused
     assert not events_with('approval %s' % aft_req['id'])
     # ^ A later turn: #n lands, the release runs once with the owner's message on its decision,
@@ -6253,7 +5975,7 @@ def part_host(created=None):
     wait(lambda: events_with('approval %s (release) approved; done' % aft_req['id']), 'the result event')
     wait_closed(aft1)
     time.sleep(3)
-    assert release_log.read_text() == aft_ran + 'released\n' and js('task', 'ledger')['approvals'] == []
+    assert release_log.read_text() == aft_ran + 'released\n' and js('chat', 'ledger')['approvals'] == []
     # ^ A land waits as well: the same run as `approve`.
     aft_head, aft_tail = ready_task('WORK after-head.txt'), ready_task('WORK after-tail.txt')
     aft_said, text = manager_says('land #%d after #%d' % (aft_tail, aft_head), 'land %d --after %d --owner-said' % (aft_tail, aft_head))
@@ -6274,10 +5996,10 @@ def part_host(created=None):
     # ^ The replaced request's decision comes after the new request: take the last request.
     aft_cur = [l for l in approval_lines() if l['kind'] == 'request'][-1]
     wait(lambda: events_with('approval %s (release) dropped; replaced by %s' % (aft_old['id'], aft_cur['id'])), 'the replaced event')
-    assert [r['id'] for r in js('task', 'ledger')['approvals']] == [aft_cur['id']]
+    assert [r['id'] for r in js('chat', 'ledger')['approvals']] == [aft_cur['id']]
     js('task', 'close', aft_newer, '--discard')
     wait(lambda: events_with('approval %s (release) dropped; #%d is closed, so release waits for nothing' % (aft_cur['id'], aft_newer)), 'the dropped event')
-    assert decision_of(aft_cur['id'])['approved'] is False and js('task', 'ledger')['approvals'] == []
+    assert decision_of(aft_cur['id'])['approved'] is False and js('chat', 'ledger')['approvals'] == []
     js('task', 'close', aft_gone, '--discard')
     assert release_log.read_text() == aft_ran + 'released\n'
     # ^ The approved release runs at the land. The project's own deploy waits for the quiet
@@ -6299,7 +6021,7 @@ def part_host(created=None):
     records_before = len(deploy_records())
     assert land(ord_task)['state'] == 'landed'
     wait(lambda: order_log.exists() and order_log.read_text() == 'release\nstart\n', 'the release at the land, then the deploy', 60)
-    refused = cli('task', 'deploy', ok=False).stderr
+    refused = cli('project', 'deploy', ok=False).stderr
     assert 'a deploy or release of demo runs' in refused and 'Nothing was run' in refused, refused
     ord_dec = decision_of(ord_req['id'])
     assert ord_dec['approved'] and ord_dec['outcome'].startswith('done: release of '), ord_dec
@@ -6371,14 +6093,14 @@ def part_host(created=None):
     (project / '.gitignore').write_text('target/\nunrelated/\n')
     free = js('task', 'new', 'WORK free.txt')['id']
     wait_state(free, 'ready', 'failed')
-    assert next(row for row in json.loads(cli('task', 'ledger').stdout)['open'] if row['id'] == free)['land_blocked_by'] == []
+    assert next(row for row in json.loads(cli('chat', 'ledger').stdout)['open'] if row['id'] == free)['land_blocked_by'] == []
     assert land(free)['state'] == 'landed' and main_has('free.txt')
     assert git('status', '--porcelain', '--', '.gitignore') == 'M .gitignore'
     wait_closed(free)
     (project / 'README').write_text('dirty\n')
     overlap = js('task', 'new', 'WORK README')['id']
     wait_state(overlap, 'ready', 'failed')
-    row = next(row for row in json.loads(cli('task', 'ledger').stdout)['open'] if row['id'] == overlap)
+    row = next(row for row in json.loads(cli('chat', 'ledger').stdout)['open'] if row['id'] == overlap)
     assert row['land_blocked_by'] == ['README'], row
     refused = land(overlap, ok=False)['message']
     assert 'uncommitted changes in README that this land changes too' in refused, refused
@@ -6539,7 +6261,7 @@ def part_host(created=None):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', show(n)
     assert 'a child takes no children' in cli('task', 'new', '--into', first, 'WORK x.txt', ok=False).stderr
     # ^ The children's '*.txt' meets the parent's parent.txt: only the sibling is an overlap.
-    rows = {r['id']: r for r in js('task', 'ledger')['open']}
+    rows = {r['id']: r for r in js('chat', 'ledger')['open']}
     assert rows[parent]['children'] == 2 and rows[first]['parent'] == parent, rows
     # ^ Where each goes (`flow`, docs/tasks.md "Where a task goes"): the parent counts its children
     # by state, each child lands into the parent.
@@ -6556,7 +6278,7 @@ def part_host(created=None):
     chain_x2 = js('task', 'new', '--after', chain_x1, '--because', 'needs', 'WORK qc-x2.txt')['id']
     for n in (chain_x1, chain_x2, chain_y1):
         wait_state(n, 'waiting')
-    listed = js('task', 'ledger')['open']
+    listed = js('chat', 'ledger')['open']
     order, places = [r['id'] for r in listed], {r['id']: r['flow'] for r in listed}
     chain_x, chain_y = [heads[0], chain_x1, chain_x2], [heads[1], chain_y1]
     for chain in (chain_x, chain_y, [parent, first, second]):
@@ -6614,7 +6336,7 @@ def part_host(created=None):
     assert not ready_short(parent, 4)[-1].get('wakes', True), ready_short(parent, 4)
     for n in (first, second):
         wait_closed(n)
-    ours = lambda: [i for i in js('task', 'check')['open'] if i['task'] in (parent, first, second)]
+    ours = lambda: [i for i in js('project', 'check')['open'] if i['task'] in (parent, first, second)]
     assert ours() == [], ours()
     assert land(parent)['state'] == 'landed'
     assert all(main_has(name) for name in ('parent.txt', 'child1.txt', 'child2.txt'))
@@ -6625,7 +6347,7 @@ def part_host(created=None):
     assert shot['captures'] == ['captures/r1-1-1.png'], shot
     assert (Path(show(first)['log']).parent / 'captures/r1-1-1.png').read_bytes().startswith(b'\x89PNG')
     wait_closed(parent)
-    js('task', 'check', 'skip', *[i['id'] for i in items])
+    js('project', 'check', 'skip', *[i['id'] for i in items])
     configure(LAND_CONFIG, 'no parent gate')
 
     # 32r. Chats (docs/tasks.md "Chats"): a chat is the manager host with a name, a goal, its own
@@ -6640,30 +6362,30 @@ def part_host(created=None):
     with open(registry, 'a') as out:
         out.write('[[agents]]\nname = "haiku-chat"\ncommand = ["claude"]\nadapter = "claude"\nmodel = "haiku"\n')
 
-    assert 'lowercase letter' in cli('task', 'chat', 'new', 'Bad_Name', ok=False).stderr
-    assert 'first chat' in cli('task', 'chat', 'new', 'manager', ok=False).stderr
+    assert 'lowercase letter' in cli('chat', 'new', 'Bad_Name', ok=False).stderr
+    assert 'first chat' in cli('chat', 'new', 'manager', ok=False).stderr
     # ^ A chat's agent is an [[agents]] entry, checked before the chat is opened.
-    assert 'no [[agents]] entry' in cli('task', 'chat', 'new', 'odd', '--agent', 'nope', ok=False).stderr
+    assert 'no [[agents]] entry' in cli('chat', 'new', 'odd', '--agent', 'nope', ok=False).stderr
     assert not (chats_dir / 'odd').exists()
-    opened = js('task', 'chat', 'new', 'billing', '--goal', goal, '--agent', 'haiku-chat')
+    opened = js('chat', 'new', 'billing', '--goal', goal, '--agent', 'haiku-chat')
     assert opened['state'] == 'open' and (chats_dir / 'billing/goal.md').read_text() == goal.read_text(), opened
     assert json.loads((chats_dir / 'billing/chat.json').read_text()) == {'agent': 'haiku-chat', 'repos': [repo_id]}
-    assert 'already open' in cli('task', 'chat', 'new', 'billing', '--goal', goal, ok=False).stderr
+    assert 'already open' in cli('chat', 'new', 'billing', '--goal', goal, ok=False).stderr
     # A new chat holds none of the project's earlier events, though the project has closed tasks.
     assert len(js('task', 'list', '--all')['tasks']) > len(js('task', 'list')['tasks'])
-    assert not chat_entries('billing') and js('task', 'chat', '--chat', 'billing')['entries'] == []
+    assert not chat_entries('billing') and js('chat', 'read', '--chat', 'billing')['entries'] == []
     # An agent opens a chat only on the owner's word (--owner-said): without it, none.
-    asked = js('task', 'say', 'RUN wsx task chat new qa --goal %s -p demo --json' % goal)
+    asked = js('chat', 'say', 'RUN wsx chat new qa --goal %s -p demo --json' % goal)
     text = reply_to(asked['id'])['text']
     assert "chat new is the owner's" in text and 'qa' not in chats(), text
     # A chat is the manager host with its goal, its own folder, session and actor; it starts
     # on say. It runs with the manager's policy: only the owner's `chat new` and the commands a manager
     # does not run in another project are refused to it.
     manager_task = js('task', 'new', 'WORK owner-chat.txt')['id']
-    talk = js('task', 'say', '--to', 'billing',
+    talk = js('chat', 'say', '--to', 'billing',
               'RUN wsx task new "WORK chat.txt" -p demo --json\n'
-              'RUN wsx task chat new more --goal %s -p demo --json\n'
-              'RUN wsx task routine list -p other --json' % goal)
+              'RUN wsx chat new more --goal %s -p demo --json\n'
+              'RUN wsx project routine list -p other --json' % goal)
     text = chat_reply('billing', talk['id'])['text']
     assert "chat new is the owner's" in text and 'a manager acts in another project only with' in text, text
     chat_task = max(t['id'] for t in js('task', 'list')['tasks'])
@@ -6677,17 +6399,17 @@ def part_host(created=None):
     # ^ Demo lends no skills here, so a chat's prompt does not offer `new --skills`.
     assert '--skills' not in chat_launch['instructions'] and 'Other projects.' in chat_launch['instructions'], chat_launch['instructions']
     # A chat records a rule from its own message: `--source msg:<id>` resolves in the calling chat's log, not the first chat's.
-    chat_reply('billing', js('task', 'say', '--to', 'billing', 'Always run the billing export before a land.')['id'])
-    owner_word = js('task', 'say', '--to', 'billing', 'Rules must run the billing export.')['id']
+    chat_reply('billing', js('chat', 'say', '--to', 'billing', 'Always run the billing export before a land.')['id'])
+    owner_word = js('chat', 'say', '--to', 'billing', 'Rules must run the billing export.')['id']
     chat_reply('billing', owner_word)
     (base / 'chat-rule.txt').write_text('The billing export runs before a land.\n')
-    ruled = chat_reply('billing', js('task', 'say', '--to', 'billing',
+    ruled = chat_reply('billing', js('chat', 'say', '--to', 'billing',
                                      'RUN wsx memory add --kind rule --slug billing-rule --text-file %s --source msg:%s '
                                      '--verified-by owner:%s --words "run the billing export" --json' % (base / 'chat-rule.txt', owner_word, owner_word))['id'])['text']
     assert '-> 0 {"slug":"billing-rule","kind":"rule"' in ruled, ruled
     # A chat lends a worker the owner's skills where the project lends them, as the manager does.
     configure(LAND_CONFIG + '  skills: owner\n', 'a project that lends skills')
-    lent = chat_reply('billing', js('task', 'say', '--to', 'billing',
+    lent = chat_reply('billing', js('chat', 'say', '--to', 'billing',
                                     'RUN wsx task new "WORK chat-lent.txt" -p demo --skills owner:other --json')['id'])['text']
     assert '-> 0 ' in lent, lent
     lent_id = max(t['id'] for t in js('task', 'list')['tasks'])
@@ -6696,8 +6418,8 @@ def part_host(created=None):
     configure(LAND_CONFIG, 'no skills lent')
     # ^ chat list and the ledger show the chat's own agent: the entry and its adapter and model.
     assert (chats()['billing']['agent'], chats()['billing']['model'], chats()['billing']['adapter']) == ('haiku-chat', 'haiku', 'claude'), chats()
-    assert next(c for c in js('task', 'ledger')['chats'] if c['name'] == 'billing')['model'] == 'haiku'
-    assert 'billing open haiku-chat' in cli('task', 'chat', 'list').stdout
+    assert next(c for c in js('chat', 'ledger')['chats'] if c['name'] == 'billing')['model'] == 'haiku'
+    assert 'billing open haiku-chat' in cli('chat', 'list').stdout
     # Only the creating chat hears its task's events; the manager hears its own.
     assert wait_state(chat_task, 'ready', 'failed')['state'] == 'ready'
     assert wait_state(manager_task, 'ready', 'failed')['state'] == 'ready'
@@ -6709,21 +6431,21 @@ def part_host(created=None):
     assert not any('#%d ' % manager_task in e.get('text', '') for e in chat_entries('billing') if e['kind'] == 'message')
     # An approval a chat's agent asks belongs to that chat (docs/tasks.md "Chats"): only its view
     # lists it, and its host hears the decision; the first chat does neither.
-    asked = chat_reply('billing', js('task', 'say', '--to', 'billing',
+    asked = chat_reply('billing', js('chat', 'say', '--to', 'billing',
                                      'RUN wsx task close %d --discard -p demo --json' % chat_task)['id'])['text']
     assert 'needs the owner' in asked, asked
-    request = next(p['id'] for p in js('task', 'ledger')['approvals'] if p['action'] == 'discard' and p.get('task') == chat_task)
-    assert js('task', 'chat', '--chat', 'billing')['approvals'] == [request] and js('task', 'chat')['approvals'] == []
-    cli('task', 'deny', request, '-p', 'demo')
+    request = next(p['id'] for p in js('chat', 'ledger')['approvals'] if p['action'] == 'discard' and p.get('task') == chat_task)
+    assert js('chat', 'read', '--chat', 'billing')['approvals'] == [request] and js('chat', 'read')['approvals'] == []
+    cli('chat', 'deny', request, '-p', 'demo')
     wait(lambda: any(e['kind'] == 'message' and e['from'] == 'events' and 'approval %s' % request in e['text']
                      for e in chat_entries('billing')), 'the chat hears the decision', 60)
     time.sleep(4)
     assert not events_with('approval %s' % request), [e['text'] for e in manager_entries() if e['kind'] == 'message']
-    assert js('task', 'chat', '--chat', 'billing')['approvals'] == []
+    assert js('chat', 'read', '--chat', 'billing')['approvals'] == []
     # Chats talk inside the project as managers do: one answer to each message.
-    asked = js('task', 'say', '--to', 'billing', "SCRIPT\nwsx task say -p demo --from-chat --json - <<'EOF'\n"
-               "RUN wsx task say -p demo --to billing --from-chat --reply 'chat answer'\n"
-               "RUN wsx task say -p demo --to billing --from-chat --reply 'second answer'\nEOF")
+    asked = js('chat', 'say', '--to', 'billing', "SCRIPT\nwsx chat say -p demo --from-chat --json - <<'EOF'\n"
+               "RUN wsx chat say -p demo --to billing --from-chat --reply 'chat answer'\n"
+               "RUN wsx chat say -p demo --to billing --from-chat --reply 'second answer'\nEOF")
     assert chat_reply('billing', asked['id'])['text'].startswith('script -> 0')
     received = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'chat:billing'), None),
                     'the chat message at the manager', 60)
@@ -6732,12 +6454,12 @@ def part_host(created=None):
     assert "--reply 'chat answer' -> 0" in answered['text'] and 'no message from billing waits' in answered['text'], answered
     wait(lambda: [e for e in chat_entries('billing') if e['kind'] == 'message' and e['from'] == 'chat-reply:demo'
                   and e['text'] == 'chat answer'], 'the answer at the chat', 60)
-    assert 'not itself' in chat_reply('billing', js('task', 'say', '--to', 'billing',
-                                                    'RUN wsx task say -p demo --to billing --from-chat hi')['id'])['text']
-    assert '--from-chat is for' in cli('task', 'say', '--from-chat', 'hello', ok=False).stderr
+    assert 'not itself' in chat_reply('billing', js('chat', 'say', '--to', 'billing',
+                                                    'RUN wsx chat say -p demo --to billing --from-chat hi')['id'])['text']
+    assert '--from-chat is for' in cli('chat', 'say', '--from-chat', 'hello', ok=False).stderr
     # An idle chat's host leaves (no agent, no pane); the next say starts it again.
     wait(lambda: not chats()['billing']['running'], 'the idle chat host leaves', 60)
-    back = js('task', 'say', '--to', 'billing', 'STATUS')
+    back = js('chat', 'say', '--to', 'billing', 'STATUS')
     assert chat_reply('billing', back['id']) and chats()['billing']['running']
     # ^ The host that left closed nothing itself: the next start closes the dead session, so the chat has one
     # session under its own label (not `task-billing-2`), and the TUI row reads it.
@@ -6746,19 +6468,19 @@ def part_host(created=None):
     row = tui_text(wsx, env, project, r'task-billing\s*\n*\s*\(')
     assert re.search(r'task-billing\s*\n*\s*\(', row), row[-3000:]
     # ^ The CLI prints the rows the other chats show: the speakers' names, no Debug text.
-    printed = cli('task', 'chat', '--chat', 'billing').stdout
+    printed = cli('chat', 'read', '--chat', 'billing').stdout
     assert re.search(r'(?m)^\[%d\] You: STATUS$' % back['id'], printed) and 'Owner' not in printed, printed
-    assert [e['id'] for e in js('task', 'chat', '--chat', 'billing')['entries'] if e['kind'] == 'message'][-1] == back['id']
+    assert [e['id'] for e in js('chat', 'read', '--chat', 'billing')['entries'] if e['kind'] == 'message'][-1] == back['id']
     # The TUI's Tasks view lists the open chats under Open; Enter opens a chat as `m`
     # opens the manager's (docs/tasks.md "TUI"), without the manager's items.
     # ^ The Tasks list's first row is "N wait for you" while the ledger's `for_you` has items.
-    below = len(js('task', 'list')['tasks']) + bool(js('task', 'ledger')['for_you'])
+    below = len(js('task', 'list')['tasks']) + bool(js('chat', 'ledger')['for_you'])
     # ^ The manager says something in the chat: a third speaker next to the owner and the chat.
     with (chats_dir / 'billing/log.jsonl').open('a') as chat_log:
         chat_log.write(json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': 9000001,
                                    'from': 'chat:demo', 'text': 'MANAGER PING'}) + '\n')
     # ^ The list shows the main chat too: the chats with needs first, then the newest message, as Home lists them.
-    listed = sorted((c for c in js('task', 'ledger')['chats'] if c['listed']), key=lambda c: (not c.get('counts', {}).get('needs'), -c['last_unix_ms']))
+    listed = sorted((c for c in js('chat', 'ledger')['chats'] if c['listed']), key=lambda c: (not c.get('counts', {}).get('needs'), -c['last_unix_ms']))
     above = [c['name'] for c in listed].index('billing')
     for cols in (120, 80):
         shots = tui_screens(wsx, env, project, [
@@ -6783,38 +6505,25 @@ def part_host(created=None):
         (r'\(x\)dismiss', b'x'),
         (r'\+1 dismissed', b'')])
     assert re.search(row, shots[1]) and not re.search(row, shots[3]), shots[3]
-    assert not next(c for c in js('task', 'ledger')['chats'] if c['name'] == 'billing')['listed']
+    assert not next(c for c in js('chat', 'ledger')['chats'] if c['name'] == 'billing')['listed']
     assert chats()['billing']['state'] == 'open'
-    again = js('task', 'say', '--to', 'billing', 'STATUS')
+    again = js('chat', 'say', '--to', 'billing', 'STATUS')
     assert chat_reply('billing', again['id'])
-    assert next(c for c in js('task', 'ledger')['chats'] if c['name'] == 'billing')['listed']
+    assert next(c for c in js('chat', 'ledger')['chats'] if c['name'] == 'billing')['listed']
     # chat close keeps the notes; the chat's tasks go back to the manager.
     (chats_dir / 'billing/notes/context.md').write_text('billing notes\n')
-    assert js('task', 'chat', 'close', 'billing')['state'] == 'closed'
+    assert js('chat', 'close', 'billing')['state'] == 'closed'
     assert (chats_dir / 'billing/notes/context.md').read_text() == 'billing notes\n'
     wait(lambda: not chats()['billing']['running'], 'the closed chat host leaves', 30)
-    assert 'no open chat billing' in cli('task', 'say', '--to', 'billing', 'hi', ok=False).stderr
+    assert 'no open chat billing' in cli('chat', 'say', '--to', 'billing', 'hi', ok=False).stderr
     js('task', 'add', chat_task, 'WORK chat2.txt')
     wait(lambda: events_with('#%d ready r2' % chat_task), 'a closed chat\'s task reaches the manager', 60)
     # ^ The manager cannot close a chat without the owner's word either; the owner's close is final until `chat new` again.
-    assert "chat close is the owner's" in reply_to(js('task', 'say', 'RUN wsx task chat close billing -p demo --json')['id'])['text']
-    assert js('task', 'chat', 'new', 'keep', '--goal', goal)['state'] == 'open'
-    js('task', 'chat', 'close', 'keep')
+    assert "chat close is the owner's" in reply_to(js('chat', 'say', 'RUN wsx chat close billing -p demo --json')['id'])['text']
+    assert js('chat', 'new', 'keep', '--goal', goal)['state'] == 'open'
+    js('chat', 'close', 'keep')
     for n in (manager_task, chat_task):
         js('task', 'close', n, '--discard')
-
-    # 32rm. A store from before chats is refused, not moved (docs/tasks.md "Chats"): each old folder names
-    # wsx v0.43.0, the last release that moves it, and nothing is moved or deleted.
-    mark('32rm')
-    mig_store = Path(created['task_dir']).parent
-    for old in ('manager', 'roles', 'chats'):
-        (mig_store / old).mkdir()
-        refused = cli('task', 'ledger', ok=False).stderr
-        assert 'from before chats' in refused and 'v0.43.0' in refused and str(mig_store / old) in refused, (old, refused)
-        assert (mig_store / old).is_dir() and not any((mig_store / old).iterdir()), old
-        (mig_store / old).rmdir()
-    js('task', 'ledger')
-    registry.write_text(registry_before)
 
     # 32v. A turn that ends while a background job runs is no missing result (docs/tasks.md
     # "Claude adapter"): the host waits for Claude's own turn after the job's notice.
@@ -6896,35 +6605,35 @@ def part_host(created=None):
 
     def last_instructions(chat):
         return [t for t in traces() if t.get('launch') and t.get('actor') == 'chat:' + chat][-1]['instructions']
-    js('task', 'chat', 'new', 'purpose', '--goal', first_goal)
-    assert js('task', 'chat', 'goal', 'purpose')['goal'] == first_goal.read_text()
-    chat_reply('purpose', js('task', 'say', '--to', 'purpose', 'FIRST TURN')['id'])
+    js('chat', 'new', 'purpose', '--goal', first_goal)
+    assert js('chat', 'goal', 'purpose')['goal'] == first_goal.read_text()
+    chat_reply('purpose', js('chat', 'say', '--to', 'purpose', 'FIRST TURN')['id'])
     assert "The owner's purpose for this chat:\nKeep the invoices exact." in last_instructions('purpose')
-    asked = js('task', 'say', '--to', 'purpose', 'RUN wsx task chat goal purpose --goal %s -p demo --json' % second_goal)
+    asked = js('chat', 'say', '--to', 'purpose', 'RUN wsx chat goal purpose --goal %s -p demo --json' % second_goal)
     assert "chat goal is the owner's" in chat_reply('purpose', asked['id'])['text']
     assert (chats_dir / 'purpose/goal.md').read_text() == first_goal.read_text()
-    said = js('task', 'say', '--to', 'purpose', 'change your purpose\nRUN wsx task chat goal purpose --goal %s --owner-said OWNER_SAID -p demo --json' % second_goal)
+    said = js('chat', 'say', '--to', 'purpose', 'change your purpose\nRUN wsx chat goal purpose --goal %s --owner-said OWNER_SAID -p demo --json' % second_goal)
     assert '-> 0 ' in chat_reply('purpose', said['id'])['text']
     assert (chats_dir / 'purpose/goal.md').read_text() == second_goal.read_text()
-    chat_reply('purpose', js('task', 'say', '--to', 'purpose', 'SECOND TURN')['id'])
+    chat_reply('purpose', js('chat', 'say', '--to', 'purpose', 'SECOND TURN')['id'])
     assert "The owner's purpose for this chat:\nOwn the refunds." in last_instructions('purpose') and 'invoices' not in last_instructions('purpose')
-    js('task', 'chat', 'goal', 'purpose', '--goal', no_goal)
-    chat_reply('purpose', js('task', 'say', '--to', 'purpose', 'THIRD TURN')['id'])
+    js('chat', 'goal', 'purpose', '--goal', no_goal)
+    chat_reply('purpose', js('chat', 'say', '--to', 'purpose', 'THIRD TURN')['id'])
     assert 'purpose for this chat' not in last_instructions('purpose') and not (chats_dir / 'purpose/goal.md').exists()
     assert last_instructions('purpose').startswith('You are purpose, a chat of the project demo.\n\n')
     # ^ The main chat has none by default: it opens as the lead (docs/tasks.md "Lead and forks"); with one, its
     # instructions open with the purpose and no lead preamble.
     assert 'purpose for this chat' not in last_instructions('demo') and last_instructions('demo').startswith('You are the lead of the project demo:')
-    js('task', 'chat', 'goal', 'demo', '--goal', first_goal)
-    reply_to(js('task', 'say', 'HOME TURN')['id'])
+    js('chat', 'goal', 'demo', '--goal', first_goal)
+    reply_to(js('chat', 'say', 'HOME TURN')['id'])
     assert last_instructions('demo').startswith("The owner's purpose for this chat:\nKeep the invoices exact.\n\n"), last_instructions('demo')[:200]
     assert 'You are the lead' not in last_instructions('demo')
-    js('task', 'chat', 'goal', 'demo', '--goal', no_goal)
-    reply_to(js('task', 'say', 'HOME TURN 2')['id'])
+    js('chat', 'goal', 'demo', '--goal', no_goal)
+    reply_to(js('chat', 'say', 'HOME TURN 2')['id'])
     assert 'purpose for this chat' not in last_instructions('demo')
     (base / 'purpose-big.md').write_text('x' * 9000)
-    assert 'larger than 8192 bytes' in cli('task', 'chat', 'goal', 'purpose', '--goal', base / 'purpose-big.md', ok=False).stderr
-    js('task', 'chat', 'close', 'purpose')
+    assert 'larger than 8192 bytes' in cli('chat', 'goal', 'purpose', '--goal', base / 'purpose-big.md', ok=False).stderr
+    js('chat', 'close', 'purpose')
 
     # 32s. Keep-warm pings (docs/tasks.md "Context rotation", "Manager"): a worker that waits on
     mark('32s2')
@@ -6936,7 +6645,7 @@ def part_host(created=None):
     pings = lambda n: [e for e in log(n) if e['kind'] == 'ping']
     keep_alive = lambda: [t for t in traces() if str(t.get('message', '')).startswith('wsx keep-alive')]
     replies_before = len([e for e in manager_entries() if e['kind'] == 'reply'])
-    js('task', 'say', 'STATUS before the pings')
+    js('chat', 'say', 'STATUS before the pings')
     wait(lambda: len([e for e in manager_entries() if e['kind'] == 'reply']) > replies_before, 'manager reply')
     # ^ A title without LIMIT: the fake manager would meet a limit of its own on the event line.
     held = js('task', 'new', '--title', 'Held by a limit', 'LIMIT 25 NOOP')['id']
@@ -6984,7 +6693,7 @@ def part_host(created=None):
     assert all(e['to'] for e in entries if e['kind'] == 'reply'), entries[-12:]
     # ^ The TUI (docs/tasks.md "TUI"): `u` flips the day rows from cost to tokens with each day's
     # cache hit rate, from the ledger's `usage.days[].usage`; the task's Usage line counts its pings.
-    ledger = js('task', 'ledger')
+    ledger = js('chat', 'ledger')
     short = lambda n: str(n) if n < 1000 else '%dk' % (n // 1000) if n < 10 ** 6 else '%.1fM' % (n / 1e6)
 
     def today(ledger):
@@ -7009,7 +6718,7 @@ def part_host(created=None):
     costs, tokens, detail = pinged[1:]
     # ^ A turn can land between the reads: the TUI shows the ledger as it was before or
     # after the TUI ran, so the row must equal one of the two.
-    before, after = today(ledger), today(js('task', 'ledger'))
+    before, after = today(ledger), today(js('chat', 'ledger'))
     cost_day = next(line for line in costs.splitlines() if re.search(label, line))
     assert re.search(r'■ build.*■ manager', costs) and cost_day.rstrip().endswith((before[1], after[1])), costs
     token_day = next(line for line in tokens.splitlines() if re.search(label, line))
@@ -7147,12 +6856,12 @@ def part_agents(created=None):
                        'model = "paid/model"\nbudget_usd_per_day = 1\n')
     stop_manager_now()
     configure(FALLBACK_CONFIG + '  chats: { adapter: pi, model: paid/model }\n', 'a chat on the paid account')
-    paid = js('task', 'say', 'PICOST 2 STATUS paid')
+    paid = js('chat', 'say', 'PICOST 2 STATUS paid')
     assert reply_to(paid['id'], 40)['text'].startswith('pi answers: '), chat()[-3:]
     wait(lambda: (agents / 'pi-paid.json').exists(), 'the budget was spent')
     assert json.loads((agents / 'pi-paid.spend.json').read_text())['micro_usd'] == 2_000_000
     assert json.loads((agents / 'pi-paid.json').read_text())['until_ms'] > time.time() * 1000
-    after_budget = js('task', 'say', 'STATUS after the budget')
+    after_budget = js('chat', 'say', 'STATUS after the budget')
     time.sleep(3)
     assert not any(e['kind'] == 'reply' and after_budget['id'] in e['to'] for e in chat()), chat()[-3:]
     (agents / 'pi-paid.json').unlink()
@@ -7174,7 +6883,7 @@ def part_agents(created=None):
     # ^ The earlier fa.txt task's ready event waits for the manager: the fake takes its title
     # (`LIMIT 20000 ...`) for no trigger (fake-claude-stream.py own_words), so the limit stays 15 s.
     limit_for(15)
-    asked = js('task', 'say', 'STATUS during the limit')
+    asked = js('chat', 'say', 'STATUS during the limit')
     stood_in = wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and e.get('provisional') == 'fake-local'
                                   and asked['id'] in e['to']), None), 'the stand-in reply')
     assert stood_in['text'].startswith('pi answers: '), stood_in
@@ -7196,7 +6905,7 @@ def part_agents(created=None):
     rotations = lambda: len([e for e in manager_entries() if e['kind'] == 'rotated'])
     rotated_before, session_before = rotations(), manager_state()['agent_session']
     limit_for(600)
-    held = js('task', 'say', 'STATUS held')
+    held = js('chat', 'say', 'STATUS held')
     wait(lambda: any(e['kind'] == 'reply' and e.get('provisional') and held['id'] in e['to'] for e in chat()),
          lambda: 'the stand-in answers the held message %r %r' % (
              manager_state(), [(e['kind'], e.get('reason'), e.get('text', '')[:80]) for e in manager_entries()[-10:]]))
@@ -7220,9 +6929,9 @@ def part_agents(created=None):
     si_auth_record = agents / 'claude.auth.json'
     si_signed_in = work / 'signed-in'
     si_signed_in.unlink(missing_ok=True)
-    assert reply_to(js('task', 'say', 'STATUS before the sign-in')['id'])['text'].startswith('open: '), chat()[-3:]
+    assert reply_to(js('chat', 'say', 'STATUS before the sign-in')['id'])['text'].startswith('open: '), chat()[-3:]
     si_at = int(time.time() * 1000)
-    si_away = js('task', 'say', 'AUTHFAIL %s STATUS away' % si_signed_in)
+    si_away = js('chat', 'say', 'AUTHFAIL %s STATUS away' % si_signed_in)
     wait(lambda: next((e for e in manager_entries() if e['kind'] == 'stopped' and 'Sign in again' in e.get('reason', '')
                        and e['unix_ms'] >= si_at), None),
          lambda: 'the manager holds for the sign-in %r' % manager_entries()[-8:], 40)
@@ -7371,7 +7080,7 @@ def part_agents(created=None):
     # Pi launch. (2) With the limit on record and the fallback refusing at once, it comes home for
     # the wait after one Pi launch and answers once the record goes.
     def pin_manager():
-        sock = js('task', 'manager')['socket']
+        sock = js('chat', 'lead')['socket']
         # ^ The service goes first: it starts the main chat's host again for any event while the
         # session is gone, and that host saves its own state over the pinned one.
         stop_repo_service()
@@ -7391,13 +7100,13 @@ def part_agents(created=None):
     (agents / 'pi-fake.json').unlink(missing_ok=True)
     limit_file.unlink(missing_ok=True)
     s8_before, s8_at = pin_manager()
-    pinned = js('task', 'say', 'STATUS pinned by an older host')
+    pinned = js('chat', 'say', 'STATUS pinned by an older host')
     assert reply_to(pinned['id'], 40)['text'].startswith('open: '), chat()[-3:]
     assert 'agent' not in manager_state() and lc_rotated_since(s8_at, 'back on claude'), (manager_state(), manager_entries()[-6:])
     assert not lc_pi_manager(s8_before), lc_pi_manager(s8_before)
     s8_before, s8_at = pin_manager()
     limit_for(600)
-    pinned_refused = js('task', 'say', 'PIREFUSE %s STATUS pinned, the fallback refuses' % no_key)
+    pinned_refused = js('chat', 'say', 'PIREFUSE %s STATUS pinned, the fallback refuses' % no_key)
     wait(lambda: lc_rotated_since(s8_at, 'back on claude: pi was refused: No API key found'), 'the pinned manager back home for the wait', 40)
     # ^ The rotated entry is in the log before the state saver writes state.json: wait for the write.
     wait(lambda: 'agent' not in manager_state() and manager_state().get('limit', {}).get('account') is True, lambda: manager_state())
@@ -7426,7 +7135,7 @@ def part_agents(created=None):
     floor_calls = lambda: [t for t in traces() if t.get('adapter') == 'pi' and t.get('launch') and t.get('model') == 'llama-wsx/lfm3-1.7b']
     # (b) The endpoint down: the manager waits for Claude and the chat says why.
     said_at = int(time.time() * 1000)
-    f_first = js('task', 'say', 'We decided: the theme is blue. STATUS first')
+    f_first = js('chat', 'say', 'We decided: the theme is blue. STATUS first')
     f_held = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'limit' and e.get('until')
                                 and e['unix_ms'] >= said_at), None), 'the hold with the floor down')
     assert 'does not answer at ' + start_floor_url in f_held['until'], f_held
@@ -7445,7 +7154,7 @@ def part_agents(created=None):
     assert provider['baseUrl'] == start_floor_url + '/v1' and provider['apiKey'] == FLOOR['key'], provider
     assert provider['models'][0]['id'] == 'lfm3-1.7b', provider
     # ^ A second message and its decision: the call builds its context from the chat, not from Claude's conversation.
-    f_second = js('task', 'say', 'We decided: ship on Friday. STATUS second')
+    f_second = js('chat', 'say', 'We decided: ship on Friday. STATUS second')
     f_answer2 = wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and e.get('provisional') == 'local-model'
                                    and f_second['id'] in e['to']), None), 'the floor stands in again', 40)
     f_prompt = next(t for t in traces() if t.get('adapter') == 'pi' and 'STATUS second' in str(t.get('message')))
@@ -7643,7 +7352,7 @@ def part_agents(created=None):
     time.sleep(4)
     seen = len(traces())
     before = len(deploy_records())
-    assert on(wsx, 'task', 'deploy', extra=caller)['started']
+    assert on(wsx, 'project', 'deploy', extra=caller)['started']
     wait(lambda: len(deploy_records()) > before and deploy_lock_free(), 'the deploy and its sweep', 60)
     assert len(replaced(log(hung))) == 1 and 'had no agent output for' in replaced(log(hung))[0]['reason'], log(hung)[-4:]
     assert process_gone(old_host[0]) and not agent_tree(old_host[0]), agent_tree(old_host[0])
@@ -7690,14 +7399,14 @@ def part_agents(created=None):
     # A manager host that starts on a new wsx sweeps once: a deploy that ran on the older wsx has
     # no sweep of its own. Its own env keeps the real bound, so the turn is 3 h quiet.
     unswept, unswept_pid = legacy_host('unswept', aged_ms=3 * 3600 * 1000)
-    manager_socket = js('task', 'manager')['socket']
+    manager_socket = js('chat', 'lead')['socket']
     # ^ The repo service stops first: with the shorter event quiet it would send the last close's event line to
     # the main chat before the manager is down again, and the chat's host would start by that.
     stop_repo_service()
     cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
     seen = len(traces())
-    assert js('task', 'manager')['state'] == 'started', js('task', 'manager')
+    assert js('chat', 'lead')['state'] == 'started', js('chat', 'lead')
     wait(lambda: replaced(log(unswept)), 'the starting manager replaces the hung host', 60)
     assert process_gone(unswept_pid) and len(replaced(log(unswept))) == 1, log(unswept)[-4:]
     assert re.search(r'turn, started 3 h.* ago, had no agent output for 3 h', replaced(log(unswept))[0]['reason']), replaced(log(unswept))
@@ -7706,14 +7415,14 @@ def part_agents(created=None):
     js('task', 'close', unswept, '--discard')
     # A say: the manager's turn hangs (MHANG) in a host on the older file; the next say replaces it
     # and the new host answers the queued message.
-    socket_path = js('task', 'manager')['socket']
+    socket_path = js('chat', 'lead')['socket']
     stop_repo_service()
     # ^ As above: a repo service that restarts after the last close sends an event line to the main chat, and
     # the chat's host starts on the harness wsx, which `install()` does not make older.
     cli('session', 'delete', 'task-demo', '-p', 'demo')
     wait(lambda: not Path(socket_path).exists() or subprocess.run(['nc', '-zU', socket_path]).returncode != 0, 'manager down')
     m_release = work / 'mhang-release'
-    on(older / 'wsx', 'task', 'say', 'MHANG %s STATUS hung under an older wsx' % m_release)
+    on(older / 'wsx', 'chat', 'say', 'MHANG %s STATUS hung under an older wsx' % m_release)
     wait(lambda: hanging(m_release), 'the manager turn hangs', 40)
     old_manager = host_of('task chat-host %s' % manager_log.parent.name)
     assert len(old_manager) == 1 and agent_tree(old_manager[0]), old_manager
@@ -7723,7 +7432,7 @@ def part_agents(created=None):
     stopped_before = len(replaced(manager_entries()))
     install()
     time.sleep(4)
-    queued = on(wsx, 'task', 'say', 'STATUS after the hang', extra=caller)
+    queued = on(wsx, 'chat', 'say', 'STATUS after the hang', extra=caller)
     assert queued['ok'], queued
     ended = lambda: process_gone(old_manager[0]) and not agent_tree(old_manager[0])
     wait(ended, lambda: 'the old manager host and its agent tree end %r now %d turn %s entries %r' % (
@@ -7753,7 +7462,7 @@ def part_agents(created=None):
     mark('39b')
     turn_quiet.write_text(str(TURN_QUIET))
     open_tasks = len(js('task', 'list')['tasks'])
-    s3_say = js('task', 'say', 'MHANG %s STATUS hung' % (work / 's3m-release'))
+    s3_say = js('chat', 'say', 'MHANG %s STATUS hung' % (work / 's3m-release'))
     s3_stop = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'stopped' and e.get('reason', '').startswith('no output for')), None),
                    lambda: 'the hung manager turn ends %r' % manager_state(), 70)
     assert s3_stop and manager_state()['limit']['attempt'] == 1 and 'agent' not in manager_state(), manager_state()
@@ -7773,17 +7482,17 @@ def part_agents(created=None):
     mark('39c')
     alert_goal = work / 'alert-goal.md'
     alert_goal.write_text('Watch the alerts.\n')
-    cli('task', 'chat', 'new', 'alerts', '--goal', str(alert_goal), '-p', 'demo', '--json')
+    cli('chat', 'new', 'alerts', '--goal', str(alert_goal), '-p', 'demo', '--json')
     alerts_log = manager_log.parent.parent / 'alerts' / 'log.jsonl'
     alerts_entries = lambda: [json.loads(line) for line in alerts_log.read_text().splitlines()] if alerts_log.exists() else []
     manager_alerts = len(lc_alerts(0))
-    blocked_say = js('task', 'say', '--to', 'alerts', 'CFAUTH %s STATUS blocked' % (work / 'cf-release'))
+    blocked_say = js('chat', 'say', '--to', 'alerts', 'CFAUTH %s STATUS blocked' % (work / 'cf-release'))
     chat_alerts = wait(lambda: lc_alerts(blocked_say['id'], alerts_entries()), lambda: 'the chat alert %r' % alerts_entries()[-6:], 40)
     assert len(chat_alerts) == 1 and chat_alerts[0]['text'].startswith('Failed to authenticate. API Error: 403 Attention Required') \
         and 'It tries again at' in chat_alerts[0]['text'] and re.search(r'(\d+ open tasks?: .+|No task is open)\.$', chat_alerts[0]['text']), chat_alerts
     assert 'Attention Required' in lc_turn(alerts_log.parent)['ended']['reason'], lc_turn(alerts_log.parent)
     assert len(lc_alerts(0)) == manager_alerts, 'the chat alerts in its own chat, not the manager\'s'
-    cli('task', 'chat', 'close', 'alerts', '-p', 'demo', '--json')
+    cli('chat', 'close', 'alerts', '-p', 'demo', '--json')
 
     # M2. The repo service and equal chat hosts (docs/tasks.md "Chats"): one `repo-host` per repo turns the events of the store into messages and sends each to the
     # chat that owns it, else to the main chat; every chat's host (the main chat's too) only talks and
@@ -7803,25 +7512,25 @@ def part_agents(created=None):
     service = lambda rid: [l for l in leftovers('task repo-host ') if l.split()[-1] == rid]
     rows = lambda name, *needles: [e for e in chat_entries(name) if e['kind'] == 'message' and e['from'] == 'events'
                                    and all(needle in e['text'] for needle in needles)]
-    twin_chats = lambda: {c['name']: c for c in js('task', 'chat', 'list', '-p', 'twin')['chats']}
+    twin_chats = lambda: {c['name']: c for c in js('chat', 'list', '-p', 'twin')['chats']}
     repo_json = Path(created['task_dir']).parent / 'repo.json'
     seen_of = lambda n: (json.loads(repo_json.read_text()).get('seen') or {}).get(str(n)) if repo_json.exists() else None
     m2_goal = base / 'm2-goal.md'
     m2_goal.write_text('Talk, nothing else.\n')
     # ^ A chat's name never starts with `repo-`: `task-repo-<id>` is the service's session.
-    assert 'does not start with repo-' in cli('task', 'chat', 'new', 'repo-x', '--goal', str(m2_goal), '-p', 'demo', ok=False).stderr
+    assert 'does not start with repo-' in cli('chat', 'new', 'repo-x', '--goal', str(m2_goal), '-p', 'demo', ok=False).stderr
     # ^ Each repo has one service; the service has no agent and no chat folder. A chat is made by hand.
-    js('task', 'chat', 'new', 'twin', '-p', 'twin')
-    twin_say = js('task', 'say', '-p', 'twin', 'STATUS')
+    js('chat', 'new', 'twin', '-p', 'twin')
+    twin_say = js('chat', 'say', '-p', 'twin', 'STATUS')
     chat_reply('twin', twin_say['id'])
     wait(lambda: service(twin_id) and service(repo_id), 'a service for each repo', 30)
     assert len(service(twin_id)) == 1 and len(service(repo_id)) == 1, (service(twin_id), service(repo_id))
     assert twin_chats()['twin']['main'] and chats()['demo']['main']
-    cli('task', 'chat', 'new', 'm2n', '--goal', str(m2_goal), '-p', 'demo', '--json')
+    cli('chat', 'new', 'm2n', '--goal', str(m2_goal), '-p', 'demo', '--json')
     # ^ A task event goes to the chat that owns the task, though that chat's host has left: the service
     # starts it, and saves the task as seen only after the host took the line.
     gate = base / 'm2-gate'
-    made = js('task', 'say', '--to', 'm2n', 'RUN wsx task new "WAIT %s WORK a.txt" -p demo --json' % gate)
+    made = js('chat', 'say', '--to', 'm2n', 'RUN wsx task new "WAIT %s WORK a.txt" -p demo --json' % gate)
     chat_reply('m2n', made['id'])
     m2_task = max(t['id'] for t in js('task', 'list')['tasks'])
     assert show(m2_task)['record']['created_by'] == 'chat:m2n', show(m2_task)['record']
@@ -7835,21 +7544,21 @@ def part_agents(created=None):
     assert len(rows('demo', '#%d ' % m2_task)) == home_rows, 'the main chat did not hear its chat\'s task'
     # ^ A routine result has no chat: it goes to the main chat of its repo, not to a named chat or
     # the other repo's main chat. A closed main chat is not opened again: the event wakes nobody.
-    js('task', 'routine', 'add', 'm2r', '-p', 'twin', '--cron', '0 5 * * *', '--arg=sh', '--arg=-c', '--arg=echo twinproof; exit 4')
-    js('task', 'routine', 'run', 'm2r', '-p', 'twin')
+    js('project', 'routine', 'add', 'm2r', '-p', 'twin', '--cron', '0 5 * * *', '--arg=sh', '--arg=-c', '--arg=echo twinproof; exit 4')
+    js('project', 'routine', 'run', 'm2r', '-p', 'twin')
     wait(lambda: rows('twin', 'routine m2r failed (exit 4)'), 'the routine result at the main chat of twin', 60)
     assert not rows('demo', 'routine m2r') and not rows('m2n', 'routine m2r')
     wait(lambda: not chat_host('twin'), 'the main chat host leaves too', 60)
     (chats_dir / 'twin/closed').write_text('closed by the owner')
     assert twin_chats()['twin']['state'] == 'closed'
-    js('task', 'routine', 'run', 'm2r', '-p', 'twin')
-    wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger', '-p', 'twin')['routines']), 'the second run ended', 30)
+    js('project', 'routine', 'run', 'm2r', '-p', 'twin')
+    wait(lambda: all(r['last'] and not r['running'] for r in js('chat', 'ledger', '-p', 'twin')['routines']), 'the second run ended', 30)
     time.sleep(EVENT_QUIET * 4)
     # ^ The service saw the event and dropped it: no line, no chat made, the closed chat stays closed.
     assert len(rows('twin', 'routine m2r failed (exit 4)')) == 1 and twin_chats()['twin']['state'] == 'closed' and (chats_dir / 'twin/closed').exists()
-    js('task', 'routine', 'delete', 'm2r', '-p', 'twin')
+    js('project', 'routine', 'delete', 'm2r', '-p', 'twin')
     # ^ A check-in belongs to the chat that set it; the service fires it, also to a chat whose host left.
-    text = chat_reply('m2n', js('task', 'say', '--to', 'm2n', 'RUN wsx task checkin -p demo --in 1m --why "m2 look"')['id'])['text']
+    text = chat_reply('m2n', js('chat', 'say', '--to', 'm2n', 'RUN wsx chat checkin -p demo --in 1m --why "m2 look"')['id'])['text']
     assert '-> 0 check-in at ' in text, text
     assert json.loads(repo_json.read_text())['checkins']['m2n']['why'] == 'm2 look'
     wait(lambda: not chat_host('m2n'), 'the host of the chat that set the check-in leaves', 60)
@@ -7859,7 +7568,7 @@ def part_agents(created=None):
     wait_state(m2_task, 'closed')
     # ^ The idle sweep: a named chat with no message and no open task of its own for 7 days is suggested
     # for closing, once, as a line to the main chat that starts no turn. The chat stays open.
-    cli('task', 'chat', 'new', 'm2idle', '--goal', str(m2_goal), '-p', 'demo', '--json')
+    cli('chat', 'new', 'm2idle', '--goal', str(m2_goal), '-p', 'demo', '--json')
     idle_log = chats_dir / 'm2idle/log.jsonl'
     idle_log.touch()
     wait(lambda: not chat_host('m2n'), lambda: 'the host of m2n leaves: %r' % chat_host('m2n'), 90)
@@ -7876,7 +7585,7 @@ def part_agents(created=None):
     # host and starts the service. A message queued before it started is answered once, none lost.
     for name, rid, args, cname in (('m2o', repo_id, ['--chat', 'm2o'], 'm2o'), ('twin', twin_id, [], 'twin')):
         if name == 'm2o':
-            cli('task', 'chat', 'new', 'm2o', '--goal', str(m2_goal), '-p', 'demo', '--json')
+            cli('chat', 'new', 'm2o', '--goal', str(m2_goal), '-p', 'demo', '--json')
         else:
             (chats_dir / 'twin/closed').unlink()  # ^ the old argv opens the main chat; a closed one is not opened again, so the owner opens it
         wait(lambda: not chat_host(cname), 'no host of ' + cname, 60)
@@ -7899,7 +7608,7 @@ def part_agents(created=None):
     norate.touch()
     configure(with_fallback('fake-backlog, fake-local, fake-pi'), 'm2 stand-in')
     limit_for(15)
-    stand_say = js('task', 'say', '--to', 'm2n', 'STATUS during the limit')
+    stand_say = js('chat', 'say', '--to', 'm2n', 'STATUS during the limit')
     stood = wait(lambda: next((e for e in chat_entries('m2n') if e['kind'] == 'reply' and e.get('provisional') == 'fake-local'
                                and stand_say['id'] in e['to']), None), 'the stand-in answers in the named chat', 60)
     assert stood['text'].startswith('pi answers: '), stood
@@ -7909,7 +7618,7 @@ def part_agents(created=None):
     norate.unlink()
     configure(CONFIG, 'm2 done')
     for name in ('m2n', 'm2idle', 'm2o'):
-        js('task', 'chat', 'close', name, '-p', 'demo')
+        js('chat', 'close', name, '-p', 'demo')
     wait(lambda: not chat_host('twin') and not chat_host('m2n'), 'the chat hosts leave', 60)
     m2_config.write_text(m2_registry)
 
@@ -7947,11 +7656,11 @@ def part_chats(created=None):
     with open(config_dir / 'config-v2.toml', 'a') as registry:
         registry.write('[[projects]]\nname = "other"\npath = ' + json.dumps(str(other)) + '\n')
     other_id = 'other-' + hashlib.sha256(str(other).encode()).hexdigest()[:8]
-    js('task', 'chat', 'new', 'other', '-p', 'other')  # ^ its main chat: a message from another project needs one
+    js('chat', 'new', 'other', '-p', 'other')  # ^ its main chat: a message from another project needs one
     other_log = state / 'wsx/tasks/chats/other/log.jsonl'
-    asked = js('task', 'say', "SCRIPT\nwsx task ledger -p other --json >/dev/null && wsx task say -p other --from-chat --json - <<'EOF'\n"
-               "RUN wsx task say -p demo --from-chat --reply 'first answer'\n"
-               "RUN wsx task say -p demo --from-chat --reply 'second answer'\nEOF")
+    asked = js('chat', 'say', "SCRIPT\nwsx chat ledger -p other --json >/dev/null && wsx chat say -p other --from-chat --json - <<'EOF'\n"
+               "RUN wsx chat say -p demo --from-chat --reply 'first answer'\n"
+               "RUN wsx chat say -p demo --from-chat --reply 'second answer'\nEOF")
     assert reply_to(asked['id'])['text'].startswith('script -> 0'), (reply_to(asked['id']), [(e['kind'], e.get('id'), str(e.get('text'))[:300]) for e in manager_entries()[-6:]])
 
     def other_entries():
@@ -7992,10 +7701,10 @@ def part_chats(created=None):
     assert len(replies) == 1 and replies[0]['text'] == 'first answer', replies
     assert any(e['kind'] == 'sent' and e['to'] == 'chat:other' and 'first answer' in e['text'] for e in manager_entries())
     wait(lambda: turn_with('Chat other replies (message'), 'the reply reaches the demo agent')
-    crossing = js('task', 'say', 'RUN wsx task deploy -p other --json\nRUN wsx task say -p demo --from-chat hi')
+    crossing = js('chat', 'say', 'RUN wsx project deploy -p other --json\nRUN wsx chat say -p demo --from-chat hi')
     text = reply_to(crossing['id'])['text']
     assert 'a manager acts in another project only with' in text and "messages another chat, not itself" in text, text
-    assert "is for a chat's agent" in cli('task', 'say', '-p', 'other', '--from-chat', 'hello', ok=False).stderr
+    assert "is for a chat's agent" in cli('chat', 'say', '-p', 'other', '--from-chat', 'hello', ok=False).stderr
 
     def other_tasks():
         return js('task', 'list', '--all', '-p', 'other')['tasks']
@@ -8025,7 +7734,7 @@ def part_chats(created=None):
         return [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events']
 
     seen_ids = other_ids()
-    said = js('task', 'say', 'RUN wsx task new "WORK b.txt MEMO reach lesson" -p other --json')
+    said = js('chat', 'say', 'RUN wsx task new "WORK b.txt MEMO reach lesson" -p other --json')
     assert '"id"' in reply_to(said['id'], 60)['text']
     reached = wait(lambda: other_ids() - seen_ids, 'the task in other', 60)
     n = reached.pop()
@@ -8034,12 +7743,12 @@ def part_chats(created=None):
     assert record['project_id'] == other_id, record
     # ^ The goal now spans other: demo's chat joined its repos, so other's chat list shows it
     # with both projects, its own first (docs/tasks.md "Chats").
-    joined = {c['name']: c for c in js('task', 'chat', 'list', '-p', 'other')['chats']}
+    joined = {c['name']: c for c in js('chat', 'list', '-p', 'other')['chats']}
     assert joined['demo']['projects'] == ['demo', 'other'], joined
     assert other_state(n, 'ready', 'failed')['state'] == 'ready', b_show(n)
     # ^ The creator reviews it: it waits ready, and the event is demo's.
     wait(lambda: next((e for e in event_lines() if 'other #%d ready' % n in e['text']), None), 'the ready event in demo', 60)
-    landed = js('task', 'say', 'RUN wsx task land %d -p other --json' % n)
+    landed = js('chat', 'say', 'RUN wsx task land %d -p other --json' % n)
     reply_to(landed['id'], 60)
     other_state(n, 'landed')
     git('cat-file', '-e', 'main:b.txt', cwd=other)
@@ -8048,15 +7757,15 @@ def part_chats(created=None):
                  'the land event in demo', 60)
     assert any(line['text'] == 'other #%d done' % n and 'task' not in line for line in event['short']), event
     # A routine of other reaches demo's chat by name (`--to`), not other's main chat (docs/tasks.md "Routines").
-    js('task', 'routine', 'add', 'crosscheck', '-p', 'other', '--cron', '0 5 * * *', '--to', 'demo',
+    js('project', 'routine', 'add', 'crosscheck', '-p', 'other', '--cron', '0 5 * * *', '--to', 'demo',
        '--arg=echo', '--arg=cross words')
-    js('task', 'routine', 'run', 'crosscheck', '-p', 'other')
+    js('project', 'routine', 'run', 'crosscheck', '-p', 'other')
     wait(lambda: next((e for e in event_lines() if 'routine crosscheck succeeded' in e['text'] and 'cross words' in e['text']), None),
          'the routine event in demo', 60)
     assert not [e for e in other_entries() if 'routine crosscheck' in e.get('text', '')], other_entries()
-    refused = cli('task', 'routine', 'add', 'badto', '-p', 'other', '--cron', '0 5 * * *', '--to', '../x', '--arg=true', ok=False)
+    refused = cli('project', 'routine', 'add', 'badto', '-p', 'other', '--cron', '0 5 * * *', '--to', '../x', '--arg=true', ok=False)
     assert 'to must be a chat name' in refused.stderr, refused.stderr
-    js('task', 'routine', 'delete', 'crosscheck', '-p', 'other')
+    js('project', 'routine', 'delete', 'crosscheck', '-p', 'other')
     # ^ other's manager never hears of it: its host ran (`new` starts it) and heard its own land event.
     assert not [e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'events'
                 and '#%d ' % n in e['text'] and 'reach lesson' in e['text']], other_entries()
@@ -8077,11 +7786,11 @@ def part_chats(created=None):
     assert [h for h in json.loads(cli('memory', 'search', 'reach lesson', '--scope', other_id, '--json').stdout) if h['kind'] == 'fact']
 
     # Refusals: a chat of demo, then the manager's discard, deploy and an unregistered project.
-    js('task', 'chat', 'new', 'reachr', '--goal', goal)
+    js('chat', 'new', 'reachr', '--goal', goal)
     before = other_ids()
-    talk = js('task', 'say', '--to', 'reachr',
-              'RUN wsx task list -p other --json\nRUN wsx task say -p other --from-chat hi\n'
-              'RUN wsx task deploy -p other --json\nRUN wsx task close %d --discard -p other --json' % n)
+    talk = js('chat', 'say', '--to', 'reachr',
+              'RUN wsx task list -p other --json\nRUN wsx chat say -p other --from-chat hi\n'
+              'RUN wsx project deploy -p other --json\nRUN wsx task close %d --discard -p other --json' % n)
     text = chat_reply('reachr', talk['id'])['text']
     # ^ A chat reaches another project as the manager does: it lists and says there, and the
     # manager's refusals (deploy, discard) are its own.
@@ -8089,18 +7798,18 @@ def part_chats(created=None):
     assert text.count('a manager acts in another project only with') == 2, text
     wait(lambda: next((e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'chat:reachr'), None),
          'the chat reaches the other project', 60)
-    refused = js('task', 'say', 'RUN wsx task close %d --discard -p other --json\nRUN wsx task deploy -p other --json\n'
+    refused = js('chat', 'say', 'RUN wsx task close %d --discard -p other --json\nRUN wsx project deploy -p other --json\n'
                  'RUN wsx task new "WORK z.txt" -p ghost --json' % n)
     text = reply_to(refused['id'], 60)['text']
     assert text.count('a manager acts in another project only with') == 2 and "project 'ghost' not found" in text, text
     assert other_ids() == before
     # A task of demo's own by its main chat records the same `chat:demo`.
-    mine = js('task', 'say', 'RUN wsx task new "WORK own.txt" -p demo --json')
+    mine = js('chat', 'say', 'RUN wsx task new "WORK own.txt" -p demo --json')
     reply_to(mine['id'], 60)
     own_task = max(t['id'] for t in js('task', 'list', '--all')['tasks'])
     assert show(own_task)['record']['created_by'] == 'chat:demo', show(own_task)['record']
     js('task', 'close', own_task, '--discard')
-    js('task', 'chat', 'close', 'reachr')
+    js('chat', 'close', 'reachr')
     reach_task = n
     # ^ Demo's manager left a landed task in other: the recap and the task counts below include it.
     # 33c. Chats on the owner's word, and the main chat (docs/tasks.md "Chats"): a chat's agent opens
@@ -8110,11 +7819,11 @@ def part_chats(created=None):
     mark('33c')
     qa_goal = base / 'qa-goal.md'
     qa_goal.write_text('Own the QA of the checkout flow.\n')
-    new_line = 'RUN wsx task chat new qa --goal %s -p demo --json' % qa_goal
+    new_line = 'RUN wsx chat new qa --goal %s -p demo --json' % qa_goal
     for line, why in ((new_line, "chat new is the owner's"), (new_line + ' --owner-said 1', '--owner-said 1: ')):
-        text = reply_to(js('task', 'say', line)['id'])['text']
+        text = reply_to(js('chat', 'say', line)['id'])['text']
         assert why in text and 'qa' not in chats(), text
-    asked = js('task', 'say', 'open a chat qa for the checkout QA\n' + new_line + ' --owner-said OWNER_SAID')
+    asked = js('chat', 'say', 'open a chat qa for the checkout QA\n' + new_line + ' --owner-said OWNER_SAID')
     assert '-> 0' in reply_to(asked['id'], 60)['text']
     assert chats()['qa']['state'] == 'open' and not chats()['qa']['main'] and chats()['demo']['main'], chats()
     meta = json.loads((chats_dir / 'qa/chat.json').read_text())
@@ -8128,34 +7837,34 @@ def part_chats(created=None):
     (chats_dir / 'qa/chat.json').write_text(json.dumps(old_meta))
     assert chats()['qa']['state'] == 'open', chats()
     # The chat's task is the main chat's to see; its events go to the chat that made it.
-    made = js('task', 'say', '--to', 'qa', 'RUN wsx task new "WORK qa.txt" -p demo --json')
+    made = js('chat', 'say', '--to', 'qa', 'RUN wsx task new "WORK qa.txt" -p demo --json')
     chat_reply('qa', made['id'])
     qa_task = max(t['id'] for t in js('task', 'list')['tasks'])
     assert show(qa_task)['record']['created_by'] == 'chat:qa', show(qa_task)['record']
-    assert qa_task in [i['id'] for i in js('task', 'ledger')['open']], 'the main chat sees the chat task in its ledger'
+    assert qa_task in [i['id'] for i in js('chat', 'ledger')['open']], 'the main chat sees the chat task in its ledger'
     assert wait_state(qa_task, 'ready', 'failed')['state'] == 'ready'
     wait(lambda: any(e['kind'] == 'message' and e['from'] == 'events' and '#%d ready' % qa_task in e['text']
                      for e in chat_entries('qa')), 'qa hears its task', 60)
     time.sleep(4)
     assert not events_with('#%d ' % qa_task)
     # ^ The chat's own summary lists the tasks it owns: its one ready task, not the repo's others.
-    status_say = js('task', 'say', '--to', 'qa', 'STATUS')
+    status_say = js('chat', 'say', '--to', 'qa', 'STATUS')
     chat_reply('qa', status_say['id'])
     status_turn = next(t for t in traces() if 'Owner (message %d)' % status_say['id'] in str(t.get('message', '')))
     assert '- open: 1 ready;' in status_turn['message'], status_turn['message']
     # ^ A routine result has no chat: it goes to the main chat, not to qa.
-    js('task', 'routine', 'add', 'chatproof', '-p', 'demo', '--cron', '0 5 * * *', '--arg=sh', '--arg=-c', '--arg=echo qaproof; exit 3')
-    js('task', 'routine', 'run', 'chatproof', '-p', 'demo')
+    js('project', 'routine', 'add', 'chatproof', '-p', 'demo', '--cron', '0 5 * * *', '--arg=sh', '--arg=-c', '--arg=echo qaproof; exit 3')
+    js('project', 'routine', 'run', 'chatproof', '-p', 'demo')
     wait(lambda: events_with('routine chatproof failed (exit 3)'), 'the routine result at the main chat', 60)
     assert not any('chatproof' in e.get('text', '') for e in chat_entries('qa') if e['kind'] == 'message')
-    js('task', 'routine', 'delete', 'chatproof', '-p', 'demo')
+    js('project', 'routine', 'delete', 'chatproof', '-p', 'demo')
     # Move (docs/tasks.md "Chats"): qa's ready task goes to the chat ui. Its next event, its place in the
     # chat summaries and the log line follow it; `created_by` stays; only its owner chat's agent moves it.
     def move_as(chat, *argv):
         return subprocess.run([str(wsx), 'task', 'move', *map(str, argv), '-p', 'demo', '--json'], cwd=project,
                               env={**env, 'WSX_TASK_ACTOR': 'chat:' + chat}, capture_output=True, text=True, timeout=60)
 
-    js('task', 'chat', 'new', 'ui', '--goal', str(qa_goal))
+    js('chat', 'new', 'ui', '--goal', str(qa_goal))
     assert 'no open chat nosuch' in cli('task', 'move', qa_task, '--chat', 'nosuch', ok=False).stderr
     assert js('task', 'move', qa_task, '--chat', 'ui')['moved'] == [qa_task]
     moved = show(qa_task)['record']
@@ -8170,16 +7879,17 @@ def part_chats(created=None):
     items_file = Path(show(qa_task)['report']).parent.parent / 'checks.jsonl'
     with open(items_file, 'a') as out:
         out.write(json.dumps(item) + '\n')
-    assert js('task', 'chat', '--chat', 'ui')['to_check'] == ['c9901'] and js('task', 'chat', '--chat', 'qa')['to_check'] == []
+    assert js('chat', 'read', '--chat', 'ui')['to_check'] == ['c9901'] and js('chat', 'read', '--chat', 'qa')['to_check'] == []
     with open(items_file, 'a') as out:
         out.write(json.dumps(dict(item, state='skipped', unix_ms=item['unix_ms'] + 1)) + '\n')
     js('task', 'add', qa_task, 'WORK qa2.txt')
     wait(lambda: any('#%d ready r2' % qa_task in e['text'] for e in chat_entries('ui') if e['kind'] == 'message'), 'ui hears the next event', 60)
     assert not [e for e in chat_entries('qa') if e['kind'] == 'message' and 'ready r2' in e['text']]
     for chat, line in (('ui', '- open: 1 ready;'), ('qa', '- open: none;')):
-        said = js('task', 'say', '--to', chat, 'STATUS')
+        said = js('chat', 'say', '--to', chat, 'STATUS')
         chat_reply(chat, said['id'])
-        turn = next(t for t in traces() if 'Owner (message %d)' % said['id'] in str(t.get('message', '')))
+        # ^ Ids count per chat: the text tells this chat's message from another chat's of the same id.
+        turn = next(t for t in traces() if 'Owner (message %d):\nSTATUS' % said['id'] in str(t.get('message', '')))
         assert line in turn['message'], (chat, turn['message'])
     refused = move_as('qa', qa_task, '--chat', 'qa')
     assert refused.returncode != 0 and 'not yours' in refused.stderr, refused
@@ -8187,26 +7897,26 @@ def part_chats(created=None):
     assert back.returncode == 0 and show(qa_task)['record']['moved_to'] == 'qa', back
     # Rename: the owner's, a shown name only (docs/tasks.md "Chats"): the id, the folder and `say --to` stay;
     # the title rule is trimmed, one line, at most 40 characters; the main chat is named by its project; empty clears.
-    assert "wsx task chat rename is for the owner" in reply_to(js('task', 'say', 'RUN wsx task chat rename qa "Checkout QA" -p demo --json')['id'])['text']
+    assert "wsx chat rename is for the owner" in reply_to(js('chat', 'say', 'RUN wsx chat rename qa "Checkout QA" -p demo --json')['id'])['text']
     assert chats()['qa']['shown'] == 'qa' and 'title' not in chats()['qa']
-    renamed = js('task', 'chat', 'rename', 'qa', '  Checkout QA  ')
+    renamed = js('chat', 'rename', 'qa', '  Checkout QA  ')
     assert renamed['title'] == 'Checkout QA', renamed
     assert chats()['qa']['title'] == 'Checkout QA' and chats()['qa']['shown'] == 'Checkout QA' and chats()['qa']['projects'] == ['demo'], chats()['qa']
     assert json.loads((chats_dir / 'qa/chat.json').read_text())['title'] == 'Checkout QA' and (chats_dir / 'qa/log.jsonl').exists()
-    assert 'at most 40' in cli('task', 'chat', 'rename', 'qa', 'x' * 41, '-p', 'demo', ok=False).stderr
-    assert 'one line' in cli('task', 'chat', 'rename', 'qa', 'two\nlines', '-p', 'demo', ok=False).stderr
-    assert 'named by its project' in cli('task', 'chat', 'rename', 'demo', 'Other', '-p', 'demo', ok=False).stderr
+    assert 'at most 40' in cli('chat', 'rename', 'qa', 'x' * 41, '-p', 'demo', ok=False).stderr
+    assert 'one line' in cli('chat', 'rename', 'qa', 'two\nlines', '-p', 'demo', ok=False).stderr
+    assert 'named by its project' in cli('chat', 'rename', 'demo', 'Other', '-p', 'demo', ok=False).stderr
     assert chats()['qa']['title'] == 'Checkout QA'
-    assert js('task', 'chat', 'rename', 'qa', '')['title'] == ''
+    assert js('chat', 'rename', 'qa', '')['title'] == ''
     assert chats()['qa']['shown'] == 'qa' and 'title' not in chats()['qa'] and 'title' not in json.loads((chats_dir / 'qa/chat.json').read_text())
     # Close: refused without the word, once with it; one hand-back row at the main chat.
-    close_line = 'RUN wsx task chat close qa -p demo --json'
-    assert "chat close is the owner's" in reply_to(js('task', 'say', close_line)['id'])['text'] and chats()['qa']['state'] == 'open'
+    close_line = 'RUN wsx chat close qa -p demo --json'
+    assert "chat close is the owner's" in reply_to(js('chat', 'say', close_line)['id'])['text'] and chats()['qa']['state'] == 'open'
     # ^ A rule the owner decided while qa ran is the project's record (the notes views are the main
     # chat's), and the hand-back names it (`memory::manage::rules_since`).
     cli('memory', 'add', '--kind', 'rule', '--slug', 'smoke-nightly', '--text-file', '-', '--source', 'msg:1',
         '--verified-by', 'owner:1', stdin='Smoke runs nightly.\n')
-    closing = js('task', 'say', 'close the qa chat\n' + close_line + ' --owner-said OWNER_SAID')
+    closing = js('chat', 'say', 'close the qa chat\n' + close_line + ' --owner-said OWNER_SAID')
     assert '-> 0' in reply_to(closing['id'], 60)['text']
     assert chats()['qa']['state'] == 'closed'
     handed = wait(lambda: [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events' and 'Chat qa is closed' in e['text']],
@@ -8218,14 +7928,14 @@ def part_chats(created=None):
     wait(lambda: events_with('#%d ready r3' % qa_task), 'the closed chat task reaches the main chat', 60)
     assert not [e for e in chat_entries('qa') if e['kind'] == 'message' and 'r3' in e['text']]
     # Only the owner chooses the main chat; closing it is 33m2's.
-    assert "wsx task chat main is the owner's" in reply_to(js('task', 'say', 'RUN wsx task chat main qa -p demo --json')['id'])['text']
+    assert "wsx chat main is the owner's" in reply_to(js('chat', 'say', 'RUN wsx chat main qa -p demo --json')['id'])['text']
     assert chats()['demo']['main'] and not chats()['qa']['main'], chats()
     js('task', 'close', qa_task, '--discard')
     # ^ A closed task has no host: the move writes its record and log, and a closed chat is refused.
     js('task', 'move', qa_task, '--chat', 'ui')
     assert show(qa_task)['record']['moved_to'] == 'ui'
     assert [(e['chat'], e['by']) for e in log(qa_task) if e['kind'] == 'moved'][-1] == ('ui', 'owner')
-    js('task', 'chat', 'close', 'ui')
+    js('chat', 'close', 'ui')
     assert 'no open chat ui' in cli('task', 'move', qa_task, '--chat', 'ui', ok=False).stderr
 
     # 33s. Search (docs/tasks.md "Search"): a manager finds an old decision across projects, ranked,
@@ -8248,121 +7958,19 @@ def part_chats(created=None):
                      for e in entries[:last_rotation]
                      if e['kind'] == 'message' and e['from'] == 'owner'
                      and words_of(e['text']) - set().union(*(words_of(o['text']) for o in spoken if o is not e)))
-    found = js('task', 'search', '-p', 'demo', rare)
+    found = js('chat', 'search', '-p', 'demo', rare)
     mine = next((h for h in found['hits'] if h['reference'] == 'demo:%d' % old['id']), None)
     assert mine and mine['quote'] == '> message %d' % old['id'] and mine['kind'] == 'message', found['hits']
     assert found['projects'] == 1 and found['problems'] == [], found
-    saved = js('task', 'say', '-p', 'other', 'We keep the marmalade quokka retries at seven.')
-    registry_path = config_dir / 'config-v2.toml'
-    registry_before = registry_path.read_text()
-    third = base / 'third'
-    third.mkdir(mode=0o700)
-    registry_path.write_text(registry_before + '[[projects]]\nname = "third"\npath = ' + json.dumps(str(third)) + '\n')
-    third_id = 'third-' + hashlib.sha256(str(third).encode()).hexdigest()[:8]
-    third_log = state / 'wsx/tasks/chats/third/log.jsonl'
-    third_log.parent.mkdir(parents=True, mode=0o700)
-    (third_log.parent / 'chat.json').write_text(json.dumps({'repos': [third_id]}))
-    third_store = state / 'wsx/tasks' / third_id
-    third_store.mkdir(mode=0o700)
-    (third_store / 'home.json').write_text(json.dumps({'chat': 'third'}))
-
-    def third_says(*lines):
-        third_log.write_text(''.join(json.dumps(line, separators=(',', ':')) + '\n' for line in lines))
-
-    third_says({'unix_ms': 1_700_000_000_000, 'kind': 'message', 'id': 1, 'from': 'owner',
-                'text': '> an older line\n\nThe zebra ledger rule is decided: marmalade stays out of it.'},
-               {'unix_ms': 1_700_000_001_000, 'kind': 'reply', 'id': 2, 'to': [1], 'text': 'Noted: the zebra ledger rule.'},
-               {'unix_ms': 1_700_000_002_000, 'kind': 'reply', 'id': 3, 'to': [1], 'text': 'zebra quiet', 'quiet': True},
-               {'unix_ms': 1_700_000_003_000, 'kind': 'message', 'id': 4, 'from': 'events', 'text': 'zebra event'},
-               {'unix_ms': 1_700_000_004_000, 'kind': 'agent', 'text': 'zebra tool step'})
-    found = js('task', 'search', '-p', 'demo', '--all', 'zebra', 'marmalade')
-    refs = [(h['reference'], h.get('quote')) for h in found['hits']]
-    assert refs[0][0] == 'third:1' and ('third:2', None) in refs and ('other:%d' % saved['id'], None) in refs, refs
-    assert not any(h['reference'] in ('third:3', 'third:4') for h in found['hits']), refs
-    assert found['hits'][0]['line'] == 'The zebra ledger rule is decided: marmalade stays out of it.', found['hits'][0]
-    assert found['projects'] == 3 and found['docs'] > 3, found
-    top = found['hits'][0]
-    assert top['slug'] == top['reference'] and top['scope'] == third_id and top['status'] == 'active' and 'zebra ledger' in top['excerpt'] and top['path'].endswith('log.jsonl'), top
-    # ^ One hit type: the fields of a `memory search` hit come with the ones of a task search hit.
-    assert 'an older line' not in json.dumps(js('task', 'search', '-p', 'demo', '--all', 'older'))
-    assert 'third:1' in [h['reference'] for h in js('task', 'search', '-p', 'demo', '--all', 'ZEBRA')['hits']]
-    # ^ The log was replaced (a roll that deleted the old file): the digest still holds the old
-    # words, and a rebuild from the logs that exist drops them (docs/tasks.md "Search"). Pairs of
-    # characters are the words of Korean: a particle after the word still matches.
-    third_says({'unix_ms': 1_700_000_005_000, 'kind': 'message', 'id': 5, 'from': 'owner', 'text': '배포 결정은 월요일로 합니다'})
-    assert js('task', 'search', '-p', 'demo', '--all', '결정을')['hits'][0]['reference'] == 'third:5'
-    assert 'third:1' in [h['reference'] for h in js('task', 'search', '-p', 'demo', '--all', 'zebra')['hits']]
-    assert 'third:1' not in [h['reference'] for h in js('task', 'search', '-p', 'demo', '--all', '--reindex', 'zebra')['hits']]
-    assert js('task', 'search', '-p', 'demo', '--all', '결정을')['hits'][0]['reference'] == 'third:5'
+    # ^ Ranking, Korean words, the rebuild and a task's story: crates/wsx/tests/chat_search.rs.
     # ^ A manager runs it in its boundary, and quotes the old message by id from the hit.
-    asked = js('task', 'say', 'RUN wsx task search -p demo --all --limit 3 %s' % rare)
+    asked = js('chat', 'say', 'RUN wsx chat search -p demo --all --limit 3 %s' % rare)
     searched = reply_to(asked['id'])['text']
     assert 'demo:%d  > message %d' % (old['id'], old['id']) in searched, searched
     # ^ A reply is no message to quote: the owner's first message, which `old` quotes, is.
-    quoted = js('task', 'say', 'QUOTE 1 Yes, that one.')
+    quoted = js('chat', 'say', 'QUOTE 1 Yes, that one.')
     answer = reply_to(quoted['id'])['text']
     assert answer == '> STATUS\n\nYes, that one.', answer
-    # ^ A task's story (docs/tasks.md "Search"): the log of a landed and of a closed task, written
-    # as the host writes it. A word of a later add finds the task with its outcome, and
-    # `--task` lists its start, add, result, checks and landing in order.
-    t0 = 1_700_100_000_000
-
-    def third_task(n, task_state, revision, events):
-        folder = third_store / str(n)
-        folder.mkdir(mode=0o700)
-        (folder / 'task.json').write_text(json.dumps({
-            'id': n, 'project': 'third', 'project_id': third_id, 'project_path': str(third), 'default_branch': 'main',
-            'base': 'abc', 'branch': 'wsx/t%d' % n, 'working_copy': str(third), 'pane_id': None, 'adapter': 'claude',
-            'model': 'm', 'checks': [], 'agent_session': None, 'state': task_state, 'revision': revision,
-            'created_unix_ms': t0, 'updated_unix_ms': t0}))
-        (folder / 'log.jsonl').write_text(''.join(json.dumps(e, separators=(',', ':')) + '\n' for e in events))
-        return folder / 'log.jsonl'
-
-    def stamp(ms):
-        return time.strftime('%Y-%m-%d %H:%M', time.gmtime(ms // 1000))
-
-    landed_log = third_task(1, 'landed', 2, [
-        {'unix_ms': t0, 'kind': 'created', 'base': 'abc', 'branch': 'wsx/t1'},
-        {'unix_ms': t0 + 1000, 'kind': 'message', 'mode': 'prompt', 'text': 'Fix the quolloquy parser'},
-        *({'unix_ms': t0 + 2000 + i, 'kind': 'agent', 'text': 'tool step %d' % i} for i in range(3)),
-        {'unix_ms': t0 + 3000, 'kind': 'result', 'status': 'done', 'summary': 'First pass: the parser is fixed.'},
-        {'unix_ms': t0 + 4000, 'kind': 'message', 'mode': 'add', 'text': 'Also keep the zymurgy case small'},
-        {'unix_ms': t0 + 5000, 'kind': 'checks', 'results': [{'command': 'cargo test', 'exit': 1, 'timed_out': False, 'output': ''}]},
-        {'unix_ms': t0 + 6000, 'kind': 'revision', 'revision': 2, 'commit': 'cd67238e1f90aaaa'},
-        {'unix_ms': t0 + 7000, 'kind': 'landed', 'commit': 'cd67238e1f90aaaa'}])
-    third_task(2, 'closed', 1, [
-        {'unix_ms': t0, 'kind': 'created', 'base': 'abc', 'branch': 'wsx/t2'},
-        {'unix_ms': t0 + 1000, 'kind': 'message', 'mode': 'prompt', 'text': 'Try the gizmo idea'},
-        {'unix_ms': t0 + 2000, 'kind': 'message', 'mode': 'steer', 'text': 'Drop the gizmo, it is a dead end'},
-        {'unix_ms': t0 + 3000, 'kind': 'closed', 'discarded': True}])
-    day = time.strftime('%m-%d', time.gmtime((t0 + 7000) // 1000))
-    hit = next(h for h in js('task', 'search', '-p', 'demo', '--all', 'zymurgy')['hits'] if h['reference'] == 'third#1')
-    assert hit['kind'] == 'history' and hit['by'] == 'add' and hit['outcome'] == 'landed %s cd67238e1f90' % day, hit
-    hit = next(h for h in js('task', 'search', '-p', 'demo', '--all', 'dead', 'end')['hits'] if h['reference'] == 'third#2')
-    assert hit['by'] == 'steer' and hit['outcome'] == 'closed: discarded', hit
-    story = js('task', 'search', '-p', 'third', '--task', '1')
-    assert [e['label'] for e in story['entries']] == ['start', 'prompt', 'steps', 'result', 'add', 'checks', 'revision', 'landed'], story
-    assert [e['text'] for e in story['entries']][2:] == ['3 steps, last: tool step 2', 'First pass: the parser is fixed.',
-                                                         'Also keep the zymurgy case small', '1 failed: cargo test', 'r2 cd67238e1f90', 'cd67238e1f90'], story
-    assert story['outcome'] == 'landed %s cd67238e1f90' % day and story['title'] == 'Fix the quolloquy parser' and story['skipped'] == 0, story
-    assert story['entries'][4]['unix_ms'] == t0 + 4000
-    printed = cli('task', 'search', '-p', 'third', '--task', '1').stdout.splitlines()
-    assert printed[0] == 't1 [landed %s cd67238e1f90]  Fix the quolloquy parser' % day, printed
-    assert printed[5] == '%s add      Also keep the zymurgy case small' % stamp(t0 + 4000), printed
-    assert js('task', 'search', '-p', 'third', '--task', '1', '--limit', '2')['skipped'] == 6
-    # ^ Words with --task keep only that task's hits; a line the log gains later is found by the next
-    # search without a rebuild, and the lines read before are not found twice.
-    assert [h['reference'] for h in js('task', 'search', '-p', 'third', '--task', '1', 'gizmo', 'zymurgy')['hits']] == ['third#1']
-    with landed_log.open('a') as handle:
-        handle.write(json.dumps({'unix_ms': t0 + 9000, 'kind': 'message', 'mode': 'add', 'text': 'A tumbleweed note'}, separators=(',', ':')) + '\n')
-    assert [h['reference'] for h in js('task', 'search', '-p', 'third', '--task', '1', 'tumbleweed')['hits']] == ['third#1']
-    assert len(js('task', 'search', '-p', 'third', '--task', '1', 'zymurgy')['hits']) == 1
-    assert js('task', 'search', '-p', 'third', '--task', '1', '--reindex', 'tumbleweed')['docs'] == 8
-    # ^ A search of nothing, and of a project with no history, says so.
-    assert 'needs some words' in cli('task', 'search', '-p', 'demo', '!!', ok=False).stderr
-    registry_path.write_text(registry_before)
-    shutil.rmtree(third_store)
-    shutil.rmtree(third_log.parent)
     # 34. Recap (docs/tasks.md "Recap"): once the other project is quiet for its 12 s after a
     mark('34')
     # land, wsx asks its manager for one recap with the token cost since the last one, and the
@@ -8393,16 +8001,16 @@ def part_chats(created=None):
     # ^ Each quiet period's look fires project.idle: a line in `looks` is a look that happened, so
     # the absence of a recap and of an idle task is read after the look that could have made them.
     looks = base / 'other-looks.log'
-    js('task', 'routine', 'add', 'lookout', '-p', 'other', '--event', 'project.idle', '--no-post',
+    js('project', 'routine', 'add', 'lookout', '-p', 'other', '--event', 'project.idle', '--no-post',
        '--arg=sh', '--arg=-c', '--arg=echo look >> %s' % looks)
     looks_count = lambda: len(looks.read_text().split()) if looks.exists() else 0
-    nudge = js('task', 'say', '-p', 'other', 'STATUS')
+    nudge = js('chat', 'say', '-p', 'other', 'STATUS')
     wait(lambda: next((e for e in other_entries() if e['kind'] == 'reply' and nudge['id'] in e['to']), None),
          'the other manager answers', 60)
     looked = looks_count()
     stays(lambda: looks_count() > looked, lambda: len(recaps()) == 1 and not idle_tasks(),
           'a look of the quiet period', 60)
-    js('task', 'routine', 'delete', 'lookout', '-p', 'other')
+    js('project', 'routine', 'delete', 'lookout', '-p', 'other')
     # ^ The owner has workflow steps; the idle task still runs as one turn.
     owner_config.write_text('tasks:\n  workflow:\n    steps:\n      - name: plan\n        prompt: PLAN only\n')
     notes = other / 'knowledge/sessions/other'
@@ -8472,57 +8080,15 @@ def part_chats(created=None):
     settled(3, 'the third turn')
     assert started(False)[2:] == [('2.1.3', True, first[2])] and len(started(False)) == 3, started(False)
     # ^ A chat's manager keeps its agent between messages and starts it on the new file too.
-    cli('task', 'chat', 'new', 'upd', '--goal', str(m2_goal), '-p', 'demo', '--json')
+    cli('chat', 'new', 'upd', '--goal', str(m2_goal), '-p', 'demo', '--json')
     point('2.1.1')
-    chat_reply('upd', js('task', 'say', '--to', 'upd', 'STATUS on 2.1.1')['id'])
+    chat_reply('upd', js('chat', 'say', '--to', 'upd', 'STATUS on 2.1.1')['id'])
     chat_session = next(t['session'] for t in traces() if t.get('manager') and 'STATUS on 2.1.1' in str(t.get('message', '')))
     point('2.1.2')
-    chat_reply('upd', js('task', 'say', '--to', 'upd', 'STATUS on 2.1.2')['id'])
+    chat_reply('upd', js('chat', 'say', '--to', 'upd', 'STATUS on 2.1.2')['id'])
     assert started(True, chat_session) == [('2.1.1', False, chat_session), ('2.1.2', True, chat_session)], started(True, chat_session)
-    js('task', 'chat', 'close', 'upd', '-p', 'demo')
+    js('chat', 'close', 'upd', '-p', 'demo')
     js('task', 'close', updated, '--discard')
-
-    # 42. A store of before: the `thread` and `from` fields and the
-    # `thread_*` lines are read as nothing and shown as nothing; no row is lost, no command takes
-    # --thread, and the chat and the ledger carry no thread key.
-    mark('42')
-    cli('task', 'chat', 'new', 'old42', '--goal', str(m2_goal), '-p', 'demo', '--json')
-    t0 = int(time.time() * 1000) - 60_000
-    with open(chats_dir / 'old42' / 'log.jsonl', 'a') as out:
-        for line in (
-            {'kind': 'thread_open', 'thread': 'billing', 'title': 'Billing fixes', 'open': 1},
-            {'kind': 'message', 'id': 9100001, 'from': 'owner', 'text': 'old tagged message', 'thread': 'billing'},
-            {'kind': 'delivered', 'ids': [9100001]},
-            {'kind': 'reply', 'id': 9100002, 'to': [9100001], 'text': 'old tagged reply', 'threads': ['old42/billing']},
-            {'kind': 'thread_merged', 'thread': 'billing', 'into': 'speed'},
-            {'kind': 'thread_moved', 'from': 'billing', 'to': 'speed', 'ids': [9100001]},
-            {'kind': 'thread_closed', 'thread': 'billing', 'why': 'done'},
-        ):
-            t0 += 1000
-            out.write(json.dumps({'unix_ms': t0, **line}) + '\n')
-    shown = js('task', 'chat', '--chat', 'old42')['entries']
-    assert [(e['kind'], e['id']) for e in shown] == [('message', 9100001), ('reply', 9100002)], shown
-    assert not [e for e in shown if 'thread' in e or 'threads' in e], shown
-    text = cli('task', 'chat', '--chat', 'old42').stdout
-    assert 'old tagged message' in text and 'old tagged reply' in text and 'thread' not in text.lower(), text
-    assert chats()['old42']['state'] == 'open' and 'thread' not in json.dumps(js('task', 'chat', 'list')), chats()
-    # ^ A task record of before, with `thread`, loads and shows no thread key; the ledger has none.
-    gate42 = tmp / 'gate42'
-    old_task = js('task', 'new', 'WAIT %s WORK old42.txt' % gate42)['id']
-    record_file = Path(show(old_task)['log']).parent / 'task.json'
-    record = json.loads(record_file.read_text())
-    record['thread'] = 'demo/billing'
-    record_file.write_text(json.dumps(record))
-    assert show(old_task)['state'] and 'thread' not in show(old_task)['record'], show(old_task)['record']
-    assert 'thread' not in json.dumps(js('task', 'ledger')), 'ledger carries a thread key'
-    # ^ The flags and the subcommand of threads are gone.
-    for argv in (('new', '--thread', 'x', 'NOOP y'), ('say', '--thread', 'x', 'hi'), ('search', '--thread', 'x', 'y'), ('thread', 'list')):
-        refused = cli('task', *argv, ok=False).stderr
-        assert 'unexpected argument' in refused or 'unrecognized subcommand' in refused, (argv, refused)
-    assert cli('memory', 'search', 'x', '--thread', 'y', ok=False).returncode != 0
-    gate42.write_text('go')
-    js('task', 'close', old_task, '--discard')
-    js('task', 'chat', 'close', 'old42', '-p', 'demo')
 
     # 33n. No chat of its own (docs/tasks.md "Chats"): a repo gets a chat only from `chat new`. Registering it and
     # starting its service make none; the first chat is its main chat unless the owner chooses another; closing
@@ -8539,11 +8105,11 @@ def part_chats(created=None):
         registry.write('[[projects]]\nname = "solo"\npath = ' + json.dumps(str(solo)) + '\n')
     solo_id = 'solo-' + hashlib.sha256(str(solo).encode()).hexdigest()[:8]
     solo_store = state / 'wsx/tasks' / solo_id
-    solo_chats = lambda: {c['name']: c for c in js('task', 'chat', 'list', '-p', 'solo')['chats']}
+    solo_chats = lambda: {c['name']: c for c in js('chat', 'list', '-p', 'solo')['chats']}
     solo_rows = lambda name, text: [e for e in chat_entries(name) if e['kind'] == 'message' and e['from'] == 'events' and text in e['text']]
     solo_task = lambda text: js('task', 'new', text, '-p', 'solo')['id']
     solo_state = lambda n: js('task', 'show', n, '-p', 'solo')['state']
-    solo_open = lambda: [i['id'] for i in js('task', 'ledger', '-p', 'solo')['open']]
+    solo_open = lambda: [i['id'] for i in js('chat', 'ledger', '-p', 'solo')['open']]
     # ^ The repo's service runs (nothing but a chat's host starts it, so the test does). No chat comes of it, nor of the events that follow.
     service = subprocess.Popen([str(wsx), 'task', 'repo-host', solo_id], cwd=project, env=env,
                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -8551,42 +8117,42 @@ def part_chats(created=None):
     wait(lambda: [l for l in leftovers('task repo-host ') if l.split()[-1] == solo_id], 'the service of solo', 30)
     wait(lambda: solo_state(t1) == 'ready', 'the first solo task is ready', 60)
     time.sleep(EVENT_QUIET * 4)
-    assert solo_chats() == {} and js('task', 'ledger', '-p', 'solo')['chats'] == [], solo_chats()
+    assert solo_chats() == {} and js('chat', 'ledger', '-p', 'solo')['chats'] == [], solo_chats()
     assert not (solo_store / 'home.json').exists() and not (chats_dir / 'solo').exists() and t1 in solo_open()
     # ^ The first chat is the main chat; the next is not, and `chat main` moves it (the owner's, no word needed).
-    js('task', 'chat', 'new', 'solo', '-p', 'solo')
-    js('task', 'chat', 'new', 'solo2', '-p', 'solo')
+    js('chat', 'new', 'solo', '-p', 'solo')
+    js('chat', 'new', 'solo2', '-p', 'solo')
     assert solo_chats()['solo']['main'] and not solo_chats()['solo2']['main'], solo_chats()
-    assert [c['main'] for c in js('task', 'ledger', '-p', 'solo')['chats'] if c['name'] == 'solo2'] == [False]
-    assert 'no open chat nosuch' in cli('task', 'chat', 'main', 'nosuch', '-p', 'solo', ok=False).stderr
-    js('task', 'chat', 'main', 'solo2', '-p', 'solo')
+    assert [c['main'] for c in js('chat', 'ledger', '-p', 'solo')['chats'] if c['name'] == 'solo2'] == [False]
+    assert 'no open chat nosuch' in cli('chat', 'main', 'nosuch', '-p', 'solo', ok=False).stderr
+    js('chat', 'main', 'solo2', '-p', 'solo')
     assert solo_chats()['solo2']['main'] and not solo_chats()['solo']['main'], solo_chats()
-    js('task', 'chat', 'main', 'solo', '-p', 'solo')
+    js('chat', 'main', 'solo', '-p', 'solo')
     assert solo_chats()['solo']['main'], solo_chats()
     # ^ Closing a chat that is not the main chat hands its tasks to the main chat.
-    assert 'no main chat' not in js('task', 'chat', 'close', 'solo2', '-p', 'solo')['message']
+    assert 'no main chat' not in js('chat', 'close', 'solo2', '-p', 'solo')['message']
     # ^ A task the owner makes where one chat is open wakes that chat, whatever the chat's name.
     t2 = solo_task('WORK s2.txt')
     wait(lambda: solo_rows('solo', '#%d ready' % t2), 'the open chat hears the owner task', 60)
-    js('task', 'routine', 'add', 'n33', '-p', 'solo', '--cron', '0 5 * * *', '--arg=sh', '--arg=-c', '--arg=exit 5')
-    js('task', 'routine', 'run', 'n33', '-p', 'solo')
+    js('project', 'routine', 'add', 'n33', '-p', 'solo', '--cron', '0 5 * * *', '--arg=sh', '--arg=-c', '--arg=exit 5')
+    js('project', 'routine', 'run', 'n33', '-p', 'solo')
     wait(lambda: solo_rows('solo', 'routine n33 failed (exit 5)'), 'the main chat hears the routine', 60)
     # ^ Closing the main chat works. The project has none after it, and says so.
-    closed = js('task', 'chat', 'close', 'solo', '-p', 'solo')
+    closed = js('chat', 'close', 'solo', '-p', 'solo')
     assert 'no main chat now' in closed['message'] and solo_chats()['solo']['state'] == 'closed' and not solo_chats()['solo']['main'], closed
     assert not (solo_store / 'home.json').exists() and set(solo_chats()) == {'solo', 'solo2'}
     # ^ Nobody is woken, and no chat comes back: the task shows in the ledger, the routine result is dropped.
     t3 = solo_task('WORK s3.txt')
     wait(lambda: solo_state(t3) == 'ready', 'the solo task with no chat is ready', 60)
-    js('task', 'routine', 'run', 'n33', '-p', 'solo')
-    wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger', '-p', 'solo')['routines']), 'the routine ended', 30)
+    js('project', 'routine', 'run', 'n33', '-p', 'solo')
+    wait(lambda: all(r['last'] and not r['running'] for r in js('chat', 'ledger', '-p', 'solo')['routines']), 'the routine ended', 30)
     time.sleep(EVENT_QUIET * 4)
     assert t3 in solo_open() and not solo_rows('solo', '#%d ' % t3) and len(solo_rows('solo', 'routine n33 failed')) == 1
     assert set(solo_chats()) == {'solo', 'solo2'} and all(c['state'] == 'closed' for c in solo_chats().values()) and not (solo_store / 'home.json').exists()
     # ^ Another project's chat that says to it is told to choose a main chat.
-    text = reply_to(js('task', 'say', 'RUN wsx task say -p solo --from-chat hi --json')['id'], 60)['text']
+    text = reply_to(js('chat', 'say', 'RUN wsx chat say -p solo --from-chat hi --json')['id'], 60)['text']
     assert 'chat main' in text, text
-    js('task', 'routine', 'delete', 'n33', '-p', 'solo')
+    js('project', 'routine', 'delete', 'n33', '-p', 'solo')
     for n in (t1, t2, t3):
         js('task', 'close', n, '--discard', '-p', 'solo')
     service.terminate()

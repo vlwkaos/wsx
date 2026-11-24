@@ -44,7 +44,7 @@ pub struct RunLocked {
     pub(super) approved: bool,
 }
 
-/// `-p` and `--json` of every `wsx task` command (`digest`, `checkin`, `post` and the hidden host
+/// `-p` and `--json` of every `wsx chat`, `wsx task` and `wsx project` command (`digest`, `checkin`, `post` and the hidden host
 /// commands accept `--json` and ignore it; `ledger` always prints JSON).
 #[derive(clap::Args)]
 pub struct Common {
@@ -56,6 +56,7 @@ pub struct Common {
     pub json: bool,
 }
 
+/// `wsx task`: one task's life, from `new` to `land` or `close` (docs/tasks.md).
 #[derive(Subcommand)]
 pub enum TaskCmd {
     /// Start a worker on a new branch in its own working copy
@@ -150,36 +151,6 @@ pub enum TaskCmd {
         #[arg(long)]
         back: bool,
     },
-    /// The owner dismisses an open question of the manager by its reply id: it asks no more (owner)
-    Dismiss { id: u64 },
-    /// List what the owner has to check of the landed tasks, or pass, skip or fail items (owner; the manager passes with --owner-said)
-    Check {
-        #[command(subcommand)]
-        action: Option<CheckAction>,
-    },
-    /// Run tasks.deploy.command in a temporary copy of one default-branch commit and record it
-    Deploy(DeployArgs),
-    /// Run tasks.release.command the same way and record it
-    Release(ReleaseArgs),
-    /// Push the default branch, or one commit, to origin's default branch and move the local one there (the manager asks the owner first)
-    Push(PushArgs),
-    /// Fetch origin and move the local default branch to its tip when no work is lost (a branch that is behind, or whose commits origin has already after a rebase or squash merge); else refuse and name the commits or files
-    Sync,
-    /// Commit files of the main checkout on the default branch once its light checks pass on
-    /// that commit (the manager: with the owner's message)
-    Commit {
-        /// Paths in the main checkout, as they are on disk
-        #[arg(required = true, num_args = 1..)]
-        files: Vec<String>,
-        #[arg(short, long)]
-        message: String,
-        #[command(flatten)]
-        said: OwnerSaid,
-    },
-    /// Print the bounded project state a manager reads first (JSON, at most 16 KiB)
-    Ledger,
-    /// Show the last deployed and released commits and how far each is behind
-    Deployed,
     #[command(hide = true)]
     /// Post what the project's tasks did since the last digest to its chat, with no manager
     /// turn, and print nothing; a project gets one with a routine (docs/tasks.md "Routines")
@@ -187,24 +158,6 @@ pub enum TaskCmd {
         /// Start here (unix seconds) instead of at the last digest, else 24 h back
         #[arg(long, value_name = "SECONDS")]
         since: Option<u64>,
-    },
-    /// Wake the manager once, `--in` a time or `--at` a local time, with `--why` as its event;
-    /// a new check-in replaces the last one. It is no routine (docs/tasks.md "Check-in")
-    Checkin {
-        /// `40m`, `2h` or `1d`
-        #[arg(
-            long = "in",
-            value_name = "DURATION",
-            conflicts_with = "at",
-            required_unless_present = "at"
-        )]
-        after: Option<String>,
-        /// `HH:MM` or `YYYY-MM-DD HH:MM` local time
-        #[arg(long)]
-        at: Option<String>,
-        /// What to look at then; the event's text
-        #[arg(long)]
-        why: String,
     },
     #[command(hide = true)]
     /// Post stdin to the project's chat as wsx's message, with no manager turn; nothing when
@@ -221,99 +174,9 @@ pub enum TaskCmd {
         #[arg(long, value_parser = post_key)]
         key: Option<String>,
     },
-    /// The project's scheduled routines: `wsx routine` (docs/tasks.md "Routines")
-    Routine {
-        #[command(subcommand)]
-        action: RoutineCmd,
-        /// The manager: the owner's message of this turn that asked to add, edit or delete it
-        #[arg(long, value_name = "MESSAGE", global = true)]
-        owner_said: Option<u64>,
-    },
-    /// Start the project's manager agent, or report the running one
-    Manager,
-    /// Ask the owner to run one command outside the boundary, in a session pane the owner can
-    /// watch and type into (sudo); its exit and last lines come back (docs/tasks.md "Approved runs")
-    Run {
-        /// The folder it runs in (default: where this command runs)
-        #[arg(long, value_name = "DIR")]
-        cwd: Option<PathBuf>,
-        /// Why: shown to the owner with the command
-        #[arg(long, value_name = "TEXT")]
-        why: Option<String>,
-        /// The command and its arguments, run as given (no shell): `wsx task run -- killall X`
-        #[arg(required = true, last = true, value_name = "COMMAND")]
-        argv: Vec<String>,
-    },
     /// Runs an approved run's command on this terminal and records its end (the pane's command)
     #[command(hide = true)]
     Ran { id: String },
-    /// Add a project to wsx: clone it when the folder is missing (the manager asks the owner first)
-    Project {
-        #[command(subcommand)]
-        action: ProjectCmd,
-    },
-    /// Send a message to the project's manager, or another chat; returns at once with its id
-    Say {
-        #[command(flatten)]
-        text: PromptSource,
-        /// To this chat instead of the first
-        #[arg(long, value_name = "NAME")]
-        to: Option<String>,
-        /// From a chat (the first is `manager`) to another chat of this project (--to, the
-        /// first when none), or with -p to another project's first chat
-        #[arg(long)]
-        from_chat: bool,
-        /// With --from-chat: this answers a message it sent
-        #[arg(long)]
-        reply: bool,
-        /// To the main chat of every registered project whose lockfile or manifest names this
-        /// dependency, instead of one project (docs/tasks.md "Mail")
-        #[arg(long, value_name = "DEPENDENCY", conflicts_with_all = ["to", "reply"])]
-        uses: Option<String>,
-    },
-    /// Read the manager conversation, or another chat's, after a message id or around one; the
-    /// owner opens, lists and closes chats (docs/tasks.md "Chats")
-    Chat {
-        #[arg(long, value_name = "ID")]
-        after: Option<u64>,
-        /// The part of the conversation around message ID, at any age the log keeps
-        #[arg(long, value_name = "ID", conflicts_with = "after")]
-        around: Option<u64>,
-        #[arg(long, value_name = "NAME")]
-        chat: Option<String>,
-        #[command(subcommand)]
-        action: Option<ChatCmd>,
-    },
-    /// Find earlier messages, decisions and task history, ranked: the chats, the notes and the
-    /// tasks; a hit's `quote` line quotes it in a reply
-    Search {
-        /// The words to find, all of them or some; the best matches come first
-        #[arg(required_unless_present = "task", value_name = "WORDS")]
-        words: Vec<String>,
-        /// One task, open or closed: its dated history, or only its hits for the words
-        #[arg(long, value_name = "N")]
-        task: Option<String>,
-        /// Every registered project, not only -p
-        #[arg(long)]
-        all: bool,
-        /// Most hits shown (10), or lines of a task's history (40)
-        #[arg(long, value_name = "N")]
-        limit: Option<usize>,
-        /// Build the index of the searched projects again from their logs and tasks
-        #[arg(long)]
-        reindex: bool,
-    },
-    /// Approve a request the manager made, and run its action (owner only)
-    Approve {
-        /// The request id, such as a3
-        id: String,
-    },
-    /// Deny a request the manager made (owner only)
-    Deny {
-        id: String,
-        #[arg(long)]
-        note: Option<String>,
-    },
     #[command(hide = true)]
     /// From a task's worker: run the project's checks as after its result (all, or by number
     /// or scenario name). `--part` reruns one part of one scenario, such as
@@ -476,10 +339,158 @@ pub struct PushArgs {
     pub(crate) said: OwnerSaidAfter,
 }
 
+/// `wsx chat`: talk with a project's chats and decide what they ask (docs/tasks.md "Chats").
+#[derive(Subcommand)]
+pub enum ChatGroup {
+    /// Send a message to the project's manager, or another chat; returns at once with its id
+    Say {
+        #[command(flatten)]
+        text: PromptSource,
+        /// To this chat instead of the first
+        #[arg(long, value_name = "NAME")]
+        to: Option<String>,
+        /// From a chat (the first is `manager`) to another chat of this project (--to, the
+        /// first when none), or with -p to another project's first chat
+        #[arg(long)]
+        from_chat: bool,
+        /// With --from-chat: this answers a message it sent
+        #[arg(long)]
+        reply: bool,
+        /// To the main chat of every registered project whose lockfile or manifest names this
+        /// dependency, instead of one project (docs/tasks.md "Mail")
+        #[arg(long, value_name = "DEPENDENCY", conflicts_with_all = ["to", "reply"])]
+        uses: Option<String>,
+    },
+    /// Read a chat's conversation, the main chat's when no --chat, after a message id or around
+    /// one (docs/tasks.md "Chats")
+    Read {
+        #[arg(long, value_name = "ID")]
+        after: Option<u64>,
+        /// The part of the conversation around message ID, at any age the log keeps
+        #[arg(long, value_name = "ID", conflicts_with = "after")]
+        around: Option<u64>,
+        #[arg(long, value_name = "NAME")]
+        chat: Option<String>,
+    },
+    #[command(flatten)]
+    Manage(ChatCmd),
+    /// Find earlier messages, decisions and task history, ranked: the chats, the notes and the
+    /// tasks; a hit's `quote` line quotes it in a reply
+    Search {
+        /// The words to find, all of them or some; the best matches come first
+        #[arg(required_unless_present = "task", value_name = "WORDS")]
+        words: Vec<String>,
+        /// One task, open or closed: its dated history, or only its hits for the words
+        #[arg(long, value_name = "N")]
+        task: Option<String>,
+        /// Every registered project, not only -p
+        #[arg(long)]
+        all: bool,
+        /// Most hits shown (10), or lines of a task's history (40)
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+        /// Build the index of the searched projects again from their logs and tasks
+        #[arg(long)]
+        reindex: bool,
+    },
+    /// Approve a request the manager made, and run its action (owner only)
+    Approve {
+        /// The request id, such as a3
+        id: String,
+    },
+    /// Deny a request the manager made (owner only)
+    Deny {
+        id: String,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// The owner dismisses an open question of the manager by its reply id: it asks no more (owner)
+    Dismiss { id: u64 },
+    /// Wake the manager once, `--in` a time or `--at` a local time, with `--why` as its event;
+    /// a new check-in replaces the last one. It is no routine (docs/tasks.md "Check-in")
+    Checkin {
+        /// `40m`, `2h` or `1d`
+        #[arg(
+            long = "in",
+            value_name = "DURATION",
+            conflicts_with = "at",
+            required_unless_present = "at"
+        )]
+        after: Option<String>,
+        /// `HH:MM` or `YYYY-MM-DD HH:MM` local time
+        #[arg(long)]
+        at: Option<String>,
+        /// What to look at then; the event's text
+        #[arg(long)]
+        why: String,
+    },
+    /// Start the project's lead (its main chat's agent), or report the running one
+    Lead,
+    /// Print the bounded project state a manager reads first (JSON, at most 16 KiB)
+    Ledger,
+}
+
+/// `wsx project`: the project's code side, its default branch, deploys and routines (docs/tasks.md).
+#[derive(Subcommand)]
+pub enum ProjectGroup {
+    #[command(flatten)]
+    Manage(ProjectCmd),
+    /// Push the default branch, or one commit, to origin's default branch and move the local one there (the manager asks the owner first)
+    Push(PushArgs),
+    /// Fetch origin and move the local default branch to its tip when no work is lost (a branch that is behind, or whose commits origin has already after a rebase or squash merge); else refuse and name the commits or files
+    Sync,
+    /// Commit files of the main checkout on the default branch once its light checks pass on
+    /// that commit (the manager: with the owner's message)
+    Commit {
+        /// Paths in the main checkout, as they are on disk
+        #[arg(required = true, num_args = 1..)]
+        files: Vec<String>,
+        #[arg(short, long)]
+        message: String,
+        #[command(flatten)]
+        said: OwnerSaid,
+    },
+    /// Run tasks.deploy.command in a temporary copy of one default-branch commit and record it
+    Deploy(DeployArgs),
+    /// Run tasks.release.command the same way and record it
+    Release(ReleaseArgs),
+    /// Show the last deployed and released commits and how far each is behind
+    Deployed,
+    /// List what the owner has to check of the landed tasks, or pass, skip or fail items (owner; the manager passes with --owner-said)
+    Check {
+        #[command(subcommand)]
+        action: Option<CheckAction>,
+    },
+    /// Ask the owner to run one command outside the boundary, in a session pane the owner can
+    /// watch and type into (sudo); its exit and last lines come back (docs/tasks.md "Approved runs")
+    Run {
+        /// The folder it runs in (default: where this command runs)
+        #[arg(long, value_name = "DIR")]
+        cwd: Option<PathBuf>,
+        /// Why: shown to the owner with the command
+        #[arg(long, value_name = "TEXT")]
+        why: Option<String>,
+        /// The command and its arguments, run as given (no shell): `wsx project run -- killall X`
+        #[arg(required = true, last = true, value_name = "COMMAND")]
+        argv: Vec<String>,
+    },
+    /// The project's scheduled routines: `wsx routine` (docs/tasks.md "Routines")
+    Routine {
+        #[command(subcommand)]
+        action: RoutineCmd,
+        /// The manager: the owner's message of this turn that asked to add, edit or delete it
+        #[arg(long, value_name = "MESSAGE", global = true)]
+        owner_said: Option<u64>,
+    },
+}
+
 #[derive(Subcommand)]
 pub enum ProjectCmd {
-    /// Register a folder inside the home folder as a project; with --clone, git clones it first
+    /// Register a folder inside the home folder as a project; with --clone, git clones it first.
+    /// A git URL alone clones into <root>/<repo>: the folder of the current project, else the one
+    /// that holds the most projects, else ~/ws
     Add {
+        /// A folder inside the home folder, or an ssh or https git URL
         path: String,
         /// The ssh or https git URL to clone into a folder that does not exist yet
         #[arg(long, value_name = "URL")]
@@ -544,16 +555,26 @@ pub enum ChatCmd {
     Rename { name: String, title: String },
 }
 
-impl TaskCmd {
-    /// The command an agent's argv names, `None` when it parses to no `wsx task` command.
+/// One parsed command of the three groups that act on a project: `wsx chat`, `wsx task` and
+/// `wsx project` (docs/design/orchestration.md, the CLI split).
+pub enum Invocation {
+    Chat(ChatGroup),
+    Task(TaskCmd),
+    Project(ProjectGroup),
+}
+
+impl Invocation {
+    /// The command an agent's argv names, `None` when it parses to no command of the three groups.
     pub fn parse_argv(argv: &[String]) -> Option<Self> {
         use clap::Parser;
         let args = crate::cli::Args::try_parse_from(
             std::iter::once("wsx").chain(argv.iter().map(String::as_str)),
         )
         .ok()?;
-        match args.command {
-            Some(crate::cli::Command::Task { subcommand, .. }) => Some(subcommand),
+        match args.command? {
+            crate::cli::Command::Chat { subcommand, .. } => Some(Self::Chat(subcommand)),
+            crate::cli::Command::Task { subcommand, .. } => Some(Self::Task(subcommand)),
+            crate::cli::Command::Project { subcommand, .. } => Some(Self::Project(subcommand)),
             _ => None,
         }
     }
@@ -565,83 +586,135 @@ impl TaskCmd {
     pub fn needs(&self) -> &'static [Capability] {
         use Capability::*;
         match self {
-            Self::List { .. }
-            | Self::Show { .. }
-            | Self::Why { .. }
-            | Self::Review { .. }
-            | Self::Ledger
-            | Self::Deployed
-            | Self::TouchedScenarios { .. }
-            | Self::Chat { action: None, .. }
-            | Self::Search { .. }
-            | Self::Check { .. }
-            | Self::Manager => &[Read],
-            Self::Post { .. } | Self::Digest { .. } | Self::Say { .. } => &[Notify],
-            Self::CheckRun { .. } => &[Result],
-            Self::After { .. } | Self::Hold { .. } => &[Backlog],
-            Self::Add { .. } | Self::Stop { .. } | Self::Move { .. } => &[Direct],
-            Self::New(_) => &[CreateTask],
-            Self::Close { discard: true, .. } => &[Discard],
-            Self::Close { .. } => &[Close],
-            Self::Land { .. } | Self::Commit { .. } => &[Land],
-            Self::Deploy(_)
-            | Self::Release(_)
-            | Self::Push(_)
-            | Self::Sync
-            | Self::Project { .. } => &[Deploy],
-            Self::Checkin { .. } => &[Routine],
-            Self::Run { .. } => &[Ask],
-            Self::Routine { action, .. } => match action {
-                RoutineCmd::List { .. } | RoutineCmd::Show { .. } | RoutineCmd::Logs { .. } => {
-                    &[Read]
-                }
-                _ => &[Routine],
+            Self::Chat(command) => match command {
+                ChatGroup::Read { .. }
+                | ChatGroup::Search { .. }
+                | ChatGroup::Lead
+                | ChatGroup::Ledger => &[Read],
+                ChatGroup::Say { .. } => &[Notify],
+                ChatGroup::Checkin { .. } => &[Routine],
+                ChatGroup::Manage(_)
+                | ChatGroup::Dismiss { .. }
+                | ChatGroup::Approve { .. }
+                | ChatGroup::Deny { .. } => &[Approve],
             },
-            Self::Hand { .. }
-            | Self::Dismiss { .. }
-            | Self::Chat {
-                action: Some(_), ..
-            }
-            | Self::Approve { .. }
-            | Self::Deny { .. }
-            | Self::Host { .. }
-            | Self::BoundaryProfile { .. }
-            | Self::Slot { .. }
-            | Self::Reap { .. }
-            | Self::Ran { .. }
-            | Self::ChatHost { .. }
-            | Self::RepoHost { .. }
-            | Self::ManagerHost { .. } => &[Approve],
+            Self::Project(command) => match command {
+                ProjectGroup::Deployed | ProjectGroup::Check { .. } => &[Read],
+                ProjectGroup::Commit { .. } => &[Land],
+                ProjectGroup::Deploy(_)
+                | ProjectGroup::Release(_)
+                | ProjectGroup::Push(_)
+                | ProjectGroup::Sync
+                | ProjectGroup::Manage(_) => &[Deploy],
+                ProjectGroup::Run { .. } => &[Ask],
+                ProjectGroup::Routine { action, .. } => match action {
+                    RoutineCmd::List { .. } | RoutineCmd::Show { .. } | RoutineCmd::Logs { .. } => {
+                        &[Read]
+                    }
+                    _ => &[Routine],
+                },
+            },
+            Self::Task(command) => match command {
+                TaskCmd::List { .. }
+                | TaskCmd::Show { .. }
+                | TaskCmd::Why { .. }
+                | TaskCmd::Review { .. }
+                | TaskCmd::TouchedScenarios { .. } => &[Read],
+                TaskCmd::Post { .. } | TaskCmd::Digest { .. } => &[Notify],
+                TaskCmd::CheckRun { .. } => &[Result],
+                TaskCmd::After { .. } | TaskCmd::Hold { .. } => &[Backlog],
+                TaskCmd::Add { .. } | TaskCmd::Stop { .. } | TaskCmd::Move { .. } => &[Direct],
+                TaskCmd::New(_) => &[CreateTask],
+                TaskCmd::Close { discard: true, .. } => &[Discard],
+                TaskCmd::Close { .. } => &[Close],
+                TaskCmd::Land { .. } => &[Land],
+                TaskCmd::Hand { .. }
+                | TaskCmd::Host { .. }
+                | TaskCmd::BoundaryProfile { .. }
+                | TaskCmd::Slot { .. }
+                | TaskCmd::Reap { .. }
+                | TaskCmd::Ran { .. }
+                | TaskCmd::ChatHost { .. }
+                | TaskCmd::RepoHost { .. }
+                | TaskCmd::ManagerHost { .. } => &[Approve],
+            },
         }
     }
+}
 
-    /// Whether the command prints JSON whatever `--json` says: the ledger always does; a
-    /// routine command has its own `--json` (`RoutineCmd`).
+// ^ Whether a command prints JSON whatever `--json` says (the ledger always does; a routine
+// command has its own `--json`, `RoutineCmd`), and whether it reads files or a host socket and
+// never needs wsxd: `main` and `Args::json` ask each group.
+impl ChatGroup {
     pub fn prints_json(&self) -> bool {
-        match self {
-            Self::Ledger => true,
-            Self::Routine { action, .. } => action.json(),
-            _ => false,
-        }
+        matches!(self, Self::Ledger)
     }
 
-    /// Commands that read files or a host socket and never need wsxd.
+    pub fn without_daemon(&self) -> bool {
+        !matches!(self, Self::Lead | Self::Say { .. } | Self::Approve { .. })
+    }
+}
+
+impl ProjectGroup {
+    pub fn prints_json(&self) -> bool {
+        matches!(self, Self::Routine { action, .. } if action.json())
+    }
+
     pub fn without_daemon(&self) -> bool {
         !matches!(
             self,
-            Self::New(_)
-                | Self::Check {
-                    action: Some(CheckAction::Fail { note: Some(_), .. }),
-                    ..
-                }
-                | Self::Close { .. }
-                | Self::Hand { .. }
-                | Self::Manager
-                | Self::Move { .. }
-                | Self::Say { .. }
-                | Self::Approve { .. }
+            Self::Check {
+                action: Some(CheckAction::Fail { note: Some(_), .. }),
+                ..
+            }
         )
     }
+}
+
+impl TaskCmd {
+    pub fn without_daemon(&self) -> bool {
+        !matches!(
+            self,
+            Self::New(_) | Self::Close { .. } | Self::Hand { .. } | Self::Move { .. }
+        )
+    }
+}
+
+/// The new form of a `wsx task` command that moved to `wsx chat` or `wsx project`, for the
+/// refusal of the old one (docs/design/orchestration.md, the CLI split).
+pub fn moved(argv: &[String]) -> Option<String> {
+    let (group, after) = argv.split_first()?;
+    if group != "task" {
+        return None;
+    }
+    // ^ `Common`'s flags may come before the command: `wsx task -p demo say ...`.
+    let mut words = after.iter().map(String::as_str);
+    let command = loop {
+        match words.next()? {
+            "-p" | "--project" => {
+                words.next()?;
+            }
+            flag if flag == "--json" || flag.starts_with("--project=") => {}
+            command => break command,
+        }
+    };
+    let rest: Vec<&str> = words.collect();
+    const CHAT_ACTIONS: [&str; 6] = ["new", "list", "close", "main", "goal", "rename"];
+    let new = match command {
+        "say" | "search" | "approve" | "deny" | "dismiss" | "checkin" | "ledger" => {
+            format!("wsx chat {command}")
+        }
+        "manager" => "wsx chat lead".into(),
+        "chat" => match rest.iter().find(|word| !word.starts_with('-')) {
+            Some(action) if CHAT_ACTIONS.contains(action) => format!("wsx chat {action}"),
+            _ => "wsx chat read".into(),
+        },
+        "project" => "wsx project add".into(),
+        "push" | "sync" | "commit" | "deploy" | "release" | "deployed" | "check" | "run"
+        | "routine" => format!("wsx project {command}"),
+        _ => return None,
+    };
+    Some(format!("`wsx task {command}` moved: use `{new}`"))
 }
 
 #[derive(Subcommand)]

@@ -53,7 +53,7 @@ fn received(fixture: &Fixture, needle: &str) -> Vec<String> {
 /// The repo's service and the manager run: the service ends a wait on a closed task and tells
 /// the manager what its sweep finds. `say` starts both.
 fn with_a_manager(fixture: &Fixture) {
-    let said = fixture.wsx(&["task", "say", "hello"]);
+    let said = fixture.wsx(&["chat", "say", "hello"]);
     assert!(said.status.success(), "{said:?}");
 }
 
@@ -170,6 +170,33 @@ fn worker_with_a_run_out(fixture: &Fixture) {
     assert!(
         !fixture.log(&task).contains("\"kind\":\"check_run\""),
         "the run ended early: {task}"
+    );
+}
+
+#[test]
+fn a_late_check_run_that_passes_is_evidence_and_starts_no_turn() {
+    let fixture = gated_ci();
+    worker_with_a_run_out(&fixture);
+    fs::write(fixture.root.join("gate"), "").expect("open the gate");
+    fixture.wait("the answer is logged", |task| {
+        fixture
+            .log(task)
+            .contains("\"kind\":\"check_run\"")
+            .then_some(())
+    });
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(received(&fixture, "Your check-run ended").is_empty());
+    // ^ The pass is recorded as evidence in the settled result (docs/tasks.md "Check-run").
+    let task = fixture.json(&["task", "show", "1", "--json"]);
+    assert_eq!(task["state"], "ready", "{task}");
+    let evidence = task["result"]["result"]["evidence"].as_array().cloned().unwrap_or_default();
+    let proof: Vec<_> = evidence
+        .iter()
+        .filter(|line| line["check"].as_str().is_some_and(|check| check.contains("check-run")))
+        .collect();
+    assert!(
+        proof.len() == 1 && proof[0]["proof"].as_str().is_some_and(|text| text.contains(": exit 0")),
+        "{task}"
     );
 }
 

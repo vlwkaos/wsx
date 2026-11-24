@@ -1,5 +1,5 @@
-//! A failed deploy keeps the end of its output, and `wsx task deployed` shows it once its
-//! detached run ends (docs/tasks.md "Deploy and release"); `wsx task push` moves origin's
+//! A failed deploy keeps the end of its output, and `wsx project deployed` shows it once its
+//! detached run ends (docs/tasks.md "Deploy and release"); `wsx project push` moves origin's
 //! default branch only as asked, and the manager's waiting requests replace one another and
 //! run one at a time (docs/tasks.md "Push"). Drives the public CLI on an isolated
 //! HOME and state, with a local bare repository as origin; neither needs wsxd.
@@ -124,16 +124,16 @@ impl Drop for Fixture {
 
 impl Fixture {
     /// Start a deploy by hand (as `env` says, in the caller's environment) and wait until
-    /// its detached run records one failure; returns the tip it deployed and `wsx task deployed`.
+    /// its detached run records one failure; returns the tip it deployed and `wsx project deployed`.
     fn failed_deploy(&self, env: &[(&str, &str)]) -> (String, Value) {
         let tip = self.git(&["rev-parse", "main"]);
         // ^ A deploy by hand answers that it started; its detached run records the result.
         let mut command = self.command(Path::new(env!("CARGO_BIN_EXE_wsx")));
         command.envs(env.iter().copied());
         let deploy = command
-            .args(["task", "deploy", "-p", "demo", "--json"])
+            .args(["project", "deploy", "-p", "demo", "--json"])
             .output()
-            .expect("run wsx task deploy");
+            .expect("run wsx project deploy");
         assert!(deploy.status.success(), "{deploy:?}");
         let started: Value = serde_json::from_slice(&deploy.stdout).expect("deploy JSON");
         assert_eq!(started["started"], true, "{started}");
@@ -141,7 +141,7 @@ impl Fixture {
 
         let deadline = Instant::now() + Duration::from_secs(30);
         let status = loop {
-            let deployed = self.wsx(&["task", "deployed", "-p", "demo", "--json"]);
+            let deployed = self.wsx(&["project", "deployed", "-p", "demo", "--json"]);
             assert!(deployed.status.success(), "{deployed:?}");
             let status: Value = serde_json::from_slice(&deployed.stdout).expect("deployed JSON");
             if status["deploy"]["failed_since"] == 1 {
@@ -232,14 +232,14 @@ fn a_push_moves_origin_only_as_asked() {
     fixture.git(&["add", "a.txt"]);
     fixture.git(&["commit", "-q", "-m", "a"]);
     let tip = fixture.git(&["rev-parse", "main"]);
-    let pushed = answer(&fixture.wsx(&["task", "push", "-p", "demo", "--json"]));
+    let pushed = answer(&fixture.wsx(&["project", "push", "-p", "demo", "--json"]));
     assert_eq!(pushed["commit"], tip.as_str(), "{pushed}");
     assert_eq!(pushed["forced"], false, "{pushed}");
     assert_eq!(origin_tip(), tip);
 
     // ^ A squash: one commit with main's tree and no parent. Without --force it refuses.
     let squash = fixture.git(&["commit-tree", "main^{tree}", "-m", "squash"]);
-    let rewrite = ["task", "push", "-p", "demo", "--commit", &squash];
+    let rewrite = ["project", "push", "-p", "demo", "--commit", &squash];
     refused(&rewrite, "a rewrite needs --force");
     // ^ A lease on a tip origin no longer has: the owner approved another state.
     let stale_lease = format!("--lease={first}");
@@ -254,7 +254,9 @@ fn a_push_moves_origin_only_as_asked() {
     fs::write(fixture.root.join("project/a.txt"), "mine\n").expect("edit a.txt");
     let other = fixture.git(&["commit-tree", &format!("{first}^{{tree}}"), "-m", "other"]);
     refused(
-        &["task", "push", "-p", "demo", "--commit", &other, "--force"],
+        &[
+            "project", "push", "-p", "demo", "--commit", &other, "--force",
+        ],
         "uncommitted changes in a.txt",
     );
     assert_eq!(origin_tip(), tip);
@@ -316,7 +318,9 @@ fn waiting_pushes_replace_one_another_and_run_one_at_a_time() {
     let newer = fixture.commit_on(&older, "newer.txt");
     let other = fixture.commit_on(&base, "other.txt");
     let ask = |commit: &str, force: bool| {
-        let mut args = vec!["task", "push", "-p", "demo", "--commit", commit, "--json"];
+        let mut args = vec![
+            "project", "push", "-p", "demo", "--commit", commit, "--json",
+        ];
         if force {
             args.push("--force");
         }
@@ -356,7 +360,7 @@ fn waiting_pushes_replace_one_another_and_run_one_at_a_time() {
     }
     let second = id_of(&ask(&newer, false));
     let pending = |action: &str| -> Vec<Value> {
-        let output = fixture.wsx(&["task", "ledger", "-p", "demo", "--json"]);
+        let output = fixture.wsx(&["chat", "ledger", "-p", "demo", "--json"]);
         let ledger: Value = serde_json::from_slice(&output.stdout).expect("ledger JSON");
         ledger["approvals"]
             .as_array()
@@ -381,7 +385,7 @@ fn waiting_pushes_replace_one_another_and_run_one_at_a_time() {
         waiting[0]["label"], "Approve push #7 #8 (2 commits)",
         "{waiting:?}"
     );
-    let replaced = fixture.wsx(&["task", "approve", &first, "-p", "demo", "--json"]);
+    let replaced = fixture.wsx(&["chat", "approve", &first, "-p", "demo", "--json"]);
     assert!(!replaced.status.success(), "{}", text(&replaced));
     assert!(
         text(&replaced).contains(&format!("replaced by {second}; nothing ran")),
@@ -412,7 +416,9 @@ fn waiting_pushes_replace_one_another_and_run_one_at_a_time() {
     // ^ A deploy or release follows the same rule: the newer commit replaces the older, a
     // commit on another line stays.
     let deploy = |commit: &str| {
-        id_of(&fixture.manager(&["task", "deploy", "-p", "demo", "--commit", commit, "--json"]))
+        id_of(&fixture.manager(&[
+            "project", "deploy", "-p", "demo", "--commit", commit, "--json",
+        ]))
     };
     let (d_old, d_new, d_other) = (deploy(&older), deploy(&newer), deploy(&other));
     let waiting = pending("deploy");
@@ -445,7 +451,7 @@ fn waiting_pushes_replace_one_another_and_run_one_at_a_time() {
     let run = |id: &str| {
         fixture
             .command(Path::new(env!("CARGO_BIN_EXE_wsx")))
-            .args(["task", "approve", id, "-p", "demo", "--json"])
+            .args(["chat", "approve", id, "-p", "demo", "--json"])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()

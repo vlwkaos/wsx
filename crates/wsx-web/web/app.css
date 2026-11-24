@@ -849,6 +849,9 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .bubble:not([data-first]) { margin-top: calc(var(--space-1) - var(--space-3)); }
 .bubble-author, .bubble-time, .bubble-tag { font-size: var(--font-size-sm); color: var(--color-muted); padding-inline: var(--space-1); }
 .bubble-author { font-weight: var(--font-weight-medium); }
+/* The lead's tag after its name: the muted text, regular weight (docs/web-client-tasks.md "Project screen"). */
+.bubble-author[data-role]::after { content: attr(data-role); color: var(--color-muted); font-weight: normal; }
+.bubble-author[data-role]:not(:empty)::after { margin-inline-start: var(--space-2); }
 .bubble-tag { padding: 0 0 var(--space-1); }
 .bubble-box {
   min-width: 0; max-width: 100%; padding: var(--space-2) var(--space-3); border-radius: var(--radius-control);

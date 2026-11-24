@@ -1,6 +1,6 @@
 #!/bin/sh
 # tasks.release.command for wsx: publish the version of one main commit (docs/tasks.md "Deploy
-# and release"). `wsx task release` runs it on the host in a temporary detached copy of that
+# and release"). `wsx project release` runs it on the host in a temporary detached copy of that
 # commit with WSX_DEPLOY_COMMIT. The tag starts .github/workflows/release.yml, which runs ci.yml's
 # tests, then builds the archive, the GitHub release, wsx-core on crates.io and the Homebrew tap.
 # A tag on origin whose version has no GitHub release and no crates.io version moves to the commit.

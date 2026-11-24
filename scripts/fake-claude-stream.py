@@ -37,7 +37,7 @@ Each user message is a small script of words:
                the next message continues this one (also for the manager); with
                CHECKRUN_LATE its check-run starts before the limit
   MLIMIT <s>   (manager, in an events message; once per <s>) like LIMIT; DASH there answers "-"
-  ASKRUN <pid>  (worker) ask the owner to run `kill <pid>` outside the boundary (`wsx task run`) and
+  ASKRUN <pid>  (worker) ask the owner to run `kill <pid>` outside the boundary (`wsx project run`) and
                trace the answer; also try it with -p, which a worker may not
   PROBE <script> <spec> <out>  run the test's boundary probe script (python3 <script> <spec> <out>)
                and trace what it wrote to <out>
@@ -79,7 +79,7 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   DIAGRAM        answer with a tall mermaid diagram, drawn after the bubble shows
   PAGE <section> <words>  replace that section of the project overview (its instructions name it)
   OVERLONG <n>   write an overview of n lines (over the cap when n > 60); the host's follow-up leaves it
-  STATUS         answer from `wsx task ledger`
+  STATUS         answer from `wsx chat ledger`
   (the host's request "<path>/context.md is <n> lines / <n> bytes ...") compact that file to its
                  project section, its lines that name Claude.app and its last 5 memos, unless its
                  first line is "# stubborn"
@@ -480,7 +480,7 @@ def manager_turn(text, project, page):
         steps = ' --> '.join('S%d[step %d]' % (n, n) for n in range(8))
         replies.append('The plan:\n\n```mermaid\nflowchart TD\n  %s\n```' % steps)
     if 'STATUS' in text.split():
-        ledger = json.loads(subprocess.run(['wsx', 'task', 'ledger', '-p', project], capture_output=True,
+        ledger = json.loads(subprocess.run(['wsx', 'chat', 'ledger', '-p', project], capture_output=True,
                                            text=True, check=True).stdout)
         rows = ['#%d %s' % (row['id'], row['state']) for row in ledger['open']]
         replies.append('open: ' + (', '.join(rows) if rows else 'none'))
@@ -773,12 +773,12 @@ def main():
             probe(*words[words.index('PROBE') + 1:words.index('PROBE') + 4])
         if 'ASKRUN' in words:
             pid = words[words.index('ASKRUN') + 1]
-            asked = subprocess.run(['wsx', 'task', 'run', '--why', 'stop the stray helper', '--', 'kill', pid],
+            asked = subprocess.run(['wsx', 'project', 'run', '--why', 'stop the stray helper', '--', 'kill', pid],
                                    capture_output=True, text=True)
-            elsewhere = subprocess.run(['wsx', 'task', 'run', '-p', 'other', '--', 'kill', pid],
+            elsewhere = subprocess.run(['wsx', 'project', 'run', '-p', 'other', '--', 'kill', pid],
                                        capture_output=True, text=True)
             # ^ A word whose shown text differs from what runs (a right-to-left override) is refused.
-            disguised = subprocess.run(['wsx', 'task', 'run', '--', 'echo', 'ok\u202erm -rf'],
+            disguised = subprocess.run(['wsx', 'project', 'run', '--', 'echo', 'ok\u202erm -rf'],
                                        capture_output=True, text=True)
             trace({'askrun': {'code': asked.returncode, 'out': asked.stdout + asked.stderr,
                               'elsewhere': elsewhere.returncode, 'elsewhere_out': elsewhere.stderr,
@@ -803,7 +803,7 @@ def main():
             # ^ Through the task host's broker (WSX_TASK_BROKER); any other command is refused,
             # a push of the default branch too (docs/tasks.md "Push").
             ran = subprocess.run(['wsx', 'task', 'check-run'], capture_output=True, text=True)
-            other = subprocess.run(['wsx', 'task', 'push', '--json'], capture_output=True, text=True)
+            other = subprocess.run(['wsx', 'project', 'push', '--json'], capture_output=True, text=True)
             trace({'check_run': [ran.returncode, ran.stdout + ran.stderr], 'check_run_other': [other.returncode, other.stderr]})
         if 'MEMORY' in words:
             trace({'memory': memory_probe()})

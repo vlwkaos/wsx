@@ -27,13 +27,13 @@ flowchart LR
   M -.->|approval, to check| O
 ```
 
-- Talk to a project's manager with `wsx task say`, the web chat, or `t` then `m` in the TUI.
+- Talk to a project's manager with `wsx chat say`, the web chat, or `t` then `m` in the TUI.
 - The manager plans and starts tasks. A task is a headless worker on branch `wsx/t<n>` in its own working copy.
 - The host runs the project's checks. The manager reviews the diff and lands the task.
 - A deploy follows a land by itself where `tasks.deploy.auto` is set.
 - Deploy, release, discard, push and project add wait for you in **Needs you**.
 - **To check** holds only what a person must look at or feel.
-- A project has several chats: each a manager with its own name, goal and log, for one area of work; the project's tasks, files and memory are shared. `wsx task chat new|list|close` manages them, `wsx task say --to <name>` writes to one.
+- A project has several chats: each a manager with its own name, goal and log, for one area of work; the project's tasks, files and memory are shared. `wsx chat new|list|close` manages them, `wsx chat say --to <name>` writes to one.
 - A manager can run tasks in another registered project. It gets their events and memo back.
 - Routines (cron or event) and check-ins wake the manager. `wsx memory` keeps its records.
 

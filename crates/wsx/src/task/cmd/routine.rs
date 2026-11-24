@@ -242,7 +242,7 @@ pub(crate) fn post_when_free(
     }
 }
 
-/// `wsx task routine`: the project's routines. A role changes nothing of the project's own, and
+/// `wsx project routine`: the project's routines. A role changes nothing of the project's own, and
 /// the manager writes one only with the owner's word (docs/tasks.md "Chats", "Routines").
 pub(crate) fn routine_command(action: RoutineCmd, owner_said: Option<u64>) -> Result<()> {
     use RoutineCmd::{Add, Delete, Edit};

@@ -97,7 +97,7 @@ pub enum Window<'a> {
 
 impl<'a> Window<'a> {
     /// The window of a chat request: a find when it has words, else around `around`, else after
-    /// `after`, else the tail. The web, the TUI and `wsx task chat` ask with these.
+    /// `after`, else the tail. The web, the TUI and `wsx chat read` ask with these.
     pub fn new(find: Option<&'a str>, after: Option<u64>, around: Option<u64>) -> Self {
         match (find.filter(|words| !words.trim().is_empty()), around, after) {
             (Some(words), ..) => Self::Find(words),
@@ -668,7 +668,7 @@ pub struct Reading {
     pub items: Vec<CheckItem>,
 }
 
-/// The one read of a chat for the web, the TUI and `wsx task chat`: the names the viewer sees
+/// The one read of a chat for the web, the TUI and `wsx chat read`: the names the viewer sees
 /// (the manager's shown name and the chat's own), the approvals of
 /// the chat that owns them, and the page at `window`. No folder yet is an empty chat. `edit` is
 /// `page`'s.
@@ -711,7 +711,7 @@ pub fn read_for(
     })
 }
 
-/// A chat window read once: what the web, the TUI and `wsx task chat` all need.
+/// A chat window read once: what the web, the TUI and `wsx chat read` all need.
 #[derive(Default)]
 pub struct Page {
     /// The log as `read_chat` returned it; `activity` reads its end.

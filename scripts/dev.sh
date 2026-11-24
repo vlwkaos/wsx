@@ -98,7 +98,7 @@ start() {
   # `daemon status` exits 0 also when wsxd is stopped: its Runtime line says which.
   daemon_running || wsx daemon recover >/dev/null
   # ^ The project's first chat is its main chat with no goal: the lead (docs/tasks.md "Lead and forks").
-  wsx task chat list -p scratch --json | grep -q '"main": true' || wsx task chat new lead -p scratch >/dev/null
+  wsx chat list -p scratch --json | grep -q '"main": true' || wsx chat new lead -p scratch >/dev/null
   # ^ The page files are built into wsx: a rebuilt binary needs a new server.
   stop_web
   if serving; then

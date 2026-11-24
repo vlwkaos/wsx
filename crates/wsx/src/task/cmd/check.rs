@@ -1,4 +1,4 @@
-//! `wsx task check`: the owner's To check list (docs/tasks.md "To check").
+//! `wsx project check`: the owner's To check list (docs/tasks.md "To check").
 
 use super::approve::owner_only;
 use super::new::{create, NewTask, Steps};
@@ -11,7 +11,7 @@ use wsx_core::task::checks::{self, CheckItem, CheckState};
 use wsx_core::task::owner::{self};
 use wsx_core::task::store::{self, TaskDir, REPORT_FILE};
 
-/// `wsx task check`: list the open items, or pass, skip or fail them (docs/tasks.md "To check").
+/// `wsx project check`: list the open items, or pass, skip or fail them (docs/tasks.md "To check").
 pub(crate) fn check(action: Option<CheckAction>, project: Option<&str>, json: bool) -> Result<()> {
     let (name, main) = project_entry(project)?;
     let project_id = store::project_id(&name, &main);
@@ -47,7 +47,7 @@ pub(crate) fn check(action: Option<CheckAction>, project: Option<&str>, json: bo
                         Some(said)
                     }
                     _ => bail!(
-                        "wsx task check pass is for the owner; the manager names each item with --owner-said <message>"
+                        "wsx project check pass is for the owner; the manager names each item with --owner-said <message>"
                     ),
                 }
             } else {

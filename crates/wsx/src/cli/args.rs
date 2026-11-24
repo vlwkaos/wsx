@@ -94,12 +94,26 @@ pub enum Command {
         #[arg(long, global = true)]
         json: bool,
     },
-    /// Headless worker tasks and the project manager (docs/tasks.md)
+    /// Talk with a project's chats and decide what they ask: say, read, search, approve (docs/tasks.md "Chats")
+    Chat {
+        #[command(flatten)]
+        common: crate::task::Common,
+        #[command(subcommand)]
+        subcommand: crate::task::ChatGroup,
+    },
+    /// Headless worker tasks: one task's life from new to land or close (docs/tasks.md)
     Task {
         #[command(flatten)]
         common: crate::task::Common,
         #[command(subcommand)]
         subcommand: crate::task::TaskCmd,
+    },
+    /// A project's code side: push, sync, commit, deploy, release, checks, routines (docs/tasks.md)
+    Project {
+        #[command(flatten)]
+        common: crate::task::Common,
+        #[command(subcommand)]
+        subcommand: crate::task::ProjectGroup,
     },
 }
 
@@ -201,7 +215,9 @@ impl Command {
                     | DaemonCmd::CloseExited { json: true }
             ),
             Command::Routine { subcommand } => subcommand.json(),
-            Command::Task { common, subcommand } => common.json || subcommand.prints_json(),
+            Command::Chat { common, subcommand } => common.json || subcommand.prints_json(),
+            Command::Task { common, .. } => common.json,
+            Command::Project { common, subcommand } => common.json || subcommand.prints_json(),
             Command::Memory { json, .. } => *json,
             _ => false,
         }

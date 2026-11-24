@@ -382,6 +382,8 @@ struct View {
     activity: Option<String>,
     /// The agent in use, as `view::agent_label` writes it.
     agent: Option<String>,
+    /// The chat is its project's lead (`chats::is_lead`): its replies say so.
+    lead: bool,
 }
 
 /// A check's answer: the host's status, and the store read again when a stamp changed.
@@ -403,6 +405,8 @@ pub struct ManagerChat {
     pub rows: Vec<ChatRow>,
     /// The other side's shown name, read with the rows.
     name: String,
+    /// The other side is the project's lead, read with the rows.
+    lead: bool,
     pub items: Vec<Item>,
     pub selected: usize,
     pub loaded: bool,
@@ -490,6 +494,7 @@ impl ManagerChat {
         });
         let mut chat = Self {
             name,
+            lead: false,
             project,
             chat,
             main,
@@ -629,6 +634,10 @@ impl ManagerChat {
                     self.wrapped.take();
                 }
                 self.name = view.name;
+                if view.lead != self.lead {
+                    self.lead = view.lead;
+                    self.wrapped.take();
+                }
                 if self.reveal_due {
                     self.reveal();
                 }
@@ -694,7 +703,7 @@ impl ManagerChat {
         });
     }
 
-    /// Send the composer's text as `wsx task say` does, starting the manager when needed.
+    /// Send the composer's text as `wsx chat say` does, starting the manager when needed.
     pub fn send(&mut self) {
         let mut text = self.composer.value().trim().to_string();
         if text.is_empty() || self.acting.is_some() {
@@ -761,7 +770,7 @@ impl ManagerChat {
         );
     }
 
-    /// Dismiss the open question of reply `id`, as `wsx task dismiss` does.
+    /// Dismiss the open question of reply `id`, as `wsx chat dismiss` does.
     fn dismiss(&mut self, id: u64) {
         self.run(format!("Dismissing {id}"), move |_, _, store| {
             let done = ManagerDir::main(&store).and_then(|dir| {
@@ -781,7 +790,7 @@ impl ManagerChat {
         self.focus = Focus::Compose;
     }
 
-    /// Approve or deny request `id` as `wsx task approve` and `deny` do.
+    /// Approve or deny request `id` as `wsx chat approve` and `deny` do.
     pub fn decide(&mut self, id: String, approve: bool) {
         self.focus = Focus::Chat;
         let doing = if approve { "Approving" } else { "Denying" };
@@ -858,6 +867,7 @@ fn read(
     Ok(View {
         rows,
         name,
+        lead: dir.is_some_and(wsx_core::task::chats::is_lead),
         items,
         activity: activity(&log).map(str::to_string),
         agent,
@@ -1092,7 +1102,7 @@ impl ManagerChat {
     fn center_row(&mut self, at: usize) {
         let (width, _) = self.area.get();
         let lines = |rows: &[ChatRow]| {
-            crate::ui::task_chat::chat_lines(rows, width, None, None, &self.opened)
+            crate::ui::task_chat::chat_lines(rows, width, None, None, &self.opened, self.lead)
                 .0
                 .len()
         };
@@ -1336,6 +1346,7 @@ impl ManagerChat {
                 self.link,
                 self.marked,
                 &self.opened,
+                self.lead,
             );
             *cache = Some(Wrapped {
                 width,

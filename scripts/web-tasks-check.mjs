@@ -1401,7 +1401,7 @@ await shot("asks-you", ".composer-send");
 // ^ A later report does not drop the mark: plans' manager asks ui's, whose answer is a reply that
 // is not quiet and asks nothing. The chat keeps its tag and the Home row, from the real overview,
 // shows the same on that row only (docs/web-client-tasks.md "Home").
-await evaluate(`fetch('api/tasks/${plansArg}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ text: 'RUN wsx task say -p ui --from-chat "How is ui now?" --json' }))} })`);
+await evaluate(`fetch('api/tasks/${plansArg}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ text: 'RUN wsx chat say -p ui --from-chat "How is ui now?" --json' }))} })`);
 // ^ In ui's chat the question is a `Talked to` row; ui's report on it is a muted line after it, not a bubble.
 // ^ A read of the route a second apart: `until` asks every 100 ms, and each ask spends the device's request budget (429 in the console).
 const reported = async () => {
@@ -2679,6 +2679,11 @@ const sideBorders = () => evaluate(`[...document.querySelectorAll('.log .bubble-
     || style.backgroundImage !== 'none' || style.boxShadow !== 'none' || ['::before', '::after'].some((part) => getComputedStyle(node, part).content !== 'none')
     || (node.closest('.bubble').dataset.side === 'out' && style.borderInlineEndColor !== 'rgba(0, 0, 0, 0)'); }).length`);
 if (!(await count('.log .bubble[data-speaker="owner"]')) || await count('.log .bubble[data-speaker="owner"] .bubble-author')) await fail("the chat has no owner bubble, or it shows a name");
+// ^ This is the project's main chat with no goal, its lead: "lead" follows the name, drawn by the
+// stylesheet, so the name's text stays the name (docs/web-client-tasks.md "Project screen").
+const leadTag = await evaluate(`(() => { const node = document.querySelector('.log .bubble[data-speaker="manager"] .bubble-author');
+  return node && { role: node.dataset.role ?? null, after: getComputedStyle(node, '::after').content, text: node.textContent }; })()`);
+if (leadTag?.role !== "lead" || leadTag.after !== '"lead"' || /lead$/.test(leadTag.text)) await fail(`the lead's name has no lead tag: ${JSON.stringify(leadTag)}`);
 for (const scheme of ["dark", "light"]) {
   await inScheme(scheme);
   const colors = await speakerColors();
@@ -3883,7 +3888,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   // `repos`, no command makes one yet): Home shows each once, in three lines, with the project
   // line muted (docs/web-client-tasks.md "Home"). Closed again after the captures.
   const cli = JSON.parse(fs.readFileSync(wsxCli));
-  const chatCmd = (...args) => execFileSync(cli.wsx, ["task", "chat", ...args], { env: cli.env, cwd: cli.cwd, stdio: "pipe" }).toString();
+  const chatCmd = (...args) => execFileSync(cli.wsx, ["chat", ...args], { env: cli.env, cwd: cli.cwd, stdio: "pipe" }).toString();
   const goal = path.join(path.dirname(wsxCli), "rename-goal.md");
   fs.writeFileSync(goal, "Work out the fee table.\n");
   const staged = cli.env.XDG_STATE_HOME;
@@ -4199,7 +4204,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await evaluate(`document.querySelector('${sheet} form').closest('dialog').close()`);
   await until("!document.querySelector('dialog.sheet')", "the New chat sheet stayed open");
   // ^ Close chat (docs/tasks.md "Chats"): the chat's ⋯ menu, one confirm, then Home without its
-  // row; `wsx task chat list` has it closed. The first chat's top row has no Close chat.
+  // row; `wsx chat list` has it closed. The first chat's top row has no Close chat.
   const menuItems = () => evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].map((item) => item.textContent.trim())");
   await go(`#/p/${project}`);
   await until(`location.hash === '${chat}'`, "the old route #/p/<id> did not redirect to the main chat");
@@ -4227,7 +4232,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await evaluate(`[...document.querySelectorAll('${sheet} button')].find((button) => button.textContent === 'Close chat').click()`);
   await until(`location.hash === '#/' && !!document.querySelector('.home-row') && !document.querySelector('.row:has(.chat-row)[data-key="${project}/c/qa"]')`, "Close chat did not go Home without the qa row", 30);
   const cli = JSON.parse(fs.readFileSync(wsxCli));
-  const listed = JSON.parse(execFileSync(cli.wsx, ["task", "chat", "list", "--json", "-p", "ui"], { env: cli.env, cwd: cli.cwd, stdio: "pipe" }));
+  const listed = JSON.parse(execFileSync(cli.wsx, ["chat", "list", "--json", "-p", "ui"], { env: cli.env, cwd: cli.cwd, stdio: "pipe" }));
   if (listed.chats.find((chat) => chat.name === "qa")?.state !== "closed") await fail(`chat list after Close chat: ${JSON.stringify(listed)}`);
 }
 
@@ -4316,7 +4321,7 @@ const named = "document.querySelectorAll('.log > [data-key]').length";
 // the 35, and each refused send is retried by `watchFetch` and counts against the page's 240 requests a minute.
 {
   const cli = JSON.parse(fs.readFileSync(wsxCli));
-  for (let n = 0; n < 35; n++) execFileSync(cli.wsx, ["task", "say", `NOOP ${n}`, "--json", "-p", "ui"], { env: cli.env, cwd: cli.cwd, stdio: "pipe" });
+  for (let n = 0; n < 35; n++) execFileSync(cli.wsx, ["chat", "say", `NOOP ${n}`, "--json", "-p", "ui"], { env: cli.env, cwd: cli.cwd, stdio: "pipe" });
 }
 await until(`!document.querySelector('.log .typing')`, "the manager did not answer the long chat", 120);
 // ^ Read to the end and opened again: nothing unread, so the window is the newest 60 rows.
@@ -4449,12 +4454,12 @@ phase("A task mention of another project (docs/web-client-tasks.md ");
   const peerWords = "waits for you";
   const pageModule = (name) => `import(new URL(${JSON.stringify(name)}, [...document.scripts].find((script) => script.type === 'module').src))`;
   // ^ plans' manager says it to ui's.
-  const asked = await say(`RUN wsx task say -p ui --from-chat "${fromPlans}" --json`, plansArg);
+  const asked = await say(`RUN wsx chat say -p ui --from-chat "${fromPlans}" --json`, plansArg);
   if (asked !== 200) await fail(`plans' manager was not asked to write to ui's: ${asked}`);
   // ^ ui's own chat billing (made by the fixture) writes to ui's first chat: `peer:chat:billing` is no project's.
   const fromBilling = "Chat note: #1 is ours";
   const billingAsked = await evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text: ${JSON.stringify(`RUN wsx task say -p ui --from-chat "${fromBilling}" --json`)}, chat: 'billing' }) }).then((response) => response.status)`);
+    body: JSON.stringify({ text: ${JSON.stringify(`RUN wsx chat say -p ui --from-chat "${fromBilling}" --json`)}, chat: 'billing' }) }).then((response) => response.status)`);
   if (billingAsked !== 200) await fail(`ui's chat billing was not asked to write to the first chat: ${billingAsked}`);
   await go(chat);
   // ^ What another chat said shows in a folded "Talked to <chat>" row (TalkLine): the helper opens every talk, then finds the

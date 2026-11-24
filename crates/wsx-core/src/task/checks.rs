@@ -233,7 +233,7 @@ pub fn find_open<'a>(items: &'a [CheckItem], id: &str) -> Result<&'a CheckItem> 
     let item = items
         .iter()
         .find(|item| item.id == id)
-        .with_context(|| format!("no item {id}; `wsx task check` lists the open ones"))?;
+        .with_context(|| format!("no item {id}; `wsx project check` lists the open ones"))?;
     if item.state != CheckState::Open {
         bail!("item {id} is already {}", state_name(item.state));
     }
@@ -267,7 +267,7 @@ fn is_skip_key(words: &str) -> bool {
 
 /// Read an owner message that opens with `> check <id>`; `message` is the id it is logged with.
 /// None for any other message. A reply of only the skip key skips an open item with `close`, as
-/// `wsx task check skip` does, and the item keeps `message` as `owner_said`. Other words go to
+/// `wsx project check skip` does, and the item keeps `message` as `owner_said`. Other words go to
 /// the manager; they close an open item as `replied` with the words as its note, and on an item
 /// that was passed or failed they are its note (`note_said` keeps `message` in both).
 pub fn item_reply(project_id: &str, text: &str, message: u64) -> Option<ItemReply> {

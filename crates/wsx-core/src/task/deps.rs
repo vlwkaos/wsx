@@ -1,4 +1,4 @@
-//! Which projects use a dependency, for mail between projects (`wsx task say --uses`): the
+//! Which projects use a dependency, for mail between projects (`wsx chat say --uses`): the
 //! lockfiles and manifests at a project's root that name it as a whole word. A text match, not a
 //! resolver: a name that only appears in a comment counts too. ref: docs/tasks.md "Mail"
 use std::path::Path;
