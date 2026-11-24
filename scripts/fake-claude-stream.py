@@ -557,6 +557,23 @@ def review_turn(session, text):
     emit(result)
 
 
+def route(prompt):
+    """The router's one call (docs/tasks.md "Router"): `ROUTE_TO <chat>` and `ROUTE_NEW <name>` in
+    the owner's message choose; `ROUTE_SLOW` takes longer than the router waits; else stay."""
+    message = prompt.split('The message:\n', 1)[-1].split('\n\nAnswer stay', 1)[0]
+    words = message.split()
+    trace({'route': True, 'argv': sys.argv[1:], 'message': message})
+    if 'ROUTE_SLOW' in words:
+        time.sleep(60)
+    verdict = {'route': 'stay'}
+    if 'ROUTE_TO' in words:
+        verdict = {'route': 'chat', 'chat': words[words.index('ROUTE_TO') + 1]}
+    if 'ROUTE_NEW' in words:
+        verdict = {'route': 'new', 'name': words[words.index('ROUTE_NEW') + 1]}
+    emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': json.dumps(verdict),
+          'structured_output': verdict})
+
+
 def main():
     global SESSION, MODEL, SPENT, THOUGHT, LATE_SIMPLIFY
     options = parse_args(sys.argv[1:])
@@ -564,6 +581,8 @@ def main():
         return interactive(options)
     if 'Reply with the word ok.' in sys.argv[1:]:
         return limit_probe()
+    if '--json-schema' in options and 'route' in (json.loads(options['--json-schema']).get('required') or []):
+        return route(sys.argv[-1])
     instructions = options.get('--append-system-prompt', '')
     project = instructions.split('wsx project ')[1].split('.')[0] if 'You are the manager' in instructions else None
     session = options.get('--resume') or options.get('--session-id')

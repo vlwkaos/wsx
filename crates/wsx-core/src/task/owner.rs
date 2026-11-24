@@ -146,6 +146,12 @@ pub fn say(
     from: Option<super::manager::Author>,
     short: Vec<super::manager::Short>,
 ) -> Result<ManagerResponse> {
+    // ^ The owner's message with no prefix may be routed by a small model first; it only picks
+    // a prefix, which the chat's host acts on (docs/tasks.md "Router").
+    let text = match from {
+        None => routed(name, main, chat, text),
+        Some(_) => text,
+    };
     let (_, dir) = ensure_manager(name, main, wsx, chat, launch)?;
     call_socket(
         &dir.socket_path(),
@@ -211,6 +217,307 @@ pub fn close_chat(
     )
     .map(|_| Closed::Handed)
     .context("the chat is closed, but its hand-back did not reach the main chat")
+}
+
+/// How long the router's model may take before the message stays where it was written.
+const ROUTE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The owner's message `text` to chat `chat` (none: the main chat) of the project, with the
+/// router's prefix when `tasks.router.model` is set and the model sends it on: `@<chat>` for
+/// an open chat whose goal it belongs to, `/new <name>` for a goal no open chat has. The model
+/// reads only the message and each open chat's name and goal line. A message with a prefix of
+/// its own, no model, a model that fails, is slow, or names a chat that is not open or a name
+/// in use: the text as it was, so it stays. Only `from: None` (the owner typing in a chat) is
+/// routed; mail and chats' messages name their chat. ref: docs/tasks.md "Router"
+fn routed(name: &str, main: &Path, chat: Option<&str>, text: String) -> String {
+    let Some(model) = crate::config::project::load_task_config(main)
+        .ok()
+        .and_then(|settings| settings.router_model)
+    else {
+        return text;
+    };
+    // ^ A prefix of its own, or a quote it answers: the rules or the quote decide.
+    let start = text.trim_start();
+    if start.starts_with(['/', '@', '>']) {
+        return text;
+    }
+    let project_id = store::project_id(name, main);
+    let open = super::chats::open_chats(&project_id);
+    let here = match chat {
+        Some(chat) => chat.to_string(),
+        None => match super::chats::open_main(&project_id) {
+            Ok(dir) => dir.chat,
+            Err(_) => return text,
+        },
+    };
+    let line = |dir: &ManagerDir| {
+        let goal = fork_goal(&super::chats::goal(dir));
+        format!(
+            "- {}: {}",
+            dir.name(),
+            if goal.is_empty() {
+                "(the lead: no goal of its own)"
+            } else {
+                &goal
+            }
+        )
+    };
+    let chats: Vec<String> = open.iter().map(line).collect();
+    let prompt = format!(
+        "Route one message of the owner. It was written in chat {here}. The project's open chats, each with its goal:\n{}\n\nThe message:\n{}\n\nAnswer stay when it continues the goal of {here}, asks about it, or you are not sure. Answer chat with that chat's name when it plainly belongs to another open chat's goal. Answer new with a short new name (lowercase, dashes) only when it asks for work whose goal no open chat has.",
+        chats.join("\n"),
+        text.chars().take(4000).collect::<String>()
+    );
+    let verdict = ask_router(&model, &prompt);
+    let Some(verdict) = verdict else {
+        return text;
+    };
+    let open_name = |chat: &str| open.iter().any(|dir| dir.name() == chat);
+    match verdict["route"].as_str() {
+        Some("chat") => match verdict["chat"].as_str() {
+            Some(target) if target != here && open_name(target) => format!("@{target} {text}"),
+            _ => text,
+        },
+        Some("new") => match verdict["name"].as_str() {
+            Some(new)
+                if super::chats::checked_name(new).is_ok()
+                    && !store::chats_root().join(new).exists() =>
+            {
+                format!("/new {new} {text}")
+            }
+            _ => text,
+        },
+        _ => text,
+    }
+}
+
+/// One call of the router's model with no tools, no project and no session: its structured
+/// answer, or none on any failure.
+fn ask_router(model: &str, prompt: &str) -> Option<serde_json::Value> {
+    use crate::process::{run_bounded, Bound, Options, Stderr};
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "route": { "enum": ["stay", "chat", "new"] },
+            "chat": { "type": "string" },
+            "name": { "type": "string" }
+        },
+        "required": ["route"]
+    });
+    let mut command = std::process::Command::new("claude");
+    command.current_dir(store::state_dir()).env_clear();
+    for name in super::AGENT_ENV {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command
+        .args(["-p", "--output-format", "stream-json", "--verbose"])
+        .args([
+            "--model",
+            model,
+            "--setting-sources",
+            "",
+            "--no-session-persistence",
+        ])
+        // ^ No tool and no MCP server: the message may be pasted text that asks for one.
+        .args(["--tools", "", "--strict-mcp-config"])
+        .args(["--json-schema", &schema.to_string()])
+        .arg(prompt)
+        .stdin(std::process::Stdio::null());
+    let run = run_bounded(
+        &mut command,
+        &Options {
+            timeout: ROUTE_TIMEOUT,
+            stdout: Bound::Tail(256 * 1024),
+            stderr: Stderr::Null,
+            reap: true,
+        },
+    )
+    .ok()?;
+    run.stdout.split(|byte| *byte == b'\n').find_map(|line| {
+        let value: serde_json::Value = serde_json::from_slice(line).ok()?;
+        (value["type"] == "result" && value["is_error"] == false)
+            .then(|| value["structured_output"].clone())
+            .filter(serde_json::Value::is_object)
+    })
+}
+
+/// The goal of a chat forked from the owner's message `text`: its first line, at most 200
+/// characters, so the new chat's purpose is the owner's own words.
+pub fn fork_goal(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .chars()
+        .take(200)
+        .collect()
+}
+
+/// Fork the owner's message `message` of chat `origin` (its `text`, from that chat's log) into
+/// the new chat `name` of the project: the new chat's goal is `fork_goal`, and it starts on the
+/// message as the owner's own words. The name is taken by making its folder, so a used name is
+/// refused and two forks at once cannot share one; `origin` notes the fork before the message
+/// goes. When the message does not reach the new chat, its host stops, it closes and both logs
+/// say the fork is undone. Returns the new chat's goal and the message's id there.
+/// The one fork of `chat new --brief` and the router's `/new`. ref: docs/tasks.md "Lead and forks"
+#[allow(clippy::too_many_arguments)]
+pub fn fork(
+    project: (&str, &Path),
+    wsx: &Path,
+    launch: impl Fn(String, Vec<String>) -> Result<()>,
+    origin: &ManagerDir,
+    message: u64,
+    text: String,
+    name: &str,
+    agent: Option<&str>,
+) -> Result<(String, Option<u64>)> {
+    use super::manager::{Author, ManagerEvent};
+    let name = super::chats::checked_name(name)?;
+    let goal = fork_goal(&text);
+    if goal.is_empty() {
+        bail!("the message has no words to fork; nothing was done");
+    }
+    // ^ Private as every chat folder (`store::create_private_dir`).
+    let made = {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(store::chats_root().join(name))
+    };
+    if let Err(error) = made {
+        match error.kind() {
+            std::io::ErrorKind::AlreadyExists => {
+                bail!("chat {name} was opened before: a fork needs a new name; nothing was done")
+            }
+            _ => bail!("cannot make the folder of chat {name}: {error}; nothing was done"),
+        }
+    }
+    origin.append(ManagerEvent::Forked {
+        to: name.to_string(),
+        message,
+    })?;
+    let project_id = store::project_id(project.0, project.1);
+    let dir = super::chats::create(&project_id, name, Some(&goal), agent)?;
+    let sent = dir
+        .append(ManagerEvent::ForkedFrom {
+            from: origin.name().to_string(),
+            message,
+        })
+        .and_then(|()| {
+            say(
+                project.0,
+                project.1,
+                wsx,
+                Some(name),
+                launch,
+                text,
+                // ^ The owner's words, already routed: `Owner`, so no router moves them again.
+                Some(super::manager::Author::Owner),
+                Vec::new(),
+            )
+        });
+    // ^ The fork stands once the message is in the new chat's log, also when the answer did not
+    // come back in time (a host that took it, then was slow).
+    let arrived = || {
+        dir.read_log().ok().and_then(|log| {
+            log.into_iter().find_map(|entry| match entry.event {
+                ManagerEvent::Message {
+                    id,
+                    from: Author::Owner,
+                    ..
+                } => Some(id),
+                _ => None,
+            })
+        })
+    };
+    let id = match sent {
+        Ok(response) if response.ok => response.id,
+        failed => {
+            let Some(id) = arrived() else {
+                let why = match failed {
+                    Ok(response) => response.message,
+                    Err(error) => format!("{error:#}"),
+                };
+                // ^ No half fork runs: its host stops, the chat closes (its name stays used) and
+                // both logs say the fork is undone.
+                let _ = super::replace::stop_host(&dir, project.1);
+                let _ = super::chats::close(name);
+                let undone = ManagerEvent::ForkUndone {
+                    to: name.to_string(),
+                };
+                let _ = dir.append(undone.clone());
+                let _ = origin.append(undone);
+                bail!("the fork to {name} did not start: {why}; chat {name} is closed");
+            };
+            Some(id)
+        }
+    };
+    Ok((goal, id))
+}
+
+/// Give the owner's message `message` of chat `origin` (its `text`) to the open chat `target`
+/// of the project `project` (the router's `@<chat>`): `target` takes it as the owner's own
+/// words, then both logs note the move. A failure is noted in `origin`, where the owner says it
+/// again; words that reached `target` though its answer did not come back are moved.
+/// ref: docs/tasks.md "Router"
+#[allow(clippy::too_many_arguments)]
+pub fn move_message(
+    project: (&str, &Path),
+    wsx: &Path,
+    launch: impl Fn(String, Vec<String>) -> Result<()>,
+    origin: &ManagerDir,
+    message: u64,
+    text: String,
+    target: &str,
+) -> Result<()> {
+    use super::manager::{Author, ManagerEvent};
+    let moved = super::chats::open_chat(target).and_then(|dir| {
+        let before = dir.read_log().map(|log| log.len()).unwrap_or(0);
+        let text_sent = text.clone();
+        let sent = say(
+            project.0,
+            project.1,
+            wsx,
+            Some(target),
+            launch,
+            text,
+            // ^ The owner's words, already routed: `Owner`, so no router moves them again.
+            Some(Author::Owner),
+            Vec::new(),
+        )
+        .and_then(|sent| {
+            anyhow::ensure!(sent.ok, "{}", sent.message);
+            Ok(())
+        });
+        let arrived = || {
+            dir.read_log().is_ok_and(|log| {
+                log.iter().skip(before).any(|entry| {
+                    matches!(&entry.event, ManagerEvent::Message { from: Author::Owner, text, .. } if *text == text_sent)
+                })
+            })
+        };
+        if sent.is_err() && !arrived() {
+            return sent;
+        }
+        dir.append(ManagerEvent::MovedFrom {
+            from: origin.name().to_string(),
+            message,
+        })?;
+        origin.append(ManagerEvent::Moved {
+            to: target.to_string(),
+            message,
+        })
+    });
+    if let Err(error) = &moved {
+        origin.append(ManagerEvent::MoveFailed {
+            to: target.to_string(),
+            message,
+            reason: format!("{error:#}"),
+        })?;
+    }
+    moved
 }
 
 /// Ask the repo's main chat to write to the owner with no turn, starting its host first. An

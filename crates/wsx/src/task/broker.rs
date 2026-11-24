@@ -318,6 +318,23 @@ fn reach(argv: &[String], own: &str, project_id: &str, role: Role) -> Result<Opt
             argv.iter()
                 .find_map(|arg| arg.strip_prefix("--to=").map(str::to_string))
         });
+    // ^ `say --uses` reaches the main chat of every project that uses a dependency: a role that
+    // reaches other projects sends it, and each message is its own (`mail_command`).
+    if sub == "say"
+        && argv
+            .iter()
+            .any(|arg| arg == "--uses" || arg.starts_with("--uses="))
+    {
+        if role.info().reach.is_empty() {
+            bail!("{}", role.reach_refusal("every project that uses it"));
+        }
+        // ^ An agent's mail is its chat's, never the owner's: without --from-chat it would
+        // reach every project as the owner.
+        if !from_chat {
+            bail!("an agent's `say --uses` passes --from-chat: it is sent as this chat; nothing was sent");
+        }
+        return Ok(None);
+    }
     // ^ `manager` is the repo's main chat, as another chat names it.
     match project.filter(|project| project != own) {
         None if sub == "say" && from_chat => {

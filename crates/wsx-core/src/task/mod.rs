@@ -12,6 +12,34 @@ pub mod chats;
 pub mod chats_home;
 pub mod checks;
 pub mod copy;
+pub mod deps;
+
+/// The environment a Claude process keeps from wsx's own: the account, the shell basics, and the
+/// network and toolchain setup (a proxy, CA files) its calls and commands need.
+pub const AGENT_ENV: &[&str] = &[
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "PATH",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "CLAUDE_CONFIG_DIR",
+    "ANTHROPIC_API_KEY",
+    // ^ Network and toolchain setup a worker's own commands need.
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+    "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+];
 pub mod failure;
 pub mod history;
 pub mod ledger;

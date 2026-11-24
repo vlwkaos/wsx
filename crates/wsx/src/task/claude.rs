@@ -19,31 +19,8 @@ use wsx_core::task::view::clip;
 use wsx_core::task::{now_unix_ms, store, worker_result_schema, TaskRecord, TurnUsage};
 
 const PROGRESS_CHARS: usize = 160;
-/// Variables a worker keeps from the host. Everything else, `WSX_*` included, is dropped.
-const KEPT_ENV: &[&str] = &[
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "PATH",
-    "SHELL",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TMPDIR",
-    "CLAUDE_CONFIG_DIR",
-    "ANTHROPIC_API_KEY",
-    // ^ Network and toolchain setup a worker's own commands need.
-    "HTTPS_PROXY",
-    "HTTP_PROXY",
-    "NO_PROXY",
-    "https_proxy",
-    "http_proxy",
-    "no_proxy",
-    "NODE_EXTRA_CA_CERTS",
-    "SSL_CERT_FILE",
-    "CARGO_HOME",
-    "RUSTUP_HOME",
-];
+// ^ A worker keeps only `AGENT_ENV` from the host; `WSX_*` and the rest are dropped.
+use wsx_core::task::AGENT_ENV;
 
 pub struct ClaudeAgent {
     pub(super) process: AgentProcess,
@@ -436,7 +413,7 @@ impl ClaudeAgent {
             launch,
             "claude",
             claude_args(launch, session, resume),
-            KEPT_ENV,
+            AGENT_ENV,
             &[("BASH_MAX_OUTPUT_LENGTH", BASH_MAX_OUTPUT)],
             std::process::Stdio::inherit(),
         )?;
@@ -983,7 +960,7 @@ fn run_limit_probe(model: &str) {
         .current_dir(store::state_dir())
         .env_clear()
         .envs(
-            KEPT_ENV
+            AGENT_ENV
                 .iter()
                 .filter_map(|name| Some((*name, std::env::var_os(name)?))),
         )

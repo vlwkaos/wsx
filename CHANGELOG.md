@@ -6,6 +6,10 @@ Releases 0.40.4 and older are in [docs/changelog-archive.md](docs/changelog-arch
 
 ### Changed
 
+- Tasks: `tasks.router.model` (off by default) lets a small model add the `@<chat>` or `/new <name>` prefix to an owner message that has none; when unsure it leaves the message where it was written.
+- Tasks: `tasks.roles` names the areas of a large repo; `wsx task chat new <name> --role <role>` opens a chat that owns the role's paths and runs on its agent.
+- Tasks: `wsx task say --uses <dependency>` sends one message to the lead of every registered project whose lockfile or manifest names that dependency.
+- Tasks: an owner message that starts with `/new <name>` forks into a new chat, and one that starts with `@<chat>` goes to that open chat, of any project; the chat it was written in takes no turn on it and notes where it went.
 - Tasks: a check failure shared by tasks reaches the main chat as an event that starts no turn; adds dropped at a land go to the chat that owns the task.
 - Web: a click outside a chat's folder sheet closes it with no change, as Escape does.
 - Tasks: a project's main chat with no goal is its lead. It forks every message that asks for work into a new chat with `wsx task chat new <name> --brief --owner-said <id>`: the new chat starts on the owner's own message, its goal the message's first line, and both chats show the fork. Closing the new chat before it owns a task undoes the fork, with no hand-back.

@@ -467,7 +467,9 @@ impl Manager {
                 message: format!("{} message(s) waiting", self.queue.len()),
             },
             ManagerRequest::Say { text, from, short } => {
-                match self.accept(from.unwrap_or(Author::Owner), text, short) {
+                // ^ `from: None` is the owner typing in this chat; forwarded words name `Owner`.
+                let typed = from.is_none();
+                match self.accept(from.unwrap_or(Author::Owner), typed, text, short) {
                     Ok(id) => ManagerResponse {
                         ok: true,
                         id: Some(id),
@@ -594,10 +596,32 @@ impl Manager {
             })
             .chain(self.state.limit.iter().flat_map(|hold| hold.ids.clone()))
             .collect();
+        // ^ The router's messages are another chat's; one whose move or fork the host did not
+        // see through (it stopped first) is noted, and the owner says it again.
+        for (at, entry) in log.iter().enumerate() {
+            let ManagerEvent::Routed { message, to } = &entry.event else {
+                continue;
+            };
+            let settled = log[at..].iter().any(|later| match &later.event {
+                ManagerEvent::Moved { message: m, .. }
+                | ManagerEvent::Forked { message: m, .. }
+                | ManagerEvent::MoveFailed { message: m, .. } => m == message,
+                ManagerEvent::ForkUndone { to: undone } => undone == to,
+                _ => false,
+            });
+            if !settled {
+                self.log(ManagerEvent::MoveFailed {
+                    to: to.clone(),
+                    message: *message,
+                    reason: "wsx stopped before it got there".into(),
+                });
+            }
+        }
         let delivered: std::collections::HashSet<u64> = log
             .iter()
             .enumerate()
             .flat_map(|(at, entry)| match &entry.event {
+                ManagerEvent::Routed { message, .. } => vec![*message],
                 ManagerEvent::Delivered { ids } if at < after => ids.clone(),
                 ManagerEvent::Delivered { ids } => ids
                     .iter()
@@ -652,7 +676,15 @@ impl Manager {
     }
 
     /// Log a message and queue it; owner messages go before events.
-    fn accept(&mut self, from: Author, mut text: String, short: Vec<Short>) -> Result<u64> {
+    /// `typed`: the owner wrote it in this chat, so the router's rules apply; words a fork, a
+    /// move or mail forwards are not routed again.
+    fn accept(
+        &mut self,
+        from: Author,
+        typed: bool,
+        mut text: String,
+        short: Vec<Short>,
+    ) -> Result<u64> {
         // ^ A reply to a To check item: "x" skips it here and starts no turn; other words go on
         // with the item's check as their quote and its id on the message. The item keeps the
         // message's id, so it is taken first. ref: `checks::item_reply`
@@ -685,6 +717,13 @@ impl Manager {
         if text.len() > MAX_MESSAGE_BYTES {
             anyhow::bail!("the message is larger than the limit of {MAX_MESSAGE_BYTES} bytes");
         }
+        // ^ The router: `/new <name>` and `@<chat>` send the owner's message on; this chat logs it
+        // as delivered and takes no turn on it (docs/tasks.md "Router").
+        if typed && check.is_none() {
+            if let Some(route) = chats::route_rule(&text, self.dir.name())? {
+                return self.route_away(route, text, short, quote);
+            }
+        }
         let id = reserved.unwrap_or_else(|| self.next_id());
         let wakes = Short::any_wakes(&short);
         self.dir.append(ManagerEvent::Message {
@@ -707,6 +746,94 @@ impl Manager {
             }
         }
         self.enqueue(id, from, text, wakes);
+        Ok(id)
+    }
+
+    /// Log the owner's message as delivered here, then send it on along `route` from its own
+    /// thread (a chat's host may take a while to start): a fork into a new chat, or a move to an
+    /// open chat of any project. A name used before is refused at once, with nothing logged.
+    fn route_away(
+        &mut self,
+        route: chats::Route,
+        text: String,
+        short: Vec<Short>,
+        quote: Option<u64>,
+    ) -> Result<u64> {
+        if let chats::Route::New { name, .. } = &route {
+            if store::chats_root().join(name).exists() {
+                anyhow::bail!("chat {name} was opened before: a fork needs a new name");
+            }
+        }
+        let id = self.next_id();
+        // ^ `Routed` first: a restart between the two finds no message to take.
+        let to = match &route {
+            chats::Route::New { name, .. } => name.clone(),
+            chats::Route::To { chat, .. } => chat.clone(),
+        };
+        self.dir.append(ManagerEvent::Routed { message: id, to })?;
+        self.dir.append(ManagerEvent::Message {
+            id,
+            from: Author::Owner,
+            text,
+            short,
+            quote,
+            check: None,
+        })?;
+        self.last_activity = Instant::now();
+        let (origin, project, main) = (self.dir.clone(), self.project.clone(), self.main.clone());
+        std::thread::spawn(move || {
+            let Ok(exe) = std::env::current_exe() else {
+                return;
+            };
+            let (to, sent) = match route {
+                chats::Route::New { name, text } => {
+                    let sent = owner::fork(
+                        (&project, &main),
+                        &exe,
+                        super::launch_manager(&main),
+                        &origin,
+                        id,
+                        text,
+                        &name,
+                        None,
+                    );
+                    (name, sent.map(|_| ()))
+                }
+                chats::Route::To { chat, text } => {
+                    // ^ The chat's own project: an `@` reaches a chat of any registered project.
+                    // `move_message` notes the move, or its own failure.
+                    match chats::open_chat(&chat)
+                        .and_then(|dir| super::project_by_id(&dir.project_id))
+                    {
+                        Ok((project, main)) => {
+                            let _ = owner::move_message(
+                                (&project, &main),
+                                &exe,
+                                super::launch_manager(&main),
+                                &origin,
+                                id,
+                                text,
+                                &chat,
+                            );
+                            return;
+                        }
+                        Err(error) => (chat, Err(error)),
+                    }
+                }
+            };
+            // ^ A fork that failed after its start notes `fork_undone` itself; any other failure is
+            // noted here.
+            if let Err(error) = sent {
+                let undone = |entry: &ManagerEntry| matches!(&entry.event, ManagerEvent::ForkUndone { to: undone } if *undone == to);
+                if !matches!(origin.read_log(), Ok(log) if log.iter().any(undone)) {
+                    let _ = origin.append(ManagerEvent::MoveFailed {
+                        to,
+                        message: id,
+                        reason: format!("{error:#}"),
+                    });
+                }
+            }
+        });
         Ok(id)
     }
 
@@ -2054,7 +2181,8 @@ impl Manager {
     fn check_thought(&mut self, in_thinking: bool) {
         if in_thinking && !self.thought_asked {
             self.thought_asked = true;
-            if let Err(error) = self.accept(Author::Recap, THOUGHT_ASKED.into(), Vec::new()) {
+            if let Err(error) = self.accept(Author::Recap, false, THOUGHT_ASKED.into(), Vec::new())
+            {
                 self.say(&format!("cannot ask for the answer in thinking: {error:#}"));
             }
         }
@@ -2115,9 +2243,12 @@ impl Manager {
             self.overview_asked = false;
         } else if !self.overview_asked {
             self.overview_asked = true;
-            if let Err(error) =
-                self.accept(Author::Recap, overview_too_long(lines, chars), Vec::new())
-            {
+            if let Err(error) = self.accept(
+                Author::Recap,
+                false,
+                overview_too_long(lines, chars),
+                Vec::new(),
+            ) {
                 self.say(&format!("cannot ask for a shorter overview: {error:#}"));
             }
         }

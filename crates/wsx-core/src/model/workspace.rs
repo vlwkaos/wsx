@@ -76,6 +76,15 @@ pub struct Scenario {
     pub paths: Vec<String>,
 }
 
+/// One of `tasks.roles`: an area of a large repo that a chat can open at (`chat new --role`),
+/// with the paths it owns, its agent entry and its purpose (docs/tasks.md "Roles").
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Role {
+    pub paths: Vec<String>,
+    pub agent: Option<String>,
+    pub purpose: String,
+}
+
 /// The `tasks:` section of `wsx.config.yml` (docs/tasks.md).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskConfig {
@@ -118,6 +127,11 @@ pub struct TaskConfig {
     pub scenarios: std::collections::BTreeMap<String, Scenario>,
     /// `tasks.scenarioFree`: globs of paths that need no scenario, such as docs.
     pub scenario_free: Vec<String>,
+    /// `tasks.roles`, by name.
+    pub roles: std::collections::BTreeMap<String, Role>,
+    /// `tasks.router.model`: the Claude model that routes an owner message with no prefix
+    /// (docs/tasks.md "Router"); none: no model routes.
+    pub router_model: Option<String>,
     /// `tasks.env`: set for the worker's commands and for the checks, the same in both.
     pub env: std::collections::BTreeMap<String, String>,
     /// Seconds one check may run before its process group is killed.
@@ -262,6 +276,8 @@ impl Default for TaskConfig {
             checks: Vec::new(),
             scenarios: Default::default(),
             scenario_free: Vec::new(),
+            roles: Default::default(),
+            router_model: None,
             env: Default::default(),
             check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
             min_free_gb: 5,

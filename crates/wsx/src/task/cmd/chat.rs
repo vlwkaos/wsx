@@ -37,6 +37,100 @@ pub(crate) fn ensure_repo(project: Option<&str>) -> Result<bool> {
     owner::ensure_repo(&name, &main, &exe, launch_manager(&main))
 }
 
+/// `wsx task say --uses <dep>`: one message to the main chat of every registered project whose
+/// lockfile or manifest names `dep` (`deps::uses`), from the owner, or with `from_chat` from the
+/// acting chat, which it does not reach itself. Each lead answers it or forks what it asks of its
+/// project ("Lead and forks"). `-p` names none: every project is looked at.
+/// ref: docs/tasks.md "Mail"
+pub(crate) fn mail_command(
+    project: Option<&str>,
+    dep: &str,
+    text: PromptSource,
+    from_chat: bool,
+    json: bool,
+) -> Result<()> {
+    let dep = wsx_core::task::deps::checked_dep(dep)?;
+    if project.is_some() {
+        bail!("--uses looks at every registered project; drop -p");
+    }
+    let dep = dep.trim();
+    if dep.is_empty() {
+        bail!("--uses needs a dependency name");
+    }
+    let text = text.read(MAX_MESSAGE_BYTES)?;
+    let sender = match from_chat {
+        false => None,
+        true => Some(
+            actor()
+                .chat()
+                .filter(|_| acting_as_manager())
+                .context("--from-chat is for a chat's agent")?
+                .to_string(),
+        ),
+    };
+    let exe = std::env::current_exe().context("cannot find the wsx binary")?;
+    let mut rows = Vec::new();
+    for registered in crate::cli::load_config()?.projects {
+        let Some(file) = wsx_core::task::deps::uses(&registered.path, dep) else {
+            continue;
+        };
+        let project_id = store::project_id(&registered.name, &registered.path);
+        let target = chats::open_main(&project_id).map(|dir| dir.chat);
+        let sent = target.and_then(|target| {
+            if sender.as_deref() == Some(target.as_str()) {
+                bail!("it is the sending chat");
+            }
+            // ^ The owner's mail names its chat: `Owner`, not `None`, so no router moves it.
+            let from = Some(sender.clone().map_or(Author::Owner, |chat| Author::Peer {
+                from: Party::Chat(chat),
+                reply: false,
+            }));
+            let response = owner::say(
+                &registered.name,
+                &registered.path,
+                &exe,
+                Some(&target),
+                launch_manager(&registered.path),
+                format!("To the projects that use {dep} ({file} here):\n{text}"),
+                from,
+                Vec::new(),
+            )?;
+            anyhow::ensure!(response.ok, "{}", response.message);
+            Ok((target, response.id))
+        });
+        rows.push(match sent {
+            Ok((chat, id)) => {
+                json!({"project": registered.name, "file": file, "chat": chat, "id": id})
+            }
+            Err(error) => {
+                json!({"project": registered.name, "file": file, "skipped": format!("{error:#}")})
+            }
+        });
+    }
+    if json || sender.is_some() {
+        return print_json(&json!({"uses": dep, "projects": rows}));
+    }
+    if rows.is_empty() {
+        println!("no registered project names {dep}");
+    }
+    for row in &rows {
+        match row["skipped"].as_str() {
+            Some(why) => println!(
+                "{}: skipped: {why}",
+                row["project"].as_str().unwrap_or_default()
+            ),
+            None => println!(
+                "{}: message {} to {} ({})",
+                row["project"].as_str().unwrap_or_default(),
+                row["id"],
+                row["chat"].as_str().unwrap_or_default(),
+                row["file"].as_str().unwrap_or_default()
+            ),
+        }
+    }
+    Ok(())
+}
+
 /// `wsx task say`: to the manager, or to the open chat `to`, from the owner or a chat.
 /// `from_chat`: this host's agent sends it (`reply`: as a reply); the sender is the acting chat
 /// (the first as `manager`), and for another project (`-p`) its first chat is the one reached.
@@ -303,6 +397,7 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
             goal,
             agent,
             brief,
+            role,
             said,
         } => {
             // ^ Only a chat forks: the owner's own --brief is refused before anything is read.
@@ -321,6 +416,33 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
                     json,
                 );
             }
+            // ^ A role is a profile: its purpose and paths open the chat's goal, its agent is the
+            // chat's unless --agent names one.
+            let (goal, agent) = match role {
+                None => (goal, agent),
+                Some(role) => {
+                    let settings = load_task_config(&main)
+                        .map_err(|error| anyhow::anyhow!("{error}; nothing was done"))?;
+                    let found = settings.roles.get(&role).with_context(|| {
+                        let known: Vec<&str> = settings.roles.keys().map(String::as_str).collect();
+                        format!(
+                            "no role {role} in tasks.roles (it has: {}); nothing was done",
+                            known.join(", ")
+                        )
+                    })?;
+                    let mut text = format!(
+                        "Role {role}: you own {}. Pass them as `--files` to the tasks you open; send work outside them to the project's lead.",
+                        found.paths.join(", ")
+                    );
+                    if !found.purpose.is_empty() {
+                        text = format!("{text}\n{}", found.purpose);
+                    }
+                    if let Some(goal) = goal.filter(|goal| !goal.trim().is_empty()) {
+                        text = format!("{text}\n\n{goal}");
+                    }
+                    (Some(text), agent.or_else(|| found.agent.clone()))
+                }
+            };
             chats::create(&project_id, &name, goal.as_deref(), agent.as_deref())?;
             let message = format!("chat {name} is open; `wsx task say --to {name}` talks to it");
             if json {
@@ -484,92 +606,17 @@ fn fork(
             _ => None,
         })
         .with_context(|| format!("there is no owner message {said}; nothing was done"))?;
-    // ^ The goal is the owner's own first line, so the new chat's "purpose" is the owner's words.
-    let goal: String = text
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or_default()
-        .chars()
-        .take(200)
-        .collect();
-    // ^ The name is taken by making its folder, which fails when any folder of that name is
-    // there: two forks at once cannot both take it, and a used name never reopens a log.
-    // ^ Private as every chat folder (`store::create_private_dir`).
-    let made = {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .create(store::chats_root().join(name))
-    };
-    if let Err(error) = made {
-        match error.kind() {
-            std::io::ErrorKind::AlreadyExists => {
-                bail!("chat {name} was opened before: a fork needs a new name; nothing was done")
-            }
-            _ => bail!("cannot make the folder of chat {name}: {error}; nothing was done"),
-        }
-    }
-    // ^ The lead notes the fork before the message goes, so the same message forks once.
-    origin.append(ManagerEvent::Forked {
-        to: name.to_string(),
-        message: said,
-    })?;
-    let dir = chats::create(&project_id, name, Some(&goal), agent)?;
-    let sent = dir
-        .append(ManagerEvent::ForkedFrom {
-            from: asker.clone(),
-            message: said,
-        })
-        .and_then(|()| {
-            let exe = std::env::current_exe().context("cannot find the wsx binary")?;
-            owner::say(
-                project,
-                main,
-                &exe,
-                Some(name),
-                launch_manager(main),
-                text,
-                None,
-                Vec::new(),
-            )
-        });
-    // ^ The fork stands once the message is in the new chat's log, also when the answer did not
-    // come back in time (a host that took it, then was slow).
-    let arrived = || {
-        dir.read_log().ok().and_then(|log| {
-            log.into_iter().find_map(|entry| match entry.event {
-                ManagerEvent::Message {
-                    id,
-                    from: Author::Owner,
-                    ..
-                } => Some(id),
-                _ => None,
-            })
-        })
-    };
-    let brief_id = match sent {
-        Ok(response) if response.ok => response.id,
-        failed => {
-            let Some(id) = arrived() else {
-                let why = match failed {
-                    Ok(response) => response.message,
-                    Err(error) => format!("{error:#}"),
-                };
-                // ^ No half fork runs: its host stops, the chat closes (its name stays used) and
-                // both logs say the fork is undone.
-                let _ = wsx_core::task::replace::stop_host(&dir, main);
-                let _ = chats::close(name);
-                let undone = ManagerEvent::ForkUndone {
-                    to: name.to_string(),
-                };
-                let _ = dir.append(undone.clone());
-                let _ = origin.append(undone);
-                bail!("the fork to {name} did not start: {why}; chat {name} is closed");
-            };
-            Some(id)
-        }
-    };
+    let exe = std::env::current_exe().context("cannot find the wsx binary")?;
+    let (goal, brief_id) = owner::fork(
+        (project, main),
+        &exe,
+        launch_manager(main),
+        &origin,
+        said,
+        text,
+        name,
+        agent,
+    )?;
     let message = format!("forked message {said} to chat {name}; it starts on it");
     if json {
         return print_json(&json!({

@@ -214,6 +214,21 @@ pub enum ManagerEvent {
     /// The owner closed the chat `to`, forked from this one, before it owned a task: the fork is
     /// undone, and nothing was handed back. No turn reads it.
     ForkUndone { to: String },
+    /// The owner's message `message` here went to the open chat `to` by the router (`@<chat>`,
+    /// docs/tasks.md "Router"): that chat takes it, this one takes no turn on it.
+    Moved { to: String, message: u64 },
+    /// The owner's message that follows came from chat `from` by the router.
+    MovedFrom { from: String, message: u64 },
+    /// The router could not give the owner's message `message` to chat `to`; the owner says it
+    /// again.
+    MoveFailed {
+        to: String,
+        message: u64,
+        reason: String,
+    },
+    /// Logged before the owner's message `message` that the router sends on to chat `to` (a
+    /// fork's new name or an open chat): this chat takes no turn on it, also after a restart.
+    Routed { message: u64, to: String },
 }
 
 /// One event as the chat shows it, written where the event is made: `#3 done`,

@@ -266,6 +266,10 @@ pub enum TaskCmd {
         /// With --from-chat: this answers a message it sent
         #[arg(long)]
         reply: bool,
+        /// To the main chat of every registered project whose lockfile or manifest names this
+        /// dependency, instead of one project (docs/tasks.md "Mail")
+        #[arg(long, value_name = "DEPENDENCY", conflicts_with_all = ["to", "reply"])]
+        uses: Option<String>,
     },
     /// Read the manager conversation, or another chat's, after a message id or around one; the
     /// owner opens, lists and closes chats (docs/tasks.md "Chats")
@@ -502,6 +506,10 @@ pub enum ChatCmd {
         /// the fork. The name must be new
         #[arg(long, requires = "owner_said", conflicts_with = "goal")]
         brief: bool,
+        /// Open it at one of `tasks.roles`: it owns that role's paths and runs on its agent; a
+        /// --goal follows the role's purpose (docs/tasks.md "Roles")
+        #[arg(long, value_name = "ROLE", conflicts_with = "brief")]
+        role: Option<String>,
         #[command(flatten)]
         said: OwnerSaid,
     },

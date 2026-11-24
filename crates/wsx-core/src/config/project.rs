@@ -144,6 +144,10 @@ struct TasksFile {
     #[serde(rename = "scenarioFree", skip_serializing_if = "Vec::is_empty")]
     scenario_free: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    roles: BTreeMap<String, TaskRoleFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    router: Option<TaskRouterFile>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     env: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     land: Option<TaskLandFile>,
@@ -242,6 +246,23 @@ struct TaskLandFile {
     approve: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     auto: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct TaskRouterFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct TaskRoleFile {
+    paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    purpose: String,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -643,6 +664,46 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
     config.checks = validate_list(file.checks, "tasks.checks", MAX_DEFAULT_COMMAND_BYTES)?;
     config.scenarios = validate_scenarios(file.scenarios, file.scenario_paths)?;
     config.scenario_free = validate_globs(file.scenario_free, "tasks.scenarioFree")?;
+    if file.roles.len() > 32 {
+        return Err("tasks.roles has more than 32 roles".into());
+    }
+    config.router_model = file
+        .router
+        .and_then(|router| router.model)
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty());
+    if config
+        .router_model
+        .as_deref()
+        .is_some_and(|model| model.len() > 64 || model.contains(char::is_whitespace))
+    {
+        return Err("tasks.router.model must be one model name".into());
+    }
+    for (name, role) in file.roles {
+        if name.is_empty()
+            || name.len() > 32
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(format!(
+                "tasks.roles: {name:?} must be 1 to 32 of a-z, 0-9 and -"
+            ));
+        }
+        let paths = validate_globs(role.paths, &format!("tasks.roles.{name}.paths"))?;
+        if paths.is_empty() {
+            return Err(format!("tasks.roles.{name}.paths names no path"));
+        }
+        if role.purpose.len() > 1000 {
+            return Err(format!("tasks.roles.{name}.purpose is over 1000 bytes"));
+        }
+        let role = crate::model::workspace::Role {
+            paths,
+            agent: role.agent.filter(|agent| !agent.trim().is_empty()),
+            purpose: role.purpose.trim().to_string(),
+        };
+        config.roles.insert(name, role);
+    }
     config.env = validate_env(file.env)?;
     config.writable = match file.boundary {
         Some(boundary) => validate_writable(boundary.writable)?,

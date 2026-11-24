@@ -137,9 +137,16 @@ pub fn run(command: TaskCmd, common: Common) -> Result<()> {
         TaskCmd::Manager => manager_command(project, json),
         TaskCmd::Say {
             text,
+            from_chat,
+            uses: Some(dep),
+            ..
+        } => cmd::chat::mail_command(project, &dep, text, from_chat, json),
+        TaskCmd::Say {
+            text,
             to,
             from_chat,
             reply,
+            uses: None,
         } => say_command(project, to.as_deref(), text, (from_chat, reply), json),
         TaskCmd::Chat {
             after,

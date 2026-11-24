@@ -186,11 +186,13 @@ fn reaches_asks(log: &[ManagerEntry], now: u64) -> bool {
         .is_some_and(|entry| now.saturating_sub(entry.unix_ms) >= ASKS_WITHIN_MS)
 }
 
-/// `Delivered`, `Agent`, `Ping` and `Answered` entries are not conversation: they use no room.
+/// `Delivered`, `Routed`, `Agent`, `Ping` and `Answered` entries are not conversation: they use
+/// no room.
 fn in_chat(entry: &ManagerEntry) -> bool {
     !matches!(
         entry.event,
         ManagerEvent::Delivered { .. }
+            | ManagerEvent::Routed { .. }
             | ManagerEvent::Agent { .. }
             | ManagerEvent::Ping { .. }
             | ManagerEvent::Answered { .. }
@@ -1203,6 +1205,24 @@ fn note_row(entry: &ManagerEntry, names: &Names) -> Option<ChatRow> {
             row_key(entry, &format!("fork-undone-{to}")),
             entry,
             format!("\u{2442} Fork to {to} undone"),
+        )),
+        ManagerEvent::Moved { to, .. } => Some(ChatRow::new(
+            RowKind::Note,
+            row_key(entry, &format!("moved-{to}")),
+            entry,
+            format!("\u{2442} Moved to {to}"),
+        )),
+        ManagerEvent::MovedFrom { from, .. } => Some(ChatRow::new(
+            RowKind::Note,
+            row_key(entry, &format!("moved-from-{from}")),
+            entry,
+            format!("\u{2442} From {from}"),
+        )),
+        ManagerEvent::MoveFailed { to, reason, .. } => Some(ChatRow::new(
+            RowKind::Note,
+            row_key(entry, &format!("move-failed-{to}")),
+            entry,
+            format!("\u{2442} Not moved to {to}: {reason}; say it again"),
         )),
         _ => None,
     }

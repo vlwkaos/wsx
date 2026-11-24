@@ -640,7 +640,39 @@ The project's main chat with no goal is its **lead** (docs/design/orchestration.
 
 - **Search.** The forked message is in both chats' logs, so search finds it once per chat.
 
-Not built yet (docs/design/orchestration.md steps 4 and 6): the router that sends a message to the right chat before the lead sees it, and mail between desks.
+## Router
+
+An owner message can name where it goes (docs/design/orchestration.md, the owner's decision 2). The chat it is written in reads it first, in its host (`accept`), so the CLI's `say`, the web's composer and the TUI's alike:
+
+- `/new <name> <words>`: the words fork into the new chat `<name>`, as the lead's fork does (`owner::fork`, "Lead and forks"): its goal is their first line, both chats note the fork, and closing the new chat before it owns a task undoes it.
+- `@<chat> <words>`: the words go to the open chat `<chat>` of any registered project. Once the words are in its log, it gets `moved_from {from, message}` ("⑂ From <chat>") and this one `moved {to, message}` ("⑂ Moved to <chat>"); words that arrived though the answer did not come back count as moved, so they are never sent twice.
+- Either way, this chat logs `routed {message, to}`, then the whole message as the owner wrote it: it takes no turn on it, also after a restart. The message goes on from the host's own thread; a failure there is noted here (`move_failed`, "⑂ Not moved to <chat>: <why>; say it again", or the fork's `fork_undone`). A host that stopped before the move or fork settled notes `move_failed` ("wsx stopped before it got there") when it starts again.
+- Only what the owner types in a chat is routed: the words a fork or a move hands on, mail and a chat's own messages are not read for a prefix again.
+- Refused at once, with nothing logged: `/new` with a name used before or no words, `@<chat>` with no words. An `@word` that names no open chat, the chat itself, or a prefix later in the message is only text and stays.
+
+**The model** (`tasks.router.model`, a Claude model name such as `haiku`; off by default): before an owner message with no prefix goes to its chat, `owner::say` asks that model once (`claude -p` with no tools, no project folder, no session, 20 s at most) with only the message and each open chat's name and goal line, and it answers `stay`, `chat` with a name, or `new` with a name. `chat` with an open chat other than this one adds `@<chat> `, `new` with a free name adds `/new <name> `; the host then routes as above, so the moved message, the notes and the undo of a fork are the same. Anything else (no model, a failure, a slow answer, a chat that is not open, a name in use) leaves the text as it was, and it stays. A message with a prefix of its own, a quoted reply (`> ...`), mail and a chat's message ask no model. It is off by default because its accuracy is not measured yet (the design's target: 90% of a replayed day's messages routed as the owner would; measuring it makes paid calls). A model move has no undo of its own: the owner says it again where it belongs.
+
+## Mail
+
+One message to every project that uses a dependency (docs/design/orchestration.md step 6, the security fan-out):
+
+```sh
+wsx task say --uses <dependency> <text> [--from-chat] --json   # no -p, --to or --reply
+```
+
+wsx reads, at each registered project's root, the lockfiles and manifests of `wsx_core::task::deps::FILES` (`Cargo.lock`, `package.json`, `pnpm-lock.yaml`, `go.mod`, `requirements.txt`, `uv.lock` and others, 8 MiB each at most) and picks a project when one of them names the dependency as a whole word: no letter, digit, `_`, `-` or `.` on either side (`openssl` does not match `openssl-sys` or `libopenssl`; a match in a comment counts, it is text, not a resolver). Each picked project's main chat, its lead, gets the text headed `To the projects that use <dependency> (<file> here):`, and is not read for a router prefix, from the owner, or with `--from-chat` from the sending chat (a role that reaches other projects; the broker allows it with no `-p`, and refuses an agent's `--uses` without `--from-chat`, which would be the owner's words); the lead answers it or forks what it asks of its project ("Lead and forks"). The answer lists `projects: [{project, file, chat, id}]`, a project with no open main chat or the sender's own lead as `skipped` with why; a project that names none is left out. A dependency name is 1 to 214 of letters, digits and `@ / . _ -`, a letter, digit or `@` first; any other is refused with nothing sent.
+
+## Roles
+
+A large repo has areas (docs/design/orchestration.md "Role"): `tasks.roles` names each with the paths it owns, an optional `[[agents]]` entry and a purpose.
+
+```yaml
+tasks:
+  roles:
+    web: { paths: ["crates/wsx-web/**", "docs/web*.md"], agent: fast, purpose: "Keep the page fast." }
+```
+
+`wsx task chat new <name> --role <role> [--goal <file>]` opens a chat at that role: its goal starts `Role <role>: you own <paths>. Pass them as --files to the tasks you open; send work outside them to the project's lead.`, then the role's purpose, then the owner's goal; it runs on the role's agent unless `--agent` names one. A role is a profile, not a running thing: the chat is an ordinary chat, and the goal is its purpose as "Chats" says. A name `tasks.roles` lacks is refused with the names it has, and nothing is made. Role names are 1 to 32 of `a-z`, `0-9` and `-`; at most 32 roles, each with at least one path.
 
 ## Recap
 

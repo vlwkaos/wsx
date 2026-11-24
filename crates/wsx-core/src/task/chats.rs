@@ -99,6 +99,49 @@ pub fn open_chats(project_id: &str) -> Vec<ManagerDir> {
     all(project_id).into_iter().filter(is_open).collect()
 }
 
+/// Where the router sends an owner message (docs/tasks.md "Router"): `/new <name>` forks it into
+/// the new chat `name`, `@<chat>` gives it to that open chat; each takes the words after the
+/// prefix. Anything else stays in the chat it was written in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Route {
+    New { name: String, text: String },
+    To { chat: String, text: String },
+}
+
+/// The router's rules, no model: the owner's message `text` written in chat `here`. `None` keeps
+/// it here, also an `@word` that names no open chat (it is only text). An error is a prefix with
+/// no words after it.
+pub fn route_rule(text: &str, here: &str) -> Result<Option<Route>> {
+    let text = text.trim_start();
+    let split = |rest: &str| -> (String, String) {
+        let rest = rest.trim_start();
+        let (head, tail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+        (head.to_string(), tail.trim().to_string())
+    };
+    if let Some(rest) = text
+        .strip_prefix("/new")
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+    {
+        let (name, words) = split(rest);
+        checked_name(&name)?;
+        if words.is_empty() {
+            bail!("write the message after `/new {name}`: it is the new chat's first message");
+        }
+        return Ok(Some(Route::New { name, text: words }));
+    }
+    let Some(rest) = text.strip_prefix('@') else {
+        return Ok(None);
+    };
+    let (chat, words) = split(rest);
+    if chat == here || open_chat(&chat).is_err() {
+        return Ok(None);
+    }
+    if words.is_empty() {
+        bail!("write the message after `@{chat}`");
+    }
+    Ok(Some(Route::To { chat, text: words }))
+}
+
 /// The open chat of that name, or an error that says why there is none.
 pub fn open_chat(name: &str) -> Result<ManagerDir> {
     match ManagerDir::existing(name)? {
