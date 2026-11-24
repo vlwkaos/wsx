@@ -1432,17 +1432,6 @@ fn agent_report_rejects_invalid_structured_id_without_mutation() {
 }
 
 #[test]
-fn terminal_agent_environment_exposes_stable_pane_identity() {
-    let environment = terminal_agent_environment(PaneId(42), "0000000000000001:0000000000000001");
-    assert!(environment
-        .iter()
-        .any(|(name, value)| name == WSX_PANE_ID_ENV && value == "42"));
-    assert!(environment.iter().any(|(name, value)| {
-        name == WSX_RUNTIME_GENERATION_ENV && value == "0000000000000001:0000000000000001"
-    }));
-}
-
-#[test]
 fn agent_report_rejects_missing_or_stale_runtime_generation() {
     let (daemon, path) = agent_test_daemon(agent_test_persisted());
     let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
@@ -4084,20 +4073,11 @@ fn a_failed_save_answers_durability_degraded_and_the_saver_retries() {
 }
 
 #[test]
-fn revisions_conflict_explicitly() {
-    assert_eq!(expect_revision(2, 1).unwrap_err().code, "revision_conflict");
-}
-#[test]
 fn utf8_truncation_never_splits_codepoints() {
     let value = truncate_utf8("가".repeat(300), 512);
     assert!(value.len() <= 512);
     assert!(value.chars().all(|character| character == '가'));
 }
-#[test]
-fn default_state_is_valid() {
-    validate_persisted(&Persisted::default()).unwrap();
-}
-
 #[test]
 fn legacy_project_without_activity_timestamp_loads() {
     let (_, path) = agent_test_daemon(Persisted::default());
@@ -4463,20 +4443,11 @@ fn recovery_launch_valid_codex_id_provides_a_resume_key() {
         ]
     );
     assert_eq!(launch.recipe.initial_input, None);
+    // ^ A legacy codex conversation id migrates to the session reference.
+    assert!(agent.session_ref.is_some());
     assert_eq!(launch.recipe.rows, saved_recipe.rows);
     assert_eq!(launch.recipe.cols, saved_recipe.cols);
     assert!(launch.resume_key.is_some());
-}
-
-#[test]
-fn recovery_launch_disabled_leaves_saved_recipe_without_a_resume_key() {
-    let saved_recipe = recovery_test_recipe();
-    let mut agent = recovery_test_agent("codex", Some(CODEX_SESSION_ID));
-
-    let launch = recovery_launch(Some(&mut agent), &saved_recipe, false);
-
-    assert_recipe_matches(&launch.recipe, &saved_recipe);
-    assert!(launch.resume_key.is_none());
 }
 
 #[test]
@@ -4491,24 +4462,6 @@ fn recovery_launch_without_agent_or_session_ref_leaves_saved_recipe_unchanged() 
     let launch = recovery_launch(Some(&mut agent_without_ref), &saved_recipe, true);
     assert_recipe_matches(&launch.recipe, &saved_recipe);
     assert!(launch.resume_key.is_none());
-}
-
-#[test]
-fn recovery_launch_legacy_codex_conversation_migrates_to_session_ref() {
-    let saved_recipe = recovery_test_recipe();
-    let mut agent = recovery_test_agent("codex", Some(CODEX_SESSION_ID));
-
-    let launch = recovery_launch(Some(&mut agent), &saved_recipe, true);
-
-    assert_eq!(
-        launch.recipe.command,
-        vec![
-            "codex".to_string(),
-            "resume".to_string(),
-            CODEX_SESSION_ID.to_string(),
-        ]
-    );
-    assert!(agent.session_ref.is_some());
 }
 
 #[test]

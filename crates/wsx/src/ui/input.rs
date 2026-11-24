@@ -408,7 +408,8 @@ mod tests {
     }
 
     #[test]
-    fn narrow_input_render_is_safe() {
+    fn narrow_input_keeps_its_prompt() {
+        // ^ At 20 columns the box degrades without an underflow and the field's prompt stays.
         let backend = ratatui::backend::TestBackend::new(20, 6);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let state = InputState::new("> ");
@@ -416,5 +417,13 @@ mod tests {
         terminal
             .draw(|frame| render_input(frame, frame.area(), &state, "Name"))
             .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("> "), "{screen:?}");
     }
 }

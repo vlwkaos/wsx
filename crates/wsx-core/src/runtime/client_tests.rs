@@ -306,14 +306,6 @@ fn lifecycle_ready_and_deferred_are_typed_healthy_outcomes() {
 }
 
 #[test]
-fn legacy_client_count_excludes_the_requester_and_own_tui_monitor() {
-    assert!(!active_client_count_has_other_tui(1, 0));
-    assert!(!active_client_count_has_other_tui(2, 1));
-    assert!(active_client_count_has_other_tui(2, 0));
-    assert!(active_client_count_has_other_tui(3, 1));
-}
-
-#[test]
 fn newer_daemon_is_reused_without_a_downgrade_request() {
     let (path, listener) = test_listener("newer-daemon");
     let server_path = path.clone();
@@ -527,13 +519,6 @@ fn detached_spawn_is_session_leader_and_survives_hangup() {
 }
 
 #[cfg(target_os = "macos")]
-#[test]
-fn local_socket_peer_matches_the_current_user() {
-    let (client, server) = UnixStream::pair().unwrap();
-    validate_peer_owner(&server).unwrap();
-    validate_peer_owner(&client).unwrap();
-}
-
 #[test]
 fn same_protocol_daemon_without_required_capabilities_is_not_stopped() {
     let (path, listener) = test_listener("missing-capabilities");

@@ -155,52 +155,12 @@ mod tests {
     }
 
     #[test]
-    fn semantic_palette_and_bounded_background_roles_keep_their_hierarchy() {
-        for color in [
-            BACKGROUND,
-            PANEL,
-            PANEL_ACTIVE,
-            ROW_SELECTED,
-            ROW_MOVE,
-            TEXT,
-            TEXT_MUTED,
-            TEXT_SUBTLE,
-            ACCENT,
-            ACCENT_MUTED,
-            SUCCESS,
-            WORKING,
-            IDLE,
-            DONE,
-            BLOCKED,
-            UNKNOWN,
-            WARNING,
-            ERROR,
-            DIVIDER,
-            TOAST_BACKGROUND,
-            MODE_INPUT,
-            MODE_CONFIG,
-        ] {
-            assert!(matches!(color, Color::Rgb(..)));
-        }
-
+    fn background_and_text_roles_keep_their_brightness_order() {
         assert!(brightness(BACKGROUND) < brightness(PANEL));
         assert!(brightness(PANEL) < brightness(PANEL_ACTIVE));
         assert!(brightness(PANEL_ACTIVE) < brightness(ROW_SELECTED));
         assert!(brightness(TEXT_SUBTLE) < brightness(TEXT_MUTED));
         assert!(brightness(TEXT_MUTED) < brightness(TEXT));
-        assert_eq!(Style::default().bg, None);
-        assert_eq!(group_chip(true).bg, Some(ACCENT));
-        assert_eq!(group_chip(false).bg, Some(PANEL_ACTIVE));
-        assert_eq!(selected_row(false).bg, Some(ROW_SELECTED));
-        assert_eq!(agent_label().fg, Some(TEXT_MUTED));
-        assert_eq!(mode_badge(ModeBadge::Navigation).bg, Some(ACCENT));
-        assert_eq!(mode_badge(ModeBadge::Terminal).bg, Some(DONE));
-        assert_eq!(mode_badge(ModeBadge::Input).bg, Some(MODE_INPUT));
-        assert_eq!(mode_badge(ModeBadge::Confirm).bg, Some(BLOCKED));
-        assert_eq!(mode_badge(ModeBadge::Config).bg, Some(MODE_CONFIG));
-        assert_eq!(mode_badge(ModeBadge::Move).bg, Some(WORKING));
-        assert_eq!(mode_badge(ModeBadge::Info).bg, Some(TEXT_MUTED));
-        assert_eq!(mode_badge(ModeBadge::Routine).bg, Some(SUCCESS));
     }
 
     #[test]

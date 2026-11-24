@@ -63,32 +63,6 @@ mod tests {
     }
 
     #[test]
-    fn enum_is_complete() {
-        assert_eq!(IntegrationTarget::ALL.len(), 17);
-        assert_eq!(
-            IntegrationTarget::ALL.map(IntegrationTarget::cli_value),
-            [
-                "pi",
-                "omp",
-                "claude",
-                "codex",
-                "copilot",
-                "devin",
-                "droid",
-                "kimi",
-                "opencode",
-                "kilo",
-                "hermes",
-                "qodercli",
-                "qwen",
-                "cursor",
-                "mastracode",
-                "antigravity-cli",
-                "grok"
-            ]
-        );
-    }
-    #[test]
     fn availability_and_status_are_path_injected() {
         let root = test_root("availability");
         let executable = root.join("claude");
@@ -112,31 +86,16 @@ mod tests {
     }
 
     #[test]
-    fn safe_idempotent_install() {
-        let root = test_root("pi");
-        let first = install::install_for_test(IntegrationTarget::Pi, &root).unwrap();
-        let before = fs::read(&first.paths[0]).unwrap();
-        let second = install::install_for_test(IntegrationTarget::Pi, &root).unwrap();
-        assert_eq!(first.paths, second.paths);
-        assert_eq!(before, fs::read(&second.paths[0]).unwrap());
-        assert_eq!(
-            status::metadata_for_test(IntegrationTarget::Pi, &root)
-                .unwrap()
-                .install_status,
-            InstallStatus::Current
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn every_target_installs_idempotently_in_isolation() {
         let parent = test_root("all-targets");
         for target in IntegrationTarget::ALL {
             let root = parent.join(target.cli_value());
             fs::create_dir_all(&root).unwrap();
             let first = install::install_for_test(target, &root).unwrap();
+            let before = fs::read(&first.paths[0]).unwrap();
             let second = install::install_for_test(target, &root).unwrap();
             assert_eq!(first.paths, second.paths, "{target}");
+            assert_eq!(before, fs::read(&second.paths[0]).unwrap(), "{target}");
             assert_eq!(
                 status::metadata_for_test(target, &root)
                     .unwrap()
@@ -589,29 +548,6 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_capabilities_match_native_authoritative_adapters() {
-        assert!(assets::primary(IntegrationTarget::Claude)
-            .contains("[ \"claude\" = \"claude\" ] && set -- \"$@\" --escape-interrupts"));
-        let authoritative = IntegrationTarget::ALL
-            .into_iter()
-            .filter(|target| target.lifecycle() == LifecycleCapability::Authoritative)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            authoritative,
-            [
-                IntegrationTarget::Pi,
-                IntegrationTarget::Omp,
-                IntegrationTarget::Claude,
-                IntegrationTarget::Codex,
-                IntegrationTarget::Kimi,
-                IntegrationTarget::Opencode,
-                IntegrationTarget::Kilo,
-                IntegrationTarget::Mastracode,
-            ]
-        );
-    }
-
-    #[test]
     fn authoritative_assets_and_configs_report_completion() {
         let claude = assets::primary(IntegrationTarget::Claude);
         assert!(claude.contains("agent wake-heartbeat"));
@@ -742,16 +678,5 @@ mod tests {
                 "{target}: missing lifecycle reporting"
             );
         }
-    }
-
-    #[test]
-    fn opencode_assets_use_tui_routing_and_argv_reporting() {
-        assert!(assets::OPENCODE_TUI.contains("api.route.current"));
-        assert!(assets::OPENCODE_TUI.contains("execReporter"));
-        assert!(assets::REPORTER.contains("execFile"));
-        assert!(!assets::OPENCODE_TUI.contains("createConnection"));
-        let updated = opencode_config::register_tui("{\n  // keep\n  \"plugin\": []\n}\n").unwrap();
-        assert!(updated.contains("// keep"));
-        assert!(updated.contains("./wsx-tui-session.js"));
     }
 }

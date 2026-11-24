@@ -5,6 +5,8 @@ use std::time::Instant;
 
 const ASSERTION_LIFETIME_SECS: u64 = 10 * 60;
 const RENEW_AFTER: Duration = Duration::from_secs(9 * 60);
+// ^ A renewal comes before the assertion it renews runs out.
+const _: () = assert!(ASSERTION_LIFETIME_SECS > RENEW_AFTER.as_secs());
 #[cfg(target_os = "macos")]
 const RETRY_AFTER: Duration = Duration::from_secs(30);
 
@@ -208,10 +210,5 @@ mod tests {
             Action::Stop
         );
         assert_eq!(action(false, false, None, true), Action::Keep);
-    }
-
-    #[test]
-    fn assertion_lifetime_exceeds_renewal_boundary() {
-        assert!(Duration::from_secs(ASSERTION_LIFETIME_SECS) > RENEW_AFTER);
     }
 }

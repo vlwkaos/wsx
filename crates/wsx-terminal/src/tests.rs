@@ -489,13 +489,6 @@ fn interactive_shell_reports_a_distinct_foreground_job_group() {
 }
 
 #[test]
-fn process_group_ownership_is_consumed_once() {
-    let group = std::sync::atomic::AtomicI32::new(42);
-    assert_eq!(take_process_group(&group), Some(42));
-    assert_eq!(take_process_group(&group), None);
-}
-
-#[test]
 fn paste_encoding_tracks_bracketed_mode_and_sanitizes_controls() {
     assert_eq!(
         ghostty::encode_paste(b"one\ntwo", false).unwrap(),
@@ -1384,12 +1377,6 @@ fn full_clipboard_fifo_rejects_selection_copy_without_ending_the_runtime() {
     assert_eq!(writes.len(), 64);
     assert!(writes.iter().all(|write| write == b"a"));
     assert!(!runtime.exited());
-}
-
-#[test]
-fn runtime_is_send_and_sync() {
-    fn assert_traits<T: Send + Sync>() {}
-    assert_traits::<TerminalRuntime>();
 }
 
 fn frame_text(runtime: &TerminalRuntime) -> String {

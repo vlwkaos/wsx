@@ -2077,198 +2077,37 @@ fn routine_refresh_closes_detail_when_routine_was_deleted() {
     assert!(matches!(app.mode, Mode::Workspace));
 }
 
+/// Moving between visible projects (`adjacent_visible_project_index`): it steps over hidden ones,
+/// stops at either end, ignores a visible index past the list and answers none from a hidden start.
 #[test]
-fn given_projects_with_visibility_gaps_when_moving_forward_then_returns_next_visible_index() {
-    let workspace = WorkspaceState {
-        projects: vec![
-            make_project("a1"),
-            make_project("b1"),
-            make_project("a2"),
-            make_project("b2"),
-            make_project("c1"),
-            make_project("c2"),
-        ],
+fn moving_between_visible_projects_steps_over_hidden_ones_and_stops_at_the_ends() {
+    let workspace = |count: usize| WorkspaceState {
+        projects: (0..count).map(|n| make_project(&format!("p{n}"))).collect(),
     };
-    let visible = HashSet::from([0, 2, 5]);
-
-    assert_eq!(
-        adjacent_visible_project_index(&workspace, &visible, 2, 1),
-        Some(5)
-    );
-}
-
-#[test]
-fn given_projects_with_visibility_gaps_when_moving_backward_then_returns_previous_visible_index() {
-    let workspace = WorkspaceState {
-        projects: vec![
-            make_project("a1"),
-            make_project("b1"),
-            make_project("a2"),
-            make_project("b2"),
-            make_project("c1"),
-            make_project("c2"),
-        ],
-    };
-    let visible = HashSet::from([0, 2, 5]);
-
-    assert_eq!(
-        adjacent_visible_project_index(&workspace, &visible, 2, -1),
-        Some(0)
-    );
-}
-
-#[test]
-fn given_empty_visible_set_when_moving_then_returns_none() {
-    let workspace = WorkspaceState {
-        projects: vec![make_project("a1"), make_project("a2")],
-    };
-    let visible = HashSet::new();
-
-    assert_eq!(
-        adjacent_visible_project_index(&workspace, &visible, 0, 1),
-        None
-    );
-}
-
-#[test]
-fn given_non_visible_project_index_when_moving_then_returns_none() {
-    let workspace = WorkspaceState {
-        projects: vec![make_project("a1"), make_project("a2"), make_project("a3")],
-    };
-    let visible = HashSet::from([0, 2]);
-
-    assert_eq!(
-        adjacent_visible_project_index(&workspace, &visible, 1, 1),
-        None
-    );
-}
-
-#[test]
-fn given_large_positive_delta_when_moving_past_last_visible_project_then_returns_none() {
-    let workspace = WorkspaceState {
-        projects: vec![
-            make_project("a1"),
-            make_project("a2"),
-            make_project("a3"),
-            make_project("a4"),
-        ],
-    };
-    let visible = HashSet::from([0, 2, 3]);
-
-    assert_eq!(
-        adjacent_visible_project_index(&workspace, &visible, 0, 5),
-        None
-    );
-}
-
-#[test]
-fn given_large_negative_delta_when_moving_before_first_visible_project_then_returns_none() {
-    let workspace = WorkspaceState {
-        projects: vec![
-            make_project("a1"),
-            make_project("a2"),
-            make_project("a3"),
-            make_project("a4"),
-        ],
-    };
-    let visible = HashSet::from([0, 2, 3]);
-
-    assert_eq!(
-        adjacent_visible_project_index(&workspace, &visible, 3, -5),
-        None
-    );
-}
-
-#[test]
-fn given_visible_set_with_out_of_range_index_when_project_index_is_not_enumerated_then_returns_none(
-) {
-    let workspace = WorkspaceState {
-        projects: vec![make_project("a1"), make_project("a2"), make_project("a3")],
-    };
-    let visible = HashSet::from([0, 99]);
-
-    assert_eq!(
-        adjacent_visible_project_index(&workspace, &visible, 99, -1),
-        None
-    );
-}
-
-#[test]
-fn given_zero_delta_when_current_project_is_visible_then_returns_same_index() {
-    let workspace = WorkspaceState {
-        projects: vec![make_project("a1"), make_project("a2"), make_project("a3")],
-    };
-    let visible = HashSet::from([0, 2]);
-
-    assert_eq!(
-        adjacent_visible_project_index(&workspace, &visible, 2, 0),
-        Some(2)
-    );
-}
-
-#[test]
-fn given_multi_step_positive_delta_when_target_visible_exists_then_returns_that_visible_index() {
-    let workspace = WorkspaceState {
-        projects: vec![
-            make_project("a1"),
-            make_project("b1"),
-            make_project("a2"),
-            make_project("b2"),
-            make_project("c1"),
-            make_project("c2"),
-        ],
-    };
-    let visible = HashSet::from([0, 2, 5]);
-
-    assert_eq!(
-        adjacent_visible_project_index(&workspace, &visible, 0, 2),
-        Some(5)
-    );
-}
-
-#[test]
-fn given_multi_step_negative_delta_when_target_visible_exists_then_returns_that_visible_index() {
-    let workspace = WorkspaceState {
-        projects: vec![
-            make_project("a1"),
-            make_project("b1"),
-            make_project("a2"),
-            make_project("b2"),
-            make_project("c1"),
-            make_project("c2"),
-        ],
-    };
-    let visible = HashSet::from([0, 2, 5]);
-
-    assert_eq!(
-        adjacent_visible_project_index(&workspace, &visible, 5, -2),
-        Some(0)
-    );
-}
-
-#[test]
-fn given_visible_set_with_out_of_range_member_when_current_project_is_valid_then_ignores_invalid_member(
-) {
-    let workspace = WorkspaceState {
-        projects: vec![make_project("a1"), make_project("a2"), make_project("a3")],
-    };
-    let visible = HashSet::from([0, 2, 99]);
-
-    assert_eq!(
-        adjacent_visible_project_index(&workspace, &visible, 0, 1),
-        Some(2)
-    );
-}
-
-#[test]
-fn given_empty_workspace_with_non_empty_visible_set_when_moving_then_returns_none() {
-    let workspace = WorkspaceState { projects: vec![] };
-    let visible = HashSet::from([0]);
-
-    assert_eq!(
-        adjacent_visible_project_index(&workspace, &visible, 0, 1),
-        None
-    );
+    // (projects, visible, from, delta, expected)
+    type Case = (usize, &'static [usize], usize, isize, Option<usize>);
+    let cases: &[Case] = &[
+        (6, &[0, 2, 5], 2, 1, Some(5)),
+        (6, &[0, 2, 5], 2, -1, Some(0)),
+        (6, &[0, 2, 5], 0, 2, Some(5)),
+        (6, &[0, 2, 5], 5, -2, Some(0)),
+        (3, &[0, 2], 2, 0, Some(2)),
+        (3, &[0, 2, 99], 0, 1, Some(2)),
+        (2, &[], 0, 1, None),
+        (3, &[0, 2], 1, 1, None),
+        (4, &[0, 2, 3], 0, 5, None),
+        (4, &[0, 2, 3], 3, -5, None),
+        (3, &[0, 99], 99, -1, None),
+        (0, &[0], 0, 1, None),
+    ];
+    for &(count, visible, from, delta, expected) in cases {
+        let visible: HashSet<usize> = visible.iter().copied().collect();
+        assert_eq!(
+            adjacent_visible_project_index(&workspace(count), &visible, from, delta),
+            expected,
+            "{count} projects, visible {visible:?}, from {from} by {delta}"
+        );
+    }
 }
 
 #[test]
@@ -3875,15 +3714,10 @@ fn blocked_first_attention_priority_applies_in_both_directions_until_blockers_cl
 }
 
 #[test]
-fn blocked_session_needs_attention() {
-    let session = make_sess(false, wsx_core::runtime::AgentState::Blocked);
-    assert!(session_needs_attention(&session));
-}
-
-#[test]
-fn muted_blocked_session_does_not_need_attention() {
-    let session = make_sess(true, wsx_core::runtime::AgentState::Blocked);
-    assert!(!session_needs_attention(&session));
+fn a_blocked_session_needs_attention_unless_muted() {
+    let blocked = |muted| make_sess(muted, wsx_core::runtime::AgentState::Blocked);
+    assert!(session_needs_attention(&blocked(false)));
+    assert!(!session_needs_attention(&blocked(true)));
 }
 
 #[test]

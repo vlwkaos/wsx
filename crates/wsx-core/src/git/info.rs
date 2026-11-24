@@ -409,45 +409,29 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// One fetch per repository at a time: the lock is taken once, refused while held, separate
+    /// per repository, and gone when its guard drops.
     #[test]
-    fn fetch_lock_acquired_on_fresh_path() {
-        let path = PathBuf::from("/tmp/wsx_test_lock_fresh");
-        let result = try_fetch_lock(&path);
-        assert!(result.is_some(), "should acquire lock on a fresh path");
-        let lock_path = result.unwrap();
-        assert!(lock_path.exists(), "lockfile should exist after acquire");
-        let _guard = FetchLockGuard(lock_path.clone());
-        // guard drop removes file
-        drop(_guard);
-        assert!(!lock_path.exists(), "lockfile should be removed on drop");
-    }
-
-    #[test]
-    fn fetch_lock_fails_when_held() {
-        let path = PathBuf::from("/tmp/wsx_test_lock_held");
-        let lock1 = try_fetch_lock(&path);
-        assert!(lock1.is_some(), "first acquire should succeed");
-        let lock2 = try_fetch_lock(&path);
+    fn a_fetch_lock_is_held_once_per_repository_and_released_on_drop() {
+        // ^ Keys only: the lock file lives in the temp folder under the key's hash.
+        let key = |name: &str| {
+            PathBuf::from(format!(
+                "/wsx-test-fetch-lock/{}/{name}",
+                std::process::id()
+            ))
+        };
+        let held = try_fetch_lock(&key("a")).expect("a fresh repository takes the lock");
+        assert!(held.exists());
         assert!(
-            lock2.is_none(),
-            "second acquire should fail while first is held"
+            try_fetch_lock(&key("a")).is_none(),
+            "a held lock is refused"
         );
-        drop(lock1.map(FetchLockGuard));
-    }
-
-    #[test]
-    fn fetch_lock_different_paths_independent() {
-        let path_a = PathBuf::from("/tmp/wsx_test_lock_a");
-        let path_b = PathBuf::from("/tmp/wsx_test_lock_b");
-        let lock_a = try_fetch_lock(&path_a);
-        let lock_b = try_fetch_lock(&path_b);
-        assert!(lock_a.is_some(), "lock for path_a should succeed");
-        assert!(
-            lock_b.is_some(),
-            "lock for path_b should succeed independently"
-        );
-        drop(lock_a.map(FetchLockGuard));
-        drop(lock_b.map(FetchLockGuard));
+        let other = try_fetch_lock(&key("b")).expect("another repository has its own lock");
+        drop(FetchLockGuard(other));
+        drop(FetchLockGuard(held.clone()));
+        assert!(!held.exists(), "the guard removes the lock file");
+        let again = try_fetch_lock(&key("a")).expect("a released lock is taken again");
+        drop(FetchLockGuard(again));
     }
 
     static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);

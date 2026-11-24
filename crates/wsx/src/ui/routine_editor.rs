@@ -525,16 +525,27 @@ mod tests {
     }
 
     #[test]
-    fn narrow_editor_and_picker_render_safely() {
+    fn narrow_editor_and_picker_keep_their_frame() {
+        // ^ At 30 columns both degrade without an underflow and still draw a closed box.
         let form = RoutinePreset::Codex.form();
         let backend = ratatui::backend::TestBackend::new(30, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| render(frame, frame.area(), &form, false, true))
-            .unwrap();
-        terminal
-            .draw(|frame| render_preset_picker(frame, frame.area(), 0))
-            .unwrap();
+        for picker in [false, true] {
+            terminal
+                .draw(|frame| match picker {
+                    false => render(frame, frame.area(), &form, false, true),
+                    true => render_preset_picker(frame, frame.area(), 0),
+                })
+                .unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(screen.contains('┌') && screen.contains('┘'), "{screen:?}");
+        }
     }
 
     #[test]

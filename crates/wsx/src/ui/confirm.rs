@@ -82,12 +82,21 @@ mod tests {
     }
 
     #[test]
-    fn narrow_confirmation_render_is_safe() {
+    fn narrow_confirmation_keeps_its_question() {
+        // ^ At 20 columns the box degrades without an underflow and the question stays readable.
         let backend = ratatui::backend::TestBackend::new(20, 6);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
         terminal
             .draw(|frame| render_confirm(frame, frame.area(), "Delete?"))
             .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("Delete?"), "{screen:?}");
     }
 }

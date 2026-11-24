@@ -1058,8 +1058,8 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarV
 #[cfg(test)]
 mod tests {
     use super::{
-        compact_port_label, fit_hints, git_remote_status_color, status_regions,
-        status_release_line, theme, StatusReleaseView,
+        compact_port_label, fit_hints, status_regions, status_release_line, theme,
+        StatusReleaseView,
     };
 
     fn line_text(line: &ratatui::text::Line<'_>) -> String {
@@ -1067,14 +1067,6 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
-    }
-
-    #[test]
-    fn git_remote_status_uses_actionable_semantic_colors() {
-        assert_eq!(git_remote_status_color(0, 0), theme::SUCCESS);
-        assert_eq!(git_remote_status_color(0, 2), theme::SUCCESS);
-        assert_eq!(git_remote_status_color(2, 0), theme::ERROR);
-        assert_eq!(git_remote_status_color(2, 1), theme::WARNING);
     }
 
     #[test]

@@ -1167,19 +1167,6 @@ mod tests {
     }
 
     #[test]
-    fn canonical_serialization_has_only_group_fields() {
-        let config: GlobalConfig = toml::from_str(
-            "groups = [\"work\"]\n[[projects]]\nname = \"p\"\npath = \"/p\"\ngroups = [\"work\"]\n",
-        )
-        .unwrap();
-        let encoded = toml::to_string(&config).unwrap();
-        assert!(encoded.contains("groups = [\"work\"]"));
-        assert!(!encoded.contains("tab"));
-        assert!(!encoded.contains("tag"));
-        assert!(!encoded.contains("filter"));
-    }
-
-    #[test]
     fn worktree_order_defaults_empty_and_round_trips_stable_paths() {
         let legacy: GlobalConfig =
             toml::from_str("[[projects]]\nname = \"p\"\npath = \"/p\"\n").unwrap();

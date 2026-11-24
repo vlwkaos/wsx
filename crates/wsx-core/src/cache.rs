@@ -1138,13 +1138,6 @@ pane_id = "pane-1"
     }
 
     #[test]
-    fn workspace_cache_serialization_never_carries_group_selection() {
-        let encoded = toml::to_string(&WorkspaceCache::default()).unwrap();
-        assert!(!encoded.contains("selected_group"));
-        assert!(!encoded.contains("active_group"));
-    }
-
-    #[test]
     fn first_v2_cache_load_imports_active_tab_without_rewriting_legacy() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)

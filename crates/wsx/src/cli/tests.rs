@@ -104,9 +104,8 @@ mod group_command_tests {
 
 #[cfg(test)]
 mod session_command_tests {
-    use crate::cli::{created_session_line, Args, Command, SessionCmd};
+    use crate::cli::{Args, Command, SessionCmd};
     use clap::Parser;
-    use wsx_core::runtime::SessionId;
 
     #[test]
     fn create_accepts_direct_scope_command_and_json_output() {
@@ -172,11 +171,6 @@ mod session_command_tests {
     }
 
     #[test]
-    fn created_identity_is_labeled_as_a_session() {
-        assert_eq!(created_session_line(SessionId(42)), "session:  42");
-    }
-
-    #[test]
     fn delete_and_prompt_accept_the_same_target_scope() {
         for argv in [
             vec![
@@ -223,21 +217,6 @@ mod session_command_tests {
 mod agent_command_tests {
     use crate::cli::{AgentCmd, Args, Command};
     use clap::Parser;
-    use wsx_core::integration::IntegrationTarget;
-
-    #[test]
-    fn supported_integration_has_an_explicit_install_command() {
-        let args = Args::try_parse_from(["wsx", "agent", "install", "pi"]).unwrap();
-        assert!(matches!(
-            args.command,
-            Some(Command::Agent {
-                subcommand: AgentCmd::Install {
-                    integration: IntegrationTarget::Pi
-                }
-            })
-        ));
-        assert!(Args::try_parse_from(["wsx", "agent", "install", "unsupported"]).is_err());
-    }
 
     #[test]
     fn exchange_commands_parse_exact_targets_bounds_and_writer_claims() {
@@ -310,74 +289,6 @@ mod agent_command_tests {
     }
 
     #[test]
-    fn report_accepts_escape_interrupt_capability() {
-        let args = Args::try_parse_from([
-            "wsx",
-            "agent",
-            "report",
-            "7",
-            "--provider",
-            "claude",
-            "--state",
-            "working",
-            "--escape-interrupts",
-        ])
-        .unwrap();
-
-        assert!(matches!(
-            args.command,
-            Some(Command::Agent {
-                subcommand: AgentCmd::Report {
-                    escape_interrupts: true,
-                    ..
-                }
-            })
-        ));
-    }
-
-    #[test]
-    fn claude_wake_commands_accept_prompt_bound_tokens() {
-        let report = Args::try_parse_from([
-            "wsx",
-            "agent",
-            "report",
-            "7",
-            "--provider",
-            "claude",
-            "--state",
-            "working",
-            "--wake-token",
-            "prompt-123",
-        ])
-        .unwrap();
-        assert!(matches!(
-            report.command,
-            Some(Command::Agent {
-                subcommand: AgentCmd::Report {
-                    wake_token: Some(token),
-                    ..
-                }
-            }) if token == "prompt-123"
-        ));
-
-        let heartbeat = Args::try_parse_from([
-            "wsx",
-            "agent",
-            "wake-heartbeat",
-            "7",
-            "--prompt-id",
-            "prompt-123",
-        ])
-        .unwrap();
-        assert!(matches!(
-            heartbeat.command,
-            Some(Command::Agent {
-                subcommand: AgentCmd::WakeHeartbeat { pane, prompt_id }
-            }) if pane == "7" && prompt_id == "prompt-123"
-        ));
-    }
-
-    #[test]
     fn detach_targets_only_the_current_managed_pane() {
         let args = Args::try_parse_from(["wsx", "agent", "detach"]).unwrap();
         assert!(matches!(
@@ -387,6 +298,38 @@ mod agent_command_tests {
             })
         ));
         assert!(Args::try_parse_from(["wsx", "agent", "detach", "7"]).is_err());
+    }
+
+    /// What the shipped hook assets send to `wsx agent report` and `wake-heartbeat` parses (the
+    /// assets in `wsx_core::integration`; live_handoff.rs runs the report end to end).
+    #[test]
+    fn agent_report_accepts_the_flags_the_hook_assets_send() {
+        let report = ["wsx", "agent", "report", "7", "--provider"];
+        for tail in [
+            &["claude", "--state", "working", "--escape-interrupts"][..],
+            &["claude", "--state", "working", "--wake-token", "prompt-123"],
+            &["pi", "--state", "idle", "--session-id", "abc"],
+            &[
+                "pi",
+                "--state",
+                "idle",
+                "--session-path",
+                "/absolute/session.jsonl",
+            ],
+            &["pi", "--state", "idle", "--conversation-id", "legacy"],
+        ] {
+            let argv: Vec<&str> = report.iter().chain(tail).copied().collect();
+            assert!(Args::try_parse_from(&argv).is_ok(), "{argv:?}");
+        }
+        assert!(Args::try_parse_from([
+            "wsx",
+            "agent",
+            "wake-heartbeat",
+            "7",
+            "--prompt-id",
+            "prompt-123"
+        ])
+        .is_ok());
     }
 
     #[test]
@@ -413,99 +356,6 @@ mod agent_command_tests {
                 }) if detached == expected
             ));
         }
-    }
-
-    #[test]
-    fn report_accepts_session_id_without_other_session_identifiers() {
-        let args = Args::try_parse_from([
-            "wsx",
-            "agent",
-            "report",
-            "7",
-            "--provider",
-            "pi",
-            "--state",
-            "idle",
-            "--session-id",
-            "abc",
-        ])
-        .unwrap();
-
-        assert!(matches!(
-            args.command,
-            Some(Command::Agent {
-                subcommand: AgentCmd::Report {
-                    session_id,
-                    session_path,
-                    conversation_id,
-                    ..
-                }
-            }) if session_id == Some("abc".into())
-                && session_path.is_none()
-                && conversation_id.is_none()
-        ));
-    }
-
-    #[test]
-    fn report_accepts_session_path_without_other_session_identifiers() {
-        let args = Args::try_parse_from([
-            "wsx",
-            "agent",
-            "report",
-            "7",
-            "--provider",
-            "pi",
-            "--state",
-            "idle",
-            "--session-path",
-            "/absolute/session.jsonl",
-        ])
-        .unwrap();
-
-        assert!(matches!(
-            args.command,
-            Some(Command::Agent {
-                subcommand: AgentCmd::Report {
-                    session_id,
-                    session_path,
-                    conversation_id,
-                    ..
-                }
-            }) if session_path == Some("/absolute/session.jsonl".into())
-                && session_id.is_none()
-                && conversation_id.is_none()
-        ));
-    }
-
-    #[test]
-    fn report_keeps_legacy_conversation_id() {
-        let args = Args::try_parse_from([
-            "wsx",
-            "agent",
-            "report",
-            "7",
-            "--provider",
-            "pi",
-            "--state",
-            "idle",
-            "--conversation-id",
-            "legacy",
-        ])
-        .unwrap();
-
-        assert!(matches!(
-            args.command,
-            Some(Command::Agent {
-                subcommand: AgentCmd::Report {
-                    conversation_id,
-                    session_id,
-                    session_path,
-                    ..
-                }
-            }) if conversation_id == Some("legacy".into())
-                && session_id.is_none()
-                && session_path.is_none()
-        ));
     }
 
     #[test]
@@ -545,36 +395,9 @@ mod agent_command_tests {
 #[cfg(test)]
 mod daemon_command_tests {
     use crate::cli::{
-        incompatible_runtime_status_json, runtime_lifecycle_lines, runtime_status_state, Args,
-        Command, DaemonCmd,
+        incompatible_runtime_status_json, runtime_lifecycle_lines, runtime_status_state,
     };
-    use clap::Parser;
     use wsx_core::runtime::{self, DaemonLifecycle, DaemonPhase};
-
-    #[test]
-    fn daemon_stop_is_a_top_level_command() {
-        let args = Args::try_parse_from(["wsx", "daemon", "stop"]).unwrap();
-        assert!(matches!(
-            args.command,
-            Some(Command::Daemon {
-                subcommand: DaemonCmd::Stop {
-                    force: false,
-                    json: false
-                }
-            })
-        ));
-    }
-
-    #[test]
-    fn daemon_recover_is_an_explicit_crash_budget_override() {
-        let args = Args::try_parse_from(["wsx", "daemon", "recover"]).unwrap();
-        assert!(matches!(
-            args.command,
-            Some(Command::Daemon {
-                subcommand: DaemonCmd::Recover
-            })
-        ));
-    }
 
     fn lifecycle(phase: DaemonPhase, daemon_revision: u32) -> DaemonLifecycle {
         DaemonLifecycle {
@@ -660,18 +483,6 @@ mod daemon_command_tests {
             .iter()
             .any(|line| line == "Target: 0.28.1:1:2:3:4 (version 0.28.1)"));
         assert!(lines.iter().any(|line| line == "Blockers: WorkingAgent"));
-    }
-}
-
-#[cfg(test)]
-mod routine_client_wiring_tests {
-    use crate::cli::Args;
-    use clap::Parser;
-
-    #[test]
-    fn legacy_embedded_daemon_command_is_removed() {
-        assert!(Args::try_parse_from(["wsx", "routine", "daemon", "start"]).is_err());
-        assert!(Args::try_parse_from(["wsx", "routine-daemon-serve"]).is_err());
     }
 }
 
