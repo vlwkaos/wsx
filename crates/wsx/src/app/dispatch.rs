@@ -165,12 +165,27 @@ impl App {
             if shell {
                 return self.action_task_shell(terminal);
             }
+            // ^ A task beside the chat takes the keys while it has the focus (docs/tasks.md "TUI").
+            if list.task_beside() && list.task_focus {
+                list.task_key(&action);
+                self.needs_redraw = true;
+                return Ok(());
+            }
+            let beside = list.task_beside();
             if let Some(chat) = &mut list.chat {
-                // ^ `o` is the overview only where the chat types nothing.
-                if chat.focus == crate::task_chat::Focus::Chat && action == Action::InputChar('o') {
+                let quiet = chat.focus == crate::task_chat::Focus::Chat;
+                // ^ `o` is the overview only where the chat types nothing; `tab` there gives the
+                // keys to a task shown beside it.
+                if quiet && action == Action::InputChar('o') {
                     list.open_overview();
+                } else if quiet && action == Action::InputTab && beside {
+                    list.task_focus = true;
                 } else if !chat.key(&action) {
                     list.chat = None;
+                }
+                // ^ A `#N` link (Enter on it) shows that task beside the chat.
+                if let Some(id) = list.chat.as_mut().and_then(|chat| chat.task.take()) {
+                    list.open_task(id);
                 }
                 // ^ A session link (Enter on it) is entered as `S` enters a shell.
                 let session = list.chat.as_mut().and_then(|chat| chat.session.take());

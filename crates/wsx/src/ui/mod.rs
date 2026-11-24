@@ -562,6 +562,30 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
         Mode::Panels { view } => panels::render(frame, area, view),
         Mode::Tasks { list } => match (&list.overview, &list.chat) {
             (Some(overview), _) => tasks::render_overview(frame, area, &list.project, overview),
+            // ^ A task opened from the chat shows beside it from 120 columns, the chat at 40%;
+            // narrower, the side with the keys fills the pane (docs/tasks.md "TUI").
+            (None, Some(chat)) if list.task_beside() => {
+                if area.width >= 120 {
+                    let chat_width = area.width * 2 / 5;
+                    let (left, right) = (
+                        Rect {
+                            width: chat_width,
+                            ..area
+                        },
+                        Rect {
+                            x: area.x + chat_width,
+                            width: area.width - chat_width,
+                            ..area
+                        },
+                    );
+                    task_chat::render(frame, left, chat);
+                    tasks::render_task_beside(frame, right, list);
+                } else if list.task_focus {
+                    tasks::render_task_beside(frame, area, list);
+                } else {
+                    task_chat::render(frame, area, chat);
+                }
+            }
             (None, Some(chat)) => task_chat::render(frame, area, chat),
             (None, None) => {
                 tasks::render(frame, area, list);
@@ -756,16 +780,31 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
             theme::ModeBadge::Info,
             vec!["(j/k)scroll".into(), "Esc: back".into()],
         ),
+        // ^ The task beside the chat while it has the keys: its actions, then how to leave it.
+        Mode::Tasks { list } if list.task_beside() && list.task_focus => {
+            let hints = match list.confirm {
+                Some(_) => vec!["(y)es".into(), "(n)o".into()],
+                None => {
+                    let mut hints = tasks::detail_hints(list);
+                    hints.extend(["tab: chat".into(), "Esc: close".into()]);
+                    hints
+                }
+            };
+            ("TASK", theme::ModeBadge::Info, hints)
+        }
         Mode::Tasks { list } if list.chat.is_some() => (
             match list.chat.as_deref().and_then(|chat| chat.chat.as_ref()) {
                 Some(_) => "CHAT",
                 None => "MANAGER",
             },
             theme::ModeBadge::Info,
-            list.chat
-                .as_deref()
-                .map(task_chat::hints)
-                .unwrap_or_default(),
+            list.chat.as_deref().map_or_else(Vec::new, |chat| {
+                let mut hints = task_chat::hints(chat);
+                if list.detail_task().is_some() && chat.focus == crate::task_chat::Focus::Chat {
+                    hints.insert(0, "tab: task".into());
+                }
+                hints
+            }),
         ),
         Mode::Tasks { list } if list.confirm.is_some() || list.close_chat.is_some() => (
             "TASK",
@@ -773,20 +812,8 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
             vec!["(y)es".into(), "(n)o".into()],
         ),
         Mode::Tasks { list } if list.detail.is_some() => {
-            // ^ The actions the task allows (`owner_actions`), after the scroll; Esc stays last.
-            let actions = list.detail_actions();
-            let has = |name| actions.contains(&name);
-            let mut hints = vec!["(j/k)scroll".to_string(), "(S)hell".into()];
-            for (shown, hint) in [
-                (has("land"), "(L)and"),
-                (has("answer"), "(a)nswer"),
-                (has("handback"), "(H)and back"),
-                (has("hand") && !has("handback"), "(H)and"),
-            ] {
-                if shown {
-                    hints.push(hint.into());
-                }
-            }
+            let mut hints = tasks::detail_hints(list);
+            hints.insert(1, "(S)hell".into());
             hints.push("Esc: back".into());
             ("TASK", theme::ModeBadge::Info, hints)
         }

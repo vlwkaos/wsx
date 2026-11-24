@@ -1203,6 +1203,26 @@ def manager_up(created):
         (r'(?s)▾ mermaid source \(2 lines\)\n +flowchart TD\n +Plan --> Land', b'\x1b'),
         (r'(?m)^ MANAGER +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
     assert 'zenuml' not in diagrams[2] and 'flowchart TD' not in diagrams[2], diagrams[2]
+    # ^ A `#N` in a message is a link: Enter shows that task beside the chat from 120 columns, keys on
+    # it; tab gives the keys to the chat and back; Esc closes the task. A number the project does
+    # not have says so (docs/tasks.md "TUI").
+    mentioned = reply_to(js('task', 'say', 'see #%d and #99999' % manager_task)['id'])
+    assert '#' not in mentioned['text'], mentioned
+    beside = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'see #%d and #99999' % manager_task, b'['),
+        (r'(?m)^ MANAGER +Enter: open', b'\r'),
+        (r'No task #99999 in this project', b'['),
+        (r'(?m)^ MANAGER +Enter: open', b'\r'),
+        (r'(?m)^ TASK +\(j/k\)scroll.*tab: chat +Esc: close', b'\t'),
+        (r'(?m)^ MANAGER +tab: task', b'\t'),
+        (r'(?m)^ TASK +\(j/k\)scroll', b'\x1b'),
+        (r'(?m)^ MANAGER +Enter: open', b'\x1b'),
+        (r'(?m)^ MANAGER +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], cols=130)
+    # ^ The task's number and its detail beside the chat, the chat still drawn on the left.
+    split = beside[6]
+    assert re.search(r'#%d ' % manager_task, split) and 'State' in split and 'see #%d' % manager_task in split, split
+    # ^ Closed, the chat has the pane again: no detail, no tab hint.
+    assert 'State' not in beside[9] and 'tab: task' not in beside[9], beside[9]
     # ^ After the jump: the owner's Reply (web *Reply*, TUI `r`) sends `> message <id>` too: stored in the same
     # format with the id, and the agent reads the line.
     said_back = js('task', 'say', '> message 1\n\nthe owner answers')

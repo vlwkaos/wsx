@@ -51,6 +51,8 @@ pub enum Target {
     /// The `More` or `Show` of a muted row (a reply to events, a talk with another chat): it opens
     /// the row's words, or folds them again. The row's key.
     More(String),
+    /// A task named as `#N`: it opens the task beside the chat (`ManagerChat::task`).
+    Task(u64),
 }
 
 /// A piece of a message: plain words, or a link `[label](session/<id>)` / `[label](files/<path>)`.
@@ -105,6 +107,46 @@ pub fn parts(text: &str) -> Vec<Part<'_>> {
     }
     if plain < text.len() {
         out.push(Part::Text(&text[plain..]));
+    }
+    out.into_iter()
+        .flat_map(|part| match part {
+            Part::Text(words) => mentions(words),
+            link => vec![link],
+        })
+        .collect()
+}
+
+/// `words` as plain words and task mentions: `#N` (1 to 6 digits) after the start or a
+/// character that is not a letter, digit or `&`, and before one that is not a letter or digit.
+fn mentions(words: &str) -> Vec<Part<'_>> {
+    let (mut out, mut plain) = (Vec::new(), 0);
+    let bytes = words.as_bytes();
+    for (at, _) in words.match_indices('#') {
+        let digits = bytes[at + 1..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        let end = at + 1 + digits;
+        let before = words[..at].chars().next_back();
+        let after = words[end..].chars().next();
+        let id = words[at + 1..end].parse::<u64>().ok().filter(|id| *id > 0);
+        let fits = (1..=6).contains(&digits)
+            && at >= plain
+            && before.is_none_or(|c| !c.is_alphanumeric() && c != '&')
+            && after.is_none_or(|c| !c.is_alphanumeric());
+        if let (true, Some(id)) = (fits, id) {
+            if plain < at {
+                out.push(Part::Text(&words[plain..at]));
+            }
+            out.push(Part::Link {
+                label: &words[at..end],
+                target: Target::Task(id),
+            });
+            plain = end;
+        }
+    }
+    if plain < words.len() {
+        out.push(Part::Text(&words[plain..]));
     }
     out
 }
@@ -380,6 +422,9 @@ pub struct ManagerChat {
     pub link: Option<(u64, usize)>,
     /// A session the owner opened by its link: the app enters it and clears this.
     pub session: Option<u64>,
+    /// A task the owner opened by its `#N` link: the Tasks view shows it beside the chat and
+    /// clears this.
+    pub task: Option<u64>,
     pub file: Option<FileView>,
     pub media: Option<MediaList>,
     pub composer: InputState,
@@ -464,6 +509,7 @@ impl ManagerChat {
             focus: Focus::Chat,
             link: None,
             session: None,
+            task: None,
             file: None,
             media: None,
             composer: InputState::new("> "),
@@ -962,6 +1008,7 @@ impl ManagerChat {
             .map(|(.., target)| target);
         match target {
             Some(Target::Session(id)) => self.session = Some(id),
+            Some(Target::Task(id)) => self.task = Some(id),
             Some(Target::File(path)) => match read_file(&self.main, &path) {
                 Ok(lines) => {
                     self.file = Some(FileView {

@@ -138,8 +138,11 @@ pub struct TaskList {
     pub rows: Vec<TaskRow>,
     pub error: Option<String>,
     pub selected: usize,
-    /// The task whose detail shows, by number, and its scroll.
+    /// The task whose detail shows, by number, and its scroll. With the chat open it shows
+    /// beside the chat (a `#N` link of it, `open_task`).
     pub detail: Option<u64>,
+    /// Keys go to the task beside the chat, not the chat (`tab` switches).
+    pub task_focus: bool,
     pub scroll: u16,
     /// The day rows show tokens, not cost (`u`).
     pub tokens: bool,
@@ -196,6 +199,7 @@ impl TaskList {
             you: false,
             help: None,
             confirm: None,
+            task_focus: false,
             close_chat: None,
             acting: None,
             notice: None,
@@ -407,11 +411,19 @@ impl TaskList {
     }
 
     /// Take a finished read and start the next check when due. True when the view changed.
-    /// An open chat reads instead of the list.
+    /// An open chat reads instead of the list, once the list has a ledger and shows no task.
     pub fn poll(&mut self) -> bool {
-        if let Some(chat) = &mut self.chat {
-            return chat.poll();
-        }
+        // ^ A task beside the chat reads the ledger too, so its detail stays current; so does a
+        // chat opened before the first read landed, which a `#N` link needs.
+        let chatted = match &mut self.chat {
+            Some(chat) if self.detail.is_none() && self.ledger.is_some() => return chat.poll(),
+            Some(chat) => chat.poll(),
+            None => false,
+        };
+        chatted | self.poll_list()
+    }
+
+    fn poll_list(&mut self) -> bool {
         // ^ A thread that died without an answer ends the action too, or no key could run another.
         let ended = match self.answer.as_ref().map(mpsc::Receiver::try_recv) {
             Some(Ok(answer)) => Some(answer),
@@ -497,11 +509,11 @@ impl TaskList {
                     })
                     .unwrap_or(self.selected)
                     .min(self.rows.len().saturating_sub(1));
-                if self
+                if let Some(id) = self
                     .detail
-                    .is_some_and(|id| !self.rows.iter().any(|row| row.id == id))
+                    .filter(|id| !self.rows.iter().any(|row| row.id == *id))
                 {
-                    self.detail = None;
+                    self.task_gone(id);
                 }
                 self.ledger = Some(ledger);
                 self.error = None;
@@ -600,15 +612,75 @@ impl TaskList {
             Action::ConfirmHalt => self.confirm = offered(&["handback", "hand"]),
             Action::NextActive => {
                 if actions.contains(&"answer") {
-                    self.open_chat(None);
+                    // ^ Beside the chat, the answer goes to that chat's message line.
+                    if self.chat.is_none() {
+                        self.open_chat(None);
+                    }
                     if let Some(chat) = &mut self.chat {
                         chat.mention(id);
                     }
+                    self.task_focus = false;
                 }
             }
             _ => return false,
         }
         true
+    }
+
+    /// Show task `id` beside the chat, keys on it; a number the ledger does not list says so in
+    /// the chat.
+    pub fn open_task(&mut self, id: u64) {
+        self.detail = Some(id);
+        self.scroll = 0;
+        self.confirm = None;
+        self.notice = None;
+        self.task_focus = true;
+        // ^ Before the first read lands, `apply` checks the number.
+        if self.ledger.is_some() && !self.rows.iter().any(|row| row.id == id) {
+            self.task_gone(id);
+        }
+    }
+
+    /// Task `id`, shown, is not in the ledger: close it, and say so in a chat it shows beside.
+    fn task_gone(&mut self, id: u64) {
+        self.detail = None;
+        self.task_focus = false;
+        if let Some(chat) = &mut self.chat {
+            chat.notice = Some((format!("No task #{id} in this project"), true));
+        }
+    }
+
+    /// A task shows beside the open chat (its ledger row is read).
+    pub fn task_beside(&self) -> bool {
+        self.chat.is_some() && self.detail_task().is_some()
+    }
+
+    /// One key on the task beside the chat: `Esc` closes it, `tab` gives the keys to the
+    /// chat, `j`/`k` scroll, and the detail's actions run (`detail_key`).
+    pub fn task_key(&mut self, action: &Action) {
+        if self.confirm.is_none() {
+            match action {
+                Action::InputEscape | Action::Quit => {
+                    self.detail = None;
+                    self.task_focus = false;
+                    return;
+                }
+                Action::InputTab => {
+                    self.task_focus = false;
+                    return;
+                }
+                Action::NavigateDown | Action::InputChar('j') => {
+                    self.scroll = self.scroll.saturating_add(1);
+                    return;
+                }
+                Action::NavigateUp | Action::InputChar('k') => {
+                    self.scroll = self.scroll.saturating_sub(1);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        self.detail_key(action);
     }
 
     /// Run the owner action `what` of task `id` as the CLI does, off the UI thread; its

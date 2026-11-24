@@ -6,6 +6,7 @@ Releases 0.40.4 and older are in [docs/changelog-archive.md](docs/changelog-arch
 
 ### Changed
 
+- TUI: a `#N` in a chat message is a link. `Enter` opens that task beside the chat (from 120 columns; narrower, it fills the pane) with its detail and actions; `tab` moves the keys between the chat and the task, and `Esc` closes it.
 - TUI: a mermaid block in the chat or the project overview is drawn as a Unicode diagram when it fits the width (the `mermaid-text` crate). Otherwise it is one link, `▸ diagram not drawn`, and `Enter` shows its source.
 - Tasks: a ready task under auto land with checks gets a review job instead of the manager's review. Its host starts one fresh agent of the manager's settings (role `reviewer`, read-only on the working copy) with `wsx task review`'s text and `report.md`; it answers `land`, and the host lands, or `changes` with at most 10 findings, which go to the worker as a turn. After 2 rounds of changes, or with no verdict, the owner lands it. The log has `review{revision, round, verdict, findings, agent, usage}` (its spend counts as the task's `review` part), and the status reads "Ready, under review". A task without checks, or with `land.auto: false`, waits for the owner, also one the manager created. See docs/tasks.md "Review".
 - Tasks: a task's events start no manager turn. They reach the chat at once and its agent with its next turn. A plan and a paused task are the owner's: they show under *For you*, push, and remind after 4 h ("Plan ready, waiting for you", "Paused, waiting for you").

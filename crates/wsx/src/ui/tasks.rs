@@ -10,7 +10,7 @@ use ratatui::{
     prelude::Stylize,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 use serde::Deserialize;
@@ -139,30 +139,7 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
             Style::default().fg(theme::WARNING),
         ));
     }
-    // ^ A land, a hand or a chat's close waiting for `y`, what runs, or how the last action ended.
-    // ^ A question first, then what runs, then how the last action ended.
-    let (words, color) = match (list.detail, list.confirm, &list.close_chat, &list.acting, &list.notice) {
-        (Some(id), Some(what), ..) => (
-            format!("{} #{id}? (y)es  (n)o", confirm_words(what)),
-            theme::WARNING,
-        ),
-        (None, _, Some(chat), ..) => (
-            format!("Close {chat}? Its log and notes stay; New chat with the same name opens it again. (y)es  (n)o"),
-            theme::WARNING,
-        ),
-        (.., Some(doing), _) => (doing.clone(), theme::TEXT_MUTED),
-        (.., Some((words, failed))) => (
-            words.clone(),
-            if *failed { theme::ERROR } else { theme::SUCCESS },
-        ),
-        _ => (String::new(), theme::TEXT),
-    };
-    if !words.is_empty() {
-        lines.push(Line::styled(
-            truncate_to_width(&words, width),
-            Style::default().fg(color),
-        ));
-    }
+    lines.extend(action_line(list, width));
     lines.push(Line::raw(""));
     let chrome = lines.len();
     if let Some(task) = list.detail_task() {
@@ -194,6 +171,89 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
         .unwrap_or(0);
     frame.render_widget(Paragraph::new(lines), inner);
     frame.render_widget(Paragraph::new(body).scroll((offset as u16, 0)), area);
+}
+
+/// The line under the heading: a land, a hand or a chat's close waiting for `y`, what runs, or
+/// how the last action ended; none when nothing.
+fn action_line(list: &TaskList, width: usize) -> Option<Line<'static>> {
+    let (words, color) = match (list.detail, list.confirm, &list.close_chat, &list.acting, &list.notice) {
+        (Some(id), Some(what), ..) => (
+            format!("{} #{id}? (y)es  (n)o", confirm_words(what)),
+            theme::WARNING,
+        ),
+        (None, _, Some(chat), ..) => (
+            format!("Close {chat}? Its log and notes stay; New chat with the same name opens it again. (y)es  (n)o"),
+            theme::WARNING,
+        ),
+        (.., Some(doing), _) => (doing.clone(), theme::TEXT_MUTED),
+        (.., Some((words, failed))) => (
+            words.clone(),
+            if *failed { theme::ERROR } else { theme::SUCCESS },
+        ),
+        _ => (String::new(), theme::TEXT),
+    };
+    (!words.is_empty())
+        .then(|| Line::styled(truncate_to_width(&words, width), Style::default().fg(color)))
+}
+
+/// The actions the shown task allows (`owner_actions`), after the scroll.
+pub fn detail_hints(list: &TaskList) -> Vec<String> {
+    let actions = list.detail_actions();
+    let has = |name| actions.contains(&name);
+    let mut hints = vec!["(j/k)scroll".to_string()];
+    for (shown, hint) in [
+        (has("land"), "(L)and"),
+        (has("answer"), "(a)nswer"),
+        (has("handback"), "(H)and back"),
+        (has("hand") && !has("handback"), "(H)and"),
+    ] {
+        if shown {
+            hints.push(hint.into());
+        }
+    }
+    hints
+}
+
+/// The task beside the chat (`TaskList::open_task`): its number and title, the action line,
+/// then its detail, after a rule in the accent while it has the keys. ref: docs/tasks.md "TUI"
+pub fn render_task_beside(frame: &mut Frame, area: Rect, list: &TaskList) {
+    let Some(task) = list.detail_task() else {
+        return;
+    };
+    frame.render_widget(Clear, area);
+    let color = if list.task_focus {
+        theme::ACCENT
+    } else {
+        theme::TEXT_SUBTLE
+    };
+    let block = Block::default()
+        .borders(Borders::LEFT)
+        .border_style(Style::default().fg(color));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let inner = Rect {
+        x: inner.x.saturating_add(1),
+        width: inner.width.saturating_sub(2),
+        ..inner
+    };
+    let width = inner.width as usize;
+    let title = format!(
+        "#{} {}",
+        task["id"].as_u64().unwrap_or_default(),
+        task["title"].as_str().unwrap_or_default()
+    );
+    let mut lines = vec![Line::styled(
+        truncate_to_width(&title, width),
+        Style::default().fg(color).bold(),
+    )];
+    lines.extend(action_line(list, width));
+    lines.push(Line::raw(""));
+    let chrome = lines.len();
+    let body = Paragraph::new(detail(task, &list.rows))
+        .wrap(Wrap { trim: false })
+        .scroll((list.scroll, 0));
+    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(body, below(inner, chrome));
 }
 
 /// The overview as written: headings bold, a fenced block (mermaid too) muted with its
