@@ -599,7 +599,7 @@ pub struct ChatRow {
     /// A post's level (`wsx task post --level warn|bad`): the chats show its word and color.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<Level>,
-    /// The pending approvals this reply carries: each goes to the first reply at or after it.
+    /// The pending approvals this reply carries: each goes to the first agent reply at or after it (a post carries none).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub approvals: Vec<String>,
     /// A stand-in agent wrote this reply: its name.
@@ -847,8 +847,10 @@ pub fn chat_rows(
         else {
             continue;
         };
+        // ^ An agent's reply carries it; a post (`wsx task post`, the digest, the session news) is
+        // wsx's own line, written with no turn, and asks for nothing.
         let reply = entries.iter().position(|entry| {
-            matches!(entry.event, ManagerEvent::Reply { .. }) && entry.unix_ms >= *at
+            matches!(entry.event, ManagerEvent::Reply { post: false, .. }) && entry.unix_ms >= *at
         });
         if let Some(index) = reply {
             carried[index].push(id.to_string());
