@@ -83,7 +83,7 @@ function ListRow({ rowKey, leaving, task = null, icon, tone, glyph, label, conte
 // ^ An icon and its word, in the row's own line: the title and what the item waits for keep the
 // row's width. The label is the button's title and, with what it acts on, its accessible name.
 const rowButton = (busy, label, icon, tone, onClick, extra = {}) => html`
-  <button class="button need-action" type="button" title=${label} data-tone=${tone} disabled=${busy}
+  <button class="button button-sm need-action" type="button" title=${label} data-tone=${tone} disabled=${busy}
     onClick=${onClick} ...${extra}><${Icon} name=${icon} />${label.split(":")[0]}</button>`;
 
 // The state of the action a row runs, kept across renders: `run` starts it, `onActing` says an
@@ -427,7 +427,7 @@ function ManagerComposer({ project, room, busy: thinking, reply, onReply, onSent
   const options = !typed ? null
     : mark === "#" ? taskOptions(tasks, typed.query)
     : mark === "@" ? within(mentions?.chats ?? [], typed.query, (other) => `${other.id} ${other.name}`)
-      .map((other) => ({ key: other.id, name: other.name, number: `@${other.id}`, source: other.project, insert: `@${other.id} ` }))
+      .map((other) => ({ key: other.id, name: other.name, number: `@${other.id}`, description: other.goal, source: other.project, insert: `@${other.id} ` }))
     : within(mentions?.skills ?? [], typed.query, (skill) => skill.name)
       .map((skill) => ({ key: skill.name, name: `/${skill.name}`, description: skill.description, source: "skill", insert: typed.start ? `owner:${skill.name} ` : `Use owner:${skill.name}: ` }));
   const listOpen = Boolean(options);
@@ -481,11 +481,11 @@ function ManagerComposer({ project, room, busy: thinking, reply, onReply, onSent
     <div class="composer">
       <${FileChips} files=${files} onInline=${inline} onRemove=${remove} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
-      <${QuoteChip} quote=${reply?.line} onRemove=${() => onReply(null)} />
       ${listOpen && html`<${Suggestions} label=${LIST_LABELS[mark]} active=${active} onHover=${setActive} onPick=${pick}
         options=${options}
         notes=${[!options.length && emptyNote(mark, tasks, mentions, failed, () => setAttempt((count) => count + 1)), mark === "#" && foldedNote(tasks, typed.query)]} />`}
       <div class="composer-row" onPointerDown=${focusField}>
+        <${QuoteChip} quote=${reply?.line} onRemove=${() => onReply(null)} />
         <${AttachButton} onFiles=${upload} />
         ${pills}
         <div class="composer-input">

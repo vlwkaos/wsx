@@ -510,18 +510,18 @@ async function chats() {
     await fail(`the shell line state is wrong: ${JSON.stringify({ plain, bare, shelled, twoLines })}`);
   }
   // One column: the user's message ends, and the composer's button ends, where the agent's
-  // text column ends; the button is as high as any control.
+  // text column ends; the button is as high as any control, and draws a size-key circle in it.
   const column = await evaluate(`(() => { const edge = (selector, side) => Math.round(document.querySelector(selector).getBoundingClientRect()[side]);
     const log = document.querySelector('.log'); const style = getComputedStyle(log);
     return { left: Math.round(log.getBoundingClientRect().left + parseFloat(style.paddingLeft)), right: Math.round(log.getBoundingClientRect().right - parseFloat(style.paddingRight)),
       steps: edge('.steps', 'left'), user: edge('.message-user', 'right'), send: edge('.composer .button', 'right'), field: edge('.composer-field', 'left'), queued: edge('.queued-text', 'left'),
       height: document.querySelector('.composer .button').getBoundingClientRect().height, control: document.querySelector('.composer-field').getBoundingClientRect().height,
-      radius: [getComputedStyle(document.querySelector('.composer .button')).borderRadius, getComputedStyle(document.querySelector('.message-user')).borderRadius],
+      mark: [document.querySelector('.composer .send-mark').getBoundingClientRect().height, getComputedStyle(document.querySelector('.composer .send-mark')).borderRadius],
       chars: Math.round((log.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)) / parseFloat(getComputedStyle(document.documentElement).fontSize || 16)) }; })()`);
   // Send sits inside the composer card on every width, one border and one space-1 from its edge.
   if (column.steps !== column.left || column.user !== column.right || column.queued !== column.left
     || column.right - column.send < 0 || column.right - column.send > 6
-    || column.height !== 44 || column.radius[0] !== column.radius[1] || column.field < column.left) {
+    || column.height !== 44 || column.mark[0] !== 36 || column.mark[1] !== "50%" || column.field < column.left) {
     await fail(`the chat is not one column, or the send button is not a 44 px control: ${JSON.stringify(column)}`);
   }
   console.log(`chat column at ${size[0]} px: ${JSON.stringify(column)}`);

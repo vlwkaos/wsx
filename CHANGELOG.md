@@ -7,6 +7,7 @@ Releases 0.40.4 and older are in [docs/changelog-archive.md](docs/changelog-arch
 ### Changed
 
 - Tasks: the lead runs on `tasks.manager.leadModel` (default `sonnet` on Claude) and rotates past `tasks.manager.leadRotateTokens` (default 120000); chats with a goal keep the manager's model and limit, and the web and TUI show the model the lead runs on.
+- Web: one button system: every button draws 36 px (28 px for `.button-sm` row actions) inside a 44 px hit box, with smaller padding and type, a 10 px radius and its focus ring on the drawn shape (`size-key-sm`, `radius-key-sm`); For you actions are small, the refusing one quiet; the composer's pills end on the send button's bottom line, and a reply's quote sits inside the composer box. The `@` list shows each chat's goal.
 - Tasks: `tasks.router.model` (off by default) lets a small model add the `@<chat>` or `/new <name>` prefix to an owner message that has none; when unsure it leaves the message where it was written.
 - Tasks: `tasks.roles` names the areas of a large repo; `wsx task chat new <name> --role <role>` opens a chat that owns the role's paths and runs on its agent.
 - Tasks: `tasks.contracts` names the files of decided behavior; a land that changes one of their lines needs the owner, and one that only adds lines lands with a note.

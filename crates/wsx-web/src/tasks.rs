@@ -1136,12 +1136,12 @@ pub fn mentions(app: &App, scope: &Scope, chat: Option<&str>) -> Outcome<Value> 
             task::chats::open_rows(&other.store, false)
                 .into_iter()
                 .filter(|(_, row)| row["listed"] == true)
-                .map(|(_, row)| (row["name"].clone(), row["shown"].clone()))
+                .map(|(_, row)| (row["name"].clone(), row["shown"].clone(), row["goal"].clone()))
                 .collect::<Vec<_>>()
                 .into_iter()
-                .map(
-                move |(name, shown)| json!({ "id": name, "name": shown, "project": other.name }),
-            )
+                .map(move |(name, shown, goal)| {
+                    json!({ "id": name, "name": shown, "goal": goal, "project": other.name })
+                })
         })
         .filter(|row| row["id"] != json!(current))
         .collect();

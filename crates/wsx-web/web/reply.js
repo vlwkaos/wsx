@@ -77,9 +77,10 @@ export function Quoted({ text, words }) {
     ${rest && html`<p class="prose">${words ? words(rest) : rest}</p>`}`;
 }
 
-// The quote over the composer, with its remove (×).
+// The quote inside the composer box, over the field: a reply mark, the quoted line, its remove (×).
 export const QuoteChip = ({ quote, onRemove }) => quote ? html`
   <div class="reply-quote">
+    <span class="reply-quote-mark" aria-hidden="true"><${Icon} name="reply" /></span>
     <span class="reply-quote-text"><span class="visually-hidden">Replying to: </span>${quote}</span>
     <button class="icon-button" type="button" title="Remove" aria-label="Remove the quote" onClick=${onRemove}><${Icon} name="fail" /></button>
   </div>` : null;

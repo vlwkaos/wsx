@@ -89,11 +89,14 @@ size-tab = "72px"
 # Height of a count badge; one digit is a circle of this size.
 size-badge = "16px"
 size-key = "36px"
+# The small button: an action inside a row or a card.
+size-key-sm = "28px"
 size-rail = "300px"
 size-prose = "72ch"
 # Radius and border
 radius-control = "16px"
-radius-key = "12px"
+radius-key = "10px"
+radius-key-sm = "8px"
 radius-sheet = "16px"
 border-width = "1px"
 # Motion

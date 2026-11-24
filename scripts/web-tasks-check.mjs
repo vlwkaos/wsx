@@ -995,7 +995,7 @@ await until(atEnd, async () => `the chat did not go back to its end: ${JSON.stri
 
 phase("The pills: the composer row holds one pill for each of For y");
 // --- The pills: the composer row holds one pill for each of For you (Needs you and To check), Tasks and Routines,
-// between the attach button and Send, each an icon and its count (the label from 900 px, the wide layout) and
+// between the attach button and Send, ending on the send circle's bottom line (the owner, 2026-11-24), each an icon and its count (the label from 900 px, the wide layout) and
 // none for a count of 0. A tap opens that pill's list over the composer; one list at a time. No
 // deploy facts here. Opening a list keeps the chat at its end.
 const pillWords = () => evaluate("[...document.querySelectorAll('.pill')].map((node) => node.getAttribute('aria-label')).join(' | ')");
@@ -1007,11 +1007,11 @@ const expectPills = async (who) => {
   if ((await pillWords()) !== PILLS) await fail(`${who} read ${await pillWords()}`);
 };
 await expectPills("the pills");
-const pillLook = await evaluate(`(() => { const row = document.querySelector('.composer-row').getBoundingClientRect(), send = document.querySelector('.composer-send').getBoundingClientRect();
-  const attach = document.querySelector('.composer-row > .icon-button')?.getBoundingClientRect(), mid = (box) => (box.top + box.bottom) / 2;
+const pillLook = await evaluate(`(() => { const row = document.querySelector('.composer-row').getBoundingClientRect(), send = document.querySelector('.composer-send').getBoundingClientRect(), mark = document.querySelector('.composer-send .send-mark').getBoundingClientRect();
+  const attach = document.querySelector('.composer-row > .icon-button')?.getBoundingClientRect();
   return [...document.querySelectorAll('.pill')].map((node) => { const box = node.getBoundingClientRect();
     return { kind: node.dataset.kind, count: node.querySelector('.pill-count').textContent.trim(), icon: !!node.querySelector('svg.icon'), label: getComputedStyle(node.querySelector('.pill-label')).display,
-      pressed: node.getAttribute('aria-pressed'), between: box.left >= (attach?.right ?? row.left) - 1 && box.right <= send.left + 1, level: Math.abs(mid(box) - mid(send)) < 3, tall: box.height >= 24 && box.height <= 32, clear: box.top - document.querySelector('.composer-input').getBoundingClientRect().bottom >= 6 }; }); })()`);
+      pressed: node.getAttribute('aria-pressed'), between: box.left >= (attach?.right ?? row.left) - 1 && box.right <= send.left + 1, level: Math.abs(box.bottom - mark.bottom) < 2, tall: box.height >= 24 && box.height <= 32, clear: box.top - document.querySelector('.composer-input').getBoundingClientRect().bottom >= 6 }; }); })()`);
 if (pillLook.map((pill) => `${pill.kind}:${pill.count}`).join() !== "you:8,tasks:5,routines:2" || pillLook.some((pill) => !pill.icon || pill.label !== "none" || pill.pressed !== "false" || !pill.between || !pill.level || !pill.tall || !pill.clear)) {
   await fail(`the pills are not an icon and a count between the attach button and Send on one row, small and clear of the field, at 390 px: ${JSON.stringify(pillLook)}`);
 }

@@ -552,9 +552,9 @@ function Composer({ session, working, reply, onReply, onSent }) {
       <${FileChips} files=${draft} onInline=${inline}
         onRemove=${remove} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
-      <${QuoteChip} quote=${reply} onRemove=${() => onReply(null)} />
       ${listOpen && html`<${CommandList} listing=${listing} matches=${matches} active=${active} onPick=${pick} onHover=${setActive} />`}
       <div class="composer-row" onPointerDown=${focusField}>
+        <${QuoteChip} quote=${reply} onRemove=${() => onReply(null)} />
         <${AttachButton} onFiles=${upload} />
         <div class="composer-input" data-token=${token ? "" : null}>
         ${token && html`<div class="composer-mirror" ref=${mirror} aria-hidden="true"><span class="composer-token">${token}</span>${draft.text.slice(token.length)}${"\u200b"}</div>`}
