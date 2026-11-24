@@ -128,7 +128,9 @@ case "${1:-tui}" in
     stop_web
     if [ -d "$DEV" ]; then
       eval "$(exports)"
-      if daemon_running; then wsx daemon stop >/dev/null; fi
+      # ^ Every session here is this instance's own (the chats' hosts, sessions started in it):
+      # --force ends them, which a plain stop refuses while one runs.
+      if daemon_running; then wsx daemon stop --force >/dev/null; fi
     fi
     echo "wsx dev stopped"
     ;;
