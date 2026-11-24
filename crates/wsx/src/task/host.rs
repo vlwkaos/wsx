@@ -4440,7 +4440,14 @@ impl Host {
             lines.concat()
         );
         self.say(&text);
-        self.tell_manager(format!("add-dropped-{}-{commit}", self.record.id), text);
+        // ^ The add was its sender's action: the chat that owns the task hears it and acts again.
+        let owner = self.record.owner_chat().map(str::to_string);
+        self.tell_manager(
+            format!("add-dropped-{}-{commit}", self.record.id),
+            text,
+            owner,
+            true,
+        );
     }
 
     /// Add the revision's Human Verify items, with their captures, to "To check", then those
@@ -4693,15 +4700,16 @@ impl Host {
         // ^ A failure only main's CI run has is the project's known one: no event, the ready
         // event names it from the evidence.
         for failure in found.iter().filter(|f| f.tasks.len() > 1 || f.outside) {
-            self.tell_manager(failure.key(), failure.event());
+            self.tell_manager(failure.key(), failure.event(), None, false);
         }
         found
     }
 
-    /// Post `text` to the manager as one event that wakes a turn, once per `key` a day. The
-    /// manager starts if it does not run, and a busy host takes a while to answer, so it goes
-    /// from its own thread.
-    fn tell_manager(&self, key: String, text: String) {
+    /// Post `text` as one event, once per `key` a day, to the chat `chat` (none: the main chat).
+    /// With `wakes` it starts a turn; without, the owner reads it and the chat reads it with its
+    /// next turn, as a task's events (docs/tasks.md "Manager"). The chat starts if it does not
+    /// run, and a busy host takes a while to answer, so it goes from its own thread.
+    fn tell_manager(&self, key: String, text: String, chat: Option<String>, wakes: bool) {
         let (project, main, project_id) = (
             self.record.project.clone(),
             self.record.project_path.clone(),
@@ -4713,15 +4721,16 @@ impl Host {
                 return;
             };
             let _ = store::post_once(&project_id, &key, now / 1000, SHARED_WINDOW_SECS, || {
+                let short = Short::plain(&text);
                 let sent = owner::say(
                     &project,
                     &main,
                     &exe,
-                    None,
+                    chat.as_deref(),
                     super::launch_manager(&main),
                     text.clone(),
                     Some(Author::Events),
-                    vec![Short::plain(&text)],
+                    vec![if wakes { short } else { short.quiet() }],
                 )?;
                 anyhow::ensure!(sent.ok, "{}", sent.message);
                 Ok(())

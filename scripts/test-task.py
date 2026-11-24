@@ -6373,6 +6373,10 @@ def part_host(created=None):
     assert 'fails in #%d too: `FAIL: after Back' % first in said and 'not yours.' in said, said
     wait(lambda: shared_events(), 'the shared failure event', 30)
     event = shared_events()[0]['text']
+    # ^ A notice derived from task events starts no turn: no `delivered` takes it yet.
+    shared_id = shared_events()[0]['id']
+    time.sleep(2)
+    assert not [e for e in manager_entries() if e['kind'] == 'delivered' and shared_id in e['ids']], manager_entries()[-5:]
     assert 'in #%d, #%d, likely on main' % (first, second) in event and re.search(r'ends with `FAIL: after Back the page is [1-9]\d+ items`', event), event
     third, said = shared_run('shared', 'sf3')
     assert 'fails in #%d, #%d too' % (first, second) in said, said
@@ -6913,9 +6917,10 @@ def part_host(created=None):
                              str(Path(show(held)['log']).parent.parent), '--task', str(held)],
                             capture_output=True, text=True, check=True).stdout
     assert len(re.findall(r'\| ping +\| ping ', report)) == 3, report[-600:]
-    # ^ The manager turns by trigger: a ready event woke turns, a stop by request (21b) none.
+    # ^ The manager turns by trigger: a task's events (ready, stopped) wake no turn, the owner's
+    # words do (docs/tasks.md "Manager").
     triggers = report.split('Manager turns by trigger', 1)[1].split('\n## ', 1)[0]
-    assert re.search(r'\| ready +\| [1-9]', triggers) and '| stopped ' not in triggers, triggers
+    assert re.search(r'\| owner +\| [1-9]', triggers) and '| ready ' not in triggers and '| stopped ' not in triggers, triggers
     # ^ The manager has no ping: its conversation is rotated or left to the idle rotation.
     entries = manager_entries()
     assert not [e for e in entries if e['kind'] == 'ping'], entries[-12:]

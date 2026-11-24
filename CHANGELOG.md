@@ -6,6 +6,7 @@ Releases 0.40.4 and older are in [docs/changelog-archive.md](docs/changelog-arch
 
 ### Changed
 
+- Tasks: a check failure shared by tasks reaches the main chat as an event that starts no turn; adds dropped at a land go to the chat that owns the task.
 - Web: a click outside a chat's folder sheet closes it with no change, as Escape does.
 - Tasks: a project's main chat with no goal is its lead. It forks every message that asks for work into a new chat with `wsx task chat new <name> --brief --owner-said <id>`: the new chat starts on the owner's own message, its goal the message's first line, and both chats show the fork. Closing the new chat before it owns a task undoes the fork, with no hand-back.
 - TUI: from 130 columns the chat has a rail of chats on its left (the manager, the open chats with their counts, For you). `^g` gives it the keys; `Enter` opens a chat. With a task open, `tab` goes chat, task, rail.
