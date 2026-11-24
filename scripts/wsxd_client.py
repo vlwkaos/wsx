@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -16,6 +17,14 @@ PROTOCOL = int(re.search(r"PROTOCOL_VERSION: u32 = (\d+);",
 HELLO = json.dumps({"method": "hello", "params": {"protocol": PROTOCOL}}).encode() + b"\n"
 BUFFERS = weakref.WeakKeyDictionary()
 
+
+
+def end_on_sigterm():
+    """Make SIGTERM raise SystemExit, so a run that scripts/scenario.py stops (SIGTERM to its process
+    group) or that is stopped by hand still runs its `finally`: its wsxd stops, `reap` ends its
+    agents and its folder is removed. With Python's default handler the process ends at once and
+    leaves all three behind."""
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 
 def reap(folder, wsx=ROOT / "target" / "debug" / "wsx"):
     """Stop every process that still names the run's folder in its arguments or environment, with

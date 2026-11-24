@@ -59,7 +59,6 @@ What changes: the conversation scrolls inside Claude (wheel, PgUp/PgDn; a drag i
 ```sh
 cargo build --locked -p wsx -p wsx-daemon
 cargo nextest run -p wsx --locked
-python3 -B scripts/test-terminal-context-harness.py
 python3 -B scripts/test-terminal-context.py --keep
 ```
 

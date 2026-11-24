@@ -108,16 +108,13 @@ try:
         line = prompt_report(prompt)
         assert expected in line and '--prompt-receipts' in line, (prompt, line)
     assert '--received' not in prompt_report('[wsx exchange 7, round 2, writer]\nhello', event='PostToolUse')
-    # A /compact a person types is reported; an automatic one is not, so an idle agent never looks busy.
-    assert '--compacting' in prompt_report('', event='PreCompact', trigger='manual')
-    before = len(calls())
-    subprocess.run(['/bin/sh', str(shell), 'working'], text=True, capture_output=True, timeout=5, check=True,
-                   input=json.dumps({'session_id': 'fixture', 'hook_event_name': 'PreCompact', 'trigger': 'auto'}),
-                   env=dict(env, WSX_AGENT_REPORT_BIN=str(binary)))
-    assert len(calls()) == before, 'an automatic compaction was reported'
+    # Every compaction is reported, the person's /compact and an automatic one (docs/agent-reporting.md
+    # "Compaction": an automatic one can come inside a turn or while the agent is idle).
+    for trigger in ('manual', 'auto'):
+        assert '--compacting' in prompt_report('', event='PreCompact', trigger=trigger), trigger
     success = True
     print('shell/Hermes reporter: pre-handoff and dangling-entry recovery, no rejection replay, unsafe-path refusal, bounded absence; '
-          'Claude prompt receipts by round, in a paste wrapper and for another prompt; manual compaction only PASS')
+          'Claude prompt receipts by round, in a paste wrapper and for another prompt; manual and automatic compaction PASS')
 finally:
     if success:
         shutil.rmtree(work)

@@ -327,6 +327,7 @@ def memory_records(raw):
 
 
 def main():
+    wsxd_client.end_on_sigterm()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wsx', type=Path, default=ROOT / 'target/debug/wsx')
     parser.add_argument('--keep', action='store_true', help='keep the scratch folder')
@@ -4083,7 +4084,7 @@ def part_worker(created=None):
         tui.close(QUIT)
     assert seen_names == [accent, plain], seen_names
     # `o` opens the project's overview.md read-only, from the list and from the chat: the text as
-    # written, the mermaid graph as a code block; `j` and PageDown scroll, `Esc` returns to what
+    # written, the mermaid graph drawn as a diagram; `j` and PageDown scroll, `Esc` returns to what
     # was under it (docs/tasks.md "TUI"). The file is longer than the window.
     Path(page).write_text('# demo\n\n## Goal\n\nShip the overview view.\n\n## Tasks\n\n```mermaid\n'
                           'graph LR\n  one[Write it] --> two[Show it]\n```\n\n## Open questions\n\n'
@@ -4102,7 +4103,8 @@ def part_worker(created=None):
         (r'WORKSPACE', b'')])
     top, scrolled, bottom = seen[2], seen[3], seen[4]
     assert re.search(r'(?m)^ Overview demo +1-\d+/\d+$', top), top
-    assert all(word in top for word in ('# demo', '## Goal', '```mermaid', 'graph LR', 'one[Write it] --> two[Show it]')), top
+    # ^ The mermaid block is drawn as a Unicode diagram (crates/wsx/src/ui/diagram.rs): its nodes and the arrow between them.
+    assert all(word in top for word in ('# demo', '## Goal', '│ Write it │', '│ Show it │', '▸')) and 'graph LR' not in top, top
     assert 'Ship the overview view.' in top and 'Open question 1.' in top, top
     assert '# demo' not in scrolled and 'Ship the overview view.' not in scrolled and '## Tasks' in scrolled, scrolled
     assert '## Open questions' in bottom or 'Open question 60.' in bottom, bottom

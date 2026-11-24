@@ -81,4 +81,6 @@ fn a_cut_question_is_restored_once_from_the_result() {
     assert!(!dir.restore_question(&mut record));
     let (dir, mut record) = task("disk", "Three questions for you:", SUMMARY);
     assert!(!dir.restore_question(&mut record));
+    // ^ A pass leaves no folder; a failed run keeps it to read.
+    let _ = fs::remove_dir_all(&state);
 }

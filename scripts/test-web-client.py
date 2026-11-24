@@ -918,6 +918,7 @@ def slowest(count=8):
 
 
 def main():
+    wsxd_client.end_on_sigterm()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wsx', type=Path, default=ROOT / 'target/debug/wsx')
     parser.add_argument('--daemon', type=Path, default=ROOT / 'target/debug/wsxd')
@@ -4901,7 +4902,8 @@ merge_seconds = 3
         assert sum(day['usage']['cost_micro_usd'] for day in everything['days']) == sum(
             usage_sum(overviews, 'week', who, 'cost_micro_usd') for who in ('workers', 'manager')), everything['days']
         weeks = [row['cost_micro_usd'] for row in everything['projects']]
-        assert weeks == sorted(weeks, reverse=True) and len(weeks) >= 2, everything['projects']
+        # ^ `ui` spends only with --browser (its tasks are the page's); without it `demo` alone does.
+        assert weeks == sorted(weeks, reverse=True) and len(weeks) >= (2 if args.browser else 1), everything['projects']
         assert [row['name'] for row in steady(viewer, 'GET', '/api/tasks/usage')[1]['projects']] == ['demo']
         ok('brief: the ledger with deploys and the main checkout; refusals: task_act and task_view per site, ungranted project 404, actions hidden without task_act')
 

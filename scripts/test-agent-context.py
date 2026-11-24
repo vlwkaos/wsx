@@ -513,6 +513,7 @@ for X in $A $B; do "$WSX" agent wait $X --result --timeout 30 --json > result-$X
 
 
 def main():
+    wsxd_client.end_on_sigterm()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wsx', type=Path, default=ROOT / 'target/debug/wsx')
     parser.add_argument('--daemon', type=Path, default=ROOT / 'target/debug/wsxd')

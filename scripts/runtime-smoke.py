@@ -19,6 +19,8 @@ import wsxd_client
 from tui_pty import TuiPty
 from wsxd_client import PROTOCOL, heartbeat_streams, recv_line, send_stream, stream_send_lock
 
+wsxd_client.end_on_sigterm()
+
 ROOT = Path(__file__).resolve().parents[1]
 # ^ Plugin manifest commands must be absolute even when the scratch root is relative.
 WORK = Path(os.environ.get("WSX_SMOKE_WORK", ROOT / ".work" / "runtime-smoke")).resolve()
