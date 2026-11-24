@@ -189,13 +189,23 @@ fn a_late_check_run_that_passes_is_evidence_and_starts_no_turn() {
     // ^ The pass is recorded as evidence in the settled result (docs/tasks.md "Check-run").
     let task = fixture.json(&["task", "show", "1", "--json"]);
     assert_eq!(task["state"], "ready", "{task}");
-    let evidence = task["result"]["result"]["evidence"].as_array().cloned().unwrap_or_default();
+    let evidence = task["result"]["result"]["evidence"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     let proof: Vec<_> = evidence
         .iter()
-        .filter(|line| line["check"].as_str().is_some_and(|check| check.contains("check-run")))
+        .filter(|line| {
+            line["check"]
+                .as_str()
+                .is_some_and(|check| check.contains("check-run"))
+        })
         .collect();
     assert!(
-        proof.len() == 1 && proof[0]["proof"].as_str().is_some_and(|text| text.contains(": exit 0")),
+        proof.len() == 1
+            && proof[0]["proof"]
+                .as_str()
+                .is_some_and(|text| text.contains(": exit 0")),
         "{task}"
     );
 }

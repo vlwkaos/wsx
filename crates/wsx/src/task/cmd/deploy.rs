@@ -3,7 +3,7 @@
 use super::approve::{after_landing, ask_covering, request_of};
 use crate::runtime_util::print_json;
 use crate::task::args::{DeployArgs, PushArgs};
-use crate::task::{acting_as_manager, actor, project_entry};
+use crate::task::{acting_as_chat, actor, project_entry};
 use crate::task::{asks_owner, outward_said};
 use crate::task::{host, hosting};
 use anyhow::{bail, Context, Result};
@@ -53,7 +53,7 @@ pub(crate) fn push(args: PushArgs, project: Option<&str>, json: bool) -> Result<
     let refuse = |error: anyhow::Error| anyhow::anyhow!("{error:#}; nothing was pushed");
     // ^ One approved push of a project at a time, and origin's tip is read under the lock: two
     // approved pushes ran together once and the older won the ref. A request waits for nothing.
-    let asks = acting_as_manager() && (owner_said.is_none() || after.is_some());
+    let asks = acting_as_chat() && (owner_said.is_none() || after.is_some());
     let _one_at_a_time = if asks {
         None
     } else {
@@ -106,7 +106,7 @@ pub(crate) fn push(args: PushArgs, project: Option<&str>, json: bool) -> Result<
     }
     // ^ A lease that is not origin's tip was refused above, so the push leases what it saw now.
     let lease = force.then(|| remote.clone().unwrap_or_default());
-    if acting_as_manager() {
+    if acting_as_chat() {
         // ^ The request says what it carries: the landed tasks and the commits origin lacks.
         // ^ A push that waits for a land names no commit unless the manager did: the default
         // branch tip is read when it runs.
@@ -300,11 +300,11 @@ pub(crate) fn deploy(
     let (owner_said, after) = outward_said(&said)?;
     // ^ The run of an approved `release --after`: the owner's message asked for it, so open To
     // check items stay on it. The manager cannot pass the flag.
-    let waived = run.checks_waived && kind == DeployKind::Release && !acting_as_manager();
+    let waived = run.checks_waived && kind == DeployKind::Release && !acting_as_chat();
     let by_hand = !if_new && run_locked.is_none();
     // ^ The run of an approved request (the owner's go, now or after a land) waits for the
     // lock instead of refusing: a refused approval is spent. The manager cannot pass the flag.
-    let approved = run.approved && !acting_as_manager();
+    let approved = run.approved && !acting_as_chat();
     let name = kind_name(kind);
     let (project_name, main) = project_entry(project)?;
     // ^ Each answer is JSON with `--json`, else its message.

@@ -1,8 +1,8 @@
 //! Token use and cost summed from the task and manager logs' `usage`, for `task show`, the
 //! ledger, the TUI and the web client. ref: docs/tasks.md "Usage"
 
-use super::manager::{ManagerEntry, ManagerEvent};
-use super::store::{self, ManagerDir, TaskDir};
+use super::manager::{ChatEntry, ChatEvent};
+use super::store::{self, ChatDir, TaskDir};
 use super::view::project_tasks;
 use super::{LogEvent, TurnUsage};
 use serde::{Deserialize, Serialize};
@@ -285,18 +285,18 @@ pub fn task(dir: &TaskDir) -> Usage {
 
 /// The manager's turns: its replies and pings in both log files. A line from before `adapter`
 /// is `unknown`: no record tells which agent the manager ran then.
-pub fn manager_turns(dir: &ManagerDir) -> Turns {
+pub fn manager_turns(dir: &ChatDir) -> Turns {
     cached(&dir.log_files(), || {
         manager_log_turns(&dir.read_log().unwrap_or_default())
     })
 }
 
-pub fn manager_log_turns(log: &[ManagerEntry]) -> Vec<Turn> {
+pub fn manager_log_turns(log: &[ChatEntry]) -> Vec<Turn> {
     let lines = log.iter().filter_map(|entry| match &entry.event {
-        ManagerEvent::Reply { usage, .. } => {
+        ChatEvent::Reply { usage, .. } => {
             Some((entry.unix_ms, PART_MANAGER, usage.as_ref(), false))
         }
-        ManagerEvent::Ping { usage } => Some((entry.unix_ms, PART_MANAGER, usage.as_ref(), true)),
+        ChatEvent::Ping { usage } => Some((entry.unix_ms, PART_MANAGER, usage.as_ref(), true)),
         _ => None,
     });
     turns(lines, "")
@@ -461,7 +461,7 @@ fn spend(project_id: &str, now_ms: u64, filter: &Filter, since: u64) -> Spend {
             sum.week.workers.add(&week);
         }
     }
-    let manager = ManagerDir::main(project_id)
+    let manager = ChatDir::main(project_id)
         .ok()
         .flatten()
         .map(|dir| manager_turns(&dir))

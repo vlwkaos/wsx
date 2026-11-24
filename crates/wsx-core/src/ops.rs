@@ -557,9 +557,15 @@ pub fn clone_place(config: &GlobalConfig, url: &str, beside: Option<&Path>) -> R
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
         })
-        .ok_or_else(|| anyhow!("clone URL '{url}' names no repository folder (letters, digits, '.', '_', '-')"))?;
+        .ok_or_else(|| {
+            anyhow!("clone URL '{url}' names no repository folder (letters, digits, '.', '_', '-')")
+        })?;
     let mut roots: Vec<(&Path, usize)> = Vec::new();
-    for parent in config.projects.iter().filter_map(|entry| entry.path.parent()) {
+    for parent in config
+        .projects
+        .iter()
+        .filter_map(|entry| entry.path.parent())
+    {
         match roots.iter_mut().find(|(root, _)| *root == parent) {
             Some((_, count)) => *count += 1,
             None => roots.push((parent, 1)),

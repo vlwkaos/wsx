@@ -4,9 +4,9 @@
 //! turn shows no agent output past `stall::turn_quiet_ms`, stop it and its agent's tree, and
 //! start one on this wsx. ref: docs/tasks.md "Host" (A host hung in a turn)
 
-use super::manager::{ManagerEvent, ManagerResponse};
+use super::manager::{ChatEvent, ChatResponse};
 use super::status::span;
-use super::store::{self, ManagerDir, TaskDir};
+use super::store::{self, ChatDir, TaskDir};
 use super::{stall, HostRequest, LogEvent, TaskRecord, TaskState};
 use crate::config::project::load_task_config;
 use crate::model::workspace::TaskConfig;
@@ -141,7 +141,7 @@ pub(super) fn replace_hung_task(dir: &TaskDir) -> anyhow::Result<bool> {
 /// The manager's or a chat's turn when it is hung in a host that runs an older wsx: it
 /// answered `busy` and as older, and its log has no agent line, delivery or reply past the
 /// bound.
-fn manager_hung(dir: &ManagerDir, main: &Path, answer: &ManagerResponse) -> Option<Hung> {
+fn manager_hung(dir: &ChatDir, main: &Path, answer: &ChatResponse) -> Option<Hung> {
     if !answer.busy || !behind(answer.binary.as_ref()) {
         return None;
     }
@@ -149,7 +149,7 @@ fn manager_hung(dir: &ManagerDir, main: &Path, answer: &ManagerResponse) -> Opti
     let started_ms = log
         .iter()
         .rev()
-        .find(|entry| matches!(entry.event, ManagerEvent::Delivered { .. }))?
+        .find(|entry| matches!(entry.event, ChatEvent::Delivered { .. }))?
         .unix_ms;
     let output_ms = log
         .iter()
@@ -157,9 +157,9 @@ fn manager_hung(dir: &ManagerDir, main: &Path, answer: &ManagerResponse) -> Opti
         .find(|entry| {
             matches!(
                 entry.event,
-                ManagerEvent::Delivered { .. }
-                    | ManagerEvent::Agent { .. }
-                    | ManagerEvent::Reply { usage: Some(_), .. }
+                ChatEvent::Delivered { .. }
+                    | ChatEvent::Agent { .. }
+                    | ChatEvent::Reply { usage: Some(_), .. }
             )
         })?
         .unix_ms;
@@ -174,15 +174,15 @@ fn manager_hung(dir: &ManagerDir, main: &Path, answer: &ManagerResponse) -> Opti
 /// (`manager_hung`), stop its agent's tree and log one `stopped` entry; the caller starts the
 /// new host, whose restore queues the turn's messages again. True when it did.
 pub(super) fn close_hung_manager(
-    dir: &ManagerDir,
+    dir: &ChatDir,
     main: &Path,
-    answer: &ManagerResponse,
+    answer: &ChatResponse,
 ) -> anyhow::Result<bool> {
     let Some(hung) = manager_hung(dir, main, answer) else {
         return Ok(false);
     };
     stop_host(dir, main)?;
-    dir.append(ManagerEvent::Stopped {
+    dir.append(ChatEvent::Stopped {
         reason: hung.reason(super::now_unix_ms()),
     })?;
     Ok(true)
@@ -190,7 +190,7 @@ pub(super) fn close_hung_manager(
 
 /// Close the chat's host session and stop its agent's tree: a hung host, or a fork whose first
 /// message did not reach it (`chat new --brief`).
-pub fn stop_host(dir: &ManagerDir, main: &Path) -> anyhow::Result<()> {
+pub fn stop_host(dir: &ChatDir, main: &Path) -> anyhow::Result<()> {
     // ^ A host of the release before runs as `manager-host`; either hands over or is replaced.
     let (args, old) = (dir.host_args(), dir.old_host_args());
     let find = |args: &[String]| host_pid(&args.iter().map(String::as_str).collect::<Vec<_>>());
@@ -241,9 +241,9 @@ pub fn sweep() -> Vec<String> {
             }
         }
         for dir in super::chats::open_chats(&project_id) {
-            let answer = super::call_socket::<_, ManagerResponse>(
+            let answer = super::call_socket::<_, ChatResponse>(
                 &dir.socket_path(),
-                &super::manager::ManagerRequest::Status,
+                &super::manager::ChatRequest::Status,
                 stall::PROBE,
             );
             if answer.is_ok_and(|answer| manager_hung(&dir, &project.path, &answer).is_some()) {

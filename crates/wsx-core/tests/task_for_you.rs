@@ -7,7 +7,7 @@ use serde_json::json;
 use std::fs;
 use wsx_core::task::chats;
 use wsx_core::task::checks::{self, CheckItem};
-use wsx_core::task::manager::{ApprovalLine, ManagerEvent};
+use wsx_core::task::manager::{ApprovalLine, ChatEvent};
 use wsx_core::task::needs::{self, YouSource};
 use wsx_core::task::store::{self, TaskDir, RECORD_FILE};
 
@@ -64,7 +64,7 @@ fn the_list_and_the_counts_of_a_chat_agree() {
     )
     .unwrap();
     store::append_approval(PROJECT, request).unwrap();
-    let ask: ManagerEvent = serde_json::from_value(
+    let ask: ChatEvent = serde_json::from_value(
         json!({ "kind": "reply", "id": 1, "to": [], "text": "Which one?", "asks": true }),
     )
     .unwrap();

@@ -192,7 +192,7 @@ pub struct TaskList {
     /// `adapter/model` of `usage_all.agents`; none for all.
     pub agent: Option<String>,
     /// The project's manager chat, opened over the list with `m`.
-    pub chat: Option<Box<crate::task_chat::ManagerChat>>,
+    pub chat: Option<Box<crate::task_chat::ChatScreen>>,
     /// The New chat form, opened with `n` over the list.
     pub new_chat: Option<crate::task_new_chat::NewChat>,
     /// The project's overview, opened with `o` over the list or the chat.
@@ -331,7 +331,7 @@ impl TaskList {
     pub fn open_chat(&mut self, chat: Option<String>) {
         self.stash_draft();
         let mut open =
-            crate::task_chat::ManagerChat::new(self.project.clone(), self.main.clone(), chat);
+            crate::task_chat::ChatScreen::new(self.project.clone(), self.main.clone(), chat);
         if let Some(draft) = self.drafts.remove(&self.chat_key(open.chat.as_deref())) {
             open.composer = crate::ui::input::InputState::with_value("> ", draft);
         }
@@ -1057,7 +1057,7 @@ pub fn run_message(
     view: &wsx_core::routine::RoutineView,
 ) -> Option<u64> {
     let run = view.latest_run.as_ref()?;
-    let dir = store::ManagerDir::main(&store::project_id(project, main)).ok()??;
+    let dir = store::ChatDir::main(&store::project_id(project, main)).ok()??;
     wsx_core::task::chat::run_messages(&dir, &[run]).pop()?
 }
 

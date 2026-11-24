@@ -4,7 +4,7 @@ use super::approve::owner_only;
 use super::new::{create, NewTask, Steps};
 use crate::runtime_util::print_json;
 use crate::task::args::{CheckAction, Chosen};
-use crate::task::{acting_as_manager, actor, project_entry};
+use crate::task::{acting_as_chat, actor, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use wsx_core::task::checks::{self, CheckItem, CheckState};
@@ -40,7 +40,7 @@ pub(crate) fn check(action: Option<CheckAction>, project: Option<&str>, json: bo
         }
         Some(CheckAction::Pass { chosen, said }) => {
             // ^ The manager passes only the items it names, on the owner's message of this turn.
-            let owner_said = if acting_as_manager() {
+            let owner_said = if acting_as_chat() {
                 match crate::task::owner_said(said.owner_said) {
                     Some(said) if !chosen.all => {
                         owner::check_owner_said(&project_id, actor().chat(), said)?;

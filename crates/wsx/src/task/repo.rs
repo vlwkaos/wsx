@@ -21,13 +21,13 @@ use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
 use wsx_core::stale;
 use wsx_core::task::build;
 use wsx_core::task::manager::{
-    decided_request, open_requests, ApprovalLine, Author, Checkin, Level, ManagerEntry,
-    ManagerEvent, ManagerRequest, ManagerResponse, RepoState, Seen, Short,
+    decided_request, open_requests, ApprovalLine, Author, ChatEntry, ChatEvent, ChatRequest,
+    ChatResponse, Checkin, Level, RepoState, Seen, Short,
 };
 use wsx_core::task::owner::ACTOR_ENV;
 use wsx_core::task::replace::Binary;
 use wsx_core::task::stall;
-use wsx_core::task::store::{self, ManagerDir};
+use wsx_core::task::store::{self, ChatDir};
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
 use wsx_core::task::{
     call_host, chats, checks, ledger, now_unix_ms, owner, session_news, test_secs, usage, Actor,
@@ -76,7 +76,7 @@ enum Event {
     Unposted(u64),
     /// The owner's reminder under this key did not reach the main chat: the next sweep sends it again.
     Unreminded(String),
-    Request(ManagerRequest, Sender<ManagerResponse>),
+    Request(ChatRequest, Sender<ChatResponse>),
     Tick,
     /// A sweep of stale worktrees and sessions ended: its notes, or why it failed.
     /// What a sweep did, and the stale sweep's error: the build folders it removed are told
@@ -289,8 +289,8 @@ impl Repo {
         Ok(())
     }
 
-    fn handle(&mut self, request: ManagerRequest) -> ManagerResponse {
-        let answer = |ok: bool, message: &str| ManagerResponse {
+    fn handle(&mut self, request: ChatRequest) -> ChatResponse {
+        let answer = |ok: bool, message: &str| ChatResponse {
             ok,
             id: None,
             busy: false,
@@ -298,17 +298,17 @@ impl Repo {
             message: message.into(),
         };
         match request {
-            ManagerRequest::Status => ManagerResponse {
+            ChatRequest::Status => ChatResponse {
                 binary: self.binary.clone(),
                 ..answer(true, "the repo's service runs")
             },
-            ManagerRequest::Checkin { at_ms, why, chat } => {
+            ChatRequest::Checkin { at_ms, why, chat } => {
                 let chat = chat.unwrap_or_default();
                 self.state.checkins.insert(chat, Checkin { at_ms, why });
                 self.save();
                 answer(true, "check-in set")
             }
-            ManagerRequest::Say { .. } | ManagerRequest::Post { .. } => answer(
+            ChatRequest::Say { .. } | ChatRequest::Post { .. } => answer(
                 false,
                 "the repo's service takes no message: say it to a chat",
             ),
@@ -438,7 +438,7 @@ impl Repo {
     fn restore(&mut self) -> Result<()> {
         self.state = match store::read_repo_state(&self.project_id)? {
             Some(state) => state,
-            None => ManagerDir::main(&self.project_id)?
+            None => ChatDir::main(&self.project_id)?
                 .and_then(|dir| {
                     std::fs::read(dir.path.join("state.json"))
                         .ok()
@@ -483,7 +483,7 @@ impl Repo {
         let Some(quiet) = self.recap_quiet else {
             return;
         };
-        let log_dir = ManagerDir::main(&self.project_id).ok().flatten();
+        let log_dir = ChatDir::main(&self.project_id).ok().flatten();
         let written = log_dir
             .as_ref()
             .and_then(|dir| std::fs::metadata(dir.path.join("log.jsonl")).ok())
@@ -1413,7 +1413,7 @@ impl Repo {
 
     /// The repo of the chat that created the task, when it is not this one: `chat.json` names it.
     fn origin_repo(&self, record: &TaskRecord) -> Option<String> {
-        let chat = ManagerDir::existing(record.created_by.chat()?).ok()??;
+        let chat = ChatDir::existing(record.created_by.chat()?).ok()??;
         (chat.project_id != self.project_id).then_some(chat.project_id)
     }
 
@@ -1613,9 +1613,9 @@ impl Repo {
 
     /// A land, a close, a new wait or an approval decision the manager heard of in `log` (the
     /// entries after `since`), a new approval request or a To check item after `since`.
-    fn changed_since(&self, log: &[ManagerEntry], since: u64) -> bool {
+    fn changed_since(&self, log: &[ChatEntry], since: u64) -> bool {
         let heard = log.iter().any(|entry| match &entry.event {
-            ManagerEvent::Message {
+            ChatEvent::Message {
                 from: Author::Events,
                 text,
                 ..
@@ -1641,7 +1641,7 @@ impl Repo {
 
     /// The spend since `since` from the logs' `cost_micro_usd`: the manager's replies and the
     /// workers' results, the costliest tasks named. ref: docs/tasks.md "Recap"
-    fn cost_since(&self, log: &[ManagerEntry], since: u64) -> String {
+    fn cost_since(&self, log: &[ChatEntry], since: u64) -> String {
         let manager = usage::Usage::since(&usage::manager_log_turns(log), 0);
         let mut tasks: Vec<(u64, u32, u64)> = project_tasks(&self.project_id)
             .unwrap_or_default()
@@ -1724,7 +1724,7 @@ pub(super) fn say_chat(
     mut lines: Vec<(String, Short)>,
     author: Author,
 ) -> bool {
-    let sent = ManagerDir::existing(to)
+    let sent = ChatDir::existing(to)
         .ok()
         .flatten()
         .context("the chat is gone")

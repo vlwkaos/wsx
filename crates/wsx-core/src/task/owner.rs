@@ -3,10 +3,9 @@
 //! ref: docs/tasks.md "Manager", "Approvals"
 
 use super::manager::{
-    pending_approvals, waiting_approvals, ApprovalAction, ApprovalLine, ManagerRequest,
-    ManagerResponse,
+    pending_approvals, waiting_approvals, ApprovalAction, ApprovalLine, ChatRequest, ChatResponse,
 };
-use super::store::{self, ManagerDir, TaskDir};
+use super::store::{self, ChatDir, TaskDir};
 use super::{call_socket, now_unix_ms, MAX_MESSAGE_BYTES};
 use anyhow::{bail, Context, Result};
 use std::path::Path;
@@ -32,15 +31,14 @@ pub fn ensure_manager(
     wsx: &Path,
     chat: Option<&str>,
     launch: impl Fn(String, Vec<String>) -> Result<()>,
-) -> Result<(bool, ManagerDir)> {
+) -> Result<(bool, ChatDir)> {
     let project_id = store::project_id(name, main);
     let dir = match chat {
         None => super::chats::open_main(&project_id)?,
         Some(chat) => super::chats::open_chat(chat)?,
     };
-    let status = || {
-        call_socket::<_, ManagerResponse>(&dir.socket_path(), &ManagerRequest::Status, HOST_TIMEOUT)
-    };
+    let status =
+        || call_socket::<_, ChatResponse>(&dir.socket_path(), &ChatRequest::Status, HOST_TIMEOUT);
     // ^ The service of a chat's own repo; another repo's runs on its own.
     if dir.project_id == project_id {
         ensure_repo(name, main, wsx, &launch)?;
@@ -96,9 +94,8 @@ pub fn ensure_repo_with(
 ) -> Result<bool> {
     let project_id = store::project_id(name, main);
     let socket = store::repo_socket(&project_id)?;
-    let status = || {
-        call_socket::<_, ManagerResponse>(&socket, &ManagerRequest::Status, HOST_TIMEOUT).is_ok()
-    };
+    let status =
+        || call_socket::<_, ChatResponse>(&socket, &ChatRequest::Status, HOST_TIMEOUT).is_ok();
     if status() {
         return Ok(false);
     }
@@ -145,7 +142,7 @@ pub fn say(
     text: String,
     from: Option<super::manager::Author>,
     short: Vec<super::manager::Short>,
-) -> Result<ManagerResponse> {
+) -> Result<ChatResponse> {
     // ^ The owner's message with no prefix may be routed by a small model first; it only picks
     // a prefix, which the chat's host acts on (docs/tasks.md "Router").
     let text = match from {
@@ -155,7 +152,7 @@ pub fn say(
     let (_, dir) = ensure_manager(name, main, wsx, chat, launch)?;
     call_socket(
         &dir.socket_path(),
-        &ManagerRequest::Say { text, from, short },
+        &ChatRequest::Say { text, from, short },
         HOST_TIMEOUT,
     )
 }
@@ -189,11 +186,11 @@ pub fn close_chat(
     let main = super::chats::close(name)?;
     if let Some(from) = fork {
         // ^ Both logs note it: the fork's own, so a reopen of the name closes as any chat.
-        let undone = super::manager::ManagerEvent::ForkUndone {
+        let undone = super::manager::ChatEvent::ForkUndone {
             to: name.to_string(),
         };
         dir.append(undone.clone())?;
-        if let Some(origin) = ManagerDir::existing(&from)? {
+        if let Some(origin) = ChatDir::existing(&from)? {
             origin.append(undone)?;
         }
         return Ok(Closed::ForkUndone);
@@ -250,7 +247,7 @@ fn routed(name: &str, main: &Path, chat: Option<&str>, text: String) -> String {
             Err(_) => return text,
         },
     };
-    let line = |dir: &ManagerDir| {
+    let line = |dir: &ChatDir| {
         let goal = fork_goal(&super::chats::goal(dir));
         format!(
             "- {}: {}",
@@ -367,13 +364,13 @@ pub fn fork(
     project: (&str, &Path),
     wsx: &Path,
     launch: impl Fn(String, Vec<String>) -> Result<()>,
-    origin: &ManagerDir,
+    origin: &ChatDir,
     message: u64,
     text: String,
     name: &str,
     agent: Option<&str>,
 ) -> Result<(String, Option<u64>)> {
-    use super::manager::{Author, ManagerEvent};
+    use super::manager::{Author, ChatEvent};
     let name = super::chats::checked_name(name)?;
     let goal = fork_goal(&text);
     if goal.is_empty() {
@@ -394,14 +391,14 @@ pub fn fork(
             _ => bail!("cannot make the folder of chat {name}: {error}; nothing was done"),
         }
     }
-    origin.append(ManagerEvent::Forked {
+    origin.append(ChatEvent::Forked {
         to: name.to_string(),
         message,
     })?;
     let project_id = store::project_id(project.0, project.1);
     let dir = super::chats::create(&project_id, name, Some(&goal), agent)?;
     let sent = dir
-        .append(ManagerEvent::ForkedFrom {
+        .append(ChatEvent::ForkedFrom {
             from: origin.name().to_string(),
             message,
         })
@@ -423,7 +420,7 @@ pub fn fork(
     let arrived = || {
         dir.read_log().ok().and_then(|log| {
             log.into_iter().find_map(|entry| match entry.event {
-                ManagerEvent::Message {
+                ChatEvent::Message {
                     id,
                     from: Author::Owner,
                     ..
@@ -444,7 +441,7 @@ pub fn fork(
                 // both logs say the fork is undone.
                 let _ = super::replace::stop_host(&dir, project.1);
                 let _ = super::chats::close(name);
-                let undone = ManagerEvent::ForkUndone {
+                let undone = ChatEvent::ForkUndone {
                     to: name.to_string(),
                 };
                 let _ = dir.append(undone.clone());
@@ -467,12 +464,12 @@ pub fn move_message(
     project: (&str, &Path),
     wsx: &Path,
     launch: impl Fn(String, Vec<String>) -> Result<()>,
-    origin: &ManagerDir,
+    origin: &ChatDir,
     message: u64,
     text: String,
     target: &str,
 ) -> Result<()> {
-    use super::manager::{Author, ManagerEvent};
+    use super::manager::{Author, ChatEvent};
     let moved = super::chats::open_chat(target).and_then(|dir| {
         let before = dir.read_log().map(|log| log.len()).unwrap_or(0);
         let text_sent = text.clone();
@@ -494,24 +491,24 @@ pub fn move_message(
         let arrived = || {
             dir.read_log().is_ok_and(|log| {
                 log.iter().skip(before).any(|entry| {
-                    matches!(&entry.event, ManagerEvent::Message { from: Author::Owner, text, .. } if *text == text_sent)
+                    matches!(&entry.event, ChatEvent::Message { from: Author::Owner, text, .. } if *text == text_sent)
                 })
             })
         };
         if sent.is_err() && !arrived() {
             return sent;
         }
-        dir.append(ManagerEvent::MovedFrom {
+        dir.append(ChatEvent::MovedFrom {
             from: origin.name().to_string(),
             message,
         })?;
-        origin.append(ManagerEvent::Moved {
+        origin.append(ChatEvent::Moved {
             to: target.to_string(),
             message,
         })
     });
     if let Err(error) = &moved {
-        origin.append(ManagerEvent::MoveFailed {
+        origin.append(ChatEvent::MoveFailed {
             to: target.to_string(),
             message,
             reason: format!("{error:#}"),
@@ -531,11 +528,11 @@ pub fn post(
     event: String,
     text: String,
     level: Option<super::manager::Level>,
-) -> Result<ManagerResponse> {
+) -> Result<ChatResponse> {
     let (_, dir) = ensure_manager(name, main, wsx, None, launch)?;
     call_socket(
         &dir.socket_path(),
-        &ManagerRequest::Post { event, text, level },
+        &ChatRequest::Post { event, text, level },
         HOST_TIMEOUT,
     )
 }
@@ -550,11 +547,11 @@ pub fn checkin(
     chat: Option<String>,
     at_ms: u64,
     why: String,
-) -> Result<ManagerResponse> {
+) -> Result<ChatResponse> {
     ensure_repo(name, main, wsx, launch)?;
     call_socket(
         &store::repo_socket(&store::project_id(name, main))?,
-        &ManagerRequest::Checkin { at_ms, why, chat },
+        &ChatRequest::Checkin { at_ms, why, chat },
         HOST_TIMEOUT,
     )
 }
@@ -1106,7 +1103,7 @@ pub fn approve_after(project_id: &str, mut request: ApprovalLine, said: u64) -> 
 
 /// Refuse unless `said` is an owner message of the manager's running turn.
 pub fn check_owner_said(project_id: &str, chat: Option<&str>, said: u64) -> Result<()> {
-    let manager = ManagerDir::existing_in(project_id, chat)?
+    let manager = ChatDir::existing_in(project_id, chat)?
         .context("the chat has no log, so no owner message")?;
     super::manager::owner_said_in_turn(&manager.read_log()?, said)
         .map_err(|why| anyhow::anyhow!("--owner-said {said}: {why}; nothing was run"))

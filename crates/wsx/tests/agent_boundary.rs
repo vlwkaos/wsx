@@ -44,7 +44,10 @@ fn the_lead_reaches_other_projects_only_through_task_verbs() {
     let fixture = Fixture::new();
     let other = fixture.root.join("home/other");
     std::fs::create_dir_all(&other).unwrap();
-    for args in [&["init", "-q", "-b", "main"][..], &["commit", "-q", "--allow-empty", "-m", "start"]] {
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["commit", "-q", "--allow-empty", "-m", "start"],
+    ] {
         let done = fixture
             .command(std::path::Path::new("git"))
             .current_dir(&other)
@@ -65,7 +68,10 @@ fn the_lead_reaches_other_projects_only_through_task_verbs() {
     // ^ `chat new` shares the word `new` with `task new` and is refused there.
     assert!(ran(&reply, "wsx chat new").contains("-> 2"), "{reply}");
     // ^ A host command after a flag is still refused.
-    assert!(ran(&reply, "wsx task -p demo host").contains("is not for an agent"), "{reply}");
+    assert!(
+        ran(&reply, "wsx task -p demo host").contains("is not for an agent"),
+        "{reply}"
+    );
     let chats = fixture.json(&["chat", "list", "-p", "other", "--json"]);
     assert!(!chats.to_string().contains("\"spy\""), "{chats}");
 }

@@ -511,14 +511,14 @@ When it would pass 16 KiB, the memos are left out first, then the least urgent o
 
 ## Log window
 
-Every reader of a manager log reads it from its end (`ManagerDir::read_back` in `wsx-core` `task/store.rs`): the last 256 KiB, then four times as much until the reader has what it needs, or the newest two files whole (at most 16 MiB). A task's `log.jsonl` uses the same reader (`TaskDir::last_entry`). What a chat needs is `wsx_core::task::chat::read_chat` with its `Window`, the one rule for the web's chat route, the TUI's chat and `wsx chat read`:
+Every reader of a manager log reads it from its end (`ChatDir::read_back` in `wsx-core` `task/store.rs`): the last 256 KiB, then four times as much until the reader has what it needs, or the newest two files whole (at most 16 MiB). A task's `log.jsonl` uses the same reader (`TaskDir::last_entry`). What a chat needs is `wsx_core::task::chat::read_chat` with its `Window`, the one rule for the web's chat route, the TUI's chat and `wsx chat read`:
 
 | Window | Shows | Reads back to |
 |---|---|---|
 | `Tail` | the newest 200 entries | 200 shown entries |
 | `After(id)` | the newest 200 after message `id` | an entry at or before `id` (ids grow) |
 | `Find(words)` | from the oldest entry whose row shows the words (name, tag, quote, text; case-insensitive) to the end; `Tail` when none does | the start |
-| `Around(id)` | 200 entries from the 40 before message `id` (a tap on a quote; web `?around=<id>`, `wsx chat read --around <id>`); `Tail` when `id` is not in the log | the message and 40 entries before it, over every rolled file (`ManagerDir::read_around`; the other windows read the newest two) |
+| `Around(id)` | 200 entries from the 40 before message `id` (a tap on a quote; web `?around=<id>`, `wsx chat read --around <id>`); `Tail` when `id` is not in the log | the message and 40 entries before it, over every rolled file (`ChatDir::read_around`; the other windows read the newest two) |
 
 Each also reads back 7 days, for the open questions ("Questions"), and to a reply or a step, for what the manager does now. A quote by id (`resolve_quote`) reads back to its id, over every rolled file. Finding an old message across projects is `wsx chat search` ("Search"), not `Find`. Each step reads only the bytes before the last one. On the wsx manager log (2.8 MB, 9,264 entries, 2026-11-06; release build, the fastest of 41 runs in process): the whole read 5.4 ms, `Tail` and `After` 0.5 ms, `Find` 5.7 to 8.8 ms, `asking` 2.1 ms (it parses only owner messages, questions, `answered` and `delivered`, and reads `approvals.jsonl`; the figure is from before `delivered`; 7 days are 1.08 MB of that log).
 
@@ -528,7 +528,7 @@ Each also reads back 7 days, for the open questions ("Questions"), and to a repl
 
 | Searched | Record | Where it comes from |
 |---|---|---|
-| Messages of the owner, other managers and chats | `message` | the manager log and each chat's log (`ManagerDir::read_back_where`) |
+| Messages of the owner, other managers and chats | `message` | the manager log and each chat's log (`ChatDir::read_back_where`) |
 | Replies that say something | `reply` | the same logs; wsx's events, recaps, quiet replies and `-` are no conversation and are left out |
 | A task's title and prompt | `task` | `task.json`, the first prompt in the task's `log.jsonl` |
 | A task's latest result: summary, memo, decisions, left open | `result` | `result.json` |
@@ -744,7 +744,7 @@ A failure of a `post = false` routine is also that event. `routine add|edit --no
 
 `routine add|edit --findings-exit <codes>` (a comma list of 1 to 255, never 0; `edit` replaces all fields, so repeat it) stores `findings_exit` in the routine, absent when empty. A run whose command exits with one of them is `findings`, not `failed`: it ran to its end and found something (a scan that exits 1 for "review" and 2 for "strong evidence" and 3 for a real failure lists `1,2`). It counts as a completed run where "last success" and "never succeeded" are told (the handover). It is attention, not failure: the run is never skipped as an empty success: it gives the event with `found something (exit 1)` in place of `succeeded after 4 s` or `failed (exit 3)` (also with empty output), and the manager tells the owner what it found. The ledger row has `last.status: "findings"` and `findings_exit`; the web's Routines pill and list show it in the attention color, the TUI tree in the warning color. A code not listed stays `failed`. The scheduler reads a routine's codes when the run ends, so an edit during a run counts. Daemon revision 42; a store without the field reads as before.
 
-A run's end in the chat: the events message above is the run's message (`ManagerEvent::Message` from `events` whose `short` has `RunRecord::result_line()`, the first clause of the line, at or after the run's end; `chat::run_messages`). The web's routine rows carry its id as `last.message` and the TUI's routine detail finds it on opening; a tap or Enter opens the chat at it (`Window::Around`). A run that made no event (a success with empty output) has none and shows no message line. The ledger does not carry the id.
+A run's end in the chat: the events message above is the run's message (`ChatEvent::Message` from `events` whose `short` has `RunRecord::result_line()`, the first clause of the line, at or after the run's end; `chat::run_messages`). The web's routine rows carry its id as `last.message` and the TUI's routine detail finds it on opening; a tap or Enter opens the chat at it (`Window::Around`). A run that made no event (a success with empty output) has none and shows no message line. The ledger does not carry the id.
 
 Triggers (`wsx project routine add|edit` take exactly one; the ledger's `trigger` shows it the same way). A routine always recurs: there is no one-shot trigger, and a command that runs once goes through its approved action (for example `wsx project add`), not a routine. A stored routine with an old `at` trigger is removed with its runs when wsxd takes the store (daemon revision 50), logged once per project:
 

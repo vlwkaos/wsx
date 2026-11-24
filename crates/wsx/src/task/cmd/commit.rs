@@ -4,7 +4,7 @@
 
 use crate::runtime_util::print_json;
 use crate::task::host::{light, run_check};
-use crate::task::{acting_as_manager, actor, owner_said, project_entry};
+use crate::task::{acting_as_chat, actor, owner_said, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use std::time::Duration;
@@ -24,7 +24,7 @@ pub(crate) fn commit(
 ) -> Result<()> {
     let (name, main) = project_entry(project)?;
     let project_id = store::project_id(&name, &main);
-    if acting_as_manager() {
+    if acting_as_chat() {
         let said = owner_said(said).context(
             "the manager commits in the main checkout only when the owner's message of this \
              turn asks: pass --owner-said <id>; nothing was committed",

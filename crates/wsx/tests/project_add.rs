@@ -33,12 +33,22 @@ fn a_git_url_alone_clones_beside_the_current_project() {
     let alpha = home.join("ws-a/alpha");
     let added = add(
         &fixture,
-        &["project", "add", alpha.to_str().unwrap(), "--clone", &url("alpha"), "--json"],
+        &[
+            "project",
+            "add",
+            alpha.to_str().unwrap(),
+            "--clone",
+            &url("alpha"),
+            "--json",
+        ],
     );
     assert!(added.status.success(), "{added:?}");
 
     // ^ From `alpha`, `beta`'s URL clones into alpha's folder, named by the URL.
-    let added = add(&fixture, &["project", "add", &url("beta"), "-p", "alpha", "--json"]);
+    let added = add(
+        &fixture,
+        &["project", "add", &url("beta"), "-p", "alpha", "--json"],
+    );
     assert!(added.status.success(), "{added:?}");
     let answer: Value = serde_json::from_slice(&added.stdout).expect("JSON answer");
     let beta = home.join("ws-a/beta");
@@ -51,15 +61,24 @@ fn a_git_url_alone_clones_beside_the_current_project() {
     // ^ The same URL again is refused by name, and clones nothing more.
     let again = add(&fixture, &["project", "add", &url("beta"), "-p", "alpha"]);
     let said = String::from_utf8_lossy(&again.stderr);
-    assert!(!again.status.success() && said.contains("already registered"), "{again:?}");
+    assert!(
+        !again.status.success() && said.contains("already registered"),
+        "{again:?}"
+    );
     assert!(!home.join("ws-a/beta-1").exists());
 
     // ^ A `-p` that names no project is refused, not dropped for another root.
     let typo = add(&fixture, &["project", "add", &url("beta"), "-p", "nope"]);
     assert!(!typo.status.success(), "{typo:?}");
-    assert!(String::from_utf8_lossy(&typo.stderr).contains("nope"), "{typo:?}");
+    assert!(
+        String::from_utf8_lossy(&typo.stderr).contains("nope"),
+        "{typo:?}"
+    );
     // ^ A folder is never read as a URL, though `/…/a@b:c` has the scp shape.
     let folder = home.join("ws-a/a@b:c");
     let refused = add(&fixture, &["project", "add", folder.to_str().unwrap()]);
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("does not exist"), "{refused:?}");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("does not exist"),
+        "{refused:?}"
+    );
 }

@@ -9,8 +9,8 @@ use super::record::{Kind, Record, Status};
 use super::store::{usage, Error, NewRecord, Patch, Store};
 use crate::task::chat::{read_chat, Window};
 use crate::task::chats;
-use crate::task::manager::{Author, ManagerEvent};
-use crate::task::store::{read_bounded_if_exists, write_note, ManagerDir, TaskDir};
+use crate::task::manager::{Author, ChatEvent};
+use crate::task::store::{read_bounded_if_exists, write_note, ChatDir, TaskDir};
 use crate::task::text::day_of;
 use crate::task::view::clip;
 use crate::task::{Actor, LogEvent, TaskRecord, TaskState};
@@ -352,7 +352,7 @@ fn check_words(store: &Store, new: &NewRecord, words: &str) -> Result<(), Error>
         return usage("--words needs a project scope");
     };
     let actor = Actor::from_env();
-    let dir = io(ManagerDir::existing_in(project, actor.chat()))?;
+    let dir = io(ChatDir::existing_in(project, actor.chat()))?;
     if let (Some(chat), Some(dir)) = (actor.chat(), &dir) {
         // ^ A chat records a rule only in the scope of a repo it is part of.
         if !chats::repos(dir).iter().any(|repo| repo == project) {
@@ -365,7 +365,7 @@ fn check_words(store: &Store, new: &NewRecord, words: &str) -> Result<(), Error>
     };
     let squeeze = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
     let said = entries.iter().find_map(|entry| match &entry.event {
-        ManagerEvent::Message {
+        ChatEvent::Message {
             id: at,
             from: Author::Owner,
             text,

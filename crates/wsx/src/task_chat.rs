@@ -21,12 +21,12 @@ use wsx_core::task::{
     chat::{self, ChatRow, Page, Reading, RowKind, Window},
     checks::{self, CheckItem, CheckState},
     manager::{
-        activity, answering, pending_approvals, waiting_approvals, Answers, ManagerRequest,
-        ManagerResponse,
+        activity, answering, pending_approvals, waiting_approvals, Answers, ChatRequest,
+        ChatResponse,
     },
     media::{self, Kind},
     owner,
-    store::{self, ManagerDir, Stamp},
+    store::{self, ChatDir, Stamp},
     view,
 };
 
@@ -51,7 +51,7 @@ pub enum Target {
     /// The `More` or `Show` of a muted row (a reply to events, a talk with another chat): it opens
     /// the row's words, or folds them again. The row's key.
     More(String),
-    /// A task named as `#N`: it opens the task beside the chat (`ManagerChat::task`).
+    /// A task named as `#N`: it opens the task beside the chat (`ChatScreen::task`).
     Task(u64),
 }
 
@@ -365,7 +365,7 @@ pub enum Focus {
     Find,
     /// A file of a link, in place of the chat.
     File,
-    /// The project's media list, in place of the chat (`ManagerChat::media`).
+    /// The project's media list, in place of the chat (`ChatScreen::media`).
     Media,
     Confirm {
         id: String,
@@ -388,15 +388,15 @@ struct View {
 
 /// A check's answer: the host's status, and the store read again when a stamp changed.
 struct Read {
-    /// The find the view was read for (`ManagerChat::searched`).
+    /// The find the view was read for (`ChatScreen::searched`).
     searched: String,
-    /// The message the view was read around (`ManagerChat::around`).
+    /// The message the view was read around (`ChatScreen::around`).
     around: Option<u64>,
-    status: Option<ManagerResponse>,
+    status: Option<ChatResponse>,
     view: Option<(Stamp, Result<View, String>)>,
 }
 
-pub struct ManagerChat {
+pub struct ChatScreen {
     pub project: String,
     /// The chat this one talks to; none is the manager.
     pub chat: Option<String>,
@@ -482,7 +482,7 @@ struct Wrapped {
 /// An action's words, whether it failed, and a sent message to give back to the composer.
 type Answer = (String, bool, Option<String>);
 
-impl ManagerChat {
+impl ChatScreen {
     pub fn new(project: String, main: PathBuf, chat: Option<String>) -> Self {
         let store = store::project_id(&project, &main);
         // ^ The shown name before the first read, which reads it again.
@@ -547,13 +547,11 @@ impl ManagerChat {
         self.pending = Some(rx);
         self.last_check = Instant::now();
         std::thread::spawn(move || {
-            let dir = ManagerDir::existing_in(&store, chat.as_deref())
-                .ok()
-                .flatten();
+            let dir = ChatDir::existing_in(&store, chat.as_deref()).ok().flatten();
             let status = dir.as_ref().and_then(|dir| {
-                call_socket::<_, ManagerResponse>(
+                call_socket::<_, ChatResponse>(
                     &dir.socket_path(),
-                    &ManagerRequest::Status,
+                    &ChatRequest::Status,
                     STATUS_TIMEOUT,
                 )
                 .ok()
@@ -773,7 +771,7 @@ impl ManagerChat {
     /// Dismiss the open question of reply `id`, as `wsx chat dismiss` does.
     fn dismiss(&mut self, id: u64) {
         self.run(format!("Dismissing {id}"), move |_, _, store| {
-            let done = ManagerDir::main(&store).and_then(|dir| {
+            let done = ChatDir::main(&store).and_then(|dir| {
                 let dir = dir.ok_or_else(|| anyhow::anyhow!("no manager"))?;
                 chat::dismiss(&dir, id, wsx_core::task::now_unix_ms())
             });
@@ -818,7 +816,7 @@ fn read(
     project: &str,
     store: &str,
     main: &Path,
-    dir: Option<&ManagerDir>,
+    dir: Option<&ChatDir>,
     (searched, around): (&str, Option<u64>),
 ) -> anyhow::Result<View> {
     let window = Window::new(Some(searched), None, around);
@@ -874,7 +872,7 @@ fn read(
     })
 }
 
-impl ManagerChat {
+impl ChatScreen {
     /// One key of the chat (input-mode actions: every character comes as `InputChar`).
     /// False when the chat closes.
     pub fn key(&mut self, action: &Action) -> bool {

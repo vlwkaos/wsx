@@ -1,13 +1,13 @@
 //! `digest`, `checkin` and `post`: what a routine does for the chat (docs/tasks.md "Routines").
 
 use crate::cli::RoutineCmd;
-use crate::task::{acting_as_manager, actor, launch_manager, project_entry};
+use crate::task::{acting_as_chat, actor, launch_manager, project_entry};
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::time::{Duration, Instant};
-use wsx_core::task::manager::{Author, Level, ManagerEntry, ManagerEvent};
+use wsx_core::task::manager::{Author, ChatEntry, ChatEvent, Level};
 use wsx_core::task::owner::{self};
-use wsx_core::task::store::ManagerDir;
+use wsx_core::task::store::ChatDir;
 use wsx_core::task::view::digest_lines;
 use wsx_core::task::Actor;
 use wsx_core::task::{
@@ -28,9 +28,9 @@ pub(crate) const DIGEST_TURN_POLL: Duration = Duration::from_secs(5);
 
 /// When the newest digest in `log` was posted: the next one starts there. A run with nothing
 /// to say posts nothing, so the next one covers its time too.
-pub(crate) fn last_digest_ms(log: &[ManagerEntry]) -> Option<u64> {
+pub(crate) fn last_digest_ms(log: &[ChatEntry]) -> Option<u64> {
     log.iter().rev().find_map(|entry| match &entry.event {
-        ManagerEvent::Message {
+        ChatEvent::Message {
             from: Author::Events,
             text,
             ..
@@ -121,7 +121,7 @@ pub(crate) fn digest(project: Option<&str>, since: Option<u64>) -> Result<()> {
     let project_id = store::project_id(&name, &main);
     let after_ms = since.map_or_else(
         || {
-            let log = ManagerDir::main(&project_id)
+            let log = ChatDir::main(&project_id)
                 .ok()
                 .flatten()
                 .and_then(|dir| dir.read_log().ok())
@@ -211,7 +211,7 @@ pub(crate) fn post_when_free(
         return Ok(());
     }
     // ^ The manager's own command runs inside the turn it would wait for.
-    let wait = match acting_as_manager() {
+    let wait = match acting_as_chat() {
         true => Duration::ZERO,
         false => DIGEST_TURN_WAIT,
     };
@@ -248,7 +248,7 @@ pub(crate) fn routine_command(action: RoutineCmd, owner_said: Option<u64>) -> Re
     use RoutineCmd::{Add, Delete, Edit};
     // ^ wsxd runs a routine outside the agent boundary: only the owner writes one.
     if let Add { project, .. } | Edit { project, .. } | Delete { project, .. } = &action {
-        if acting_as_manager() {
+        if acting_as_chat() {
             let said = crate::task::owner_said(owner_said).context(
                 "the owner adds, edits and deletes routines: pass --owner-said <id> \
                  when the owner's message of this turn asks for it; nothing was run",

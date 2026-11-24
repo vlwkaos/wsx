@@ -3,14 +3,14 @@
 
 use serde_json::json;
 use wsx_core::task::chat::{chat_rows, Names};
-use wsx_core::task::manager::ManagerEntry;
+use wsx_core::task::manager::ChatEntry;
 
 fn rows(log: Vec<serde_json::Value>) -> Vec<String> {
-    let log: Vec<ManagerEntry> = log
+    let log: Vec<ChatEntry> = log
         .into_iter()
         .map(|line| serde_json::from_value(line).unwrap())
         .collect();
-    let refs: Vec<&ManagerEntry> = log.iter().collect();
+    let refs: Vec<&ChatEntry> = log.iter().collect();
     let names = Names {
         own: "manager",
         manager: "manager",

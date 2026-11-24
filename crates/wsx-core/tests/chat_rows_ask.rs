@@ -4,9 +4,9 @@
 
 use serde_json::json;
 use wsx_core::task::chat::{chat_rows, Names};
-use wsx_core::task::manager::{ApprovalLine, ManagerEntry};
+use wsx_core::task::manager::{ApprovalLine, ChatEntry};
 
-fn entries(lines: &[serde_json::Value]) -> Vec<ManagerEntry> {
+fn entries(lines: &[serde_json::Value]) -> Vec<ChatEntry> {
     lines
         .iter()
         .map(|line| serde_json::from_value(line.clone()).unwrap())
@@ -40,7 +40,7 @@ fn an_asked_approval_is_one_row_with_one_tag() {
         ),
     ] {
         let log = entries(&log);
-        let refs: Vec<&ManagerEntry> = log.iter().collect();
+        let refs: Vec<&ChatEntry> = log.iter().collect();
         let rows = chat_rows(&refs, &[&request], &[], &[], &names);
         assert_eq!(rows.len(), 2, "{what}: {rows:?}");
         assert_eq!(rows[1].approvals, ["a3"], "{what}: {rows:?}");

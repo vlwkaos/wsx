@@ -16,7 +16,11 @@ fn sessions(fixture: &Fixture) -> usize {
     listed
         .as_array()
         .or_else(|| listed["sessions"].as_array())
-        .map_or(0, |rows| rows.iter().filter(|row| row.to_string().contains("feat/keep")).count())
+        .map_or(0, |rows| {
+            rows.iter()
+                .filter(|row| row.to_string().contains("feat/keep"))
+                .count()
+        })
 }
 
 fn delete(fixture: &Fixture) -> std::process::Output {
@@ -36,7 +40,10 @@ fn delete_refuses_uncommitted_work_and_keeps_an_unmerged_branch() {
     fixture.git(&["add", ".gitignore", "README"]);
     fixture.git(&["commit", "-q", "-m", "ignore"]);
     let created = fixture.json(&["worktree", "create", "feat/keep", "--json"]);
-    let keep: PathBuf = created["worktree"].as_str().unwrap_or_else(|| panic!("{created}")).into();
+    let keep: PathBuf = created["worktree"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .into();
     let git = |args: &[&str]| {
         let mut argv = vec!["-C", keep.to_str().unwrap()];
         argv.extend(args);

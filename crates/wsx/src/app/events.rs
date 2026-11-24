@@ -330,7 +330,7 @@ impl App {
                 .into_iter()
                 .map(|(name, path)| {
                     let id = wsx_core::task::store::project_id(&name, &path);
-                    let asks = wsx_core::task::store::ManagerDir::main(&id)
+                    let asks = wsx_core::task::store::ChatDir::main(&id)
                         .ok()
                         .flatten()
                         .and_then(|dir| wsx_core::task::chat::asking(&dir, now).ok())

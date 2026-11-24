@@ -5,8 +5,8 @@
 //! folder of Home with `folder` beside it (`set_folder`, `sections`). ref: docs/tasks.md "Chats"
 
 use super::chats::{self, CHAT_FILE};
-use super::manager::{Author, ManagerEntry, ManagerEvent, Short};
-use super::store::{self, ManagerDir};
+use super::manager::{Author, ChatEntry, ChatEvent, Short};
+use super::store::{self, ChatDir};
 use anyhow::{bail, Result};
 use std::io::ErrorKind;
 
@@ -18,21 +18,21 @@ const TAIL_BYTES: u64 = 64 * 1024;
 /// Whether the owner would read this entry as a message: their own, a reply that is not quiet, a
 /// `say` of another chat, or events that wake the chat. A rotation, a hold, a ping, a recap and
 /// the events that start no turn (`Short::wakes` false) are not.
-pub fn is_message(entry: &ManagerEntry) -> bool {
+pub fn is_message(entry: &ChatEntry) -> bool {
     match &entry.event {
-        ManagerEvent::Message { from, short, .. } => match from {
+        ChatEvent::Message { from, short, .. } => match from {
             Author::Owner | Author::Peer { .. } => true,
             Author::Events => Short::any_wakes(short),
             Author::Recap => false,
         },
-        ManagerEvent::Reply { quiet, .. } => !quiet,
+        ChatEvent::Reply { quiet, .. } => !quiet,
         _ => false,
     }
 }
 
 /// When the chat last had a message (`is_message`), else when it was opened. The one time Home
 /// sorts and shows, and dismisses by.
-pub fn last_message_ms(dir: &ManagerDir) -> u64 {
+pub fn last_message_ms(dir: &ChatDir) -> u64 {
     dir.read_tail(TAIL_BYTES)
         .ok()
         .and_then(|entries| {
@@ -52,12 +52,12 @@ pub fn last_message_ms(dir: &ManagerDir) -> u64 {
 }
 
 /// Whether the chat's row is on Home: not dismissed, or a message after the dismissal.
-pub fn listed(dir: &ManagerDir) -> bool {
+pub fn listed(dir: &ChatDir) -> bool {
     listed_at(dir, || last_message_ms(dir))
 }
 
 /// `listed` for a caller that has `last_message_ms` already, or reads it only when a mark exists.
-pub fn listed_at(dir: &ManagerDir, last: impl FnOnce() -> u64) -> bool {
+pub fn listed_at(dir: &ChatDir, last: impl FnOnce() -> u64) -> bool {
     let at = std::fs::read_to_string(dir.path.join(DISMISSED_FILE))
         .ok()
         .and_then(|text| text.trim().parse::<u64>().ok());
@@ -71,7 +71,7 @@ pub fn dismiss(name: &str, now: u64) -> Result<()> {
 }
 
 /// The Home folder the owner put the chat in, if any. A folder exists only while a chat is in it.
-pub fn folder(dir: &ManagerDir) -> Option<String> {
+pub fn folder(dir: &ChatDir) -> Option<String> {
     let text = std::fs::read_to_string(dir.path.join(FOLDER_FILE)).ok()?;
     Some(text.trim().to_string()).filter(|name| !name.is_empty())
 }
@@ -139,7 +139,7 @@ pub fn sections<T>(ordered: Vec<T>, folder_of: impl Fn(&T) -> Option<String>) ->
 }
 
 /// The chat is opened again: its row is listed from now on.
-pub fn clear(dir: &ManagerDir) -> Result<()> {
+pub fn clear(dir: &ChatDir) -> Result<()> {
     match std::fs::remove_file(dir.path.join(DISMISSED_FILE)) {
         Err(error) if error.kind() != ErrorKind::NotFound => Err(error.into()),
         _ => Ok(()),

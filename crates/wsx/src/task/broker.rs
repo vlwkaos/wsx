@@ -186,7 +186,7 @@ fn forward(socket: &Path, argv: Vec<String>) -> Result<i32> {
 }
 
 /// What the manager host's broker needs besides its socket.
-pub struct ManagerBroker {
+pub struct ChatBroker {
     pub exe: PathBuf,
     pub fallback_cwd: PathBuf,
     /// The manager's own project, and its task ID (its memory scope).
@@ -205,10 +205,10 @@ pub struct ManagerBroker {
 /// ref: docs/tasks.md "Managers talk", "Chats"
 pub fn serve_manager(
     listener: UnixListener,
-    broker: ManagerBroker,
+    broker: ChatBroker,
     sent: impl Fn(String, String, bool) + Send + Sync + 'static,
 ) {
-    let ManagerBroker {
+    let ChatBroker {
         exe,
         fallback_cwd,
         own,

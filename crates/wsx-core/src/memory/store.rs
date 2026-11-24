@@ -2,7 +2,7 @@
 
 use super::record::{duplicate, fold, Folded, Kind, Line, Record, Status, MAX_TEXT_BYTES};
 use crate::task::checks::{self, CheckState};
-use crate::task::store::{self as task_store, ManagerDir, TaskDir};
+use crate::task::store::{self as task_store, ChatDir, TaskDir};
 use crate::task::{now_unix_ms, TaskState};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -541,7 +541,7 @@ impl Store {
     /// A project scope: the manager's `notes/` folder, when the project has a manager.
     pub fn notes_dir(&self) -> Option<PathBuf> {
         let id = self.project_id()?;
-        let dir = ManagerDir::main(id).ok().flatten()?;
+        let dir = ChatDir::main(id).ok().flatten()?;
         Some(dir.path.join("notes"))
     }
 

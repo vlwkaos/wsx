@@ -2,7 +2,7 @@
 //! ran`: the session pane's command once approved. ref: docs/tasks.md "Approved runs"
 
 use super::approve::{ask_covering, request_of};
-use crate::task::{acting_as_manager, project_entry};
+use crate::task::{acting_as_chat, project_entry};
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 use wsx_core::task::manager::{ApprovalAction, ApprovalLine, RunSpec};
@@ -29,7 +29,7 @@ pub(crate) fn ask(
     let worker: Option<u32> = std::env::var(WORKER_ENV)
         .ok()
         .and_then(|text| text.parse().ok());
-    if !acting_as_manager() && worker.is_none() {
+    if !acting_as_chat() && worker.is_none() {
         bail!(
             "wsx project run is how an agent asks the owner; the owner runs the command in a terminal"
         );
@@ -93,7 +93,7 @@ pub(crate) fn ask(
 /// and last lines (a `Ran` line). Once per request; the argv is the request's, never this
 /// command line's.
 pub(crate) fn ran(project: Option<&str>, id: &str) -> Result<()> {
-    if acting_as_manager() || std::env::var_os(WORKER_ENV).is_some() {
+    if acting_as_chat() || std::env::var_os(WORKER_ENV).is_some() {
         bail!("wsx task ran is the session's own command");
     }
     let (name, main) = project_entry(project)?;

@@ -339,7 +339,7 @@ pub fn task_agent(record: &TaskRecord) -> Value {
 
 /// The agent the manager's turns run on now: a fallback in its state, else `chats::runs_on`.
 /// ref: docs/tasks.md "Agents"
-pub fn manager_agent(dir: &store::ManagerDir, settings: &TaskConfig) -> Value {
+pub fn manager_agent(dir: &store::ChatDir, settings: &TaskConfig) -> Value {
     match dir.read_state().ok().and_then(|state| state.agent) {
         Some(agent) => json!({
             "adapter": agent.adapter, "model": agent.model, "effort": settings.manager_effort,

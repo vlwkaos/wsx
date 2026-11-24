@@ -72,20 +72,26 @@ fn each_revision_records_its_paths_and_open_tasks_overlap() {
     for bad in ["two words", "-x", ""] {
         let refused = fixture.wsx(&["task", "new", "WORK no.txt", &format!("--model={bad}")]);
         assert!(
-            !refused.status.success()
-                && String::from_utf8_lossy(&refused.stderr).contains("model"),
+            !refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains("model"),
             "{bad:?}: {refused:?}"
         );
     }
     assert_eq!(count(&fixture), before);
     let memo = new_task(
         &fixture,
-        &["WORK memo.txt MEMO fixtures stay small", "--model", "sonnet"],
+        &[
+            "WORK memo.txt MEMO fixtures stay small",
+            "--model",
+            "sonnet",
+        ],
     );
     assert_eq!(ready(&fixture, memo)["state"], "ready");
     let task = show(&fixture, memo);
     assert_eq!(task["record"]["model"], "sonnet");
-    assert_eq!(fixture.traces().last().expect("a launch")["model"], "sonnet");
+    assert_eq!(
+        fixture.traces().last().expect("a launch")["model"],
+        "sonnet"
+    );
     // The memo stays in result.json and reaches the ledger's recent tasks once the task is closed.
     assert_eq!(task["result"]["result"]["memo"], "fixtures stay small");
     let closed = fixture.wsx(&["task", "close", &memo.to_string(), "--discard"]);
@@ -117,7 +123,10 @@ fn declared_files_overlap_before_any_revision() {
     let (x1, y1, x2) = three_tasks(&fixture);
     let gate = fixture.root.join("files-gate");
     let wait = format!("WAIT {}", gate.display());
-    let d1 = new_task(&fixture, &[&wait, "--files", "src/*.rs", "--files", "docs/a.md"]);
+    let d1 = new_task(
+        &fixture,
+        &[&wait, "--files", "src/*.rs", "--files", "docs/a.md"],
+    );
     let d2 = new_task(&fixture, &[&wait, "--files", "src/**/*.rs"]);
     let d3 = new_task(&fixture, &[&wait, "--files", "web/*.js"]);
     let record = &show(&fixture, d1)["record"];
@@ -137,11 +146,28 @@ fn declared_files_overlap_before_any_revision() {
     );
 
     // `add --files` extends; a declared glob meets another task's changed path.
-    let added = fixture.wsx(&["task", "add", &d3.to_string(), "--files", "*.txt", "also the text files"]);
+    let added = fixture.wsx(&[
+        "task",
+        "add",
+        &d3.to_string(),
+        "--files",
+        "*.txt",
+        "also the text files",
+    ]);
     assert!(added.status.success(), "{added:?}");
-    assert_eq!(show(&fixture, d3)["record"]["files"], json!(["web/*.js", "*.txt"]));
+    assert_eq!(
+        show(&fixture, d3)["record"]["files"],
+        json!(["web/*.js", "*.txt"])
+    );
     // `add --title` names what the add made the task carry; a bad title sends nothing.
-    let added = fixture.wsx(&["task", "add", &d3.to_string(), "--title", "Web and text files", "also the docs"]);
+    let added = fixture.wsx(&[
+        "task",
+        "add",
+        &d3.to_string(),
+        "--title",
+        "Web and text files",
+        "also the docs",
+    ]);
     assert!(added.status.success(), "{added:?}");
     let title = "Web and text files";
     assert_eq!(show(&fixture, d3)["record"]["title"], title);
@@ -157,12 +183,22 @@ fn declared_files_overlap_before_any_revision() {
     assert_eq!(show(&fixture, d3)["record"]["title"], title);
     let open = rows(&fixture, &["chat", "ledger", "--json"]);
     let d3_row = row(&open, d3);
-    assert_eq!(d3_row["overlaps"], json!([declared(x1), declared(y1), declared(x2)]));
-    assert!(row(&open, x1)["overlaps"].as_array().unwrap().contains(&declared(d3)));
+    assert_eq!(
+        d3_row["overlaps"],
+        json!([declared(x1), declared(y1), declared(x2)])
+    );
+    assert!(row(&open, x1)["overlaps"]
+        .as_array()
+        .unwrap()
+        .contains(&declared(d3)));
     // The ledger names the agent in use now (docs/tasks.md "Agents"); no effort.
     let agent = &d3_row["agent"];
     assert_eq!(
-        (agent["adapter"].clone(), agent["effort"].clone(), agent["fallback"].clone()),
+        (
+            agent["adapter"].clone(),
+            agent["effort"].clone(),
+            agent["fallback"].clone()
+        ),
         (json!("claude"), json!("high"), json!(false)),
         "{agent}"
     );
@@ -180,16 +216,20 @@ fn a_bad_files_glob_creates_no_task() {
     for bad in ["/abs/*.rs", "../x", "a/../b", &"x".repeat(257), "[", ""] {
         let refused = fixture.wsx(&["task", "new", "WORK no.txt", "--files", bad]);
         assert!(
-            !refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains("--files"),
+            !refused.status.success()
+                && String::from_utf8_lossy(&refused.stderr).contains("--files"),
             "{bad:?}: {refused:?}"
         );
     }
-    let many: Vec<String> = (0..65).flat_map(|n| ["--files".to_string(), format!("f{n}")]).collect();
+    let many: Vec<String> = (0..65)
+        .flat_map(|n| ["--files".to_string(), format!("f{n}")])
+        .collect();
     let mut argv = vec!["task", "new", "WORK no.txt"];
     argv.extend(many.iter().map(String::as_str));
     let refused = fixture.wsx(&argv);
     assert!(
-        !refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains("at most 64"),
+        !refused.status.success()
+            && String::from_utf8_lossy(&refused.stderr).contains("at most 64"),
         "{refused:?}"
     );
     let refused = fixture.wsx(&["task", "add", &d1.to_string(), "--files", "../up", "x"]);

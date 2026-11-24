@@ -4,7 +4,7 @@ use super::{
     text::{fit, hard_wrap, truncate_to_width, wrap_cells},
     theme,
 };
-use crate::task_chat::ManagerChat;
+use crate::task_chat::ChatScreen;
 use crate::task_list::{
     Overview, RailTarget, Region, Section, TaskList, TaskRow, BESIDE_MIN, RAIL_WIDTH,
 };
@@ -220,7 +220,7 @@ pub fn detail_hints(list: &TaskList) -> Vec<String> {
 /// The open chat with the rail and a task opened from it (docs/tasks.md "TUI"). The rail shows
 /// from `RAIL_MIN` columns, the task beside the chat from `BESIDE_MIN`; narrower, the region with
 /// the keys fills the pane. The width is kept for the keys (`TaskList::width`).
-pub fn render_chat_view(frame: &mut Frame, area: Rect, list: &TaskList, chat: &ManagerChat) {
+pub fn render_chat_view(frame: &mut Frame, area: Rect, list: &TaskList, chat: &ChatScreen) {
     list.width.set(area.width);
     let wide = area.width >= BESIDE_MIN;
     match list.focus() {

@@ -5,9 +5,9 @@
 //! `wsx memory search`. ref: docs/tasks.md "Search", docs/memory.md "Search"
 
 use super::manage::clip_to;
-use crate::task::manager::{says_nothing, split_quote, Author, ManagerEntry, ManagerEvent};
+use crate::task::manager::{says_nothing, split_quote, Author, ChatEntry, ChatEvent};
 use crate::task::store::{
-    self, contains_bytes, ManagerDir, TaskDir, FIRST_READ_BYTES, LOG_FILE, RECORD_FILE, RESULT_FILE,
+    self, contains_bytes, ChatDir, TaskDir, FIRST_READ_BYTES, LOG_FILE, RECORD_FILE, RESULT_FILE,
 };
 use crate::task::{chats, history, view};
 use anyhow::{bail, Context, Result};
@@ -201,18 +201,16 @@ pub(super) fn rank<'a>(texts: impl Iterator<Item = &'a str>, terms: &[String]) -
 /// The file a doc was read from, for the `path` of a memory hit; empty when its folder is gone.
 pub(super) fn source_path(project_id: &str, doc: &Doc) -> String {
     let path = match (doc.kind, doc.task) {
-        (Kind::Message | Kind::Reply, _) => ManagerDir::existing(&doc.chat)
+        (Kind::Message | Kind::Reply, _) => ChatDir::existing(&doc.chat)
             .ok()
             .flatten()
             .map(|dir| dir.path.join(LOG_FILE)),
-        (Kind::Decision | Kind::Memo, _) => {
-            ManagerDir::main(project_id).ok().flatten().map(|dir| {
-                dir.path.join("notes").join(match doc.kind {
-                    Kind::Decision => "decisions.md",
-                    _ => "context.md",
-                })
+        (Kind::Decision | Kind::Memo, _) => ChatDir::main(project_id).ok().flatten().map(|dir| {
+            dir.path.join("notes").join(match doc.kind {
+                Kind::Decision => "decisions.md",
+                _ => "context.md",
             })
-        }
+        }),
         (kind, Some(task)) => TaskDir::open(project_id, task).ok().map(|dir| {
             dir.file(match kind {
                 Kind::Task => RECORD_FILE,
@@ -415,9 +413,9 @@ fn catch_up_chats(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
 
 /// The record of a chat entry: what the owner, a manager or a chat said, and a reply that says
 /// something. Wsx's events, recaps and quiet replies are not conversation.
-fn chat_doc(entry: &ManagerEntry, chat: &str) -> Option<Doc> {
+fn chat_doc(entry: &ChatEntry, chat: &str) -> Option<Doc> {
     let (kind, id, by, text, check) = match &entry.event {
-        ManagerEvent::Message {
+        ChatEvent::Message {
             id,
             from,
             text,
@@ -431,7 +429,7 @@ fn chat_doc(entry: &ManagerEntry, chat: &str) -> Option<Doc> {
             };
             (Kind::Message, *id, by, text, check.as_deref())
         }
-        ManagerEvent::Reply {
+        ChatEvent::Reply {
             id,
             text,
             quiet: false,
@@ -601,7 +599,7 @@ fn result_text(value: &serde_json::Value) -> String {
 /// The manager's decisions and memo lines, read from the notes as they are now: the files stay,
 /// and a line the manager merged or fixed is not found in its old form.
 fn notes(project_id: &str, records_apart: bool) -> Vec<Doc> {
-    let Ok(Some(dir)) = ManagerDir::main(project_id) else {
+    let Ok(Some(dir)) = ChatDir::main(project_id) else {
         return Vec::new();
     };
     let mut docs = Vec::new();

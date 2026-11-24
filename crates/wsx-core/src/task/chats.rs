@@ -7,7 +7,7 @@
 use super::chats_home;
 use super::checks::CheckItem;
 use super::manager::ApprovalLine;
-use super::store::{self, ManagerDir};
+use super::store::{self, ChatDir};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -67,7 +67,7 @@ pub fn name_problem(name: &str, open: &[String]) -> Option<String> {
 }
 
 /// Every chat folder of the machine, open or closed, by name.
-fn machine_chats() -> Vec<ManagerDir> {
+fn machine_chats() -> Vec<ChatDir> {
     let Ok(entries) = std::fs::read_dir(store::chats_root()) else {
         return Vec::new();
     };
@@ -78,24 +78,24 @@ fn machine_chats() -> Vec<ManagerDir> {
     names.sort();
     names
         .iter()
-        .filter_map(|name| ManagerDir::existing(name).ok()?)
+        .filter_map(|name| ChatDir::existing(name).ok()?)
         .collect()
 }
 
 /// The chats that run in the repo `project_id`, open or closed, by name.
-pub fn all(project_id: &str) -> Vec<ManagerDir> {
+pub fn all(project_id: &str) -> Vec<ChatDir> {
     machine_chats()
         .into_iter()
         .filter(|dir| repos(dir).iter().any(|repo| repo == project_id))
         .collect()
 }
 
-pub fn is_open(dir: &ManagerDir) -> bool {
+pub fn is_open(dir: &ChatDir) -> bool {
     !dir.path.join(CLOSED_FILE).exists()
 }
 
 /// The open chats of the repo, by name.
-pub fn open_chats(project_id: &str) -> Vec<ManagerDir> {
+pub fn open_chats(project_id: &str) -> Vec<ChatDir> {
     all(project_id).into_iter().filter(is_open).collect()
 }
 
@@ -143,8 +143,8 @@ pub fn route_rule(text: &str, here: &str) -> Result<Option<Route>> {
 }
 
 /// The open chat of that name, or an error that says why there is none.
-pub fn open_chat(name: &str) -> Result<ManagerDir> {
-    match ManagerDir::existing(name)? {
+pub fn open_chat(name: &str) -> Result<ChatDir> {
+    match ChatDir::existing(name)? {
         Some(dir) if is_open(&dir) => Ok(dir),
         _ => bail!("there is no open chat {name}; `wsx chat list` names them"),
     }
@@ -285,7 +285,7 @@ pub fn checks_of(project_id: &str, items: Vec<CheckItem>, viewer: &Viewer) -> Ve
         .collect()
 }
 
-pub fn goal(dir: &ManagerDir) -> String {
+pub fn goal(dir: &ChatDir) -> String {
     store::read_bounded_if_exists(&dir.path.join(GOAL_FILE), MAX_GOAL_BYTES as u64)
         .ok()
         .flatten()
@@ -314,7 +314,7 @@ struct ChatFile {
     title: String,
 }
 
-fn chat_file(dir: &ManagerDir) -> ChatFile {
+fn chat_file(dir: &ChatDir) -> ChatFile {
     store::read_bounded_if_exists(&dir.path.join(CHAT_FILE), 4096)
         .ok()
         .flatten()
@@ -322,19 +322,19 @@ fn chat_file(dir: &ManagerDir) -> ChatFile {
         .unwrap_or_default()
 }
 
-fn write_chat_file(dir: &ManagerDir, file: &ChatFile) -> Result<()> {
+fn write_chat_file(dir: &ChatDir, file: &ChatFile) -> Result<()> {
     store::write_atomic(&dir.path.join(CHAT_FILE), &serde_json::to_vec(file)?)
 }
 
 /// The repos the chat runs in; the first is its own.
-pub fn repos(dir: &ManagerDir) -> Vec<String> {
+pub fn repos(dir: &ChatDir) -> Vec<String> {
     chat_file(dir).repos
 }
 
 /// A chat that starts work in another project works in it from then on: the project joins its
 /// `repos` after its own, so the project's lists show the chat and its records reach it. True
 /// when it joined now. ref: docs/tasks.md "Chats"
-pub fn join(dir: &ManagerDir, project_id: &str) -> Result<bool> {
+pub fn join(dir: &ChatDir, project_id: &str) -> Result<bool> {
     let mut file = chat_file(dir);
     if file.repos.is_empty() || file.repos.iter().any(|id| id == project_id) {
         return Ok(false);
@@ -360,7 +360,7 @@ pub fn checked_title(title: &str) -> Result<&str> {
 
 /// The name the owner reads for a chat, the one rule of every surface: its title, else for the
 /// repo's main chat `home` (the project's shown name), else the chat's id.
-pub fn shown_name(dir: &ManagerDir, home: &str) -> String {
+pub fn shown_name(dir: &ChatDir, home: &str) -> String {
     shown_of(
         &chat_file(dir).title,
         dir.is_main().then_some(home),
@@ -392,7 +392,7 @@ pub fn rename(name: &str, title: &str) -> Result<String> {
 
 /// The names of the projects the chat runs in, its own first (`repos`, by the registered
 /// project's name; one the config does not know shows its id without the hash).
-pub fn project_names(dir: &ManagerDir) -> Vec<String> {
+pub fn project_names(dir: &ChatDir) -> Vec<String> {
     let registered = Registered::load();
     repos(dir).iter().map(|id| registered.name(id)).collect()
 }
@@ -432,7 +432,7 @@ impl Registered {
 /// web overview: `shown` (`shown_name`, the project `project_id`'s name for its main chat),
 /// `projects` (where it runs, its own first, by name) and `title` when it has one.
 pub fn naming(
-    dir: &ManagerDir,
+    dir: &ChatDir,
     project_id: &str,
     is_main: bool,
     registered: &Registered,
@@ -459,7 +459,7 @@ pub fn naming(
 }
 
 /// A new chat folder gets its `chat.json` with its repo.
-pub(super) fn ensure_file(dir: &ManagerDir) -> Result<()> {
+pub(super) fn ensure_file(dir: &ChatDir) -> Result<()> {
     if dir.path.join(CHAT_FILE).exists() {
         return Ok(());
     }
@@ -514,7 +514,7 @@ pub fn agent_entries() -> Vec<(String, ChatAgent)> {
 }
 
 /// The chat's own agent; none runs the manager's (also when its entry is gone from the config).
-pub fn agent(dir: &ManagerDir) -> Option<ChatAgent> {
+pub fn agent(dir: &ChatDir) -> Option<ChatAgent> {
     entry_agent(&chat_file(dir).agent?)
 }
 
@@ -534,13 +534,13 @@ pub struct Runs {
 
 /// Whether the chat is its project's lead: the main chat, with no goal. The chat screens tag
 /// its replies with it. ref: docs/tasks.md "Lead and forks"
-pub fn is_lead(dir: &ManagerDir) -> bool {
+pub fn is_lead(dir: &ChatDir) -> bool {
     dir.is_main() && goal(dir).trim().is_empty()
 }
 
 /// The chat's own agent; else, for the lead, `tasks.lead.model` and its shorter context;
 /// else `tasks.chats`'s. ref: docs/tasks.md "Lead and forks"
-pub fn runs_on(dir: &ManagerDir, settings: &crate::model::workspace::TaskConfig) -> Runs {
+pub fn runs_on(dir: &ChatDir, settings: &crate::model::workspace::TaskConfig) -> Runs {
     if let Some(own) = agent(dir) {
         return Runs {
             adapter: own.adapter,
@@ -576,13 +576,13 @@ pub fn create(
     name: &str,
     goal: Option<&str>,
     agent: Option<&str>,
-) -> Result<ManagerDir> {
+) -> Result<ChatDir> {
     let name = checked_name(name)?;
     let agent = agent.map(checked_agent).transpose()?;
     if let Some(goal) = goal {
         checked_goal(goal)?;
     }
-    if let Some(dir) = ManagerDir::existing(name)? {
+    if let Some(dir) = ChatDir::existing(name)? {
         if is_open(&dir) {
             bail!("chat {name} is already open");
         }
@@ -590,7 +590,7 @@ pub fn create(
             bail!("chat {name} is a closed chat of another repo; choose another name");
         }
     }
-    let dir = ManagerDir::open_as(project_id, name)?;
+    let dir = ChatDir::open_as(project_id, name)?;
     if let Some(goal) = goal {
         write_goal(&dir, goal)?;
     }
@@ -618,7 +618,7 @@ pub fn set_goal(name: &str, goal: &str) -> Result<()> {
     write_goal(&open_chat(name)?, goal)
 }
 
-fn write_goal(dir: &ManagerDir, goal: &str) -> Result<()> {
+fn write_goal(dir: &ChatDir, goal: &str) -> Result<()> {
     let path = dir.path.join(GOAL_FILE);
     if !goal.trim().is_empty() {
         return store::write_atomic(&path, goal.as_bytes());
@@ -649,7 +649,7 @@ pub fn close(name: &str) -> Result<Option<String>> {
 
 /// The repo's main chat, which must be open: the one that hears what no chat owns and that
 /// another project's `say` reaches. An error names `chat main` when there is none.
-pub fn open_main(project_id: &str) -> Result<ManagerDir> {
+pub fn open_main(project_id: &str) -> Result<ChatDir> {
     let name = store::main_chat(project_id).context(
         "the project has no main chat; `wsx chat main <chat>` makes one of its chats the main chat",
     )?;
@@ -669,13 +669,13 @@ pub fn set_main(name: &str, project_id: &str) -> Result<()> {
 /// The chat that `dir` was forked from (`ForkedFrom`), while `dir` has never owned a task (open
 /// or ended) and its fork was not undone before (a fork reopened by name and closed again is
 /// only closed): closing it then undoes the fork. ref: docs/tasks.md "Lead and forks"
-pub fn unstarted_fork(dir: &ManagerDir) -> Result<Option<String>> {
-    use super::manager::ManagerEvent;
+pub fn unstarted_fork(dir: &ChatDir) -> Result<Option<String>> {
+    use super::manager::ChatEvent;
     let mut from = None;
     for entry in dir.read_log()? {
         match entry.event {
-            ManagerEvent::ForkedFrom { from: chat, .. } => from = Some(chat),
-            ManagerEvent::ForkUndone { .. } => return Ok(None),
+            ChatEvent::ForkedFrom { from: chat, .. } => from = Some(chat),
+            ChatEvent::ForkUndone { .. } => return Ok(None),
             _ => {}
         }
     }
@@ -702,7 +702,7 @@ const HAND_BACK_DECISIONS: usize = 5;
 
 /// What a closing chat hands to the main chat: its goal, its open tasks, its last decisions.
 /// The open tasks belong to the main chat from then on (`owner`).
-pub fn hand_back(dir: &ManagerDir) -> String {
+pub fn hand_back(dir: &ChatDir) -> String {
     let goal = goal(dir);
     let goal = goal.lines().map(str::trim).find(|line| !line.is_empty());
     let tasks: Vec<String> = store::task_numbers(&dir.project_id)
@@ -776,7 +776,7 @@ pub fn rows(project_id: &str) -> Vec<Value> {
 
 /// The open chats with their row (`rows`) and pill counts (`counts`, `needs::chat_counts`): the
 /// ledger and the web's Home rows read the same row. A closed chat is history.
-pub fn open_rows(project_id: &str, land_auto: bool) -> Vec<(ManagerDir, Value)> {
+pub fn open_rows(project_id: &str, land_auto: bool) -> Vec<(ChatDir, Value)> {
     let counts = super::needs::chat_counts(project_id, land_auto);
     let (main, registered) = (store::main_chat(project_id), Registered::load());
     open_chats(project_id)
@@ -789,7 +789,7 @@ pub fn open_rows(project_id: &str, land_auto: bool) -> Vec<(ManagerDir, Value)> 
         .collect()
 }
 
-fn row(dir: &ManagerDir, project_id: &str, main: Option<&str>, registered: &Registered) -> Value {
+fn row(dir: &ChatDir, project_id: &str, main: Option<&str>, registered: &Registered) -> Value {
     let last = chats_home::last_message_ms(dir);
     let is_main = main == Some(dir.name());
     let mut row = serde_json::json!({

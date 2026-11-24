@@ -4,10 +4,10 @@
 
 use super::checks::CheckItem;
 use super::manager::{
-    quote_of, says_nothing, split_quote, ApprovalLine, Author, Level, ManagerEntry, ManagerEvent,
-    Party, Short,
+    quote_of, says_nothing, split_quote, ApprovalLine, Author, ChatEntry, ChatEvent, Level, Party,
+    Short,
 };
-use super::store::{self, contains_bytes, ManagerDir, FIRST_READ_BYTES};
+use super::store::{self, contains_bytes, ChatDir, FIRST_READ_BYTES};
 use crate::routine::RunRecord;
 use anyhow::{bail, Result};
 use serde::Serialize;
@@ -110,7 +110,7 @@ impl<'a> Window<'a> {
 
 /// The entries a chat needs from the log's end: its window and the manager's last step
 /// (`activity`). The open questions are `asking`'s.
-pub fn read_chat(dir: &ManagerDir, window: &Window) -> Result<Vec<ManagerEntry>> {
+pub fn read_chat(dir: &ChatDir, window: &Window) -> Result<Vec<ChatEntry>> {
     if let Window::Around(id) = window {
         // ^ Ids grow: an entry below `id` and none at it means the message is not in the log.
         // Else enough entries before it, or the oldest file's start, end the read.
@@ -136,7 +136,7 @@ pub fn read_chat(dir: &ManagerDir, window: &Window) -> Result<Vec<ManagerEntry>>
             && log.iter().any(|entry| {
                 matches!(
                     entry.event,
-                    ManagerEvent::Reply { .. } | ManagerEvent::Agent { .. }
+                    ChatEvent::Reply { .. } | ChatEvent::Agent { .. }
                 )
             })
     })
@@ -147,7 +147,7 @@ pub fn read_chat(dir: &ManagerDir, window: &Window) -> Result<Vec<ManagerEntry>>
 /// (`RunRecord::result_line`) as a line of its `short`. None for a run still going, one that
 /// printed nothing (it makes no event), or one older than the log kept. No agent reads this.
 /// ref: docs/tasks.md "Routines"
-pub fn run_messages(dir: &ManagerDir, runs: &[&RunRecord]) -> Vec<Option<u64>> {
+pub fn run_messages(dir: &ChatDir, runs: &[&RunRecord]) -> Vec<Option<u64>> {
     let ends: Vec<u64> = runs
         .iter()
         .filter_map(|run| run.finished_epoch)
@@ -166,7 +166,7 @@ pub fn run_messages(dir: &ManagerDir, runs: &[&RunRecord]) -> Vec<Option<u64>> {
             let end = run.finished_epoch?.max(0) as u64 * 1000;
             let line = Short::plain(&run.result_line()).text;
             log.iter().find_map(|entry| match &entry.event {
-                ManagerEvent::Message {
+                ChatEvent::Message {
                     id,
                     from: Author::Events,
                     short,
@@ -181,21 +181,21 @@ pub fn run_messages(dir: &ManagerDir, runs: &[&RunRecord]) -> Vec<Option<u64>> {
 }
 
 /// Whether `log` reaches back past the questions that can still ask at `now`.
-fn reaches_asks(log: &[ManagerEntry], now: u64) -> bool {
+fn reaches_asks(log: &[ChatEntry], now: u64) -> bool {
     log.first()
         .is_some_and(|entry| now.saturating_sub(entry.unix_ms) >= ASKS_WITHIN_MS)
 }
 
 /// `Delivered`, `Routed`, `Agent`, `Ping` and `Answered` entries are not conversation: they use
 /// no room.
-fn in_chat(entry: &ManagerEntry) -> bool {
+fn in_chat(entry: &ChatEntry) -> bool {
     !matches!(
         entry.event,
-        ManagerEvent::Delivered { .. }
-            | ManagerEvent::Routed { .. }
-            | ManagerEvent::Agent { .. }
-            | ManagerEvent::Ping { .. }
-            | ManagerEvent::Answered { .. }
+        ChatEvent::Delivered { .. }
+            | ChatEvent::Routed { .. }
+            | ChatEvent::Agent { .. }
+            | ChatEvent::Ping { .. }
+            | ChatEvent::Answered { .. }
     )
 }
 
@@ -206,13 +206,13 @@ fn in_chat(entry: &ManagerEntry) -> bool {
 /// another chat's words) has none. A quote helps when the reply will not sit directly under what
 /// it answers: the newest owner message of the turn, quoted when the turn held more than one or
 /// any chat item was logged after it.
-pub fn quoted_message(log: &[ManagerEntry], to: &[u64]) -> Option<u64> {
+pub fn quoted_message(log: &[ChatEntry], to: &[u64]) -> Option<u64> {
     let owners: Vec<usize> = (0..log.len())
         .filter(|&at| {
             log[at].id().is_some_and(|id| to.contains(&id))
                 && matches!(
                     &log[at].event,
-                    ManagerEvent::Message {
+                    ChatEvent::Message {
                         from: Author::Owner,
                         ..
                     }
@@ -227,10 +227,10 @@ pub fn quoted_message(log: &[ManagerEntry], to: &[u64]) -> Option<u64> {
 /// The entries of `window` in `log` (`read_chat`), and how many older ones were left out.
 /// `names`: what the rows show, which a find matches.
 pub fn chat_window<'a>(
-    log: &'a [ManagerEntry],
+    log: &'a [ChatEntry],
     window: &Window,
     names: &Names,
-) -> (Vec<&'a ManagerEntry>, usize) {
+) -> (Vec<&'a ChatEntry>, usize) {
     if let Window::Around(id) = window {
         if let Some(at) = log.iter().position(|entry| entry.id() == Some(*id)) {
             let before = log[..at].iter().filter(|e| in_chat(e)).count();
@@ -254,7 +254,7 @@ pub fn chat_window<'a>(
         },
         Window::Around(_) => (0, CHAT_ENTRIES),
     };
-    let mut entries: Vec<&ManagerEntry> = log[start..].iter().filter(|e| in_chat(e)).collect();
+    let mut entries: Vec<&ChatEntry> = log[start..].iter().filter(|e| in_chat(e)).collect();
     let skipped = entries.len().saturating_sub(limit);
     entries.drain(..skipped);
     (divider_first(log, entries), skipped)
@@ -262,7 +262,7 @@ pub fn chat_window<'a>(
 
 /// The oldest entry of `log` whose row shows `words`, case-insensitive: its author's name, its
 /// tag, its quote or its text, as `chat_rows` makes them.
-fn find_from(log: &[ManagerEntry], words: &str, names: &Names) -> Option<usize> {
+fn find_from(log: &[ChatEntry], words: &str, names: &Names) -> Option<usize> {
     let words = words.to_lowercase();
     if words.is_empty() {
         return None;
@@ -298,7 +298,7 @@ pub struct OpenAsk {
 /// A reply whose turn made an approval request with a card (`asked_in_turn`) is no question: the
 /// card is the one item, and the decision settles it (docs/tasks.md "Approvals").
 pub fn open_asks(
-    log: &[ManagerEntry],
+    log: &[ChatEntry],
     approvals: &[ApprovalLine],
     chat: &str,
     now: u64,
@@ -323,7 +323,7 @@ pub struct AnsweredAsk {
 /// the chat must still know when the exchanges that held them are gone (docs/tasks.md "Manager").
 /// A dismissed question has no answer and is not one.
 pub fn answered_asks(
-    log: &[ManagerEntry],
+    log: &[ChatEntry],
     approvals: &[ApprovalLine],
     chat: &str,
 ) -> Vec<AnsweredAsk> {
@@ -333,7 +333,7 @@ pub fn answered_asks(
 /// One walk of the log for `open_asks` and `answered_asks`: the questions still open, and those an
 /// owner message answered.
 fn walk_asks(
-    log: &[ManagerEntry],
+    log: &[ChatEntry],
     approvals: &[ApprovalLine],
     chat: &str,
 ) -> (Vec<OpenAsk>, Vec<AnsweredAsk>) {
@@ -345,8 +345,8 @@ fn walk_asks(
     let mut turn_from: Option<u64> = None;
     for entry in log {
         match &entry.event {
-            ManagerEvent::Delivered { .. } => turn_from = Some(entry.unix_ms),
-            ManagerEvent::Reply { id, text, asks, .. } => {
+            ChatEvent::Delivered { .. } => turn_from = Some(entry.unix_ms),
+            ChatEvent::Reply { id, text, asks, .. } => {
                 let from = turn_from.take();
                 if *asks && !asked_in_turn(approvals, chat, from, entry.unix_ms) {
                     let line = text.trim_end().lines().last().unwrap_or_default().trim();
@@ -358,7 +358,7 @@ fn walk_asks(
                     });
                 }
             }
-            ManagerEvent::Message {
+            ChatEvent::Message {
                 id,
                 from: Author::Owner,
                 text,
@@ -387,7 +387,7 @@ fn walk_asks(
                     });
                 }
             }
-            ManagerEvent::Answered { id } => open.retain(|ask| ask.id != *id),
+            ChatEvent::Answered { id } => open.retain(|ask| ask.id != *id),
             _ => {}
         }
     }
@@ -415,9 +415,9 @@ fn asked_in_turn(approvals: &[ApprovalLine], chat: &str, from: Option<u64>, to: 
 /// The open questions of `dir`'s chat: the chats mark them, the Home row and the Workspace
 /// row show them in the accent, the TUI's items and the web's reservoir list them. Only the
 /// lines `open_asks` reads are parsed: on the wsx log, 7 days are 1 MB of it.
-pub fn asking(dir: &ManagerDir, now: u64) -> Result<Vec<OpenAsk>> {
+pub fn asking(dir: &ChatDir, now: u64) -> Result<Vec<OpenAsk>> {
     // ^ Where serde writes them: `unix_ms`, `kind` and a message's `from` first, a reply's
-    // `asks` after its text, near the end (`ManagerEvent`). A quote in a text is escaped, so a
+    // `asks` after its text, near the end (`ChatEvent`). A quote in a text is escaped, so a
     // text never holds these quoted words. The marks leave out the colon: a line written with
     // a space after it (a hand-written fixture) passes too; what passes needlessly is parsed.
     let keep = |line: &[u8]| {
@@ -440,11 +440,11 @@ pub fn asking(dir: &ManagerDir, now: u64) -> Result<Vec<OpenAsk>> {
 
 /// The owner dismisses the question of reply `id`: it asks no more, and no turn reads it.
 /// Refused for a reply that is not an open question.
-pub fn dismiss(dir: &ManagerDir, id: u64, now: u64) -> Result<()> {
+pub fn dismiss(dir: &ChatDir, id: u64, now: u64) -> Result<()> {
     if !asking(dir, now)?.iter().any(|ask| ask.id == id) {
         bail!("reply {id} is not an open question");
     }
-    dir.append(ManagerEvent::Answered { id })
+    dir.append(ChatEvent::Answered { id })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -576,7 +576,7 @@ pub struct ChatRow {
     /// The id of the message the leading quote points at: a tap goes to it at any age.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quoted_id: Option<u64>,
-    /// The To check item the leading quote is the check of (`ManagerEvent::Message::check`): a tap
+    /// The To check item the leading quote is the check of (`ChatEvent::Message::check`): a tap
     /// goes to its bubble, else to the To check list at it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quoted_check: Option<String>,
@@ -615,7 +615,7 @@ pub struct ChatRow {
 }
 
 impl ChatRow {
-    fn new(kind: RowKind, key: String, entry: &ManagerEntry, text: String) -> Self {
+    fn new(kind: RowKind, key: String, entry: &ChatEntry, text: String) -> Self {
         Self {
             kind,
             key,
@@ -644,7 +644,7 @@ impl ChatRow {
     }
 
     /// A message of `author`, its leading quote apart.
-    fn said(key: String, entry: &ManagerEntry, author: Speaker, name: String, text: &str) -> Self {
+    fn said(key: String, entry: &ChatEntry, author: Speaker, name: String, text: &str) -> Self {
         let (quoted, body) = split_quote(text);
         let quote = Some(quote_of(text)).filter(|quote| !quote.is_empty());
         Self {
@@ -673,14 +673,14 @@ pub struct Reading {
 /// the chat that owns them, and the page at `window`. No folder yet is an empty chat. `edit` is
 /// `page`'s.
 pub fn read_for(
-    dir: Option<&ManagerDir>,
+    dir: Option<&ChatDir>,
     (project, store_id): (&str, &str),
     settings: &crate::model::workspace::TaskConfig,
     window: &Window,
-    edit: impl FnMut(&mut ManagerEntry),
+    edit: impl FnMut(&mut ChatEntry),
 ) -> Result<Reading> {
     let shown = settings.manager_shown_name(project);
-    let chat = dir.and_then(ManagerDir::named);
+    let chat = dir.and_then(ChatDir::named);
     let manager = manager_name_in(chat, shown);
     let own = dir.map_or_else(
         || shown.to_string(),
@@ -715,9 +715,9 @@ pub fn read_for(
 #[derive(Default)]
 pub struct Page {
     /// The log as `read_chat` returned it; `activity` reads its end.
-    pub log: Vec<ManagerEntry>,
+    pub log: Vec<ChatEntry>,
     /// The entries of the window, after the caller's `edit`.
-    pub entries: Vec<ManagerEntry>,
+    pub entries: Vec<ChatEntry>,
     /// How many older entries the window left out.
     pub skipped: usize,
     pub asks: Vec<OpenAsk>,
@@ -728,17 +728,17 @@ pub struct Page {
 /// questions and the rows. `edit` changes each entry of the window before its row is made (the
 /// web turns an owner message's file paths into attachments). `approvals`: see `chat_rows`.
 pub fn page(
-    dir: &ManagerDir,
+    dir: &ChatDir,
     window: &Window,
     names: &Names,
     approvals: &[&ApprovalLine],
     now: u64,
-    mut edit: impl FnMut(&mut ManagerEntry),
+    mut edit: impl FnMut(&mut ChatEntry),
 ) -> Result<Page> {
     let log = read_chat(dir, window)?;
     let asks = asking(dir, now)?;
     let (entries, skipped) = chat_window(&log, window, names);
-    let mut entries: Vec<ManagerEntry> = entries.into_iter().cloned().collect();
+    let mut entries: Vec<ChatEntry> = entries.into_iter().cloned().collect();
     entries.iter_mut().for_each(&mut edit);
     let rows = chat_rows(
         &entries.iter().collect::<Vec<_>>(),
@@ -760,12 +760,12 @@ pub fn page(
 /// limit, an agent error or a failed start: the newest `limit` or `stopped` entry that no
 /// resume or reply followed). Else none: a message waits only moments for a free manager.
 /// ref: docs/tasks.md "Manager"
-pub fn waiting_ids(log: &[ManagerEntry]) -> Vec<u64> {
+pub fn waiting_ids(log: &[ChatEntry]) -> Vec<u64> {
     let held = log.iter().rev().find_map(|entry| match &entry.event {
-        ManagerEvent::Limit { until } => Some(until.is_some()),
-        ManagerEvent::Stopped { .. } => Some(true),
+        ChatEvent::Limit { until } => Some(until.is_some()),
+        ChatEvent::Stopped { .. } => Some(true),
         // ^ A stand-in's reply and a post are written during a hold: they end none.
-        ManagerEvent::Reply {
+        ChatEvent::Reply {
             provisional: None,
             post: false,
             ..
@@ -778,7 +778,7 @@ pub fn waiting_ids(log: &[ManagerEntry]) -> Vec<u64> {
     let taken: HashSet<u64> = log
         .iter()
         .filter_map(|entry| match &entry.event {
-            ManagerEvent::Delivered { ids } => Some(ids),
+            ChatEvent::Delivered { ids } => Some(ids),
             _ => None,
         })
         .flatten()
@@ -786,7 +786,7 @@ pub fn waiting_ids(log: &[ManagerEntry]) -> Vec<u64> {
         .collect();
     log.iter()
         .filter_map(|entry| match &entry.event {
-            ManagerEvent::Message {
+            ChatEvent::Message {
                 id,
                 from: Author::Owner,
                 ..
@@ -801,7 +801,7 @@ pub fn waiting_ids(log: &[ManagerEntry]) -> Vec<u64> {
 /// questions (`open_asks`), whose rows ask. `waiting`: the owner messages not taken into a
 /// turn (`waiting_ids`), whose rows come last, queued.
 pub fn chat_rows(
-    entries: &[&ManagerEntry],
+    entries: &[&ChatEntry],
     approvals: &[&ApprovalLine],
     asks: &[OpenAsk],
     waiting: &[u64],
@@ -813,7 +813,7 @@ pub fn chat_rows(
     let recaps: HashSet<u64> = entries
         .iter()
         .filter_map(|entry| match &entry.event {
-            ManagerEvent::Message {
+            ChatEvent::Message {
                 id,
                 from: Author::Recap,
                 ..
@@ -826,16 +826,16 @@ pub fn chat_rows(
     let posted: HashSet<u64> = entries
         .iter()
         .filter_map(|entry| match &entry.event {
-            ManagerEvent::Reply { to, post: true, .. } => Some(to.iter().copied()),
+            ChatEvent::Reply { to, post: true, .. } => Some(to.iter().copied()),
             _ => None,
         })
         .flatten()
         .collect();
     // ^ What each message is, so a reply knows what it answers (`bubble`).
-    let said: HashMap<u64, &ManagerEvent> = entries
+    let said: HashMap<u64, &ChatEvent> = entries
         .iter()
         .filter_map(|entry| match &entry.event {
-            ManagerEvent::Message { id, .. } => Some((*id, &entry.event)),
+            ChatEvent::Message { id, .. } => Some((*id, &entry.event)),
             _ => None,
         })
         .collect();
@@ -850,7 +850,7 @@ pub fn chat_rows(
         // ^ An agent's reply carries it; a post (`wsx task post`, the digest, the session news) is
         // wsx's own line, written with no turn, and asks for nothing.
         let reply = entries.iter().position(|entry| {
-            matches!(entry.event, ManagerEvent::Reply { post: false, .. }) && entry.unix_ms >= *at
+            matches!(entry.event, ChatEvent::Reply { post: false, .. }) && entry.unix_ms >= *at
         });
         if let Some(index) = reply {
             carried[index].push(id.to_string());
@@ -868,18 +868,18 @@ pub fn chat_rows(
             continue;
         }
         match &entry.event {
-            ManagerEvent::Message {
+            ChatEvent::Message {
                 from: Author::Events,
                 id,
                 ..
             } if posted.contains(id) => {}
-            ManagerEvent::Message {
+            ChatEvent::Message {
                 from: Author::Events,
                 text,
                 short,
                 ..
             } => event_rows(&mut rows, entry, text, short),
-            ManagerEvent::Message { from, text, .. } => {
+            ChatEvent::Message { from, text, .. } => {
                 let row = message_row(entry, from, text);
                 match row {
                     Some(row) if row.id.is_some_and(|id| waiting.contains(&id)) => {
@@ -892,7 +892,7 @@ pub fn chat_rows(
                     None => {}
                 }
             }
-            ManagerEvent::Reply { .. } => rows.extend(reply_row(
+            ChatEvent::Reply { .. } => rows.extend(reply_row(
                 entry,
                 std::mem::take(&mut carried[index]),
                 &recaps,
@@ -916,11 +916,11 @@ pub fn chat_rows(
 /// once, as the tag of the manager's reply (`chat_rows`), so such a pair has no row; the old logs keep it.
 const OLD_ASK_LINE: &str = "asked the owner: ";
 
-fn without_ask_lines<'a>(entries: &[&'a ManagerEntry]) -> Vec<&'a ManagerEntry> {
+fn without_ask_lines<'a>(entries: &[&'a ChatEntry]) -> Vec<&'a ChatEntry> {
     let old: HashSet<u64> = entries
         .iter()
         .filter_map(|entry| match &entry.event {
-            ManagerEvent::Message {
+            ChatEvent::Message {
                 from: Author::Events,
                 id,
                 text,
@@ -933,8 +933,8 @@ fn without_ask_lines<'a>(entries: &[&'a ManagerEntry]) -> Vec<&'a ManagerEntry> 
         .iter()
         .copied()
         .filter(|entry| match &entry.event {
-            ManagerEvent::Message { id, .. } => !old.contains(id),
-            ManagerEvent::Reply { to, post: true, .. } => {
+            ChatEvent::Message { id, .. } => !old.contains(id),
+            ChatEvent::Reply { to, post: true, .. } => {
                 to.is_empty() || !to.iter().all(|id| old.contains(id))
             }
             _ => true,
@@ -948,28 +948,25 @@ fn without_ask_lines<'a>(entries: &[&'a ManagerEntry]) -> Vec<&'a ManagerEntry> 
 /// The log keeps its order. A rotation at idle, one with a stop or pause between it and that
 /// message, or one whose message is outside the window keeps its place, so holds fold as before.
 /// ref: docs/tasks.md "Manager" (New conversation)
-fn divider_first<'a>(
-    log: &'a [ManagerEntry],
-    mut shown: Vec<&'a ManagerEntry>,
-) -> Vec<&'a ManagerEntry> {
-    let place = |list: &[&ManagerEntry], entry: &ManagerEntry| {
+fn divider_first<'a>(log: &'a [ChatEntry], mut shown: Vec<&'a ChatEntry>) -> Vec<&'a ChatEntry> {
+    let place = |list: &[&ChatEntry], entry: &ChatEntry| {
         list.iter().position(|item| std::ptr::eq(*item, entry))
     };
     for (at, rotated) in log.iter().enumerate() {
-        if !matches!(rotated.event, ManagerEvent::Rotated { .. }) {
+        if !matches!(rotated.event, ChatEvent::Rotated { .. }) {
             continue;
         }
         let Some(from) = place(&shown, rotated) else {
             continue;
         };
         let Some(ids) = log[at + 1..].iter().find_map(|entry| match &entry.event {
-            ManagerEvent::Delivered { ids } => Some(ids),
+            ChatEvent::Delivered { ids } => Some(ids),
             _ => None,
         }) else {
             continue;
         };
         let first = log[..at].iter().position(
-            |entry| matches!(&entry.event, ManagerEvent::Message { id, .. } if ids.contains(id)),
+            |entry| matches!(&entry.event, ChatEvent::Message { id, .. } if ids.contains(id)),
         );
         let Some(first) = first.filter(|&first| !log[first..at].iter().any(held_kind)) else {
             continue;
@@ -984,7 +981,7 @@ fn divider_first<'a>(
 }
 
 /// The key of an entry's row: its kind and id, else its time.
-fn row_key(entry: &ManagerEntry, kind: &str) -> String {
+fn row_key(entry: &ChatEntry, kind: &str) -> String {
     match entry.id() {
         Some(id) => format!("{kind}-{id}"),
         None => format!("{kind}-{}", entry.unix_ms),
@@ -998,7 +995,7 @@ fn peer_name(party: &Party) -> String {
 
 /// The row of a message from the owner, a manager or a chat. Events have `event_rows`; a recap
 /// request shows nothing.
-fn message_row(entry: &ManagerEntry, from: &Author, text: &str) -> Option<ChatRow> {
+fn message_row(entry: &ChatEntry, from: &Author, text: &str) -> Option<ChatRow> {
     let key = row_key(entry, "message");
     let peer = match from {
         Author::Owner => {
@@ -1021,7 +1018,7 @@ fn message_row(entry: &ManagerEntry, from: &Author, text: &str) -> Option<ChatRo
 /// nothing. ref: docs/transcript.md
 fn talk(
     key: String,
-    entry: &ManagerEntry,
+    entry: &ChatEntry,
     with: &Party,
     from: Option<&Party>,
     own: &str,
@@ -1064,7 +1061,7 @@ fn push_row(rows: &mut Vec<ChatRow>, row: ChatRow) {
 /// The lines of an events message, one row each unless the line repeats: a task's line is a repeat
 /// when it has the text of that task's latest line since the last message bubble (any time later);
 /// a line with no task, when it has the text of the row before it.
-fn event_rows(rows: &mut Vec<ChatRow>, entry: &ManagerEntry, text: &str, short: &[Short]) {
+fn event_rows(rows: &mut Vec<ChatRow>, entry: &ChatEntry, text: &str, short: &[Short]) {
     // ^ A line logged before `short` shows its first clause.
     let lines: Vec<Short> = match short.is_empty() {
         false => short.to_vec(),
@@ -1108,14 +1105,14 @@ fn event_rows(rows: &mut Vec<ChatRow>, entry: &ManagerEntry, text: &str, short: 
 /// the events it answers; its words open under it. A reply that says nothing (`-`) has no row.
 /// ref: docs/transcript.md
 fn reply_row(
-    entry: &ManagerEntry,
+    entry: &ChatEntry,
     approvals: Vec<String>,
     recaps: &HashSet<u64>,
     asks: &[OpenAsk],
     names: &Names,
-    said: &HashMap<u64, &ManagerEvent>,
+    said: &HashMap<u64, &ChatEvent>,
 ) -> Option<ChatRow> {
-    let ManagerEvent::Reply {
+    let ChatEvent::Reply {
         to,
         text,
         quiet,
@@ -1135,7 +1132,7 @@ fn reply_row(
         && to.iter().all(|id| {
             matches!(
                 said.get(id),
-                Some(ManagerEvent::Message {
+                Some(ChatEvent::Message {
                     from: Author::Peer { .. },
                     ..
                 })
@@ -1151,7 +1148,7 @@ fn reply_row(
         let first = super::view::first_sentence(text);
         let mut tokens: Vec<Token> = Vec::new();
         for token in to.iter().filter_map(|id| match said.get(id) {
-            Some(ManagerEvent::Message { short, .. }) => Some(short),
+            Some(ChatEvent::Message { short, .. }) => Some(short),
             _ => None,
         }) {
             for token in token.iter().filter_map(Token::of) {
@@ -1195,11 +1192,11 @@ fn reply_row(
 
 /// The row of what the manager itself did: a message it sent, a pause, a new conversation or a
 /// stop. The other entries have none.
-fn note_row(entry: &ManagerEntry, names: &Names) -> Option<ChatRow> {
+fn note_row(entry: &ChatEntry, names: &Names) -> Option<ChatRow> {
     match &entry.event {
         // ^ An empty `sent` (older hosts logged one without --json) shows nothing.
-        ManagerEvent::Sent { text, .. } if text.trim().is_empty() => None,
-        ManagerEvent::Sent { to, text, .. } => talk(
+        ChatEvent::Sent { text, .. } if text.trim().is_empty() => None,
+        ChatEvent::Sent { to, text, .. } => talk(
             row_key(entry, "sent"),
             entry,
             &Party::from_key(to),
@@ -1207,7 +1204,7 @@ fn note_row(entry: &ManagerEntry, names: &Names) -> Option<ChatRow> {
             names.own,
             text,
         ),
-        ManagerEvent::Limit { until } => Some(ChatRow::new(
+        ChatEvent::Limit { until } => Some(ChatRow::new(
             RowKind::Line,
             row_key(entry, "limit"),
             entry,
@@ -1216,7 +1213,7 @@ fn note_row(entry: &ManagerEntry, names: &Names) -> Option<ChatRow> {
                 None => format!("{} resumed", names.own),
             },
         )),
-        ManagerEvent::Rotated { tokens, reason } => Some(ChatRow::new(
+        ChatEvent::Rotated { tokens, reason } => Some(ChatRow::new(
             RowKind::Note,
             row_key(entry, "rotated"),
             entry,
@@ -1230,7 +1227,7 @@ fn note_row(entry: &ManagerEntry, names: &Names) -> Option<ChatRow> {
                 ),
             },
         )),
-        ManagerEvent::Stopped { reason } => Some(ChatRow {
+        ChatEvent::Stopped { reason } => Some(ChatRow {
             danger: true,
             ..ChatRow::new(
                 RowKind::Note,
@@ -1241,37 +1238,37 @@ fn note_row(entry: &ManagerEntry, names: &Names) -> Option<ChatRow> {
         }),
         // ^ A fork as one note in each chat; closing the new chat before it owns a task undoes
         // it (docs/tasks.md "Lead and forks").
-        ManagerEvent::Forked { to, .. } => Some(ChatRow::new(
+        ChatEvent::Forked { to, .. } => Some(ChatRow::new(
             RowKind::Note,
             row_key(entry, &format!("forked-{to}")),
             entry,
             format!("\u{2442} Forked to {to}"),
         )),
-        ManagerEvent::ForkedFrom { from, .. } => Some(ChatRow::new(
+        ChatEvent::ForkedFrom { from, .. } => Some(ChatRow::new(
             RowKind::Note,
             row_key(entry, &format!("forked-from-{from}")),
             entry,
             format!("\u{2442} Forked from {from}"),
         )),
-        ManagerEvent::ForkUndone { to } => Some(ChatRow::new(
+        ChatEvent::ForkUndone { to } => Some(ChatRow::new(
             RowKind::Note,
             row_key(entry, &format!("fork-undone-{to}")),
             entry,
             format!("\u{2442} Fork to {to} undone"),
         )),
-        ManagerEvent::Moved { to, .. } => Some(ChatRow::new(
+        ChatEvent::Moved { to, .. } => Some(ChatRow::new(
             RowKind::Note,
             row_key(entry, &format!("moved-{to}")),
             entry,
             format!("\u{2442} Moved to {to}"),
         )),
-        ManagerEvent::MovedFrom { from, .. } => Some(ChatRow::new(
+        ChatEvent::MovedFrom { from, .. } => Some(ChatRow::new(
             RowKind::Note,
             row_key(entry, &format!("moved-from-{from}")),
             entry,
             format!("\u{2442} From {from}"),
         )),
-        ManagerEvent::MoveFailed { to, reason, .. } => Some(ChatRow::new(
+        ChatEvent::MoveFailed { to, reason, .. } => Some(ChatRow::new(
             RowKind::Note,
             row_key(entry, &format!("move-failed-{to}")),
             entry,
@@ -1283,10 +1280,10 @@ fn note_row(entry: &ManagerEntry, names: &Names) -> Option<ChatRow> {
 
 /// Whether an entry is a hold: the manager stopped, paused or resumed, or began a new
 /// conversation.
-fn held_kind(entry: &ManagerEntry) -> bool {
+fn held_kind(entry: &ChatEntry) -> bool {
     matches!(
         entry.event,
-        ManagerEvent::Stopped { .. } | ManagerEvent::Limit { .. } | ManagerEvent::Rotated { .. }
+        ChatEvent::Stopped { .. } | ChatEvent::Limit { .. } | ChatEvent::Rotated { .. }
     )
 }
 
@@ -1294,19 +1291,19 @@ fn held_kind(entry: &ManagerEntry) -> bool {
 /// stop's, or the reason of the new conversation it brought) fold into one row when they hold
 /// twice or more: `wsx stopped 3 times: <reason>; next try 10:11`. A run of usage limits with
 /// no stop folds the same way. Else each entry has its own row (`note_row`).
-fn hold_rows(rows: &mut Vec<ChatRow>, run: &[&ManagerEntry], names: &Names) {
-    let mut segment: Vec<&ManagerEntry> = Vec::new();
+fn hold_rows(rows: &mut Vec<ChatRow>, run: &[&ChatEntry], names: &Names) {
+    let mut segment: Vec<&ChatEntry> = Vec::new();
     let mut reason: Option<&str> = None;
     for entry in run {
         let own = match &entry.event {
-            ManagerEvent::Stopped { reason } => Some(reason.as_str()),
-            ManagerEvent::Rotated {
+            ChatEvent::Stopped { reason } => Some(reason.as_str()),
+            ChatEvent::Rotated {
                 reason: Some(reason),
                 ..
             } => Some(reason.as_str()),
             _ => None,
         };
-        if matches!(entry.event, ManagerEvent::Rotated { reason: None, .. })
+        if matches!(entry.event, ChatEvent::Rotated { reason: None, .. })
             || own.is_some_and(|own| !segment.is_empty() && reason != Some(own))
         {
             fold_segment(rows, &segment, reason, names);
@@ -1322,14 +1319,14 @@ fn hold_rows(rows: &mut Vec<ChatRow>, run: &[&ManagerEntry], names: &Names) {
 /// One segment of `hold_rows`: `reason` is the stop's, none for a run of limits alone.
 fn fold_segment(
     rows: &mut Vec<ChatRow>,
-    segment: &[&ManagerEntry],
+    segment: &[&ChatEntry],
     reason: Option<&str>,
     names: &Names,
 ) {
     let count =
-        |counts: fn(&ManagerEvent) -> bool| segment.iter().filter(|e| counts(&e.event)).count();
-    let stops = count(|event| matches!(event, ManagerEvent::Stopped { .. }));
-    let pauses = count(|event| matches!(event, ManagerEvent::Limit { until: Some(_) }));
+        |counts: fn(&ChatEvent) -> bool| segment.iter().filter(|e| counts(&e.event)).count();
+    let stops = count(|event| matches!(event, ChatEvent::Stopped { .. }));
+    let pauses = count(|event| matches!(event, ChatEvent::Limit { until: Some(_) }));
     let (Some(first), Some(last)) = (segment.first(), segment.last()) else {
         return;
     };
@@ -1340,8 +1337,8 @@ fn fold_segment(
     }
     // ^ How the run ended: paused until a time, resumed, or neither (a stop with no pause).
     let end = segment.iter().rev().find_map(|entry| match &entry.event {
-        ManagerEvent::Limit { until } => Some(until.as_deref()),
-        ManagerEvent::Stopped { .. } => Some(None),
+        ChatEvent::Limit { until } => Some(until.as_deref()),
+        ChatEvent::Stopped { .. } => Some(None),
         _ => None,
     });
     let own = names.own;

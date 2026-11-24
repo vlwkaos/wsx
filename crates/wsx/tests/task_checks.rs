@@ -61,12 +61,17 @@ fn a_check_past_the_timeout_is_killed_and_fails_the_task() {
         failed["result"]
     );
     let report = fs::read_to_string(failed["report"].as_str().unwrap()).expect("report");
-    assert!(report.contains(&format!("`sleep {sleep}`: timed out")), "{report}");
+    assert!(
+        report.contains(&format!("`sleep {sleep}`: timed out")),
+        "{report}"
+    );
     // ^ Only the check's own process counts: the worker's instructions name the check too.
     let alive: Vec<String> = leftovers(&format!("sleep {sleep}"))
         .into_iter()
         .filter(|line| {
-            let command = line.split_once(' ').map_or("", |(_, command)| command.trim_start());
+            let command = line
+                .split_once(' ')
+                .map_or("", |(_, command)| command.trim_start());
             command.starts_with("sleep") || command.starts_with("/bin/sh -c sleep")
         })
         .collect();
@@ -78,9 +83,8 @@ fn a_check_past_the_timeout_is_killed_and_fails_the_task() {
 fn a_loud_check_runs_to_its_end_and_keeps_its_tail() {
     // ^ Far past the kept output: its exit decides, and the output kept is the end, where a test
     // run puts its summary.
-    let fixture = Fixture::with_tasks_config(
-        "  checks: [\"seq 1 40000; seq 1 40000 >&2; echo tail end\"]\n",
-    );
+    let fixture =
+        Fixture::with_tasks_config("  checks: [\"seq 1 40000; seq 1 40000 >&2; echo tail end\"]\n");
     let id = new_noop(&fixture);
     let task = settled(&fixture, &id, &["ready", "failed"]);
     let check = &task["result"]["checks"][0];
@@ -115,15 +119,27 @@ fn trace_pair(fixture: &Fixture, name: &str) -> Vec<(i64, String)> {
     let key = format!("check_run_repeat_{name}");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
-        if let Some(trace) = fixture.traces().iter().find(|trace| trace.get(&key).is_some()) {
+        if let Some(trace) = fixture
+            .traces()
+            .iter()
+            .find(|trace| trace.get(&key).is_some())
+        {
             return trace[&key]
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|answer| (answer[0].as_i64().unwrap(), answer[1].as_str().unwrap().to_string()))
+                .map(|answer| {
+                    (
+                        answer[0].as_i64().unwrap(),
+                        answer[1].as_str().unwrap().to_string(),
+                    )
+                })
                 .collect();
         }
-        assert!(std::time::Instant::now() < deadline, "the {name} answers timeout");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the {name} answers timeout"
+        );
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
@@ -146,18 +162,29 @@ fn a_check_run_that_exits_75_is_never_kept_and_one_that_exits_1_is() {
         .unwrap()
         .to_string();
     for id in [&flaky, &hard] {
-        assert_eq!(settled(&fixture, id, &["ready", "failed"])["state"], "ready");
+        assert_eq!(
+            settled(&fixture, id, &["ready", "failed"])["state"],
+            "ready"
+        );
     }
     let pair = trace_pair(&fixture, "tempfail");
     assert!(pair[0].0 == 1 && pair[1].0 == 1, "{pair:?}");
-    assert!(!pair[0].1.contains("stored") && !pair[1].1.contains("stored"), "{pair:?}");
     assert!(
-        pair[1].1.contains("exit 75 (a temporary failure, not kept: the next check-run runs it again)"),
+        !pair[0].1.contains("stored") && !pair[1].1.contains("stored"),
+        "{pair:?}"
+    );
+    assert!(
+        pair[1]
+            .1
+            .contains("exit 75 (a temporary failure, not kept: the next check-run runs it again)"),
         "{pair:?}"
     );
     assert_eq!(runs("tempfail.log"), 2);
     let pair = trace_pair(&fixture, "hardfail");
-    assert!(pair[0].0 == 1 && pair[0].1.contains("exit 1") && !pair[0].1.contains("stored"), "{pair:?}");
+    assert!(
+        pair[0].0 == 1 && pair[0].1.contains("exit 1") && !pair[0].1.contains("stored"),
+        "{pair:?}"
+    );
     assert!(
         pair[1].0 == 1 && pair[1].1.contains("(stored: it ran on this tree before)"),
         "{pair:?}"

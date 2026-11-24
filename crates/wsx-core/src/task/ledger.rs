@@ -464,7 +464,7 @@ pub fn routine_rows(
     main: &Path,
     limit: usize,
     full: bool,
-    chat: Option<&super::store::ManagerDir>,
+    chat: Option<&super::store::ChatDir>,
 ) -> (Value, crate::routine::Counts) {
     let none = crate::routine::Counts::default();
     use crate::routine::{request, store, Action, Response};

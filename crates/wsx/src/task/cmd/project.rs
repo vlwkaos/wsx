@@ -4,7 +4,7 @@ use super::approve::{ask_covering, request_of};
 use crate::cli::load_config;
 use crate::runtime_util::print_json;
 use crate::task::args::ProjectCmd;
-use crate::task::{acting_as_manager, project_entry};
+use crate::task::{acting_as_chat, project_entry};
 use anyhow::Result;
 use serde_json::json;
 use wsx_core::task::manager::{ApprovalAction, ApprovalLine};
@@ -35,7 +35,7 @@ pub(crate) fn project(action: ProjectCmd, project: Option<&str>, json: bool) -> 
     // ^ The refusals come first, so the manager hears them and the owner is never asked for
     // what would be refused.
     let folder = ops::check_add_project(&config, &path, clone.as_deref())?;
-    if acting_as_manager() {
+    if acting_as_chat() {
         let (name, main) = project_entry(project)?;
         let mut request = request_of(ApprovalAction::Project, None, None, None);
         if let ApprovalLine::Request { path, url, .. } = &mut request {

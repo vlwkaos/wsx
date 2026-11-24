@@ -6,7 +6,7 @@ use crate::cli::PromptSource;
 use crate::runtime_util::print_json;
 use crate::task::args::ChatCmd;
 use crate::task::manager;
-use crate::task::{acting_as_manager, actor, launch_manager, open, project_entry};
+use crate::task::{acting_as_chat, actor, launch_manager, open, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -16,15 +16,15 @@ use wsx_core::memory::{backend, index::Target};
 use wsx_core::task::chat::{self, Reading, Window};
 use wsx_core::task::chats;
 use wsx_core::task::manager::{
-    pending_approvals, Author, ManagerEvent, ManagerRequest, ManagerResponse, Party,
+    pending_approvals, Author, ChatEvent, ChatRequest, ChatResponse, Party,
 };
 use wsx_core::task::owner::{self};
-use wsx_core::task::store::ManagerDir;
+use wsx_core::task::store::ChatDir;
 use wsx_core::task::store::{self, TaskDir};
 use wsx_core::task::text;
 use wsx_core::task::MAX_MESSAGE_BYTES;
 
-pub(crate) fn ensure_manager(project: Option<&str>) -> Result<(bool, ManagerDir)> {
+pub(crate) fn ensure_manager(project: Option<&str>) -> Result<(bool, ChatDir)> {
     let (name, main) = project_entry(project)?;
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
     owner::ensure_manager(&name, &main, &exe, None, launch_manager(&main))
@@ -63,7 +63,7 @@ pub(crate) fn mail_command(
         true => Some(
             actor()
                 .chat()
-                .filter(|_| acting_as_manager())
+                .filter(|_| acting_as_chat())
                 .context("--from-chat is for a chat's agent")?
                 .to_string(),
         ),
@@ -152,11 +152,11 @@ pub(crate) fn say_command(
         Some(reply) => {
             let sender = actor()
                 .chat()
-                .filter(|_| acting_as_manager())
+                .filter(|_| acting_as_chat())
                 .context("--from-chat is for a chat's agent")?
                 .to_string();
             // ^ A chat reaches another project's main chat (broker.rs, policy.rs).
-            let own = ManagerDir::existing(&sender)?.map(|dir| dir.project_id);
+            let own = ChatDir::existing(&sender)?.map(|dir| dir.project_id);
             let own_repo = own.as_deref() == Some(project_id.as_str());
             let target = match (to.filter(|to| *to != "manager"), own_repo) {
                 (Some(to), true) => to.to_string(),
@@ -220,8 +220,7 @@ pub(crate) fn chat(
 ) -> Result<()> {
     let (name, main) = project_entry(project)?;
     let project_id = store::project_id(&name, &main);
-    let dir =
-        ManagerDir::existing_in(&project_id, chat)?.filter(|dir| dir.project_id == project_id);
+    let dir = ChatDir::existing_in(&project_id, chat)?.filter(|dir| dir.project_id == project_id);
     if chat.is_some() && dir.is_none() {
         bail!("the project has no chat {}", chat.unwrap_or_default());
     }
@@ -405,7 +404,7 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
             said,
         } => {
             // ^ Only a chat forks: the owner's own --brief is refused before anything is read.
-            if brief && !acting_as_manager() {
+            if brief && !acting_as_chat() {
                 bail!("--brief forks the owner's message of the lead's turn: the lead's agent passes it with --owner-said; nothing was done");
             }
             let (project, main) = lifecycle("chat new", project, said.owner_said)?;
@@ -462,14 +461,14 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
             for row in &mut rows {
                 let socket = row["name"]
                     .as_str()
-                    .map(ManagerDir::existing)
+                    .map(ChatDir::existing)
                     .transpose()?
                     .flatten()
                     .map(|dir| dir.socket_path());
                 row["running"] = json!(socket.is_some_and(|socket| {
-                    wsx_core::task::call_socket::<_, ManagerResponse>(
+                    wsx_core::task::call_socket::<_, ChatResponse>(
                         &socket,
-                        &ManagerRequest::Status,
+                        &ChatRequest::Status,
                         Duration::from_secs(2),
                     )
                     .is_ok()
@@ -584,21 +583,22 @@ fn fork(
     let (Some(asker), Some(said)) = (asker, said) else {
         bail!("--brief forks the owner's message of the lead's turn; nothing was done");
     };
-    let origin = ManagerDir::existing(&asker)?.context("the asking chat has no folder")?;
+    let origin = ChatDir::existing(&asker)?.context("the asking chat has no folder")?;
     if !chats::is_lead(&origin) {
         bail!("only the lead forks: the project's main chat with no goal; nothing was done");
     }
     let name = chats::checked_name(name)?;
     let log = origin.read_log()?;
-    if log.iter().any(
-        |entry| matches!(&entry.event, ManagerEvent::Forked { message, .. } if *message == said),
-    ) {
+    if log
+        .iter()
+        .any(|entry| matches!(&entry.event, ChatEvent::Forked { message, .. } if *message == said))
+    {
         bail!("message {said} was forked already; nothing was done");
     }
     let text = log
         .into_iter()
         .find_map(|entry| match entry.event {
-            ManagerEvent::Message {
+            ChatEvent::Message {
                 id,
                 from: Author::Owner,
                 text,
@@ -632,7 +632,7 @@ fn fork(
 /// The repo of a chat lifecycle command: the owner's own `-p`; a chat's agent acts in its own
 /// repo on the owner's message of its turn. ref: docs/tasks.md "Chats"
 fn lifecycle(command: &str, project: Option<&str>, said: Option<u64>) -> Result<(String, PathBuf)> {
-    if !acting_as_manager() {
+    if !acting_as_chat() {
         return project_entry(project);
     }
     let asker = actor().chat().map(str::to_string).unwrap_or_default();
@@ -641,13 +641,13 @@ fn lifecycle(command: &str, project: Option<&str>, said: Option<u64>) -> Result<
             "wsx chat {command} is the owner's; a chat's agent runs it when the owner's message of this turn asks: pass --owner-said <id>; nothing was done"
         )
     })?;
-    let own = ManagerDir::existing(&asker)?.context("the asking chat has no folder")?;
+    let own = ChatDir::existing(&asker)?.context("the asking chat has no folder")?;
     owner::check_owner_said(&own.project_id, Some(&asker), said)?;
     crate::task::project_by_id(&own.project_id)
 }
 
 /// The open chat `name`, which must run in the repo `project_id`.
-pub(super) fn chat_of_repo(name: &str, project_id: &str) -> Result<ManagerDir> {
+pub(super) fn chat_of_repo(name: &str, project_id: &str) -> Result<ChatDir> {
     match chats::open_chat(name)? {
         dir if dir.project_id == project_id => Ok(dir),
         _ => bail!("chat {name} runs in another project"),

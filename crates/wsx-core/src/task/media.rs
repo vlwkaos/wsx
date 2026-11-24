@@ -9,7 +9,7 @@
 use super::chat::linked_files;
 use super::chats;
 use super::checks::{self, CheckState};
-use super::manager::{Author, ManagerEntry, ManagerEvent};
+use super::manager::{Author, ChatEntry, ChatEvent};
 use super::store::{contains_bytes, TaskDir, FIRST_READ_BYTES};
 use anyhow::Result;
 use serde::Serialize;
@@ -126,7 +126,7 @@ pub fn list(project_id: &str, filter: &Filter, checkout: &Path) -> Result<Page> 
     // ^ A message has no task: a task filter leaves the logs unread.
     if filter.task.is_none() {
         for dir in chats::all(project_id) {
-            let items_of = |entries: &[ManagerEntry]| -> Vec<Item> {
+            let items_of = |entries: &[ChatEntry]| -> Vec<Item> {
                 entries
                     .iter()
                     .flat_map(|entry| entry_items(entry, dir.name(), checkout, filter.with_uploads))
@@ -210,14 +210,14 @@ fn first_video(item: &checks::CheckItem) -> usize {
 
 /// The files one log entry posts: its links, and the uploads of an owner message.
 fn entry_items(
-    entry: &ManagerEntry,
+    entry: &ChatEntry,
     dir_name: &str,
     checkout: &Path,
     with_uploads: bool,
 ) -> Vec<Item> {
     let (id, who, text, uploads) = match &entry.event {
-        ManagerEvent::Reply { id, text, .. } => (*id, dir_name.to_string(), text, false),
-        ManagerEvent::Message { id, from, text, .. } => match from {
+        ChatEvent::Reply { id, text, .. } => (*id, dir_name.to_string(), text, false),
+        ChatEvent::Message { id, from, text, .. } => match from {
             Author::Owner => (*id, "owner".to_string(), text, with_uploads),
             Author::Peer { from, .. } => (*id, from.name().to_string(), text, false),
             Author::Events | Author::Recap => return Vec::new(),

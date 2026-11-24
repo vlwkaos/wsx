@@ -24,11 +24,11 @@ use wsx_core::task::{
     checks, copy, ledger,
     manager::{
         activity, decided_request, pending_approvals, waiting_approvals, ApprovalLine, Author,
-        ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse,
+        ChatEntry, ChatEvent, ChatRequest, ChatResponse,
     },
     needs::{self, ChatCounts, Stage, YouSource, APPROVAL_RANK},
     owner, stall, status,
-    store::{self, ManagerDir, TaskDir, REPORT_FILE},
+    store::{self, ChatDir, TaskDir, REPORT_FILE},
     view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
 };
 
@@ -117,20 +117,19 @@ pub struct OverviewKey {
 pub type Overviews = HashMap<(u64, String), (OverviewKey, Instant, Value)>;
 
 /// A chat's agent status; `None` when its manager or chat is not running.
-fn manager_status(dir: &ManagerDir) -> Option<ManagerResponse> {
-    call_socket::<_, ManagerResponse>(&dir.socket_path(), &ManagerRequest::Status, STATUS_TIMEOUT)
-        .ok()
+fn manager_status(dir: &ChatDir) -> Option<ChatResponse> {
+    call_socket::<_, ChatResponse>(&dir.socket_path(), &ChatRequest::Status, STATUS_TIMEOUT).ok()
 }
 
-fn manager_busy(dir: Option<&ManagerDir>) -> bool {
+fn manager_busy(dir: Option<&ChatDir>) -> bool {
     dir.and_then(manager_status)
         .is_some_and(|status| status.busy)
 }
 
 /// The chat `chat` looks through: its folder, or the main chat's for `None`.
-fn viewer_dir(scope: &Scope, chat: Option<&str>) -> Option<ManagerDir> {
+fn viewer_dir(scope: &Scope, chat: Option<&str>) -> Option<ChatDir> {
     match chat {
-        None => ManagerDir::main(&scope.store).ok().flatten(),
+        None => ChatDir::main(&scope.store).ok().flatten(),
         Some(chat) => task::chats::open_chat(chat).ok(),
     }
 }
@@ -353,7 +352,7 @@ fn build_overview(
         .filter_map(|(_, record)| record.as_ref().ok())
         .map(|record| record.state_unix_ms.max(record.created_unix_ms))
         .chain(tail.iter().filter_map(|entry| match &entry.event {
-            ManagerEvent::Message {
+            ChatEvent::Message {
                 from: Author::Owner,
                 ..
             } => Some(entry.unix_ms),
@@ -775,7 +774,7 @@ pub fn chat(
     let shown = settings.manager_shown_name(&scope.name);
     let mut manager = json!({ "name": chat.unwrap_or(shown) });
     let dir = match chat {
-        None => ManagerDir::main(&scope.store).map_err(internal)?,
+        None => ChatDir::main(&scope.store).map_err(internal)?,
         Some(chat) => Some(
             task::chats::open_chat(chat)
                 .map_err(|error| Fault::new(404, "not_found", format!("{error:#}")))?,
@@ -809,7 +808,7 @@ pub fn chat(
         &settings,
         &window,
         |entry| {
-            if let ManagerEvent::Message {
+            if let ChatEvent::Message {
                 id,
                 from: Author::Owner,
                 text,
@@ -876,9 +875,9 @@ pub fn chat(
 /// The newest reply of a chat that counts as news (when, text): one that is not quiet. A ping and
 /// the owner's own message are none. The project's home row and a chat's contact both use it
 /// (docs/web-client-tasks.md "Home", "Chats").
-fn newest_news(tail: &[ManagerEntry]) -> Option<(u64, String)> {
+fn newest_news(tail: &[ChatEntry]) -> Option<(u64, String)> {
     tail.iter().rev().find_map(|entry| match &entry.event {
-        ManagerEvent::Reply {
+        ChatEvent::Reply {
             text, quiet: false, ..
         } => Some((
             entry.unix_ms,
@@ -928,7 +927,7 @@ fn chat_contacts(
                 .into_iter()
                 .rev()
                 .find_map(|entry| match entry.event {
-                    ManagerEvent::Reply { text, .. } => Some(view::clip(
+                    ChatEvent::Reply { text, .. } => Some(view::clip(
                         task::manager::split_quote(&text)
                             .1
                             .lines()
@@ -1042,7 +1041,7 @@ pub fn page(scope: &Scope) -> Outcome<Value> {
 /// run with the id of its events message, or with `error` when the scheduler does not answer.
 /// ref: docs/web-client-tasks.md "Routines"
 pub fn routines(scope: &Scope) -> Value {
-    let dir = ManagerDir::main(&scope.store).ok().flatten();
+    let dir = ChatDir::main(&scope.store).ok().flatten();
     match ledger::routine_rows(&scope.path, MAX_ROUTINES, true, dir.as_ref()) {
         (rows @ Value::Array(_), counts) => json!({ "routines": rows, "counts": counts }),
         (failed, _) => json!({ "routines": [], "error": failed["error"] }),
@@ -1103,7 +1102,7 @@ pub fn since(scope: &Scope, after: u64) -> Value {
             found.entry(kind).or_default().push(record.id);
         }
     }
-    let replies = ManagerDir::main(&scope.store)
+    let replies = ChatDir::main(&scope.store)
         .ok()
         .flatten()
         .and_then(|dir| dir.read_log().ok())
@@ -1111,7 +1110,7 @@ pub fn since(scope: &Scope, after: u64) -> Value {
             log.iter()
                 .filter(|entry| {
                     entry.unix_ms > after
-                        && matches!(entry.event, ManagerEvent::Reply { quiet: false, .. })
+                        && matches!(entry.event, ChatEvent::Reply { quiet: false, .. })
                 })
                 .count()
         });
@@ -1592,7 +1591,7 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
         let log = dir.read_tail(MANAGER_TAIL_BYTES).unwrap_or_default();
         let own = |id: &u64| {
             log.iter().any(|entry| match &entry.event {
-                ManagerEvent::Message { id: of, from, .. } => {
+                ChatEvent::Message { id: of, from, .. } => {
                     of == id && matches!(from, Author::Events | Author::Recap)
                 }
                 _ => false,
@@ -1600,7 +1599,7 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
         };
         let event_of = |id: &u64| {
             log.iter().find_map(|entry| match &entry.event {
-                ManagerEvent::Message { id: of, text, .. } if of == id => Some(text.as_str()),
+                ChatEvent::Message { id: of, text, .. } if of == id => Some(text.as_str()),
                 _ => None,
             })
         };
@@ -1613,7 +1612,7 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
             .map_or_else(|| manager_name(scope), str::to_string);
         let mut news = false;
         for entry in &log {
-            let ManagerEvent::Reply {
+            let ChatEvent::Reply {
                 id,
                 to,
                 quiet,

@@ -1111,7 +1111,7 @@ const MAX_MANAGER_STATE_BYTES: u64 = 256 * 1024;
 /// A chat's folder, `tasks/chats/<name>/` (docs/tasks.md "Chats"). `project_id` is the repo the
 /// chat runs in, the first of its `chat.json` `repos`.
 #[derive(Debug, Clone)]
-pub struct ManagerDir {
+pub struct ChatDir {
     pub project_id: String,
     pub path: PathBuf,
     /// The chat's name, its id.
@@ -1190,7 +1190,7 @@ pub fn clear_main_chat(project_id: &str) -> Result<()> {
     }
 }
 
-impl ManagerDir {
+impl ChatDir {
     /// Open the chat's folder in `project_id`, creating it owner-only when it is missing. A new
     /// folder gets its `chat.json` with that repo.
     pub fn open_as(project_id: &str, chat: &str) -> Result<Self> {
@@ -1295,14 +1295,14 @@ impl ManagerDir {
         Ok(path)
     }
 
-    pub fn append(&self, event: super::manager::ManagerEvent) -> Result<()> {
+    pub fn append(&self, event: super::manager::ChatEvent) -> Result<()> {
         let path = self.path.join(MANAGER_LOG);
         if fs::symlink_metadata(&path).is_ok_and(|meta| meta.len() > MAX_MANAGER_LOG_BYTES) {
             let next = self.old_logs().last().map_or(1, |(n, _)| n + 1);
             fs::rename(&path, self.path.join(format!("log.{next}.jsonl")))
                 .with_context(|| format!("cannot roll over {}", path.display()))?;
         }
-        let mut line = serde_json::to_vec(&super::manager::ManagerEntry {
+        let mut line = serde_json::to_vec(&super::manager::ChatEntry {
             unix_ms: now_unix_ms(),
             event,
         })?;
@@ -1345,7 +1345,7 @@ impl ManagerDir {
     }
 
     /// The old log, then the current one; unreadable lines are skipped.
-    pub fn read_log(&self) -> Result<Vec<super::manager::ManagerEntry>> {
+    pub fn read_log(&self) -> Result<Vec<super::manager::ChatEntry>> {
         trace_read_log(&self.path);
         let mut entries = Vec::new();
         for path in self.log_files() {
@@ -1357,7 +1357,7 @@ impl ManagerDir {
             entries.extend(
                 bytes
                     .split(|byte| *byte == b'\n')
-                    .filter_map(super::manager::ManagerEntry::read),
+                    .filter_map(super::manager::ChatEntry::read),
             );
         }
         Ok(entries)
@@ -1369,8 +1369,8 @@ impl ManagerDir {
     pub fn read_back(
         &self,
         first: u64,
-        enough: impl Fn(&[super::manager::ManagerEntry]) -> bool,
-    ) -> Result<Vec<super::manager::ManagerEntry>> {
+        enough: impl Fn(&[super::manager::ChatEntry]) -> bool,
+    ) -> Result<Vec<super::manager::ChatEntry>> {
         self.read_back_where(first, |_| true, enough)
     }
 
@@ -1379,8 +1379,8 @@ impl ManagerDir {
     pub fn read_around(
         &self,
         first: u64,
-        enough: impl Fn(&[super::manager::ManagerEntry]) -> bool,
-    ) -> Result<Vec<super::manager::ManagerEntry>> {
+        enough: impl Fn(&[super::manager::ChatEntry]) -> bool,
+    ) -> Result<Vec<super::manager::ChatEntry>> {
         self.read_all_where(first, |_| true, enough)
     }
 
@@ -1390,8 +1390,8 @@ impl ManagerDir {
         &self,
         first: u64,
         keep: impl Fn(&[u8]) -> bool,
-        enough: impl Fn(&[super::manager::ManagerEntry]) -> bool,
-    ) -> Result<Vec<super::manager::ManagerEntry>> {
+        enough: impl Fn(&[super::manager::ChatEntry]) -> bool,
+    ) -> Result<Vec<super::manager::ChatEntry>> {
         let mut files: Vec<PathBuf> = self.old_logs().into_iter().map(|(_, path)| path).collect();
         files.push(self.path.join(MANAGER_LOG));
         read_back(
@@ -1399,7 +1399,7 @@ impl ManagerDir {
             first,
             u64::MAX,
             |line| match keep(line) {
-                true => super::manager::ManagerEntry::read(line),
+                true => super::manager::ChatEntry::read(line),
                 false => None,
             },
             enough,
@@ -1412,14 +1412,14 @@ impl ManagerDir {
         &self,
         first: u64,
         keep: impl Fn(&[u8]) -> bool,
-        enough: impl Fn(&[super::manager::ManagerEntry]) -> bool,
-    ) -> Result<Vec<super::manager::ManagerEntry>> {
+        enough: impl Fn(&[super::manager::ChatEntry]) -> bool,
+    ) -> Result<Vec<super::manager::ChatEntry>> {
         read_back(
             &self.log_files(),
             first,
             2 * (MAX_MANAGER_LOG_BYTES + MAX_LOG_LINE_BYTES as u64),
             |line| match keep(line) {
-                true => super::manager::ManagerEntry::read(line),
+                true => super::manager::ChatEntry::read(line),
                 false => None,
             },
             enough,
@@ -1427,11 +1427,11 @@ impl ManagerDir {
     }
 
     /// The entries in the last `bytes` of the log, for a quick look at the latest ones.
-    pub fn read_tail(&self, bytes: u64) -> Result<Vec<super::manager::ManagerEntry>> {
+    pub fn read_tail(&self, bytes: u64) -> Result<Vec<super::manager::ChatEntry>> {
         self.read_back(bytes, |_| true)
     }
 
-    pub fn read_state(&self) -> Result<super::manager::ManagerState> {
+    pub fn read_state(&self) -> Result<super::manager::ChatState> {
         let path = self.path.join(MANAGER_STATE);
         let Some(bytes) = read_bounded_if_exists(&path, MAX_MANAGER_STATE_BYTES)? else {
             return Ok(Default::default());
@@ -1439,7 +1439,7 @@ impl ManagerDir {
         serde_json::from_slice(&bytes).with_context(|| format!("cannot parse {}", path.display()))
     }
 
-    pub fn write_state(&self, state: &super::manager::ManagerState) -> Result<()> {
+    pub fn write_state(&self, state: &super::manager::ChatState) -> Result<()> {
         write_atomic(
             &self.path.join(MANAGER_STATE),
             &serde_json::to_vec_pretty(state)?,

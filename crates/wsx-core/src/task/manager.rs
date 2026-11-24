@@ -120,7 +120,7 @@ impl TryFrom<String> for Author {
 /// One line of a chat's `log.jsonl`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ManagerEvent {
+pub enum ChatEvent {
     Message {
         id: u64,
         from: Author,
@@ -313,10 +313,10 @@ impl Short {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagerEntry {
+pub struct ChatEntry {
     pub unix_ms: u64,
     #[serde(flatten)]
-    pub event: ManagerEvent,
+    pub event: ChatEvent,
 }
 
 /// The longest quiet reply, as long as the web's first sentence (`firstSentence` in lib.js).
@@ -405,7 +405,7 @@ pub fn quote_of(text: &str) -> String {
 /// the quoted id and the note.
 pub fn resolve_quote(
     text: &str,
-    log: &[ManagerEntry],
+    log: &[ChatEntry],
     by_owner: bool,
 ) -> (String, Option<u64>, Option<String>) {
     let text = text.trim_start();
@@ -417,13 +417,13 @@ pub fn resolve_quote(
     let id = quoted_id(text);
     let said = id.and_then(|id| {
         log.iter().find_map(|entry| match &entry.event {
-            ManagerEvent::Message {
+            ChatEvent::Message {
                 id: found,
                 from: Author::Owner | Author::Peer { .. },
                 text,
                 ..
             } if *found == id => Some(text),
-            ManagerEvent::Reply {
+            ChatEvent::Reply {
                 id: found,
                 text,
                 quiet: false,
@@ -448,29 +448,29 @@ pub fn resolve_quote(
     }
 }
 
-impl ManagerEntry {
+impl ChatEntry {
     /// An entry as read from the log: a reply stored as quiet before the length rule keeps its
     /// flag only when it is short, and one that `says_nothing` is quiet.
     pub(super) fn read(line: &[u8]) -> Option<Self> {
         let mut entry: Self = serde_json::from_slice(line).ok()?;
-        if let ManagerEvent::Reply { text, quiet, .. } = &mut entry.event {
+        if let ChatEvent::Reply { text, quiet, .. } = &mut entry.event {
             *quiet = (*quiet && quiet_reply(text)) || says_nothing(text);
         }
         Some(entry)
     }
 
-    /// The id of the message this message or reply quotes (`ManagerEvent::Message::quote`).
+    /// The id of the message this message or reply quotes (`ChatEvent::Message::quote`).
     pub fn quote_id(&self) -> Option<u64> {
         match &self.event {
-            ManagerEvent::Message { quote, .. } | ManagerEvent::Reply { quote, .. } => *quote,
+            ChatEvent::Message { quote, .. } | ChatEvent::Reply { quote, .. } => *quote,
             _ => None,
         }
     }
 
-    /// The To check item an owner's message answers (`ManagerEvent::Message::check`).
+    /// The To check item an owner's message answers (`ChatEvent::Message::check`).
     pub fn check_id(&self) -> Option<&str> {
         match &self.event {
-            ManagerEvent::Message { check, .. } => check.as_deref(),
+            ChatEvent::Message { check, .. } => check.as_deref(),
             _ => None,
         }
     }
@@ -478,19 +478,19 @@ impl ManagerEntry {
     /// The id of a message or reply, which `chat --after` counts from.
     pub fn id(&self) -> Option<u64> {
         match &self.event {
-            ManagerEvent::Message { id, .. } | ManagerEvent::Reply { id, .. } => Some(*id),
+            ChatEvent::Message { id, .. } | ChatEvent::Reply { id, .. } => Some(*id),
             _ => None,
         }
     }
 }
 
 /// What the manager does now: its last step after its last reply. Shown while it is busy.
-pub fn activity(log: &[ManagerEntry]) -> Option<&str> {
+pub fn activity(log: &[ChatEntry]) -> Option<&str> {
     log.iter()
         .rev()
-        .take_while(|entry| !matches!(entry.event, ManagerEvent::Reply { .. }))
+        .take_while(|entry| !matches!(entry.event, ChatEvent::Reply { .. }))
         .find_map(|entry| match &entry.event {
-            ManagerEvent::Agent { text } => Some(text.as_str()),
+            ChatEvent::Agent { text } => Some(text.as_str()),
             _ => None,
         })
 }
@@ -518,7 +518,7 @@ impl Seen {
 /// A chat's `state.json`: what the manager host must remember across a restart.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ManagerState {
+pub struct ChatState {
     /// The conversation the next turn resumes; none after a rotation.
     pub agent_session: Option<String>,
     /// A fallback agent an earlier wsx moved the manager to; none: its own agent. The turn after
@@ -558,7 +558,7 @@ pub struct ManagerState {
 }
 
 /// What the repo service has seen and still owes (`tasks/<repo-id>/repo.json`). The fields up to
-/// `checkin` were `ManagerState`'s while the first chat's host ran the duties: a first start
+/// `checkin` were `ChatState`'s while the first chat's host ran the duties: a first start
 /// reads them from that chat's `state.json` once. ref: docs/tasks.md "Chats"
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -807,10 +807,10 @@ pub fn decided_request(lines: &[ApprovalLine], at: usize) -> Option<&ApprovalLin
 
 /// Whether the owner's message `id` is in the manager's running turn: the last delivered
 /// turn has no reply yet and holds that message from the owner. ref: docs/tasks.md "Approvals"
-pub fn owner_said_in_turn(log: &[ManagerEntry], id: u64) -> Result<(), String> {
+pub fn owner_said_in_turn(log: &[ChatEntry], id: u64) -> Result<(), String> {
     let turn = log.iter().rev().find_map(|entry| match &entry.event {
-        ManagerEvent::Reply { .. } => Some(None),
-        ManagerEvent::Delivered { ids } => Some(Some(ids)),
+        ChatEvent::Reply { .. } => Some(None),
+        ChatEvent::Delivered { ids } => Some(Some(ids)),
         _ => None,
     });
     let Some(Some(ids)) = turn else {
@@ -820,7 +820,7 @@ pub fn owner_said_in_turn(log: &[ManagerEntry], id: u64) -> Result<(), String> {
         return Err(format!("message {id} is not in the running turn"));
     }
     let from = log.iter().find_map(|entry| match &entry.event {
-        ManagerEvent::Message { id: said, from, .. } if *said == id => Some(from),
+        ChatEvent::Message { id: said, from, .. } if *said == id => Some(from),
         _ => None,
     });
     match from {
@@ -833,14 +833,14 @@ pub fn owner_said_in_turn(log: &[ManagerEntry], id: u64) -> Result<(), String> {
 /// One request on the manager host's control socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
-pub enum ManagerRequest {
+pub enum ChatRequest {
     Status,
     Say {
         text: String,
         /// Another project's manager; none is the owner.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<Author>,
-        /// The chat's short form of an events message (`ManagerEvent::Message::short`).
+        /// The chat's short form of an events message (`ChatEvent::Message::short`).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         short: Vec<Short>,
     },
@@ -864,7 +864,7 @@ pub enum ManagerRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagerResponse {
+pub struct ChatResponse {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<u64>,

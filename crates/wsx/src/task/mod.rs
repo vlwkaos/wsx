@@ -345,7 +345,7 @@ pub(crate) fn launch_manager(main: &Path) -> impl Fn(String, Vec<String>) -> Res
 /// True when the manager's or a chat's agent runs this command (`WSX_TASK_ACTOR`).
 /// ^ A guard against the agents' mistakes, not a security boundary: anything that runs
 /// commands as the owner can unset it (docs/tasks.md "Approvals").
-fn acting_as_manager() -> bool {
+fn acting_as_chat() -> bool {
     actor() != Actor::Owner
 }
 
@@ -357,7 +357,7 @@ fn actor() -> Actor {
 /// `tasks.*.approve`, or always when the agent is untrusted (`WSX_TASK_TRUST`, set by its
 /// broker). ref: docs/tasks.md "Permissions"
 fn asks_owner(configured: bool) -> bool {
-    acting_as_manager() && (configured || Trust::from_env() == Trust::Untrusted)
+    acting_as_chat() && (configured || Trust::from_env() == Trust::Untrusted)
 }
 
 /// `--owner-said` and `--after` of an action the manager runs: the owner's message (trusted
@@ -365,7 +365,7 @@ fn asks_owner(configured: bool) -> bool {
 /// manager's and needs the message. ref: docs/tasks.md "Approvals"
 fn outward_said(said: &args::OwnerSaidAfter) -> Result<(Option<u64>, Option<u32>)> {
     let owner = owner_said(said.said.owner_said);
-    if said.after.is_some() && !(acting_as_manager() && owner.is_some()) {
+    if said.after.is_some() && !(acting_as_chat() && owner.is_some()) {
         bail!("--after is the manager's, with --owner-said from a trusted agent; nothing was recorded");
     }
     Ok((owner, said.after))

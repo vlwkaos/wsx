@@ -8,7 +8,7 @@ use crate::runtime_util::print_json;
 use crate::task::args::OwnerSaidAfter;
 use crate::task::manager::plain_event;
 use crate::task::repo::say_chat;
-use crate::task::{acting_as_manager, actor, open, outward_said, send};
+use crate::task::{acting_as_chat, actor, open, outward_said, send};
 use crate::task::{ask_host_ok, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
@@ -802,7 +802,7 @@ pub(crate) fn close_command(
     // the owner's message that asked for it.
     let record = dir.read_record()?;
     if discard
-        && acting_as_manager()
+        && acting_as_chat()
         && ask_covering(
             &record.project_path,
             &dir.project_id,

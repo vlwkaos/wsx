@@ -1,7 +1,7 @@
 //! The owner's approvals: a request, `approve` and `deny` (docs/tasks.md "Approvals").
 
 use crate::runtime_util::print_json;
-use crate::task::{acting_as_manager, actor, project_entry};
+use crate::task::{acting_as_chat, actor, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use std::path::Path;
@@ -211,7 +211,7 @@ pub(crate) fn submit(
 }
 
 pub(crate) fn owner_only(command: &str) -> Result<()> {
-    if acting_as_manager() {
+    if acting_as_chat() {
         bail!("wsx chat {command} is for the owner; the manager cannot decide its own requests");
     }
     Ok(())

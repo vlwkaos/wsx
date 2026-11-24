@@ -6,7 +6,7 @@ use super::{
     text::{self, cells, hard_wrap, truncate_to_width, wrap_cells},
     theme,
 };
-use crate::task_chat::{diagram_key, links, mermaid_at, parts, Focus, Item, ManagerChat, Part};
+use crate::task_chat::{diagram_key, links, mermaid_at, parts, ChatScreen, Focus, Item, Part};
 use ratatui::{
     layout::Rect,
     prelude::Stylize,
@@ -23,7 +23,7 @@ use wsx_core::task::manager::Level;
 /// Below this width a To check row drops where to look.
 const WHERE_MIN_WIDTH: usize = 100;
 
-pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
+pub fn render(frame: &mut Frame, area: Rect, chat: &ChatScreen) {
     frame.render_widget(Clear, area);
     let inner = Rect {
         x: area.x.saturating_add(1),
@@ -258,7 +258,7 @@ fn render_file(
 }
 
 /// The footer's hints: only the keys the focus and the selected item take.
-pub fn hints(chat: &ManagerChat) -> Vec<String> {
+pub fn hints(chat: &ChatScreen) -> Vec<String> {
     match &chat.focus {
         Focus::Compose => vec![
             "Enter: send".into(),
@@ -341,7 +341,7 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
 
 /// `Manager <project>` (another chat: its name) on the left, the To check and approval counts on
 /// the right; another chat has none.
-fn heading(chat: &ManagerChat, width: usize) -> Line<'static> {
+fn heading(chat: &ChatScreen, width: usize) -> Line<'static> {
     let checks = chat
         .items
         .iter()
@@ -395,7 +395,7 @@ fn heading(chat: &ManagerChat, width: usize) -> Line<'static> {
 
 /// A read failure, else what the last action said, else what runs, else whether the
 /// manager works or runs at all.
-fn status(chat: &ManagerChat, width: usize) -> Line<'static> {
+fn status(chat: &ChatScreen, width: usize) -> Line<'static> {
     let (text, color) = if let Some(error) = &chat.error {
         (format!("Could not read the chat: {error}"), theme::ERROR)
     } else if let Some(doing) = &chat.acting {
@@ -900,7 +900,7 @@ fn mark(line: Line<'static>, range: Range<usize>, style: Style) -> Line<'static>
 /// The owner's open items: a check as its id, task and words, then when it passes (and
 /// where to look on a wide screen); an approval as one line. Also the selected item's
 /// first line.
-fn item_lines(chat: &ManagerChat, width: usize) -> (Vec<Line<'static>>, Option<usize>) {
+fn item_lines(chat: &ChatScreen, width: usize) -> (Vec<Line<'static>>, Option<usize>) {
     let mut lines = Vec::new();
     if chat.items.is_empty() {
         return (lines, None);
@@ -1023,7 +1023,7 @@ const COMPOSER_LINES: usize = 5;
 /// The bottom lines by focus, and the cursor's column and line when it takes typing: one line,
 /// or the message's lines (`⌥⏎`), the prompt on the first.
 fn composer(
-    chat: &ManagerChat,
+    chat: &ChatScreen,
     width: usize,
     most: usize,
 ) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
@@ -1073,7 +1073,7 @@ fn keep_cursor(before: &str, after: &str, width: usize) -> (String, u16) {
 }
 
 /// The bottom line by focus, and the cursor's column when it takes typing.
-fn composer_line(chat: &ManagerChat, width: usize) -> (Line<'static>, Option<u16>) {
+fn composer_line(chat: &ChatScreen, width: usize) -> (Line<'static>, Option<u16>) {
     let typed = |state: &crate::ui::input::InputState| {
         let before = format!("{}{}", state.prompt, &state.buffer[..state.cursor]);
         let (shown, column) = keep_cursor(&before, &state.buffer[state.cursor..], width);

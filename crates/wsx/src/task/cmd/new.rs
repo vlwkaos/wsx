@@ -428,7 +428,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
     // ^ The events of a task a chat of another repo created are routed by this repo's service
     // to that chat, so the service must run. ref: docs/tasks.md "Chats"
     let asking_chat = record.created_by.chat().and_then(|chat| {
-        wsx_core::task::store::ManagerDir::existing(chat)
+        wsx_core::task::store::ChatDir::existing(chat)
             .ok()
             .flatten()
     });

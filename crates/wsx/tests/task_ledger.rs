@@ -44,19 +44,53 @@ fn the_ledger_lists_stray_worktrees_with_flags_from_git_alone() {
     fs::remove_dir_all(at("stray-gone")).unwrap();
 
     let answer = ledger(&fixture);
-    let strays = answer["stray_worktrees"].as_array().expect("stray_worktrees");
+    let strays = answer["stray_worktrees"]
+        .as_array()
+        .expect("stray_worktrees");
     // ^ The sweep's rule (stale::loss): uncommitted files and commits neither merged nor pushed.
     let flags = |name: &str| {
         let row = strays
             .iter()
-            .find(|row| Path::new(row["path"].as_str().unwrap()).file_name().unwrap() == name)
+            .find(|row| {
+                Path::new(row["path"].as_str().unwrap())
+                    .file_name()
+                    .unwrap()
+                    == name
+            })
             .unwrap_or_else(|| panic!("no stray {name} in {strays:?}"));
         ["branch", "dirty", "unmerged", "missing", "sessions"].map(|key| row[key].clone())
     };
     assert_eq!(strays.len(), 3, "{strays:?}");
-    assert_eq!(flags("stray-merged"), [json!("stray-merged"), json!(0), json!(0), json!(false), json!(0)]);
-    assert_eq!(flags("stray-dirty"), [json!("stray-dirty"), json!(1), json!(1), json!(false), json!(0)]);
-    assert_eq!(flags("stray-gone"), [json!("stray-gone"), json!(0), json!(0), json!(true), json!(0)]);
+    assert_eq!(
+        flags("stray-merged"),
+        [
+            json!("stray-merged"),
+            json!(0),
+            json!(0),
+            json!(false),
+            json!(0)
+        ]
+    );
+    assert_eq!(
+        flags("stray-dirty"),
+        [
+            json!("stray-dirty"),
+            json!(1),
+            json!(1),
+            json!(false),
+            json!(0)
+        ]
+    );
+    assert_eq!(
+        flags("stray-gone"),
+        [
+            json!("stray-gone"),
+            json!(0),
+            json!(0),
+            json!(true),
+            json!(0)
+        ]
+    );
     assert_eq!(answer["stray_worktrees_omitted"], 0);
 
     for name in ["stray-merged", "stray-dirty"] {
@@ -125,24 +159,39 @@ fn a_git_that_hangs_leaves_a_note_and_keeps_the_rows() {
     let started = Instant::now();
     let hung = fixture
         .command(Path::new(env!("CARGO_BIN_EXE_wsx")))
-        .env("PATH", format!("{}:{path}", fixture.root.join("bin").display()))
+        .env(
+            "PATH",
+            format!("{}:{path}", fixture.root.join("bin").display()),
+        )
         .args(["chat", "ledger", "--json"])
         .output()
         .expect("run wsx");
     let took = started.elapsed();
     assert!(hung.status.success(), "{hung:?}");
-    assert!(took > Duration::from_secs(9) && took < Duration::from_secs(40), "{took:?}");
+    assert!(
+        took > Duration::from_secs(9) && took < Duration::from_secs(40),
+        "{took:?}"
+    );
     let hung: Value = serde_json::from_slice(&hung.stdout).expect("ledger JSON");
     let notes = hung["notes"].as_array().expect("notes");
     assert!(
-        notes.len() == 1 && notes[0].as_str().unwrap().contains("git did not answer in 10 s"),
+        notes.len() == 1
+            && notes[0]
+                .as_str()
+                .unwrap()
+                .contains("git did not answer in 10 s"),
         "{notes:?}"
     );
     assert_eq!(hung["main"]["branch"], "main");
     assert!(hung["main"]["changed_files"].is_null(), "{}", hung["main"]);
     let normal = ledger(&fixture);
     let ids = |answer: &Value| -> Vec<Value> {
-        answer["open"].as_array().unwrap().iter().map(|row| row["id"].clone()).collect()
+        answer["open"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].clone())
+            .collect()
     };
     assert_eq!(ids(&hung), ids(&normal));
     assert!(!ids(&normal).is_empty());

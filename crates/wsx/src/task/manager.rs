@@ -30,15 +30,15 @@ use wsx_core::task::manager::{
     resolve_quote, says_nothing, split_quote, Answers, ApprovalLine, QUOTE_REF,
 };
 use wsx_core::task::manager::{
-    Author, Level, LimitHold, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse,
-    ManagerState, Party, Seen, Short,
+    Author, ChatEntry, ChatEvent, ChatRequest, ChatResponse, ChatState, Level, LimitHold, Party,
+    Seen, Short,
 };
 use wsx_core::task::policy;
 use wsx_core::task::replace::Binary;
 use wsx_core::task::stall;
 use wsx_core::task::status;
 use wsx_core::task::store;
-use wsx_core::task::store::ManagerDir;
+use wsx_core::task::store::ChatDir;
 use wsx_core::task::view::{self, clip, project_tasks};
 use wsx_core::task::{chats, owner, Actor};
 use wsx_core::task::{checks, ledger, now_unix_ms, TaskRecord, TaskState, MAX_MESSAGE_BYTES};
@@ -108,7 +108,7 @@ const SUMMARY_ROWS: usize = 12;
 const SUMMARY_TITLE_CHARS: usize = 60;
 
 pub(super) enum Event {
-    Request(ManagerRequest, Sender<ManagerResponse>),
+    Request(ChatRequest, Sender<ChatResponse>),
     Agent(u64, Option<AgentLine>),
     Tick,
     /// The agent's `say --from-chat` reached a chat of this project or another project's
@@ -130,7 +130,7 @@ type Owed = std::sync::Arc<std::sync::Mutex<BTreeMap<String, u32>>>;
 const NO_PUSH_KEY: &str = "url.wsx-task-push::.pushInsteadOf";
 
 struct Manager {
-    dir: ManagerDir,
+    dir: ChatDir,
     project: String,
     main: PathBuf,
     /// `tasks.chats.adapter`: the headless adapter the manager runs on.
@@ -153,7 +153,7 @@ struct Manager {
     lead: bool,
     /// `tasks.chats.effort`, passed to every launch.
     effort: String,
-    state: ManagerState,
+    state: ChatState,
     events: Sender<Event>,
     agent: Option<Agent>,
     generation: u64,
@@ -344,7 +344,7 @@ pub fn run(chat: &str) -> Result<()> {
     std::thread::spawn(move || {
         broker::serve_manager(
             brokered,
-            broker::ManagerBroker {
+            broker::ChatBroker {
                 exe,
                 fallback_cwd: folder,
                 own,
@@ -448,7 +448,7 @@ impl Manager {
                     self.end_hung_turn();
                     self.leave_when_done()
                 }
-                Event::Sent { to, text, reply } => self.log(ManagerEvent::Sent { to, text, reply }),
+                Event::Sent { to, text, reply } => self.log(ChatEvent::Sent { to, text, reply }),
             }
             if self.turn.is_none() {
                 self.next_turn();
@@ -466,21 +466,21 @@ impl Manager {
         Ok(())
     }
 
-    fn handle(&mut self, request: ManagerRequest) -> ManagerResponse {
+    fn handle(&mut self, request: ChatRequest) -> ChatResponse {
         let busy = self.turn.is_some();
         match request {
-            ManagerRequest::Status => ManagerResponse {
+            ChatRequest::Status => ChatResponse {
                 ok: true,
                 id: None,
                 busy,
                 binary: self.binary.clone(),
                 message: format!("{} message(s) waiting", self.queue.len()),
             },
-            ManagerRequest::Say { text, from, short } => {
+            ChatRequest::Say { text, from, short } => {
                 // ^ `from: None` is the owner typing in this chat; forwarded words name `Owner`.
                 let typed = from.is_none();
                 match self.accept(from.unwrap_or(Author::Owner), typed, text, short) {
-                    Ok(id) => ManagerResponse {
+                    Ok(id) => ChatResponse {
                         ok: true,
                         id: Some(id),
                         busy,
@@ -491,7 +491,7 @@ impl Manager {
                             "sent to the manager".into()
                         },
                     },
-                    Err(error) => ManagerResponse {
+                    Err(error) => ChatResponse {
                         ok: false,
                         id: None,
                         busy,
@@ -500,7 +500,7 @@ impl Manager {
                     },
                 }
             }
-            ManagerRequest::Post { event, text, level } => {
+            ChatRequest::Post { event, text, level } => {
                 let refusal = match (busy, text.trim().is_empty(), text.len() > MAX_MESSAGE_BYTES) {
                     (true, ..) => Some("a manager turn runs"),
                     (_, true, _) => Some("the text is empty"),
@@ -510,7 +510,7 @@ impl Manager {
                 if refusal.is_none() {
                     self.post(event, text, level);
                 }
-                ManagerResponse {
+                ChatResponse {
                     ok: refusal.is_none(),
                     id: None,
                     busy,
@@ -519,7 +519,7 @@ impl Manager {
                 }
             }
             // ^ A check-in belongs to the chat that set it and the repo's service fires it.
-            ManagerRequest::Checkin { .. } => ManagerResponse {
+            ChatRequest::Checkin { .. } => ChatResponse {
                 ok: false,
                 id: None,
                 busy,
@@ -534,7 +534,7 @@ impl Manager {
     /// has no usage and is marked `post`, which the chats read.
     fn post(&mut self, event: String, text: String, level: Option<Level>) {
         let id = self.next_id();
-        self.log(ManagerEvent::Message {
+        self.log(ChatEvent::Message {
             id,
             from: Author::Events,
             text: event,
@@ -542,9 +542,9 @@ impl Manager {
             quote: None,
             check: None,
         });
-        self.log(ManagerEvent::Delivered { ids: vec![id] });
+        self.log(ChatEvent::Delivered { ids: vec![id] });
         let reply = self.next_id();
-        self.log(ManagerEvent::Reply {
+        self.log(ChatEvent::Reply {
             id: reply,
             to: vec![id],
             text,
@@ -596,12 +596,12 @@ impl Manager {
         let log = self.dir.read_log()?;
         let after = log
             .iter()
-            .rposition(|entry| matches!(&entry.event, ManagerEvent::Reply { usage: Some(_), .. }))
+            .rposition(|entry| matches!(&entry.event, ChatEvent::Reply { usage: Some(_), .. }))
             .map_or(0, |at| at + 1);
         let answered: std::collections::HashSet<u64> = log
             .iter()
             .flat_map(|entry| match &entry.event {
-                ManagerEvent::Reply { to, .. } => to.clone(),
+                ChatEvent::Reply { to, .. } => to.clone(),
                 _ => Vec::new(),
             })
             .chain(self.state.limit.iter().flat_map(|hold| hold.ids.clone()))
@@ -609,18 +609,18 @@ impl Manager {
         // ^ The router's messages are another chat's; one whose move or fork the host did not
         // see through (it stopped first) is noted, and the owner says it again.
         for (at, entry) in log.iter().enumerate() {
-            let ManagerEvent::Routed { message, to } = &entry.event else {
+            let ChatEvent::Routed { message, to } = &entry.event else {
                 continue;
             };
             let settled = log[at..].iter().any(|later| match &later.event {
-                ManagerEvent::Moved { message: m, .. }
-                | ManagerEvent::Forked { message: m, .. }
-                | ManagerEvent::MoveFailed { message: m, .. } => m == message,
-                ManagerEvent::ForkUndone { to: undone } => undone == to,
+                ChatEvent::Moved { message: m, .. }
+                | ChatEvent::Forked { message: m, .. }
+                | ChatEvent::MoveFailed { message: m, .. } => m == message,
+                ChatEvent::ForkUndone { to: undone } => undone == to,
                 _ => false,
             });
             if !settled {
-                self.log(ManagerEvent::MoveFailed {
+                self.log(ChatEvent::MoveFailed {
                     to: to.clone(),
                     message: *message,
                     reason: "wsx stopped before it got there".into(),
@@ -631,9 +631,9 @@ impl Manager {
             .iter()
             .enumerate()
             .flat_map(|(at, entry)| match &entry.event {
-                ManagerEvent::Routed { message, .. } => vec![*message],
-                ManagerEvent::Delivered { ids } if at < after => ids.clone(),
-                ManagerEvent::Delivered { ids } => ids
+                ChatEvent::Routed { message, .. } => vec![*message],
+                ChatEvent::Delivered { ids } if at < after => ids.clone(),
+                ChatEvent::Delivered { ids } => ids
                     .iter()
                     .copied()
                     .filter(|id| answered.contains(id))
@@ -642,7 +642,7 @@ impl Manager {
             })
             .collect();
         for entry in log {
-            if let ManagerEvent::Message {
+            if let ChatEvent::Message {
                 id,
                 from,
                 text,
@@ -736,7 +736,7 @@ impl Manager {
         }
         let id = reserved.unwrap_or_else(|| self.next_id());
         let wakes = Short::any_wakes(&short);
-        self.dir.append(ManagerEvent::Message {
+        self.dir.append(ChatEvent::Message {
             id,
             from: from.clone(),
             text: text.clone(),
@@ -780,8 +780,8 @@ impl Manager {
             chats::Route::New { name, .. } => name.clone(),
             chats::Route::To { chat, .. } => chat.clone(),
         };
-        self.dir.append(ManagerEvent::Routed { message: id, to })?;
-        self.dir.append(ManagerEvent::Message {
+        self.dir.append(ChatEvent::Routed { message: id, to })?;
+        self.dir.append(ChatEvent::Message {
             id,
             from: Author::Owner,
             text,
@@ -834,9 +834,9 @@ impl Manager {
             // ^ A fork that failed after its start notes `fork_undone` itself; any other failure is
             // noted here.
             if let Err(error) = sent {
-                let undone = |entry: &ManagerEntry| matches!(&entry.event, ManagerEvent::ForkUndone { to: undone } if *undone == to);
+                let undone = |entry: &ChatEntry| matches!(&entry.event, ChatEvent::ForkUndone { to: undone } if *undone == to);
                 if !matches!(origin.read_log(), Ok(log) if log.iter().any(undone)) {
-                    let _ = origin.append(ManagerEvent::MoveFailed {
+                    let _ = origin.append(ChatEvent::MoveFailed {
                         to,
                         message: id,
                         reason: format!("{error:#}"),
@@ -857,7 +857,7 @@ impl Manager {
         check: &str,
         was: Option<CheckState>,
     ) -> u64 {
-        self.log(ManagerEvent::Message {
+        self.log(ChatEvent::Message {
             id,
             from: Author::Owner,
             text,
@@ -865,7 +865,7 @@ impl Manager {
             quote: None,
             check: Some(item),
         });
-        self.log(ManagerEvent::Delivered { ids: vec![id] });
+        self.log(ChatEvent::Delivered { ids: vec![id] });
         let check = clip(check, 60);
         let said = match was {
             None => format!("Skipped: {check}"),
@@ -873,7 +873,7 @@ impl Manager {
         };
         // ^ A quiet post answers it, so a restart does not hand the message to the agent.
         let reply = self.next_id();
-        self.log(ManagerEvent::Reply {
+        self.log(ChatEvent::Reply {
             id: reply,
             to: vec![id],
             text: said,
@@ -1110,7 +1110,7 @@ impl Manager {
             // ^ Not logged as delivered. One `stopped` entry for a run of failures.
             self.put_back(taken);
             if self.start_failed.replace(Instant::now()).is_none() {
-                self.log(ManagerEvent::Stopped {
+                self.log(ChatEvent::Stopped {
                     reason: format!("cannot start the manager agent: {error:#}"),
                 });
             }
@@ -1123,7 +1123,7 @@ impl Manager {
             .as_ref()
             .is_some_and(|hold| !hold.switched && !hold.auth)
         {
-            self.log(ManagerEvent::Limit { until: None });
+            self.log(ChatEvent::Limit { until: None });
         }
         self.delivered(&taken);
         let mut turn = held.map(|hold| hold.ids).unwrap_or_default();
@@ -1143,7 +1143,7 @@ impl Manager {
         }
         if !taken.is_empty() {
             let ids = taken.iter().map(|(id, ..)| *id).collect();
-            self.log(ManagerEvent::Delivered { ids });
+            self.log(ChatEvent::Delivered { ids });
         }
     }
 
@@ -1335,7 +1335,7 @@ impl Manager {
         // entry says to sign in again, and a `limit` would show a pause with a time. It follows
         // the saved hold: whoever sees the entry finds the hold in the state.
         if announce && !auth {
-            self.log(ManagerEvent::Limit {
+            self.log(ChatEvent::Limit {
                 until: Some(self.held_until(until_ms, now)),
             });
         }
@@ -1438,7 +1438,7 @@ impl Manager {
         let log = self.dir.read_log().unwrap_or_default();
         let (mut asked, mut text) = (Vec::new(), String::new());
         for entry in &log {
-            if let ManagerEvent::Message {
+            if let ChatEvent::Message {
                 id,
                 from: Author::Owner,
                 text: said,
@@ -1539,7 +1539,7 @@ impl Manager {
                 self.say(&format!("{name} stood in: reply {id}"));
                 let answered = to.iter().copied().max().unwrap_or(0);
                 let (text, quote) = self.quoted(result.text, &to, false);
-                self.log(ManagerEvent::Reply {
+                self.log(ChatEvent::Reply {
                     id,
                     to,
                     text,
@@ -1570,7 +1570,7 @@ impl Manager {
             .iter()
             .rev()
             .filter_map(|entry| match &entry.event {
-                ManagerEvent::Reply {
+                ChatEvent::Reply {
                     to,
                     text,
                     provisional,
@@ -1629,7 +1629,7 @@ impl Manager {
         let log = self.dir.read_log().unwrap_or_default();
         log.iter()
             .filter_map(|entry| match &entry.event {
-                ManagerEvent::Message { id, text, .. } if ids.contains(id) => {
+                ChatEvent::Message { id, text, .. } if ids.contains(id) => {
                     Some(format!("Message {id}:\n{text}\n\n"))
                 }
                 _ => None,
@@ -2001,7 +2001,7 @@ impl Manager {
                     turn.output(&self.dir.path);
                 }
                 self.say(&text);
-                self.log(ManagerEvent::Agent { text });
+                self.log(ChatEvent::Agent { text });
                 if !said {
                     self.steer_waiting();
                 }
@@ -2012,7 +2012,7 @@ impl Manager {
                 if self.turn.take().is_some() {
                     let reason = "the manager agent ended during a turn";
                     self.end_turn_record(reason);
-                    self.log(ManagerEvent::Stopped {
+                    self.log(ChatEvent::Stopped {
                         reason: reason.into(),
                     });
                     if self.state.limit.is_none() {
@@ -2075,7 +2075,7 @@ impl Manager {
                 self.refused(until_ms, attempt, to, &reason, now);
                 // ^ A move to a fallback answers the owner; a hold for the sign-in does not.
                 if self.state.limit.as_ref().is_some_and(|hold| hold.auth) && !was_auth {
-                    self.log(ManagerEvent::Stopped {
+                    self.log(ChatEvent::Stopped {
                         reason: format!(
                             "{reason}. Sign in again (`claude /login`); the manager retries \
                              every {} min.",
@@ -2103,10 +2103,10 @@ impl Manager {
                 account: false,
             });
             self.save();
-            self.log(ManagerEvent::Stopped {
+            self.log(ChatEvent::Stopped {
                 reason: reason.clone(),
             });
-            self.log(ManagerEvent::Limit {
+            self.log(ChatEvent::Limit {
                 until: Some(status::resume_time(until_ms, now)),
             });
             if attempt == 1 {
@@ -2138,7 +2138,7 @@ impl Manager {
             self.state.last_reply = Some(id);
         }
         self.save();
-        self.log(ManagerEvent::Reply {
+        self.log(ChatEvent::Reply {
             id,
             to,
             text,
@@ -2276,7 +2276,7 @@ impl Manager {
         // a failed sign-in) must not count as the old size, or the idle rule rotates it again.
         self.state.context_tokens = 0;
         self.save();
-        self.log(ManagerEvent::Rotated { tokens, reason });
+        self.log(ChatEvent::Rotated { tokens, reason });
     }
 
     /// The owner's decisions and the project context, within 10 KiB, with what is left out
@@ -2288,7 +2288,7 @@ impl Manager {
             .map_or_else(|_| String::new(), |notes| notes::preamble(&notes));
         // ^ A new chat has no notes yet: it starts from the repo's, the main chat's.
         match (own.is_empty(), self.dir.is_main()) {
-            (true, false) => ManagerDir::main(&self.dir.project_id)
+            (true, false) => ChatDir::main(&self.dir.project_id)
                 .ok()
                 .flatten()
                 .map_or(own, |main| notes::preamble(&main.path.join("notes"))),
@@ -2305,7 +2305,7 @@ impl Manager {
         let replied = log
             .iter()
             .rev()
-            .find(|entry| matches!(entry.event, ManagerEvent::Reply { usage: Some(_), .. }))
+            .find(|entry| matches!(entry.event, ChatEvent::Reply { usage: Some(_), .. }))
             .map_or(0, |entry| (entry.unix_ms / 1000) as i64);
         let routines = handover_routines(super::repo::finished_routine_runs(&self.main), replied);
         let routines = match routines.is_empty() {
@@ -2329,7 +2329,7 @@ impl Manager {
         }
     }
 
-    fn log(&self, event: ManagerEvent) {
+    fn log(&self, event: ChatEvent) {
         if let Err(error) = self.dir.append(event) {
             self.say(&format!("cannot append to the manager log: {error:#}"));
         }
@@ -2371,7 +2371,7 @@ fn routine_for_owner(line: &str) -> bool {
 /// first: an answer is a decision, and the last exchanges alone lose it once a long job has moved
 /// on (docs/tasks.md "Manager"). Built by code from the log, so it holds whether or not the agent
 /// wrote a note.
-fn handover_answers(log: &[ManagerEntry], dir: &ManagerDir) -> String {
+fn handover_answers(log: &[ChatEntry], dir: &ChatDir) -> String {
     let approvals = store::read_approvals(&dir.project_id).unwrap_or_default();
     let answered = chat::answered_asks(log, &approvals, &dir.chat);
     // ^ Newest first until the count or the bytes run out, then shown oldest first.
@@ -2445,18 +2445,18 @@ fn handover_routines(mut runs: Vec<RunRecord>, replied: i64) -> Vec<String> {
 }
 
 /// The last `limit` owner messages and replies, oldest first, each on one line.
-fn recent_exchanges(log: &[ManagerEntry], limit: usize) -> Vec<String> {
+fn recent_exchanges(log: &[ChatEntry], limit: usize) -> Vec<String> {
     let mut lines: Vec<String> = log
         .iter()
         .rev()
         .filter_map(|entry| match &entry.event {
-            ManagerEvent::Message {
+            ChatEvent::Message {
                 id,
                 from: Author::Owner,
                 text,
                 ..
             } => Some(format!("Owner (message {id}): {}", one_line(text))),
-            ManagerEvent::Reply {
+            ChatEvent::Reply {
                 id,
                 text,
                 provisional: Some(name),
@@ -2464,13 +2464,13 @@ fn recent_exchanges(log: &[ManagerEntry], limit: usize) -> Vec<String> {
             } => Some(format!("Stand-in {name} (reply {id}): {}", one_line(text))),
             // ^ A post (`wsx task post`, the digest, the session news): the owner saw it, the
             // manager did not write it.
-            ManagerEvent::Reply {
+            ChatEvent::Reply {
                 id,
                 text,
                 post: true,
                 ..
             } => Some(format!("Posted (reply {id}): {}", one_line(text))),
-            ManagerEvent::Reply { id, text, .. } => {
+            ChatEvent::Reply { id, text, .. } => {
                 Some(format!("You (reply {id}): {}", one_line(text)))
             }
             _ => None,
