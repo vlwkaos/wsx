@@ -533,6 +533,13 @@ pub enum LogEvent {
     Landed {
         commit: String,
     },
+    /// A `land: pr` land: the branch is pushed and the pull request `url` holds `commit`; the
+    /// task's work ends there, the merge is GitHub's (docs/tasks.md "Landing").
+    PrOpened {
+        url: String,
+        branch: String,
+        commit: String,
+    },
     /// The task waits for free disk before a turn or its checks (`tasks.minFreeGb`).
     DiskWait {
         free_mb: u64,

@@ -418,6 +418,43 @@ pub fn touched_since(
         .collect())
 }
 
+/// What the change of `head` since it left `default_branch` does to the files `globs` name:
+/// `changed`, the ones where a line went or changed (a binary file counts); `stricter`, the ones
+/// that only gained lines. Both empty with no glob. ref: docs/tasks.md "Contracts"
+pub fn contract_change(
+    repo: &Path,
+    head: &str,
+    default_branch: &str,
+    globs: &[String],
+) -> Result<(Vec<String>, Vec<String>)> {
+    if globs.is_empty() {
+        return Ok(Default::default());
+    }
+    let base = fork_point(repo, head, default_branch)?;
+    // ^ `-z`: paths as they are, not quoted (a non-ASCII name would not meet its glob).
+    let text = read(
+        repo,
+        &["diff", "--numstat", "--no-renames", "-z", &base, head],
+    )?;
+    let (mut changed, mut stricter) = (Vec::new(), Vec::new());
+    for line in text.split('\0').filter(|line| !line.is_empty()) {
+        let mut fields = line.splitn(3, '\t');
+        let (Some(_added), Some(deleted), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if !globs.iter().any(|glob| super::view::meet(glob, path)) {
+            continue;
+        }
+        match deleted {
+            "0" => stricter.push(path.to_string()),
+            _ => changed.push(path.to_string()),
+        }
+    }
+    Ok((changed, stricter))
+}
+
 /// The commit where `head` left `target`.
 pub fn merge_base(repo: &Path, head: &str, target: &str) -> Result<String> {
     git(repo, &["merge-base", head, target])
@@ -811,6 +848,82 @@ pub fn push(
     args.extend(lease.as_deref());
     args.extend([remote, refspec.as_str()]);
     remote_git(main, &args).map(|_| ())
+}
+
+/// Push `commit` to `remote`'s `branch` (only when the branch is not there, or holds `commit` or
+/// a commit before it: another branch of the same name is never overwritten) and give the URL of the
+/// pull request from `branch` into `base`: the open one GitHub has, else a new one with `title`
+/// and `body` (`gh pr create`). `gh` runs in `main` and must be signed in; each step gives up
+/// after a minute. A `land: pr` project's land. ref: docs/tasks.md "Landing"
+pub fn open_pr(
+    main: &Path,
+    remote: &str,
+    (branch, base): (&str, &str),
+    commit: &str,
+    (title, body): (&str, &str),
+) -> Result<String> {
+    let tip = remote_tip(main, remote, branch)?;
+    if let Some(tip) = tip.as_deref() {
+        if tip != commit && !is_ancestor(main, tip, commit).unwrap_or(false) {
+            bail!(
+                "{remote} has a branch {branch} at {tip:.12} that this task's work does not contain: delete it there, then land again. Nothing was pushed"
+            );
+        }
+    }
+    push(
+        main,
+        remote,
+        branch,
+        commit,
+        Some(tip.as_deref().unwrap_or("")),
+    )?;
+    let gh = |args: &[&str]| -> Result<String> {
+        let mut command = std::process::Command::new("gh");
+        command.args(args).current_dir(main);
+        let run = crate::process::run_bounded(
+            &mut command,
+            &crate::process::Options {
+                timeout: std::time::Duration::from_secs(60),
+                stdout: crate::process::Bound::Tail(64 * 1024),
+                stderr: crate::process::Stderr::Own(crate::process::Bound::Tail(8 * 1024)),
+                reap: false,
+            },
+        )
+        .with_context(|| {
+            format!(
+                "cannot run gh {}; is the GitHub CLI installed?",
+                args[..2].join(" ")
+            )
+        })?;
+        let said = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_string();
+        if run.timed_out || !run.status.success() {
+            bail!(
+                "gh {} failed{}: {}",
+                args[..2].join(" "),
+                if run.timed_out {
+                    " (after a minute)"
+                } else {
+                    ""
+                },
+                said(&run.stderr)
+            );
+        }
+        Ok(said(&run.stdout))
+    };
+    let open = gh(&[
+        "pr", "list", "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url",
+    ])?;
+    if open.starts_with("https://") {
+        return Ok(open);
+    }
+    let made = gh(&[
+        "pr", "create", "--base", base, "--head", branch, "--title", title, "--body", body,
+    ])?;
+    made.lines()
+        .rev()
+        .find(|line| line.starts_with("https://"))
+        .map(str::to_string)
+        .with_context(|| format!("gh pr create gave no URL: {made}"))
 }
 
 /// What `sync` did to the local branch.

@@ -127,6 +127,9 @@ pub struct TaskConfig {
     pub scenarios: std::collections::BTreeMap<String, Scenario>,
     /// `tasks.scenarioFree`: globs of paths that need no scenario, such as docs.
     pub scenario_free: Vec<String>,
+    /// `tasks.contracts`: globs of the files that hold decided behavior (scenario asserts). A
+    /// land that changes a line of one needs the owner (docs/tasks.md "Contracts").
+    pub contracts: Vec<String>,
     /// `tasks.roles`, by name.
     pub roles: std::collections::BTreeMap<String, Role>,
     /// `tasks.router.model`: the Claude model that routes an owner message with no prefix
@@ -150,6 +153,9 @@ pub struct TaskConfig {
     pub land_approve: bool,
     /// Whether the host lands a task as soon as its checks pass (docs/tasks.md "Landing").
     pub land_auto: bool,
+    /// `tasks.land.mode: pr`: a land pushes the task's branch and opens a pull request instead
+    /// of moving the default branch (docs/tasks.md "Landing").
+    pub land_pr: bool,
     pub deploy_approve: bool,
     /// Whether the deployed site is public: open "To check" items then stop a deploy.
     pub deploy_public: bool,
@@ -276,6 +282,7 @@ impl Default for TaskConfig {
             checks: Vec::new(),
             scenarios: Default::default(),
             scenario_free: Vec::new(),
+            contracts: Vec::new(),
             roles: Default::default(),
             router_model: None,
             env: Default::default(),
@@ -285,6 +292,7 @@ impl Default for TaskConfig {
             capture_budget_mb: DEFAULT_CAPTURE_BUDGET_MB,
             land_approve: false,
             land_auto: true,
+            land_pr: false,
             deploy_approve: false,
             deploy_public: false,
             deploy_auto: false,

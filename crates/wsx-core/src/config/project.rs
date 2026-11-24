@@ -143,6 +143,8 @@ struct TasksFile {
     scenario_paths: BTreeMap<String, Vec<String>>,
     #[serde(rename = "scenarioFree", skip_serializing_if = "Vec::is_empty")]
     scenario_free: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    contracts: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     roles: BTreeMap<String, TaskRoleFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -246,6 +248,8 @@ struct TaskLandFile {
     approve: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     auto: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -664,6 +668,7 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
     config.checks = validate_list(file.checks, "tasks.checks", MAX_DEFAULT_COMMAND_BYTES)?;
     config.scenarios = validate_scenarios(file.scenarios, file.scenario_paths)?;
     config.scenario_free = validate_globs(file.scenario_free, "tasks.scenarioFree")?;
+    config.contracts = validate_globs(file.contracts, "tasks.contracts")?;
     if file.roles.len() > 32 {
         return Err("tasks.roles has more than 32 roles".into());
     }
@@ -823,6 +828,11 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         if let Some(auto) = land.auto {
             config.land_auto = auto;
         }
+        config.land_pr = match land.mode.as_deref() {
+            None | Some("local") => false,
+            Some("pr") => true,
+            Some(other) => return Err(format!("tasks.land.mode must be local or pr, not {other}")),
+        };
     }
     Ok(config)
 }

@@ -103,6 +103,7 @@ pub fn line(event: &LogEvent) -> Option<(&'static str, String)> {
             ("checks", text)
         }
         LogEvent::Landed { commit } => ("landed", view::short_commit(commit).into()),
+        LogEvent::PrOpened { url, .. } => ("pull request", url.clone()),
         LogEvent::Closed { discarded } => (
             "closed",
             match discarded {

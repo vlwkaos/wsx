@@ -58,7 +58,19 @@ pub(crate) fn land_command(
     let record = dir.read_record()?;
     let settings = load_task_config(&record.project_path)
         .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
-    if (after.is_some() || asks_owner(settings.land_approve))
+    // ^ A changed contract line is the owner's to land, as a land in a project that approves
+    // lands (docs/tasks.md "Contracts").
+    let (changed, _) = wsx_core::task::copy::contract_change(
+        &record.working_copy,
+        "HEAD",
+        &record.default_branch,
+        &settings.contracts,
+    )
+    .map_err(|error| {
+        anyhow::anyhow!("cannot read what it changes: {error:#}; nothing was landed")
+    })?;
+    let contract = !changed.is_empty();
+    if (after.is_some() || asks_owner(settings.land_approve || contract))
         && ask_owner(
             &dir.project_id,
             after_landing(

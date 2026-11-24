@@ -327,6 +327,9 @@ struct Host {
     /// The Human Verify items of the revision whose landing conflicted: the turn that
     /// resolves it rarely repeats them, and they still need a person.
     carried_verify: Vec<HumanVerify>,
+    /// The contract files this land adds to and changes no line of: the main chat hears of them
+    /// once the land is done (`require_contracts_kept`).
+    stricter_contracts: Vec<String>,
     /// The context of the worker's last model call, from the log when the host starts.
     context_tokens: u64,
     /// The turn that waits while the worker writes its handoff notes, and why the
@@ -433,6 +436,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         gate: None,
         stored_checks: None,
         carried_verify: Vec::new(),
+        stricter_contracts: Vec::new(),
         context_tokens: 0,
         rotating: None,
         trigger: TurnTrigger::Step,
@@ -4170,7 +4174,33 @@ impl Host {
         self.require_ready(auto)?;
         view::refuse_open_children(&self.record.project_id, self.record.id, "land")?;
         self.require_committed()?;
+        self.require_contracts_kept(auto)?;
         self.land_on_tip()
+    }
+
+    /// A change that edits a line of a contract file (`tasks.contracts`) lands only by a land the
+    /// owner asked for, never by itself; one that only adds lines is a stricter contract: it
+    /// lands, and the main chat hears of it with no turn once it landed. ref: docs/tasks.md
+    /// "Contracts"
+    fn require_contracts_kept(&mut self, auto: bool) -> Result<()> {
+        // ^ A config wsx cannot read names no contract it could skip: the land stops.
+        let settings = load_task_config(&self.record.project_path)
+            .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
+        let (changed, stricter) = copy::contract_change(
+            &self.record.working_copy,
+            "HEAD",
+            &self.record.default_branch,
+            &settings.contracts,
+        )?;
+        if auto && !changed.is_empty() {
+            anyhow::bail!(
+                "it changes the contract {}: the owner lands it with `wsx task land {}`",
+                changed.join(", "),
+                self.record.id
+            );
+        }
+        self.stricter_contracts = stricter;
+        Ok(())
     }
 
     /// Fast-forward when the branch has the default branch tip, else rebase onto it. The
@@ -4318,6 +4348,13 @@ impl Host {
     fn fast_forward(&mut self) -> Result<String> {
         let tip = self.default_tip()?;
         let head = copy::resolve_commit(&self.record.working_copy, "HEAD")?;
+        // ^ A `land: pr` project hands the checked revision to GitHub instead; a child lands
+        // into its parent's branch as always.
+        let pr = self.record.parent.is_none()
+            && load_task_config(&self.record.project_path).is_ok_and(|settings| settings.land_pr);
+        if pr {
+            return self.open_pr(&head);
+        }
         let cleared = copy::move_branch(
             &self.record.project_path,
             &self.record.default_branch,
@@ -4338,6 +4375,42 @@ impl Host {
         Ok(format!(
             "landed r{} on {} at {head:.12}",
             self.record.revision, self.record.default_branch
+        ))
+    }
+
+    /// Push the task's branch to `origin` and open (or find) its pull request into the default
+    /// branch, then end the task as landed: the default branch does not move, so no open task is
+    /// told to rebase and no deploy is due. ref: docs/tasks.md "Landing"
+    fn open_pr(&mut self, head: &str) -> Result<String> {
+        let title = self
+            .record
+            .title
+            .clone()
+            .unwrap_or_else(|| format!("Task #{}", self.record.id));
+        let report =
+            std::fs::read_to_string(self.dir.path.join(store::REPORT_FILE)).unwrap_or_default();
+        let body = format!(
+            "{}\n\nOpened by `wsx task land` for task #{} at revision r{}.",
+            report.trim(),
+            self.record.id,
+            self.record.revision
+        );
+        let url = copy::open_pr(
+            &self.record.project_path,
+            super::cmd::deploy::PUSH_REMOTE,
+            (&self.record.branch, &self.record.default_branch),
+            head,
+            (&title, body.trim()),
+        )?;
+        self.log(LogEvent::PrOpened {
+            url: url.clone(),
+            branch: self.record.branch.clone(),
+            commit: head.to_string(),
+        });
+        self.settle_landed(head, false);
+        Ok(format!(
+            "opened {url} for r{} at {head:.12}",
+            self.record.revision
         ))
     }
 
@@ -4402,6 +4475,12 @@ impl Host {
     /// "To check" list before readers see `landed` (docs/tasks.md "To check"). A child's items
     /// wait in its `result.json`, its captures kept, until its parent lands.
     fn landed(&mut self, commit: &str) {
+        self.settle_landed(commit, true);
+    }
+
+    /// The task is `landed` at `commit`. `moved`: its target branch moved (a local land), so open
+    /// tasks that overlap hear of it and a deploy may be due; a pull request moves nothing.
+    fn settle_landed(&mut self, commit: &str, moved: bool) {
         if self.record.parent.is_some() {
             self.keep_verify_for_parent();
         } else {
@@ -4414,10 +4493,26 @@ impl Host {
         self.write_report(TaskState::Landed);
         self.record.after = None;
         self.set_state(TaskState::Landed);
-        if self.record.parent.is_none() {
+        if moved && self.record.parent.is_none() {
             self.tell_overlaps(commit);
         }
-        self.after_landing();
+        let stricter = std::mem::take(&mut self.stricter_contracts);
+        if !stricter.is_empty() {
+            self.tell_manager(
+                format!(
+                    "contract-stricter-{}-r{}",
+                    self.record.id, self.record.revision
+                ),
+                format!(
+                    "#{} adds to the contract {} and changes none of its lines",
+                    self.record.id,
+                    stricter.join(", ")
+                ),
+                None,
+                false,
+            );
+        }
+        self.after_landing(moved);
     }
 
     /// The adds that waited for the worker while the checks of this land ran are not delivered:
@@ -4537,16 +4632,19 @@ impl Host {
     /// its work is on the default branch, and its copy and build only take space. Each runs
     /// as its own `wsx task` command that outlives this host.
     /// ref: docs/tasks.md "Deploy and release", "Close"
-    fn after_landing(&self) {
+    fn after_landing(&self, moved: bool) {
         let project = self.record.project.as_str();
         let id = self.record.id.to_string();
         // ^ The deploy is due when the default branch is ahead of the last deploy: a child's land
-        // moves its parent's branch, so it starts none.
-        let deploy = super::cmd::deploy::spawn_quiet_deploy(
-            project,
-            &self.record.project_id,
-            &self.record.project_path,
-        );
+        // moves its parent's branch, so it starts none; a pull request moves no branch.
+        let deploy = match moved {
+            true => super::cmd::deploy::spawn_quiet_deploy(
+                project,
+                &self.record.project_id,
+                &self.record.project_path,
+            ),
+            false => Ok(()),
+        };
         let close = store::follow_up_log(&self.record.project_id).and_then(|log| {
             hosting::spawn_wsx(
                 &["task", "close", id.as_str(), "-p", project, "--json"],
