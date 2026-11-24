@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/vlwkaos/wsx/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vlwkaos/wsx/actions/workflows/ci.yml)
 
-Project-first terminal workspace manager for Git worktrees, with a manager that runs coding tasks for you.
+Project-first terminal workspace manager for Git worktrees, with a lead agent that runs coding tasks for you.
 
 ![wsx Workspace with a running agent and terminal preview](docs/screenshots/01-workspace-overview.png)
 
@@ -11,31 +11,33 @@ Project-first terminal workspace manager for Git worktrees, with a manager that 
 - **Project → Worktree → Session → Pane** in a keyboard-first TUI
 - Persistent sessions: the `wsxd` daemon owns PTYs and terminal state, so sessions survive client and SSH disconnects
 - Ghostty-based terminal with splits, mouse, selection and clipboard
-- Agent states, native resume, routines and a [manager](#manager-flow) per project
+- Agent states, native resume, routines and a [lead](#lead-flow) per project
 - Optional hosted web client: chat, files, push notifications ([docs](docs/web-client.md))
 - Executable [plugins](docs/plugins.md); macOS and Linux
 
-## Manager flow
+## Lead flow
 
 ```mermaid
 flowchart LR
-  O[You] -->|say| M[Manager]
-  M -->|new| W[Worker on wsx/t n]
-  W -->|checks pass| M
-  M -->|review, land| D[Default branch]
+  O[You] -->|say| L[Lead]
+  L -->|wsx task new| W[Worker: plan, build, review]
+  W -->|checks pass| R[Review job]
+  R -->|land| D[Default branch]
   D -->|deploy if set| S[Site]
-  M -.->|approval, to check| O
+  L -.->|Needs you, To check| O
 ```
 
-- Talk to a project's manager with `wsx chat say`, the web chat, or `t` then `m` in the TUI.
-- The manager plans and starts tasks. A task is a headless worker on branch `wsx/t<n>` in its own working copy.
-- The host runs the project's checks. The manager reviews the diff and lands the task.
-- A deploy follows a land by itself where `tasks.deploy.auto` is set.
-- Deploy, release, discard, push and project add wait for you in **Needs you**.
-- **To check** holds only what a person must look at or feel.
-- A project has several chats: each a manager with its own name, goal and log, for one area of work; the project's tasks, files and memory are shared. `wsx chat new|list|close` manages them, `wsx chat say --to <name>` writes to one.
-- A manager can run tasks in another registered project. It gets their events and memo back.
-- Routines (cron or event) and check-ins wake the manager. `wsx memory` keeps its records.
+Each project has a **lead**: the agent of its main chat. You tell the lead what you want; it does the rest.
+
+1. Talk to the lead: `t` then `m` in the TUI, the web chat, or `wsx chat say "<request>"`.
+2. The lead turns the request into **tasks**. A task is a worker on branch `wsx/t<n>` in its own working copy. A full task runs as separate turns (plan, build, review); `--size small` runs one build turn.
+3. The host runs the project's checks after each turn. A failure goes back to the worker.
+4. A review job reviews the diff and **lands** it on the default branch. A deploy follows where `tasks.deploy.auto` is set.
+5. You decide two things only. **Needs you** holds what spends or ships: push, deploy, release, discard, project add. **To check** holds what a person must look at.
+
+More work at once: `wsx chat new <name> --goal <file>` opens a **chat** with its own goal and log for one area; the project's tasks, files and memory stay shared. The lead can also run tasks in another registered project. Routines (cron or event) wake the lead; `wsx memory` keeps what it learns.
+
+The commands follow the same model: `wsx chat` talks and decides, `wsx task` handles one task, `wsx project` handles the repository (add, push, deploy, check, routine).
 
 Details: [tasks](docs/tasks.md), [orchestration](docs/agent-orchestration.md), [memory](docs/memory.md).
 
@@ -71,7 +73,7 @@ Set up agent hooks with `wsx agent install claude` (or `pi`). See [integrations]
 |---|---|
 | Workspace | `j/k` move, `h/l` fold, `Enter` select, `m` reorder, `[`/`]` project, `i/I` idle, `a/A` active, `n/N` attention (sessions and projects with a need) |
 | Project | `p` add, `d` unregister (`H` also halts), `w` worktree, `u` routine, `e` config, `g` group, `v` panels, `M` this Mac's panels, `t` tasks |
-| Tasks | `m` manager chat, `S` shell, `o` overview, `a` agent, `u` usage; in a task's detail `L` land, `a` answer, `H` take over or hand back; in the chat `i` write, `/` find, `PgUp/PgDn` page, `g/G` oldest or newest, `?` keys |
+| Tasks | `m` lead chat, `S` shell, `o` overview, `a` agent, `u` usage; in a task's detail `L` land, `a` answer, `H` take over or hand back; in the chat `i` write, `/` find, `PgUp/PgDn` page, `g/G` oldest or newest, `?` keys |
 | Worktree | `s` session, `r` alias, `d` delete |
 | Session or pane | `Enter` terminal, `x` acknowledge or mute, `C` interrupt, `\|` split right, `-` split down |
 | Routine | `Enter` run history, `r` run now, `Space` on or off, `e` edit, `d` delete |
@@ -85,7 +87,9 @@ In a terminal, the prefix is `Ctrl+A`. Prefix then `h/l` moves between the proje
 ```text
 wsx status | worktree | session | group | routine | memory | plugin | runtime | daemon
 wsx agent install|context|start|request|wait|...     # docs/agent-orchestration.md
-wsx task new|say|list|show|land|check|...             # docs/tasks.md
+wsx chat say|read|new|approve|...                     # docs/tasks.md
+wsx task new|list|show|land|stop|...
+wsx project add|push|deploy|check|routine|...
 wsx web serve|pair|devices                            # docs/web-client.md
 ```
 

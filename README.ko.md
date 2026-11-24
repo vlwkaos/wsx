@@ -186,7 +186,15 @@ Ctrl+C나 agent crash로 pane process가 종료되어도 session은 저장된 �
 
 `wsx agent request <session> <prompt>`는 명시한 prompt-capable agent에 provider-neutral하고 runtime generation에 묶인 exchange를 시작합니다. 반환된 exchange ID로 `inspect`, `wait`, `continue`, `cancel`을 실행하고 `exchanges`로 보존된 receipt를 조회합니다. 저장된 intent와 실패한 delivery는 `intent_persisted`, 성공한 universal delivery는 `pty_delivery`, lifecycle 전이는 `pane_lifecycle`로 표시합니다. `--frame`은 structured assistant output이라고 주장하지 않고 bounded `terminal_frame` fallback을 반환합니다. Read-only exchange는 서로 다른 pane에서 병렬 실행할 수 있습니다. `--writer`는 기본으로 대상 worktree 전체를 claim하고, 반복 가능한 `--write-claim <absolute-path>`로 범위를 좁힙니다. 겹치는 active writer claim은 거부합니다. 이 claim은 협력 scheduling만 조정하며 repository permission을 부여하거나 회수하지 않습니다. CLI exchange는 live Terminal lease를 가져가지 않습니다. Web chat은 request의 `takeover`로 lease를 가져가고, 밀려난 창에는 control이 옮겨졌다고 알립니다(`docs/agent-orchestration.md` "Terminal control"). Native adapter는 `exchange_receipts` capability를 알리고 generation과 round에 묶인 `accepted` 또는 `completed` receipt를 `request_bound` evidence로 제출할 수 있습니다. Pi integration 20은 새 observer가 로드되어 있고 호환되는 Projp Goal Run과 daemon의 bound receipt 지원이 있을 때만 native 요청을 연결합니다. 조건이 없으면 lifecycle 보고만 유지합니다. 완료는 native 작업이 끝난 뒤 확인하며, 추적 중인 Task는 저장된 완료 transaction도 필요합니다. Pane의 Done 상태만으로 연결된 요청을 완료 처리하지 않습니다. 이번 변경은 모든 provider의 native 입력 제출이나 구조화된 질문 응답을 보장하지 않으며, 보고된 Claude 요청 제출 문제는 아직 해결되지 않았습니다.
 
-`wsx task new "<prompt>" -p <project>`는 `wsx/t<n>` 브랜치의 자기 작업 사본(copy-on-write 복제)에서 headless worker를 시작합니다. `wsx chat say "<요청>" -p <project>`는 프로젝트의 manager와 대화합니다. manager는 작업의 크기를 정하고, task를 시작하기 전에 묻고, 결과를 리뷰하고, land하고 배포합니다. 웹 클라이언트는 manager 채팅, task 목록과 확인할 항목(To check)을 보여 줍니다. 상태, check, landing, 권한과 설정은 [docs/tasks.md](docs/tasks.md)에 있습니다.
+프로젝트마다 **lead**가 있습니다. lead는 프로젝트 main chat의 agent입니다. 원하는 것을 lead에게 말하면 나머지는 lead가 합니다.
+
+1. lead와 대화합니다. TUI에서 `t` 다음 `m`, 웹 채팅, 또는 `wsx chat say "<요청>" -p <project>`를 씁니다.
+2. lead는 요청을 **task**로 나눕니다(`wsx task new`). task는 `wsx/t<n>` 브랜치의 자기 작업 사본(copy-on-write 복제)에서 도는 worker입니다. 큰 task는 plan, build, review를 각각 다른 turn으로 돌리고, `--size small`은 build turn 하나만 돕니다.
+3. host는 turn마다 프로젝트의 check를 돌립니다. 실패하면 worker에게 돌아갑니다.
+4. review job이 diff를 리뷰하고 기본 브랜치에 **land**합니다. `tasks.deploy.auto`가 켜져 있으면 배포가 이어집니다.
+5. 사용자가 정할 것은 두 가지뿐입니다. **Needs you**에는 push, deploy, release, discard, project add처럼 비용이 들거나 내보내는 일이 옵니다. **To check**에는 사람이 직접 봐야 하는 것이 옵니다.
+
+영역을 나누려면 `wsx chat new <name> --goal <file>`로 자기 goal과 log를 가진 **chat**을 엽니다. task, 파일, memory는 프로젝트가 함께 씁니다. 명령도 같은 모델을 따릅니다. `wsx chat`은 대화와 결정, `wsx task`는 task 하나, `wsx project`는 repository(add, push, deploy, check, routine)를 다룹니다. 상태, check, landing, 권한과 설정은 [docs/tasks.md](docs/tasks.md)에 있습니다.
 
 Routine의 각 `--arg`는 direct argv item 하나입니다. wsx는 routine argv를 실행할 때 shell을 사용하지 않습니다. 신뢰하지 않는 routine은 enable 또는 run하기 전에 `wsx routine show <name>`으로 확인합니다.
 
