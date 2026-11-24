@@ -136,6 +136,20 @@ fn by_age(records: &[Record], keep: impl Fn(&Record) -> bool) -> Vec<&Record> {
     found
 }
 
+/// The project's active rules decided at or after `since_ms`, oldest first, each as its
+/// `decisions.md` line without the bullet: what the owner decided while a goal chat ran, which
+/// its hand-back names (`chats::hand_back`). The rules live in the project's store, not in the
+/// goal chat's folder. ref: docs/tasks.md "Chats"
+pub fn rules_since(store: &Store, since_ms: u64) -> Result<Vec<String>, Error> {
+    let records = store.records()?;
+    Ok(by_age(&records, |r| {
+        r.kind == Kind::Rule && r.status == Status::Active && decided(r) >= since_ms
+    })
+    .into_iter()
+    .map(|r| rule_line(r).trim_start_matches("- ").to_string())
+    .collect())
+}
+
 fn join(lines: Vec<String>) -> String {
     lines.iter().map(|l| format!("{l}\n")).collect()
 }

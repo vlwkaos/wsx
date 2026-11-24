@@ -8194,16 +8194,17 @@ def part_chats(created=None):
     # Close: refused without the word, once with it; one hand-back row at the main chat.
     close_line = 'RUN wsx task chat close qa -p demo --json'
     assert "chat close is the owner's" in reply_to(js('task', 'say', close_line)['id'])['text'] and chats()['qa']['state'] == 'open'
-    (chats_dir / 'qa/notes').mkdir(exist_ok=True)
-    (chats_dir / 'qa/notes/decisions.md').write_text('- QA signs off on checkout\n- smoke runs nightly\n')
+    # ^ A rule the owner decided while qa ran is the project's record (the notes views are the main
+    # chat's), and the hand-back names it (`memory::manage::rules_since`).
+    cli('memory', 'add', '--kind', 'rule', '--slug', 'smoke-nightly', '--text-file', '-', '--source', 'msg:1',
+        '--verified-by', 'owner:1', stdin='Smoke runs nightly.\n')
     closing = js('task', 'say', 'close the qa chat\n' + close_line + ' --owner-said OWNER_SAID')
     assert '-> 0' in reply_to(closing['id'], 60)['text']
     assert chats()['qa']['state'] == 'closed'
     handed = wait(lambda: [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events' and 'Chat qa is closed' in e['text']],
                   'the hand-back row at the main chat', 60)
     assert len(handed) == 1 and 'Goal: Own the QA of the checkout flow.' in handed[0]['text'], handed
-    assert '#%d' % qa_task in handed[0]['text'] and 'smoke runs nightly' in handed[0]['text'], handed[0]['text']
-    assert (chats_dir / 'qa/notes/decisions.md').exists()
+    assert '#%d' % qa_task in handed[0]['text'] and 'Smoke runs nightly.' in handed[0]['text'], handed[0]['text']
     # ^ The closed chat's open task is the main chat's: its next event reaches the main chat.
     js('task', 'add', qa_task, 'WORK qa3.txt')
     wait(lambda: events_with('#%d ready r3' % qa_task), 'the closed chat task reaches the main chat', 60)

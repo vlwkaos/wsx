@@ -720,21 +720,22 @@ pub fn hand_back(dir: &ManagerDir) -> String {
             )
         })
         .collect();
-    let notes = dir.path.join("notes/decisions.md");
-    let decisions: Vec<String> = store::read_bounded_if_exists(&notes, 256 * 1024)
+    // ^ The rules decided since the chat began: they are the project's records, and the notes
+    // views are written to the main chat only.
+    let since_ms = dir
+        .read_log()
         .ok()
-        .flatten()
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .unwrap_or_default()
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(str::to_string)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .take(HAND_BACK_DECISIONS)
-        .rev()
-        .collect();
+        .and_then(|log| log.first().map(|entry| entry.unix_ms))
+        .unwrap_or(u64::MAX);
+    let decisions: Vec<String> =
+        crate::memory::Store::project(&dir.project_id, &dir.project_id, std::path::Path::new("/"))
+            .and_then(|store| crate::memory::manage::rules_since(&store, since_ms))
+            .unwrap_or_default()
+            .into_iter()
+            .rev()
+            .take(HAND_BACK_DECISIONS)
+            .rev()
+            .collect();
     let list = |items: &[String]| match items.is_empty() {
         true => "none".to_string(),
         false => format!(
