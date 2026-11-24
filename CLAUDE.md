@@ -13,6 +13,7 @@ cargo nextest run --workspace --locked    # unit and integration tests
 cargo test --workspace --locked --doc     # doctests
 python3 scripts/runtime-smoke.py          # real PTY and stream scenarios; rebuild both binaries first
 python3 -B scripts/test-web-client.py     # hosted web client journey; add --browser for headless Chrome
+scripts/dev.sh [web|env|stop|reset]       # this build as a separate wsx (own wsxd, web on :4699, TUI) under .work/dev
 ```
 
 Tests that open a PTY or a Unix socket fail inside a command sandbox. Rerun them outside it.

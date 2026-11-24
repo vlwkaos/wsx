@@ -159,12 +159,20 @@ function FolderSheet({ row, folders, onPick, onClose }) {
   // ^ The sheet takes the focus itself, not its first option: a ring shows only once Tab moves into the list.
   useEffect(() => { dialog.current.showModal(); dialog.current.focus(); }, []);
   const pick = (folder) => { dialog.current.close(); onPick(row, folder); };
+  // ^ A click outside the sheet closes it with no change, as Escape does (tasks.js `backdrop`); the
+  // sheet's own padding is the dialog element too, so the click's place decides.
+  const backdrop = (event) => {
+    if (event.target !== dialog.current) return;
+    const box = dialog.current.getBoundingClientRect();
+    const inside = event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom;
+    if (!inside) dialog.current.close();
+  };
   const current = row.chat.folder ?? null;
   const option = (folder, text) => html`
     <li key=${folder ?? ""}><button class="folder-option" type="button" role="menuitemradio" aria-checked=${current === folder} onClick=${() => pick(folder)}>
       <span class="folder-tick">${current === folder ? html`<${Icon} name="pass" />` : null}</span>${text}</button></li>`;
   return html`
-    <dialog class="sheet" tabindex="-1" ref=${dialog} aria-labelledby="folder-title" onClose=${onClose}>
+    <dialog class="sheet" tabindex="-1" ref=${dialog} aria-labelledby="folder-title" onClose=${onClose} onClick=${backdrop}>
       <h2 class="sheet-title" id="folder-title">${row.main ? row.project.name : row.chat.shown}</h2>
       <ul class="folder-options" role="menu" aria-label="Folder">
         ${folders.map((folder) => option(folder, folder))}
