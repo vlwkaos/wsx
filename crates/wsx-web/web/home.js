@@ -160,19 +160,25 @@ function FolderSheet({ row, folders, onPick, onClose }) {
   useEffect(() => { dialog.current.showModal(); dialog.current.focus(); }, []);
   const pick = (folder) => { dialog.current.close(); onPick(row, folder); };
   // ^ A click outside the sheet closes it with no change, as Escape does (tasks.js `backdrop`); the
-  // sheet's own padding is the dialog element too, so the click's place decides.
-  const backdrop = (event) => {
-    if (event.target !== dialog.current) return;
+  // sheet's own padding is the dialog element too, so the click's place decides. Only a press that
+  // started out there counts: the click that ends the long press which opened the sheet lands on
+  // the backdrop too, and must leave it open.
+  const pressedOut = useRef(false);
+  const outside = (event) => {
+    if (event.target !== dialog.current) return false;
     const box = dialog.current.getBoundingClientRect();
-    const inside = event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom;
-    if (!inside) dialog.current.close();
+    return event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom;
+  };
+  const backdrop = (event) => {
+    if (pressedOut.current && outside(event)) dialog.current.close();
+    pressedOut.current = false;
   };
   const current = row.chat.folder ?? null;
   const option = (folder, text) => html`
     <li key=${folder ?? ""}><button class="folder-option" type="button" role="menuitemradio" aria-checked=${current === folder} onClick=${() => pick(folder)}>
       <span class="folder-tick">${current === folder ? html`<${Icon} name="pass" />` : null}</span>${text}</button></li>`;
   return html`
-    <dialog class="sheet" tabindex="-1" ref=${dialog} aria-labelledby="folder-title" onClose=${onClose} onClick=${backdrop}>
+    <dialog class="sheet" tabindex="-1" ref=${dialog} aria-labelledby="folder-title" onClose=${onClose} onPointerDown=${(event) => { pressedOut.current = outside(event); }} onClick=${backdrop}>
       <h2 class="sheet-title" id="folder-title">${row.main ? row.project.name : row.chat.shown}</h2>
       <ul class="folder-options" role="menu" aria-label="Folder">
         ${folders.map((folder) => option(folder, folder))}

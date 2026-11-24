@@ -4076,7 +4076,10 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
     const approvals = path.join(state, path.dirname(path.dirname(path.dirname(found))), repo, "approvals.jsonl");
     fs.appendFileSync(approvals, `${JSON.stringify({ kind: "request", id: "a9002", action: "push", chat: "ui", unix_ms: Date.now() })}\n`);
   }
-  await until(`!!document.querySelector('${youRow}')`, "Home has no For you row while chats wait for the owner", 300);
+  // ^ The row was there before for the other chats: wait until it counts the staged ui approval, so
+  // the row and the list below are read after the same change.
+  await untilApi(`fetch('api/tasks/for-you').then((r) => r.json()).then((served) => served.some((entry) => entry.chat === "ui")
+    && document.querySelector('${youRow} .row-context')?.textContent.includes(\`in \${served.length} chats\`))`, "Home's For you row never counted the staged ui approval", 30);
   const homeWords = await evaluate(`document.querySelector('${youRow} .row-context').textContent`);
   const [, homeItems, homeChats] = /^(\d+) items? in (\d+) chats?: \d+ (?:questions?|approvals?|checks?|stopped)/.exec(homeWords) ?? [];
   if (!homeItems || Number(homeChats) < 2) await fail(`Home's For you row reads ${JSON.stringify(homeWords)}`);
