@@ -1204,8 +1204,9 @@ def manager_up(created):
         (r'(?m)^ MANAGER +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
     assert 'zenuml' not in diagrams[2] and 'flowchart TD' not in diagrams[2], diagrams[2]
     # ^ A `#N` in a message is a link: Enter shows that task beside the chat from 120 columns, keys on
-    # it; tab gives the keys to the chat and back; Esc closes the task. A number the project does
-    # not have says so (docs/tasks.md "TUI").
+    # it; a number the project does not have says so. From 130 columns the chat rail shows on the
+    # left: tab goes chat, task, rail, chat; ^g reaches the rail from the chat; Esc in the task
+    # closes it. In the message line, ⌥Enter starts a new line (docs/tasks.md "TUI").
     mentioned = reply_to(js('task', 'say', 'see #%d and #99999' % manager_task)['id'])
     assert '#' not in mentioned['text'], mentioned
     beside = tui_screens(wsx, env, project, [
@@ -1213,16 +1214,25 @@ def manager_up(created):
         (r'(?m)^ MANAGER +Enter: open', b'\r'),
         (r'No task #99999 in this project', b'['),
         (r'(?m)^ MANAGER +Enter: open', b'\r'),
-        (r'(?m)^ TASK +\(j/k\)scroll.*tab: chat +Esc: close', b'\t'),
+        (r'(?m)^ TASK +\(j/k\)scroll.*tab: chats +Esc: close', b'\t'),
+        (r'(?m)^ CHATS +\(j/k\)move', b'\x1b'),
+        (r'(?m)^ MANAGER +tab: task.*\^g chats', b'\x07'),
+        (r'(?m)^ CHATS +\(j/k\)move', b'\t'),
         (r'(?m)^ MANAGER +tab: task', b'\t'),
         (r'(?m)^ TASK +\(j/k\)scroll', b'\x1b'),
         (r'(?m)^ MANAGER +Enter: open', b'\x1b'),
-        (r'(?m)^ MANAGER +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], cols=130)
-    # ^ The task's number and its detail beside the chat, the chat still drawn on the left.
+        (r'(?m)^ MANAGER +\(i\)message', b'i'),
+        (r'Enter: send +\u2325Enter: new line', b'line one\x1b\rline two'),
+        (r'> line one[^\n]*\n[^\n]*line two', b'\x1b'),
+        (r'> line one \u21b5 line two', b'\x1b'), (r'\(m\)anager', b'm'),
+        (r'> line one \u21b5 line two', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], cols=130)
+    # ^ The rail (the manager marked open), the chat, and the task's number and detail beside it.
     split = beside[6]
     assert re.search(r'#%d ' % manager_task, split) and 'State' in split and 'see #%d' % manager_task in split, split
-    # ^ Closed, the chat has the pane again: no detail, no tab hint.
-    assert 'State' not in beside[9] and 'tab: task' not in beside[9], beside[9]
+    assert 'Chats' in split and '\u25b8 Manager' in split and 'For you' in split, split
+    # ^ Closed, the chat has the pane again: no detail, no tab hint. Left with Esc and opened again,
+    # the chat keeps its unsent message (steps 16 and 18).
+    assert 'State' not in beside[12] and 'tab: task' not in beside[12], beside[12]
     # ^ After the jump: the owner's Reply (web *Reply*, TUI `r`) sends `> message <id>` too: stored in the same
     # format with the id, and the agent reads the line.
     said_back = js('task', 'say', '> message 1\n\nthe owner answers')

@@ -562,31 +562,7 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
         Mode::Panels { view } => panels::render(frame, area, view),
         Mode::Tasks { list } => match (&list.overview, &list.chat) {
             (Some(overview), _) => tasks::render_overview(frame, area, &list.project, overview),
-            // ^ A task opened from the chat shows beside it from 120 columns, the chat at 40%;
-            // narrower, the side with the keys fills the pane (docs/tasks.md "TUI").
-            (None, Some(chat)) if list.task_beside() => {
-                if area.width >= 120 {
-                    let chat_width = area.width * 2 / 5;
-                    let (left, right) = (
-                        Rect {
-                            width: chat_width,
-                            ..area
-                        },
-                        Rect {
-                            x: area.x + chat_width,
-                            width: area.width - chat_width,
-                            ..area
-                        },
-                    );
-                    task_chat::render(frame, left, chat);
-                    tasks::render_task_beside(frame, right, list);
-                } else if list.task_focus {
-                    tasks::render_task_beside(frame, area, list);
-                } else {
-                    task_chat::render(frame, area, chat);
-                }
-            }
-            (None, Some(chat)) => task_chat::render(frame, area, chat),
+            (None, Some(chat)) => tasks::render_chat_view(frame, area, list, chat),
             (None, None) => {
                 tasks::render(frame, area, list);
                 if let Some(form) = &list.new_chat {
@@ -780,13 +756,33 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
             theme::ModeBadge::Info,
             vec!["(j/k)scroll".into(), "Esc: back".into()],
         ),
+        // ^ The rail while it has the keys.
+        Mode::Tasks { list }
+            if list.chat.is_some() && list.region == crate::task_list::Region::Rail =>
+        {
+            (
+                "CHATS",
+                theme::ModeBadge::Info,
+                vec!["(j/k)move".into(), "Enter: open".into(), "Esc: back".into()],
+            )
+        }
         // ^ The task beside the chat while it has the keys: its actions, then how to leave it.
-        Mode::Tasks { list } if list.task_beside() && list.task_focus => {
+        Mode::Tasks { list }
+            if list.task_beside() && list.region == crate::task_list::Region::Task =>
+        {
             let hints = match list.confirm {
                 Some(_) => vec!["(y)es".into(), "(n)o".into()],
                 None => {
                     let mut hints = tasks::detail_hints(list);
-                    hints.extend(["tab: chat".into(), "Esc: close".into()]);
+                    hints.push(
+                        if list.rail_shown.get() {
+                            "tab: chats"
+                        } else {
+                            "tab: chat"
+                        }
+                        .into(),
+                    );
+                    hints.push("Esc: close".into());
                     hints
                 }
             };
@@ -800,8 +796,11 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
             theme::ModeBadge::Info,
             list.chat.as_deref().map_or_else(Vec::new, |chat| {
                 let mut hints = task_chat::hints(chat);
-                if list.detail_task().is_some() && chat.focus == crate::task_chat::Focus::Chat {
-                    hints.insert(0, "tab: task".into());
+                if chat.focus == crate::task_chat::Focus::Chat {
+                    if list.detail_task().is_some() {
+                        hints.insert(0, "tab: task".into());
+                    }
+                    hints.push("^g chats".into());
                 }
                 hints
             }),

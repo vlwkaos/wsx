@@ -5,6 +5,14 @@ impl App {
 
     pub(super) fn dispatch(&mut self, action: Action, terminal: &mut Tui) -> Result<()> {
         self.ensure_flat();
+        // ^ `⌥Enter` is a new line only in the chat's message line; elsewhere it is Enter.
+        let composing = matches!(&self.mode, Mode::Tasks { list }
+            if list.region == crate::task_list::Region::Chat
+                && list.chat.as_ref().is_some_and(|chat| chat.focus == crate::task_chat::Focus::Compose));
+        let action = match action {
+            Action::InputNewline if !composing => Action::Select,
+            action => action,
+        };
         if matches!(
             action,
             Action::Quit | Action::HardQuit | Action::MouseClick { .. }
@@ -143,6 +151,29 @@ impl App {
                 self.needs_redraw = true;
                 return Ok(());
             }
+            // ^ The region with the focus takes the keys (docs/tasks.md "TUI"): `^g` the rail from
+            // anywhere in the chat, then the rail, the task beside the chat, or the chat.
+            use crate::task_list::Region;
+            if list.chat.is_some() {
+                let region = match list.region {
+                    _ if action == Action::ChatRail => {
+                        list.focus_rail();
+                        None
+                    }
+                    Region::Rail => Some(Region::Rail),
+                    Region::Task if list.task_beside() => Some(Region::Task),
+                    _ => Some(Region::Chat),
+                };
+                if region != Some(Region::Chat) {
+                    match region {
+                        Some(Region::Rail) => list.rail_key(&action),
+                        Some(Region::Task) => list.task_key(&action),
+                        _ => {}
+                    }
+                    self.needs_redraw = true;
+                    return Ok(());
+                }
+            }
             // ^ `?` is text in the message line: it opens the help only where the chat types nothing.
             let help = match &list.chat {
                 Some(chat) => {
@@ -165,12 +196,6 @@ impl App {
             if shell {
                 return self.action_task_shell(terminal);
             }
-            // ^ A task beside the chat takes the keys while it has the focus (docs/tasks.md "TUI").
-            if list.task_beside() && list.task_focus {
-                list.task_key(&action);
-                self.needs_redraw = true;
-                return Ok(());
-            }
             let beside = list.task_beside();
             if let Some(chat) = &mut list.chat {
                 let quiet = chat.focus == crate::task_chat::Focus::Chat;
@@ -179,9 +204,15 @@ impl App {
                 if quiet && action == Action::InputChar('o') {
                     list.open_overview();
                 } else if quiet && action == Action::InputTab && beside {
-                    list.task_focus = true;
+                    list.region = Region::Task;
                 } else if !chat.key(&action) {
-                    list.chat = None;
+                    // ^ Esc unwinds one layer: the task beside the chat, then the chat.
+                    if beside {
+                        list.detail = None;
+                    } else {
+                        list.stash_draft();
+                        list.chat = None;
+                    }
                 }
                 // ^ A `#N` link (Enter on it) shows that task beside the chat.
                 if let Some(id) = list.chat.as_mut().and_then(|chat| chat.task.take()) {

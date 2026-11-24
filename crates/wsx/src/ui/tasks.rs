@@ -4,11 +4,12 @@ use super::{
     text::{fit, hard_wrap, truncate_to_width, wrap_cells},
     theme,
 };
-use crate::task_list::{Overview, Section, TaskList, TaskRow};
+use crate::task_chat::ManagerChat;
+use crate::task_list::{Overview, RailTarget, Region, Section, TaskList, TaskRow};
 use ratatui::{
     layout::Rect,
     prelude::Stylize,
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
@@ -214,6 +215,123 @@ pub fn detail_hints(list: &TaskList) -> Vec<String> {
     hints
 }
 
+/// The rail's width, and the pane width from which it shows beside the chat: the chat keeps
+/// its own 100 columns and more (docs/tasks.md "TUI").
+const RAIL_WIDTH: u16 = 24;
+const RAIL_MIN: u16 = 130;
+/// The pane width from which a task shows beside the chat, the chat at 40% of the rest.
+const BESIDE_MIN: u16 = 120;
+
+/// The open chat with the rail and a task opened from it (docs/tasks.md "TUI"). The rail shows
+/// from `RAIL_MIN` columns, the task beside the chat from `BESIDE_MIN`; narrower, the region with
+/// the keys fills the pane.
+pub fn render_chat_view(frame: &mut Frame, area: Rect, list: &TaskList, chat: &ManagerChat) {
+    let rail_shown = area.width >= RAIL_MIN;
+    list.rail_shown.set(rail_shown);
+    let beside = list.task_beside();
+    match list.region {
+        Region::Rail if !rail_shown => return render_rail(frame, area, list),
+        Region::Task if beside && area.width < BESIDE_MIN => {
+            return render_task_beside(frame, area, list)
+        }
+        _ => {}
+    }
+    let mut rest = area;
+    if rail_shown {
+        render_rail(
+            frame,
+            Rect {
+                width: RAIL_WIDTH,
+                ..area
+            },
+            list,
+        );
+        rest = Rect {
+            x: area.x + RAIL_WIDTH,
+            width: area.width - RAIL_WIDTH,
+            ..area
+        };
+    }
+    if beside && area.width >= BESIDE_MIN {
+        let chat_width = rest.width * 2 / 5;
+        super::task_chat::render(
+            frame,
+            Rect {
+                width: chat_width,
+                ..rest
+            },
+            chat,
+        );
+        render_task_beside(
+            frame,
+            Rect {
+                x: rest.x + chat_width,
+                width: rest.width - chat_width,
+                ..rest
+            },
+            list,
+        );
+    } else {
+        super::task_chat::render(frame, rest, chat);
+    }
+}
+
+/// The chat rail: "Chats", then an item a row, the open chat marked `▸` and the selected one
+/// reversed while the rail has the keys; each item's marks after its name, as the list's chat
+/// rows show them. A rule on its right side, in the accent while it has the keys.
+fn render_rail(frame: &mut Frame, area: Rect, list: &TaskList) {
+    frame.render_widget(Clear, area);
+    let focused = list.region == Region::Rail;
+    let color = if focused {
+        theme::ACCENT
+    } else {
+        theme::TEXT_SUBTLE
+    };
+    let block = Block::default()
+        .borders(Borders::RIGHT)
+        .border_style(Style::default().fg(color));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let inner = Rect {
+        x: inner.x.saturating_add(1),
+        width: inner.width.saturating_sub(1),
+        ..inner
+    };
+    let width = inner.width as usize;
+    let items = list.rail_items();
+    let current = list.rail_current(&items);
+    let mut lines = vec![
+        Line::styled("Chats", Style::default().fg(color).bold()),
+        Line::raw(""),
+    ];
+    for (index, item) in items.iter().enumerate() {
+        if item.target == RailTarget::ForYou {
+            lines.push(Line::raw(""));
+        }
+        let marks = super::workspace_tree::tray_marks(
+            item.counts.running,
+            item.counts.needs,
+            item.counts.check,
+        );
+        let marks_width: usize = marks.iter().map(|mark| mark.content.chars().count()).sum();
+        let mark = if current == Some(index) { "▸ " } else { "  " };
+        let mut style = Style::default().fg(theme::TEXT);
+        if focused && index == list.rail.min(items.len().saturating_sub(1)) {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
+        let mut spans = vec![Span::styled(
+            fit(
+                &format!("{mark}{}", item.title),
+                width.saturating_sub(marks_width + 1),
+            ),
+            style,
+        )];
+        spans.extend(marks);
+        lines.push(Line::from(spans));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 /// The task beside the chat (`TaskList::open_task`): its number and title, the action line,
 /// then its detail, after a rule in the accent while it has the keys. ref: docs/tasks.md "TUI"
 pub fn render_task_beside(frame: &mut Frame, area: Rect, list: &TaskList) {
@@ -221,7 +339,7 @@ pub fn render_task_beside(frame: &mut Frame, area: Rect, list: &TaskList) {
         return;
     };
     frame.render_widget(Clear, area);
-    let color = if list.task_focus {
+    let color = if list.region == Region::Task {
         theme::ACCENT
     } else {
         theme::TEXT_SUBTLE

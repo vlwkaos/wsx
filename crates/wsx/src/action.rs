@@ -57,6 +57,10 @@ pub enum Action {
     InputBackspace,
     InputTab,
     InputBackTab,
+    /// `⌥⏎` in a text field: a new line where the field holds more than one.
+    InputNewline,
+    /// `^g` in the Tasks view's chat: the keys go to the chat rail.
+    ChatRail,
     InputEscape,
     LiteralEscape,
     TerminalKey(crossterm::event::KeyEvent),

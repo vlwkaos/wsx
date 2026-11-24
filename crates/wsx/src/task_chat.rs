@@ -885,6 +885,7 @@ impl ManagerChat {
             Focus::Chat => return self.chat_key(action),
             Focus::Compose => match action {
                 Action::Select => self.send(),
+                Action::InputNewline => self.composer.insert_char('\n'),
                 Action::InputEscape => {
                     // ^ Esc drops what the message would answer, not its words.
                     if self.reply.take().is_some() {

@@ -427,6 +427,12 @@ pub fn poll_event(
 
 /// Input mode: only special keys are translated; all chars go to the buffer.
 fn translate_input_key(key: KeyEvent) -> Action {
+    // ^ The two chords a text field takes; any other modifier types as before.
+    match (key.modifiers, key.code) {
+        (KeyModifiers::ALT, KeyCode::Enter) => return Action::InputNewline,
+        (KeyModifiers::CONTROL, KeyCode::Char('g')) => return Action::ChatRail,
+        _ => {}
+    }
     match key.code {
         KeyCode::Enter => Action::Select,
         KeyCode::Esc => Action::InputEscape,

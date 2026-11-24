@@ -37,7 +37,13 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
     let top = vec![heading(chat, width), status(chat, width)];
     // ^ The items take at most a third of the height; the chat keeps the rest.
     let (items, item_selected) = item_lines(chat, width);
-    let room = inner.height.saturating_sub(top.len() as u16 + 1);
+    // ^ The message line keeps the heading's rows: in a short pane it has the rows left.
+    let rows_left = usize::from(inner.height.saturating_sub(top.len() as u16)).max(1);
+    let (composed, cursor) = composer(chat, width, rows_left);
+    let composer_height = composed.len() as u16;
+    let room = inner
+        .height
+        .saturating_sub(top.len() as u16 + composer_height);
     let items_height = (items.len() as u16).min(room / 3);
     let chat_height = room - items_height;
     chat.area.set((width, chat_height));
@@ -101,11 +107,13 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
         Paragraph::new(items).scroll((item_offset, 0)),
         row(top_height + chat_height, items_height),
     );
-    let composer_y = inner.y + inner.height - 1;
-    let (line, cursor) = composer(chat, width);
-    frame.render_widget(Paragraph::new(line), row(inner.height - 1, 1));
-    if let Some(column) = cursor {
-        frame.set_cursor_position((inner.x + column.min(inner.width - 1), composer_y));
+    let composer_top = inner.height - composer_height;
+    frame.render_widget(Paragraph::new(composed), row(composer_top, composer_height));
+    if let Some((column, line)) = cursor {
+        frame.set_cursor_position((
+            inner.x + column.min(inner.width - 1),
+            inner.y + composer_top + line,
+        ));
     }
 }
 
@@ -252,7 +260,11 @@ fn render_file(
 /// The footer's hints: only the keys the focus and the selected item take.
 pub fn hints(chat: &ManagerChat) -> Vec<String> {
     match &chat.focus {
-        Focus::Compose => vec!["Enter: send".into(), "Esc: done".into()],
+        Focus::Compose => vec![
+            "Enter: send".into(),
+            "⌥Enter: new line".into(),
+            "Esc: done".into(),
+        ],
         Focus::Find => vec!["Enter: keep".into(), "Esc: clear".into()],
         Focus::File => vec![
             "(j/k)scroll".into(),
@@ -999,8 +1011,38 @@ fn item_lines(chat: &ManagerChat, width: usize) -> (Vec<Line<'static>>, Option<u
     (lines, selected)
 }
 
+/// The most lines the message line grows to (`⌥⏎`); the cursor's line stays in view.
+const COMPOSER_LINES: usize = 5;
+
+/// The bottom lines by focus, and the cursor's column and line when it takes typing: one line,
+/// or the message's lines (`⌥⏎`), the prompt on the first.
+fn composer(
+    chat: &ManagerChat,
+    width: usize,
+    most: usize,
+) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
+    let most = COMPOSER_LINES.min(most).max(1);
+    if chat.focus == Focus::Compose && chat.composer.value().contains('\n') {
+        let state = &chat.composer;
+        let text = format!("{}{}", state.prompt, state.value());
+        let at = state.prompt.len() + state.cursor;
+        let on = text[..at].matches('\n').count();
+        let lines: Vec<&str> = text.split('\n').collect();
+        let first = (on + 1).saturating_sub(most);
+        let shown = lines[first..lines.len().min(first + most)]
+            .iter()
+            .map(|line| Line::raw(truncate_to_width(line, width)))
+            .collect();
+        let start = text[..at].rfind('\n').map_or(0, |newline| newline + 1);
+        let column = cells(&text[start..at]).min(width.saturating_sub(1)) as u16;
+        return (shown, Some((column, (on - first) as u16)));
+    }
+    let (line, cursor) = composer_line(chat, width);
+    (vec![line], cursor.map(|column| (column, 0)))
+}
+
 /// The bottom line by focus, and the cursor's column when it takes typing.
-fn composer(chat: &ManagerChat, width: usize) -> (Line<'static>, Option<u16>) {
+fn composer_line(chat: &ManagerChat, width: usize) -> (Line<'static>, Option<u16>) {
     let typed = |state: &crate::ui::input::InputState| {
         // ^ A long line shows its end, where the cursor is: one pass back from the cursor
         // keeps the longest end that is narrower than the line.
@@ -1071,9 +1113,10 @@ fn composer(chat: &ManagerChat, width: usize) -> (Line<'static>, Option<u16>) {
         Focus::Chat if chat.composer.value().is_empty() => {
             (muted("> press i to write a message"), None)
         }
+        // ^ A message of more lines waits on one, each new line a `↵`.
         Focus::Chat => (
             muted(&truncate_to_width(
-                &format!("> {}", chat.composer.value()),
+                &format!("> {}", chat.composer.value().replace('\n', " ↵ ")),
                 width,
             )),
             None,
