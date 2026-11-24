@@ -181,16 +181,23 @@ pub(super) fn close_hung_manager(
     let Some(hung) = manager_hung(dir, main, answer) else {
         return Ok(false);
     };
+    stop_host(dir, main)?;
+    dir.append(ManagerEvent::Stopped {
+        reason: hung.reason(super::now_unix_ms()),
+    })?;
+    Ok(true)
+}
+
+/// Close the chat's host session and stop its agent's tree: a hung host, or a fork whose first
+/// message did not reach it (`chat new --brief`).
+pub fn stop_host(dir: &ManagerDir, main: &Path) -> anyhow::Result<()> {
     // ^ A host of the release before runs as `manager-host`; either hands over or is replaced.
     let (args, old) = (dir.host_args(), dir.old_host_args());
     let find = |args: &[String]| host_pid(&args.iter().map(String::as_str).collect::<Vec<_>>());
     let pid = find(&args).or_else(|| find(&old));
     super::close_session(&format!("task-{}", dir.name()), main)?;
     stop_tree(pid);
-    dir.append(ManagerEvent::Stopped {
-        reason: hung.reason(super::now_unix_ms()),
-    })?;
-    Ok(true)
+    Ok(())
 }
 
 /// After a deploy and when a project's manager host starts: replace each hung host that runs

@@ -1184,6 +1184,26 @@ fn note_row(entry: &ManagerEntry, names: &Names) -> Option<ChatRow> {
                 format!("{} stopped: {reason}", names.own),
             )
         }),
+        // ^ A fork as one note in each chat; closing the new chat before it owns a task undoes
+        // it (docs/tasks.md "Lead and forks").
+        ManagerEvent::Forked { to, .. } => Some(ChatRow::new(
+            RowKind::Note,
+            row_key(entry, &format!("forked-{to}")),
+            entry,
+            format!("\u{2442} Forked to {to}"),
+        )),
+        ManagerEvent::ForkedFrom { from, .. } => Some(ChatRow::new(
+            RowKind::Note,
+            row_key(entry, &format!("forked-from-{from}")),
+            entry,
+            format!("\u{2442} Forked from {from}"),
+        )),
+        ManagerEvent::ForkUndone { to } => Some(ChatRow::new(
+            RowKind::Note,
+            row_key(entry, &format!("fork-undone-{to}")),
+            entry,
+            format!("\u{2442} Fork to {to} undone"),
+        )),
         _ => None,
     }
 }

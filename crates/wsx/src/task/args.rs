@@ -497,6 +497,11 @@ pub enum ChatCmd {
         /// The `[[agents]]` entry it runs on; default: the manager's (tasks.manager)
         #[arg(long, value_name = "ENTRY")]
         agent: Option<String>,
+        /// The lead (the main chat with no goal) forks the owner's message --owner-said names:
+        /// the new chat starts on it, its goal is the message's first line, and the lead notes
+        /// the fork. The name must be new
+        #[arg(long, requires = "owner_said", conflicts_with = "goal")]
+        brief: bool,
         #[command(flatten)]
         said: OwnerSaid,
     },

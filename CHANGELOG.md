@@ -6,6 +6,7 @@ Releases 0.40.4 and older are in [docs/changelog-archive.md](docs/changelog-arch
 
 ### Changed
 
+- Tasks: a project's main chat with no goal is its lead. It forks every message that asks for work into a new chat with `wsx task chat new <name> --brief --owner-said <id>`: the new chat starts on the owner's own message, its goal the message's first line, and both chats show the fork. Closing the new chat before it owns a task undoes the fork, with no hand-back.
 - TUI: from 130 columns the chat has a rail of chats on its left (the manager, the open chats with their counts, For you). `^g` gives it the keys; `Enter` opens a chat. With a task open, `tab` goes chat, task, rail.
 - TUI: `⌥Enter` in the chat's message line starts a new line; the line grows to 5 rows.
 - TUI: a `#N` in a chat message is a link. `Enter` opens that task beside the chat (from 120 columns; narrower, it fills the pane) with its detail and actions; `tab` moves the keys between the chat and the task, and `Esc` closes it.

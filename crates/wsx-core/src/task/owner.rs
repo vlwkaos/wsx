@@ -159,15 +159,35 @@ pub fn say(
 /// as one message of wsx, which the main chat reads with its next turn. The open tasks are the
 /// main chat's from then on (`chats::owner`). True when a main chat took it; closing the main
 /// chat leaves the repo with none, and its open tasks have no chat. ref: docs/tasks.md "Chats"
+/// How a chat closed: its hand-back reached the main chat, there is no main chat to take its
+/// open tasks, or it was a fork that owned no task and the fork is undone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Closed {
+    Handed,
+    NoMain,
+    ForkUndone,
+}
+
 pub fn close_chat(
     project: (&str, &Path),
     wsx: &Path,
     name: &str,
     launch: impl Fn(String, Vec<String>) -> Result<()>,
-) -> Result<bool> {
+) -> Result<Closed> {
+    // ^ A fork closed before it owned a task is undone: the chat it came from is told in a note
+    // that no turn reads, and nothing is handed back (its goal would be forked again).
+    let fork = super::chats::unstarted_fork(&super::chats::open_chat(name)?)?;
     let (main, text) = super::chats::close(name)?;
+    if let Some(from) = fork {
+        if let Some(origin) = ManagerDir::existing(&from)? {
+            origin.append(super::manager::ManagerEvent::ForkUndone {
+                to: name.to_string(),
+            })?;
+        }
+        return Ok(Closed::ForkUndone);
+    }
     let Some(main) = main else {
-        return Ok(false);
+        return Ok(Closed::NoMain);
     };
     let short = super::manager::Short::event(
         format!("Chat {name} closed; its open tasks are yours"),
@@ -183,7 +203,7 @@ pub fn close_chat(
         Some(super::manager::Author::Events),
         vec![short],
     )
-    .map(|_| true)
+    .map(|_| Closed::Handed)
     .context("the chat is closed, but its hand-back did not reach the main chat")
 }
 

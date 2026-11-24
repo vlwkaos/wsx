@@ -15,7 +15,9 @@ use wsx_core::config::project::load_task_config;
 use wsx_core::memory::{backend, index::Target};
 use wsx_core::task::chat::{self, Reading, Window};
 use wsx_core::task::chats;
-use wsx_core::task::manager::{pending_approvals, Author, ManagerRequest, ManagerResponse, Party};
+use wsx_core::task::manager::{
+    pending_approvals, Author, ManagerEvent, ManagerRequest, ManagerResponse, Party,
+};
 use wsx_core::task::owner::{self};
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::store::{self, TaskDir};
@@ -300,11 +302,25 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
             name,
             goal,
             agent,
+            brief,
             said,
         } => {
+            // ^ Only a chat forks: the owner's own --brief is refused before anything is read.
+            if brief && !acting_as_manager() {
+                bail!("--brief forks the owner's message of the lead's turn: the lead's agent passes it with --owner-said; nothing was done");
+            }
             let (project, main) = lifecycle("chat new", project, said.owner_said)?;
             let project_id = store::project_id(&project, &main);
             let goal = goal.as_deref().map(read_goal).transpose()?;
+            if brief {
+                return fork(
+                    &project,
+                    &main,
+                    (&name, agent.as_deref()),
+                    said.owner_said,
+                    json,
+                );
+            }
             chats::create(&project_id, &name, goal.as_deref(), agent.as_deref())?;
             let message = format!("chat {name} is open; `wsx task say --to {name}` talks to it");
             if json {
@@ -357,10 +373,11 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
             let (project, main) = lifecycle("chat close", project, said.owner_said)?;
             chat_of_repo(&name, &store::project_id(&project, &main))?;
             let exe = std::env::current_exe().context("cannot find the wsx binary")?;
-            let handed = owner::close_chat((&project, &main), &exe, &name, launch_manager(&main))?;
-            let message = match handed {
-                true => format!("chat {name} is closed; its notes stay, its open tasks are the main chat's"),
-                false => format!("chat {name} is closed; its notes stay. {project} has no main chat now: its open tasks have no chat"),
+            let closed = owner::close_chat((&project, &main), &exe, &name, launch_manager(&main))?;
+            let message = match closed {
+                owner::Closed::Handed => format!("chat {name} is closed; its notes stay, its open tasks are the main chat's"),
+                owner::Closed::NoMain => format!("chat {name} is closed; its notes stay. {project} has no main chat now: its open tasks have no chat"),
+                owner::Closed::ForkUndone => format!("chat {name} is closed before it owned a task: the fork is undone"),
             };
             if json {
                 return print_json(&json!({ "chat": name, "state": "closed", "message": message }));
@@ -423,6 +440,111 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
             Ok(())
         }
     }
+}
+
+/// `chat new --brief`: the lead (the main chat with no goal) forks the owner's message `said` of
+/// its turn into the new chat `name`, which starts on it as the owner's own message (its first
+/// turn may act on it). The text and the goal (its first line) come from the lead's log, never
+/// from the agent. A name used before is refused: it would reopen that chat's log. A message
+/// forks once. ref: docs/tasks.md "Lead and forks"
+fn fork(
+    project: &str,
+    main: &Path,
+    (name, agent): (&str, Option<&str>),
+    said: Option<u64>,
+    json: bool,
+) -> Result<()> {
+    let asker = actor().chat().map(str::to_string);
+    let (Some(asker), Some(said)) = (asker, said) else {
+        bail!("--brief forks the owner's message of the lead's turn; nothing was done");
+    };
+    let project_id = store::project_id(project, main);
+    let origin = ManagerDir::existing(&asker)?.context("the asking chat has no folder")?;
+    if store::main_chat(&project_id).as_deref() != Some(asker.as_str())
+        || !chats::goal(&origin).trim().is_empty()
+    {
+        bail!("only the lead forks: the project's main chat with no goal; nothing was done");
+    }
+    // ^ Any folder of that name, also one with no repo recorded, is a used name.
+    if ManagerDir::existing(name)?.is_some() || store::chats_root().join(name).exists() {
+        bail!("chat {name} was opened before: a fork needs a new name; nothing was done");
+    }
+    let log = origin.read_log()?;
+    if log.iter().any(
+        |entry| matches!(&entry.event, ManagerEvent::Forked { message, .. } if *message == said),
+    ) {
+        bail!("message {said} was forked already; nothing was done");
+    }
+    let text = log
+        .into_iter()
+        .find_map(|entry| match entry.event {
+            ManagerEvent::Message {
+                id,
+                from: Author::Owner,
+                text,
+                ..
+            } if id == said => Some(text),
+            _ => None,
+        })
+        .with_context(|| format!("there is no owner message {said}; nothing was done"))?;
+    // ^ The goal is the owner's own first line, so the new chat's "purpose" is the owner's words.
+    let goal: String = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .chars()
+        .take(200)
+        .collect();
+    let dir = chats::create(&project_id, name, Some(&goal), agent)?;
+    let sent = dir
+        .append(ManagerEvent::ForkedFrom {
+            from: asker.clone(),
+            message: said,
+        })
+        .and_then(|()| {
+            let exe = std::env::current_exe().context("cannot find the wsx binary")?;
+            owner::say(
+                project,
+                main,
+                &exe,
+                Some(name),
+                launch_manager(main),
+                text,
+                None,
+                Vec::new(),
+            )
+        });
+    let response = match sent {
+        Ok(response) if response.ok => response,
+        failed => {
+            let why = match failed {
+                Ok(response) => response.message,
+                Err(error) => format!("{error:#}"),
+            };
+            // ^ No half fork runs: its host stops and the chat closes (its name stays used).
+            let _ = wsx_core::task::replace::stop_host(&dir, main);
+            let _ = chats::close(name);
+            bail!("the fork to {name} did not start: {why}; chat {name} is closed");
+        }
+    };
+    // ^ The fork stands once the message is in; a lead note that fails is said, not undone.
+    let noted = origin.append(ManagerEvent::Forked {
+        to: name.to_string(),
+        message: said,
+    });
+    let message = match &noted {
+        Ok(()) => format!("forked message {said} to chat {name}; it starts on it"),
+        Err(error) => format!("forked message {said} to chat {name}; it starts on it, but the lead's note failed: {error:#}"),
+    };
+    if json {
+        return print_json(&json!({
+            "chat": name, "state": "open", "forked_from": asker, "message_id": said,
+            "brief_id": response.id, "goal": goal, "message": message,
+        }));
+    }
+    println!("{message}");
+    Ok(())
 }
 
 /// The repo of a chat lifecycle command: the owner's own `-p`; a chat's agent acts in its own

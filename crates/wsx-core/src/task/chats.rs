@@ -574,6 +574,32 @@ pub fn set_main(name: &str, project_id: &str) -> Result<()> {
     store::set_main_chat(project_id, name)
 }
 
+/// The chat that `dir` was forked from (`ForkedFrom`), while `dir` has never owned a task (open
+/// or ended): closing it then undoes the fork. ref: docs/tasks.md "Lead and forks"
+pub fn unstarted_fork(dir: &ManagerDir) -> Result<Option<String>> {
+    let from = dir
+        .read_log()?
+        .into_iter()
+        .find_map(|entry| match entry.event {
+            super::manager::ManagerEvent::ForkedFrom { from, .. } => Some(from),
+            _ => None,
+        });
+    let Some(from) = from else {
+        return Ok(None);
+    };
+    // ^ A chat's tasks can be in any repo it names; a record that cannot be read counts as
+    // owned, so a doubt keeps the hand-back.
+    let mut owned = false;
+    for project_id in repos(dir) {
+        for id in store::task_numbers(&project_id)? {
+            owned |= store::TaskDir::open(&project_id, id)
+                .and_then(|task| task.read_record())
+                .map_or(true, |record| record.owner_chat() == Some(dir.name()));
+        }
+    }
+    Ok((!owned).then_some(from))
+}
+
 /// How many of the closed chat's last decisions lines the hand-back carries.
 const HAND_BACK_DECISIONS: usize = 5;
 

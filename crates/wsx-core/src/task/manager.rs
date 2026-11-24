@@ -205,6 +205,15 @@ pub enum ManagerEvent {
     /// The owner dismissed the question of reply `id` (`wsx task dismiss`): it asks no more.
     /// No turn reads it. ref: docs/tasks.md "Manager"
     Answered { id: u64 },
+    /// This chat forked the owner's message `message` into the new chat `to` (`chat new
+    /// --brief`): that chat starts on it. No turn reads it. ref: docs/tasks.md "Lead and forks"
+    Forked { to: String, message: u64 },
+    /// This chat was forked from chat `from`: the owner's message `message` there is its first
+    /// message. No turn reads it.
+    ForkedFrom { from: String, message: u64 },
+    /// The owner closed the chat `to`, forked from this one, before it owned a task: the fork is
+    /// undone, and nothing was handed back. No turn reads it.
+    ForkUndone { to: String },
 }
 
 /// One event as the chat shows it, written where the event is made: `#3 done`,

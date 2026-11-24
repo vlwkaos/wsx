@@ -193,10 +193,27 @@ const INSTRUCTION_MESSAGE_TOKENS: u64 = 100_000;
 const MAX_NOTES_READ: u64 = 256 * 1024;
 
 /// A chat's instructions open with its name, when it is not the main chat, and its purpose, when
-/// the owner set one, then the manager's: one text for every chat. ref: docs/tasks.md "Chats"
+/// the owner set one, then the manager's: one text for every chat. The main chat with no purpose
+/// is the project's lead: it forks each goal into a new chat (docs/tasks.md "Lead and forks").
+/// It never says "wsx project ", which the fake manager reads its project after.
 fn chat_preamble(chat: Option<&str>, project: &str, goal: &str) -> String {
-    let who = chat.map(|chat| format!("You are {chat}, a chat of the project {project}."));
     let goal = goal.trim();
+    if chat.is_none() && goal.is_empty() {
+        return format!(
+            "You are the lead of the project {project}: its always-open chat, with no goal of your \
+             own. Answer a question, a status ask or a quick decision yourself. When the owner's \
+             message asks for work (a change, a fix, a goal that needs tasks), fork it and never \
+             hold it: run `wsx task chat new <name> --brief --owner-said <id> -p {project} --json`, \
+             where <id> is that message and <name> is short, lowercase with dashes, and new (`wsx \
+             task chat list -p {project} --json` lists every name used). The new chat starts on the \
+             owner's message, its goal the message's first line; reply in one line with where it \
+             went. For work, this replaces `chat new --goal` below. Work a chat already holds stays \
+             there: tell the owner which chat. A closed chat's hand-back is no ask: do not fork it. \
+             Another project's lead may write to you: answer it, or fork what it asks of this \
+             project.\n\n"
+        );
+    }
+    let who = chat.map(|chat| format!("You are {chat}, a chat of the project {project}."));
     let purpose = (!goal.is_empty()).then(|| format!("The owner's purpose for this chat:\n{goal}"));
     let parts: Vec<String> = who.into_iter().chain(purpose).collect();
     match parts.is_empty() {
