@@ -2,14 +2,14 @@
 //! Media sheet and the TUI's list, which only render it. ref: docs/tasks.md "Media"
 //!
 //! Three sources: the To check captures (`checks`), the pictures and videos that messages of the
-//! manager, its chats and its peers link (`files/<path>`), and the files an owner message
+//! lead, its chats and its peers link (`files/<path>`), and the files an owner message
 //! attached (the web's media store, which this crate cannot read: an upload's item names the
 //! store's file and the web says whether the store still has it).
 
 use super::chat::linked_files;
+use super::chat_host::{Author, ChatEntry, ChatEvent};
 use super::chats;
 use super::checks::{self, CheckState};
-use super::manager::{Author, ChatEntry, ChatEvent};
 use super::store::{contains_bytes, TaskDir, FIRST_READ_BYTES};
 use anyhow::Result;
 use serde::Serialize;

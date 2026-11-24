@@ -1,8 +1,8 @@
-//! The manager's notes (`notes/` in the chat's folder): what a fresh conversation opens with,
-//! what it is told is missing, and how a finished task's memo joins `context.md`. For the manager
+//! The lead's notes (`notes/` in the chat's folder): what a fresh conversation opens with,
+//! what it is told is missing, and how a finished task's memo joins `context.md`. For the lead
 //! the files are views of the records (`wsx_core::memory::manage`). ref: docs/tasks.md "Notes budget"
 
-use super::manager::{read_note, CONTEXT_FILE, DECISIONS_FILE};
+use super::chat_runner::{read_note, CONTEXT_FILE, DECISIONS_FILE};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use wsx_core::memory::backend;
@@ -81,7 +81,7 @@ fn size(lines: &[String], at: &[usize]) -> usize {
 }
 
 /// What a fresh conversation shows of the two files: the decisions newest first, then the
-/// project section the manager wrote (up to half of its budget) and the newest memo lines.
+/// project section the lead wrote (up to half of its budget) and the newest memo lines.
 fn split(notes: &Path) -> (View, View) {
     let decisions: Vec<String> = read_note(&notes.join(DECISIONS_FILE))
         .lines()
@@ -202,7 +202,7 @@ pub(super) fn matching(store: Store, said: &str) -> String {
     out
 }
 
-/// The manager's memo as a record (a line of at most `MEMO_LINE_CHARS`); the views follow.
+/// The lead's memo as a record (a line of at most `MEMO_LINE_CHARS`); the views follow.
 /// `landed` is the commit and diff paths of a landed task; `project` the registered project
 /// that ran the task when it is not the store's own. Returns the views that were edited
 /// by hand meanwhile. ref: docs/tasks.md "Memo"

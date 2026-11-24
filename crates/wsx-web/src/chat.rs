@@ -1303,7 +1303,7 @@ pub fn notice_line(target: &Target, state: AgentState) -> Option<String> {
 }
 const NOTICE_CHARS: usize = 120;
 
-/// A task worker, its `-hand` session or the manager: its task or the project chat shows it,
+/// A task worker, its `-hand` session or the lead: its task or the project chat shows it,
 /// so the lists leave it out (store.js `listedSessions`). wsx-core owns the rule.
 fn is_task_session(target: &Target) -> bool {
     let provider = target
@@ -1386,7 +1386,7 @@ fn prompt_of(site: &Site, media: &Media, text: &str, attachments: &[String]) -> 
 }
 
 /// The text with its attachments' paths under the attachment header, as an agent reads
-/// them (the session chat and the manager chat).
+/// them (the session chat and the chat).
 pub fn with_attachments(
     site: &Site,
     media: &Media,
@@ -1523,7 +1523,7 @@ fn provider_name(provider: &str) -> String {
 
 /// A message's quote line (`quote_of`), or none when it has no words.
 fn quote_line(text: &str) -> Option<String> {
-    Some(wsx_core::task::manager::quote_of(text)).filter(|quote| !quote.is_empty())
+    Some(wsx_core::task::chat_host::quote_of(text)).filter(|quote| !quote.is_empty())
 }
 
 fn queued_view(queued: &crate::queue::Queued, media: &Media) -> Value {
@@ -1573,7 +1573,7 @@ fn private_name(relative: &Path) -> bool {
         || ["pem", "key", "p12", "pfx", "env", "jks"].contains(&extension)
 }
 
-/// Undo what `send` and the broker added to a user message, for display only. The manager
+/// Undo what `send` and the broker added to a user message, for display only. The lead
 /// chat reads its owner messages through it too.
 pub fn sent_message(text: &str, media: &Media) -> (String, Vec<Attachment>) {
     let text = unwrap_paste(text);

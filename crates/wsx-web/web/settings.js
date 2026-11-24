@@ -8,7 +8,7 @@ import { AllUsage } from "./usage.js";
 
 // The two switches of this device (docs/web-client.md "Notifications").
 const SWITCHES = [
-  ["manager", "Manager needs me", "Tasks, approvals, things to check", "task_view"],
+  ["manager", "Needs you", "Tasks, approvals, things to check", "task_view"],
   ["agents", "An agent needs me", "Input needed or an error"],
 ];
 

@@ -1,4 +1,4 @@
-//! What a task host and a manager host need from any headless agent: one process per
+//! What a task host and a chat host need from any headless agent: one process per
 //! conversation, messages in, progress and turn results out. Each adapter (claude.rs) maps
 //! its own stream to these types; the hosts never read an adapter's wire format.
 //! ref: docs/tasks.md "Agents"
@@ -103,7 +103,7 @@ pub fn hung_turn(quiet: Duration, refusal: bool) -> TurnResult {
 
 /// An error result that says the agent's sign-in failed (Claude's `Failed to authenticate:
 /// OAuth session expired ...`). Only a new sign-in helps, and a running agent process keeps
-/// its old credentials, so the retry needs a new process. ref: docs/tasks.md "Manager"
+/// its old credentials, so the retry needs a new process. ref: docs/tasks.md "Chat host"
 pub fn auth_failed(text: &str) -> bool {
     let text = text.to_ascii_lowercase();
     // ^ Claude Code (2.1.316) names a real sign-in failure by its cause: "Failed to
@@ -128,7 +128,7 @@ pub fn auth_failed(text: &str) -> bool {
 /// The words of a turn: every text block the agent said, in order, joined with a blank line.
 /// A block of `-` or nothing is dropped, so a turn that says only `-` has no words and stays
 /// quiet. With no block seen, the stream's own `fallback` (Claude's `result`) is the text.
-/// ref: docs/tasks.md "Manager"
+/// ref: docs/tasks.md "Chat host"
 pub fn turn_text(blocks: &[String], fallback: String) -> String {
     if blocks.is_empty() {
         return fallback;
@@ -136,7 +136,7 @@ pub fn turn_text(blocks: &[String], fallback: String) -> String {
     let said: Vec<&str> = blocks
         .iter()
         .map(|block| block.trim())
-        .filter(|block| !wsx_core::task::manager::says_nothing(block))
+        .filter(|block| !wsx_core::task::chat_host::says_nothing(block))
         .collect();
     said.join("\n\n")
 }
@@ -168,7 +168,7 @@ impl TurnResult {
     /// a `-` or empty reply has none): the answer may be in the thinking. Both adapters count
     /// the thinking, so one rule serves both; an error result is judged before (`on_result`). ref: docs/tasks.md "Reply text"
     pub fn answered_in_thinking(&self) -> bool {
-        let said = if wsx_core::task::manager::says_nothing(&self.text) {
+        let said = if wsx_core::task::chat_host::says_nothing(&self.text) {
             0
         } else {
             self.text.trim().chars().count()
@@ -203,7 +203,7 @@ pub struct Launch {
     pub env: Vec<(String, std::ffi::OsString)>,
     /// Put first on `PATH`, so the agent's commands find this wsx build.
     pub path_prefix: Option<PathBuf>,
-    /// `--plugin-dir`: the manager's plugin of the owner's skills.
+    /// `--plugin-dir`: the lead's plugin of the owner's skills.
     pub plugin_dirs: Vec<PathBuf>,
     /// A stand-in's one call: no tools and no stored conversation.
     pub minimal: bool,
@@ -384,7 +384,7 @@ pub fn fallback(names: &[String], now_ms: u64, role: policy::Role) -> Option<Cho
     })
 }
 
-/// The agent that answers the owner while the manager's is held: the first of `names` that
+/// The agent that answers the owner while the lead's is held: the first of `names` that
 /// fills the stand-in job, else the local floor when its endpoint answers. None: nobody
 /// answers. ref: docs/tasks.md "Agents"
 pub fn stand_in(names: &[String], now_ms: u64) -> Option<Choice> {
@@ -421,7 +421,7 @@ pub enum Next {
 }
 
 /// The one rule of where a host goes, asked before every turn and at every look of a wait by
-/// the task host and the manager host: `home` is the own (adapter, model), `current` the pair
+/// the task host and the chat host: `home` is the own (adapter, model), `current` the pair
 /// in use. ref: docs/tasks.md "Agents"
 pub fn next(home: (&str, &str), current: (&str, &str), ask: Ask, now_ms: u64) -> Next {
     let own = account(home.0, home.1);

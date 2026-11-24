@@ -1,12 +1,12 @@
-//! The chats: `say`, `chat`, `search` (docs/tasks.md "Manager", "Chats").
+//! The chats: `say`, `chat`, `search` (docs/tasks.md "Chat host", "Chats").
 
 use super::approve::owner_only;
 use crate::cli::load_config;
 use crate::cli::PromptSource;
 use crate::runtime_util::print_json;
 use crate::task::args::ChatCmd;
-use crate::task::manager;
-use crate::task::{acting_as_chat, actor, launch_manager, open, project_entry};
+use crate::task::chat_runner;
+use crate::task::{acting_as_chat, actor, launch_chat, open, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -14,27 +14,27 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::memory::{backend, index::Target};
 use wsx_core::task::chat::{self, Reading, Window};
-use wsx_core::task::chats;
-use wsx_core::task::manager::{
+use wsx_core::task::chat_host::{
     pending_approvals, Author, ChatEvent, ChatRequest, ChatResponse, Party,
 };
+use wsx_core::task::chats;
 use wsx_core::task::owner::{self};
 use wsx_core::task::store::ChatDir;
 use wsx_core::task::store::{self, TaskDir};
 use wsx_core::task::text;
 use wsx_core::task::MAX_MESSAGE_BYTES;
 
-pub(crate) fn ensure_manager(project: Option<&str>) -> Result<(bool, ChatDir)> {
+pub(crate) fn ensure_lead(project: Option<&str>) -> Result<(bool, ChatDir)> {
     let (name, main) = project_entry(project)?;
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
-    owner::ensure_manager(&name, &main, &exe, None, launch_manager(&main))
+    owner::ensure_lead(&name, &main, &exe, None, launch_chat(&main))
 }
 
 /// Start the repo's service unless it runs.
 pub(crate) fn ensure_repo(project: Option<&str>) -> Result<bool> {
     let (name, main) = project_entry(project)?;
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
-    owner::ensure_repo(&name, &main, &exe, launch_manager(&main))
+    owner::ensure_repo(&name, &main, &exe, launch_chat(&main))
 }
 
 /// `wsx chat say --uses <dep>`: one message to the main chat of every registered project whose
@@ -90,7 +90,7 @@ pub(crate) fn mail_command(
                 &registered.path,
                 &exe,
                 Some(&target),
-                launch_manager(&registered.path),
+                launch_chat(&registered.path),
                 format!("To the projects that use {dep} ({file} here):\n{text}"),
                 from,
                 Vec::new(),
@@ -131,7 +131,7 @@ pub(crate) fn mail_command(
     Ok(())
 }
 
-/// `wsx chat say`: to the manager, or to the open chat `to`, from the owner or a chat.
+/// `wsx chat say`: to the lead, or to the open chat `to`, from the owner or a chat.
 /// `from_chat`: this host's agent sends it (`reply`: as a reply); the sender is the acting chat
 /// (the first as `manager`), and for another project (`-p`) its first chat is the one reached.
 pub(crate) fn say_command(
@@ -183,13 +183,13 @@ pub(crate) fn say_command(
         &main,
         &exe,
         chat,
-        launch_manager(&main),
+        launch_chat(&main),
         text,
         from,
         Vec::new(),
     )?;
     // ^ A chat's message always answers in JSON: its host logs `sent` from
-    // the `text` (broker.rs). ref: docs/tasks.md "Managers talk"
+    // the `text` (broker.rs). ref: docs/tasks.md "Mail"
     if json || sent.is_some() {
         let mut value = serde_json::to_value(&response)?;
         if let Some(text) = sent {
@@ -204,7 +204,7 @@ pub(crate) fn say_command(
         );
     }
     if !response.ok {
-        bail!("the manager refused the message: {}", response.message);
+        bail!("the chat refused the message: {}", response.message);
     }
     Ok(())
 }
@@ -238,7 +238,7 @@ pub(crate) fn chat(
         |_| {},
     )?;
     let asks: Vec<u64> = page.asks.iter().map(|ask| ask.id).collect();
-    // ^ The owner messages a held manager has not taken into a turn, as the chats show them.
+    // ^ The owner messages a held lead has not taken into a turn, as the chats show them.
     let waiting = chat::waiting_ids(&page.log);
     if json {
         return print_json(&json!({
@@ -376,8 +376,8 @@ pub(crate) fn history(dir: &TaskDir, limit: usize, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `wsx chat dismiss <id>`: the owner's; the manager answers a question, it does not close it.
-/// ref: docs/tasks.md "Manager"
+/// `wsx chat dismiss <id>`: the owner's; the lead answers a question, it does not close it.
+/// ref: docs/tasks.md "Chat host"
 pub(crate) fn dismiss(project: Option<&str>, id: u64, json: bool) -> Result<()> {
     owner_only("dismiss")?;
     let (name, main) = project_entry(project)?;
@@ -498,7 +498,7 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
             let (project, main) = lifecycle("chat close", project, said.owner_said)?;
             chat_of_repo(&name, &store::project_id(&project, &main))?;
             let exe = std::env::current_exe().context("cannot find the wsx binary")?;
-            let closed = owner::close_chat((&project, &main), &exe, &name, launch_manager(&main))?;
+            let closed = owner::close_chat((&project, &main), &exe, &name, launch_chat(&main))?;
             let message = match closed {
                 owner::Closed::Handed => format!("chat {name} is closed; its notes stay, its open tasks are the main chat's"),
                 owner::Closed::NoMain => format!("chat {name} is closed; its notes stay. {project} has no main chat now: its open tasks have no chat"),
@@ -611,7 +611,7 @@ fn fork(
     let (goal, brief_id) = owner::fork(
         (project, main),
         &exe,
-        launch_manager(main),
+        launch_chat(main),
         &origin,
         said,
         text,
@@ -672,23 +672,23 @@ pub(crate) fn read_goal(path: &Path) -> Result<String> {
     Ok(goal)
 }
 
-/// `wsx chat lead`: start the project's manager, or say that it runs.
-pub(crate) fn manager_command(project: Option<&str>, json: bool) -> Result<()> {
-    let (started, dir) = ensure_manager(project)?;
+/// `wsx chat lead`: start the project's lead, or say that it runs.
+pub(crate) fn lead_command(project: Option<&str>, json: bool) -> Result<()> {
+    let (started, dir) = ensure_lead(project)?;
     let state = if started { "started" } else { "running" };
     if json {
         let (project, main) = project_entry(project)?;
         let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
-        let name = settings.manager_shown_name(&project);
+        let name = settings.lead_shown_name(&project);
         print_json(&json!({ "state": state, "socket": dir.socket_path(), "name": name }))
     } else {
-        println!("manager {state}");
+        println!("lead {state}");
         Ok(())
     }
 }
 
-/// `wsx task boundary-profile`: the manager's Seatbelt profile (hidden; the boundary scenario).
+/// `wsx task boundary-profile`: the lead's Seatbelt profile (hidden; the boundary scenario).
 pub(crate) fn boundary_profile(project: Option<&str>, untrusted: bool) -> Result<()> {
     let (name, main) = project_entry(project)?;
-    manager::print_profile(&name, &main, untrusted)
+    chat_runner::print_profile(&name, &main, untrusted)
 }

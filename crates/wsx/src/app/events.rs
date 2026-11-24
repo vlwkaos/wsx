@@ -272,8 +272,8 @@ impl App {
             }
             self.spawn_runtime_capture();
             self.spawn_plugin_view();
-            if self.manager_asks_timer.ready() {
-                self.spawn_manager_asks();
+            if self.chat_asks_timer.ready() {
+                self.spawn_chat_asks();
             }
             self.spawn_git_local_for_selected();
             self.tick_git_fetch();
@@ -307,8 +307,8 @@ impl App {
     /// seconds, for the Workspace row's accent and marks (docs/tasks.md "TUI"). The counts are
     /// read again only when the project's store changed (`store::stamp`, which stats files
     /// and parses none) or its `land.auto` did.
-    pub(super) fn spawn_manager_asks(&mut self) {
-        if self.manager_asks_rx.is_some() {
+    pub(super) fn spawn_chat_asks(&mut self) {
+        if self.chat_asks_rx.is_some() {
             return;
         }
         let projects: Vec<(String, PathBuf)> = self
@@ -318,7 +318,7 @@ impl App {
             .map(|project| (project.name.clone(), project.path.clone()))
             .collect();
         let (tx, rx) = mpsc::channel();
-        self.manager_asks_rx = Some(rx);
+        self.chat_asks_rx = Some(rx);
         let cache = Arc::clone(&self.needs_cache);
         std::thread::spawn(move || {
             let mut cache = cache
@@ -355,20 +355,20 @@ impl App {
         });
     }
 
-    pub(super) fn apply_manager_asks(&mut self) {
-        let Some(rx) = &self.manager_asks_rx else {
+    pub(super) fn apply_chat_asks(&mut self) {
+        let Some(rx) = &self.chat_asks_rx else {
             return;
         };
         match rx.try_recv() {
             Ok(attention) => {
-                self.manager_asks_rx = None;
-                if attention != self.manager_asks {
-                    self.manager_asks = attention;
+                self.chat_asks_rx = None;
+                if attention != self.chat_asks {
+                    self.chat_asks = attention;
                     self.needs_redraw = true;
                 }
             }
             Err(mpsc::TryRecvError::Empty) => {}
-            Err(mpsc::TryRecvError::Disconnected) => self.manager_asks_rx = None,
+            Err(mpsc::TryRecvError::Disconnected) => self.chat_asks_rx = None,
         }
     }
 

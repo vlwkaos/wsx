@@ -1,4 +1,4 @@
-//! The TUI's manager chat of one project, or another chat's (docs/tasks.md "Chats"): the
+//! The TUI's chat of one project, or another chat's (docs/tasks.md "Chats"): the
 //! conversation, the open To check items and the waiting approvals, read off the UI thread when a file of the task store changes, and the
 //! owner's message and decisions, also run off it. ref: docs/tasks.md "TUI"
 use crate::{
@@ -19,11 +19,11 @@ use wsx_core::config::project::load_task_config;
 use wsx_core::task::{
     call_socket,
     chat::{self, ChatRow, Page, Reading, RowKind, Window},
-    checks::{self, CheckItem, CheckState},
-    manager::{
+    chat_host::{
         activity, answering, pending_approvals, waiting_approvals, Answers, ChatRequest,
         ChatResponse,
     },
+    checks::{self, CheckItem, CheckState},
     media::{self, Kind},
     owner,
     store::{self, ChatDir, Stamp},
@@ -376,7 +376,7 @@ pub enum Focus {
 
 struct View {
     rows: Vec<ChatRow>,
-    /// The other side's shown name: the manager's (`manager_shown_name`), or the chat's.
+    /// The other side's shown name: the lead's (`lead_shown_name`), or the chat's.
     name: String,
     items: Vec<Item>,
     activity: Option<String>,
@@ -398,7 +398,7 @@ struct Read {
 
 pub struct ChatScreen {
     pub project: String,
-    /// The chat this one talks to; none is the manager.
+    /// The chat this one talks to; none is the lead.
     pub chat: Option<String>,
     main: PathBuf,
     store: String,
@@ -456,7 +456,7 @@ pub struct ChatScreen {
     /// and the find's count all read it, so a frame wraps nothing new.
     wrapped: RefCell<Option<Wrapped>>,
     /// What a message answers (`r` on an open question or a To check item): its line and what
-    /// it answers, sent with its quote (`manager::answering`).
+    /// it answers, sent with its quote (`chat_runner::answering`).
     reply: Option<(String, Answers)>,
     /// What runs now ("Sending", "Failing c3"), until its answer comes.
     pub acting: Option<String>,
@@ -489,7 +489,7 @@ impl ChatScreen {
         let name = chat.clone().unwrap_or_else(|| {
             load_task_config(&main)
                 .unwrap_or_default()
-                .manager_shown_name(&project)
+                .lead_shown_name(&project)
                 .to_string()
         });
         let mut chat = Self {
@@ -659,7 +659,7 @@ impl ChatScreen {
         changed
     }
 
-    /// The name the chat shows for the other side: the chat's, or the manager's shown name.
+    /// The name the chat shows for the other side: the chat's, or the lead's shown name.
     pub fn who(&self) -> &str {
         &self.name
     }
@@ -701,7 +701,7 @@ impl ChatScreen {
         });
     }
 
-    /// Send the composer's text as `wsx chat say` does, starting the manager when needed.
+    /// Send the composer's text as `wsx chat say` does, starting the lead when needed.
     pub fn send(&mut self) {
         let mut text = self.composer.value().trim().to_string();
         if text.is_empty() || self.acting.is_some() {
@@ -724,7 +724,7 @@ impl ChatScreen {
                         &main,
                         &exe,
                         chat.as_deref(),
-                        crate::task::launch_manager(&main),
+                        crate::task::launch_chat(&main),
                         text.clone(),
                         None,
                         Vec::new(),
@@ -733,7 +733,7 @@ impl ChatScreen {
             match said {
                 Ok(response) if response.ok => ("Sent".into(), false, None),
                 Ok(response) => (
-                    format!("The manager refused it: {}", response.message),
+                    format!("The chat refused it: {}", response.message),
                     true,
                     Some(text),
                 ),
@@ -772,7 +772,7 @@ impl ChatScreen {
     fn dismiss(&mut self, id: u64) {
         self.run(format!("Dismissing {id}"), move |_, _, store| {
             let done = ChatDir::main(&store).and_then(|dir| {
-                let dir = dir.ok_or_else(|| anyhow::anyhow!("no manager"))?;
+                let dir = dir.ok_or_else(|| anyhow::anyhow!("no chat"))?;
                 chat::dismiss(&dir, id, wsx_core::task::now_unix_ms())
             });
             match done {
@@ -811,7 +811,7 @@ impl ChatScreen {
 }
 
 /// The conversation as rows (`chat_rows`), the open items then the waiting approvals, and
-/// the manager's last step. No manager folder yet is an empty chat.
+/// the lead's last step. No lead folder yet is an empty chat.
 fn read(
     project: &str,
     store: &str,
@@ -828,14 +828,14 @@ fn read(
         approvals,
         items: checked,
     } = chat::read_for(dir, (project, store), &settings, &window, |_| {})?;
-    let shown = settings.manager_shown_name(project);
+    let shown = settings.lead_shown_name(project);
     let name = dir.map_or_else(
         || shown.to_string(),
         |dir| wsx_core::task::chats::shown_name(dir, shown),
     );
-    // ^ A fallback's while one runs, else the chat's own or the manager's (docs/tasks.md "Agents").
+    // ^ A fallback's while one runs, else the chat's own or the lead's (docs/tasks.md "Agents").
     let agent = dir
-        .map(|dir| view::manager_agent(dir, &settings))
+        .map(|dir| view::chat_agent(dir, &settings))
         .and_then(|agent| view::agent_label(&agent));
     let mut items: Vec<Item> = checked
         .into_iter()
@@ -965,7 +965,7 @@ impl ChatScreen {
             (Action::InputChar('i') | Action::Select, _) => self.focus = Focus::Compose,
             (Action::InputChar('p'), Some(Item::Check(_))) => self.close_check(CheckState::Passed),
             (Action::InputChar('f'), Some(Item::Check(_))) => self.close_check(CheckState::Failed),
-            // ^ A reply to an item closes it as replied, its words the manager's note; "x" skips
+            // ^ A reply to an item closes it as replied, its words the lead's note; "x" skips
             // it (wsx-core `checks::item_reply`).
             (Action::InputChar('r'), Some(Item::Check(item))) => {
                 self.reply_to(item.check, Answers::Check(item.id))

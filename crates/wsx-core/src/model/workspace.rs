@@ -109,13 +109,13 @@ pub struct TaskConfig {
     /// its context is at least half of `rotate_tokens`: the prompt cache is gone, so a resume
     /// writes the whole context again (`tasks.agent.rotateIdleSeconds`, 0 = never).
     pub rotate_idle_seconds: u64,
-    /// Seconds after the last answer at which a worker or the manager that waits on
+    /// Seconds after the last answer at which a worker or the lead that waits on
     /// something the host knows gets a ping turn that keeps its prompt cache warm
     /// (`tasks.agent.keepWarmSeconds`, 0 = never). ref: docs/tasks.md "Context rotation"
     pub keep_warm_seconds: u64,
-    /// `tasks.skills: owner` lends workers the owner's skills, as the manager has them.
+    /// `tasks.skills: owner` lends workers the owner's skills, as the lead has them.
     pub owner_skills: bool,
-    /// `tasks.skillsOnly`: the only skills a worker gets (the manager keeps all); empty = all.
+    /// `tasks.skillsOnly`: the only skills a worker gets (the lead keeps all); empty = all.
     pub skills_only: Vec<String>,
     pub workflow: TaskWorkflow,
     pub checks: Vec<String>,
@@ -149,9 +149,9 @@ pub struct TaskConfig {
     /// an agent may write (docs/tasks.md "Permissions").
     pub writable: Vec<std::path::PathBuf>,
     /// `tasks.captureBudgetMb`: the most a project's kept To check captures may take; over it the
-    /// manager host removes the oldest decided ones (docs/tasks.md "To check").
+    /// chat host removes the oldest decided ones (docs/tasks.md "To check").
     pub capture_budget_mb: u64,
-    /// Whether the manager's land, deploy and release need the owner's approval (only a
+    /// Whether the lead's land, deploy and release need the owner's approval (only a
     /// release does by default: docs/tasks.md "Approvals").
     pub land_approve: bool,
     /// Whether the host lands a task as soon as its checks pass (docs/tasks.md "Landing").
@@ -172,24 +172,24 @@ pub struct TaskConfig {
     /// Shell commands that deploy or release one default-branch commit.
     pub deploy_command: Option<String>,
     pub release_command: Option<String>,
-    /// The project manager (`tasks.chats`).
+    /// The project lead (`tasks.chats`).
     /// `tasks.lead.name`: the name the owner reads instead of the project's, when set.
     pub lead_name: Option<String>,
-    /// `tasks.chats.adapter`: the manager's headless adapter (docs/tasks.md "Agents").
+    /// `tasks.chats.adapter`: the lead's headless adapter (docs/tasks.md "Agents").
     pub chats_adapter: String,
     pub chats_model: String,
     /// The model of a turn with only wsx's events and no review due; `None` (`off`) keeps
-    /// `chats_model`. ref: docs/tasks.md "Manager"
+    /// `chats_model`. ref: docs/tasks.md "Chat host"
     pub chats_event_model: Option<String>,
     /// `tasks.chats.rotateTokens` when the owner set it; else `None`, and
-    /// `manager_rotate_limit` decides by adapter.
+    /// `chats_rotate_limit` decides by adapter.
     pub chats_rotate_tokens: Option<u64>,
     /// `tasks.lead.model`: the lead's model (the main chat with no goal), `same` for
     /// `chats_model`; `None` takes `lead_model`'s default. ref: docs/tasks.md "Lead and forks"
     pub lead_model: Option<String>,
     /// `tasks.lead.rotateTokens`; `None` takes `lead_rotate_limit`'s default.
     pub lead_rotate_tokens: Option<u64>,
-    /// Quiet seconds after which the manager writes the owner a recap; 0 is off. The config
+    /// Quiet seconds after which the lead writes the owner a recap; 0 is off. The config
     /// says minutes (`recapMinutes`, a fraction allowed). ref: docs/tasks.md "Recap"
     pub chats_recap_secs: u64,
     /// `tasks.prune.idleDays` in seconds: a session idle this long is closed; 0 is off.
@@ -208,7 +208,7 @@ pub struct TaskWorkflow {
     pub build: String,
     /// Added to the review job's instructions (docs/tasks.md "Review").
     pub review: String,
-    /// The prompt of the task the manager host starts when session notes are newer than the
+    /// The prompt of the task the chat host starts when session notes are newer than the
     /// last one; empty is off.
     pub idle: String,
     /// The worker's turns in order, each one step; empty is one build turn. The project's
@@ -241,10 +241,10 @@ pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 /// The effort of a `task new --size small` task: high on every model, never lower.
 pub const SMALL_EFFORT: &str = "high";
 
-/// Context size after which a manager's next turn starts a fresh conversation, the one rule:
+/// Context size after which a chat's next turn starts a fresh conversation, the one rule:
 /// the owner's `rotateTokens` wins; else 400000 for Claude (its 1M window, so a conversation
-/// is kept longer) and 150000 for any other adapter. ref: docs/tasks.md "Manager"
-pub fn manager_rotate_limit(explicit: Option<u64>, adapter: &str) -> u64 {
+/// is kept longer) and 150000 for any other adapter. ref: docs/tasks.md "Chat host"
+pub fn chats_rotate_limit(explicit: Option<u64>, adapter: &str) -> u64 {
     explicit.unwrap_or(if adapter == "claude" {
         400_000
     } else {
@@ -253,15 +253,15 @@ pub fn manager_rotate_limit(explicit: Option<u64>, adapter: &str) -> u64 {
 }
 
 /// The lead's context limit: it answers and forks goals, so what it carries is the ledger, the
-/// notes and the handover, not a goal's work. Unset: 120000, or the adapter's manager limit when
+/// notes and the handover, not a goal's work. Unset: 120000, or the adapter's lead limit when
 /// that is lower. ref: docs/tasks.md "Lead and forks"
 pub fn lead_rotate_limit(explicit: Option<u64>, adapter: &str) -> u64 {
-    explicit.unwrap_or_else(|| manager_rotate_limit(None, adapter).min(120_000))
+    explicit.unwrap_or_else(|| chats_rotate_limit(None, adapter).min(120_000))
 }
 
 impl TaskConfig {
-    /// The lead's model: `leadModel` (`same`: the manager's); unset, `sonnet` on Claude and the
-    /// manager's on any other adapter. ref: docs/tasks.md "Lead and forks"
+    /// The lead's model: `leadModel` (`same`: the lead's); unset, `sonnet` on Claude and the
+    /// lead's on any other adapter. ref: docs/tasks.md "Lead and forks"
     pub fn lead_model(&self) -> &str {
         match self.lead_model.as_deref() {
             Some("same") => &self.chats_model,
@@ -280,9 +280,9 @@ impl TaskConfig {
         }
     }
 
-    /// The manager's name as the owner reads it: `tasks.lead.name`, else its project's
+    /// The lead's name as the owner reads it: `tasks.lead.name`, else its project's
     /// name (docs/tasks.md "Config").
-    pub fn manager_shown_name<'a>(&'a self, project: &'a str) -> &'a str {
+    pub fn lead_shown_name<'a>(&'a self, project: &'a str) -> &'a str {
         self.lead_name.as_deref().unwrap_or(project)
     }
 }
@@ -330,7 +330,7 @@ impl Default for TaskConfig {
             chats_adapter: "claude".into(),
             chats_model: "opus".into(),
             // ^ Off: a switch writes the conversation into the other model's cache, which cost
-            // more than the turn saved (scripts/bench-manager.py, docs/tasks.md "Manager").
+            // more than the turn saved (scripts/bench-lead.py, docs/tasks.md "Chat host").
             chats_event_model: None,
             chats_rotate_tokens: None,
             lead_model: None,

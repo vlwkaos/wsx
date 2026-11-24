@@ -3583,7 +3583,7 @@ capabilities = ["terminal_view"]
 # covers the default auto land.
 # ^ `minFreeGb: 0`: tasks must not wait on this machine's free disk. `approve: true` keeps
 # the manager's land an approval request for the journey. `rotateTokens`: the manager's BIG (200k)
-# must pass its limit, which is 400000 on Claude when unset (docs/tasks.md "Manager").
+# must pass its limit, which is 400000 on Claude when unset (docs/tasks.md "Chat host").
 PANEL_CONFIG = '''panels:
   - name: device
     command: [scripts/device.sh]
@@ -3810,12 +3810,12 @@ def task_journey(args):
         for name in ('demo', 'ui', 'calm', *(folder.name for folder in session_projects)):
             js('chat', 'new', name, '-p', name)
         plans_id = 'plans-' + hashlib.sha256(str(plans).encode()).hexdigest()[:8]
-        manager_dir = state / 'wsx/tasks/chats/plans'
+        chat_dir = state / 'wsx/tasks/chats/plans'
         (state / 'wsx/tasks/chats').mkdir(mode=0o700, parents=True, exist_ok=True)
-        manager_dir.mkdir(mode=0o700)
+        chat_dir.mkdir(mode=0o700)
         (state / 'wsx/tasks' / plans_id).mkdir(mode=0o700, exist_ok=True)
         (state / 'wsx/tasks' / plans_id / 'home.json').write_text(json.dumps({'chat': 'plans'}))
-        (manager_dir / 'chat.json').write_text(json.dumps({'repos': [plans_id]}))
+        (chat_dir / 'chat.json').write_text(json.dumps({'repos': [plans_id]}))
         questions = ['Should the fold keep five rows?', 'Can #92 wait for Monday?', 'Shall I ship #93 today?', 'Is the since line right?']
         # ^ The log opens with the two questions that stay open and six spare ones: the four plain
         # owner messages the journey sends to plans answer four (the run showed four gone), and the two the web check sends before it asks (its RUN
@@ -3867,7 +3867,7 @@ def task_journey(args):
         event(93, 'landed', 'Release notes', 'Release notes are ready:\n\n| Part | State |\n|---|---|\n| wsx | built |\n\n- the notes are written', counts=[2, 2])
         # ^ A failed sign-in, three times in an hour: stopped, paused, a new conversation at the third,
         # resumed. Nothing shows between them, so the chat folds them into one row
-        # (docs/tasks.md "Manager"); the first hold is a pause alone, a row of its own.
+        # (docs/tasks.md "Chat host"); the first hold is a pause alone, a row of its own.
         reason = 'Failed to authenticate. API Error: 401'
         hold_at = old_log[-1]['unix_ms']
         old_log.append({'kind': 'limit', 'until': '09:11', 'unix_ms': hold_at + 100})
@@ -3888,7 +3888,7 @@ def task_journey(args):
         old_log.append({'kind': 'sent', 'to': 'ui', 'text': '', 'unix_ms': old_log[-1]['unix_ms'] + 1000})
         # ^ Four questions: an owner reply that quotes the third answers it, and a message with no
         # quote the newest open one; the first two still ask, each until a quote, a dismiss or a
-        # later plain message answers it (docs/tasks.md "Questions" under "Manager").
+        # later plain message answers it (docs/tasks.md "Questions" under "Chat host").
         asked_at = old_log[-1]['unix_ms'] + 1000
         for n, question in enumerate(questions[2:]):
             old_log.append({'kind': 'reply', 'id': 9903 + n, 'to': [9001], 'text': question, 'asks': True, 'unix_ms': asked_at + n * 1000})
@@ -3910,10 +3910,10 @@ def task_journey(args):
                            {'kind': 'delivered', 'ids': [5001 + 2 * n], 'unix_ms': at + 1},
                            {'kind': 'reply', 'id': 5002 + 2 * n, 'to': [5001 + 2 * n], 'quiet': False, 'unix_ms': at + 2000,
                             'text': answer}])
-        (manager_dir / 'log.1.jsonl').write_text(''.join(json.dumps(entry) + '\n' for entry in filler + old_log))
+        (chat_dir / 'log.1.jsonl').write_text(''.join(json.dumps(entry) + '\n' for entry in filler + old_log))
         # ^ Ids only grow (the host counts in state.json): its new entries come after this log's 9906, so
         # a read around an old id finds the file that holds it (docs/tasks.md "Log window").
-        state_file = manager_dir / 'state.json'
+        state_file = chat_dir / 'state.json'
         manager_state = json.loads(state_file.read_text()) if state_file.exists() else {}
         state_file.write_text(json.dumps({**manager_state, 'next_id': 10000}))
         # `plans`: #1 waits for the owner (its worker was refused a tool and asks), #2 is ready.
@@ -3953,10 +3953,10 @@ def task_journey(args):
 
             # A deploy of the default branch tip: the brief says it is up to date until a task lands.
             # A deploy by hand answers that it started; its detached run records the result.
-            # ^ A task event wakes no turn (docs/tasks.md "Manager"; the host sees a task that is ready and lands
+            # ^ A task event wakes no turn (docs/tasks.md "Chat host"; the host sees a task that is ready and lands
             # within one second only as landed), so the lands wait for a waking event. The deploy's
             # is one, and it comes before any message of another manager, whose turn would take the
-            # lands along and answer them in its own reply (manager.rs `accept`).
+            # lands along and answer them in its own reply (chat_runner.rs `accept`).
             assert js('project', 'deploy', '-p', 'ui')['started'] is True
             wait(lambda: js('project', 'deployed', '-p', 'ui')['deploy'].get('behind') == 0, 'the deploy of ui was recorded', timeout=60)
             def lands_answered():
@@ -3975,7 +3975,7 @@ def task_journey(args):
             assert [e['text'] for e in sent] == ['ui is fine'], sent
 
             # ^ plans' turn held only ui's reply: its short answer is quiet, as one to events
-            # (docs/tasks.md "Manager").
+            # (docs/tasks.md "Chat host").
             def answered():
                 entries = js('chat', 'read', '-p', 'plans')['entries']
                 asked = {e['id'] for e in entries if e.get('from') == 'chat-reply:ui'}
@@ -4419,7 +4419,7 @@ merge_seconds = 3
         assert owner.request('GET', '/' + row['attachments'][0]['url'])[1] == mock
         js('task', 'close', live, '--discard', '-p', 'demo')
         ok('a task picture: task/<n>/<path> of an open task is granted and served; off the copy, a symlink out, a private name, a non-picture, a closed, an unknown task and a leading zero are not')
-        # --- The usage limit holds the manager (docs/tasks.md "Manager"): the turn that met the limit
+        # --- The usage limit holds the manager (docs/tasks.md "Chat host"): the turn that met the limit
         # keeps its bubble; a message sent meanwhile has not been taken into a turn, so its row is
         # queued, after the others; once the manager resumes and takes it, it is a normal bubble.
         held = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'LIMIT 8 STATUS held'})[1]
@@ -4811,7 +4811,7 @@ merge_seconds = 3
         first, second, third = replied
         manager_chat = lambda: steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]
         # ^ A turn of the fake agent costs 1000 micro USD; the usage `turns` also counts wsx's own posts (usage none).
-        manager_turns = lambda: steady(owner, 'GET', '/api/tasks/%d/usage' % demo)[1]['today']['manager']['cost_micro_usd'] // 1000
+        chat_turns = lambda: steady(owner, 'GET', '/api/tasks/%d/usage' % demo)[1]['today']['manager']['cost_micro_usd'] // 1000
 
         def reply_to(item, words):
             status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': '> check %s\n\n%s' % (item['id'], words)})
@@ -4820,11 +4820,11 @@ merge_seconds = 3
         # ^ The landings' events are read in turns of their own, some seconds after the landings:
         # count turns from a manager that stayed idle for 8 s.
         def settled():
-            seen = manager_turns()
+            seen = chat_turns()
             time.sleep(8)
-            return manager_turns() == seen and not manager_chat()['busy']
+            return chat_turns() == seen and not manager_chat()['busy']
         wait(settled, 'the manager idle before the x replies', timeout=120)
-        turns, tasks_before = manager_turns(), len(js('task', 'list', '-p', 'demo', '--all')['tasks'])
+        turns, tasks_before = chat_turns(), len(js('task', 'list', '-p', 'demo', '--all')['tasks'])
         reply_to(first, '  x ')
         reply_to(second, 'ㅌ')
         wait(lambda: [item['id'] for item in steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open']] == [third['id']],
@@ -4835,7 +4835,7 @@ merge_seconds = 3
             refused = cli('project', 'check', 'pass', item['id'], '-p', 'demo', expect=1)
             assert 'already skipped' in refused.stderr, refused.stderr
         assert len(js('task', 'list', '-p', 'demo', '--all')['tasks']) == tasks_before, js('task', 'list', '-p', 'demo', '--all')
-        assert manager_turns() == turns, (manager_turns(), turns)
+        assert chat_turns() == turns, (chat_turns(), turns)
         rows = manager_chat()['rows']
         # ^ The fake worker's items all say "open the file": the two replies and the two lines read the same.
         sent = [r['text'] for r in rows if r.get('author') == 'owner' and r['kind'] == 'message' and r.get('quoted') == first['check']]
@@ -4845,20 +4845,20 @@ merge_seconds = 3
         # ^ An item that is closed already is said so in the same line, with no error.
         reply_to(first, 'X')
         wait(lambda: any(r['text'] == 'Already skipped: ' + first['check'] for r in manager_chat()['rows']), 'the closed item line')
-        assert manager_turns() == turns
+        assert chat_turns() == turns
         # ^ Other words to an item close it as replied, and the words reach the manager as its note (docs/tasks.md "To check").
         reply_to(third, 'x marks the spot')
-        wait(lambda: manager_turns() > turns, 'a turn for words to an item', timeout=60)
+        wait(lambda: chat_turns() > turns, 'a turn for words to an item', timeout=60)
         assert steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open'] == []
         refused = cli('project', 'check', 'pass', third['id'], '-p', 'demo', expect=1)
         assert 'already replied' in refused.stderr, refused.stderr
         # ^ An "x" that quotes a message is words for the manager, as before.
         wait(lambda: not manager_chat()['busy'], 'the manager idle after the words', timeout=90)
-        turns = manager_turns()
+        turns = chat_turns()
         quoted = next(r for r in reversed(manager_chat()['rows']) if r['kind'] == 'message' and r.get('author') == 'manager' and r.get('id'))
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': '> message %d\n\nx' % quoted['id']})
         assert status == 200 and body['ok'], body
-        wait(lambda: manager_turns() > turns, 'a turn for an x to a message', timeout=60)
+        wait(lambda: chat_turns() > turns, 'a turn for an x to a message', timeout=60)
         assert steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open'] == []
         wait(lambda: not manager_chat()['busy'], 'the manager idle after the x to a message', timeout=90)
         ok('to check: a reply of x or ㅌ skips the item with no manager turn and a line in the chat, a closed item is said so, other words close it as replied and reach the manager, an x to a message reaches the manager')
@@ -4959,7 +4959,7 @@ merge_seconds = 3
             # ^ The open questions by the rule, read from plans' log files by this test: the quoted
             # third and the newest are answered; each later plain owner message answers one more.
             def open_questions():
-                log_files = [manager_dir / 'log.1.jsonl', manager_dir / 'log.jsonl']
+                log_files = [chat_dir / 'log.1.jsonl', chat_dir / 'log.jsonl']
                 still = []
                 for line in (line for path in log_files if path.exists() for line in path.read_text().splitlines()):
                     entry = json.loads(line)

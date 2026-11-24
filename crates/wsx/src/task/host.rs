@@ -24,17 +24,18 @@ use wsx_core::memory::start::{self as memory_start, Start};
 use wsx_core::memory::{manage as memory_manage, Store};
 use wsx_core::model::workspace::WorkflowStep;
 use wsx_core::runtime;
-use wsx_core::task::manager::asks_owner;
+use wsx_core::task::chat_host::asks_owner;
 use wsx_core::task::replace::{Binary, HANDOFF_FILE};
 use wsx_core::task::schedule;
 use wsx_core::task::status::{self, STOPPED_BY_REQUEST};
 use wsx_core::task::text::question;
 use wsx_core::task::view::{checked_files, checked_title, short_commit};
 use wsx_core::task::{
-    build, call_host, checks,
+    build, call_host,
+    chat_host::{Author, Level, Short},
+    checks,
     copy::{self, Rebase},
     failure::{self, NO_SPACE},
-    manager::{Author, Level, Short},
     now_unix_ms, owner,
     owner::HOST_TIMEOUT,
     report, stall,
@@ -966,7 +967,7 @@ impl Host {
     }
 
     /// The parked build starts: the copy follows the default branch, then the build step's
-    /// turn carries the adds that waited and `text`, the manager's words for the end of the
+    /// turn carries the adds that waited and `text`, the lead's words for the end of the
     /// wait.
     fn start_parked_build(&mut self, text: Option<String>) -> Result<String> {
         let note = self.follow_default_branch()?;
@@ -1282,7 +1283,7 @@ impl Host {
     }
 
     /// Wait for task `task` to land and then add `text`, or wait no more (`None`). The
-    /// manager host ends the wait. ref: docs/tasks.md "After another task"
+    /// chat host ends the wait. ref: docs/tasks.md "After another task"
     fn after(
         &mut self,
         task: Option<u32>,
@@ -1358,7 +1359,7 @@ impl Host {
             task,
             landed: text.is_some(),
         });
-        // ^ A task that has not started starts, also when `task` was closed: the manager hears
+        // ^ A task that has not started starts, also when `task` was closed: the lead hears
         // of it from the event of the closing.
         if self.awaits_start() {
             self.start_after_wait()?;
@@ -2184,7 +2185,7 @@ impl Host {
             ));
             return;
         }
-        // ^ A plan has nothing to check: the manager reads it and continues the task with an
+        // ^ A plan has nothing to check: the lead reads it and continues the task with an
         // add. ref: docs/tasks.md "Workflow"
         if self.record.plan {
             self.record.plan = false;
@@ -3724,7 +3725,7 @@ impl Host {
                 self.finish_landing(landed, state);
             }
             // ^ A result that ends with a question for the owner is the owner's need, not the
-            // review job's: the task waits ready on the answer. ref: docs/tasks.md "Manager"
+            // review job's: the task waits ready on the answer. ref: docs/tasks.md "Chat host"
             None if state == TaskState::Ready && asks_owner(&result.summary) => {
                 let question = result.summary.trim_end().lines().last().unwrap_or_default();
                 self.move_to(
@@ -3754,7 +3755,7 @@ impl Host {
     /// Start the review job of a ready revision when it is due (`status::under_review`: the
     /// project lands by itself, checks prove the task, nothing holds it, no review of this
     /// revision ended) and no message waits for the worker. A fresh agent of the project's
-    /// manager reads what the task was asked and its diff and answers `land` or `changes`.
+    /// lead reads what the task was asked and its diff and answers `land` or `changes`.
     /// After `MAX_REVIEW_ROUNDS` rounds of changes the owner decides. ref: docs/tasks.md "Review"
     fn start_review(&mut self) {
         if self.review.is_some()
@@ -4170,7 +4171,7 @@ impl Host {
 
     /// A child lands only on a parent at rest, ready or failed: its commits would join a
     /// running turn or checks, and its new revision would drop a wait for the owner or a
-    /// plan. The child stays ready and the manager lands it again on the parent's next
+    /// plan. The child stays ready and the lead lands it again on the parent's next
     /// event. ref: docs/tasks.md "Parent tasks"
     fn require_parent_at_rest(&self) -> Result<()> {
         let Some(parent) = self.record.parent else {
@@ -4424,7 +4425,7 @@ impl Host {
         }
         let stricter = std::mem::take(&mut self.stricter_contracts);
         if !stricter.is_empty() {
-            self.tell_manager(
+            self.tell_chat(
                 format!(
                     "contract-stricter-{}-r{}",
                     self.record.id, self.record.revision
@@ -4442,7 +4443,7 @@ impl Host {
     }
 
     /// The adds that waited for the worker while the checks of this land ran are not delivered:
-    /// the task is `landed`. Each is logged as it came; the manager hears of them once, with
+    /// the task is `landed`. Each is logged as it came; the lead hears of them once, with
     /// their first lines, since their sender was told "queued".
     fn refuse_queued(&mut self, commit: &str) {
         let adds: Vec<String> = self.pending.drain(..).collect();
@@ -4463,7 +4464,7 @@ impl Host {
         self.say(&text);
         // ^ The add was its sender's action: the chat that owns the task hears it and acts again.
         let owner = self.record.owner_chat().map(str::to_string);
-        self.tell_manager(
+        self.tell_chat(
             format!("add-dropped-{}-{commit}", self.record.id),
             text,
             owner,
@@ -4697,7 +4698,7 @@ impl Host {
     }
 
     /// The failures of `results` that other tasks of the project show too: each is posted to
-    /// the manager once, as one event that wakes a turn; returns them for the worker whose
+    /// the lead once, as one event that wakes a turn; returns them for the worker whose
     /// run it was (and for main's, see `check_run_done`). ref: docs/tasks.md "Checks, revisions and report"
     fn shared_failures(&self, results: &[CheckResult]) -> Vec<failure::SharedFailure> {
         let now = now_unix_ms();
@@ -4724,16 +4725,16 @@ impl Host {
         // ^ A failure only main's CI run has is the project's known one: no event, the ready
         // event names it from the evidence.
         for failure in found.iter().filter(|f| f.tasks.len() > 1 || f.outside) {
-            self.tell_manager(failure.key(), failure.event(), None, false);
+            self.tell_chat(failure.key(), failure.event(), None, false);
         }
         found
     }
 
     /// Post `text` as one event, once per `key` a day, to the chat `chat` (none: the main chat).
     /// With `wakes` it starts a turn; without, the owner reads it and the chat reads it with its
-    /// next turn, as a task's events (docs/tasks.md "Manager"). The chat starts if it does not
+    /// next turn, as a task's events (docs/tasks.md "Chat host"). The chat starts if it does not
     /// run, and a busy host takes a while to answer, so it goes from its own thread.
-    fn tell_manager(&self, key: String, text: String, chat: Option<String>, wakes: bool) {
+    fn tell_chat(&self, key: String, text: String, chat: Option<String>, wakes: bool) {
         let (project, main, project_id) = (
             self.record.project.clone(),
             self.record.project_path.clone(),
@@ -4751,7 +4752,7 @@ impl Host {
                     &main,
                     &exe,
                     chat.as_deref(),
-                    super::launch_manager(&main),
+                    super::launch_chat(&main),
                     text.clone(),
                     Some(Author::Events),
                     vec![if wakes { short } else { short.quiet() }],
@@ -4975,7 +4976,7 @@ pub(super) fn light(command: &str) -> bool {
 }
 
 /// A project command's environment: no `WSX_*` variable from the caller, so its tests act as
-/// the owner, not as the worker or manager that started it. Checks and deploys share it.
+/// the owner, not as the worker or lead that started it. Checks and deploys share it.
 pub(super) fn clean_env(process: &mut std::process::Command) {
     for (name, _) in std::env::vars_os() {
         if name.to_string_lossy().starts_with("WSX_") {

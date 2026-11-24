@@ -1,5 +1,5 @@
 //! The lead forks the owner's message into a new chat that starts on it; closing that chat
-//! before it owns a task undoes the fork. Through the real CLI and the fake manager agent.
+//! before it owns a task undoes the fork. Through the real CLI and the fake lead agent.
 //! ref: docs/tasks.md "Lead and forks"
 mod common;
 
@@ -257,10 +257,10 @@ fn launched_models(fixture: &Fixture) -> Vec<String> {
 }
 
 /// The lead answers and forks goals, so it runs on `tasks.lead.model` (unset on Claude:
-/// sonnet) while a chat with a goal keeps the manager's model (opus); `tasks.lead.model: same` gives
-/// the lead the manager's model again. ref: docs/tasks.md "Lead and forks"
+/// sonnet) while a chat with a goal keeps the lead's model (opus); `tasks.lead.model: same` gives
+/// the lead the lead's model again. ref: docs/tasks.md "Lead and forks"
 #[test]
-fn the_lead_runs_on_its_own_model_and_goal_chats_on_the_managers() {
+fn the_lead_runs_on_its_own_model_and_goal_chats_on_the_chats_model() {
     let fixture = Fixture::new();
     let id = fixture.json(&["chat", "say", "hello", "--json"])["id"]
         .as_u64()
@@ -276,7 +276,7 @@ fn the_lead_runs_on_its_own_model_and_goal_chats_on_the_managers() {
         .unwrap();
     reply_to(&fixture, "billing", id);
     assert_eq!(launched_models(&fixture), ["sonnet", "opus"]);
-    // ^ A goal set on the main chat ends its lead role: its agent starts again on the manager's model.
+    // ^ A goal set on the main chat ends its lead role: its agent starts again on the lead's model.
     let set = fixture.wsx(&["chat", "goal", "demo", "--goal", goal.to_str().unwrap()]);
     assert!(set.status.success(), "{set:?}");
     let id = fixture.json(&["chat", "say", "again", "--json"])["id"]

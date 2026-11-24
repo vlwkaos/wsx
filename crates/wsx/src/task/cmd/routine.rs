@@ -1,11 +1,11 @@
 //! `digest`, `checkin` and `post`: what a routine does for the chat (docs/tasks.md "Routines").
 
 use crate::cli::RoutineCmd;
-use crate::task::{acting_as_chat, actor, launch_manager, project_entry};
+use crate::task::{acting_as_chat, actor, launch_chat, project_entry};
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::time::{Duration, Instant};
-use wsx_core::task::manager::{Author, ChatEntry, ChatEvent, Level};
+use wsx_core::task::chat_host::{Author, ChatEntry, ChatEvent, Level};
 use wsx_core::task::owner::{self};
 use wsx_core::task::store::ChatDir;
 use wsx_core::task::view::digest_lines;
@@ -21,7 +21,7 @@ pub(crate) const DAY_MS: u64 = 24 * 3600 * 1000;
 /// The events message of a digest in the chat.
 pub(crate) const DIGEST_EVENT: &str = "daily digest";
 
-/// How long a digest waits for a manager turn to end, and how often it asks again.
+/// How long a digest waits for a chat turn to end, and how often it asks again.
 pub(crate) const DIGEST_TURN_WAIT: Duration = Duration::from_secs(30 * 60);
 
 pub(crate) const DIGEST_TURN_POLL: Duration = Duration::from_secs(5);
@@ -44,7 +44,7 @@ pub(crate) const CHECKIN_MAX_SECS: i64 = 7 * 24 * 3600;
 
 pub(crate) const CHECKIN_WHY_CHARS: usize = 500;
 
-/// Set the project manager's one pending check-in: its host sends `why` as an event at the
+/// Set the project lead's one pending check-in: its host sends `why` as an event at the
 /// time, and a new check-in replaces the last. It is no routine and runs no command, so it
 /// needs no `--owner-said`. ref: docs/tasks.md "Check-in"
 pub(crate) fn checkin(
@@ -79,7 +79,7 @@ pub(crate) fn checkin(
         &name,
         &main,
         &exe,
-        launch_manager(&main),
+        launch_chat(&main),
         chat,
         at_secs as u64 * 1000,
         why.to_string(),
@@ -154,7 +154,7 @@ pub(crate) fn post_key(key: &str) -> Result<String, String> {
 pub(crate) const POST_KEY_WINDOW_SECS: u64 = 10 * 60;
 
 /// `wsx task post`: stdin's lines to the chat, as the digest posts its own. It needs only the
-/// state folder (`HOME` or `XDG_STATE_HOME`) and the running manager host, no `WSX_*`
+/// state folder (`HOME` or `XDG_STATE_HOME`) and the running chat host, no `WSX_*`
 /// variable. ref: docs/tasks.md "Routines"
 pub(crate) fn post(
     project: Option<&str>,
@@ -195,9 +195,9 @@ pub(crate) fn post(
     }
 }
 
-/// Post `lines()` as wsx's `event` message to the chat, with no manager turn: none when it is
+/// Post `lines()` as wsx's `event` message to the chat, with no lead turn: none when it is
 /// empty. A turn that runs refuses it, so this tries again for up to 30 minutes, at once
-/// failing when the manager itself runs it inside that turn. ref: docs/tasks.md "Routines"
+/// failing when the lead itself runs it inside that turn. ref: docs/tasks.md "Routines"
 pub(crate) fn post_when_free(
     main: &Path,
     name: &str,
@@ -210,7 +210,7 @@ pub(crate) fn post_when_free(
     if wsx_core::task::chats::open_main(&store::project_id(name, main)).is_err() {
         return Ok(());
     }
-    // ^ The manager's own command runs inside the turn it would wait for.
+    // ^ The lead's own command runs inside the turn it would wait for.
     let wait = match acting_as_chat() {
         true => Duration::ZERO,
         false => DIGEST_TURN_WAIT,
@@ -226,12 +226,12 @@ pub(crate) fn post_when_free(
             name,
             main,
             &exe,
-            launch_manager(main),
+            launch_chat(main),
             event.into(),
             lines.join("\n"),
             level,
         )
-        .with_context(|| format!("the manager host of {name} is not running"))?;
+        .with_context(|| format!("the lead of {name} is not running"))?;
         if response.ok {
             return Ok(());
         }
@@ -243,7 +243,7 @@ pub(crate) fn post_when_free(
 }
 
 /// `wsx project routine`: the project's routines. A role changes nothing of the project's own, and
-/// the manager writes one only with the owner's word (docs/tasks.md "Chats", "Routines").
+/// the lead writes one only with the owner's word (docs/tasks.md "Chats", "Routines").
 pub(crate) fn routine_command(action: RoutineCmd, owner_said: Option<u64>) -> Result<()> {
     use RoutineCmd::{Add, Delete, Edit};
     // ^ wsxd runs a routine outside the agent boundary: only the owner writes one.

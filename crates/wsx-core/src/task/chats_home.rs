@@ -4,8 +4,8 @@
 //! after that time, or when the chat is opened again (`clear`). The owner also puts a chat in one
 //! folder of Home with `folder` beside it (`set_folder`, `sections`). ref: docs/tasks.md "Chats"
 
+use super::chat_host::{Author, ChatEntry, ChatEvent, Short};
 use super::chats::{self, CHAT_FILE};
-use super::manager::{Author, ChatEntry, ChatEvent, Short};
 use super::store::{self, ChatDir};
 use anyhow::{bail, Result};
 use std::io::ErrorKind;

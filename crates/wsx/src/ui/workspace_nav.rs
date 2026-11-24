@@ -55,7 +55,7 @@ impl SidebarLayout {
         }
     }
 
-    /// Sidebar content with a local title and one blank row, used by Group Manager.
+    /// Sidebar content with a local title and one blank row, used by Group manager.
     pub fn with_header(area: Rect) -> Self {
         Self::from_area(area, true)
     }

@@ -110,9 +110,9 @@ pub fn list(provider: &str, worktree: &Path, project: &Path) -> Listing {
     listing(provider == "claude", found, skipped)
 }
 
-/// The owner's skills a manager of `project` gets as `owner:<name>` (`<config root>/skills`),
-/// for the manager composer's `/` list. Skills only, same bounds as `list`.
-/// ref: docs/tasks.md "Manager"
+/// The owner's skills a chat of `project` gets as `owner:<name>` (`<config root>/skills`),
+/// for the lead composer's `/` list. Skills only, same bounds as `list`.
+/// ref: docs/tasks.md "Chat host"
 pub fn owner_skills(project: &Path) -> Listing {
     let mut found = Vec::new();
     let mut skipped = 0;

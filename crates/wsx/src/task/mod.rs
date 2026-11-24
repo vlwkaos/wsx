@@ -5,6 +5,7 @@ mod agent;
 mod args;
 mod boundary;
 pub mod broker;
+pub mod chat_runner;
 mod claude;
 mod cmd;
 mod egress;
@@ -14,7 +15,6 @@ mod hosting;
 mod instructions;
 mod ledger;
 pub(crate) mod limit;
-pub mod manager;
 mod notes;
 mod pi;
 mod repo;
@@ -28,9 +28,7 @@ use anyhow::{bail, Context, Result};
 pub use args::{moved, ChatGroup, Common, Invocation, ProjectGroup, TaskCmd};
 use args::{DeployArgs, ReleaseArgs};
 use cmd::approve::{approve, deny};
-use cmd::chat::{
-    boundary_profile, chat, chat_command, dismiss, manager_command, say_command, search,
-};
+use cmd::chat::{boundary_profile, chat, chat_command, dismiss, lead_command, say_command, search};
 use cmd::check::check;
 use cmd::commit::commit;
 use cmd::deploy::{deploy, deployed, push, sync};
@@ -53,7 +51,7 @@ use wsx_core::task::{
 use wsx_core::{ops, runtime};
 
 /// Ends the evidence name of a check-run pass the host recorded in a done result; the
-/// manager's ready event repeats it. ref: docs/tasks.md "Check-run"
+/// lead's ready event repeats it. ref: docs/tasks.md "Check-run"
 const RECORDED_BY_HOST: &str = "(recorded by the host)";
 const HOST_START_WAIT: Duration = Duration::from_secs(10);
 pub fn run(command: Invocation, common: Common) -> Result<()> {
@@ -142,7 +140,7 @@ pub fn run(command: Invocation, common: Common) -> Result<()> {
             action.inherit(project, json);
             routine_command(action, owner_said)
         }
-        Invocation::Chat(ChatGroup::Lead) => manager_command(project, json),
+        Invocation::Chat(ChatGroup::Lead) => lead_command(project, json),
         Invocation::Chat(ChatGroup::Say {
             text,
             from_chat,
@@ -183,9 +181,9 @@ pub fn run(command: Invocation, common: Common) -> Result<()> {
             bail!("`wsx task check-run` runs only inside a task's worker, through its host")
         }
         Invocation::Task(TaskCmd::ManagerHost { project_id, chat }) => {
-            manager::run_old(&project_id, chat.as_deref())
+            chat_runner::run_old(&project_id, chat.as_deref())
         }
-        Invocation::Task(TaskCmd::ChatHost { chat }) => manager::run(&chat),
+        Invocation::Task(TaskCmd::ChatHost { chat }) => chat_runner::run(&chat),
         Invocation::Task(TaskCmd::RepoHost { project_id }) => repo::run(&project_id),
         Invocation::Task(TaskCmd::Slot { command }) => std::process::exit(slot::run(&command)?),
         Invocation::Task(TaskCmd::TouchedScenarios { since }) => {
@@ -326,9 +324,9 @@ fn ask_host_ok(dir: &TaskDir, request: &HostRequest) -> Result<HostResponse> {
     Ok(response)
 }
 
-/// Create the manager's or a chat's hidden session (its label), starting wsxd when it does
+/// Create the lead's or a chat's hidden session (its label), starting wsxd when it does
 /// not run.
-pub(crate) fn launch_manager(main: &Path) -> impl Fn(String, Vec<String>) -> Result<()> + '_ {
+pub(crate) fn launch_chat(main: &Path) -> impl Fn(String, Vec<String>) -> Result<()> + '_ {
     move |label, argv| {
         ops::create_session_launch(
             &runtime::Client::local(),
@@ -342,7 +340,7 @@ pub(crate) fn launch_manager(main: &Path) -> impl Fn(String, Vec<String>) -> Res
     }
 }
 
-/// True when the manager's or a chat's agent runs this command (`WSX_TASK_ACTOR`).
+/// True when the lead's or a chat's agent runs this command (`WSX_TASK_ACTOR`).
 /// ^ A guard against the agents' mistakes, not a security boundary: anything that runs
 /// commands as the owner can unset it (docs/tasks.md "Approvals").
 fn acting_as_chat() -> bool {
@@ -353,20 +351,20 @@ fn actor() -> Actor {
     Actor::from_env()
 }
 
-/// Whether the manager's agent must ask the owner for an outward command: its configured
+/// Whether the lead's agent must ask the owner for an outward command: its configured
 /// `tasks.*.approve`, or always when the agent is untrusted (`WSX_TASK_TRUST`, set by its
 /// broker). ref: docs/tasks.md "Permissions"
 fn asks_owner(configured: bool) -> bool {
     acting_as_chat() && (configured || Trust::from_env() == Trust::Untrusted)
 }
 
-/// `--owner-said` and `--after` of an action the manager runs: the owner's message (trusted
+/// `--owner-said` and `--after` of an action the lead runs: the owner's message (trusted
 /// agents only) and the task whose landing the approved action waits for. `--after` is the
-/// manager's and needs the message. ref: docs/tasks.md "Approvals"
+/// lead's and needs the message. ref: docs/tasks.md "Approvals"
 fn outward_said(said: &args::OwnerSaidAfter) -> Result<(Option<u64>, Option<u32>)> {
     let owner = owner_said(said.said.owner_said);
     if said.after.is_some() && !(acting_as_chat() && owner.is_some()) {
-        bail!("--after is the manager's, with --owner-said from a trusted agent; nothing was recorded");
+        bail!("--after is a chat's, with --owner-said from a trusted agent; nothing was recorded");
     }
     Ok((owner, said.after))
 }

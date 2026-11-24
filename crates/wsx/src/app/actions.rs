@@ -617,7 +617,7 @@ impl App {
         };
     }
 
-    /// Enter in a routine's detail: the manager chat of its project, at the message of the last
+    /// Enter in a routine's detail: the chat of its project, at the message of the last
     /// run's end.
     pub(super) fn open_routine_message(&mut self, project_path: &Path, id: u64) {
         let Some(project) = self
@@ -1193,7 +1193,7 @@ impl App {
                     return None;
                 };
                 let path = &self.workspace.projects[*idx].path;
-                self.manager_asks
+                self.chat_asks
                     .get(path)
                     .is_some_and(ProjectAttention::any)
                     .then_some(index)

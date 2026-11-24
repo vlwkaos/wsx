@@ -7,7 +7,7 @@ use crate::task::args::ProjectCmd;
 use crate::task::{acting_as_chat, project_entry};
 use anyhow::Result;
 use serde_json::json;
-use wsx_core::task::manager::{ApprovalAction, ApprovalLine};
+use wsx_core::task::chat_host::{ApprovalAction, ApprovalLine};
 use wsx_core::task::store;
 use wsx_core::{ops, runtime};
 
@@ -32,7 +32,7 @@ pub(crate) fn project(action: ProjectCmd, project: Option<&str>, json: bool) -> 
         }
         clone => (path, clone),
     };
-    // ^ The refusals come first, so the manager hears them and the owner is never asked for
+    // ^ The refusals come first, so the lead hears them and the owner is never asked for
     // what would be refused.
     let folder = ops::check_add_project(&config, &path, clone.as_deref())?;
     if acting_as_chat() {

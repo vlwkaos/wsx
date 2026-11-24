@@ -1,4 +1,4 @@
-//! What the task host and the manager host share: their owner-only socket and the
+//! What the task host and the chat host share: their owner-only socket and the
 //! report of their pane's state through the existing agent report path.
 //! ref: docs/tasks.md "Host"
 

@@ -16,7 +16,7 @@ pub enum Outcome {
 pub struct NewChat {
     pub name: InputState,
     pub goal: InputState,
-    /// The `[[agents]]` entries a chat may run on, and the one picked (none: the manager's).
+    /// The `[[agents]]` entries a chat may run on, and the one picked (none: the lead's).
     pub agents: Vec<(String, chats::ChatAgent)>,
     pub agent: Option<usize>,
     /// 0 name, 1 goal, 2 agent (only with entries).
@@ -25,7 +25,7 @@ pub struct NewChat {
     pub error: Option<String>,
     /// The project's open chats, whose names are taken.
     taken: Vec<String>,
-    /// The manager's agent in few words, which `default` runs on.
+    /// The lead's agent in few words, which `default` runs on.
     default_agent: Option<String>,
     /// Enter was pressed with no name.
     asked: bool,

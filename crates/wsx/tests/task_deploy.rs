@@ -1,6 +1,6 @@
 //! A failed deploy keeps the end of its output, and `wsx project deployed` shows it once its
 //! detached run ends (docs/tasks.md "Deploy and release"); `wsx project push` moves origin's
-//! default branch only as asked, and the manager's waiting requests replace one another and
+//! default branch only as asked, and the lead's waiting requests replace one another and
 //! run one at a time (docs/tasks.md "Push"). Drives the public CLI on an isolated
 //! HOME and state, with a local bare repository as origin; neither needs wsxd.
 
@@ -88,7 +88,7 @@ impl Fixture {
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
-    /// `wsx` as the manager runs it: a push or a force push asks the owner.
+    /// `wsx` as the lead runs it: a push or a force push asks the owner.
     fn manager(&self, args: &[&str]) -> Output {
         self.command(Path::new(env!("CARGO_BIN_EXE_wsx")))
             .env("WSX_TASK_ACTOR", "chat:demo")
@@ -186,7 +186,7 @@ fn a_failed_deploy_shows_the_end_of_its_output() {
     );
 }
 
-/// A deploy's tests act as the owner: the caller's `WSX_*` variables (a manager's
+/// A deploy's tests act as the owner: the caller's `WSX_*` variables (a chat's
 /// `WSX_TASK_ACTOR`) stay out;
 /// only `WSX_DEPLOY_COMMIT` is set (as for a check, docs/tasks.md "Deploy and release").
 #[test]

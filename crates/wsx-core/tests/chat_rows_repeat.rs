@@ -1,9 +1,9 @@
 //! A task event line repeated with no bubble between shows once, at any time gap
-//! (`chat_rows`). ref: docs/tasks.md "Manager"
+//! (`chat_rows`). ref: docs/tasks.md "Chat host"
 
 use serde_json::json;
 use wsx_core::task::chat::{chat_rows, Names};
-use wsx_core::task::manager::ChatEntry;
+use wsx_core::task::chat_host::ChatEntry;
 
 fn rows(log: Vec<serde_json::Value>) -> Vec<String> {
     let log: Vec<ChatEntry> = log

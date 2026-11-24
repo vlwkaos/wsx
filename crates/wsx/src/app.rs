@@ -327,7 +327,7 @@ pub(crate) type NeedsCache = HashMap<PathBuf, (store::Stamp, bool, Needs)>;
 /// What a project asks of the owner: the Workspace row's accent and marks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProjectAttention {
-    /// Its manager has an open question.
+    /// Its lead has an open question.
     pub asks: bool,
     pub needs: Needs,
 }
@@ -557,7 +557,7 @@ pub enum Mode {
     RoutineDetail {
         project_path: PathBuf,
         routine_name: String,
-        /// The events message that told of the last run's end: Enter opens the manager chat there.
+        /// The events message that told of the last run's end: Enter opens the chat there.
         message: Option<u64>,
         scroll: u16,
     },
@@ -1280,7 +1280,7 @@ pub struct App {
     /// A shell the Tasks view created, entered once a refresh lists it, and when it asked.
     pending_shell: Option<(runtime::SessionId, Instant)>,
     /// The Tasks view a shell was opened from, and that shell's pane: leaving that terminal
-    /// goes back to it, the manager chat or the task list (docs/tasks.md "TUI").
+    /// goes back to it, the chat or the task list (docs/tasks.md "TUI").
     terminal_return: Option<(runtime::PaneId, Box<crate::task_list::TaskList>)>,
     last_stream_reattach: Option<Instant>,
     // ^ docs/daemon-live-upgrade.md: this TUI re-executes into a replaced install.
@@ -1313,11 +1313,11 @@ pub struct App {
     /// What each project asks of the owner (an open question, tasks, approvals, To check items),
     /// read off the UI thread (docs/tasks.md "TUI"); one read at a time. Projects with none are
     /// left out.
-    manager_asks: HashMap<PathBuf, ProjectAttention>,
-    manager_asks_rx: Option<mpsc::Receiver<HashMap<PathBuf, ProjectAttention>>>,
+    chat_asks: HashMap<PathBuf, ProjectAttention>,
+    chat_asks_rx: Option<mpsc::Receiver<HashMap<PathBuf, ProjectAttention>>>,
     /// The need counts by project with the store stamp and `land.auto` they were read at.
     needs_cache: Arc<Mutex<NeedsCache>>,
-    manager_asks_timer: Timer,
+    chat_asks_timer: Timer,
     integration_scan_rx: mpsc::Receiver<Result<Vec<wsx_core::integration::IntegrationMetadata>>>,
     integration_metadata: Vec<wsx_core::integration::IntegrationMetadata>,
     pending_integration_demand: Option<wsx_core::integration::IntegrationTarget>,
@@ -1553,10 +1553,10 @@ impl App {
             routine_tx,
             routine_rx,
             routine_refresh_generation: HashMap::new(),
-            manager_asks: HashMap::new(),
-            manager_asks_rx: None,
+            chat_asks: HashMap::new(),
+            chat_asks_rx: None,
             needs_cache: Arc::default(),
-            manager_asks_timer: Timer::new(MANAGER_ASKS_INTERVAL_MS),
+            chat_asks_timer: Timer::new(MANAGER_ASKS_INTERVAL_MS),
             integration_scan_rx,
             integration_metadata: Vec::new(),
             pending_integration_demand: None,
@@ -1581,7 +1581,7 @@ impl App {
             app.spawn_runtime_refresh();
         }
         app.spawn_routine_refresh();
-        app.spawn_manager_asks();
+        app.spawn_chat_asks();
         app.spawn_repo_scan();
         Ok(app)
     }
@@ -1984,8 +1984,8 @@ impl App {
         }
     }
 
-    pub(crate) fn manager_asks(&self) -> &HashMap<PathBuf, ProjectAttention> {
-        &self.manager_asks
+    pub(crate) fn chat_asks(&self) -> &HashMap<PathBuf, ProjectAttention> {
+        &self.chat_asks
     }
 
     /// Projects the inactivity timer collapsed. The tree shows one as stale only while it has no

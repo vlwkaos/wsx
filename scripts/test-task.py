@@ -850,7 +850,7 @@ def manager_up(created):
     assert 'git commit' not in launch['instructions'] and 'only after the owner says yes' not in launch['instructions']
     page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'overview.md')
     assert Path(page).read_text() == unwritten and old_page.read_text() == unwritten, old_page
-    # ^ It uses the owner's skills (docs/tasks.md "Manager"); no allow list: nothing prompts. Only
+    # ^ It uses the owner's skills (docs/tasks.md "Chat host"); no allow list: nothing prompts. Only
     # the tools no wsx agent calls leave its request, and Bash output is capped.
     assert '--allowedTools' not in launch['argv'], launch['argv']
     assert launch['argv'][launch['argv'].index('--disallowedTools') + 1] == 'Workflow,ScheduleWakeup,ReportFindings', launch['argv']
@@ -877,7 +877,7 @@ def manager_up(created):
     assert len(follow) == 1 and 'the cap is 60 / 4,000' in follow[0]['message'], follow
     assert len(Path(page).read_text().splitlines()) == 70
     Path(page).write_text('# demo\n\n## Goal\n\nshort\n')
-    # ^ An expired sign-in (docs/tasks.md "Manager"): one `stopped` that says to sign in, no new
+    # ^ An expired sign-in (docs/tasks.md "Chat host"): one `stopped` that says to sign in, no new
     # conversation, a new agent process for each try, and an owner message tries at once.
     signed_in = work / 'signed-in'
     manager_log = home_dir(Path(page).parent) / 'log.jsonl'
@@ -918,7 +918,7 @@ def manager_up(created):
     failed = [e for e in entries() if 'OAuth session expired' in str(e)]
     assert [e['kind'] for e in failed] == ['agent', 'stopped', 'reply'], failed
     # ^ The hold for the sign-in reaches the owner once, at once: a post at level bad with the
-    # reason, the retry and the open tasks (docs/tasks.md "Manager").
+    # reason, the retry and the open tasks (docs/tasks.md "Chat host").
     alert = failed[2]
     assert alert['post'] and alert['level'] == 'bad' and 'It tries again at' in alert['text'] \
         and re.search(r'(\d+ open tasks?: .+|No task is open)\.$', alert['text']), alert
@@ -1127,7 +1127,7 @@ def manager_up(created):
         time.sleep(EVENT_QUIET + 0.5)
         wait(manager_idle, why, 60)
 
-    # Usage (docs/tasks.md "Manager"): rotation looks at the last main model call's context, not
+    # Usage (docs/tasks.md "Chat host"): rotation looks at the last main model call's context, not
     # the result's sum over the turn's calls, nor a subagent's; a reply's cost is its own, not the
     # process's running `total_cost_usd`.
     summed = js('chat', 'say', 'SUMMED')
@@ -1136,7 +1136,7 @@ def manager_up(created):
     replies = [e for e in manager_entries() if e['kind'] == 'reply' and not e.get('post')]
     assert usage['input_tokens'] + usage['cache_read_tokens'] == 200000 and usage['context_tokens'] == 50000, usage
     assert usage['model'] == 'fake-manager' and usage['adapter'] == 'claude', usage
-    # Quotes (docs/tasks.md "Manager"): a reply that opens with `> message <id>` is stored with
+    # Quotes (docs/tasks.md "Chat host"): a reply that opens with `> message <id>` is stored with
     # that message's first line in the owner's quote format; a bad or unknown id drops the line and
     # the reply stands. The next turn names the id of the manager's last reply.
     asked_promise = js('chat', 'say', 'STATUS promise')
@@ -1157,7 +1157,7 @@ def manager_up(created):
     mine = raw_reply(js('chat', 'say', 'QUOTE %d keeps mine' % asked_promise['id'])['id'])
     assert mine['quote'] == asked_promise['id'] and mine['text'].startswith('> STATUS promise\n\nkeeps mine'), mine
     # ^ A task event logged during its turn would sit between: the events of earlier tasks land first.
-    # They start no turn of their own (docs/tasks.md "Manager"), so they join this one before it.
+    # They start no turn of their own (docs/tasks.md "Chat host"), so they join this one before it.
     manager_settled('the events before one owner message')
     one = js('chat', 'say', 'STATUS one owner message')
     own_words = raw_reply(one['id'])
@@ -1186,9 +1186,9 @@ def manager_up(created):
     jumped = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
         (r'(?m)^   \u258e STATUS$', b'['),
-        (r'(?m)^ MANAGER +Enter: open', b'\r'),
+        (r'(?m)^ LEAD +Enter: open', b'\r'),
         (r'(?m)^ You +\d\d:\d\d\n   STATUS$', b'\x1b'),
-        (r'(?m)^ MANAGER +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+        (r'(?m)^ LEAD +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
     assert 'jump' in jumped[2] and 'jump' not in jumped[4], jumped[4]
     # ^ A mermaid block the chat can draw shows as its diagram, its source one link under it; Enter
     # on that link shows the source. A type it does not draw is the link alone (docs/tasks.md "TUI").
@@ -1197,9 +1197,9 @@ def manager_up(created):
     diagrams = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
         (r'(?s)▸ diagram not drawn \(mermaid, 2 lines\).*│ Plan │.*│ Land │.*▸ mermaid source \(2 lines\)', b'['),
-        (r'(?m)^ MANAGER +Enter: open', b'\r'),
+        (r'(?m)^ LEAD +Enter: open', b'\r'),
         (r'(?s)▾ mermaid source \(2 lines\)\n +flowchart TD\n +Plan --> Land', b'\x1b'),
-        (r'(?m)^ MANAGER +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+        (r'(?m)^ LEAD +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
     assert 'zenuml' not in diagrams[2] and 'flowchart TD' not in diagrams[2], diagrams[2]
     # ^ A `#N` in a message is a link: Enter shows that task beside the chat from 120 columns, keys on
     # it; a number the project does not have says so. From 130 columns the chat rail shows on the
@@ -1209,19 +1209,19 @@ def manager_up(created):
     assert '#' not in mentioned['text'], mentioned
     beside = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'see #%d and #99999' % manager_task, b'['),
-        (r'(?m)^ MANAGER +Enter: open', b'\r'),
+        (r'(?m)^ LEAD +Enter: open', b'\r'),
         (r'No task #99999 in this project', b'['),
-        (r'(?m)^ MANAGER +Enter: open', b'\r'),
+        (r'(?m)^ LEAD +Enter: open', b'\r'),
         (r'(?m)^ TASK +\(j/k\)scroll.*\(H\)and.*tab: chats +Esc: close', b'H'),
         (r'(?m)^ TASK +\(y\)es +\(n\)o', b'n'),
         (r'(?m)^ TASK +\(j/k\)scroll', b'\t'),
         (r'(?m)^ CHATS +\(j/k\)move', b'\x1b'),
-        (r'(?m)^ MANAGER +tab: task.*\^g chats', b'\x07'),
+        (r'(?m)^ LEAD +tab: task.*\^g chats', b'\x07'),
         (r'(?m)^ CHATS +\(j/k\)move', b'\t'),
-        (r'(?m)^ MANAGER +tab: task', b'\t'),
+        (r'(?m)^ LEAD +tab: task', b'\t'),
         (r'(?m)^ TASK +\(j/k\)scroll', b'\x1b'),
-        (r'(?m)^ MANAGER +Enter: open', b'\x1b'),
-        (r'(?m)^ MANAGER +\(i\)message', b'i'),
+        (r'(?m)^ LEAD +Enter: open', b'\x1b'),
+        (r'(?m)^ LEAD +\(i\)message', b'i'),
         (r'Enter: send +\u2325Enter: new line', b'line one\x1b\rline two'),
         (r'> line one[^\n]*\n[^\n]*line two', b'\x1b'),
         (r'> line one \u21b5 line two', b'\x1b'), (r'\(m\)anager', b'm'),
@@ -1230,14 +1230,14 @@ def manager_up(created):
     # ^ The rail (the manager marked open), the chat, and the task's number and detail beside it.
     split = beside[6]
     assert re.search(r'#%d ' % manager_task, split) and 'State' in split and 'see #%d' % manager_task in split, split
-    assert 'Chats' in split and '\u25b8 Manager' in split and 'For you' in split, split
+    assert 'Chats' in split and '\u25b8 Lead' in split and 'For you' in split, split
     # ^ Closed, the chat has the pane again: no detail, no tab hint. Left with Esc and opened again,
     # the chat keeps its unsent message (steps 18 and 20).
     assert 'State' not in beside[14] and 'tab: task' not in beside[14], beside[14]
     # ^ H asked its question on the task (the chat's typed `H` reaches the detail's action).
     assert re.search(r'Take over #%d\?' % manager_task, beside[7]), beside[7]
     # ^ Enter on For you leaves the chat for the For you list: no rail, no chat.
-    assert '\u25b8 Manager' not in beside[-1] and 'see #%d' % manager_task not in beside[-1], beside[-1]
+    assert '\u25b8 Lead' not in beside[-1] and 'see #%d' % manager_task not in beside[-1], beside[-1]
     # ^ After the jump: the owner's Reply (web *Reply*, TUI `r`) sends `> message <id>` too: stored in the same
     # format with the id, and the agent reads the line.
     said_back = js('chat', 'say', '> message 1\n\nthe owner answers')
@@ -1256,7 +1256,7 @@ def manager_up(created):
     after_rotation = js('chat', 'say', 'STATUS')
     reply_to(after_rotation['id'])
     # ^ A rotation after a reply took no waiting message: its divider keeps its place, under that
-    # reply and above the next message (`chat::chat_window`, docs/tasks.md "Manager").
+    # reply and above the next message (`chat::chat_window`, docs/tasks.md "Chat host").
     shown = [(e['kind'], e.get('id')) for e in js('chat', 'read')['entries']]
     divider = max(at for at, (kind, _) in enumerate(shown) if kind == 'rotated')
     assert shown.index(('reply', big_reply['id'])) < divider < shown.index(('message', after_rotation['id'])), shown[-8:]
@@ -2051,7 +2051,7 @@ def part_core(created=None):
         # goes before `(o)verview` at 80 (ui/mod.rs `status_bar`).
         footer = re.search(r'(?m)^ TASKS .*$', hinted[1]).group(0)
         assert bool(re.search(r'\(a\)gent +\(u\)sage', footer)) == (cols == 120), footer
-        assert re.search(r'(?m)^ MANAGER +\(i\)message +\(/\)find +\(S\)hell +Esc: back +\(j/k\)scroll ', hinted[2]), hinted[2]
+        assert re.search(r'(?m)^ LEAD +\(i\)message +\(/\)find +\(S\)hell +Esc: back +\(j/k\)scroll ', hinted[2]), hinted[2]
     # ^ The rows follow the ledger's open order (Moving chains, then Waiting ones; task_list.rs
     # `rows`), after the "N wait for you" row while the ledger's `for_you` has items.
     ledger_now = js('chat', 'ledger')
@@ -2082,7 +2082,7 @@ def part_core(created=None):
         (r'(?m)^ TASKS ', b'm'),
         (r'MANAGER', b'S'),
         (r'at:%s' % re.escape(project.name), b'')])
-    assert 'TASK ' not in again[3] and 'MANAGER' not in again[-1], again
+    assert 'TASK ' not in again[3] and 'LEAD' not in again[-1], again
     assert [label for label in sessions_at(copy_path) if label != 'task-%d' % sh] == task_shells
     assert [label for label in sessions_at(project) if not label.startswith('task-')] == main_shells
     # ^ The same project shell, its earlier output on the screen; the workspace key and its
@@ -2328,7 +2328,7 @@ def part_core(created=None):
     refused = subprocess.run([str(wsx), 'project', 'check', 'skip', '--all'], cwd=project, env=manager_env,
                              capture_output=True, text=True)
     assert refused.returncode != 0 and 'check skip is for the owner' in refused.stderr, refused.stderr
-    # ^ A dismiss of a question is the owner's too (docs/tasks.md "Questions" under "Manager").
+    # ^ A dismiss of a question is the owner's too (docs/tasks.md "Questions" under "Chat host").
     refused = subprocess.run([str(wsx), 'chat', 'dismiss', '1'], cwd=project, env=manager_env,
                              capture_output=True, text=True)
     assert refused.returncode != 0 and 'dismiss is for the owner' in refused.stderr, refused.stderr
@@ -2503,7 +2503,7 @@ def part_core(created=None):
     assert len(merged) == 1, merged
     # ^ An event names the host's checks before the worker's own words.
     assert '#%d ready r1: NOOP; checks 1 of 1 passed; worker says (unchecked): did: NOOP' % first in merged[0]['text'], merged
-    # ^ Task events start no turn (docs/tasks.md "Manager"): they go with the next owner turn.
+    # ^ Task events start no turn (docs/tasks.md "Chat host"): they go with the next owner turn.
     after_events = js('chat', 'say', 'STATUS after events')
     reply_to(after_events['id'], 60)
     delivered = [e['ids'] for e in manager_entries() if e['kind'] == 'delivered']
@@ -2514,7 +2514,7 @@ def part_core(created=None):
     status_turn = turn_with('Owner (message %d)' % waiting['id'])['message']
     assert '- changed since your last turn:\n' in status_turn and '#%d ready r1' % first in status_turn, status_turn
     # ^ A waking event alone (a routine's failure) runs a turn of only events on eventModel in the
-    # same process, and the next owner turn switches back (docs/tasks.md "Manager").
+    # same process, and the next owner turn switches back (docs/tasks.md "Chat host").
     manager_settled('the manager idle before the routine event')
     js('project', 'routine', 'run', 'nightly', '-p', 'demo')
     routine_event = wait(lambda: (lambda found: found[-1] if len(found) == 4 else None)(
@@ -2531,7 +2531,7 @@ def part_core(created=None):
     owner_turn = turn_with('STATUS after the routine')
     assert owner_turn['model'] == 'fake-manager' and owner_turn['session'] == event_turn['session'], owner_turn
     # ^ One thought in two owner messages: the second comes while the first's turn runs and goes into
-    # it at the turn's next tool call, so one reply answers both (docs/tasks.md "Manager", Messages
+    # it at the turn's next tool call, so one reply answers both (docs/tasks.md "Chat host", Messages
     # during a turn). The turn above (LONG) had no tool call after its message: that one waited.
     manager_settled('the manager idle before MSTEER')
     part_one = js('chat', 'say', 'MSTEER part one')
@@ -2587,7 +2587,7 @@ def part_core(created=None):
     resumed_usage = late_reply['usage']
     assert resumed_usage['cost_micro_usd'] == 1000 and resumed_usage['session_cost_micro_usd'] > 5000, resumed_usage
     # ^ An answer to the chat's question, then more exchanges than the handover's last 8: the
-    # fresh conversation still gets the question and the answer (manager.rs `handover_answers`).
+    # fresh conversation still gets the question and the answer (chat_runner.rs `handover_answers`).
     asked_probe = reply_to(js('chat', 'say', 'ASK the rename probe')['id'])
     reply_to(js('chat', 'say', 'ANSWER-PROBE yes rename all, refuse the old keys')['id'])
     for n in range(5):
@@ -2648,7 +2648,7 @@ def part_core(created=None):
     fresh = [t for t in traces() if t.get('launch') and t.get('manager')][-1]
     assert not fresh['resume'] and fresh['session'] != launches[-1]['session'], fresh
     rotated = [e for e in manager_entries() if e['kind'] == 'rotated']
-    assert rotated[-1].get('reason') == "the manager's instructions changed", rotated
+    assert rotated[-1].get('reason') == "the chat's instructions changed", rotated
     # ^ The host rotated as it took the waiting message: the log keeps the message first, and the
     # chat shows the divider above it, in the JSON entries and in the rows (`chat::chat_window`).
     raw = manager_entries()
@@ -2658,7 +2658,7 @@ def part_core(created=None):
     divider = max(at for at, (kind, _) in enumerate(shown) if kind == 'rotated')
     assert divider < shown.index(('message', changed['id'])), shown[-8:]
     rows = cli('chat', 'read').stdout
-    assert rows.rindex("(New conversation: the manager's instructions changed") < rows.index('[%d] You: STATUS after the change' % changed['id']), rows[-800:]
+    assert rows.rindex("(New conversation: the chat's instructions changed") < rows.index('[%d] You: STATUS after the change' % changed['id']), rows[-800:]
     opened = turn_with('STATUS after the change')['message']
     # ^ The notes come first, then the handover.
     assert opened.startswith("The owner's decisions") and '\n\nHandover (this is a new conversation' in opened and 'Owner (message ' in opened, opened
@@ -2670,7 +2670,7 @@ def part_core(created=None):
     handovers = [h for h in memory_records(cli('memory', 'search', 'Handover new conversation exchanges', '--json').stdout) if h['slug'].startswith('handover-')]
     assert not handovers, handovers
 
-    # Continuity (docs/tasks.md "Manager"): notes share their budget, idle large conversations
+    # Continuity (docs/tasks.md "Chat host"): notes share their budget, idle large conversations
     # rotate, and a warm small one takes changed instructions as a message.
     def stop_manager():
         sock = js('chat', 'lead')['socket']
@@ -2700,7 +2700,7 @@ def part_core(created=None):
     assert re.search(r'NOT SHOWN: decisions\.md lines 1-\d+ of 400 .*Read /\S+/notes/decisions\.md', head), head
     assert 'NOT SHOWN: context.md' not in head, head
     # 21b. Restart: a message delivered to a turn that got no reply goes to the next turn once,
-    # one with a reply does not (docs/tasks.md "Manager"). The first HANG turn never answers; the
+    # one with a reply does not (docs/tasks.md "Chat host"). The first HANG turn never answers; the
     # host and its agent are killed after `delivered` is logged.
     mark('21b')
     wait(manager_idle, 'the manager idle before HANG', 60)
@@ -3080,17 +3080,17 @@ def part_core(created=None):
         (r'WORKSPACE', b't'),
         (r'\(m\)anager', b'm'),
         (r'\(\[/\]\)link', b'['),
-        (r'(?m)^ MANAGER +Enter: open +\(\[/\]\)link +Esc: clear +\(i\)message', b'\r'),
+        (r'(?m)^ LEAD +Enter: open +\(\[/\]\)link +Esc: clear +\(i\)message', b'\r'),
         (r'(?m)\$ *$', b'\x01w'),
-        (r'(?m)^ MANAGER ', b'['),
-        (r'(?m)^ MANAGER +Enter: open', b'\r'),
+        (r'(?m)^ LEAD ', b'['),
+        (r'(?m)^ LEAD +Enter: open', b'\r'),
         (r'(?s)files/routine-out/board.html +\d+/\d+\n.*<p>board</p>', b'\x1b'),
-        (r'(?m)^ MANAGER +Enter: open', b'\x1b'),
-        (r'(?m)^ MANAGER +\(i\)message', b'\x1b'),
+        (r'(?m)^ LEAD +Enter: open', b'\x1b'),
+        (r'(?m)^ LEAD +\(i\)message', b'\x1b'),
         (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], raw=frames)
     # ^ The chat shows the words, not `[words](session/N)`.
     assert 'shell in main exited' in linked[2] and '(session/' not in linked[2], linked[2]
-    assert re.search(r'(?m)^ MANAGER ', linked[5]) and 'shell in main exited' in linked[5], linked[5]
+    assert re.search(r'(?m)^ LEAD ', linked[5]) and 'shell in main exited' in linked[5], linked[5]
     assert re.search(r'(?m)^ \u2502 shell in main exited', linked[2]), linked[2]
     assert re.search(r'38;2;184;140;240[;0-9]*m\u2502', frames[2].decode('utf-8', 'replace')), 'a wsx post has no secondary bar'
     # ^ A post with a level (`wsx task post --level warn|bad`, docs/tasks.md "Routines") shows the word in its
@@ -3236,7 +3236,7 @@ def part_core(created=None):
     for name in ('gone', 'stuck', 'task-99', 'worker', 'held'):
         cli('session', 'delete', name, '-p', 'demo')
     # ^ A reply that ends with a question asks the owner and is never quiet; a reply that ends with
-    # a table, or a report, does not ask (docs/tasks.md "Manager"). A task's event starts no turn,
+    # a table, or a report, does not ask (docs/tasks.md "Chat host"). A task's event starts no turn,
     # so the owner's message takes the task's ready line along.
     asking = js('task', 'new', 'NOOP ASK')['id']
     wait_state(asking, 'ready')
@@ -3293,7 +3293,7 @@ def part_core(created=None):
     assert shown[:3] == [('limit', True), ('limit', False), ('reply', False)], shown
     assert turn_with('The usage limit has reset'), 'the manager continues after its limit'
     # ^ The reply is every text block of the turn, in order, joined with a blank line: Claude's
-    # `result` holds only the last (docs/tasks.md "Manager"). A `-` block next to words is dropped,
+    # `result` holds only the last (docs/tasks.md "Chat host"). A `-` block next to words is dropped,
     # and a turn whose only block is `-` is quiet.
     spoken = js('chat', 'say', 'BLOCKS First, the answer.|TOOL|Then, the closing note.')
     spoken_reply = reply_to(spoken['id'])
@@ -3336,13 +3336,13 @@ def part_core(created=None):
         wait(lambda: events_with('#%d closed r1' % n, 'memo: lesson %d kept' % i), 'memo of t%d in its event' % n)
     assert len(js('chat', 'ledger')['recent']) == 10
     # ^ wsx writes the memos into the manager's notes, once each, and no turn runs for a close: the
-    # events go along with the next turn (docs/tasks.md "Memo", "Manager").
+    # events go along with the next turn (docs/tasks.md "Memo", "Chat host").
     context = (notes / 'context.md').read_text()
     for i, n in enumerate(memo_tasks):
         assert context.count('lesson %d kept' % i) == 1 and '- #%d: ' % n in context, context
     # ^ One close alone, after the turns above have ended, is the case that costs no turn. No task
     # event costs one: a ready task and a stop by request are chat lines that join the next turn
-    # (docs/tasks.md "Manager").
+    # (docs/tasks.md "Chat host").
     lone = js('task', 'new', 'WORK lone.txt')['id']
     halted = js('task', 'new', 'WAIT %s NOOP' % (base / 'never'))['id']
     assert wait_state(lone, 'ready', 'failed')['state'] == 'ready'
@@ -3363,7 +3363,7 @@ def part_core(created=None):
     along = js('chat', 'say', 'STATUS after the closes')
     assert {last_close['id'], stop_event['id']} <= set(reply_to(along['id'])['to']), chat()[-3:]
     along_turn = turn_with('STATUS after the closes')['message']
-    # ^ The owner's message comes first and the turn says so (docs/tasks.md "Manager").
+    # ^ The owner's message comes first and the turn says so (docs/tasks.md "Chat host").
     assert 'closed r1' in along_turn and 'Answer message %d first.' % along['id'] in along_turn, along_turn
     assert 'stopped by request' in along_turn, along_turn
     js('task', 'close', halted, '--discard')
@@ -3746,7 +3746,7 @@ def part_worker(created=None):
     assert re.search(r'(?m)^ You +\d\d:\d\d$', sent) and 'hello from the tui' in sent, sent
     # ^ The chat names the manager as the web does: its shown name (docs/tasks.md "Config"); the
     # main chat with no goal is the lead, and "lead" follows its name.
-    assert re.search(r'(?m)^ %s  lead +\d\d:\d\d$' % re.escape(js('chat', 'lead')['name']), opened) and 'MANAGER' in opened, opened
+    assert re.search(r'(?m)^ %s  lead +\d\d:\d\d$' % re.escape(js('chat', 'lead')['name']), opened) and 'LEAD' in opened, opened
     assert owner_said('hello from the tui'), manager_log.read_text()[-2000:]
     assert item['id'] not in [i['id'] for i in js('project', 'check')['open']]
     rows = [json.loads(line) for line in checks_file.read_text().splitlines() if line.strip()]
@@ -3811,7 +3811,7 @@ def part_worker(created=None):
     reply_to(js('chat', 'say', 'STATUS')['id'])
     # ^ Only the turns that take an owner message: an event turn (a landed task's ready line) can come
     # at any time in this section and is not what it counts.
-    manager_turns = lambda: len([t for t in traces() if t.get('manager') and 'Owner (message' in str(t.get('message', ''))])
+    chat_turns = lambda: len([t for t in traces() if t.get('manager') and 'Owner (message' in str(t.get('message', ''))])
     open_ids = lambda: [i['id'] for i in js('project', 'check')['open'] if i['task'] in replied]
     row_of = lambda item: {r['id']: r for r in (json.loads(line) for line in checks_file.read_text().splitlines() if line.strip())}[item['id']]
     # ^ The logged message names the item it answers (`check`, next to `quote`), the item names the
@@ -3823,7 +3823,7 @@ def part_worker(created=None):
     found_by_item = lambda item, message_id: wait(
         lambda: any(h['reference'].endswith(':%d' % message_id) for h in js('chat', 'search', '-p', 'demo', item['id'])['hits']),
         'the search finds message %d by %s' % (message_id, item['id']), 30)
-    turns = manager_turns()
+    turns = chat_turns()
     for item, words in ((first, ' X '), (second, 'ㅌ')):
         said = js('chat', 'say', '> check %s\n\n%s' % (item['id'], words))
         assert logged_message(said['id'])['check'] == item['id'] and row_of(item)['owner_said'] == said['id'], (logged_message(said['id']), row_of(item))
@@ -3835,16 +3835,16 @@ def part_worker(created=None):
         assert logged['text'] == '> %s\n\n%s' % (item['check'], words.strip()), logged
     assert [row_of(i)['state'] for i in (first, second)] == ['skipped', 'skipped'] and row_of(first).get('note') is None
     assert open_ids() == [third['id'], fourth['id'], fifth['id']]
-    assert manager_turns() == turns, 'an x reply started a manager turn'
+    assert chat_turns() == turns, 'an x reply started a manager turn'
     again = js('chat', 'say', '> check %s\n\nx' % first['id'])
-    assert reply_to(again['id'])['text'] == 'Already skipped: ' + first['check'] and manager_turns() == turns
+    assert reply_to(again['id'])['text'] == 'Already skipped: ' + first['check'] and chat_turns() == turns
     # ^ Pass (the button) then a reply: the item is passed with no note until the words come; they
     # are its note and go to the manager once.
     js('project', 'check', 'pass', third['id'])
     assert row_of(third)['state'] == 'passed' and row_of(third).get('note') is None
     thanks = js('chat', 'say', '> check %s\n\nlooks right, thanks' % third['id'])
     reply_to(thanks['id'])
-    assert manager_turns() == turns + 1
+    assert chat_turns() == turns + 1
     assert third['check'] in str(turn_with('looks right, thanks')), traces()[-1]
     assert logged_message(thanks['id'])['check'] == third['id'] and row_of(third)['note_said'] == thanks['id'], (logged_message(thanks['id']), row_of(third))
     found_by_item(third, thanks['id'])
@@ -3855,7 +3855,7 @@ def part_worker(created=None):
     assert open_ids() == [fifth['id']]
     wrong = js('chat', 'say', '> check %s\n\nthe text is cut off' % fourth['id'])
     reply_to(wrong['id'])
-    assert manager_turns() == turns + 2
+    assert chat_turns() == turns + 2
     assert 'To check %s failed: the text is cut off' % fourth['id'] in str(turn_with('the text is cut off')), traces()[-1]
     assert row_of(fourth)['state'] == 'failed' and row_of(fourth)['note'] == 'the text is cut off' and row_of(fourth).get('fix_task') is None
     assert logged_message(wrong['id'])['check'] == fourth['id'] and row_of(fourth)['note_said'] == wrong['id'], (logged_message(wrong['id']), row_of(fourth))
@@ -3863,13 +3863,13 @@ def part_worker(created=None):
     # ^ A second reply goes to the manager and leaves the first note.
     more = js('chat', 'say', '> check %s\n\nalso on a phone' % fourth['id'])
     reply_to(more['id'])
-    assert manager_turns() == turns + 3 and row_of(fourth)['note'] == 'the text is cut off'
+    assert chat_turns() == turns + 3 and row_of(fourth)['note'] == 'the text is cut off'
     assert logged_message(more['id'])['check'] == fourth['id'] and row_of(fourth)['note_said'] == wrong['id']
     # ^ Words to an open item are the third verdict: it closes as replied with them as its note, and
     # the manager reads them marked as a fail's are. An x that quotes a message is the manager's.
     wordy = js('chat', 'say', '> check %s\n\nx marks the spot' % fifth['id'])
     reply_to(wordy['id'])
-    assert manager_turns() == turns + 4
+    assert chat_turns() == turns + 4
     assert 'To check %s replied: x marks the spot' % fifth['id'] in str(turn_with('x marks the spot')), traces()[-1]
     assert fifth['check'] in str(turn_with('x marks the spot')), traces()[-1]
     assert row_of(fifth)['state'] == 'replied' and row_of(fifth)['note'] == 'x marks the spot', row_of(fifth)
@@ -3879,12 +3879,12 @@ def part_worker(created=None):
     assert reply_to(js('chat', 'say', '> check %s\n\nx' % fifth['id'])['id'])['text'] == 'Already replied: ' + fifth['check']
     quoting = js('chat', 'say', '> message %d\n\nx' % status_reply['id'])
     reply_to(quoting['id'])
-    assert manager_turns() == turns + 5
+    assert chat_turns() == turns + 5
     # ^ An item no one knows: the quote line goes and the words stay.
     stray = js('chat', 'say', '> check c9999\n\nx')
     reply_to(stray['id'])
     assert 'check' not in logged_message(stray['id'])
-    assert manager_turns() == turns + 6
+    assert chat_turns() == turns + 6
 
     # A quote reaches a message of any age (docs/tasks.md "Log window"): the log rolls to
     # log.1, log.2 and so on, and every file stays. `agent` lines (not in the chat) fill the
@@ -3915,8 +3915,8 @@ def part_worker(created=None):
     rolled = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
         (r'(?m)^   \u258e STATUS$', b'['),
-        (r'(?m)^ MANAGER +Enter: open', b'\r'),
-        (r'(?m)^ MANAGER +Esc: newest', b''),
+        (r'(?m)^ LEAD +Enter: open', b'\r'),
+        (r'(?m)^ LEAD +Esc: newest', b''),
         (r'(?m)^ You +\d\d:\d\d\n   STATUS$', b'\x1b'),
         (r'across the rolls', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
     assert 'across the rolls' not in rolled[5], rolled[5]
@@ -3964,9 +3964,9 @@ def part_worker(created=None):
         (r'(?m)^ Overview demo +6-\d+/\d+$', b'\x1b[6~\x1b[6~\x1b[6~'),
         (r'Open question 60\.', b'\x1b'),
         (r'(?m)^ TASKS +\(j/k\)move', b'm'),
-        (r'(?m)^ MANAGER +.*\(j/k\)scroll +\(o\)verview', b'o'),
+        (r'(?m)^ LEAD +.*\(j/k\)scroll +\(o\)verview', b'o'),
         (r'(?m)^ OVERVIEW +\(j/k\)scroll', b'\x1b'),
-        (r'(?m)^ MANAGER +.*\(j/k\)scroll +\(o\)verview', b'\x1b'),
+        (r'(?m)^ LEAD +.*\(j/k\)scroll +\(o\)verview', b'\x1b'),
         (r'(?m)^ TASKS +\(j/k\)move', b'\x1b'),
         (r'WORKSPACE', b'')])
     top, scrolled, bottom = seen[2], seen[3], seen[4]
@@ -3976,7 +3976,7 @@ def part_worker(created=None):
     assert 'Ship the overview view.' in top and 'Open question 1.' in top, top
     assert '# demo' not in scrolled and 'Ship the overview view.' not in scrolled and '## Tasks' in scrolled, scrolled
     assert '## Open questions' in bottom or 'Open question 60.' in bottom, bottom
-    assert 'Overview' not in seen[8] and 'MANAGER' in seen[8], seen[8]
+    assert 'Overview' not in seen[8] and 'LEAD' in seen[8], seen[8]
     Path(page).write_text('# demo\n\n## Goal\n\nshort\n')
     js('task', 'close', asks, '--discard')
 
@@ -4092,7 +4092,7 @@ def part_worker(created=None):
     assert git('status', '--porcelain', 'shared.txt') == 'M shared.txt'
     # A land refused on the owner's uncommitted change on main that the task's change overlaps: on
     # the owner's yes `wsx project commit`, which runs in the host, commits it once the light checks
-    # pass on that commit (docs/tasks.md "Manager"), and the land passes. It refuses without the
+    # pass on that commit (docs/tasks.md "Chat host"), and the land passes. It refuses without the
     # owner's message of this turn, and when a light check fails on the commit.
     dirty = js('task', 'new', 'LINE shared.txt 1')['id']
     assert wait_state(dirty, 'ready', 'failed')['state'] == 'ready'
@@ -4135,7 +4135,7 @@ def part_worker(created=None):
     # 23g. The manager's new task may name files an open task names or changes (docs/tasks.md
     # "Store"): it is made, and its land rebases it; one parked after that task keeps the wait.
     # `why` and `review` read a task for the manager, through its broker as for the owner
-    # (docs/tasks.md "Manager").
+    # (docs/tasks.md "Chat host").
     mark('23g')
     ov_gate = work / 'release-23g'
     ov_first = js('task', 'new', '--files', 'ov*.txt', '--title', 'Overlap first', 'WAIT %s WORK ov-a.txt' % ov_gate)['id']
@@ -4605,7 +4605,7 @@ def part_worker(created=None):
     assert any(e['kind'] == 'disk_wait' for e in log(dw))
     row = next(r for r in js('chat', 'ledger')['open'] if r['id'] == dw)
     assert row['waiting']['on'] == 'disk', row
-    # Stalls (docs/tasks.md "Manager"): a wait whose cause is real is none, past the grace.
+    # Stalls (docs/tasks.md "Chat host"): a wait whose cause is real is none, past the grace.
     js('chat', 'lead')
 
     sweeps(2)
@@ -4651,7 +4651,7 @@ def part_worker(created=None):
     # A silent worker is one stall per silence: its turn record (`turn.json`, docs/tasks.md
     # "Agents") is past its deadline and still open, so its host did not end it. What the manager
     # or the host writes (an add, a land notice) moves no deadline; a line of the worker's does
-    # (docs/tasks.md "Manager", Stalls). The record and the turn are aged by 3 h by hand, since
+    # (docs/tasks.md "Chat host", Stalls). The record and the turn are aged by 3 h by hand, since
     # the host's own bound is `tasks.checkTimeoutSeconds` plus 10 minutes.
     mark('27q')
     quiet_gate = base / 'quiet-gate'
@@ -4816,7 +4816,7 @@ def part_worker(created=None):
     js('task', 'close', held, '--discard')
 
     # 27d. A turn reads its events as wsx wrote them; a line under them says what holds now for
-    # each task that moved on since (docs/tasks.md "Manager", Events): the limit wait of a
+    # each task that moved on since (docs/tasks.md "Chat host", Events): the limit wait of a
     # task that works again by the time the owner's turn takes the event along.
     mark('27d')
     # ^ The events of 27c may still be queued: a waking line merged with the limit wait's would
@@ -5570,7 +5570,7 @@ def part_host(created=None):
     assert wait_state(w, 'ready', 'failed')['state'] == 'ready' and 'after' not in show(w)['record'], log(w)
     for n in (a, w, c, e, f, g, parked, unparked):
         js('task', 'close', n, '--discard')
-    # 32ow. A task that waits on the owner reminds the owner (docs/tasks.md "Manager", Stalls): one
+    # 32ow. A task that waits on the owner reminds the owner (docs/tasks.md "Chat host", Stalls): one
     # push once the wait lasted 4 h, then one a day, each once (a service restart sends none twice),
     # with only the project, the number, the wait's time and its reason line, and no manager turn.
     # The record's state start is aged by the hours, as the silence stall above ages its record.
@@ -5807,7 +5807,7 @@ def part_host(created=None):
     js('task', 'close', paused, '--discard')
     wait_state(paused, 'closed')
     configure(LAND_CONFIG, 'scenario for 32ap over')
-    # 32wk. One wake rule (docs/tasks.md "Manager"): no task event starts a manager turn, here a
+    # 32wk. One wake rule (docs/tasks.md "Chat host"): no task event starts a manager turn, here a
     # ready task parked behind another, a ready result that asks the owner and a plain ready task;
     # they go along with the owner's next message. The asking task waits ready on the owner.
     mark('32wk')
@@ -5817,8 +5817,8 @@ def part_host(created=None):
     review = manager_new('WAIT %s WORK wk-r.txt' % review_gate)
     manager_after(parked, holder, 'WORK wk-p2.txt', because='files')
     manager_settled('before the burst')
-    manager_turns = lambda: [t for t in traces() if t.get('manager') and 'message' in t]
-    before = len(manager_turns())
+    chat_turns = lambda: [t for t in traces() if t.get('manager') and 'message' in t]
+    before = len(chat_turns())
     quiet_gate.touch()
     for n in (parked, asking):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
@@ -5831,16 +5831,16 @@ def part_host(created=None):
         event = wait(lambda: events_with('#%d ready r' % n), 'the quiet ready event of #%d' % n)[0]
         assert unmarked(x for x in event['short'] if x.get('task') == n) == [{'text': '#%d ready' % n, 'task': n, 'wakes': False}], event
     manager_settled('after the quiet events')
-    assert len(manager_turns()) == before, manager_turns()[before:]
+    assert len(chat_turns()) == before, chat_turns()[before:]
     review_gate.touch()
     assert wait_state(review, 'ready', 'failed')['state'] == 'ready', log(review)
     wait(lambda: events_with('#%d ready r' % review), 'the plain ready event')
     manager_settled('after the plain ready event')
-    assert len(manager_turns()) == before, [t['message'][:120] for t in manager_turns()[before:]]
+    assert len(chat_turns()) == before, [t['message'][:120] for t in chat_turns()[before:]]
     reply_to(js('chat', 'say', 'STATUS after the burst')['id'])
     turn = turn_with('STATUS after the burst')
     assert all('#%d ready r' % n in turn['message'] for n in (parked, asking, review)), turn['message']
-    assert len(manager_turns()) == before + 1, [t['message'][:120] for t in manager_turns()[before:]]
+    assert len(chat_turns()) == before + 1, [t['message'][:120] for t in chat_turns()[before:]]
     for n in (holder, parked, asking, review):
         js('task', 'close', n, '--discard')
     for n in (holder, parked, asking, review):
@@ -6313,7 +6313,7 @@ def part_host(created=None):
     assert wait_state(parent, 'ready', 'failed')['state'] == 'ready' and show(parent)['record']['revision'] == 2
     assert 'has open child tasks #%d' % second in land(parent, ok=False)['message']
     # ^ No ready event of the held parent wakes a manager turn: its own first one, nor the one after a
-    # child landed with its checks passed (docs/tasks.md "Manager").
+    # child landed with its checks passed (docs/tasks.md "Chat host").
     def ready_short(n, revision):
         event = wait(lambda: events_with('#%d ready r%d' % (n, revision)), 'the ready event of r%d' % revision)[0]
         # ^ A message of several events holds one short per line (r1 and r2 of the parent can share
@@ -6387,7 +6387,7 @@ def part_host(created=None):
               'RUN wsx chat new more --goal %s -p demo --json\n'
               'RUN wsx project routine list -p other --json' % goal)
     text = chat_reply('billing', talk['id'])['text']
-    assert "chat new is the owner's" in text and 'a manager acts in another project only with' in text, text
+    assert "chat new is the owner's" in text and 'a chat acts in another project only with' in text, text
     chat_task = max(t['id'] for t in js('task', 'list')['tasks'])
     assert show(chat_task)['record']['created_by'] == 'chat:billing', show(chat_task)['record']
     chat_launch = next(t for t in traces() if t.get('launch') and t.get('actor') == 'chat:billing')
@@ -6635,7 +6635,7 @@ def part_host(created=None):
     assert 'larger than 8192 bytes' in cli('chat', 'goal', 'purpose', '--goal', base / 'purpose-big.md', ok=False).stderr
     js('chat', 'close', 'purpose')
 
-    # 32s. Keep-warm pings (docs/tasks.md "Context rotation", "Manager"): a worker that waits on
+    # 32s. Keep-warm pings (docs/tasks.md "Context rotation", "Chat host"): a worker that waits on
     mark('32s2')
     # its checks gets a no-op turn tasks.agent.keepWarmSeconds after its last answer, at most 3 in
     # a row; it logs `ping`, is no result and starts no step. None while the account's usage limit
@@ -6684,7 +6684,7 @@ def part_host(created=None):
                             capture_output=True, text=True, check=True).stdout
     assert len(re.findall(r'\| ping +\| ping ', report)) == 3, report[-600:]
     # ^ The manager turns by trigger: a task's events (ready, stopped) wake no turn, the owner's
-    # words do (docs/tasks.md "Manager").
+    # words do (docs/tasks.md "Chat host").
     triggers = report.split('Manager turns by trigger', 1)[1].split('\n## ', 1)[0]
     assert re.search(r'\| owner +\| [1-9]', triggers) and '| ready ' not in triggers and '| stopped ' not in triggers, triggers
     # ^ The manager has no ping: its conversation is rotated or left to the idle rotation.
@@ -6744,7 +6744,7 @@ def part_agents(created=None):
     chats_dir, chats, chat_entries, chat_reply = chat_helpers(created)
     repo_id = Path(created['task_dir']).parent.name
     norate = tmp / 'fake-claude.trace.norate'
-    manager_turns = lambda: [t for t in traces() if t.get('manager') and 'message' in t]
+    chat_turns = lambda: [t for t in traces() if t.get('manager') and 'message' in t]
 
     # 36. One agent for life (docs/tasks.md "Agents"): a usage limit of any length is waited out on
     # the task's own agent, and the same conversation resumes when the account's record ends; a
@@ -6938,7 +6938,7 @@ def part_agents(created=None):
     assert si_auth_record.exists(), list(agents.iterdir())
     assert 'agent' not in manager_state() and not any(e['kind'] == 'reply' and si_away['id'] in e['to'] for e in chat()), manager_state()
     si_signed_in.touch()
-    # ^ The held message goes again in full once the sign-in works (manager.rs AUTH_CONTINUE): the
+    # ^ The held message goes again in full once the sign-in works (chat_runner.rs AUTH_CONTINUE): the
     # failed turn ended before any model call, so the conversation may not hold it.
     si_reply = reply_to(si_away['id'], 40)
     assert si_reply['text'].startswith('open: ') and si_reply['usage']['adapter'] == 'claude', chat()[-3:]
@@ -6981,7 +6981,7 @@ def part_agents(created=None):
     lc_claude_turn = lambda since, words: next(t for t in traces()[since:] if 'message' in t and t.get('adapter') != 'pi'
                                                and not t.get('manager') and words in t['message'])
     lc_turn = lambda folder: json.loads((Path(folder) / 'turn.json').read_text())
-    # ^ The alerts of failed turns posted after message `since` (docs/tasks.md "Manager").
+    # ^ The alerts of failed turns posted after message `since` (docs/tasks.md "Chat host").
     lc_alerts = lambda since, entries=None: [e for e in (entries or manager_entries()) if e['kind'] == 'reply' and e.get('post')
                                              and e.get('level') == 'bad' and e['id'] > since]
     for name in ('pi-fake.json', 'claude.auth.json'):
@@ -7476,7 +7476,7 @@ def part_agents(created=None):
         and open_words in s3_alerts[0]['text'], s3_alerts
     turn_quiet.unlink()
 
-    # 39c. A chat's turn that hits a 403 block page (docs/tasks.md "Manager", "Chats"): the chat
+    # 39c. A chat's turn that hits a 403 block page (docs/tasks.md "Chat host", "Chats"): the chat
     # host holds as the manager does and alerts the owner in its own chat, with the project's open
     # tasks. The chat holds 5 minutes too, so it is closed after.
     mark('39c')
@@ -7573,14 +7573,14 @@ def part_agents(created=None):
     idle_log.touch()
     wait(lambda: not chat_host('m2n'), lambda: 'the host of m2n leaves: %r' % chat_host('m2n'), 90)
     print('m2: home host of demo after the linger:', chat_host('demo'), manager_state().get('limit'))
-    m2_turns = len(manager_turns())
+    m2_turns = len(chat_turns())
     aged = time.time() - 8 * 24 * 3600
     os.utime(idle_log, (aged, aged))
     suggested = wait(lambda: rows('demo', 'chat m2idle has had no message and no open task'), 'the idle chat is suggested for closing', 60)
     assert len(suggested) == 1 and suggested[0]['short'] and all(x.get('wakes') is False for x in suggested[0]['short']), suggested
     time.sleep(8)
     assert len(rows('demo', 'chat m2idle has had no message')) == 1 and chats()['m2idle']['state'] == 'open'
-    assert len(manager_turns()) == m2_turns, manager_turns()[m2_turns:]
+    assert len(chat_turns()) == m2_turns, chat_turns()[m2_turns:]
     # ^ The old argv `manager-host <repo> [--chat n]` still works for one release: the process becomes the chat's
     # host and starts the service. A message queued before it started is answered once, none lost.
     for name, rid, args, cname in (('m2o', repo_id, ['--chat', 'm2o'], 'm2o'), ('twin', twin_id, [], 'twin')):
@@ -7638,7 +7638,7 @@ def part_chats(created=None):
     m2_goal = base / 'm2-goal.md'
     m2_goal.write_text('Talk, nothing else.\n')
 
-    # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
+    # 33. Managers talk (docs/tasks.md "Mail"): a manager reads another project's
     mark('33')
     # ledger and messages its manager, which answers once; nothing else crosses projects.
     # ^ Its folder is a link to the real one, as a project kept behind a symlink: wsxd stores the
@@ -7703,7 +7703,7 @@ def part_chats(created=None):
     wait(lambda: turn_with('Chat other replies (message'), 'the reply reaches the demo agent')
     crossing = js('chat', 'say', 'RUN wsx project deploy -p other --json\nRUN wsx chat say -p demo --from-chat hi')
     text = reply_to(crossing['id'])['text']
-    assert 'a manager acts in another project only with' in text and "messages another chat, not itself" in text, text
+    assert 'a chat acts in another project only with' in text and "messages another chat, not itself" in text, text
     assert "is for a chat's agent" in cli('chat', 'say', '-p', 'other', '--from-chat', 'hello', ok=False).stderr
 
     def other_tasks():
@@ -7719,7 +7719,7 @@ def part_chats(created=None):
         js('task', 'land', other_land, '-p', 'other')
     wait(lambda: any(e['kind'] == 'message' and e['from'] == 'events' and '#%d landed' % other_land in e['text']
                      and 'memo: other lesson' in e['text'] for e in other_entries()), 'the other land event', 60)
-    # 33r. A manager works in another project (docs/tasks.md "Managers talk"): demo's manager creates
+    # 33r. A manager works in another project (docs/tasks.md "Mail"): demo's manager creates
     mark('33r')
     # a task in `other`. It runs and lands in other's repo and store, its events reach demo's chat as
     # `other #<n>` and not other's manager, its memo is a fact in demo's memory whose paths are
@@ -7795,13 +7795,13 @@ def part_chats(created=None):
     # ^ A chat reaches another project as the manager does: it lists and says there, and the
     # manager's refusals (deploy, discard) are its own.
     assert 'list -p other --json -> 0' in text and 'say -p other --from-chat hi -> 0' in text, text
-    assert text.count('a manager acts in another project only with') == 2, text
+    assert text.count('a chat acts in another project only with') == 2, text
     wait(lambda: next((e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'chat:reachr'), None),
          'the chat reaches the other project', 60)
     refused = js('chat', 'say', 'RUN wsx task close %d --discard -p other --json\nRUN wsx project deploy -p other --json\n'
                  'RUN wsx task new "WORK z.txt" -p ghost --json' % n)
     text = reply_to(refused['id'], 60)['text']
-    assert text.count('a manager acts in another project only with') == 2 and "project 'ghost' not found" in text, text
+    assert text.count('a chat acts in another project only with') == 2 and "project 'ghost' not found" in text, text
     assert other_ids() == before
     # A task of demo's own by its main chat records the same `chat:demo`.
     mine = js('chat', 'say', 'RUN wsx task new "WORK own.txt" -p demo --json')
@@ -7943,7 +7943,7 @@ def part_chats(created=None):
     # and quotes it by id; the digest keeps what was said when the log goes; a hit quotes by id
     # only in the project the search ran in.
     # ^ The rolls were deleted above, and with them the `rotated` entry that fill() wrote (it sits
-    # in the first roll, docs/tasks.md "Manager"): a rotation ends the conversation the earlier
+    # in the first roll, docs/tasks.md "Chat host"): a rotation ends the conversation the earlier
     # messages belong to, so the current log gets one more, as the host writes it.
     with manager_log.open('a') as out:
         out.write(json.dumps({'kind': 'rotated', 'tokens': 400000, 'unix_ms': int(time.time() * 1000)}) + '\n')

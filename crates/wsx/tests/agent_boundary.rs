@@ -1,7 +1,7 @@
 //! What the lead's host runs for its agent (`broker::allowed`, `broker::reach`): a host command is
 //! refused wherever its flags sit, and the reach into another project covers the `wsx task` verbs
 //! the role lists, not a `wsx chat` verb of the same name. Real host, fake Claude.
-//! ref: docs/tasks.md "Manager tools", docs/design/orchestration.md "Role"
+//! ref: docs/tasks.md "Lead tools", docs/design/orchestration.md "Role"
 
 #![cfg(target_os = "macos")]
 

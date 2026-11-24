@@ -1,6 +1,6 @@
 //! Stalls: an open task that stays in one state while its cause is gone or nothing moves.
-//! A state change is an event already; this finds what produces none. The manager host looks
-//! every `SWEEP` and reports each stall once. ref: docs/tasks.md "Manager" (Stalls)
+//! A state change is an event already; this finds what produces none. The chat host looks
+//! every `SWEEP` and reports each stall once. ref: docs/tasks.md "Chat host" (Stalls)
 
 use super::status::{self, span};
 use super::store::{self, TaskDir};
@@ -19,7 +19,7 @@ pub fn sweep() -> Duration {
 /// (30 s each), and longer than a host's exec handoff or a land's rebase holds its socket.
 const GRACE: Duration = Duration::from_secs(60);
 /// `GRACE`, or the seconds in `WSX_TEST_STALL_GRACE_SECS`: for the task scenario only, which
-/// would otherwise wait a minute per stall. ref: docs/tasks.md "Manager" (Stalls)
+/// would otherwise wait a minute per stall. ref: docs/tasks.md "Chat host" (Stalls)
 pub fn grace() -> Duration {
     test_secs("WSX_TEST_STALL_GRACE_SECS", GRACE)
 }
@@ -62,7 +62,7 @@ pub struct OwnerReminder {
 
 /// The owner's reminder of an open task that waits on the owner (`status::waits_on`, not a
 /// guess from state names) for `OWNER_FIRST`, and again each `OWNER_REPEAT` while it waits.
-/// A wait that ended (answered, closed, landed) has none. ref: docs/tasks.md "Manager" (Stalls)
+/// A wait that ended (answered, closed, landed) has none. ref: docs/tasks.md "Chat host" (Stalls)
 pub fn owner_wait(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<OwnerReminder> {
     let on = status::waits_on(dir, record, status::land_auto(record))
         .filter(|on| on.kind == status::Holder::Owner)?;
@@ -215,10 +215,10 @@ pub fn turn_quiet_ms(check_timeout_secs: u64) -> u64 {
         })
 }
 
-/// The turn record's file in a task's, the manager's or a chat's folder.
+/// The turn record's file in a task's, the lead's or a chat's folder.
 pub const TURN_FILE: &str = "turn.json";
 
-/// The one record of an agent turn, for workers, the manager and chats alike: its host writes
+/// The one record of an agent turn, for workers, the lead and chats alike: its host writes
 /// it at the start, at each line of the agent and at the end, as `turn.json` in its folder (the
 /// next turn overwrites it). The host ends a turn whose `deadline_ms` passes (`hung_turn`); the
 /// stall sweep, `stuck` and `wsx task why` read the same record, so liveness has one clock and
@@ -263,7 +263,7 @@ impl Turn {
     }
 
     /// A line of the agent: the quiet clock starts again. Only the agent's own lines call it,
-    /// so what the manager or the host writes never moves the deadline.
+    /// so what the lead or the host writes never moves the deadline.
     pub fn output(&mut self, folder: &Path) {
         self.output_ms = super::now_unix_ms();
         self.deadline_ms = self.output_ms + self.quiet_ms;
@@ -358,9 +358,9 @@ fn host_answers(dir: &TaskDir) -> bool {
 }
 
 /// The newest output of the task's worker, in unix ms: the last agent, blocked, result, checks
-/// or check-run entry of the log, or the state's start (a new turn). An entry the manager or
+/// or check-run entry of the log, or the state's start (a new turn). An entry the lead or
 /// the host wrote (a message of any kind, `after`, `hold`, a land notice) is no progress: it
-/// would restart the quiet clock of a hung worker. ref: docs/tasks.md "Manager" (Stalls)
+/// would restart the quiet clock of a hung worker. ref: docs/tasks.md "Chat host" (Stalls)
 pub fn progress_ms(dir: &TaskDir, record: &TaskRecord) -> u64 {
     let output = dir
         .last_entry(|entry| {

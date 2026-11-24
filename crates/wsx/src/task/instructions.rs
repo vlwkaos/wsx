@@ -1,27 +1,27 @@
-//! The manager's standing instructions, formatted once for each new conversation.
-//! scripts/bench-manager.py reads the text of `instructions` from this file.
+//! The lead's standing instructions, formatted once for each new conversation.
+//! scripts/bench-lead.py reads the text of `instructions` from this file.
 
+use super::chat_runner::{CONTEXT_FILE, DECISIONS_FILE};
 use super::claude::SKILLS_PLUGIN_NAME;
-use super::manager::{CONTEXT_FILE, DECISIONS_FILE};
 use std::path::Path;
 use wsx_core::model::workspace::TaskWorkflow;
 use wsx_core::task::policy::{lend_line, Role};
 
-/// How the manager reaches the owner's skills.
+/// How the lead reaches the owner's skills.
 pub(super) enum Skills<'a> {
     None,
     /// The adapter lists them and has a Skill tool (Pi).
     Tool,
-    /// Claude: no listing and no Skill tool; the manager reads `<folder>/<name>/SKILL.md`.
+    /// Claude: no listing and no Skill tool; the lead reads `<folder>/<name>/SKILL.md`.
     Folder(&'a Path, &'a [String]),
 }
 
 /// One rule once, in the paragraph of the moment it acts (replying, talk or work, starting,
 /// review, the owner's word, waits, tools and memory, other projects). What a command refuses
 /// or `--help` lists is not repeated here: the refusal text and the help teach it. Facts
-/// the manager must not guess (a task's state now, what is live, a worker's claim) come in
+/// the lead must not guess (a task's state now, what is live, a worker's claim) come in
 /// the events and the ledger, so the text names where each fact comes from.
-/// ref: docs/tasks.md "Manager", "Memo"
+/// ref: docs/tasks.md "Chat host", "Memo"
 pub(super) fn instructions(
     project: &str,
     notes: &Path,

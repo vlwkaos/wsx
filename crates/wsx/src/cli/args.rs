@@ -555,7 +555,7 @@ pub enum RoutineCmd {
         command: Vec<String>,
         #[arg(long, default_value = "")]
         prompt: String,
-        /// Tell the owner nothing of a run: its output is an event for the manager only (docs/tasks.md "Routines")
+        /// Tell the owner nothing of a run: its output is an event for the lead only (docs/tasks.md "Routines")
         #[arg(long)]
         no_post: bool,
         /// Non-zero exit codes (comma list, 1 to 255) that mean the run found something: status
@@ -582,7 +582,7 @@ pub enum RoutineCmd {
         command: Vec<String>,
         #[arg(long, default_value = "")]
         prompt: String,
-        /// Tell the owner nothing of a run: its output is an event for the manager only (docs/tasks.md "Routines")
+        /// Tell the owner nothing of a run: its output is an event for the lead only (docs/tasks.md "Routines")
         #[arg(long)]
         no_post: bool,
         /// Non-zero exit codes (comma list, 1 to 255) that mean the run found something: status

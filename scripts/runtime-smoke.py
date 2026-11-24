@@ -2274,7 +2274,7 @@ try:
                    r"^Atlas stopped 2 times: agent exited$", r"^You\s+waiting\s+Not yet\.$"])
     # ^ Two questions, then an owner message with no quote: it answers the newer one only; the
     # older one waits under the chat, counted in the heading. `r` starts a reply that quotes
-    # it, Esc drops that, and `d` dismisses it (docs/tasks.md "Questions" under "Manager").
+    # it, Esc drops that, and `d` dismisses it (docs/tasks.md "Questions" under "Chat host").
     chat_screen = remove_tui.text()
     assert "1 question  0 to check  0 approvals" in chat_screen, chat_screen
     assert re.search(r"▸ asks +Should I land #4\?", chat_screen) and not re.search(r"asks +Shall I deploy", chat_screen), chat_screen
@@ -2356,7 +2356,7 @@ try:
     wait_for(lambda: "Esc: close" not in remove_tui.text(), "Enter on a routine with no message did not close its detail", seconds=60)
     open_routine_detail("probe")
     assert re.search(r"Last:\s+found something \(exit 1\)\s+\d{4}-\d\d-\d\d", remove_tui.text()), remove_tui.text()
-    assert re.search(r"Message:\s+Enter opens it in the manager chat", remove_tui.text()) and "(⏎)message" in remove_tui.text(), remove_tui.text()
+    assert re.search(r"Message:\s+Enter opens it in the lead chat", remove_tui.text()) and "(⏎)message" in remove_tui.text(), remove_tui.text()
     remove_tui.send(b"\r")
     # ^ The chat reads around the message ("Esc: newest" in the footer); the first Esc goes to the newest part, the next leaves.
     wait_for(lambda: probe_line in remove_tui.text() and "Esc: newest" in remove_tui.text() and "Message:" not in remove_tui.text(),
@@ -2497,7 +2497,7 @@ try:
     remove_tui.send(b"t")
     wait_for(lambda: "All projects" in remove_tui.text(), "t opened no Tasks view for keep-me", seconds=120)
     screen_key(b"?", r"Help: Tasks", "? in the Tasks view opened no help for it")
-    assert "Manager chat" in remove_tui.text(), remove_tui.text()
+    assert "Lead chat" in remove_tui.text(), remove_tui.text()
     remove_tui.send(b"\x1b")
     wait_for(lambda: "Help: Tasks" not in remove_tui.text(), "Esc did not close the Tasks help", seconds=60)
     time.sleep(0.5)
@@ -2536,7 +2536,7 @@ try:
     remove_tui.send(b"m")
     wait_for(lambda: "LAST-ENTRY-0" in remove_tui.text(), "the TUI chat did not show the end of the 7.5 MiB log", seconds=120)
     # ^ From here only the chat's own refresh reads the log: the Tasks view's usage tab parsed the whole log
-    # once, when it opened (usage::manager_turns, its own 30 s timer).
+    # once, when it opened (usage::chat_turns, its own 30 s timer).
     # dirs::cache_dir: the home's Library/Caches on macOS, XDG_CACHE_HOME elsewhere.
     ui_stderr = next((p for p in (HOME / "Library/Caches/wsx/ui-stderr.log", WORK / "cache/wsx/ui-stderr.log") if p.exists()), None)
     assert ui_stderr, "the TUI wrote no ui-stderr.log"

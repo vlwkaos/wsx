@@ -54,7 +54,7 @@ pub struct Routine {
     pub prompt: String,
     #[serde(default = "yes")]
     pub enabled: bool,
-    /// Whether the manager posts a run's end to the project's chat. Stored only when off.
+    /// Whether the lead posts a run's end to the project's chat. Stored only when off.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub post: bool,
     /// Non-zero exit codes that mean the run completed and found something: such a run is
@@ -191,7 +191,7 @@ pub fn exit_words(exit: Option<i32>) -> String {
 
 impl RunRecord {
     /// `routine <name> succeeded after 4 s`, `routine <name> failed (exit 3)`, `routine <name>
-    /// found something (exit 1)`: the run's end as the manager's events say it, and what
+    /// found something (exit 1)`: the run's end as the lead's events say it, and what
     /// `task::chat::run_messages` finds the run's message by.
     pub fn result_line(&self) -> String {
         let end = self.finished_epoch.unwrap_or_default();

@@ -1,10 +1,10 @@
-//! An approval the manager asked shows once in a chat: as the tag of the manager's reply
+//! An approval the lead asked shows once in a chat: as the tag of the lead's reply
 //! (`chat_rows`), never as a second row. A log from a host that also posted "Asked you: ..." after
 //! the turn shows no extra row either. ref: docs/tasks.md "Approvals"
 
 use serde_json::json;
 use wsx_core::task::chat::{chat_rows, Names};
-use wsx_core::task::manager::{ApprovalLine, ChatEntry};
+use wsx_core::task::chat_host::{ApprovalLine, ChatEntry};
 
 fn entries(lines: &[serde_json::Value]) -> Vec<ChatEntry> {
     lines

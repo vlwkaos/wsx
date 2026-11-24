@@ -3,7 +3,7 @@
 
   python3 -B scripts/bench-manager.py --mode before|after|after-nof [--cases synthetic|logged|discussion|stale|idle] [--model sonnet] [--runs 3] [--out DIR]
 
-It plays the manager host of docs/tasks.md "Manager" for a throwaway project: a fixture repo,
+It plays the manager host of docs/tasks.md "Chat host" for a throwaway project: a fixture repo,
 a fake `wsx` on PATH that serves a fixture ledger, and fixed turns. `synthetic` is five turns
 (a status question, 'build X', the owner's go after the manager sized it, an event-only turn and
 an events turn with a review due). `logged` replays batches of the 2026-11-04 manager log,
@@ -226,7 +226,7 @@ def turns(copy, tip):
 
 
 def discussion():
-    """Review points one by one, then the owner's go (docs/tasks.md "Manager": talk it over or work)."""
+    """Review points one by one, then the owner's go (docs/tasks.md "Chat host": talk it over or work)."""
     points = ("A: src/cli.py does not check for an empty name. B: the README has no usage section. "
               "C: the CLI has no test.")
     return [([], [([('Owner', 1, "let's go through these three review points one by one: " + points)], None, False),
@@ -862,7 +862,7 @@ def rates(models):
 
 
 def event_kind(text):
-    """The kind of an events message: the most urgent of its event lines (docs/tasks.md "Manager")."""
+    """The kind of an events message: the most urgent of its event lines (docs/tasks.md "Chat host")."""
     found = {'other'}
     for line in text.splitlines():
         if re.match(r'#\d+ failed|deploy of \S+ failed|checks? fail', line):
@@ -878,7 +878,7 @@ def event_kind(text):
     return min(found, key=KINDS.index)
 
 
-def manager_turns(days):
+def chat_turns(days):
     """Each project's manager turns with usage in the last `days`, in log order. `review_due`
     approximates turn_model's rule (crates/wsx/src/task/manager.rs): some task's newest event, under
     a day old, is `ready`."""
@@ -1098,7 +1098,7 @@ def replay_start(first, base, source=None):
 def run_events(options, out):
     """`events`: the cost model on the logged turns, then real event-only bursts replayed on Opus and
     Sonnet from a fork of the manager's own transcript, judged blind by Opus."""
-    projects = manager_turns(options.days)
+    projects = chat_turns(options.days)
     print(json.dumps({'cost_model': event_cost(projects, options.days)}), flush=True)
     path = Path(out.name)
     rows = jsonl(path)
@@ -1212,7 +1212,7 @@ def run_probe(options):
     """One real event turn across a model change in one process: Opus, set_model sonnet, the next
     event turn, then the owner's last message asked on Sonnet and again on Opus. It shows whether
     the conversation keeps its context and what each switch writes to the cache."""
-    projects = manager_turns(options.days)
+    projects = chat_turns(options.days)
     for burst in event_bursts(projects, random.Random(463)):
         if len(burst) < 2 or burst[0]['project'] != 'wsx-8cbe3f08':
             continue
@@ -1318,7 +1318,7 @@ def rotation_cost(projects, days, rotate, idle_min=IDLE_MIN, ping=False):
 def run_rotation(options):
     """`rotation`: the manager's modeled spend per week across rotation sizes and idle rules, from the
     logged turns (no model call); the first row is today's settings, against the logged spend."""
-    projects = manager_turns(options.days)
+    projects = chat_turns(options.days)
     logged = sum(t['usage']['cost_micro_usd'] for turns in projects.values() for t in turns) / 1e6 * 7 / options.days
     print(json.dumps({'logged_usd_per_week': round(logged, 2), 'turns': sum(map(len, projects.values()))}))
     for idle_min, ping in ((IDLE_MIN, False), (0, False), (None, False), (IDLE_MIN, True)):
@@ -1578,7 +1578,7 @@ def replay_turn(launch, env, base, text, resume=None):
 def run_rotation_replay(options, out):
     """`rotation --replay N`: N busy crossings judged, fresh against the real turn; a failing case
     runs the kept conversation again in the same replay (`kept`) and counts only if it fails there too."""
-    projects = manager_turns(options.days)
+    projects = chat_turns(options.days)
     path = Path(out.name)
     rows = [r for r in jsonl(path) if 'id' in r]
     done = {(r['project'], r['id']) for r in rows}
@@ -1726,7 +1726,7 @@ def run_switch_replay(options, out):
     """`switches --replay N` (paid): N real owner and event turns, each as the first message of a fresh
     conversation with today's switches (`skills`) and with the memory switch, judged blind by Opus
     with the real turn as the third answer. The memory switch ships when it is bad in no more cases than `skills`."""
-    projects = manager_turns(options.days)
+    projects = chat_turns(options.days)
     path = Path(out.name)
     rows = [r for r in jsonl(path) if 'id' in r]
     done = {(r['project'], r['id']) for r in rows}

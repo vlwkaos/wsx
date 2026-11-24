@@ -4,7 +4,7 @@
 //! chat's folder. It only talks: the repo's service (`repo.rs`) hands it the events of its
 //! tasks, and it leaves `CHAT_LINGER` after its queue is empty, started again by the next
 //! message. The hidden `manager-host <repo> [--chat <name>]` of the release before runs as this
-//! host and starts the service. ref: docs/tasks.md "Manager", "Chats"
+//! host and starts the service. ref: docs/tasks.md "Chat host", "Chats"
 
 use super::agent::{
     self, new_session_id, Agent, AgentLine, Ask, Launch, Next, TurnResult, PROMPT_CACHE_MS,
@@ -20,19 +20,19 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
-use wsx_core::model::workspace::{lead_rotate_limit, manager_rotate_limit};
+use wsx_core::model::workspace::{chats_rotate_limit, lead_rotate_limit};
 use wsx_core::routine::RunRecord;
 use wsx_core::runtime;
 use wsx_core::task::chat;
-use wsx_core::task::checks::{CheckState, ItemReply};
-use wsx_core::task::manager::{
+use wsx_core::task::chat_host::{
     answering, asks_owner, instructions_digest, pending_approvals, quiet_reply, quoted_id,
     resolve_quote, says_nothing, split_quote, Answers, ApprovalLine, QUOTE_REF,
 };
-use wsx_core::task::manager::{
+use wsx_core::task::chat_host::{
     Author, ChatEntry, ChatEvent, ChatRequest, ChatResponse, ChatState, Level, LimitHold, Party,
     Seen, Short,
 };
+use wsx_core::task::checks::{CheckState, ItemReply};
 use wsx_core::task::policy;
 use wsx_core::task::replace::Binary;
 use wsx_core::task::stall;
@@ -73,7 +73,7 @@ once, then any below.";
 const SWITCH_CONTINUE: &str = "The earlier conversation stopped before it answered these \
 messages; you continue in a new conversation. Answer them, then any below.";
 /// What a stand-in is told. ref: docs/tasks.md "Agents"
-const STAND_IN: &str = "You stand in for a project's manager for a short while, because its agent \
+const STAND_IN: &str = "You stand in for a project's runner for a short while, because its agent \
 is at its usage limit. You have no tools: you cannot read files, start tasks or change anything. \
 Answer the owner from the notes, the last exchanges and the ledger below, in a few short lines. \
 Say what you do not know. Promise nothing. The manager's agent reads your reply and answers the \
@@ -120,20 +120,20 @@ pub(super) enum Event {
     },
 }
 
-/// Answers this manager owes other projects' managers: one per message from one of them
+/// Answers this lead owes other projects' chats: one per message from one of them
 /// that a turn delivered. A `say --from-chat --reply` spends one, so a reply is never
-/// answered and a message is answered once. ref: docs/tasks.md "Managers talk"
+/// answered and a message is answered once. ref: docs/tasks.md "Mail"
 type Owed = std::sync::Arc<std::sync::Mutex<BTreeMap<String, u32>>>;
 
 /// `url.<base>.pushInsteadOf` with an empty prefix rewrites every push URL to `<base><url>`:
 /// `git push` then answers "'remote-wsx-task-push' is not a git command".
 const NO_PUSH_KEY: &str = "url.wsx-task-push::.pushInsteadOf";
 
-struct Manager {
+struct ChatRunner {
     dir: ChatDir,
     project: String,
     main: PathBuf,
-    /// `tasks.chats.adapter`: the headless adapter the manager runs on.
+    /// `tasks.chats.adapter`: the headless adapter the lead runs on.
     adapter: String,
     /// A stand-in's call runs: which agent and when it began.
     stand_in: Option<(agent::Choice, Instant)>,
@@ -189,9 +189,9 @@ struct Manager {
     drift_said: bool,
 }
 
-/// The manager's lean project context in its notes folder. ref: docs/tasks.md "Memo"
+/// The lead's lean project context in its notes folder. ref: docs/tasks.md "Memo"
 pub(super) const CONTEXT_FILE: &str = "context.md";
-/// The owner's decisions, one line each, appended by the manager as they are made.
+/// The owner's decisions, one line each, appended by the lead as they are made.
 pub(super) const DECISIONS_FILE: &str = "decisions.md";
 /// A conversation idle past `PROMPT_CACHE_MS` lost Claude's prompt cache: past this context, a
 /// fresh conversation costs less than the cold resume. Below it the resume keeps what a fresh
@@ -204,9 +204,9 @@ const INSTRUCTION_MESSAGE_TOKENS: u64 = 100_000;
 const MAX_NOTES_READ: u64 = 256 * 1024;
 
 /// A chat's instructions open with its name, when it is not the main chat, and its purpose, when
-/// the owner set one, then the manager's: one text for every chat. The main chat with no purpose
+/// the owner set one, then the lead's: one text for every chat. The main chat with no purpose
 /// is the project's lead: it forks each goal into a new chat (docs/tasks.md "Lead and forks").
-/// It never says "wsx project ", which the fake manager reads its project after.
+/// It never says "wsx project ", which the fake lead reads its project after.
 fn chat_preamble(chat: Option<&str>, project: &str, goal: &str) -> String {
     let goal = goal.trim();
     if chat.is_none() && goal.is_empty() {
@@ -233,7 +233,7 @@ fn chat_preamble(chat: Option<&str>, project: &str, goal: &str) -> String {
     }
 }
 
-/// The manager's boundary profile as text. ref: scripts/test-manager-boundary.py
+/// The lead's boundary profile as text. ref: scripts/test-lead-boundary.py
 pub fn print_profile(project: &str, main: &Path, untrusted: bool) -> Result<()> {
     let project_id = store::project_id(project, main);
     let dir = chats::open_main(&project_id)?;
@@ -242,7 +242,7 @@ pub fn print_profile(project: &str, main: &Path, untrusted: bool) -> Result<()> 
         true => (policy::Trust::Untrusted, "pi"),
         false => (policy::Trust::Trusted, "claude"),
     };
-    let policy = policy::Policy::of(trust, policy::Role::Manager, None);
+    let policy = policy::Policy::of(trust, policy::Role::Chat, None);
     print!(
         "{}",
         Boundary::manager(main, &dir.path, &overview, policy)?
@@ -263,7 +263,7 @@ pub fn run_old(project_id: &str, chat: Option<&str>) -> Result<()> {
         Some(chat) => chats::open_chat(chat)?,
     };
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
-    if let Err(error) = owner::ensure_repo(&project, &main, &exe, super::launch_manager(&main)) {
+    if let Err(error) = owner::ensure_repo(&project, &main, &exe, super::launch_chat(&main)) {
         eprintln!("cannot start the repo's service: {error:#}");
     }
     run(dir.name())
@@ -285,7 +285,7 @@ pub fn run(chat: &str) -> Result<()> {
         rotate_tokens,
     } = chats::runs_on(&dir, &settings);
     let (events, receiver) = channel();
-    let mut manager = Manager {
+    let mut runner = ChatRunner {
         dir,
         project,
         main,
@@ -320,7 +320,7 @@ pub fn run(chat: &str) -> Result<()> {
         overview_asked: false,
         drift_said: false,
     };
-    manager.restore()?;
+    runner.restore()?;
     let requests = events.clone();
     std::thread::spawn(move || {
         hosting::serve(
@@ -332,17 +332,17 @@ pub fn run(chat: &str) -> Result<()> {
         )
     });
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
-    let folder = manager.main.clone();
+    let folder = runner.main.clone();
     let (own, project_id, owed, sent, actor) = (
-        manager.project.clone(),
-        manager.dir.project_id.clone(),
-        manager.owed.clone(),
+        runner.project.clone(),
+        runner.dir.project_id.clone(),
+        runner.owed.clone(),
         events.clone(),
-        manager.actor(),
+        runner.actor(),
     );
-    let policy = manager.policy.clone();
+    let policy = runner.policy.clone();
     std::thread::spawn(move || {
-        broker::serve_manager(
+        broker::serve_chat(
             brokered,
             broker::ChatBroker {
                 exe,
@@ -363,37 +363,37 @@ pub fn run(chat: &str) -> Result<()> {
             std::thread::sleep(Duration::from_secs(1));
         }
     });
-    manager.say(&format!(
+    runner.say(&format!(
         "{} of {} in {}",
-        manager.dir.name(),
-        manager.project,
-        manager.main.display()
+        runner.dir.name(),
+        runner.project,
+        runner.main.display()
     ));
-    manager.report(runtime::AgentState::Idle);
-    manager.run(receiver)?;
-    if manager.leaving {
+    runner.report(runtime::AgentState::Idle);
+    runner.run(receiver)?;
+    if runner.leaving {
         // ^ The sockets go first: a `say` during the agent's stop (up to 5 s) starts the next
         // host, which refuses to bind while this one still accepts on the same path.
-        let _ = std::fs::remove_file(manager.dir.socket_path());
-        let _ = std::fs::remove_file(manager.dir.broker_path());
-        if let Some(agent) = manager.agent.take() {
+        let _ = std::fs::remove_file(runner.dir.socket_path());
+        let _ = std::fs::remove_file(runner.dir.broker_path());
+        if let Some(agent) = runner.agent.take() {
             agent.stop();
         }
         return Ok(());
     }
-    if let (true, Some(binary)) = (manager.reexec, &manager.binary) {
-        if let Some(agent) = manager.agent.take() {
+    if let (true, Some(binary)) = (runner.reexec, &runner.binary) {
+        if let Some(agent) = runner.agent.take() {
             agent.stop();
         }
-        let _ = std::fs::remove_file(manager.dir.socket_path());
-        let _ = std::fs::remove_file(manager.dir.broker_path());
+        let _ = std::fs::remove_file(runner.dir.socket_path());
+        let _ = std::fs::remove_file(runner.dir.broker_path());
         let error = binary.exec();
         anyhow::bail!("cannot start the replaced wsx binary: {error}");
     }
     Ok(())
 }
 
-/// The messages of one manager turn, taken off the queue by `take_batch`.
+/// The messages of one lead turn, taken off the queue by `take_batch`.
 struct Batch {
     /// The author the turn answers.
     first: Author,
@@ -411,8 +411,8 @@ fn author_heading(author: &Author) -> String {
         Author::Owner => "Owner".to_string(),
         Author::Events => "Events".to_string(),
         Author::Recap => "Recap request from wsx".to_string(),
-        // ^ A chat's, this project's manager's or another project's message is answered once
-        // (docs/tasks.md "Chats", "Managers talk").
+        // ^ A chat's, this project's lead's or another project's message is answered once
+        // (docs/tasks.md "Chats", "Mail").
         Author::Peer { from, reply } => {
             let who = match from {
                 Party::Chat(name) => format!("Chat {name}"),
@@ -425,7 +425,7 @@ fn author_heading(author: &Author) -> String {
     }
 }
 
-impl Manager {
+impl ChatRunner {
     fn run(&mut self, receiver: Receiver<Event>) -> Result<()> {
         while let Ok(event) = receiver.recv() {
             match event {
@@ -486,9 +486,9 @@ impl Manager {
                         busy,
                         binary: None,
                         message: if busy {
-                            "the manager's running turn takes it, or its next turn".into()
+                            "the chat's running turn takes it, or its next turn".into()
                         } else {
-                            "sent to the manager".into()
+                            "sent to the chat".into()
                         },
                     },
                     Err(error) => ChatResponse {
@@ -502,7 +502,7 @@ impl Manager {
             }
             ChatRequest::Post { event, text, level } => {
                 let refusal = match (busy, text.trim().is_empty(), text.len() > MAX_MESSAGE_BYTES) {
-                    (true, ..) => Some("a manager turn runs"),
+                    (true, ..) => Some("a chat turn runs"),
                     (_, true, _) => Some("the text is empty"),
                     (.., true) => Some("the text is larger than the limit"),
                     _ => None,
@@ -530,7 +530,7 @@ impl Manager {
     }
 
     /// Write to the owner with no turn: a delivered events message, so that no restart hands it
-    /// to the agent, and the reply to it, which the web pushes like the manager's own. The reply
+    /// to the agent, and the reply to it, which the web pushes like the lead's own. The reply
     /// has no usage and is marked `post`, which the chats read.
     fn post(&mut self, event: String, text: String, level: Option<Level>) {
         let id = self.next_id();
@@ -561,7 +561,7 @@ impl Manager {
     /// The first failed turn of a hold (an agent error, a 403, a hung turn, a failed sign-in) or
     /// a turn whose agent ended reaches the owner at once: a post at level bad, which the web
     /// pushes, with the reason, the retry and the open tasks. A usage limit and a move to a
-    /// fallback post none: a stand-in or the next agent answers. ref: docs/tasks.md "Manager"
+    /// fallback post none: a stand-in or the next agent answers. ref: docs/tasks.md "Chat host"
     fn alert_failed(&mut self, reason: &str, until_ms: Option<u64>) {
         let records: Vec<TaskRecord> = project_tasks(&self.dir.project_id)
             .unwrap_or_default()
@@ -680,7 +680,7 @@ impl Manager {
         }
     }
 
-    /// Who the agent's commands act as (`WSX_TASK_ACTOR`): the manager, or the chat.
+    /// Who the agent's commands act as (`WSX_TASK_ACTOR`): the lead, or the chat.
     fn actor(&self) -> Actor {
         Actor::Chat(self.dir.name().to_string())
     }
@@ -716,7 +716,7 @@ impl Manager {
                 None => {}
             }
         }
-        // ^ The owner's Reply sends `> message <id>`, as a manager's reply does.
+        // ^ The owner's Reply sends `> message <id>`, as a chat's reply does.
         let (text, quote) = match from {
             Author::Owner => self.quoted(text, &[], true),
             _ => (text, None),
@@ -800,7 +800,7 @@ impl Manager {
                     let sent = owner::fork(
                         (&project, &main),
                         &exe,
-                        super::launch_manager(&main),
+                        super::launch_chat(&main),
                         &origin,
                         id,
                         text,
@@ -819,7 +819,7 @@ impl Manager {
                             let _ = owner::move_message(
                                 (&project, &main),
                                 &exe,
-                                super::launch_manager(&main),
+                                super::launch_chat(&main),
                                 &origin,
                                 id,
                                 text,
@@ -889,7 +889,7 @@ impl Manager {
         id
     }
 
-    /// Owner messages go first, then other managers', then events.
+    /// Owner messages go first, then other chats', then events.
     fn enqueue(&mut self, id: u64, from: Author, text: String, wakes: bool) {
         let rank = |author: &Author| match author {
             Author::Owner => 0,
@@ -905,7 +905,7 @@ impl Manager {
         self.queue.insert(at, (id, from, text, wakes));
     }
 
-    /// A message of a manager or a chat is answered once (docs/tasks.md "Chats").
+    /// A message of a chat or a chat is answered once (docs/tasks.md "Chats").
     fn owe(&self, author: &Author) {
         let Author::Peer { from, reply: false } = author else {
             return;
@@ -925,7 +925,7 @@ impl Manager {
     }
 
     /// The messages of the next turn, off the queue: those of the first author that wakes the
-    /// manager, then the events that need no judgment, which go along after them.
+    /// lead, then the events that need no judgment, which go along after them.
     fn take_batch(&mut self) -> Batch {
         let first = self
             .queue
@@ -1008,7 +1008,7 @@ impl Manager {
     /// reads events minutes or hours after wsx wrote them (on 11-13 three limit waits were
     /// read 25 min after the limit ended and relayed as current): the line that says what
     /// holds now is wsx's, read at the turn's start. None when nothing changed.
-    /// ref: docs/tasks.md "Manager" (Events)
+    /// ref: docs/tasks.md "Chat host" (Events)
     fn since_then(&self, heads: &BTreeMap<u32, (String, u32)>) -> Option<String> {
         if heads.is_empty() {
             return None;
@@ -1052,7 +1052,7 @@ impl Manager {
         if (self.state.limit.is_some() || self.work_waiting())
             && self.binary.as_ref().is_some_and(Binary::replaced)
         {
-            self.say("the wsx binary was replaced: the manager restarts with it");
+            self.say("the wsx binary was replaced: the chat restarts with it");
             self.reexec = true;
             return;
         }
@@ -1071,8 +1071,8 @@ impl Manager {
             for_owner,
         } = self.take_batch();
         // ^ The limit preface is no owner message: a held turn is events-only when its
-        // held and its new messages all are. Another manager's or a chat's reply is used, not
-        // answered: like events. ref: docs/tasks.md "Manager"
+        // held and its new messages all are. Another lead's or a chat's reply is used, not
+        // answered: like events. ref: docs/tasks.md "Chat host"
         let events_only = held.as_ref().is_none_or(|hold| hold.events)
             && if ids.is_empty() {
                 held.is_some()
@@ -1106,12 +1106,12 @@ impl Manager {
             text = self.provisional_note() + &text;
         }
         if let Err(error) = self.send_turn(text.trim_end(), events_only) {
-            self.say(&format!("cannot start the manager agent: {error:#}"));
+            self.say(&format!("cannot start the chat agent: {error:#}"));
             // ^ Not logged as delivered. One `stopped` entry for a run of failures.
             self.put_back(taken);
             if self.start_failed.replace(Instant::now()).is_none() {
                 self.log(ChatEvent::Stopped {
-                    reason: format!("cannot start the manager agent: {error:#}"),
+                    reason: format!("cannot start the chat agent: {error:#}"),
                 });
             }
             return;
@@ -1157,7 +1157,7 @@ impl Manager {
     /// The owner's messages that came during a turn go into it at its next tool call, so one
     /// thought written as several messages gets one reply. Not while the agent writes its last
     /// text (a steer then runs a second turn), in a turn of only events, or in a stand-in's call:
-    /// those messages wait for the next turn. ref: docs/tasks.md "Manager" (Messages during a turn)
+    /// those messages wait for the next turn. ref: docs/tasks.md "Chat host" (Messages during a turn)
     fn steer_waiting(&mut self) {
         let owner_waits = self
             .queue
@@ -1172,7 +1172,7 @@ impl Manager {
         let sent = self
             .agent
             .as_mut()
-            .context("the manager agent is not running")
+            .context("the chat agent is not running")
             .and_then(|agent| agent.send(text.trim_end()));
         if let Err(error) = sent {
             // ^ The next turn takes them; the agent's own end is reported by its stream.
@@ -1187,8 +1187,8 @@ impl Manager {
         }
     }
 
-    /// The model of a turn: `eventModel` for one with only events, else the manager's.
-    /// ref: docs/tasks.md "Manager"
+    /// The model of a turn: `eventModel` for one with only events, else the lead's.
+    /// ref: docs/tasks.md "Chat host"
     fn turn_model(&self, events_only: bool) -> String {
         // ^ A chat still on a fallback from an earlier wsx runs that agent's model: the event
         // model names one of the own agent's.
@@ -1207,7 +1207,7 @@ impl Manager {
             .any(|(_, author, _, wakes)| *author != Author::Events || *wakes)
     }
 
-    /// Before every turn, the one rule of where the manager goes (`agent::next`): a hold on the
+    /// Before every turn, the one rule of where the lead goes (`agent::next`): a hold on the
     /// own account's record while it refuses turns (a limit or a failed sign-in), which ends
     /// when the record does; a chat an earlier wsx left on a fallback goes back on its own agent
     /// as soon as that is free, in a fresh conversation that opens with the handover and the
@@ -1234,7 +1234,7 @@ impl Manager {
             Next::Stay => {
                 if let Some(hold) = self.state.limit.as_mut().filter(|hold| now < hold.until_ms) {
                     hold.until_ms = now;
-                    self.say("the usage limit has lifted: the manager continues");
+                    self.say("the usage limit has lifted: the chat continues");
                     self.save();
                 }
                 false
@@ -1252,7 +1252,7 @@ impl Manager {
         }
     }
 
-    /// Where the manager goes (`agent::next`): its own agent is `tasks.chats.adapter` and
+    /// Where the lead goes (`agent::next`): its own agent is `tasks.chats.adapter` and
     /// `model`, the current one `state.agent` when set.
     fn next(&self, ask: Ask, now: u64) -> Next {
         let current = self.current_agent();
@@ -1365,7 +1365,7 @@ impl Manager {
 
     /// A turn with no line from the agent past its record's deadline ends: the agent is
     /// stopped and the turn is its error, which holds and retries; on a fallback it counts as
-    /// a refusal with no reset, so the manager moves on (`refused`).
+    /// a refusal with no reset, so the lead moves on (`refused`).
     /// ref: docs/tasks.md "Agents"
     fn end_hung_turn(&mut self) {
         if self.turn.is_none() || self.stand_in.is_some() {
@@ -1381,7 +1381,7 @@ impl Manager {
         };
         let turn = agent::hung_turn(quiet, self.state.agent.is_some());
         self.say(&turn.text);
-        // ^ A late line of the stopped process is not a turn of the manager's.
+        // ^ A late line of the stopped process is not a turn of the lead's.
         self.generation += 1;
         if let Some(agent) = self.agent.take() {
             agent.stop();
@@ -1455,7 +1455,7 @@ impl Manager {
             return;
         }
         let recent = recent_exchanges(&log, HANDOVER_ENTRIES);
-        // ^ The manager's own next summary must still name what changed since its last turn.
+        // ^ The lead's own next summary must still name what changed since its last turn.
         let seen = self.state.turn_seen.clone();
         let ledger = self.ledger_summary();
         self.state.turn_seen = seen;
@@ -1519,7 +1519,7 @@ impl Manager {
         let Some((stand_in, _)) = self.stand_in.take() else {
             return;
         };
-        // ^ A late line of the stopped process is not a turn of the manager's.
+        // ^ A late line of the stopped process is not a turn of the lead's.
         self.generation += 1;
         if let Some(agent) = self.agent.take() {
             agent.stop();
@@ -1597,7 +1597,7 @@ impl Manager {
         )
     }
 
-    /// The account the manager's turns run on now.
+    /// The account the lead's turns run on now.
     fn current_account(&self) -> String {
         match &self.state.agent {
             Some(agent) => agent::account(&agent.adapter, &agent.model),
@@ -1605,7 +1605,7 @@ impl Manager {
         }
     }
 
-    /// The adapter the manager runs on now: a fallback's, else `tasks.chats.adapter`.
+    /// The adapter the lead runs on now: a fallback's, else `tasks.chats.adapter`.
     fn current_adapter(&self) -> String {
         self.state
             .agent
@@ -1620,7 +1620,7 @@ impl Manager {
         if self.lead {
             lead_rotate_limit(self.rotate_tokens, &adapter)
         } else {
-            manager_rotate_limit(self.rotate_tokens, &adapter)
+            chats_rotate_limit(self.rotate_tokens, &adapter)
         }
     }
 
@@ -1656,8 +1656,8 @@ impl Manager {
 
     /// A few lines of the ledger for the end of a turn's message: the open tasks by state,
     /// the tasks changed since the last turn (every open one in a fresh conversation), the
-    /// To check and approval counts and the deploy. The manager reads the full ledger only
-    /// when it needs more. ref: docs/tasks.md "Manager"
+    /// To check and approval counts and the deploy. The lead reads the full ledger only
+    /// when it needs more. ref: docs/tasks.md "Chat host"
     fn ledger_summary(&mut self) -> String {
         // ^ The chat's own tasks, To check items and approvals (`chats::Viewer`), as its page lists them.
         let viewer = chats::Viewer::new(&self.dir.project_id, Some(&self.dir.chat));
@@ -1807,7 +1807,7 @@ impl Manager {
             let mut launch = self.launch()?;
             let digest = instructions_digest(&launch.instructions);
             // ^ Claude keeps the system prompt a conversation began with, also on resume:
-            // new instructions need a new conversation (docs/tasks.md "Manager").
+            // new instructions need a new conversation (docs/tasks.md "Chat host").
             if self.state.agent_session.is_some()
                 && self.state.instructions.as_deref() != Some(&digest)
             {
@@ -1823,7 +1823,7 @@ impl Manager {
                         launch.instructions
                     );
                 } else {
-                    self.rotate(0, Some("the manager's instructions changed".into()));
+                    self.rotate(0, Some("the chat's instructions changed".into()));
                     launch = self.launch()?;
                 }
             }
@@ -1865,7 +1865,7 @@ impl Manager {
         let agent = self
             .agent
             .as_mut()
-            .context("the manager agent is not running")?;
+            .context("the chat agent is not running")?;
         if self.agent_model != model {
             agent.set_model(&model)?;
             self.agent_model = model;
@@ -1906,7 +1906,7 @@ impl Manager {
         Ok(launch)
     }
 
-    /// The manager runs inside its boundary and prompts for nothing. ref: docs/tasks.md "Permissions"
+    /// The lead runs inside its boundary and prompts for nothing. ref: docs/tasks.md "Permissions"
     fn launch_for(&self, adapter: &str, model: &str) -> Result<Launch> {
         let exe = std::env::current_exe().context("cannot find the wsx binary")?;
         let notes = self.dir.notes()?;
@@ -1930,7 +1930,7 @@ impl Manager {
         .into_iter()
         .chain(account_env(root.clone()))
         .collect();
-        let policy = agent::policy(policy::Role::Manager, adapter, model, &env);
+        let policy = agent::policy(policy::Role::Chat, adapter, model, &env);
         let boundary = Boundary::manager(&self.main, &self.dir.path, &overview, policy)?
             .adapter(adapter, root.as_deref())
             .reach(adapter, model, &env)
@@ -1965,7 +1965,7 @@ impl Manager {
         launch.effort = self.effort.clone();
         launch.plugin_dirs = skills.into_iter().collect();
         // ^ The agent's `wsx task` commands go to this host (broker.rs), which runs them as
-        // the manager actor; the actor mark stays for the approval rules.
+        // the lead actor; the actor mark stays for the approval rules.
         launch.env = env;
         launch.path_prefix = exe.parent().map(Path::to_path_buf);
         Ok(launch)
@@ -1973,10 +1973,10 @@ impl Manager {
 
     fn on_agent(&mut self, line: Option<AgentLine>) {
         match line {
-            // ^ The manager's size is checked after each reply: a turn grew at most 53k tokens
-            // in 7 days to 2026-11-15, never past `rotateTokens`. ref: docs/tasks.md "Manager"
+            // ^ The lead's size is checked after each reply: a turn grew at most 53k tokens
+            // in 7 days to 2026-11-15, never past `rotateTokens`. ref: docs/tasks.md "Chat host"
             Some(AgentLine::Context(_)) => {}
-            // ^ A stand-in's call is no conversation of the manager's.
+            // ^ A stand-in's call is no conversation of the lead's.
             Some(AgentLine::Init(_)) if self.stand_in.is_some() => {}
             Some(AgentLine::Progress { .. }) if self.stand_in.is_some() => {}
             Some(AgentLine::Result(result)) if self.stand_in.is_some() => {
@@ -2010,7 +2010,7 @@ impl Manager {
             None => {
                 self.agent = None;
                 if self.turn.take().is_some() {
-                    let reason = "the manager agent ended during a turn";
+                    let reason = "the chat agent ended during a turn";
                     self.end_turn_record(reason);
                     self.log(ChatEvent::Stopped {
                         reason: reason.into(),
@@ -2037,7 +2037,7 @@ impl Manager {
         let now = now_unix_ms();
         self.spend(&adapter, &model, result.usage.cost_micro_usd, now);
         // ^ A usage limit is no reply: its messages are answered once it resets.
-        // ref: docs/tasks.md "Manager"
+        // ref: docs/tasks.md "Chat host"
         if let Some(reached) = &result.limit {
             let attempt = self.state.limit.as_ref().map_or(0, |hold| hold.attempt) + 1;
             let (until_ms, problem) = agent::record_limit(&adapter, &model, reached, attempt, now);
@@ -2052,7 +2052,7 @@ impl Manager {
         }
         // ^ An agent's error is no reply either: the owner sees why, and the turn tries again
         // with a backoff. A conversation that keeps failing may be the cause: a fresh one
-        // follows. ref: docs/tasks.md "Manager"
+        // follows. ref: docs/tasks.md "Chat host"
         if result.is_error && result.subtype != "aborted" {
             let attempt = self.state.limit.as_ref().map_or(0, |hold| hold.attempt) + 1;
             let reason = clip(result.text.lines().next().unwrap_or_default(), 200);
@@ -2077,7 +2077,7 @@ impl Manager {
                 if self.state.limit.as_ref().is_some_and(|hold| hold.auth) && !was_auth {
                     self.log(ChatEvent::Stopped {
                         reason: format!(
-                            "{reason}. Sign in again (`claude /login`); the manager retries \
+                            "{reason}. Sign in again (`claude /login`); the runner retries \
                              every {} min.",
                             store::sign_in_retry_ms().div_ceil(60_000)
                         ),
@@ -2173,7 +2173,7 @@ impl Manager {
     }
 
     /// A reply that opens with `> message <id>` quotes that message, when it is the owner's or
-    /// another chat's (`resolve_quote`; the owner's Reply may name a manager's reply too). One that opens with no quote and says something quotes the
+    /// another chat's (`resolve_quote`; the owner's Reply may name a chat's reply too). One that opens with no quote and says something quotes the
     /// owner message it answers when it will not sit under it (`chat::quoted_message`); an owner's
     /// own message (`to` empty) only its explicit quote. ref: docs/tasks.md "A quote"
     fn quoted(&self, text: String, to: &[u64], by_owner: bool) -> (String, Option<u64>) {
@@ -2211,7 +2211,7 @@ impl Manager {
         (text, quote)
     }
 
-    /// The manager writes the overview with its own tools: after a turn, a file over the cap
+    /// The lead writes the overview with its own tools: after a turn, a file over the cap
     /// gets one follow-up turn, and no second one until the owner writes again.
     /// ref: docs/tasks.md "Project overview"
     fn check_overview(&mut self) {
@@ -2325,13 +2325,13 @@ impl Manager {
 
     fn save(&mut self) {
         if let Err(error) = self.dir.write_state(&self.state) {
-            self.say(&format!("cannot write the manager state: {error:#}"));
+            self.say(&format!("cannot write the chat state: {error:#}"));
         }
     }
 
     fn log(&self, event: ChatEvent) {
         if let Err(error) = self.dir.append(event) {
-            self.say(&format!("cannot append to the manager log: {error:#}"));
+            self.say(&format!("cannot append to the chat log: {error:#}"));
         }
     }
 
@@ -2355,7 +2355,7 @@ impl Manager {
     }
 }
 
-/// Whether an events line is a routine run's event for the owner (`routine_event`): the manager
+/// Whether an events line is a routine run's event for the owner (`routine_event`): the lead
 /// answers its turn with a message, not a quiet line. An output line never matches, since
 /// `routine_event` holds the output in one line.
 fn routine_for_owner(line: &str) -> bool {
@@ -2366,10 +2366,10 @@ fn routine_for_owner(line: &str) -> bool {
 /// routines in the order of their newest run: its standing (the newest run, or the newest
 /// failure since its last success with how many there were), then its runs after the previous
 /// conversation's last reply (`replied`, epoch seconds) when they are more than that newest run.
-/// ref: docs/tasks.md "Manager"
+/// ref: docs/tasks.md "Chat host"
 /// The questions this chat asked that the owner answered, newest `HANDOVER_ANSWERS` of them, oldest
 /// first: an answer is a decision, and the last exchanges alone lose it once a long job has moved
-/// on (docs/tasks.md "Manager"). Built by code from the log, so it holds whether or not the agent
+/// on (docs/tasks.md "Chat host"). Built by code from the log, so it holds whether or not the agent
 /// wrote a note.
 fn handover_answers(log: &[ChatEntry], dir: &ChatDir) -> String {
     let approvals = store::read_approvals(&dir.project_id).unwrap_or_default();
@@ -2463,7 +2463,7 @@ fn recent_exchanges(log: &[ChatEntry], limit: usize) -> Vec<String> {
                 ..
             } => Some(format!("Stand-in {name} (reply {id}): {}", one_line(text))),
             // ^ A post (`wsx task post`, the digest, the session news): the owner saw it, the
-            // manager did not write it.
+            // lead did not write it.
             ChatEvent::Reply {
                 id,
                 text,

@@ -1,4 +1,4 @@
-//! The manager chat: the conversation with the newest at the bottom, the owner's open
+//! The chat: the conversation with the newest at the bottom, the owner's open
 //! items under it and the message line last. ref: docs/tasks.md "TUI"
 use super::{
     chat_table, diagram,
@@ -18,7 +18,7 @@ use ratatui::{
 use std::collections::HashSet;
 use std::ops::Range;
 use wsx_core::task::chat::{ChatRow, RowKind, Speaker, Token};
-use wsx_core::task::manager::Level;
+use wsx_core::task::chat_host::Level;
 
 /// Below this width a To check row drops where to look.
 const WHERE_MIN_WIDTH: usize = 100;
@@ -339,7 +339,7 @@ pub fn hints(chat: &ChatScreen) -> Vec<String> {
     }
 }
 
-/// `Manager <project>` (another chat: its name) on the left, the To check and approval counts on
+/// the lead's name (another chat: its name) on the left, the To check and approval counts on
 /// the right; another chat has none.
 fn heading(chat: &ChatScreen, width: usize) -> Line<'static> {
     let checks = chat
@@ -394,7 +394,7 @@ fn heading(chat: &ChatScreen, width: usize) -> Line<'static> {
 }
 
 /// A read failure, else what the last action said, else what runs, else whether the
-/// manager works or runs at all.
+/// lead works or runs at all.
 fn status(chat: &ChatScreen, width: usize) -> Line<'static> {
     let (text, color) = if let Some(error) = &chat.error {
         (format!("Could not read the chat: {error}"), theme::ERROR)
@@ -432,7 +432,7 @@ fn clock(unix_ms: u64) -> String {
 }
 
 /// Each message as its author, tag and time, then its words wrapped under them; each event,
-/// limit or note as one muted line, and a run of quiet replies under the manager's name once
+/// limit or note as one muted line, and a run of quiet replies under the lead's name once
 /// (`chat_rows`). A link shows its words underlined, the selected one reversed; the second
 /// value is the line of the selected link. The heading of the `marked` message is reversed.
 /// `lead`: the other side is the project's lead, and its name is followed by "lead".
@@ -445,7 +445,7 @@ pub fn chat_lines(
     lead: bool,
 ) -> (Vec<Line<'static>>, Option<usize>) {
     let role = |row: &ChatRow| {
-        (lead && row.author == Some(Speaker::Manager))
+        (lead && row.author == Some(Speaker::Agent))
             .then(|| Span::styled("  lead", Style::default().fg(theme::TEXT_SUBTLE)))
     };
     let mut lines = Vec::new();
@@ -459,7 +459,7 @@ pub fn chat_lines(
         };
         let name = row.name.clone().unwrap_or_default();
         if row.queued {
-            // ^ A message the held manager has not taken: one marked line at the end, in the
+            // ^ A message the held lead has not taken: one marked line at the end, in the
             // owner's color, as the web's queue above the composer shows it.
             if before.is_some_and(|before| !before.queued) {
                 lines.push(Line::raw(""));

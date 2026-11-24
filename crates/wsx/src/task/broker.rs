@@ -13,14 +13,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use wsx_core::git::output_with_timeout_limit;
+use wsx_core::task::chat_host::Party;
 use wsx_core::task::chats;
-use wsx_core::task::manager::Party;
 use wsx_core::task::owner::ACTOR_ENV;
 use wsx_core::task::policy::{Capability, Policy, Role, Trust, RULES_ENV, TRUST_ENV};
 use wsx_core::task::store;
 
 pub const BROKER_ENV: &str = "WSX_TASK_BROKER";
-/// The manager's own project; set only by the manager host. Memory commands read it for the
+/// The lead's own project; set only by the chat host. Memory commands read it for the
 /// agent's own scope (cli/memory.rs).
 pub const FROM_ENV: &str = "WSX_TASK_FROM";
 /// Stdin, and stdout and stderr each, of one command.
@@ -56,7 +56,7 @@ impl Default for SharedPolicy {
     fn default() -> Self {
         Self(std::sync::Arc::new(std::sync::Mutex::new(Policy::of(
             Trust::Untrusted,
-            Role::Manager,
+            Role::Chat,
             Some(&[]),
         ))))
     }
@@ -185,11 +185,11 @@ fn forward(socket: &Path, argv: Vec<String>) -> Result<i32> {
     Ok(response.code)
 }
 
-/// What the manager host's broker needs besides its socket.
+/// What the chat host's broker needs besides its socket.
 pub struct ChatBroker {
     pub exe: PathBuf,
     pub fallback_cwd: PathBuf,
-    /// The manager's own project, and its task ID (its memory scope).
+    /// The lead's own project, and its task ID (its memory scope).
     pub own: String,
     pub project_id: String,
     pub actor: String,
@@ -198,12 +198,12 @@ pub struct ChatBroker {
     pub policy: SharedPolicy,
 }
 
-/// The manager host's side: every `task` command runs as its `actor` (`manager` or
+/// The chat host's side: every `task` command runs as its `actor` (`manager` or
 /// `chat:<name>`). Another project is reached only by `ledger` and `say --from-chat -p`, a
 /// chat of this one by `say --from-chat`; a `--reply` spends an answer the
 /// host owes (`owed`), and `sent` hears each message that went out.
-/// ref: docs/tasks.md "Managers talk", "Chats"
-pub fn serve_manager(
+/// ref: docs/tasks.md "Mail", "Chats"
+pub fn serve_chat(
     listener: UnixListener,
     broker: ChatBroker,
     sent: impl Fn(String, String, bool) + Send + Sync + 'static,
@@ -313,10 +313,10 @@ fn memory_pin(argv: &[String], own_id: &str, policy: Policy) -> Result<bool> {
 }
 
 /// The other project a command reaches. The agent's role runs its `reach` there (the task
-/// lives in that project's store, as the owner's `-p` makes it; every chat is a manager) and
+/// lives in that project's store, as the owner's `-p` makes it; every chat is a chat) and
 /// `say --from-chat`, which reaches that project's main chat; any role only reads `ledger`.
 /// A `say --from-chat` without `-p` reaches a chat of its own (`manager` without `--to`);
-/// `None` for anything else of its own. ref: docs/tasks.md "Managers talk"; policy.rs
+/// `None` for anything else of its own. ref: docs/tasks.md "Mail"; policy.rs
 fn reach(argv: &[String], own: &str, project_id: &str, role: Role) -> Result<Option<Party>> {
     let project = argv
         .iter()

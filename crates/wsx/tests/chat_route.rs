@@ -1,6 +1,6 @@
 //! The router: `/new <name>` forks the owner's message into a new chat and `@<chat>` gives it to
 //! an open chat; the chat it was written in takes no turn on it. Through the real CLI and the
-//! fake manager agent. ref: docs/tasks.md "Router"
+//! fake lead agent. ref: docs/tasks.md "Router"
 mod common;
 
 use common::Fixture;

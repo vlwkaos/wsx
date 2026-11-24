@@ -1,5 +1,5 @@
 //! Which worktrees and sessions of a project are stale, and the one safe action for each.
-//! The manager host's prune, the web's and the TUI's worktree delete read this rule alone.
+//! The chat host's prune, the web's and the TUI's worktree delete read this rule alone.
 //! ref: docs/tasks.md "Stale worktrees"
 //!
 //! A worktree is never judged when it is the main checkout (its shell session stays), an open
@@ -355,7 +355,7 @@ pub fn stop_leaked(project_id: &str, main: &Path) -> Vec<Note> {
     notes
 }
 
-/// One line for the manager's chat and whether it needs the owner.
+/// One line for the lead's chat and whether it needs the owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
     pub path: PathBuf,

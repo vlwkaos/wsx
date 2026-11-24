@@ -27,7 +27,7 @@ fn until<T>(label: &str, mut test: impl FnMut() -> Option<T>) -> T {
     }
 }
 
-/// The texts of the messages the fake Claude received: (a manager's, text).
+/// The texts of the messages the fake Claude received: (a chat's, text).
 fn messages(fixture: &Fixture) -> Vec<(bool, String)> {
     fixture
         .traces()
@@ -41,7 +41,7 @@ fn messages(fixture: &Fixture) -> Vec<(bool, String)> {
         .collect()
 }
 
-/// What a worker's agent received (a manager's event lines name the titles too).
+/// What a worker's agent received (a chat's event lines name the titles too).
 fn received(fixture: &Fixture, needle: &str) -> Vec<String> {
     messages(fixture)
         .into_iter()
@@ -50,9 +50,9 @@ fn received(fixture: &Fixture, needle: &str) -> Vec<String> {
         .collect()
 }
 
-/// The repo's service and the manager run: the service ends a wait on a closed task and tells
-/// the manager what its sweep finds. `say` starts both.
-fn with_a_manager(fixture: &Fixture) {
+/// The repo's service and the lead run: the service ends a wait on a closed task and tells
+/// the lead what its sweep finds. `say` starts both.
+fn with_a_lead(fixture: &Fixture) {
     let said = fixture.wsx(&["chat", "say", "hello"]);
     assert!(said.status.success(), "{said:?}");
 }
@@ -60,7 +60,7 @@ fn with_a_manager(fixture: &Fixture) {
 /// #1 works until `hold` exists; #2 was created `--after 1` and has had an add. Nothing of #2
 /// has reached an agent: the add said it is queued behind the prompt.
 fn waiting_task_with_an_add(fixture: &Fixture) {
-    with_a_manager(fixture);
+    with_a_lead(fixture);
     let hold = fixture.root.join("hold");
     fixture.json(&["task", "new", &format!("WAIT {}", hold.display()), "--json"]);
     fixture.json(&[
@@ -230,7 +230,7 @@ fn a_failed_check_run_reopens_the_settled_task() {
 #[test]
 fn a_check_run_that_ends_after_a_stop_reaches_the_chat_and_the_next_turn() {
     let fixture = gated_ci();
-    with_a_manager(&fixture);
+    with_a_lead(&fixture);
     worker_with_a_run_out(&fixture);
     let stopped = fixture.wsx(&["task", "stop", "1"]);
     assert!(stopped.status.success(), "{stopped:?}");
@@ -243,7 +243,7 @@ fn a_check_run_that_ends_after_a_stop_reaches_the_chat_and_the_next_turn() {
     });
 
     // ^ The stopped worker gets no turn; the chat's event line says the answer waits for it
-    // (a task's event starts no manager turn, docs/tasks.md "Manager").
+    // (a task's event starts no lead turn, docs/tasks.md "Chat host").
     assert!(received(&fixture, "Your check-run ended").is_empty());
     let chat_log = fixture.root.join("state/wsx/tasks/chats/demo/log.jsonl");
     until("the chat's event line", || {
@@ -305,7 +305,7 @@ fn a_task_parked_for_its_files_plans_now_and_builds_after_the_wait() {
     let fixture = Fixture::with_tasks_config(
         "  workflow:\n    steps:\n      - {name: plan, prompt: plan it}\n      - {name: build, prompt: build it}\n",
     );
-    with_a_manager(&fixture);
+    with_a_lead(&fixture);
     let hold = fixture.root.join("hold");
     fixture.json(&["task", "new", &format!("WAIT {}", hold.display()), "--json"]);
     fixture.json(&[
@@ -433,10 +433,10 @@ fn the_report_names_the_test_checks_a_revision_edited() {
 
 /// Code owns a task's events (docs/design/orchestration.md step 3): with `tasks.land.auto` a
 /// ready task's review job, a fresh read-only agent, decides. Round 1 asks for changes, which
-/// go to the worker as a turn; round 2 lands the new revision. The manager, running for the
+/// go to the worker as a turn; round 2 lands the new revision. The lead, running for the
 /// owner's message, takes no turn of task events through it all. ref: docs/tasks.md "Review"
 #[test]
-fn a_review_job_lands_a_ready_task_and_no_event_wakes_the_manager() {
+fn a_review_job_lands_a_ready_task_and_no_event_wakes_the_lead() {
     let fixture = Fixture::with_tasks_config("  checks:\n    - \"true\"\n");
     let config = fixture.root.join("project/wsx.config.yml");
     let text = fs::read_to_string(&config).expect("read the project config");
@@ -446,7 +446,7 @@ fn a_review_job_lands_a_ready_task_and_no_event_wakes_the_manager() {
     )
     .expect("turn auto land on");
     fixture.git(&["commit", "-qam", "auto land"]);
-    with_a_manager(&fixture);
+    with_a_lead(&fixture);
     until("the manager's first turn", || {
         messages(&fixture)
             .iter()
@@ -509,7 +509,7 @@ fn a_review_job_lands_a_ready_task_and_no_event_wakes_the_manager() {
             .then_some(())
     });
     std::thread::sleep(Duration::from_secs(3));
-    // ^ The manager's only message is the owner's: no turn of task events.
+    // ^ The lead's only message is the owner's: no turn of task events.
     let manager: Vec<String> = messages(&fixture)
         .into_iter()
         .filter(|(manager, _)| *manager)

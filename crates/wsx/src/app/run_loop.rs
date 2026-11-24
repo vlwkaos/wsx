@@ -79,7 +79,7 @@ impl App {
                 | Mode::IntegrationManager { .. }
                 | Mode::RoutinePresetPicker { .. }
                 | Mode::RoutineEditor { .. } => EventMode::Input,
-                // ^ The manager chat and the New chat form take every character themselves.
+                // ^ The chat and the New chat form take every character themselves.
                 Mode::Tasks { list } if list.chat.is_some() || list.new_chat.is_some() => {
                     EventMode::Input
                 }
@@ -407,7 +407,7 @@ impl App {
                 } => self.apply_plugin_view(generation, &plugin_id, pane_id, result),
             }
         }
-        self.apply_manager_asks();
+        self.apply_chat_asks();
         while let Ok(result) = self.routine_rx.try_recv() {
             self.apply_routine_result(result);
         }

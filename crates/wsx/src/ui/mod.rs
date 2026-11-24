@@ -301,7 +301,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         workspace: &app.workspace,
                         flat: app.flat(),
                         stale_projects: app.stale_collapsed_projects(),
-                        attention: app.manager_asks(),
+                        attention: app.chat_asks(),
                         selected: app.tree_selected,
                         scroll_offset: app.tree_scroll,
                         animation_frame: app.spinner_frame,
@@ -317,7 +317,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         workspace: &app.workspace,
                         flat: app.flat(),
                         stale_projects: app.stale_collapsed_projects(),
-                        attention: app.manager_asks(),
+                        attention: app.chat_asks(),
                         selected: app.tree_selected,
                         scroll_offset: app.tree_scroll,
                         is_move_mode,
@@ -792,7 +792,7 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
         Mode::Tasks { list } if list.chat.is_some() => (
             match list.chat.as_deref().and_then(|chat| chat.chat.as_ref()) {
                 Some(_) => "CHAT",
-                None => "MANAGER",
+                None => "LEAD",
             },
             theme::ModeBadge::Info,
             list.chat.as_deref().map_or_else(Vec::new, |chat| {

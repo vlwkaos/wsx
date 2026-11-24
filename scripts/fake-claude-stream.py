@@ -386,7 +386,7 @@ def manager_turn(text, project, page):
         time.sleep(25)
     if 'MSTEER' in text.split():
         # ^ One tool call after a pause, as Claude runs one: the host hands the owner's next message
-        # to the turn at that call (docs/tasks.md "Manager", Messages during a turn), and the reply says what came.
+        # to the turn at that call (docs/tasks.md "Chat host", Messages during a turn), and the reply says what came.
         time.sleep(3)
         tool_use('msteer-tool', 'true')
         tool_result('msteer-tool', 'ok', False)
@@ -403,7 +403,7 @@ def manager_turn(text, project, page):
         # ^ Events that come along with the turn follow the owner's message: they are no script.
         script = ('\n' + text).split('\nSCRIPT\n', 1)[1].split('\n\nEvents (message ', 1)[0]
         script = script.split('\n\nYour last reply: ', 1)[0]
-        # ^ Events along with the owner's message add "Answer message N first." after it (manager.rs): not a script line.
+        # ^ Events along with the owner's message add "Answer message N first." after it (chat_runner.rs): not a script line.
         script = script.split('\n\nAnswer message', 1)[0]
         # ^ The host's line with the id of the manager's last reply ends the turn text.
         done = subprocess.run(script, shell=True, capture_output=True, text=True)
@@ -417,7 +417,7 @@ def manager_turn(text, project, page):
             replies.append('ran: %s -> %d %s' % (line[4:], done.returncode, (done.stdout + done.stderr).strip()[:600]))
     for line in text.splitlines():
         if line.startswith('QUOTE '):
-            # ^ A reply that quotes by id: `QUOTE <id|OWNER_SAID> <words>` (docs/tasks.md "Manager").
+            # ^ A reply that quotes by id: `QUOTE <id|OWNER_SAID> <words>` (docs/tasks.md "Chat host").
             _, ref, words = line.split(' ', 2)
             replies.insert(0, '> message %s\n\n%s' % (ref.replace('OWNER_SAID', said), words))
     for line in text.splitlines():

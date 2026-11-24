@@ -32,7 +32,7 @@ const NOTICE_CHARS: usize = 160;
 pub const REPORTED_STATES: [TaskState; 3] =
     [TaskState::Ready, TaskState::Failed, TaskState::Landed];
 
-/// Task states the manager hears about: the reported ones, a closed task and a task that waits
+/// Task states the lead hears about: the reported ones, a closed task and a task that waits
 /// for anyone but the owner's hand (not a task the owner works on by hand).
 pub fn is_event(record: &TaskRecord) -> bool {
     match record.state {
@@ -109,7 +109,7 @@ pub fn read_result(dir: &TaskDir) -> Option<Value> {
 }
 
 /// What wsx ran on the task's latest revision, each check as `passed`, `failed` or
-/// `timed out`: the manager states these, not the worker's words (docs/tasks.md "Ledger").
+/// `timed out`: the lead states these, not the worker's words (docs/tasks.md "Ledger").
 /// A task whose work resolves a landing conflict: its last conflict came after its last
 /// revision. ref: docs/tasks.md "Landing"
 pub fn resolving_conflict(dir: &TaskDir) -> bool {
@@ -249,7 +249,7 @@ pub fn checked_model(model: &str) -> Result<String> {
 }
 
 /// The task's title: its `--title`, else the first line of its prompt (at most 120 characters),
-/// shown without a leading `Owner <words>:`, which is how the manager's prompts open. Only the
+/// shown without a leading `Owner <words>:`, which is how the lead's prompts open. Only the
 /// shown title changes; the record and the prompt keep what was written. ref: docs/tasks.md "Store"
 pub fn title(dir: &TaskDir, record: &TaskRecord) -> Option<String> {
     if let Some(title) = &record.title {
@@ -337,9 +337,9 @@ pub fn task_agent(record: &TaskRecord) -> Value {
     })
 }
 
-/// The agent the manager's turns run on now: a fallback in its state, else `chats::runs_on`.
+/// The agent the lead's turns run on now: a fallback in its state, else `chats::runs_on`.
 /// ref: docs/tasks.md "Agents"
-pub fn manager_agent(dir: &store::ChatDir, settings: &TaskConfig) -> Value {
+pub fn chat_agent(dir: &store::ChatDir, settings: &TaskConfig) -> Value {
     match dir.read_state().ok().and_then(|state| state.agent) {
         Some(agent) => json!({
             "adapter": agent.adapter, "model": agent.model, "effort": settings.chats_effort,
@@ -355,7 +355,7 @@ pub fn manager_agent(dir: &store::ChatDir, settings: &TaskConfig) -> Value {
     }
 }
 
-/// The agent a project's chats run on unless they name their own: the manager's, as the
+/// The agent a project's chats run on unless they name their own: the lead's, as the
 /// New chat form's Default.
 pub fn default_agent(settings: &TaskConfig) -> Value {
     json!({
@@ -389,10 +389,10 @@ pub fn agent_label(agent: &Value) -> Option<String> {
 /// - `land`: a ready task with no pending approval of its own.
 /// - `hand`, `handback`: take a build over in its working copy and give it back
 ///   (docs/tasks.md "By hand").
-/// - `answer`: the owner talks to the manager: a wait for the owner or a failure.
+/// - `answer`: the owner talks to the lead: a wait for the owner or a failure.
 ///
-/// Hold stays a command for the manager: the owner's message to the worker goes
-/// through the manager (docs/web-client-tasks.md "Task sheet").
+/// Hold stays a command for the lead: the owner's message to the worker goes
+/// through the lead (docs/web-client-tasks.md "Task sheet").
 pub fn owner_actions(
     state: TaskState,
     waiting: Option<WaitOn>,

@@ -406,7 +406,7 @@ pub fn post_once(
     Ok(true)
 }
 
-/// Replace a note of the manager's notes folder.
+/// Replace a note of the lead's notes folder.
 pub fn write_note(path: &Path, text: &str) -> Result<()> {
     write_atomic(path, text.as_bytes())
 }
@@ -592,7 +592,7 @@ pub fn limited_until(account: &str, now_ms: u64) -> Option<u64> {
 /// new sign-in is checked again after it. ref: docs/tasks.md "Agents"
 const SIGN_IN_RETRY_MS: u64 = 5 * 60_000;
 
-/// When a failed sign-in is tried again, for every host (the task hosts and the manager
+/// When a failed sign-in is tried again, for every host (the task hosts and the lead
 /// host): `SIGN_IN_RETRY_MS`, or the seconds in `WSX_TEST_SIGN_IN_RETRY_SECS`: for the task scenario
 /// only, which would otherwise wait 5 minutes to see the return home.
 pub fn sign_in_retry_ms() -> u64 {
@@ -1103,7 +1103,7 @@ pub fn task_numbers(project_id: &str) -> Result<Vec<u32>> {
 const MANAGER_LOG: &str = "log.jsonl";
 const MANAGER_STATE: &str = "state.json";
 const MANAGER_SOCKET: &str = "manager.sock";
-/// The manager log rolls over to `log.<n>.jsonl` past this size (n counts up from 1, the oldest);
+/// The lead log rolls over to `log.<n>.jsonl` past this size (n counts up from 1, the oldest);
 /// every old file is kept, so a quote reaches a message of any age. ref: docs/tasks.md "Log window"
 const MAX_MANAGER_LOG_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_MANAGER_STATE_BYTES: u64 = 256 * 1024;
@@ -1156,7 +1156,7 @@ pub fn repo_socket(project_id: &str) -> Result<PathBuf> {
 }
 
 /// What the repo service saved, or none before its first start. ref: docs/tasks.md "Chats"
-pub fn read_repo_state(project_id: &str) -> Result<Option<super::manager::RepoState>> {
+pub fn read_repo_state(project_id: &str) -> Result<Option<super::chat_host::RepoState>> {
     let path = project_dir(project_id)?.join(REPO_STATE);
     match read_bounded_if_exists(&path, MAX_MANAGER_STATE_BYTES)? {
         Some(bytes) => serde_json::from_slice(&bytes)
@@ -1166,7 +1166,7 @@ pub fn read_repo_state(project_id: &str) -> Result<Option<super::manager::RepoSt
     }
 }
 
-pub fn write_repo_state(project_id: &str, state: &super::manager::RepoState) -> Result<()> {
+pub fn write_repo_state(project_id: &str, state: &super::chat_host::RepoState) -> Result<()> {
     write_atomic(
         &ensure_project_dir(project_id)?.join(REPO_STATE),
         &serde_json::to_vec_pretty(state)?,
@@ -1258,7 +1258,7 @@ impl ChatDir {
             .into()
     }
 
-    /// The arguments of the host the release before ran for this chat: `manager-host <repo>
+    /// The arguments of the host the release before ran for this chat: `lead-host <repo>
     /// [--chat <name>]`. It hands over to `chat-host` and `repo-host` for one release.
     pub fn old_host_args(&self) -> Vec<String> {
         let mut args: Vec<String> = ["task", "manager-host", self.project_id.as_str()]
@@ -1272,7 +1272,7 @@ impl ChatDir {
         args
     }
 
-    /// The chat's name, unless it is the repo's main chat: that is the repo's manager, and
+    /// The chat's name, unless it is the repo's main chat: that is the repo's lead, and
     /// the views name it so.
     pub fn named(&self) -> Option<&str> {
         (!self.is_main()).then_some(self.chat.as_str())
@@ -1282,7 +1282,7 @@ impl ChatDir {
         sockets_of(&self.path).0
     }
 
-    /// The socket on which the manager host runs the manager agent's `wsx task` commands.
+    /// The socket on which the chat host runs the lead agent's `wsx task` commands.
     /// ref: docs/tasks.md "Permissions"
     pub fn broker_path(&self) -> PathBuf {
         sockets_of(&self.path).1
@@ -1295,14 +1295,14 @@ impl ChatDir {
         Ok(path)
     }
 
-    pub fn append(&self, event: super::manager::ChatEvent) -> Result<()> {
+    pub fn append(&self, event: super::chat_host::ChatEvent) -> Result<()> {
         let path = self.path.join(MANAGER_LOG);
         if fs::symlink_metadata(&path).is_ok_and(|meta| meta.len() > MAX_MANAGER_LOG_BYTES) {
             let next = self.old_logs().last().map_or(1, |(n, _)| n + 1);
             fs::rename(&path, self.path.join(format!("log.{next}.jsonl")))
                 .with_context(|| format!("cannot roll over {}", path.display()))?;
         }
-        let mut line = serde_json::to_vec(&super::manager::ChatEntry {
+        let mut line = serde_json::to_vec(&super::chat_host::ChatEntry {
             unix_ms: now_unix_ms(),
             event,
         })?;
@@ -1345,7 +1345,7 @@ impl ChatDir {
     }
 
     /// The old log, then the current one; unreadable lines are skipped.
-    pub fn read_log(&self) -> Result<Vec<super::manager::ChatEntry>> {
+    pub fn read_log(&self) -> Result<Vec<super::chat_host::ChatEntry>> {
         trace_read_log(&self.path);
         let mut entries = Vec::new();
         for path in self.log_files() {
@@ -1357,7 +1357,7 @@ impl ChatDir {
             entries.extend(
                 bytes
                     .split(|byte| *byte == b'\n')
-                    .filter_map(super::manager::ChatEntry::read),
+                    .filter_map(super::chat_host::ChatEntry::read),
             );
         }
         Ok(entries)
@@ -1369,8 +1369,8 @@ impl ChatDir {
     pub fn read_back(
         &self,
         first: u64,
-        enough: impl Fn(&[super::manager::ChatEntry]) -> bool,
-    ) -> Result<Vec<super::manager::ChatEntry>> {
+        enough: impl Fn(&[super::chat_host::ChatEntry]) -> bool,
+    ) -> Result<Vec<super::chat_host::ChatEntry>> {
         self.read_back_where(first, |_| true, enough)
     }
 
@@ -1379,8 +1379,8 @@ impl ChatDir {
     pub fn read_around(
         &self,
         first: u64,
-        enough: impl Fn(&[super::manager::ChatEntry]) -> bool,
-    ) -> Result<Vec<super::manager::ChatEntry>> {
+        enough: impl Fn(&[super::chat_host::ChatEntry]) -> bool,
+    ) -> Result<Vec<super::chat_host::ChatEntry>> {
         self.read_all_where(first, |_| true, enough)
     }
 
@@ -1390,8 +1390,8 @@ impl ChatDir {
         &self,
         first: u64,
         keep: impl Fn(&[u8]) -> bool,
-        enough: impl Fn(&[super::manager::ChatEntry]) -> bool,
-    ) -> Result<Vec<super::manager::ChatEntry>> {
+        enough: impl Fn(&[super::chat_host::ChatEntry]) -> bool,
+    ) -> Result<Vec<super::chat_host::ChatEntry>> {
         let mut files: Vec<PathBuf> = self.old_logs().into_iter().map(|(_, path)| path).collect();
         files.push(self.path.join(MANAGER_LOG));
         read_back(
@@ -1399,7 +1399,7 @@ impl ChatDir {
             first,
             u64::MAX,
             |line| match keep(line) {
-                true => super::manager::ChatEntry::read(line),
+                true => super::chat_host::ChatEntry::read(line),
                 false => None,
             },
             enough,
@@ -1412,14 +1412,14 @@ impl ChatDir {
         &self,
         first: u64,
         keep: impl Fn(&[u8]) -> bool,
-        enough: impl Fn(&[super::manager::ChatEntry]) -> bool,
-    ) -> Result<Vec<super::manager::ChatEntry>> {
+        enough: impl Fn(&[super::chat_host::ChatEntry]) -> bool,
+    ) -> Result<Vec<super::chat_host::ChatEntry>> {
         read_back(
             &self.log_files(),
             first,
             2 * (MAX_MANAGER_LOG_BYTES + MAX_LOG_LINE_BYTES as u64),
             |line| match keep(line) {
-                true => super::manager::ChatEntry::read(line),
+                true => super::chat_host::ChatEntry::read(line),
                 false => None,
             },
             enough,
@@ -1427,11 +1427,11 @@ impl ChatDir {
     }
 
     /// The entries in the last `bytes` of the log, for a quick look at the latest ones.
-    pub fn read_tail(&self, bytes: u64) -> Result<Vec<super::manager::ChatEntry>> {
+    pub fn read_tail(&self, bytes: u64) -> Result<Vec<super::chat_host::ChatEntry>> {
         self.read_back(bytes, |_| true)
     }
 
-    pub fn read_state(&self) -> Result<super::manager::ChatState> {
+    pub fn read_state(&self) -> Result<super::chat_host::ChatState> {
         let path = self.path.join(MANAGER_STATE);
         let Some(bytes) = read_bounded_if_exists(&path, MAX_MANAGER_STATE_BYTES)? else {
             return Ok(Default::default());
@@ -1439,7 +1439,7 @@ impl ChatDir {
         serde_json::from_slice(&bytes).with_context(|| format!("cannot parse {}", path.display()))
     }
 
-    pub fn write_state(&self, state: &super::manager::ChatState) -> Result<()> {
+    pub fn write_state(&self, state: &super::chat_host::ChatState) -> Result<()> {
         write_atomic(
             &self.path.join(MANAGER_STATE),
             &serde_json::to_vec_pretty(state)?,
@@ -1458,7 +1458,7 @@ pub fn chat_of(path: &Path) -> Option<&str> {
         .flatten()
 }
 
-/// A reader of the manager's log (the chat, the search catch-up) reads this much of its end
+/// A reader of the lead's log (the chat, the search catch-up) reads this much of its end
 /// first, more only when its window needs it (`read_back_where`, docs/tasks.md "Log window").
 pub(crate) const FIRST_READ_BYTES: u64 = 256 * 1024;
 /// Whether `needle` is in `haystack`: the test of a `read_back_where` filter.
@@ -1518,12 +1518,12 @@ pub fn stamp(project_id: &str) -> Stamp {
 }
 
 pub const OVERVIEW_FILE: &str = "overview.md";
-/// The overview's hard size: more is cut in the web view and sent back to the manager.
+/// The overview's hard size: more is cut in the web view and sent back to the lead.
 pub const MAX_OVERVIEW_LINES: usize = 60;
 pub const MAX_OVERVIEW_CHARS: usize = 4000;
 pub const MAX_OVERVIEW_BYTES: u64 = 256 * 1024;
 
-/// `tasks/<project-id>/overview.md`, the project's overview that the manager edits.
+/// `tasks/<project-id>/overview.md`, the project's overview that the lead edits.
 /// ref: docs/tasks.md "Project overview"
 pub fn overview_path(project_id: &str) -> Result<PathBuf> {
     Ok(project_dir(project_id)?.join(OVERVIEW_FILE))
@@ -1606,9 +1606,9 @@ const MAX_APPROVALS_BYTES: u64 = 4 * 1024 * 1024;
 /// the next `a<n>`; the line as written is returned.
 pub fn append_approval(
     project_id: &str,
-    mut line: super::manager::ApprovalLine,
-) -> Result<super::manager::ApprovalLine> {
-    use super::manager::ApprovalLine;
+    mut line: super::chat_host::ApprovalLine,
+) -> Result<super::chat_host::ApprovalLine> {
+    use super::chat_host::ApprovalLine;
     let path = ensure_project_dir(project_id)?.join(APPROVALS_FILE);
     let mut file = open_locked(
         &path,
@@ -1649,7 +1649,7 @@ pub fn run_log(project_id: &str, id: &str) -> Result<PathBuf> {
     Ok(dir.join(format!("{id}.log")))
 }
 
-pub fn read_approvals(project_id: &str) -> Result<Vec<super::manager::ApprovalLine>> {
+pub fn read_approvals(project_id: &str) -> Result<Vec<super::chat_host::ApprovalLine>> {
     let path = project_dir(project_id)?.join(APPROVALS_FILE);
     let Some(bytes) =
         read_bounded_if_exists(&path, MAX_APPROVALS_BYTES + MAX_LOG_LINE_BYTES as u64)?

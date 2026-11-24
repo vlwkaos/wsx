@@ -164,7 +164,7 @@ fn a_host_that_cannot_load_its_record_posts_one_alert() {
         .join("7");
     fs::create_dir_all(&dir).expect("create the task folder");
     fs::write(dir.join("task.json"), "garbage").expect("write it");
-    // ^ The manager host receives the post; it runs the project's main chat.
+    // ^ The chat host receives the post; it runs the project's main chat.
     let started = fixture.wsx(&["chat", "lead"]);
     assert!(started.status.success(), "{started:?}");
 

@@ -1,24 +1,24 @@
-//! Chats: a manager with a name and a goal. Each is `tasks/chats/<name>/` (the name is its id,
+//! Chats: a chat with a name and a goal. Each is `tasks/chats/<name>/` (the name is its id,
 //! unique on the machine) with its own log, `notes/`, an optional `goal.md` and `chat.json
 //! {agent?, repos}`. A repo's `home.json` names its main chat, the owner's choice (`set_main`),
 //! which hears what no open chat owns. The repo (files, tasks, rules, memory) is shared; a chat reaches another's context by
 //! search or by `say`. ref: docs/tasks.md "Chats"
 
+use super::chat_host::ApprovalLine;
 use super::chats_home;
 use super::checks::CheckItem;
-use super::manager::ApprovalLine;
 use super::store::{self, ChatDir};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 
-/// The chat's purpose, in the manager's instructions (`wsx chat goal`); a changed goal
+/// The chat's purpose, in the lead's instructions (`wsx chat goal`); a changed goal
 /// reaches the agent at its next turn. Every chat has one.
 pub const GOAL_FILE: &str = "goal.md";
 /// Written by `chat close`; its host leaves. The notes and the log stay.
 pub const CLOSED_FILE: &str = "closed";
-/// `{agent?}`: the name of the `[[agents]]` entry the chat runs on; none runs the manager's.
+/// `{agent?}`: the name of the `[[agents]]` entry the chat runs on; none runs the lead's.
 pub const CHAT_FILE: &str = "chat.json";
 pub const MAX_GOAL_BYTES: usize = 8 * 1024;
 pub const MAX_NAME_CHARS: usize = 24;
@@ -513,7 +513,7 @@ pub fn agent_entries() -> Vec<(String, ChatAgent)> {
         .collect()
 }
 
-/// The chat's own agent; none runs the manager's (also when its entry is gone from the config).
+/// The chat's own agent; none runs the lead's (also when its entry is gone from the config).
 pub fn agent(dir: &ChatDir) -> Option<ChatAgent> {
     entry_agent(&chat_file(dir).agent?)
 }
@@ -528,7 +528,7 @@ pub struct Runs {
     /// The project's main chat with no goal: it answers and forks goals.
     pub lead: bool,
     /// The owner's limit: `leadRotateTokens` for the lead (`lead_rotate_limit`), else
-    /// `rotateTokens` (`manager_rotate_limit`).
+    /// `rotateTokens` (`chats_rotate_limit`).
     pub rotate_tokens: Option<u64>,
 }
 
@@ -612,7 +612,7 @@ pub fn create(
 }
 
 /// Set an open chat's purpose; an empty goal clears it. The chat's agent
-/// reads it at its next turn (`Manager::send_turn`).
+/// reads it at its next turn (`ChatRunner::send_turn`).
 pub fn set_goal(name: &str, goal: &str) -> Result<()> {
     checked_goal(goal)?;
     write_goal(&open_chat(name)?, goal)
@@ -670,7 +670,7 @@ pub fn set_main(name: &str, project_id: &str) -> Result<()> {
 /// or ended) and its fork was not undone before (a fork reopened by name and closed again is
 /// only closed): closing it then undoes the fork. ref: docs/tasks.md "Lead and forks"
 pub fn unstarted_fork(dir: &ChatDir) -> Result<Option<String>> {
-    use super::manager::ChatEvent;
+    use super::chat_host::ChatEvent;
     let mut from = None;
     for entry in dir.read_log()? {
         match entry.event {
@@ -765,7 +765,7 @@ pub fn hand_back(dir: &ChatDir) -> String {
 /// name the owner reads (`shown_name`, the project's name for the main chat), `title` the chat's
 /// own, `projects` the names of the projects it runs in, its own first; `goal` is the goal's
 /// first line; `agent` is the entry's name, `adapter` and `model` its own, left out for a chat on
-/// the manager's.
+/// the lead's.
 pub fn rows(project_id: &str) -> Vec<Value> {
     let (main, registered) = (store::main_chat(project_id), Registered::load());
     all(project_id)

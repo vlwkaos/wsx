@@ -204,7 +204,7 @@ pub(super) fn cmd_status(json: bool, format: Format, group: Option<&GroupKey>) -
     let projects = resolve_projects(&config, &workspace, None, group)?;
     if json {
         // ^ Status JSON is a top-level project array; runtime status uses an object.
-        print_json(&manager_status(&projects)?)?;
+        print_json(&chat_status(&projects)?)?;
         return Ok(());
     }
     if let Format::Compact = format {
@@ -253,11 +253,11 @@ pub(super) fn cmd_status(json: bool, format: Format, group: Option<&GroupKey>) -
     Ok(())
 }
 
-/// The status projects with what a manager needs for its next step, as added keys:
+/// The status projects with what a chat needs for its next step, as added keys:
 /// `work` on a worktree and `exchange` on a session.
 /// ^ docs/agent-orchestration.md "One status call": one exchange per session and counts
 /// for a worktree keep the output bounded.
-pub(super) fn manager_status(projects: &[&Project]) -> Result<serde_json::Value> {
+pub(super) fn chat_status(projects: &[&Project]) -> Result<serde_json::Value> {
     let exchanges = list_agent_exchanges(None, RuntimeSessionScope::default())?;
     let mut output = serde_json::to_value(projects)?;
     for (project, project_row) in projects

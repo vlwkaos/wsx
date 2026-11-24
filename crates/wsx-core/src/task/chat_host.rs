@@ -1,7 +1,7 @@
-//! The project manager's conversation and state: `tasks/chats/<name>/`, the chat's own folder (the main chat's too).
-//! ref: docs/tasks.md "Manager"
+//! The project lead's conversation and state: `tasks/chats/<name>/`, the chat's own folder (the main chat's too).
+//! ref: docs/tasks.md "Chat host"
 //!
-//! The manager host is the only writer of these files; `wsx chat read` reads the log.
+//! The chat host is the only writer of these files; `wsx chat read` reads the log.
 
 use super::status::answered_after_stop;
 use super::store::TaskDir;
@@ -28,7 +28,7 @@ impl Level {
 }
 
 /// The other side of a peer message: a chat. Its key is `chat:<name>`, as `owed`, `sent{to}` and
-/// a row's peer carry it; a row of before chats shared a store carries a manager's project name
+/// a row's peer carry it; a row of before chats shared a store carries a chat's project name
 /// instead, read as the name of that project's chat. ref: docs/tasks.md "Chats"
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Party {
@@ -57,7 +57,7 @@ impl Party {
     }
 }
 
-/// Who wrote a message the manager receives: `owner`, `events`, a peer or `recap`. A peer is a
+/// Who wrote a message the lead receives: `owner`, `events`, a peer or `recap`. A peer is a
 /// chat (`chat:<name>`; `manager:<project>` of before is read the same); `-reply` after the
 /// word marks the answer to a message this side sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,7 +126,7 @@ pub enum ChatEvent {
         from: Author,
         text: String,
         /// An events message's lines as the chat shows them, one per event, written where each
-        /// event is made; none for an owner's or a peer's message (docs/tasks.md "Manager").
+        /// event is made; none for an owner's or a peer's message (docs/tasks.md "Chat host").
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         short: Vec<Short>,
         /// The id of the message its leading `> <line>` quotes (`resolve_quote`): a tap on the
@@ -147,16 +147,16 @@ pub enum ChatEvent {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TurnUsage>,
-        /// A short reply to a turn of only events: the manager's own work, which the chat
-        /// shows as a muted line, not a message (`quiet_reply`, docs/tasks.md "Manager").
+        /// A short reply to a turn of only events: the lead's own work, which the chat
+        /// shows as a muted line, not a message (`quiet_reply`, docs/tasks.md "Chat host").
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         quiet: bool,
         /// The reply asks the owner (`asks_owner`); such a reply is never quiet. The chat tags it
-        /// until it is answered (`chat::open_asks`, docs/tasks.md "Manager").
+        /// until it is answered (`chat::open_asks`, docs/tasks.md "Chat host").
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         asks: bool,
-        /// A stand-in (an organizer entry) wrote this while the manager's agent could not: the agent's name.
-        /// The manager's agent still answers `to` itself and is told of this reply
+        /// A stand-in (an organizer entry) wrote this while the lead's agent could not: the agent's name.
+        /// The lead's agent still answers `to` itself and is told of this reply
         /// (docs/tasks.md "Agents").
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provisional: Option<String>,
@@ -172,7 +172,7 @@ pub enum ChatEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         quote: Option<u64>,
     },
-    /// This manager's message to another project's manager (`say --from-chat`).
+    /// This lead's message to another project's lead (`say --from-chat`).
     Sent {
         to: String,
         text: String,
@@ -182,7 +182,7 @@ pub enum ChatEvent {
     /// A command or other step of the agent, in short form.
     Agent { text: String },
     /// A ping turn kept the prompt cache warm while a task works: no reply, not in the chat.
-    /// ref: docs/tasks.md "Manager"
+    /// ref: docs/tasks.md "Chat host"
     Ping {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TurnUsage>,
@@ -194,7 +194,7 @@ pub enum ChatEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
-    /// The usage limit paused the manager (`until`: the time it resumes, "00:10") or lifted.
+    /// The usage limit paused the lead (`until`: the time it resumes, "00:10") or lifted.
     /// Written by wsx; the chat shows it as a status line. ref: docs/web-client-tasks.md
     Limit {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,7 +203,7 @@ pub enum ChatEvent {
     /// The agent process ended outside a reply.
     Stopped { reason: String },
     /// The owner dismissed the question of reply `id` (`wsx chat dismiss`): it asks no more.
-    /// No turn reads it. ref: docs/tasks.md "Manager"
+    /// No turn reads it. ref: docs/tasks.md "Chat host"
     Answered { id: u64 },
     /// This chat forked the owner's message `message` into the new chat `to` (`chat new
     /// --brief`): that chat starts on it. No turn reads it. ref: docs/tasks.md "Lead and forks"
@@ -238,9 +238,9 @@ pub struct Short {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<u32>,
-    /// Whether the event needs the manager's judgment now: false for a landing, a close, a wait
+    /// Whether the event needs the lead's judgment now: false for a landing, a close, a wait
     /// that ends by itself, a stop someone asked for and an automatic deploy that worked. Those
-    /// go along with the manager's next turn and cost none. ref: docs/tasks.md "Manager"
+    /// go along with the lead's next turn and cost none. ref: docs/tasks.md "Chat host"
     #[serde(default = "wakes_default", skip_serializing_if = "is_wakes")]
     pub wakes: bool,
     /// A task's new state in the words of `task::status` (`landed`, `ready`, `failed`): the
@@ -303,7 +303,7 @@ impl Short {
     /// A task's event: `#<task> <words>`. It wakes no chat: code acts on a task's own events
     /// (its host, its review job) and the owner hears of what needs them, so a chat takes a
     /// turn only for a message (docs/design/orchestration.md "The owner's decisions" 1).
-    /// ref: docs/tasks.md "Manager"
+    /// ref: docs/tasks.md "Chat host"
     pub fn task(task: u32, words: &str) -> Self {
         Self {
             task: Some(task),
@@ -330,7 +330,7 @@ pub fn quiet_reply(text: &str) -> bool {
 }
 
 /// Whether a reply says nothing to the owner: `-` (nothing changed) or no text. It is quiet, and
-/// no chat shows it (docs/tasks.md "Manager").
+/// no chat shows it (docs/tasks.md "Chat host").
 pub fn says_nothing(text: &str) -> bool {
     matches!(text.trim(), "" | "-")
 }
@@ -398,7 +398,7 @@ pub fn quote_of(text: &str) -> String {
 
 /// A message that opens with `> message <id>` quotes that message in the owner's format
 /// (`> <its first line>` and an empty line) and keeps the id, so the chat needs no second format
-/// and a tap finds the message at any age. A manager's quote means "this answers that message",
+/// and a tap finds the message at any age. A chat's quote means "this answers that message",
 /// so it names only the owner's or another chat's message (`by_owner` false): its own replies and
 /// events drop the line like a bad or unknown id. The owner's Reply (`by_owner`) may also name a
 /// reply that says something. The message still stands, and the note says why. Returns the text,
@@ -484,7 +484,7 @@ impl ChatEntry {
     }
 }
 
-/// What the manager does now: its last step after its last reply. Shown while it is busy.
+/// What the lead does now: its last step after its last reply. Shown while it is busy.
 pub fn activity(log: &[ChatEntry]) -> Option<&str> {
     log.iter()
         .rev()
@@ -495,7 +495,7 @@ pub fn activity(log: &[ChatEntry]) -> Option<&str> {
         })
 }
 
-/// A task as the manager last reported it.
+/// A task as the lead last reported it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Seen {
     pub state: TaskState,
@@ -515,16 +515,16 @@ impl Seen {
     }
 }
 
-/// A chat's `state.json`: what the manager host must remember across a restart.
+/// A chat's `state.json`: what the chat host must remember across a restart.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChatState {
     /// The conversation the next turn resumes; none after a rotation.
     pub agent_session: Option<String>,
-    /// A fallback agent an earlier wsx moved the manager to; none: its own agent. The turn after
+    /// A fallback agent an earlier wsx moved the lead to; none: its own agent. The turn after
     /// the own agent's limit ends starts a fresh conversation on the own agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<ManagerAgent>,
+    pub agent: Option<ChatFallback>,
     pub next_id: u64,
     /// The digest of the instructions the conversation in `agent_session` began with.
     /// Claude keeps a conversation's first system prompt also on resume, so other
@@ -532,7 +532,7 @@ pub struct ChatState {
     pub instructions: Option<String>,
     /// The last main-conversation context size and when the agent last answered: an idle large
     /// conversation rotates, a warm small one takes changed instructions as a message.
-    /// ref: docs/tasks.md "Manager"
+    /// ref: docs/tasks.md "Chat host"
     pub context_tokens: u64,
     pub last_reply_ms: u64,
     /// A rotation happened: the next fresh conversation opens with the last exchanges.
@@ -548,11 +548,11 @@ pub struct ChatState {
     /// The newest owner message a stand-in has answered.
     #[serde(skip_serializing_if = "is_zero")]
     pub provisional_to: u64,
-    /// The id of the manager's newest reply that says something: the turn text names it, since
+    /// The id of the lead's newest reply that says something: the turn text names it, since
     /// a reply quotes a message by id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_reply: Option<u64>,
-    /// A provisional reply the manager's agent has not been told of yet.
+    /// A provisional reply the lead's agent has not been told of yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub provisional: bool,
 }
@@ -577,7 +577,7 @@ pub struct RepoState {
     /// session id. Absent until the first start. ref: docs/tasks.md "Session news"
     pub sessions_seen: Option<BTreeMap<u64, String>>,
     /// The stall of each open task already turned into an event, by its marker: the same
-    /// stall is reported once. ref: docs/tasks.md "Manager" (Stalls)
+    /// stall is reported once. ref: docs/tasks.md "Chat host" (Stalls)
     pub stalls: BTreeMap<u32, String>,
     /// The last task started with `tasks.workflow.idle`, and when it started: the next one
     /// waits for session notes newer than that. ref: docs/tasks.md "Workflow"
@@ -597,7 +597,7 @@ pub struct RepoState {
     pub suggested_close: BTreeMap<String, u64>,
 }
 
-/// A time at which the manager hears `why` as an event.
+/// A time at which the lead hears `why` as an event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkin {
     pub at_ms: u64,
@@ -608,7 +608,7 @@ pub(crate) fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
-/// A manager turn the usage limit ended. ref: docs/tasks.md "Manager"
+/// A chat turn the usage limit ended. ref: docs/tasks.md "Chat host"
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LimitHold {
     pub until_ms: u64,
@@ -620,11 +620,11 @@ pub struct LimitHold {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub events: bool,
     /// The held turn goes to a new conversation (errors in a row rotated it, or an earlier wsx
-    /// moved the manager), with its messages in full. ref: docs/tasks.md "Agents"
+    /// moved the lead), with its messages in full. ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub switched: bool,
     /// The agent's sign-in failed: the turn retries in a new agent process every `store::sign_in_retry_ms`, and
-    /// at once when the owner writes, until a sign-in lets it through. ref: docs/tasks.md "Manager"
+    /// at once when the owner writes, until a sign-in lets it through. ref: docs/tasks.md "Chat host"
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auth: bool,
     /// The hold is the account's usage limit: it ends as soon as the account's record does,
@@ -633,9 +633,9 @@ pub struct LimitHold {
     pub account: bool,
 }
 
-/// The fallback agent an earlier wsx moved the manager to; it goes home once its own is free.
+/// The fallback agent an earlier wsx moved the lead to; it goes home once its own is free.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagerAgent {
+pub struct ChatFallback {
     pub name: String,
     pub adapter: String,
     pub model: String,
@@ -650,7 +650,7 @@ pub fn instructions_digest(instructions: &str) -> String {
         .collect()
 }
 
-/// What the manager asked the owner to approve.
+/// What the lead asked the owner to approve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalAction {
@@ -736,7 +736,7 @@ pub enum ApprovalLine {
         note: Option<String>,
         /// What running the approved action said, or why it was not run.
         outcome: String,
-        /// The owner message of the manager's turn that approved it: the owner asked for
+        /// The owner message of the lead's turn that approved it: the owner asked for
         /// the action in the chat, so no button was needed. ref: docs/tasks.md "Approvals"
         #[serde(default, skip_serializing_if = "Option::is_none")]
         owner_said: Option<u64>,
@@ -805,7 +805,7 @@ pub fn decided_request(lines: &[ApprovalLine], at: usize) -> Option<&ApprovalLin
         .find(|line| matches!(line, ApprovalLine::Request { .. }) && line.id() == id)
 }
 
-/// Whether the owner's message `id` is in the manager's running turn: the last delivered
+/// Whether the owner's message `id` is in the lead's running turn: the last delivered
 /// turn has no reply yet and holds that message from the owner. ref: docs/tasks.md "Approvals"
 pub fn owner_said_in_turn(log: &[ChatEntry], id: u64) -> Result<(), String> {
     let turn = log.iter().rev().find_map(|entry| match &entry.event {
@@ -814,7 +814,7 @@ pub fn owner_said_in_turn(log: &[ChatEntry], id: u64) -> Result<(), String> {
         _ => None,
     });
     let Some(Some(ids)) = turn else {
-        return Err("no manager turn runs".into());
+        return Err("no chat turn runs".into());
     };
     if !ids.contains(&id) {
         return Err(format!("message {id} is not in the running turn"));
@@ -830,21 +830,21 @@ pub fn owner_said_in_turn(log: &[ChatEntry], id: u64) -> Result<(), String> {
     }
 }
 
-/// One request on the manager host's control socket.
+/// One request on the chat host's control socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum ChatRequest {
     Status,
     Say {
         text: String,
-        /// Another project's manager; none is the owner.
+        /// Another project's lead; none is the owner.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<Author>,
         /// The chat's short form of an events message (`ChatEvent::Message::short`).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         short: Vec<Short>,
     },
-    /// wsx writes to the owner with no manager turn: `event` as a delivered events message and
+    /// wsx writes to the owner with no lead turn: `event` as a delivered events message and
     /// `text` as the reply to it, with no usage. Refused while a turn runs: a reply after that
     /// turn's delivery would read as its end. ref: docs/tasks.md "Routines"
     Post {

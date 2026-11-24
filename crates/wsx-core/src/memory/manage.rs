@@ -1,4 +1,4 @@
-//! The manager's notes as views of the records: the write path (records first, then the views),
+//! The lead's notes as views of the records: the write path (records first, then the views),
 //! the top-5 check of a new rule or fact, drift, and the sweep that deletes what is past. Old
 //! notes files are not imported: a store that still holds them is refused (`refuse_unimported`).
 //! ref: docs/memory.md "Notes", "Deletion"
@@ -8,8 +8,8 @@ use super::index;
 use super::record::{Kind, Record, Status};
 use super::store::{usage, Error, NewRecord, Patch, Store};
 use crate::task::chat::{read_chat, Window};
+use crate::task::chat_host::{Author, ChatEvent};
 use crate::task::chats;
-use crate::task::manager::{Author, ChatEvent};
 use crate::task::store::{read_bounded_if_exists, write_note, ChatDir, TaskDir};
 use crate::task::text::day_of;
 use crate::task::view::clip;
@@ -186,7 +186,7 @@ fn hash(text: &str) -> String {
 }
 
 /// A view file as text. A link, a file too large and one that cannot be read are none, as the
-/// manager's own reader treats them: the next render replaces them.
+/// lead's own reader treats them: the next render replaces them.
 fn read_view(path: &Path) -> Result<Option<String>, Error> {
     Ok(read_bounded_if_exists(path, MAX_VIEW_BYTES)
         .ok()
@@ -270,7 +270,7 @@ pub fn drift(store: &Store) -> Result<Vec<Drift>, Error> {
 }
 
 /// Write the views from the records, under the store's lock. A view edited by hand is first
-/// kept as `<view>.drift` and returned. Nothing happens for a scope without a manager.
+/// kept as `<view>.drift` and returned. Nothing happens for a scope without a chat.
 fn render(store: &Store) -> Result<Vec<Drift>, Error> {
     let Some(notes) = store.notes_dir() else {
         return Ok(Vec::new());
@@ -577,11 +577,11 @@ pub fn supersede(
     Ok((record, views_after_write(store)))
 }
 
-// ^ The deletion rule: wsx deletes what is past, no manager decides. ref: docs/memory.md "Deletion"
+// ^ The deletion rule: wsx deletes what is past, no lead decides. ref: docs/memory.md "Deletion"
 
 /// The prefix of a task's handoff notes record: `rotation-<n>-<digest>` (`add_episode`).
 const ROTATION: &str = "rotation-";
-/// The prefix of a manager handover record, which no release stores any more.
+/// The prefix of a chat handover record, which no release stores any more.
 const HANDOVER: &str = "handover-";
 /// Files of the project folder that no code reads any more.
 const PROJECT_LEFTOVERS: [&str; 2] = ["trial.lock", "grants.json"];
@@ -608,7 +608,7 @@ pub struct Swept {
 }
 
 /// Delete what is past, by rule: the handoff notes record of a task that ended, a replaced rule
-/// (an old store's), a manager handover (no release stores one now), and at a land each fact of
+/// (an old store's), a chat handover (no release stores one now), and at a land each fact of
 /// an earlier task whose paths are all gone at the landed commit or all held by the land's own
 /// fact. Then the files no code reads: the old archive views, `*.pre-memory`, `threads-placed`,
 /// a chat note named with the numbers of ended tasks only, and the project's `batch-check-*.log`,

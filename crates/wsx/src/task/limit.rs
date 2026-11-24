@@ -1,4 +1,4 @@
-//! The wait on an agent's usage limit, shared by the task host and the manager host.
+//! The wait on an agent's usage limit, shared by the task host and the chat host.
 //! ref: docs/tasks.md "Claude adapter" (Usage limit), "Agents"
 
 /// After the reset: the limit lifts on the provider's clock, not this machine's.

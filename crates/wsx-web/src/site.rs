@@ -34,9 +34,9 @@ pub enum Capability {
     MediaUpload,
     MediaDownload,
     Push,
-    /// Read the tasks, reports and manager chat of a project (docs/web-client-tasks.md).
+    /// Read the tasks, reports and chat of a project (docs/web-client-tasks.md).
     TaskView,
-    /// Talk to the manager and act on tasks: land, take over, approve, deny.
+    /// Talk to the lead and act on tasks: land, take over, approve, deny.
     TaskAct,
 }
 
@@ -87,7 +87,7 @@ struct SiteFile {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Notify {
-    /// "Manager needs me": tasks that wait on the owner, approval requests, To check items.
+    /// "Needs you": tasks that wait on the owner, approval requests, To check items.
     pub manager: Merge,
     /// "An agent needs me": session agents that need input or stopped with an error.
     pub agents: Merge,

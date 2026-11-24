@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 
-/// Set by the broker on each command it runs for a manager: `trusted` or `untrusted`.
+/// Set by the broker on each command it runs for a chat: `trusted` or `untrusted`.
 pub const TRUST_ENV: &str = "WSX_TASK_TRUST";
 /// The two variables that name the lean runner's policy file and its hash (projp
 /// `runner/README.md`); without both the runner denies every tool call.
@@ -20,7 +20,7 @@ pub const RUNNER_POLICY_SHA_ENV: &str = "PROJP_POLICY_SHA256";
 /// Set by the broker on each `wsx memory` command it runs: `deny` when the agent may not write a
 /// rule. A missing value is the owner's own call, which may.
 pub const RULES_ENV: &str = "WSX_MEMORY_RULES";
-/// Programs the strict profile refuses to start: privilege, UI scripting and the service manager.
+/// Programs the strict profile refuses to start: privilege, UI scripting and the service lead.
 pub const DENIED_EXEC: [&str; 5] = [
     "/usr/bin/sudo",
     "/usr/bin/su",
@@ -37,13 +37,13 @@ pub const DENIED_EXEC: [&str; 5] = [
 pub enum Capability {
     /// `list`, `show`, `ledger`, `chat`, `search`, `check`, `manager`, `routine list|show|logs`.
     Read,
-    /// `post`, `digest`, `say`: a message to the owner's chat or another manager.
+    /// `post`, `digest`, `say`: a message to the owner's chat or another lead.
     Notify,
-    /// Reply text to the owner (the manager's turn, the stand-in).
+    /// Reply text to the owner (the lead's turn, the stand-in).
     Answer,
     /// `after`, `hold`: order and park tasks.
     Backlog,
-    /// Write the manager's notes (compaction, memo folding).
+    /// Write the lead's notes (compaction, memo folding).
     Note,
     /// Write the handoff notes of a rotation.
     Handoff,
@@ -61,7 +61,7 @@ pub enum Capability {
     Deploy,
     /// `routine add|edit|delete|enable|disable|run|cancel|fire`, `checkin`.
     Routine,
-    /// The owner's commands, which the CLI judges itself for a manager: `approve`, `deny`,
+    /// The owner's commands, which the CLI judges itself for a chat: `approve`, `deny`,
     /// `hand` (also `--back`), `dismiss`, and the hidden host commands.
     Approve,
     /// A worker's `result` and `check-run`.
@@ -155,7 +155,7 @@ pub struct RoleInfo {
     pub reach: &'static [&'static str],
 }
 
-/// What the manager, and so every chat, runs in another project.
+/// What the lead, and so every chat, runs in another project.
 const MANAGER_REACH: [&str; 8] = [
     "new", "show", "list", "add", "stop", "hold", "land", "close",
 ];
@@ -163,7 +163,7 @@ const MANAGER_REACH: [&str; 8] = [
 /// The one role enum: a launch site's role, and the job a stand-in fills (`filled_by`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
-    Manager,
+    Chat,
     Organizer,
     Worker,
     /// The review job of a ready task: reads its copy and decides land or changes.
@@ -173,11 +173,11 @@ pub enum Role {
 
 use Capability::*;
 
-/// The one table of roles. Every chat of docs/tasks.md "Chats" runs as the manager; the organizer
+/// The one table of roles. Every chat of docs/tasks.md "Chats" runs as the lead; the organizer
 /// is the stand-in's job.
 pub const ROLES: [(Role, RoleInfo); 4] = [
     (
-        Role::Manager,
+        Role::Chat,
         RoleInfo {
             name: "manager",
             caps: &ALL,
@@ -247,7 +247,7 @@ impl Role {
                 self.info().name
             ),
             reach => format!(
-                "a manager acts in another project only with {}, never --discard or an approved action; for {other} it may also read `wsx chat ledger -p {other}` and `wsx chat say -p {other} --from-chat`",
+                "a chat acts in another project only with {}, never --discard or an approved action; for {other} it may also read `wsx chat ledger -p {other}` and `wsx chat say -p {other} --from-chat`",
                 reach.join(", ")
             ),
         }

@@ -238,7 +238,7 @@ fn fake_claude_writes_the_recorded_lines() {
     let script = repository().join("scripts/fake-claude-stream.py");
     let script = script.to_str().expect("UTF-8 path");
     let is_result = |line: &Value| line["type"] == "result";
-    // ^ A manager turn: text, a tool call and its result, more text, a subagent's call.
+    // ^ A chat turn: text, a tool call and its result, more text, a subagent's call.
     let manager = drive(
         &[
             script,

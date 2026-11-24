@@ -1,12 +1,12 @@
-//! The manager chat as rows: the log classified once, for the web's bubbles and the TUI's
-//! chat, which only render them. ref: docs/tasks.md "Manager", docs/web-client-tasks.md
+//! The chat as rows: the log classified once, for the web's bubbles and the TUI's
+//! chat, which only render them. ref: docs/tasks.md "Chat host", docs/web-client-tasks.md
 //! "Project screen"
 
-use super::checks::CheckItem;
-use super::manager::{
+use super::chat_host::{
     quote_of, says_nothing, split_quote, ApprovalLine, Author, ChatEntry, ChatEvent, Level, Party,
     Short,
 };
+use super::checks::CheckItem;
 use super::store::{self, contains_bytes, ChatDir, FIRST_READ_BYTES};
 use crate::routine::RunRecord;
 use anyhow::{bail, Result};
@@ -17,10 +17,10 @@ use std::collections::{HashMap, HashSet};
 pub const CHAT_ENTRIES: usize = 200;
 /// A window around a message shows this many chat entries before it.
 const AROUND_BEFORE: usize = 40;
-/// A question older than this asks no more (docs/tasks.md "Manager").
+/// A question older than this asks no more (docs/tasks.md "Chat host").
 pub const ASKS_WITHIN_MS: u64 = 7 * 24 * 3600 * 1000;
 
-/// The path a `files/<path>` link address names, `%XX` decoded (`link_path` in task/manager.rs
+/// The path a `files/<path>` link address names, `%XX` decoded (`link_path` in task/lead.rs
 /// writes each byte outside a safe set so). The chats, the web's media grant and the TUI read
 /// the address through it.
 pub fn file_href(href: &str) -> Option<String> {
@@ -108,7 +108,7 @@ impl<'a> Window<'a> {
     }
 }
 
-/// The entries a chat needs from the log's end: its window and the manager's last step
+/// The entries a chat needs from the log's end: its window and the lead's last step
 /// (`activity`). The open questions are `asking`'s.
 pub fn read_chat(dir: &ChatDir, window: &Window) -> Result<Vec<ChatEntry>> {
     if let Window::Around(id) = window {
@@ -199,10 +199,10 @@ fn in_chat(entry: &ChatEntry) -> bool {
     )
 }
 
-/// The owner message a manager's reply to the turn `to` quotes, or None. `log` holds the entries
+/// The owner message a chat's reply to the turn `to` quotes, or None. `log` holds the entries
 /// up to now, the reply not yet. The one place that chooses which message a reply relates to and
 /// whether the quote helps (docs/tasks.md "A quote"). A quote means "this answers that message",
-/// so only a message the manager answers can be quoted, and a turn with no owner message (events,
+/// so only a message the lead answers can be quoted, and a turn with no owner message (events,
 /// another chat's words) has none. A quote helps when the reply will not sit directly under what
 /// it answers: the newest owner message of the turn, quoted when the turn held more than one or
 /// any chat item was logged after it.
@@ -294,7 +294,7 @@ pub struct OpenAsk {
 /// The replies that ask the owner (`asks`) and are not answered, oldest first. An owner
 /// message that quotes one answers it; one with no quote answers the newest open one before
 /// it; one that quotes anything else answers none. A dismiss (`Answered`) answers its reply.
-/// A question older than `ASKS_WITHIN_MS` before `now` asks no more (docs/tasks.md "Manager").
+/// A question older than `ASKS_WITHIN_MS` before `now` asks no more (docs/tasks.md "Chat host").
 /// A reply whose turn made an approval request with a card (`asked_in_turn`) is no question: the
 /// card is the one item, and the decision settles it (docs/tasks.md "Approvals").
 pub fn open_asks(
@@ -320,7 +320,7 @@ pub struct AnsweredAsk {
 }
 
 /// The questions of `chat`'s log the owner answered, oldest first: what a fresh conversation of
-/// the chat must still know when the exchanges that held them are gone (docs/tasks.md "Manager").
+/// the chat must still know when the exchanges that held them are gone (docs/tasks.md "Chat host").
 /// A dismissed question has no answer and is not one.
 pub fn answered_asks(
     log: &[ChatEntry],
@@ -450,16 +450,16 @@ pub fn dismiss(dir: &ChatDir, id: u64, now: u64) -> Result<()> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RowKind {
-    /// A message with its author: the owner's, a reply of the manager, what it sent another
-    /// manager, or a message of another manager or a chat.
+    /// A message with its author: the owner's, a reply of the lead, what it sent another
+    /// lead, or a message of another lead or a chat.
     Message,
     /// A muted line of wsx: an event in its short form, or the usage limit.
     Line,
-    /// A quiet reply: the manager's own work, a muted line under its name.
+    /// A quiet reply: the lead's own work, a muted line under its name.
     Quiet,
-    /// A new conversation, or the manager stopped.
+    /// A new conversation, or the lead stopped.
     Note,
-    /// What the manager and another chat said to each other, folded into one line that opens to
+    /// What the lead and another chat said to each other, folded into one line that opens to
     /// the words: `Talked to <name>`.
     Talk,
 }
@@ -469,8 +469,8 @@ pub enum RowKind {
 #[serde(into = "String")]
 pub enum Speaker {
     Owner,
-    Manager,
-    /// Another project's manager, or a chat of this project.
+    Agent,
+    /// Another project's lead, or a chat of this project.
     Peer(Party),
 }
 
@@ -478,7 +478,7 @@ impl From<Speaker> for String {
     fn from(speaker: Speaker) -> Self {
         match speaker {
             Speaker::Owner => "owner".into(),
-            Speaker::Manager => "manager".into(),
+            Speaker::Agent => "manager".into(),
             Speaker::Peer(party) => format!("peer:{}", party.key()),
         }
     }
@@ -486,24 +486,24 @@ impl From<Speaker> for String {
 
 /// The names the rows show.
 pub struct Names<'a> {
-    /// The chat's other side: the manager's shown name (`manager_shown_name`), or the chat's.
+    /// The chat's other side: the lead's shown name (`lead_shown_name`), or the chat's.
     pub own: &'a str,
-    /// The project's manager, as another chat names it (`manager_name_in`).
+    /// The project's lead, as another chat names it (`lead_name_in`).
     pub manager: &'a str,
 }
 
 /// How a chat names the project's first chat: its shown name, and in another chat (`chat`) the
-/// word `manager` after it, so the room has three speakers (the owner, the manager, the chat)
+/// word `lead` after it, so the room has three speakers (the owner, the lead, the chat)
 /// and the bare project name is none. ref: docs/tasks.md "Chats"
-pub fn manager_name_in(chat: Option<&str>, shown: &str) -> String {
+pub fn lead_name_in(chat: Option<&str>, shown: &str) -> String {
     match chat {
-        Some(_) => format!("{shown} manager"),
+        Some(_) => format!("{shown} lead"),
         None => shown.to_string(),
     }
 }
 
 /// What a muted row says as marks: one task, its new state and its checks. Built from the facts
-/// of the events the row is or answers (`Short`), never read from the manager's prose, so the
+/// of the events the row is or answers (`Short`), never read from the lead's prose, so the
 /// web and the TUI draw the same marks (a `#n` link, a status chip, a check count).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Token {
@@ -533,9 +533,9 @@ impl Token {
 /// One message of a `Talk` row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Said {
-    /// Who wrote it: the other chat's name, or the chat's own manager.
+    /// Who wrote it: the other chat's name, or the chat's own lead.
     pub name: String,
-    /// The other chat's key (`Party::key`) when it wrote it; none for the chat's own manager, so
+    /// The other chat's key (`Party::key`) when it wrote it; none for the chat's own lead, so
     /// a client reads a bare `#n` as the right project's task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peer: Option<String>,
@@ -556,7 +556,7 @@ pub struct ChatRow {
     pub unix_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<Speaker>,
-    /// The author's shown name: "You", the manager's, a peer's.
+    /// The author's shown name: "You", the lead's, a peer's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// "Recap", "Reply", "To <name>", "Reply to <name>".
@@ -605,10 +605,10 @@ pub struct ChatRow {
     /// A stand-in agent wrote this reply: its name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provisional: Option<String>,
-    /// The manager stopped.
+    /// The lead stopped.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub danger: bool,
-    /// An owner message the held manager has not taken into a turn (`waiting_ids`): the chats
+    /// An owner message the held lead has not taken into a turn (`waiting_ids`): the chats
     /// show it as waiting, after the other rows.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub queued: bool,
@@ -669,7 +669,7 @@ pub struct Reading {
 }
 
 /// The one read of a chat for the web, the TUI and `wsx chat read`: the names the viewer sees
-/// (the manager's shown name and the chat's own), the approvals of
+/// (the lead's shown name and the chat's own), the approvals of
 /// the chat that owns them, and the page at `window`. No folder yet is an empty chat. `edit` is
 /// `page`'s.
 pub fn read_for(
@@ -679,9 +679,9 @@ pub fn read_for(
     window: &Window,
     edit: impl FnMut(&mut ChatEntry),
 ) -> Result<Reading> {
-    let shown = settings.manager_shown_name(project);
+    let shown = settings.lead_shown_name(project);
     let chat = dir.and_then(ChatDir::named);
-    let manager = manager_name_in(chat, shown);
+    let manager = lead_name_in(chat, shown);
     let own = dir.map_or_else(
         || shown.to_string(),
         |dir| super::chats::shown_name(dir, shown),
@@ -698,7 +698,7 @@ pub fn read_for(
             dir,
             window,
             &names,
-            &super::manager::pending_approvals(&approvals),
+            &super::chat_host::pending_approvals(&approvals),
             super::now_unix_ms(),
             edit,
         )?,
@@ -756,10 +756,10 @@ pub fn page(
     })
 }
 
-/// The owner messages in `log` the manager has not taken into a turn while it is held (a usage
+/// The owner messages in `log` the lead has not taken into a turn while it is held (a usage
 /// limit, an agent error or a failed start: the newest `limit` or `stopped` entry that no
-/// resume or reply followed). Else none: a message waits only moments for a free manager.
-/// ref: docs/tasks.md "Manager"
+/// resume or reply followed). Else none: a message waits only moments for a free lead.
+/// ref: docs/tasks.md "Chat host"
 pub fn waiting_ids(log: &[ChatEntry]) -> Vec<u64> {
     let held = log.iter().rev().find_map(|entry| match &entry.event {
         ChatEvent::Limit { until } => Some(until.is_some()),
@@ -822,7 +822,7 @@ pub fn chat_rows(
         })
         .collect();
     // ^ A posted event shows once, as the reply that says it to the owner (`post`); the log keeps
-    // the event for the manager (docs/tasks.md "Manager").
+    // the event for the lead (docs/tasks.md "Chat host").
     let posted: HashSet<u64> = entries
         .iter()
         .filter_map(|entry| match &entry.event {
@@ -913,7 +913,7 @@ pub fn chat_rows(
 
 /// What a host before the tag wrote after a turn that asked the owner: an events message
 /// "asked the owner: Approve push (a3)" and a post reply to it, "Asked you: ...". An approval shows
-/// once, as the tag of the manager's reply (`chat_rows`), so such a pair has no row; the old logs keep it.
+/// once, as the tag of the lead's reply (`chat_rows`), so such a pair has no row; the old logs keep it.
 const OLD_ASK_LINE: &str = "asked the owner: ";
 
 fn without_ask_lines<'a>(entries: &[&'a ChatEntry]) -> Vec<&'a ChatEntry> {
@@ -947,7 +947,7 @@ fn without_ask_lines<'a>(entries: &[&'a ChatEntry]) -> Vec<&'a ChatEntry> {
 /// the first `Delivered` after it (the host rotates as it takes the waiting messages for a turn).
 /// The log keeps its order. A rotation at idle, one with a stop or pause between it and that
 /// message, or one whose message is outside the window keeps its place, so holds fold as before.
-/// ref: docs/tasks.md "Manager" (New conversation)
+/// ref: docs/tasks.md "Chat host" (New conversation)
 fn divider_first<'a>(log: &'a [ChatEntry], mut shown: Vec<&'a ChatEntry>) -> Vec<&'a ChatEntry> {
     let place = |list: &[&ChatEntry], entry: &ChatEntry| {
         list.iter().position(|item| std::ptr::eq(*item, entry))
@@ -993,7 +993,7 @@ fn peer_name(party: &Party) -> String {
     party.name().to_string()
 }
 
-/// The row of a message from the owner, a manager or a chat. Events have `event_rows`; a recap
+/// The row of a message from the owner, a chat or a chat. Events have `event_rows`; a recap
 /// request shows nothing.
 fn message_row(entry: &ChatEntry, from: &Author, text: &str) -> Option<ChatRow> {
     let key = row_key(entry, "message");
@@ -1013,7 +1013,7 @@ fn message_row(entry: &ChatEntry, from: &Author, text: &str) -> Option<ChatRow> 
     talk(key, entry, peer, Some(peer), "", text)
 }
 
-/// The row of what another chat and the manager said to each other: the muted line `Talked to
+/// The row of what another chat and the lead said to each other: the muted line `Talked to
 /// <name>` that opens to the words (`push_row` joins a run with one chat). Empty words (`-`) show
 /// nothing. ref: docs/transcript.md
 fn talk(
@@ -1096,7 +1096,7 @@ fn event_rows(rows: &mut Vec<ChatRow>, entry: &ChatEntry, text: &str, short: &[S
     }
 }
 
-/// The row of a manager reply. `approvals`: the ids of the pending approvals it carries. `said`:
+/// The row of a chat reply. `approvals`: the ids of the pending approvals it carries. `said`:
 /// the messages of the window, which tell what the reply answers.
 ///
 /// The one rule of what reaches the owner as a bubble: a reply is a bubble when it answers an
@@ -1158,7 +1158,7 @@ fn reply_row(
         }
         tokens.drain(..tokens.len().saturating_sub(TOKENS));
         return Some(ChatRow {
-            author: Some(Speaker::Manager),
+            author: Some(Speaker::Agent),
             name: Some(names.own.to_string()),
             first_sentence: (first != text).then_some(first),
             tokens,
@@ -1183,14 +1183,14 @@ fn reply_row(
         ..ChatRow::said(
             row_key(entry, "reply"),
             entry,
-            Speaker::Manager,
+            Speaker::Agent,
             names.own.to_string(),
             text,
         )
     })
 }
 
-/// The row of what the manager itself did: a message it sent, a pause, a new conversation or a
+/// The row of what the lead itself did: a message it sent, a pause, a new conversation or a
 /// stop. The other entries have none.
 fn note_row(entry: &ChatEntry, names: &Names) -> Option<ChatRow> {
     match &entry.event {
@@ -1278,7 +1278,7 @@ fn note_row(entry: &ChatEntry, names: &Names) -> Option<ChatRow> {
     }
 }
 
-/// Whether an entry is a hold: the manager stopped, paused or resumed, or began a new
+/// Whether an entry is a hold: the lead stopped, paused or resumed, or began a new
 /// conversation.
 fn held_kind(entry: &ChatEntry) -> bool {
     matches!(

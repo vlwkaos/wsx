@@ -691,7 +691,7 @@ fn move_as(
 /// A commit of the main checkout's `files` as they are on disk, on top of `branch`'s tip,
 /// which must be the checkout's HEAD; the checkout, its index and the branch stay as they are.
 /// Gives back the commit and the tip it is on; `take_commit` moves the branch there.
-/// ref: docs/tasks.md "Manager"
+/// ref: docs/tasks.md "Chat host"
 pub fn commit_files(
     main: &Path,
     branch: &str,

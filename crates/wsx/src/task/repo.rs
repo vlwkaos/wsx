@@ -5,9 +5,9 @@
 //! (`chats::owner`), else to the repo's main chat, or to none when it has none; `owner::say` starts that chat's host when it
 //! is not running, and the service marks the event seen only after the chat took it, so a
 //! deploy or a crash loses none. A task's event, and any other that needs no decision, is
-//! logged in the chat as a message that starts no turn. ref: docs/tasks.md "Chats", "Manager"
+//! logged in the chat as a message that starts no turn. ref: docs/tasks.md "Chats", "Chat host"
 
-use super::manager::plain_event;
+use super::chat_runner::plain_event;
 use super::{hosting, notes};
 use crate::cli::existing_daemon_snapshot;
 use anyhow::{Context, Result};
@@ -20,7 +20,7 @@ use wsx_core::config::project::load_task_config;
 use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
 use wsx_core::stale;
 use wsx_core::task::build;
-use wsx_core::task::manager::{
+use wsx_core::task::chat_host::{
     decided_request, open_requests, ApprovalLine, Author, ChatEntry, ChatEvent, ChatRequest,
     ChatResponse, Checkin, Level, RepoState, Seen, Short,
 };
@@ -102,7 +102,7 @@ struct Repo {
     /// was taken.
     state: RepoState,
     events: Sender<Event>,
-    /// `tasks.deploy.auto`: a deploy that worked starts no turn. ref: docs/tasks.md "Manager"
+    /// `tasks.deploy.auto`: a deploy that worked starts no turn. ref: docs/tasks.md "Chat host"
     deploy_auto: bool,
     /// Event lines not yet sent, by the chat that hears them (empty: the main chat), and when
     /// the last one came.
@@ -630,7 +630,7 @@ impl Repo {
     /// Drop open requests whose task left or moved on, or whose `after` task closed without
     /// landing; run those whose `after` task landed (the owner approved them in the chat); then
     /// turn new decisions into event lines, except those the owner's chat message approved: the
-    /// manager ran them itself. ref: docs/tasks.md "Approvals"
+    /// lead ran them itself. ref: docs/tasks.md "Approvals"
     fn watch_approvals(&mut self) {
         let project_id = self.project_id.clone();
         let mut lines = self.approval_lines();
@@ -706,7 +706,7 @@ impl Repo {
                 continue;
             };
             let request = decided_request(&lines, *at);
-            // ^ The run of a request that waited for a land is news: the manager did not run it.
+            // ^ The run of a request that waited for a land is news: the lead did not run it.
             if owner_said.is_some()
                 && !matches!(request, Some(ApprovalLine::Request { after: Some(_), .. }))
             {
@@ -847,7 +847,7 @@ impl Repo {
                 .and_then(|exe| owner::approve_waiting(&name, &main, &id, &exe));
             if let Err(error) = run {
                 let waiting = store::read_approvals(&project_id).unwrap_or_default();
-                if wsx_core::task::manager::waiting_approvals(&waiting)
+                if wsx_core::task::chat_host::waiting_approvals(&waiting)
                     .iter()
                     .any(|line| line.id() == id)
                 {
@@ -874,7 +874,7 @@ impl Repo {
 
     /// Turn each new failed deploy or release into an event line with the end of its output, and
     /// each new successful one into one line.
-    /// ref: docs/tasks.md "Manager"
+    /// ref: docs/tasks.md "Chat host"
     fn watch_deploys(&mut self) {
         let Ok(records) = store::read_deploys(&self.project_id) else {
             return;
@@ -885,7 +885,7 @@ impl Repo {
             }
             self.observed_deploys_ms = record.unix_ms;
             // ^ Deploys and releases run detached for minutes: a success is news too, or a
-            // manager that waits for one never hears that it may go on.
+            // lead that waits for one never hears that it may go on.
             let outcome = match record.exit == Some(0) {
                 true => "succeeded",
                 false => "failed",
@@ -974,9 +974,9 @@ impl Repo {
             .unwrap_or(0)
     }
 
-    /// Make an event of each routine run that ended: for a routine that posts, one the manager
+    /// Make an event of each routine run that ended: for a routine that posts, one the lead
     /// answers to the owner in a turn of its own ([`routine_event`]); for one that does not, the
-    /// end of its output for the manager's work. A success that printed nothing to stdout is no
+    /// end of its output for the lead's work. A success that printed nothing to stdout is no
     /// event and costs no turn. ref: docs/tasks.md "Routines"
     fn watch_routines(&mut self) {
         // ^ A run that ends in this second may be recorded after this read: wait the second out.
@@ -1034,7 +1034,7 @@ impl Repo {
         };
         let found = session_news::attention(&snapshot, &self.main);
         let (fresh, keep) = session_news::unposted(found, self.state.sessions_seen.as_ref());
-        // ^ A post starts the main chat's host and asks the service about itself (`ensure_manager`):
+        // ^ A post starts the main chat's host and asks the service about itself (`ensure_lead`):
         // off the loop, which answers that. A post that did not reach the main chat (a turn runs, its
         // host does not start) is no news seen: `Unposted` takes it back, and the next look posts it.
         // With no main chat the news is seen and told to nobody.
@@ -1047,7 +1047,7 @@ impl Repo {
                         &project,
                         &main,
                         &exe,
-                        super::launch_manager(&main),
+                        super::launch_chat(&main),
                         news.event,
                         news.text,
                         None,
@@ -1266,13 +1266,13 @@ impl Repo {
                         clip(hold, EVENT_SUMMARY_CHARS)
                     ));
                 }
-                // ^ A stopped task's worker never hears of its check-run: the manager does.
+                // ^ A stopped task's worker never hears of its check-run: the lead does.
                 if wsx_core::task::status::answered_after_stop(&dir, &record) {
                     summary.push_str(
                         "; its check-run ended after the stop: the answer joins the worker's next turn, which a `wsx task add` starts",
                     );
                 }
-                // ^ A ready task that waits for another is not for the manager to land yet.
+                // ^ A ready task that waits for another is not for the lead to land yet.
                 if let Some(after) = record.after.as_ref().filter(|_| record.state.is_open()) {
                     summary.push_str(&format!("; waits for #{} to land", after.task));
                 }
@@ -1290,7 +1290,7 @@ impl Repo {
                         summary.push_str(&format!("; {unattached}"));
                     }
                 }
-                // ^ The worker's memo reaches the manager when its task leaves, never later:
+                // ^ The worker's memo reaches the lead when its task leaves, never later:
                 // the ledger lists only the last few. ref: docs/tasks.md "Memo"
                 if !record.state.is_open() {
                     let memo = result["result"]["memo"].as_str().unwrap_or_default();
@@ -1357,7 +1357,7 @@ impl Repo {
         }
     }
 
-    /// A task that ended: its memo joins the manager's notes as a record (a landed task's fact
+    /// A task that ended: its memo joins the lead's notes as a record (a landed task's fact
     /// holds its landed commit and the paths of its diff), then `notes/context.md` from the
     /// records; then the memory deletes what the end made past.
     /// ref: docs/tasks.md "Memo", docs/memory.md "Capture", "Deletion"
@@ -1371,7 +1371,7 @@ impl Repo {
             let done = memory_store(&self.project_id, &self.project, &self.main)
                 .and_then(|store| notes::record_memo(&store, None, task, memo, landed))
                 .map(|drift| self.say_drift(&drift));
-            // ^ The manager that ran the task from another project keeps the fact too, in its own
+            // ^ The lead that ran the task from another project keeps the fact too, in its own
             // scope. ref: docs/memory.md "Capture"
             let done = done.and_then(|()| match self.origin_repo(record) {
                 Some(origin) => self.record_memo_at(&origin, task, memo, landed),
@@ -1454,7 +1454,7 @@ impl Repo {
     }
 
     /// Turn each new stall of an open task into one event line, after it lasted
-    /// `stall::GRACE`. ref: docs/tasks.md "Manager" (Stalls)
+    /// `stall::GRACE`. ref: docs/tasks.md "Chat host" (Stalls)
     fn watch_stalls(&mut self) {
         if self
             .stalls_swept
@@ -1523,9 +1523,9 @@ impl Repo {
     }
 
     /// Push the owner's reminder once per key (task, wait, step): through the main chat as an
-    /// event with no manager turn, off the loop (the post may wait for a turn that runs). The
+    /// event with no lead turn, off the loop (the post may wait for a turn that runs). The
     /// key is also in `post-keys.json`, so a restart or a deploy sends none twice.
-    /// Returns the key. ref: docs/tasks.md "Manager" (Stalls)
+    /// Returns the key. ref: docs/tasks.md "Chat host" (Stalls)
     fn remind_owner(&mut self, record: &TaskRecord, reminder: stall::OwnerReminder) -> String {
         let key = format!(
             "owner.{}.{}.{}",
@@ -1564,7 +1564,7 @@ impl Repo {
     }
 
     /// End the wait of `wsx task after` when its task `state` is landed (the task gets the
-    /// text as an add), or closed or unknown (the manager hears of it once). A host that
+    /// text as an add), or closed or unknown (the lead hears of it once). A host that
     /// does not answer keeps the wait; the next sweep asks again.
     /// ref: docs/tasks.md "After another task"
     fn end_after(
@@ -1611,7 +1611,7 @@ impl Repo {
         true
     }
 
-    /// A land, a close, a new wait or an approval decision the manager heard of in `log` (the
+    /// A land, a close, a new wait or an approval decision the lead heard of in `log` (the
     /// entries after `since`), a new approval request or a To check item after `since`.
     fn changed_since(&self, log: &[ChatEntry], since: u64) -> bool {
         let heard = log.iter().any(|entry| match &entry.event {
@@ -1639,10 +1639,10 @@ impl Repo {
         heard || asked || to_check
     }
 
-    /// The spend since `since` from the logs' `cost_micro_usd`: the manager's replies and the
+    /// The spend since `since` from the logs' `cost_micro_usd`: the lead's replies and the
     /// workers' results, the costliest tasks named. ref: docs/tasks.md "Recap"
     fn cost_since(&self, log: &[ChatEntry], since: u64) -> String {
-        let manager = usage::Usage::since(&usage::manager_log_turns(log), 0);
+        let manager = usage::Usage::since(&usage::chat_log_turns(log), 0);
         let mut tasks: Vec<(u64, u32, u64)> = project_tasks(&self.project_id)
             .unwrap_or_default()
             .into_iter()
@@ -1676,7 +1676,7 @@ impl Repo {
 
     /// When session notes in the main checkout's `knowledge/sessions/<project>/` are newer
     /// than the last idle task's start and that task is not open, start one task with
-    /// `tasks.workflow.idle` as the manager would, so it lands through its review job.
+    /// `tasks.workflow.idle` as the lead would, so it lands through its review job.
     /// Otherwise nothing, not even a line. ref: docs/tasks.md "Workflow"
     fn start_idle(&mut self) {
         let prompt = load_task_config(&self.main)
@@ -1751,7 +1751,7 @@ pub(super) fn say_chat(
                 &main,
                 exe,
                 Some(to),
-                super::launch_manager(&main),
+                super::launch_chat(&main),
                 text,
                 Some(author),
                 short,
@@ -1777,13 +1777,13 @@ fn newest_ms(folder: &Path) -> Option<u64> {
 }
 
 /// Whether a run wrote nothing to stdout; an unreadable file counts as output, so that the
-/// manager still hears of the run.
+/// lead still hears of the run.
 fn stdout_empty(run: &RunRecord) -> bool {
     std::fs::metadata(&run.stdout_path).is_ok_and(|file| file.len() == 0)
 }
 
 /// A routine run that ended as an event line with the end of its output: what a routine that
-/// prints wants the manager to read. ref: docs/tasks.md "Routines"
+/// prints wants the lead to read. ref: docs/tasks.md "Routines"
 fn routine_line(run: &RunRecord) -> String {
     format!("{}{}", run.result_line(), output_ends(&run.final_output))
 }
@@ -1948,7 +1948,7 @@ pub(super) fn finished_routine_runs(main: &Path) -> Vec<RunRecord> {
         .collect()
 }
 
-/// The project's memory store, which holds the manager's notes as records.
+/// The project's memory store, which holds the lead's notes as records.
 pub(super) fn memory_store(
     project_id: &str,
     project: &str,

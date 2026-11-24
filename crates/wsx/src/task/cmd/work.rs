@@ -6,7 +6,7 @@ use crate::cli::PromptSource;
 use crate::cli::{existing_daemon_snapshot, load_config};
 use crate::runtime_util::print_json;
 use crate::task::args::OwnerSaidAfter;
-use crate::task::manager::plain_event;
+use crate::task::chat_runner::plain_event;
 use crate::task::repo::say_chat;
 use crate::task::{acting_as_chat, actor, open, outward_said, send};
 use crate::task::{ask_host_ok, project_entry};
@@ -14,10 +14,10 @@ use anyhow::{bail, Context, Result};
 use serde_json::json;
 use std::path::Path;
 use std::time::{Duration, Instant};
+use wsx_core::task::chat_host::ApprovalAction;
+use wsx_core::task::chat_host::Author;
 use wsx_core::task::chats;
 use wsx_core::task::checks::{self};
-use wsx_core::task::manager::ApprovalAction;
-use wsx_core::task::manager::Author;
 use wsx_core::task::owner::HOST_TIMEOUT;
 use wsx_core::task::status::Status;
 use wsx_core::task::view::{checked_files, checked_title, short_commit};
@@ -165,7 +165,7 @@ fn one_status(dir: &TaskDir, record: &TaskRecord) -> Result<(Status, Tasks)> {
     let records = tasks.iter().filter_map(|(_, record)| record.as_ref().ok());
     let waiters = wsx_core::task::status::waiters(records, record.id);
     let facts = wsx_core::task::status::Facts {
-        approvals: &wsx_core::task::manager::pending_approvals(&approvals),
+        approvals: &wsx_core::task::chat_host::pending_approvals(&approvals),
         stuck: stuck.as_deref(),
         deployed: None,
         waiters: &waiters,
@@ -181,7 +181,7 @@ const WHY_MESSAGE_CHARS: usize = 600;
 
 /// `wsx task why <n>`: where a task is and why: its status, what it waits on, the last message
 /// it was given and the end of its story, so nobody reads its log by hand.
-/// ref: docs/tasks.md "Manager"
+/// ref: docs/tasks.md "Chat host"
 pub(crate) fn why(dir: &TaskDir, json: bool) -> Result<()> {
     let record = dir.read_record()?;
     let (status, _) = one_status(dir, &record)?;
@@ -364,7 +364,7 @@ impl ReviewMaterial {
 }
 
 /// `wsx task review <n>`: the task's `ReviewMaterial`, the same text its review job reads.
-/// ref: docs/tasks.md "Manager", "Review"
+/// ref: docs/tasks.md "Chat host", "Review"
 pub(crate) fn review(dir: &TaskDir, json: bool) -> Result<()> {
     let material = ReviewMaterial::read(dir)?;
     if json {
@@ -798,7 +798,7 @@ pub(crate) fn close_command(
         bail!("--after records an approved close --discard; a close without --discard needs no approval");
     }
     let dir = open(project, task)?;
-    // ^ Discarding work cannot be undone: the manager always asks first, or names
+    // ^ Discarding work cannot be undone: the lead always asks first, or names
     // the owner's message that asked for it.
     let record = dir.read_record()?;
     if discard

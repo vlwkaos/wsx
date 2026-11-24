@@ -761,8 +761,8 @@ fn usage_rows(ledger: &Value, width: usize, tokens: bool) -> Vec<Line<'static>> 
     lines
 }
 
-/// A spend (`usage::project`'s or `usage::all`'s): "Today $3.42 (manager $0.80) · 7 days
-/// $21.10 (manager $4.02)", after `prefix`.
+/// A spend (`usage::project`'s or `usage::all`'s): "Today $3.42 (lead $0.80) · 7 days
+/// $21.10 (lead $4.02)", after `prefix`.
 fn project_usage(spend: &Value, prefix: &str) -> Option<String> {
     let spent = |window: &str| {
         let cost = |who: &str| {
@@ -770,7 +770,7 @@ fn project_usage(spend: &Value, prefix: &str) -> Option<String> {
         };
         let manager = cost("manager");
         format!(
-            "{} (manager {})",
+            "{} (chats {})",
             usage::usd(cost("workers") + manager),
             usage::usd(manager)
         )

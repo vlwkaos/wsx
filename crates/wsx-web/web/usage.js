@@ -23,7 +23,7 @@ const ROWS = [
 ];
 
 // The parts of a day's spend, in the order of their fixed colors (`usage.rs` PARTS).
-const PARTS = [["build", "Build"], ["plan", "Plan"], ["context", "Context"], ["review", "Review"], ["memo", "Memo"], ["other", "Other work"], ["manager", "Manager"]];
+const PARTS = [["build", "Build"], ["plan", "Plan"], ["context", "Context"], ["review", "Review"], ["memo", "Memo"], ["other", "Other work"], ["manager", "Chats"]];
 
 // The kinds of token, in the order of their fixed colors (`app.css` .usage i[data-part]).
 const KINDS = [["input", "Input"], ["cache_read", "Cache read"], ["cache_write", "Cache write"], ["output", "Output"]];
@@ -94,7 +94,7 @@ function DayRows({ days, chart, label }) {
 // The period choices; a limit window's only while Claude reports one (`usage::limits`).
 const PERIODS = [["today", "Today"], ["week", "7 days"], ["five_hour", "5-hour window"], ["seven_day", "7-day window"]];
 const WINDOWS = ["five_hour", "seven_day"];
-const WHO = [["", "Workers and manager"], ["workers", "Workers"], ["manager", "Manager"]];
+const WHO = [["", "Workers and chats"], ["workers", "Workers"], ["manager", "Chats"]];
 const ADAPTERS = { claude: "Claude", pi: "Pi", unknown: "Unknown" };
 
 // The query of one choice of filters; Rust tells when the period starts (`usage::start`).

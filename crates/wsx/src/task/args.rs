@@ -13,7 +13,7 @@ use wsx_core::task::AfterKind;
 /// `--owner-said <id>` on an action that needs the owner's approval (docs/tasks.md "Approvals").
 #[derive(clap::Args)]
 pub struct OwnerSaid {
-    /// The manager: the owner's message of this turn that asked for it (its id), which
+    /// The lead: the owner's message of this turn that asked for it (its id), which
     /// approves it without a new request
     #[arg(long, value_name = "MESSAGE")]
     pub(super) owner_said: Option<u64>,
@@ -25,7 +25,7 @@ pub struct OwnerSaid {
 pub struct OwnerSaidAfter {
     #[command(flatten)]
     pub(super) said: OwnerSaid,
-    /// The manager: record the approved action to run when this task lands, not now
+    /// The lead: record the approved action to run when this task lands, not now
     #[arg(long, value_name = "TASK", requires = "owner_said")]
     pub(super) after: Option<u32>,
 }
@@ -152,7 +152,7 @@ pub enum TaskCmd {
         back: bool,
     },
     #[command(hide = true)]
-    /// Post what the project's tasks did since the last digest to its chat, with no manager
+    /// Post what the project's tasks did since the last digest to its chat, with no lead
     /// turn, and print nothing; a project gets one with a routine (docs/tasks.md "Routines")
     Digest {
         /// Start here (unix seconds) instead of at the last digest, else 24 h back
@@ -160,7 +160,7 @@ pub enum TaskCmd {
         since: Option<u64>,
     },
     #[command(hide = true)]
-    /// Post stdin to the project's chat as wsx's message, with no manager turn; nothing when
+    /// Post stdin to the project's chat as wsx's message, with no lead turn; nothing when
     /// it is empty. A routine pipes its report here (docs/tasks.md "Routines")
     Post {
         /// The chat's line above the text
@@ -210,7 +210,7 @@ pub enum TaskCmd {
     /// "Scenarios").
     #[command(hide = true)]
     Reap { folder: PathBuf },
-    /// Prints the manager's Seatbelt profile; scripts/test-manager-boundary.py starts a second
+    /// Prints the lead's Seatbelt profile; scripts/test-lead-boundary.py starts a second
     /// sandbox with it.
     #[command(hide = true)]
     BoundaryProfile {
@@ -290,7 +290,7 @@ pub struct NewArgs {
     /// carries the context and the plan
     #[arg(long, value_name = "STEP")]
     pub(crate) skip: Vec<String>,
-    /// One turn without `tasks.workflow.steps`: the manager's idle task
+    /// One turn without `tasks.workflow.steps`: the lead's idle task
     #[arg(long, hide = true)]
     pub(crate) no_steps: bool,
 }
@@ -342,7 +342,7 @@ pub struct PushArgs {
 /// `wsx chat`: talk with a project's chats and decide what they ask (docs/tasks.md "Chats").
 #[derive(Subcommand)]
 pub enum ChatGroup {
-    /// Send a message to the project's manager, or another chat; returns at once with its id
+    /// Send a message to the project's lead, or another chat; returns at once with its id
     Say {
         #[command(flatten)]
         text: PromptSource,
@@ -393,20 +393,20 @@ pub enum ChatGroup {
         #[arg(long)]
         reindex: bool,
     },
-    /// Approve a request the manager made, and run its action (owner only)
+    /// Approve a request the lead made, and run its action (owner only)
     Approve {
         /// The request id, such as a3
         id: String,
     },
-    /// Deny a request the manager made (owner only)
+    /// Deny a request the lead made (owner only)
     Deny {
         id: String,
         #[arg(long)]
         note: Option<String>,
     },
-    /// The owner dismisses an open question of the manager by its reply id: it asks no more (owner)
+    /// The owner dismisses an open question of the lead by its reply id: it asks no more (owner)
     Dismiss { id: u64 },
-    /// Wake the manager once, `--in` a time or `--at` a local time, with `--why` as its event;
+    /// Wake the lead once, `--in` a time or `--at` a local time, with `--why` as its event;
     /// a new check-in replaces the last one. It is no routine (docs/tasks.md "Check-in")
     Checkin {
         /// `40m`, `2h` or `1d`
@@ -426,7 +426,7 @@ pub enum ChatGroup {
     },
     /// Start the project's lead (its main chat's agent), or report the running one
     Lead,
-    /// Print the bounded project state a manager reads first (JSON, at most 16 KiB)
+    /// Print the bounded project state a chat reads first (JSON, at most 16 KiB)
     Ledger,
 }
 
@@ -435,12 +435,12 @@ pub enum ChatGroup {
 pub enum ProjectGroup {
     #[command(flatten)]
     Manage(ProjectCmd),
-    /// Push the default branch, or one commit, to origin's default branch and move the local one there (the manager asks the owner first)
+    /// Push the default branch, or one commit, to origin's default branch and move the local one there (the lead asks the owner first)
     Push(PushArgs),
     /// Fetch origin and move the local default branch to its tip when no work is lost (a branch that is behind, or whose commits origin has already after a rebase or squash merge); else refuse and name the commits or files
     Sync,
     /// Commit files of the main checkout on the default branch once its light checks pass on
-    /// that commit (the manager: with the owner's message)
+    /// that commit (the lead: with the owner's message)
     Commit {
         /// Paths in the main checkout, as they are on disk
         #[arg(required = true, num_args = 1..)]
@@ -456,7 +456,7 @@ pub enum ProjectGroup {
     Release(ReleaseArgs),
     /// Show the last deployed and released commits and how far each is behind
     Deployed,
-    /// List what the owner has to check of the landed tasks, or pass, skip or fail items (owner; the manager passes with --owner-said)
+    /// List what the owner has to check of the landed tasks, or pass, skip or fail items (owner; the lead passes with --owner-said)
     Check {
         #[command(subcommand)]
         action: Option<CheckAction>,
@@ -478,7 +478,7 @@ pub enum ProjectGroup {
     Routine {
         #[command(subcommand)]
         action: RoutineCmd,
-        /// The manager: the owner's message of this turn that asked to add, edit or delete it
+        /// The lead: the owner's message of this turn that asked to add, edit or delete it
         #[arg(long, value_name = "MESSAGE", global = true)]
         owner_said: Option<u64>,
     },
@@ -502,14 +502,14 @@ pub enum ProjectCmd {
 
 #[derive(Subcommand)]
 pub enum ChatCmd {
-    /// Open a chat: a manager with a name and a goal, in the same project (the owner's, or a
+    /// Open a chat: a chat with a name and a goal, in the same project (the owner's, or a
     /// chat's on the owner's message of its turn)
     New {
         name: String,
         /// The chat's goal, a file or - for standard input
         #[arg(long, value_name = "FILE")]
         goal: Option<PathBuf>,
-        /// The `[[agents]]` entry it runs on; default: the manager's (tasks.chats)
+        /// The `[[agents]]` entry it runs on; default: the lead's (tasks.chats)
         #[arg(long, value_name = "ENTRY")]
         agent: Option<String>,
         /// The lead (the main chat with no goal) forks the owner's message --owner-said names:
@@ -719,7 +719,7 @@ pub fn moved(argv: &[String]) -> Option<String> {
 
 #[derive(Subcommand)]
 pub enum CheckAction {
-    /// The named items passed, or every open item with --all (the manager: named items with --owner-said)
+    /// The named items passed, or every open item with --all (the lead: named items with --owner-said)
     Pass {
         #[command(flatten)]
         chosen: Chosen,
@@ -729,7 +729,7 @@ pub enum CheckAction {
     /// Close the named items, or every open item with --all, without a verdict: no fix task
     Skip(Chosen),
     /// The item failed. With --note a new task fixes it, linked to the item; without, the item
-    /// only closes as failed (the manager starts the fix from the owner's words)
+    /// only closes as failed (the lead starts the fix from the owner's words)
     Fail {
         id: String,
         /// What is wrong; the new task gets it

@@ -33,8 +33,8 @@ pub enum Region {
 /// What an item of the chat rail opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RailTarget {
-    /// The project's manager (`open_chat(None)`); the main chat's row is this item.
-    Manager,
+    /// The project's lead (`open_chat(None)`); the main chat's row is this item.
+    Lead,
     Chat(String),
     /// The For you list in place of the chat.
     ForYou,
@@ -183,7 +183,7 @@ pub struct TaskList {
     /// The Tasks pane's width at the last frame: the chat view's layout follows it
     /// (`rail_shown`, `task_drawn`), and so do the keys that depend on what shows.
     pub width: Cell<u16>,
-    /// Unsent message lines of the chats left (`stash_draft`), by chat; none is the manager.
+    /// Unsent message lines of the chats left (`stash_draft`), by chat; none is the lead.
     drafts: std::collections::HashMap<Option<String>, String>,
     pub scroll: u16,
     /// The day rows show tokens, not cost (`u`).
@@ -191,7 +191,7 @@ pub struct TaskList {
     /// The agent the spend lines and the day rows count (`a`): an adapter or
     /// `adapter/model` of `usage_all.agents`; none for all.
     pub agent: Option<String>,
-    /// The project's manager chat, opened over the list with `m`.
+    /// The project's chat, opened over the list with `m`.
     pub chat: Option<Box<crate::task_chat::ChatScreen>>,
     /// The New chat form, opened with `n` over the list.
     pub new_chat: Option<crate::task_new_chat::NewChat>,
@@ -327,7 +327,7 @@ impl TaskList {
         self.check();
     }
 
-    /// Open the manager's chat, or another's (docs/tasks.md "Chats").
+    /// Open the lead's chat, or another's (docs/tasks.md "Chats").
     pub fn open_chat(&mut self, chat: Option<String>) {
         self.stash_draft();
         let mut open =
@@ -350,7 +350,7 @@ impl TaskList {
         }
     }
 
-    /// `n`: the New chat form, whose `default` agent is the project's manager's.
+    /// `n`: the New chat form, whose `default` agent is the project's lead's.
     pub fn open_new_chat(&mut self) {
         let default = wsx_core::config::project::load_task_config(&self.main)
             .ok()
@@ -644,7 +644,7 @@ impl TaskList {
     }
 
     /// One key in a task's detail. False when it is not an action's key. A land or a hand
-    /// asks first (`y` runs it, `n` or `Esc` drops it); `a` opens the manager chat with the
+    /// asks first (`y` runs it, `n` or `Esc` drops it); `a` opens the chat with the
     /// task's number in the message line, as the web's Answer does.
     pub fn detail_key(&mut self, action: &Action) -> bool {
         let Some(id) = self.detail else {
@@ -788,7 +788,7 @@ impl TaskList {
         self.ledger.as_ref().and_then(main_chat)
     }
 
-    /// A chat by its key: the main chat's name is the manager (none), as `open_chat(None)`
+    /// A chat by its key: the main chat's name is the lead (none), as `open_chat(None)`
     /// opens it.
     fn chat_key(&self, chat: Option<&str>) -> Option<String> {
         chat.filter(|name| Some(*name) != self.main_chat())
@@ -799,7 +799,7 @@ impl TaskList {
     pub fn rail_current(&self) -> Option<usize> {
         let open = self.chat_key(self.chat.as_ref()?.chat.as_deref());
         self.rail_list.iter().position(|item| match &item.target {
-            RailTarget::Manager => open.is_none(),
+            RailTarget::Lead => open.is_none(),
             RailTarget::Chat(name) => open.as_deref() == Some(name.as_str()),
             RailTarget::ForYou => false,
         })
@@ -831,7 +831,7 @@ impl TaskList {
                     .map(|item| item.target.clone());
                 self.detail = None;
                 match target {
-                    Some(RailTarget::Manager) => self.open_chat(None),
+                    Some(RailTarget::Lead) => self.open_chat(None),
                     Some(RailTarget::Chat(name)) => self.open_chat(Some(name)),
                     Some(RailTarget::ForYou) => {
                         self.stash_draft();
@@ -1050,7 +1050,7 @@ pub fn chain_of(rows: &[TaskRow], id: u64) -> Vec<&TaskRow> {
 }
 
 /// The events message that told of `view`'s last run's end, for the routine detail's Enter
-/// (`chat::run_messages`); none for a run that made no message or a project without a manager.
+/// (`chat::run_messages`); none for a run that made no message or a project without a chat.
 pub fn run_message(
     project: &str,
     main: &std::path::Path,
@@ -1070,14 +1070,14 @@ fn main_chat(ledger: &Value) -> Option<&str> {
         .as_str()
 }
 
-/// The chat rail (docs/tasks.md "TUI"): the manager (with the main chat's counts), the open
+/// The chat rail (docs/tasks.md "TUI"): the lead (with the main chat's counts), the open
 /// chats as the list orders them with their counts, and For you with the number that waits, as
 /// the list's "N wait for you" row counts it.
 fn rail_list(ledger: Option<&Value>) -> Vec<RailItem> {
     let mut items = vec![RailItem {
-        title: "Manager".into(),
+        title: "Lead".into(),
         counts: Default::default(),
-        target: RailTarget::Manager,
+        target: RailTarget::Lead,
     }];
     let mut waiting = 0;
     if let Some(ledger) = ledger {

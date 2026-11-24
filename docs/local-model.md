@@ -1,6 +1,6 @@
 # Local model endpoint
 
-How wsx uses a local model as a fallback agent. wsx uses it with no entry to add: it is the built-in stand-in that answers the owner while the manager waits for a usage limit ([tasks.md](tasks.md) "Agents", "Local floor"). Nothing here edits your Pi or wsx config.
+How wsx uses a local model as a fallback agent. wsx uses it with no entry to add: it is the built-in stand-in that answers the owner while the lead waits for a usage limit ([tasks.md](tasks.md) "Agents", "Local floor"). Nothing here edits your Pi or wsx config.
 
 ## Endpoint
 
@@ -17,7 +17,7 @@ Serving and model management belong to projk, not wsx. wsx starts no server and 
 
 ## Own entry (optional)
 
-The built-in floor needs none of this: wsx writes the `llama-wsx` provider into each launch's Pi folder from the endpoint above, unless your `~/.pi/agent/models.json` already has one, and counts the floor only while the endpoint answers. Add the entries below to use the model as a worker's or the manager's fallback (`may`), to load the lean runner, or to change the jobs it fills; an entry or list of yours wins over the floor.
+The built-in floor needs none of this: wsx writes the `llama-wsx` provider into each launch's Pi folder from the endpoint above, unless your `~/.pi/agent/models.json` already has one, and counts the floor only while the endpoint answers. Add the entries below to use the model as a worker's or the lead's fallback (`may`), to load the lean runner, or to change the jobs it fills; an entry or list of yours wins over the floor.
 
 Add a provider to `~/.pi/agent/models.json` (wsx copies only this file into each Pi launch). `baseUrl` and the key file path are the endpoint settings above:
 

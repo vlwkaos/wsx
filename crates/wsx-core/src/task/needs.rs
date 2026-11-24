@@ -1,8 +1,9 @@
 //! What a project needs from the owner: the one rule behind the web's Home row and the TUI's
 //! Workspace tree marks. ref: docs/tasks.md "Landing", "To check", "TUI"
 use super::{
-    chat, chats, checks,
-    manager::{pending_approvals, waiting_approvals, ApprovalLine},
+    chat,
+    chat_host::{pending_approvals, waiting_approvals, ApprovalLine},
+    chats, checks,
     status::{self, Holder},
     store::{self, TaskDir},
     view, TaskRecord, TaskState, WaitOn,
@@ -117,7 +118,7 @@ pub const APPROVAL_RANK: u8 = 2;
 pub struct Needs {
     /// Tasks that wait on, failed for or are ready for the owner, and pending approvals.
     pub owner: usize,
-    /// Tasks at work (or with the manager, or with the owner by hand).
+    /// Tasks at work (or with the lead, or with the owner by hand).
     pub working: usize,
     /// Approved actions that run when their task lands.
     pub waiting: usize,

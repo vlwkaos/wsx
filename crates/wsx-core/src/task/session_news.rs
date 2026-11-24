@@ -1,4 +1,4 @@
-//! A project's own agent sessions that need the owner, as chat lines. The manager host reads
+//! A project's own agent sessions that need the owner, as chat lines. The chat host reads
 //! wsxd's snapshot and posts each session once per transition into `exited`, `error` or
 //! `blocked`, worded as the web's Home words it. ref: docs/tasks.md "Session news"
 
@@ -6,7 +6,7 @@ use crate::runtime::{AgentState, Pane, Snapshot};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// A session that belongs to a task or to the manager: `task-<n>`, `task-<n>-hand`,
+/// A session that belongs to a task or to the lead: `task-<n>`, `task-<n>-hand`,
 /// a chat's `task-<name>` (provider `task` or `manager`). The web's
 /// `isTaskSession` (store.js) is the same rule.
 pub fn is_task_session(label: &str, provider: Option<&str>) -> bool {
@@ -30,7 +30,7 @@ pub struct SessionNews {
 }
 
 /// The sessions of the project at `main` that are in an attention state now, with an agent
-/// that is not a task's or the manager's. The pane is the web's: the agent's, else the first.
+/// that is not a task's or the lead's. The pane is the web's: the agent's, else the first.
 pub fn attention(snapshot: &Snapshot, main: &Path) -> Vec<SessionNews> {
     let same = |path: &Path| crate::fs_util::same_folder(path, main);
     let Some(project) = snapshot.projects.iter().find(|p| same(&p.path)) else {

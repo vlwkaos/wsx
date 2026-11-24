@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::git::{output_with_timeout_tail, ssh_agent};
 use wsx_core::ops;
+use wsx_core::task::chat_host::{ApprovalAction, ApprovalLine};
 use wsx_core::task::checks::{self};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
-use wsx_core::task::manager::{ApprovalAction, ApprovalLine};
 use wsx_core::task::owner::{self};
 use wsx_core::task::view::short_commit;
 use wsx_core::task::{
@@ -34,8 +34,8 @@ pub(crate) const PUSH_REMOTE: &str = "origin";
 
 /// Push the default branch tip, or `commit`, to origin's default branch, then move the local
 /// default branch there. A fast-forward of both, unless `force`: then it may rewrite them, with
-/// `--force-with-lease` on origin's tip seen when it was asked (`lease`). The manager always
-/// asks the owner (or names the owner's message); its broker runs this in the manager host,
+/// `--force-with-lease` on origin's tip seen when it was asked (`lease`). The lead always
+/// asks the owner (or names the owner's message); its broker runs this in the chat host,
 /// outside the boundary, so the owner's ssh setup applies. ref: docs/tasks.md "Push"
 pub(crate) fn push(args: PushArgs, project: Option<&str>, json: bool) -> Result<()> {
     let PushArgs {
@@ -108,7 +108,7 @@ pub(crate) fn push(args: PushArgs, project: Option<&str>, json: bool) -> Result<
     let lease = force.then(|| remote.clone().unwrap_or_default());
     if acting_as_chat() {
         // ^ The request says what it carries: the landed tasks and the commits origin lacks.
-        // ^ A push that waits for a land names no commit unless the manager did: the default
+        // ^ A push that waits for a land names no commit unless the lead did: the default
         // branch tip is read when it runs.
         let mut request = request_of(
             ApprovalAction::Push,
@@ -225,7 +225,7 @@ fn last_deployed(project_id: &str, kind: DeployKind, commit: &str) -> Result<boo
 
 /// Start the detached `deploy --if-new --quiet`, which waits for a quiet default branch, when
 /// the project deploys by itself and the last deploy did not run the default branch tip.
-/// `deploys.jsonl` and the branch say it is due, so a land, a manager host that starts and a
+/// `deploys.jsonl` and the branch say it is due, so a land, a chat host that starts and a
 /// waiter that died (a reboot, a replaced host) all start it the same way: a deploy is late by
 /// one quiet window at most, and a second waiter finds the first one's deploy done.
 /// ref: docs/tasks.md "Deploy and release"
@@ -280,7 +280,7 @@ pub(crate) fn sync(project: Option<&str>, json: bool) -> Result<()> {
 /// `if_new`: skip a commit that is already deployed, so the deploys that follow quick lands
 /// run once for the newest one (docs/tasks.md "Deploy and release").
 /// One by hand checks, takes the lock and answers at once: a detached `wsx task` holding the
-/// lock (`run_locked`) runs and records it, so no caller's time limit (the manager's broker)
+/// lock (`run_locked`) runs and records it, so no caller's time limit (the lead's broker)
 /// cuts a long release.
 pub(crate) fn deploy(
     kind: DeployKind,
@@ -299,11 +299,11 @@ pub(crate) fn deploy(
     let run_locked = run.run_locked;
     let (owner_said, after) = outward_said(&said)?;
     // ^ The run of an approved `release --after`: the owner's message asked for it, so open To
-    // check items stay on it. The manager cannot pass the flag.
+    // check items stay on it. The lead cannot pass the flag.
     let waived = run.checks_waived && kind == DeployKind::Release && !acting_as_chat();
     let by_hand = !if_new && run_locked.is_none();
     // ^ The run of an approved request (the owner's go, now or after a land) waits for the
-    // lock instead of refusing: a refused approval is spent. The manager cannot pass the flag.
+    // lock instead of refusing: a refused approval is spent. The lead cannot pass the flag.
     let approved = run.approved && !acting_as_chat();
     let name = kind_name(kind);
     let (project_name, main) = project_entry(project)?;

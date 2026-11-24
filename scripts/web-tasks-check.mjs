@@ -3219,7 +3219,7 @@ console.log(`long chat render at 390 px, CPU 4x: ${costs.map((cost) => `${cost.l
 const costly = costs.filter((cost) => cost.renders > 0 || (cost.label === "at the end after a find" && cost.named > 60));
 if (costly.length) await fail(`a read with no new message rendered bubbles again, or the log kept more than its newest 60 rows: ${JSON.stringify(costs)}`);
 phase("Questions (docs/tasks.md Questions under Manager): plans' lo");
-// --- Questions (docs/tasks.md "Questions" under "Manager"): plans' log asked four times and the
+// --- Questions (docs/tasks.md "Questions" under "Chat host"): plans' log asked four times and the
 // owner answered some (test-web-client.py); the plain owner messages since answered more, so plans
 // is asked once more here. Each open question waits in the reservoir with Reply and Dismiss; a
 // dismiss clears only that one: its row, its bubble's border and the overview's `asks`, which
@@ -4345,7 +4345,7 @@ if (Math.abs(shifted) > 2) await fail(`Show earlier moved the row in view by ${s
 await toLatest("390 px");
 await jumpRounds("390 px, long chat");
 phase("The manager quotes an earlier message by id (docs/tasks.md M");
-// --- The manager quotes an earlier message by id (docs/tasks.md "Manager"): its reply shows the
+// --- The manager quotes an earlier message by id (docs/tasks.md "Chat host"): its reply shows the
 // quote as one line over its words, and a tap goes to the quoted message.
 const sayAgain = async (words) => {
   const status = await say(words);

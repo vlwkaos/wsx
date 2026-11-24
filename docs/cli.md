@@ -1,6 +1,6 @@
 # CLI and runtime
 
-Every command, and the details of sessions, worktrees, the daemon and the runtime rules. Agent exchanges: [agent-orchestration.md](agent-orchestration.md). Tasks and the manager: [tasks.md](tasks.md). Memory: [memory.md](memory.md).
+Every command, and the details of sessions, worktrees, the daemon and the runtime rules. Agent exchanges: [agent-orchestration.md](agent-orchestration.md). Tasks and the lead: [tasks.md](tasks.md). Memory: [memory.md](memory.md).
 
 ## All commands
 
@@ -30,11 +30,11 @@ wsx web vapid
 wsx task new|list|show|add|stop|move|land|after|hold|close|hand|dismiss|check|deploy|release|push|ledger|deployed|checkin|routine|manager|project|say|chat|search|approve|deny [-p <project>] [--json]
 ```
 
-Hidden from `wsx --help`, still run: `wsx task check-run`, `digest` and `post` (a worker's and the routines' commands), `wsx memory capture|start|import` (the task host's), `wsx group` and `wsx plugin`. A hidden command keeps its argv, so scripts, hooks, stored routines and a running manager's older prompt work without a change.
+Hidden from `wsx --help`, still run: `wsx task check-run`, `digest` and `post` (a worker's and the routines' commands), `wsx memory capture|start|import` (the task host's), `wsx group` and `wsx plugin`. A hidden command keeps its argv, so scripts, hooks, stored routines and a running lead's older prompt work without a change.
 
 Chats ([tasks.md](tasks.md) "Chats"): `wsx chat new <name> [--goal <file>|-] [--agent <entry>]`, `chat list` and `chat close <name>` are the owner's. `wsx chat read [--chat <name>] [--after <id>|--around <id>]` reads a chat. `wsx chat say [--to <name>] "<text>"` writes to a chat (the first when `--to` is missing). `wsx task move <n>... --chat <name>` hands open and landed tasks to another open chat of the repo: their events, waits and To check items go there; the owner, or a chat's agent for its own tasks. A chat's agent adds `--from-chat [--reply]` to write to another chat of its project (`--to`), or with `-p <project>` to that project's first chat.
 
-The manager passes `--after <n>` with `--owner-said <id>` to `wsx task land|close --discard|deploy|release|push`: the owner's go is checked now and the action runs when #n lands ([tasks.md](tasks.md) "Approvals").
+The lead passes `--after <n>` with `--owner-said <id>` to `wsx task land|close --discard|deploy|release|push`: the owner's go is checked now and the action runs when #n lands ([tasks.md](tasks.md) "Approvals").
 
 ## Worktrees and sessions
 
@@ -67,7 +67,7 @@ A pane whose process exits, for example after Ctrl+C or an agent crash, stays li
 
 ## Routines
 
-A routine runs on `--cron <expr>`, on `--event <kind>` (`task.landed`, `deploy.failed`, `project.idle`, ...); a routine always recurs, and a one-time command goes through its approved action, not a routine. Each routine `--arg` is one direct argv item. wsx never invokes a shell for routine argv. Inspect untrusted routines with `wsx routine show <name>` before enabling or running them. In the TUI, `u` creates one: choose a documented one-shot agent template or Custom. A template replaces the command argv shown in the next form. The argv remains editable; Custom starts empty. On a routine row `r` runs it now (`wsx routine run`) and Space turns it on or off (`wsx routine enable|disable`: the stored routine edited with `enabled` flipped, at the revision the row was read at); `Enter` shows its runs. The shipped `wsxd` binary runs the routines; at its first start it takes over the routines and run history of an earlier asched scheduler. The manager's use of routines and check-ins: [tasks.md](tasks.md) "Routines".
+A routine runs on `--cron <expr>`, on `--event <kind>` (`task.landed`, `deploy.failed`, `project.idle`, ...); a routine always recurs, and a one-time command goes through its approved action, not a routine. Each routine `--arg` is one direct argv item. wsx never invokes a shell for routine argv. Inspect untrusted routines with `wsx routine show <name>` before enabling or running them. In the TUI, `u` creates one: choose a documented one-shot agent template or Custom. A template replaces the command argv shown in the next form. The argv remains editable; Custom starts empty. On a routine row `r` runs it now (`wsx routine run`) and Space turns it on or off (`wsx routine enable|disable`: the stored routine edited with `enabled` flipped, at the revision the row was read at); `Enter` shows its runs. The shipped `wsxd` binary runs the routines; at its first start it takes over the routines and run history of an earlier asched scheduler. The lead's use of routines and check-ins: [tasks.md](tasks.md) "Routines".
 
 ## Web client
 

@@ -165,7 +165,7 @@ def main():
         head, handover, rest = text.partition('Handover (this is a new conversation')
         current = head + rest.partition('\n\n')[2] if handover else text
         own = current.rsplit('Owner (message', 1)[-1]
-        # ^ A turn held across a switch comes as `Message N:` blocks (manager.rs held_messages): the last one is the owner's.
+        # ^ A turn held across a switch comes as `Message N:` blocks (chat_runner.rs held_messages): the last one is the owner's.
         own = re.split(r'\n\nMessage \d+:\n', own)[-1]
         # ^ The ledger summary at the end of a turn names tasks by title: it is no owner's word either.
         own = own.split('\n\nLedger summary from wsx', 1)[0].split('Events (message', 1)[0]

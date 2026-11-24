@@ -1,6 +1,6 @@
 //! Mail between projects: `wsx chat say --uses <dependency>` reaches the main chat of every
 //! registered project whose lockfile or manifest names it, and no other, from the owner or from a
-//! chat. Through the real CLI and the fake manager agent. ref: docs/tasks.md "Managers talk"
+//! chat. Through the real CLI and the fake lead agent. ref: docs/tasks.md "Mail"
 mod common;
 
 use common::Fixture;

@@ -17,7 +17,7 @@ export function ProjectOverview({ project, onClose, grip }) {
       head=${html`<${ProjectFacts} project=${project} overview=${tasks} />`}
       bar=${html`<span class="bar-label">Overview</span>
         ${page?.unix_ms && html`<span class="bar-state">Updated ${ago(now - page.unix_ms)}</span>`}`}>
-      ${page?.text == null ? html`<p class="empty">No overview yet. The manager writes it once it starts.</p>`
+      ${page?.text == null ? html`<p class="empty">No overview yet. The lead writes it once it starts.</p>`
         : html`<div class="task-body"><${Markdown} text=${page.text} words=${withChips(project)} prose /></div>
           ${page.cut && html`<p class="empty over-limit">Over the size limit: ${page.cut.lines} lines, ${page.cut.chars} characters. Only the first 60 lines and 4,000 characters show.</p>`}`}
     </${SheetPage}>`;

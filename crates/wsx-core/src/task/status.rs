@@ -1,9 +1,9 @@
 //! A task's status in words: a short label for a row or a pill, and a sentence that says what
 //! the task waits for, why, how long, and what comes next. The web client, the TUI, `wsx task`
-//! and the manager's events all show these words; none makes its own. Decisions never read
+//! and the lead's events all show these words; none makes its own. Decisions never read
 //! them: they test the record. ref: docs/tasks.md "Status"
 
-use super::manager::ApprovalLine;
+use super::chat_host::ApprovalLine;
 use super::store::TaskDir;
 use super::view::{check_outcomes, clip, read_result, resolving_conflict};
 use super::{AfterKind, LogEvent, ReviewVerdict, TaskRecord, TaskState, WaitOn, Waiting};
@@ -273,7 +273,7 @@ fn waited_by_sentence(waiters: &[Waiter]) -> String {
 /// What a caller knows beyond the task's own files.
 #[derive(Default)]
 pub struct Facts<'a> {
-    /// The project's pending approval requests (`manager::pending_approvals`).
+    /// The project's pending approval requests (`chat_host::pending_approvals`).
     pub approvals: &'a [&'a ApprovalLine],
     /// `stall::stuck`: it asks the task host, so only a view of one task passes it.
     pub stuck: Option<&'a str>,
@@ -355,7 +355,7 @@ fn status_of(
             "approval",
             "Waiting for your approval",
             Some(asked),
-            &format!("the manager asks: {label}"),
+            &format!("its chat asks: {label}"),
             "It goes on when you approve or deny it.",
             now_ms,
         );
@@ -366,7 +366,7 @@ fn status_of(
             "Stuck",
             None,
             why,
-            "The manager hears of the stall and decides what to do.",
+            "Its chat hears of the stall and decides what to do.",
             now_ms,
         );
     }
@@ -545,7 +545,7 @@ fn waiting_on(
                     "Stopped",
                     Some(entered),
                     STOPPED_BY_REQUEST,
-                    "Tell the manager to resume or close it.",
+                    "Tell its chat to resume or close it.",
                     now_ms,
                 ),
                 Some(reason) => words(
@@ -553,7 +553,7 @@ fn waiting_on(
                     "Interrupted",
                     Some(entered),
                     &reason,
-                    "The manager resumes it or tells you why not.",
+                    "Its chat resumes it or tells you why not.",
                     now_ms,
                 ),
                 // ^ A worker that answered blocked or idle while its task waits for another has
@@ -564,7 +564,7 @@ fn waiting_on(
                     "Waiting for your answer",
                     Some(entered),
                     &waiting.reason,
-                    "Answer the manager; the worker goes on then.",
+                    "Answer its chat; the worker goes on then.",
                     now_ms,
                 ),
             }
@@ -635,7 +635,7 @@ fn working(record: &TaskRecord, now_ms: u64) -> Status {
         None => "Working".into(),
     };
     let next = if record.plan {
-        "Its plan goes to the manager after its result."
+        "Its plan goes to its chat after its result."
     } else if record.checks.is_empty() {
         "It is ready after its result."
     } else {
@@ -661,7 +661,7 @@ fn failed(dir: &TaskDir, result: Option<&Option<Value>>, now_ms: u64) -> Status 
             "Failed",
             None,
             "the worker could not finish",
-            "Tell the manager what to do next.",
+            "Tell its chat what to do next.",
             now_ms,
         ),
         _ => words(
@@ -672,7 +672,7 @@ fn failed(dir: &TaskDir, result: Option<&Option<Value>>, now_ms: u64) -> Status 
                 "{failed} of {} failed after the worker's retries",
                 count(outcomes.len(), "check")
             ),
-            "Tell the manager, so the worker fixes it.",
+            "Tell its chat, so the worker fixes it.",
             now_ms,
         ),
     }
@@ -690,14 +690,14 @@ fn after_wait(record: &TaskRecord, now_ms: u64) -> Status {
         Some(after.since_unix_ms),
         &format!("#{} is {other}", after.task),
         &format!(
-            "{} When it lands, wsx sends the task the manager's next instruction. If it is closed instead, the manager is told.",
+            "{} When it lands, wsx sends the task its chat's next instruction. If it is closed instead, its chat is told.",
             because_sentence(after.because, after.task)
         ),
         now_ms,
     )
 }
 
-/// A ready task: its landing stopped, it is held, it waits for another task, the manager
+/// A ready task: its landing stopped, it is held, it waits for another task, the lead
 /// reviews it, or the owner lands it.
 fn ready(
     dir: &TaskDir,

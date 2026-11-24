@@ -39,7 +39,7 @@ impl SharedFailure {
         format!("check:{}\n{}", clip(&self.command), self.line)
     }
 
-    /// The event line for the manager.
+    /// The event line for the lead.
     pub fn event(&self) -> String {
         if self.outside && self.tasks.len() < 2 {
             return format!(

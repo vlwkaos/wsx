@@ -1,4 +1,4 @@
-//! `wsx chat ledger`: the bounded project state a manager reads before it acts.
+//! `wsx chat ledger`: the bounded project state a chat reads before it acts.
 //! ref: docs/tasks.md "Ledger"
 
 use super::project_entry;

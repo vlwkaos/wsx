@@ -63,7 +63,7 @@ fn a_cut_question_is_restored_once_from_the_result() {
     assert!(!shown.sentence.contains('\n'), "{}", shown.sentence);
     assert_eq!(shown.ask().as_deref(), Some(SUMMARY));
     assert!(
-        shown.rest().starts_with("Answer the manager"),
+        shown.rest().starts_with("Answer its chat"),
         "{}",
         shown.rest()
     );

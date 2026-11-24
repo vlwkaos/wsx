@@ -5,9 +5,9 @@
 
 use serde_json::json;
 use std::fs;
+use wsx_core::task::chat_host::{ApprovalLine, ChatEvent};
 use wsx_core::task::chats;
 use wsx_core::task::checks::{self, CheckItem};
-use wsx_core::task::manager::{ApprovalLine, ChatEvent};
 use wsx_core::task::needs::{self, YouSource};
 use wsx_core::task::store::{self, TaskDir, RECORD_FILE};
 

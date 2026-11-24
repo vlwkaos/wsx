@@ -1,10 +1,10 @@
 //! A host whose own code cannot end its turn: a deploy reaches a host only before its next
 //! turn, so one that hangs inside a turn under an older wsx never follows. Callers replace it:
-//! a deploy, a starting manager host, `call_task_host` and `ensure_manager` find a host that runs an older wsx and whose
+//! a deploy, a starting chat host, `call_task_host` and `ensure_lead` find a host that runs an older wsx and whose
 //! turn shows no agent output past `stall::turn_quiet_ms`, stop it and its agent's tree, and
 //! start one on this wsx. ref: docs/tasks.md "Host" (A host hung in a turn)
 
-use super::manager::{ChatEvent, ChatResponse};
+use super::chat_host::{ChatEvent, ChatResponse};
 use super::status::span;
 use super::store::{self, ChatDir, TaskDir};
 use super::{stall, HostRequest, LogEvent, TaskRecord, TaskState};
@@ -138,10 +138,10 @@ pub(super) fn replace_hung_task(dir: &TaskDir) -> anyhow::Result<bool> {
     Ok(true)
 }
 
-/// The manager's or a chat's turn when it is hung in a host that runs an older wsx: it
+/// The lead's or a chat's turn when it is hung in a host that runs an older wsx: it
 /// answered `busy` and as older, and its log has no agent line, delivery or reply past the
 /// bound.
-fn manager_hung(dir: &ChatDir, main: &Path, answer: &ChatResponse) -> Option<Hung> {
+fn chat_hung(dir: &ChatDir, main: &Path, answer: &ChatResponse) -> Option<Hung> {
     if !answer.busy || !behind(answer.binary.as_ref()) {
         return None;
     }
@@ -170,15 +170,15 @@ fn manager_hung(dir: &ChatDir, main: &Path, answer: &ChatResponse) -> Option<Hun
     })
 }
 
-/// Close the manager's or the chat's host when its turn hangs in an older wsx
-/// (`manager_hung`), stop its agent's tree and log one `stopped` entry; the caller starts the
+/// Close the lead's or the chat's host when its turn hangs in an older wsx
+/// (`chat_hung`), stop its agent's tree and log one `stopped` entry; the caller starts the
 /// new host, whose restore queues the turn's messages again. True when it did.
-pub(super) fn close_hung_manager(
+pub(super) fn close_hung_chat(
     dir: &ChatDir,
     main: &Path,
     answer: &ChatResponse,
 ) -> anyhow::Result<bool> {
-    let Some(hung) = manager_hung(dir, main, answer) else {
+    let Some(hung) = chat_hung(dir, main, answer) else {
         return Ok(false);
     };
     stop_host(dir, main)?;
@@ -200,9 +200,9 @@ pub fn stop_host(dir: &ChatDir, main: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// After a deploy and when a project's manager host starts: replace each hung host that runs
+/// After a deploy and when a project's chat host starts: replace each hung host that runs
 /// an older wsx, of every registered project.
-/// A host that answers no status is left to `call_task_host` and `ensure_manager`.
+/// A host that answers no status is left to `call_task_host` and `ensure_lead`.
 pub fn sweep() -> Vec<String> {
     let mut errors = Vec::new();
     let Ok((config, _)) = crate::config::global::GlobalConfig::load() else {
@@ -243,10 +243,10 @@ pub fn sweep() -> Vec<String> {
         for dir in super::chats::open_chats(&project_id) {
             let answer = super::call_socket::<_, ChatResponse>(
                 &dir.socket_path(),
-                &super::manager::ChatRequest::Status,
+                &super::chat_host::ChatRequest::Status,
                 stall::PROBE,
             );
-            if answer.is_ok_and(|answer| manager_hung(&dir, &project.path, &answer).is_some()) {
+            if answer.is_ok_and(|answer| chat_hung(&dir, &project.path, &answer).is_some()) {
                 let launch = |label, argv| {
                     crate::ops::create_session_launch(
                         &crate::runtime::Client::local(),
@@ -260,7 +260,7 @@ pub fn sweep() -> Vec<String> {
                 };
                 let chat = dir.named();
                 if let Err(error) =
-                    super::owner::ensure_manager(&project.name, &project.path, &exe, chat, launch)
+                    super::owner::ensure_lead(&project.name, &project.path, &exe, chat, launch)
                 {
                     errors.push(format!("{} of {}: {error:#}", dir.name(), project.name));
                 }

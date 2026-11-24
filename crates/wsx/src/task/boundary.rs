@@ -1,9 +1,9 @@
 //! The agent boundary: one macOS Seatbelt profile per role, applied by the task host and the
-//! manager host to the whole agent process tree (Bash, file tools, MCP servers, hooks), so any
+//! chat host to the whole agent process tree (Bash, file tools, MCP servers, hooks), so any
 //! adapter runs in its own no-prompt mode inside it. A deny-list: reads and writes are open
 //! except what other tasks, wsx and the owner's secrets own; network, loopback and PTYs stay
 //! open. A signal reaches only a process of the same sandbox, so one agent's `pkill` cannot
-//! end another agent, the manager, wsxd or the owner's processes. An untrusted agent (Pi with
+//! end another agent, the lead, wsxd or the owner's processes. An untrusted agent (Pi with
 //! any model, Claude on another endpoint) gets the strict profile of `wsx_core::task::policy`
 //! instead: the same denials plus writes only in its own folders, the network only to the
 //! loopback (its provider through the egress proxy of `egress.rs`) and no privilege tools.
@@ -29,7 +29,7 @@ const STRICT_SECRETS: [&str; 4] = [".config/gh", ".netrc", ".npmrc", ".claude"];
 /// What a strict agent writes outside its folders: the null device, terminals and PTYs.
 const DEV_WRITE: &str = r"^/dev/(null|zero|tty|ttys[0-9]+|ptmx|fd/[0-9]+)$";
 
-/// What the manager does not run: git's remote helpers, `receive-pack` and ssh, which a push
+/// What the lead does not run: git's remote helpers, `receive-pack` and ssh, which a push
 /// execs (an https or ssh fetch too).
 const MANAGER_DENIED_EXEC: &str = r"(/git-(remote-[a-z0-9]+|receive-pack)|^/usr/bin/ssh)$";
 
@@ -130,7 +130,7 @@ impl Boundary {
         Ok(boundary)
     }
 
-    /// The manager: its folder and the project overview; never the main checkout or its git
+    /// The lead: its folder and the project overview; never the main checkout or its git
     /// folder. Its `wsx task` commands run in its host through the broker, outside this
     /// boundary: `land` and `wsx project commit` write main, `wsx project push` the remote.
     /// ref: docs/tasks.md "Permissions"
@@ -361,7 +361,7 @@ impl Boundary {
             if let Some(tmp) = std::env::var_os("TMPDIR").filter(|tmp| !tmp.is_empty()) {
                 rule("allow file-write*", subpath(&real(Path::new(&tmp))));
             }
-            // ^ Only a worker commits; the manager's commits run in its host.
+            // ^ Only a worker commits; the lead's commits run in its host.
             if self.policy.role == Role::Worker {
                 rule("allow file-write*", subpath(&self.common));
             }
@@ -409,7 +409,7 @@ impl Boundary {
         for path in &self.own_prefix {
             rule("allow file-write*", regex(&format!("^{}", escape(path))));
         }
-        if self.policy.role == Role::Manager {
+        if self.policy.role == Role::Chat {
             // ^ No push by hand: git reaches a remote through these programs, and the owner's
             // approved `wsx project push` runs in the host.
             rule("deny process-exec", regex(MANAGER_DENIED_EXEC));

@@ -1,5 +1,5 @@
 //! What loads this Mac: the CPU the processes use, grouped by whose work they are (a task's working
-//! copy and the runs it started, wsxd, the live web site, a manager's agent, the rest). The agents'
+//! copy and the runs it started, wsxd, the live web site, a chat's agent, the rest). The agents'
 //! boundary refuses `ps` and `top`; the host and wsxd read the process table with libproc, so a load
 //! wait and the `this-mac` panel name the cause. One reading serves both: at most one per `FRESH`.
 //! ref: docs/design/scheduler.md "Sample"
@@ -58,7 +58,7 @@ pub struct Proc {
 pub struct Owners {
     /// Each task's working copy (as given and as the system reports it) and its name.
     pub tasks: Vec<(Vec<PathBuf>, String)>,
-    /// The task store: a manager's or a chat's agent runs below it.
+    /// The task store: a chat's or a chat's agent runs below it.
     pub store: Vec<PathBuf>,
 }
 
@@ -337,7 +337,7 @@ mod tests {
     }
 
     /// A fake process table: a task's nextest and the Chrome a run started in a scratch folder, a
-    /// second task, wsxd and a pane under it, the live site, a manager's agent, and what is outside.
+    /// second task, wsxd and a pane under it, the live site, a chat's agent, and what is outside.
     #[test]
     fn the_cpu_goes_to_the_owner_of_each_process() {
         let owners = Owners {

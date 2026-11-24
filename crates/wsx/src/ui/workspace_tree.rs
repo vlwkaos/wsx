@@ -105,7 +105,7 @@ fn folded_item<'a>(
     ListItem::new(Line::from(spans)).style(style)
 }
 
-/// `lead_name`: `TaskConfig::manager_shown_name`; the manager's row shows it in place of
+/// `lead_name`: `TaskConfig::lead_shown_name`; the lead's row shows it in place of
 /// its provider `manager` (docs/tasks.md "Config").
 fn session_line(
     sess: &SessionInfo,
@@ -168,7 +168,7 @@ pub struct TreeView<'a> {
     pub workspace: &'a WorkspaceState,
     pub flat: &'a [FlatEntry],
     pub stale_projects: &'a HashSet<PathBuf>,
-    /// What the projects ask of the owner: a name takes the accent while its manager asks,
+    /// What the projects ask of the owner: a name takes the accent while its lead asks,
     /// and the marks follow the name.
     pub attention: &'a HashMap<PathBuf, ProjectAttention>,
     pub selected: usize,
@@ -184,7 +184,7 @@ pub struct CompactTreeView<'a> {
     pub workspace: &'a WorkspaceState,
     pub flat: &'a [FlatEntry],
     pub stale_projects: &'a HashSet<PathBuf>,
-    /// What the projects ask of the owner: a name takes the accent while its manager asks,
+    /// What the projects ask of the owner: a name takes the accent while its lead asks,
     /// and the marks follow the name.
     pub attention: &'a HashMap<PathBuf, ProjectAttention>,
     pub selected: usize,
@@ -210,7 +210,7 @@ fn visible_rows(len: usize, selected: usize, offset: usize, height: usize) -> (u
     }
 }
 
-/// A project's name is bold text; it takes the accent while its manager asks the owner, as the
+/// A project's name is bold text; it takes the accent while its lead asks the owner, as the
 /// web's Home row does (docs/tasks.md "TUI").
 fn project_style(asks: bool) -> Style {
     Style::default()
@@ -571,7 +571,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                     port_visibility,
                     animation_frame,
                     Some(project.config.as_ref().map_or(&project.name, |config| {
-                        config.tasks.manager_shown_name(&project.name)
+                        config.tasks.lead_shown_name(&project.name)
                     })),
                 ))
             }

@@ -5,7 +5,7 @@ use super::approve::{ask_covering, request_of};
 use crate::task::{acting_as_chat, project_entry};
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
-use wsx_core::task::manager::{ApprovalAction, ApprovalLine, RunSpec};
+use wsx_core::task::chat_host::{ApprovalAction, ApprovalLine, RunSpec};
 use wsx_core::task::owner::command_line;
 use wsx_core::task::store::{self, TaskDir};
 

@@ -864,7 +864,7 @@ pub fn create_session_launch(
 }
 
 /// The project's shell: one ordinary shell session in `main`, the project's main checkout,
-/// that the TUI's `S` in the manager chat and the page's header button open. A live one is
+/// that the TUI's `S` in the chat and the page's header button open. A live one is
 /// reused; an exited one is closed and a new one made. ref: docs/tasks.md "TUI"
 pub fn project_shell(client: &Client, config: &GlobalConfig, main: &Path) -> Result<SessionId> {
     // ^ Labels are not unique (the daemon takes any), so the session id is kept in

@@ -1,8 +1,8 @@
-//! What the owner does through a project's manager: start it, talk to it, and decide
+//! What the owner does through a project's lead: start it, talk to it, and decide
 //! its approval requests. Shared by `wsx task` and the web client.
-//! ref: docs/tasks.md "Manager", "Approvals"
+//! ref: docs/tasks.md "Chat host", "Approvals"
 
-use super::manager::{
+use super::chat_host::{
     pending_approvals, waiting_approvals, ApprovalAction, ApprovalLine, ChatRequest, ChatResponse,
 };
 use super::store::{self, ChatDir, TaskDir};
@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// Set to `manager` for the manager's agent; its commands then ask instead of acting.
+/// Set to `manager` for the lead's agent; its commands then ask instead of acting.
 pub const ACTOR_ENV: &str = "WSX_TASK_ACTOR";
 pub const HOST_TIMEOUT: Duration = Duration::from_secs(15);
 /// A landing rebases the branch onto the default branch before the host answers.
@@ -25,7 +25,7 @@ const MAX_OUTCOME_CHARS: usize = 1000;
 /// started. `launch` creates the hidden session (its label, `task-<chat>` or
 /// `task-repo-<repo-id>`) in the main checkout with the given argv; the CLI may start wsxd for
 /// it, the web client never does.
-pub fn ensure_manager(
+pub fn ensure_lead(
     name: &str,
     main: &Path,
     wsx: &Path,
@@ -45,7 +45,7 @@ pub fn ensure_manager(
     }
     // ^ A host hung in a turn under an older wsx is closed and started again here.
     if let Ok(answer) = status() {
-        if !super::replace::close_hung_manager(&dir, main, &answer)? {
+        if !super::replace::close_hung_chat(&dir, main, &answer)? {
             return Ok((false, dir));
         }
     }
@@ -53,8 +53,7 @@ pub fn ensure_manager(
     argv.extend(dir.host_args());
     let label = format!("task-{}", dir.name());
     super::close_left_session(&label, main);
-    launch(label.clone(), argv)
-        .context("the manager did not start; no session was left running")?;
+    launch(label.clone(), argv).context("the chat did not start; no session was left running")?;
     let deadline = Instant::now() + MANAGER_START_WAIT;
     while Instant::now() < deadline {
         if status().is_ok() {
@@ -75,7 +74,7 @@ pub fn repo_label(project_id: &str) -> String {
 
 /// Start the repo's service, `wsx task repo-host <repo-id>`, unless it answers. One that is
 /// running but answers nothing is closed and started again when `replace_hung` is set (the
-/// sweep after a deploy); `ensure_manager` leaves it to that sweep. True when it started one.
+/// sweep after a deploy); `ensure_lead` leaves it to that sweep. True when it started one.
 pub fn ensure_repo(
     name: &str,
     main: &Path,
@@ -129,8 +128,8 @@ pub fn ensure_repo_with(
     )
 }
 
-/// Give the manager, or the open chat `chat`, a message, starting it first when needed.
-/// `from` is another manager or chat; none is the owner. `short`: an events message's lines
+/// Give the lead, or the open chat `chat`, a message, starting it first when needed.
+/// `from` is another lead or chat; none is the owner. `short`: an events message's lines
 /// as the chat shows them.
 #[allow(clippy::too_many_arguments)]
 pub fn say(
@@ -140,8 +139,8 @@ pub fn say(
     chat: Option<&str>,
     launch: impl Fn(String, Vec<String>) -> Result<()>,
     text: String,
-    from: Option<super::manager::Author>,
-    short: Vec<super::manager::Short>,
+    from: Option<super::chat_host::Author>,
+    short: Vec<super::chat_host::Short>,
 ) -> Result<ChatResponse> {
     // ^ The owner's message with no prefix may be routed by a small model first; it only picks
     // a prefix, which the chat's host acts on (docs/tasks.md "Router").
@@ -149,7 +148,7 @@ pub fn say(
         None => routed(name, main, chat, text),
         Some(_) => text,
     };
-    let (_, dir) = ensure_manager(name, main, wsx, chat, launch)?;
+    let (_, dir) = ensure_lead(name, main, wsx, chat, launch)?;
     call_socket(
         &dir.socket_path(),
         &ChatRequest::Say { text, from, short },
@@ -186,7 +185,7 @@ pub fn close_chat(
     let main = super::chats::close(name)?;
     if let Some(from) = fork {
         // ^ Both logs note it: the fork's own, so a reopen of the name closes as any chat.
-        let undone = super::manager::ChatEvent::ForkUndone {
+        let undone = super::chat_host::ChatEvent::ForkUndone {
             to: name.to_string(),
         };
         dir.append(undone.clone())?;
@@ -198,7 +197,7 @@ pub fn close_chat(
     let (Some(main), Some(text)) = (main, text) else {
         return Ok(Closed::NoMain);
     };
-    let short = super::manager::Short::event(
+    let short = super::chat_host::Short::event(
         format!("Chat {name} closed; its open tasks are yours"),
         false,
     );
@@ -209,7 +208,7 @@ pub fn close_chat(
         Some(&main),
         launch,
         text,
-        Some(super::manager::Author::Events),
+        Some(super::chat_host::Author::Events),
         vec![short],
     )
     .map(|_| Closed::Handed)
@@ -370,7 +369,7 @@ pub fn fork(
     name: &str,
     agent: Option<&str>,
 ) -> Result<(String, Option<u64>)> {
-    use super::manager::{Author, ChatEvent};
+    use super::chat_host::{Author, ChatEvent};
     let name = super::chats::checked_name(name)?;
     let goal = fork_goal(&text);
     if goal.is_empty() {
@@ -411,7 +410,7 @@ pub fn fork(
                 launch,
                 text,
                 // ^ The owner's words, already routed: `Owner`, so no router moves them again.
-                Some(super::manager::Author::Owner),
+                Some(super::chat_host::Author::Owner),
                 Vec::new(),
             )
         });
@@ -469,7 +468,7 @@ pub fn move_message(
     text: String,
     target: &str,
 ) -> Result<()> {
-    use super::manager::{Author, ChatEvent};
+    use super::chat_host::{Author, ChatEvent};
     let moved = super::chats::open_chat(target).and_then(|dir| {
         let before = dir.read_log().map(|log| log.len()).unwrap_or(0);
         let text_sent = text.clone();
@@ -527,9 +526,9 @@ pub fn post(
     launch: impl Fn(String, Vec<String>) -> Result<()>,
     event: String,
     text: String,
-    level: Option<super::manager::Level>,
+    level: Option<super::chat_host::Level>,
 ) -> Result<ChatResponse> {
-    let (_, dir) = ensure_manager(name, main, wsx, None, launch)?;
+    let (_, dir) = ensure_lead(name, main, wsx, None, launch)?;
     call_socket(
         &dir.socket_path(),
         &ChatRequest::Post { event, text, level },
@@ -940,7 +939,7 @@ fn start_run(
     main: &Path,
     project_id: &str,
     id: &str,
-    run: Option<&super::manager::RunSpec>,
+    run: Option<&super::chat_host::RunSpec>,
     wsx: &Path,
     owner_said: Option<u64>,
 ) -> Result<Approved> {
@@ -1033,8 +1032,8 @@ pub fn deny(name: &str, main: &Path, id: &str, note: Option<String>) -> Result<(
     decide(&project_id, id, false, note, "denied", None)
 }
 
-/// Settle a pending request that no longer applies, with why; the manager host tells the
-/// manager and the owner in the chat.
+/// Settle a pending request that no longer applies, with why; the chat host tells the
+/// lead and the owner in the chat.
 pub fn drop_request(project_id: &str, id: &str, why: &str) -> Result<()> {
     decide(
         project_id,
@@ -1046,7 +1045,7 @@ pub fn drop_request(project_id: &str, id: &str, why: &str) -> Result<()> {
     )
 }
 
-/// Record a request the owner approved by asking for it in the chat: the manager names the
+/// Record a request the owner approved by asking for it in the chat: the lead names the
 /// owner's message `said` of its running turn, and the action runs without a button.
 /// The id of the recorded request is returned. ref: docs/tasks.md "Approvals"
 pub fn approve_by_message(project_id: &str, request: ApprovalLine, said: u64) -> Result<String> {
@@ -1068,7 +1067,7 @@ pub fn approve_by_message(project_id: &str, request: ApprovalLine, said: u64) ->
 }
 
 /// Record a request the owner approved in the chat that can run only once task `after` has
-/// landed: `said` is checked now, in the owner's turn, and kept on the request; the manager
+/// landed: `said` is checked now, in the owner's turn, and kept on the request; the lead
 /// host runs it when `after` lands (`approve_waiting`). Nothing is recorded when a check fails.
 /// ref: docs/tasks.md "Approvals"
 pub fn approve_after(project_id: &str, mut request: ApprovalLine, said: u64) -> Result<String> {
@@ -1101,11 +1100,11 @@ pub fn approve_after(project_id: &str, mut request: ApprovalLine, said: u64) -> 
         .to_string())
 }
 
-/// Refuse unless `said` is an owner message of the manager's running turn.
+/// Refuse unless `said` is an owner message of the lead's running turn.
 pub fn check_owner_said(project_id: &str, chat: Option<&str>, said: u64) -> Result<()> {
     let manager = ChatDir::existing_in(project_id, chat)?
         .context("the chat has no log, so no owner message")?;
-    super::manager::owner_said_in_turn(&manager.read_log()?, said)
+    super::chat_host::owner_said_in_turn(&manager.read_log()?, said)
         .map_err(|why| anyhow::anyhow!("--owner-said {said}: {why}; nothing was run"))
 }
 

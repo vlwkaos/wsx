@@ -2,9 +2,9 @@
 
 Use the local CLI on the machine that owns the WSX sessions. These commands do not provide a remote transport. An SSH caller runs them on the target host. Agent identity comes from generation-authorized adapter reports, never process names, ports, or terminal content.
 
-## A manager's sequence
+## A chat's sequence
 
-A manager on the main checkout starts workers in sibling worktrees, waits, reads results, continues and closes. Each command prints every ID that the next command needs, so no lookup command is necessary. The block can be written before any of it ran, as one tool call.
+A chat on the main checkout starts workers in sibling worktrees, waits, reads results, continues and closes. Each command prints every ID that the next command needs, so no lookup command is necessary. The block can be written before any of it ran, as one tool call.
 
 ```sh
 # Start: one call for each worker. The same --key can be repeated safely.

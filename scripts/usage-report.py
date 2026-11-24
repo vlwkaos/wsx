@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """Token, time and quality report for one project's manager-mode tasks.
 
-Reads only the task state folder (docs/tasks.md "Task logs", "Manager"):
+Reads only the task state folder (docs/tasks.md "Task logs", "Chat host"):
   <dir>/<n>/task.json, <dir>/<n>/log*.jsonl   worker results, checks, revisions
   <dir>/home.json, <dir>/../chats/<name>/log*.jsonl   the repo's chats (the main chat is the manager): messages and replies
 Usage fields are documented in docs/tasks.md ("Usage").
@@ -220,7 +220,7 @@ def task_row(task, events, turns):
 
 
 # ^ Event kinds that start no turn, for a message logged before its lines carried `short[].wakes`
-# (docs/tasks.md "Manager"; since the review job, no task event starts one): a turn they join is
+# (docs/tasks.md "Chat host"; since the review job, no task event starts one): a turn they join is
 # named by its other events.
 ALONG = ("landed", "closed", "stopped", "waiting:limit", "waiting:disk")
 # ^ `wsx task` verbs that only read.
@@ -257,7 +257,7 @@ def event_lines(message):
     return [(line, event_kind(line) not in ALONG) for line in lines]
 
 
-def manager_turns(events):
+def chat_turns(events):
     """Each reply or ping with usage: `kind` by who wrote its messages, `trigger` the event kind
     that woke an events turn, `acted` whether it ran a `wsx task` verb that changes something."""
     messages = {e["id"]: e for e in events if e.get("kind") == "message" and "id" in e}
@@ -358,7 +358,7 @@ def main():
         events = [e for e in events if since <= e.get("unix_ms", 0) < until]
         mevents += events
         # ^ Message ids are a project's own.
-        mturns += manager_turns(events)
+        mturns += chat_turns(events)
 
     table("Quotes (replies that say something, and those that open with a quote the manager wrote, per manager)",
           ["project", "manager", "replies", "quoting", "share"], quotes)

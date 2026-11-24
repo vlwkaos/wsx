@@ -1,4 +1,4 @@
-//! Task records for manager mode: one worker, its working copy and its log.
+//! Task records for lead mode: one worker, its working copy and its log.
 //! ref: docs/tasks.md
 //!
 //! `store` owns the files under `$XDG_STATE_HOME/wsx/tasks/`. While a task's
@@ -40,10 +40,10 @@ pub const AGENT_ENV: &[&str] = &[
     "CARGO_HOME",
     "RUSTUP_HOME",
 ];
+pub mod chat_host;
 pub mod failure;
 pub mod history;
 pub mod ledger;
-pub mod manager;
 pub mod media;
 pub mod needs;
 pub mod owner;
@@ -126,7 +126,7 @@ pub enum WaitOn {
     Owner,
     /// `tasks.minFreeGb` of free disk; the host resumes by itself.
     Disk,
-    /// A `--plan` task's first result is its plan: the manager reads it and answers with an
+    /// A `--plan` task's first result is its plan: the lead reads it and answers with an
     /// `add` (go, or what to change). ref: docs/tasks.md "Workflow"
     Plan,
     /// The owner works in the working copy; nothing runs until `handback`.
@@ -143,7 +143,7 @@ pub enum WaitOn {
     /// time. ref: docs/tasks.md "Claude adapter"
     Limit,
     /// The worker's turn ended with `status: paused`: something outside goes on and nothing is
-    /// asked. The owner (or the manager on the owner's word) continues it with an `add`.
+    /// asked. The owner (or the lead on the owner's word) continues it with an `add`.
     /// ref: docs/tasks.md "Status"
     Paused,
     /// A landing that started stopped (a dirty main checkout): the task stays `ready` and the
@@ -151,7 +151,7 @@ pub enum WaitOn {
     LandStopped,
     /// A ready task whose worker's result ends with a question for the owner (`asks_owner` of
     /// its summary): the owner's need, never the review job's. `reason` is the question; the
-    /// next move out of `ready` ends it. ref: docs/tasks.md "Manager"
+    /// next move out of `ready` ends it. ref: docs/tasks.md "Chat host"
     Asks,
 }
 
@@ -177,7 +177,7 @@ impl WaitOn {
 pub struct After {
     /// The task whose land ends the wait.
     pub task: u32,
-    /// What the task does then: the manager's add.
+    /// What the task does then: the lead's add.
     pub text: String,
     pub since_unix_ms: u64,
     /// Why it waits. ref: docs/tasks.md "After another task"
@@ -841,7 +841,7 @@ pub enum HostRequest {
         because: Option<AfterKind>,
         by: Actor,
     },
-    /// The manager host saw the wait end: with `text` the task landed and the text is added;
+    /// The chat host saw the wait end: with `text` the task landed and the text is added;
     /// without it the task was closed or is unknown.
     AfterEnd {
         task: u32,
@@ -1182,7 +1182,7 @@ pub struct WorkerResult {
     pub human_verify: Vec<HumanVerify>,
     pub left_open: Vec<String>,
     pub notes: String,
-    /// Durable project knowledge a later task needs; empty when there is none. The manager
+    /// Durable project knowledge a later task needs; empty when there is none. The lead
     /// folds it into its notes on rotation. ref: docs/tasks.md "Memo"
     pub memo: String,
 }

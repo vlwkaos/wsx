@@ -1,11 +1,11 @@
-//! The built-in index: what can be searched and how it scores. The chats, the manager's notes
+//! The built-in index: what can be searched and how it scores. The chats, the lead's notes
 //! and each task's title, story and results. One digest per project keeps the words of what was
 //! said, not the tool noise; it is built from the logs, caught up on read and rebuilt on request.
 //! `backend` ranks it (`rank`) alone for `wsx chat search` and with the memory records for
 //! `wsx memory search`. ref: docs/tasks.md "Search", docs/memory.md "Search"
 
 use super::manage::clip_to;
-use crate::task::manager::{says_nothing, split_quote, Author, ChatEntry, ChatEvent};
+use crate::task::chat_host::{says_nothing, split_quote, Author, ChatEntry, ChatEvent};
 use crate::task::store::{
     self, contains_bytes, ChatDir, TaskDir, FIRST_READ_BYTES, LOG_FILE, RECORD_FILE, RESULT_FILE,
 };
@@ -36,9 +36,9 @@ const BM25_B: f64 = 0.75;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// An owner's, another manager's or a chat's message.
+    /// An owner's, another lead's or a chat's message.
     Message,
-    /// A manager's reply that says something.
+    /// A chat's reply that says something.
     Reply,
     /// A task's title and prompt.
     Task,
@@ -47,10 +47,10 @@ pub enum Kind {
     /// A line of a task's story: an add or a steer, a turn's result, a revision, its checks, a
     /// stop, its landing or close (`history::line`); read from the task's log.
     History,
-    /// A line of the manager's `notes/decisions.md`; read from the file, never kept. Not while the
+    /// A line of the lead's `notes/decisions.md`; read from the file, never kept. Not while the
     /// file is a view of the records: they are searched themselves.
     Decision,
-    /// A line of the manager's `notes/context.md`; read from the file.
+    /// A line of the lead's `notes/context.md`; read from the file.
     Memo,
     /// The newest id a catch-up scanned, so the next one stops there; no text.
     Mark,
@@ -86,7 +86,7 @@ impl Kind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Doc {
     pub kind: Kind,
-    /// The chat it belongs to; none is the manager's.
+    /// The chat it belongs to; none is the lead's.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub chat: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,7 +100,7 @@ pub(super) struct Doc {
     pub text: String,
     /// A `History` line: the byte offset after it in the task's log, so a catch-up reads the log
     /// from the newest one it has.
-    #[serde(default, skip_serializing_if = "crate::task::manager::is_zero")]
+    #[serde(default, skip_serializing_if = "crate::task::chat_host::is_zero")]
     pub end: u64,
 }
 
@@ -360,7 +360,7 @@ fn supersede(docs: &mut Vec<Doc>) {
     });
 }
 
-/// The manager's and each chat's messages and replies newer than the digest holds. Ids grow,
+/// The lead's and each chat's messages and replies newer than the digest holds. Ids grow,
 /// so the read from the log's end stops at the newest one it has.
 fn catch_up_chats(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Result<()> {
     for dir in chats::all(project_id) {
@@ -411,7 +411,7 @@ fn catch_up_chats(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
     Ok(())
 }
 
-/// The record of a chat entry: what the owner, a manager or a chat said, and a reply that says
+/// The record of a chat entry: what the owner, a chat or a chat said, and a reply that says
 /// something. Wsx's events, recaps and quiet replies are not conversation.
 fn chat_doc(entry: &ChatEntry, chat: &str) -> Option<Doc> {
     let (kind, id, by, text, check) = match &entry.event {
@@ -596,8 +596,8 @@ fn result_text(value: &serde_json::Value) -> String {
     clip(&lines.join("\n"))
 }
 
-/// The manager's decisions and memo lines, read from the notes as they are now: the files stay,
-/// and a line the manager merged or fixed is not found in its old form.
+/// The lead's decisions and memo lines, read from the notes as they are now: the files stay,
+/// and a line the lead merged or fixed is not found in its old form.
 fn notes(project_id: &str, records_apart: bool) -> Vec<Doc> {
     let Ok(Some(dir)) = ChatDir::main(project_id) else {
         return Vec::new();

@@ -770,7 +770,7 @@ async fn events(
 
 /// Closes a session the site reaches, as `wsx session delete` does (docs/web-client.md
 /// "Screens"). A device that may start sessions may remove them. A task's
-/// worker and the manager belong to their host and close with it.
+/// worker and the lead belong to their host and close with it.
 async fn session_remove(
     State(app): State<Shared>,
     Paired(_): Paired,
@@ -1369,7 +1369,7 @@ async fn tasks_overview(
 #[serde(deny_unknown_fields)]
 struct AfterQuery {
     after: Option<u64>,
-    /// Another chat instead of the manager's (docs/tasks.md "Chats").
+    /// Another chat instead of the lead's (docs/tasks.md "Chats").
     chat: Option<String>,
     /// The chat from the oldest entry that shows these words, for a find
     /// (docs/web-client-chat.md "Find").
@@ -1498,7 +1498,7 @@ struct SayInput {
     /// Media hashes from `PUT /api/media`.
     #[serde(default)]
     attachments: Vec<String>,
-    /// To this open chat instead of the manager.
+    /// To this open chat instead of the lead.
     #[serde(default)]
     chat: Option<String>,
     /// The chat message the text answers (a Reply); wsx-core writes its quote.
@@ -1511,8 +1511,8 @@ struct SayInput {
 
 impl SayInput {
     /// What the text answers, at most one thing; a check is its `c<n>` id.
-    fn answers(&self) -> Outcome<Option<wsx_core::task::manager::Answers>> {
-        use wsx_core::task::manager::Answers;
+    fn answers(&self) -> Outcome<Option<wsx_core::task::chat_host::Answers>> {
+        use wsx_core::task::chat_host::Answers;
         match (self.quote_id, &self.check) {
             (None, None) => Ok(None),
             (Some(id), None) => Ok(Some(Answers::Message(id))),
@@ -1549,7 +1549,7 @@ async fn tasks_say(
         // ^ An empty message stays empty: `say` refuses it, quote or not.
         let text = match text.trim().is_empty() {
             true => text,
-            false => wsx_core::task::manager::answering(&text, answers.as_ref()),
+            false => wsx_core::task::chat_host::answering(&text, answers.as_ref()),
         };
         crate::tasks::say(
             &app,
@@ -1799,7 +1799,7 @@ async fn task_check(
     .map(Json)
 }
 
-/// The owner dismisses an open question (docs/tasks.md "Manager").
+/// The owner dismisses an open question (docs/tasks.md "Chat host").
 async fn task_dismiss(
     State(app): State<Shared>,
     Paired(device): Paired,
@@ -2311,7 +2311,7 @@ async fn push_set(
 ) -> Outcome<Json<Value>> {
     allow(&app, Capability::Push, "notifications")?;
     if input.choices.manager {
-        allow(&app, Capability::TaskView, "manager notifications")?;
+        allow(&app, Capability::TaskView, "Needs you notifications")?;
     }
     let push = app
         .push

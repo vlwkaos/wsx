@@ -35,7 +35,7 @@ pub fn root_variables(provider: &str) -> &'static [&'static str] {
         .map_or(&[], |location| location.variables)
 }
 
-/// How every wsx agent presents a reply: the manager's and the workers' instructions,
+/// How every wsx agent presents a reply: the lead's and the workers' instructions,
 /// and the Claude output style that `wsx agent install claude` writes (docs/agent-reporting.md
 /// "Output style").
 pub const PRESENTATION: &str = include_str!("../../integrations/common/presentation.md");

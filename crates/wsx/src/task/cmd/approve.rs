@@ -5,8 +5,8 @@ use crate::task::{acting_as_chat, actor, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use std::path::Path;
+use wsx_core::task::chat_host::{ApprovalAction, ApprovalLine};
 use wsx_core::task::ledger::default_ref;
-use wsx_core::task::manager::{ApprovalAction, ApprovalLine};
 use wsx_core::task::owner::{self, action_name, find_request};
 use wsx_core::task::{
     copy, now_unix_ms,
@@ -48,7 +48,7 @@ pub(crate) fn after_landing(mut request: ApprovalLine, after: Option<u32>) -> Ap
     request
 }
 
-/// The manager's action that needs the owner: approved by the owner's message `owner_said`
+/// The lead's action that needs the owner: approved by the owner's message `owner_said`
 /// of its running turn (recorded; `false`: run it), else a request (`true`: the owner was
 /// asked); a request with `after` and the message is recorded waiting, and nothing runs now
 /// (`true`). ref: docs/tasks.md "Approvals"
@@ -108,7 +108,7 @@ pub(crate) fn covered_requests(
         copy::resolve_commit(main, commit.as_deref().unwrap_or(&default)).ok()
     };
     let newest = resolve(commit);
-    Ok(wsx_core::task::manager::open_requests(&lines)
+    Ok(wsx_core::task::chat_host::open_requests(&lines)
         .into_iter()
         .filter_map(|old| {
             let ApprovalLine::Request {
@@ -212,7 +212,7 @@ pub(crate) fn submit(
 
 pub(crate) fn owner_only(command: &str) -> Result<()> {
     if acting_as_chat() {
-        bail!("wsx chat {command} is for the owner; the manager cannot decide its own requests");
+        bail!("wsx chat {command} is for the owner; a chat cannot decide its own requests");
     }
     Ok(())
 }

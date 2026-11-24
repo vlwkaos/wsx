@@ -13,7 +13,7 @@ sandbox; the incident was one worker's `pkill -f` ending three others). The file
 
 Needs Claude Code signed in, network, and no command sandbox around this script (Seatbelt
 cannot start inside another). It costs a few cheap model calls.
-Build adjacent wsx and wsxd first. ref: docs/tasks.md "Permissions", "Manager"
+Build adjacent wsx and wsxd first. ref: docs/tasks.md "Permissions", "Chat host"
 """
 import argparse
 import json

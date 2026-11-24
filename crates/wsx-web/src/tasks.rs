@@ -1,5 +1,5 @@
-//! A project's tasks and its manager on the web. ref: docs/web-client-tasks.md
-//! ^ Reads go through `wsx_core::task`; actions go to the task host's or the manager's
+//! A project's tasks and its lead on the web. ref: docs/web-client-tasks.md
+//! ^ Reads go through `wsx_core::task`; actions go to the task host's or the lead's
 //! socket. `scope` is the only code that maps a page's project id to a task store, so a
 //! project outside the grant answers 404 like every other route.
 use crate::locked;
@@ -21,11 +21,11 @@ use wsx_core::runtime::Snapshot;
 use wsx_core::task::{
     self, call_socket, call_task_host,
     chains::Chains,
-    checks, copy, ledger,
-    manager::{
+    chat_host::{
         activity, decided_request, pending_approvals, waiting_approvals, ApprovalLine, Author,
         ChatEntry, ChatEvent, ChatRequest, ChatResponse,
     },
+    checks, copy, ledger,
     needs::{self, ChatCounts, Stage, YouSource, APPROVAL_RANK},
     owner, stall, status,
     store::{self, ChatDir, TaskDir, REPORT_FILE},
@@ -40,7 +40,7 @@ const RESOLUTIONS_SHOWN: usize = 30;
 const RESOLUTION_TASKS: usize = 30;
 const RESOLUTION_WITHIN_MS: u64 = 7 * 24 * 3600 * 1000;
 const LAST_REPLY_CHARS: usize = 120;
-/// The home row's last reply and activity come from this much of the manager log's end.
+/// The home row's last reply and activity come from this much of the lead log's end.
 const MANAGER_TAIL_BYTES: u64 = 64 * 1024;
 /// `resolutions` reads this much of each recent task's log end; a log within it is read whole.
 const RESOLUTION_LOG_BYTES: u64 = 256 * 1024;
@@ -103,27 +103,26 @@ pub fn open_working_copy(scope: &Scope, task: u32) -> Option<crate::sandbox::Roo
 }
 
 /// What an overview was built from: the project's files and the settings it reads. The
-/// manager's `busy` is not in it: it is read on every call.
+/// lead's `busy` is not in it: it is read on every call.
 #[derive(PartialEq)]
 pub struct OverviewKey {
     stamp: store::Stamp,
     /// The open chats and the main chat: a chat that opens or closes moves tasks between views.
     chats: (Vec<String>, Option<String>),
-    /// `land.auto` and the manager's shown name.
+    /// `land.auto` and the lead's shown name.
     settings: Option<(bool, String)>,
 }
 
 /// A built overview and when, by project and the chat that looks ("" is the main chat).
 pub type Overviews = HashMap<(u64, String), (OverviewKey, Instant, Value)>;
 
-/// A chat's agent status; `None` when its manager or chat is not running.
-fn manager_status(dir: &ChatDir) -> Option<ChatResponse> {
+/// A chat's agent status; `None` when its lead or chat is not running.
+fn chat_status(dir: &ChatDir) -> Option<ChatResponse> {
     call_socket::<_, ChatResponse>(&dir.socket_path(), &ChatRequest::Status, STATUS_TIMEOUT).ok()
 }
 
-fn manager_busy(dir: Option<&ChatDir>) -> bool {
-    dir.and_then(manager_status)
-        .is_some_and(|status| status.busy)
+fn chat_busy(dir: Option<&ChatDir>) -> bool {
+    dir.and_then(chat_status).is_some_and(|status| status.busy)
 }
 
 /// The chat `chat` looks through: its folder, or the main chat's for `None`.
@@ -173,7 +172,7 @@ fn overview_in(
         settings: settings.as_ref().map(|settings| {
             (
                 settings.land_auto,
-                settings.manager_shown_name(&scope.name).to_string(),
+                settings.lead_shown_name(&scope.name).to_string(),
             )
         }),
     };
@@ -193,12 +192,12 @@ fn overview_in(
         locked(&app.overviews).insert(kept_as, (key, Instant::now(), body.clone()));
         body
     });
-    body["busy"] = json!(manager_busy(viewer_dir(scope, chat).as_ref()));
+    body["busy"] = json!(chat_busy(viewer_dir(scope, chat).as_ref()));
     // ^ Each row's `busy` is read on each call too, as the overview's.
     for row in body["chats"].as_array_mut().into_iter().flatten() {
         let name = row["name"].as_str().unwrap_or_default().to_string();
         let dir = viewer_dir(scope, (row["main"] != true).then_some(name.as_str()));
-        row["busy"] = json!(manager_busy(dir.as_ref()));
+        row["busy"] = json!(chat_busy(dir.as_ref()));
     }
     // ^ The routine pill's counts (docs/web-client-tasks.md "Home"): the scheduler's, not a store
     // file's, so they are read on each call and not kept with the body.
@@ -303,12 +302,12 @@ fn build_overview(
     needs.sort_by_key(|(rank, order, _)| (*rank, *order));
     listed.sort_by_key(|(order, recent, _)| (*order, *recent));
     listed.truncate(TASKS_LISTED);
-    // ^ The latest manager entry and reply, for the home row (docs/web-client-tasks.md "Home").
-    let manager_dir = viewer_dir(
+    // ^ The latest lead entry and reply, for the home row (docs/web-client-tasks.md "Home").
+    let chat_dir = viewer_dir(
         scope,
         Some(viewer.name()).filter(|name| Some(*name) != viewer.main()),
     );
-    let tail = manager_dir
+    let tail = chat_dir
         .as_ref()
         .and_then(|dir| dir.read_tail(MANAGER_TAIL_BYTES).ok())
         .unwrap_or_default();
@@ -346,7 +345,7 @@ fn build_overview(
         .map(news_value);
     // ^ The owner-facing activity the home row orders by: the newest message, the owner's own
     // message, a task entering its state and, in the page, an agent session's state change.
-    // Record saves and the manager's `agent`, event and quiet entries do not count.
+    // Record saves and the lead's `agent`, event and quiet entries do not count.
     let last_unix_ms = tasks
         .iter()
         .filter_map(|(_, record)| record.as_ref().ok())
@@ -370,7 +369,7 @@ fn build_overview(
     };
     json!({
         "project": scope.project,
-        "manager": settings.map_or(scope.name.as_str(), |settings| settings.manager_shown_name(&scope.name)),
+        "manager": settings.map_or(scope.name.as_str(), |settings| settings.lead_shown_name(&scope.name)),
         // ^ Most urgent first, then oldest: a need's `rank` is its kind's (`NeedKind::rank`).
         "needs": needs.into_iter().map(|(rank, _, mut row)| {
             row["rank"] = json!(rank);
@@ -398,7 +397,7 @@ fn build_overview(
         "last_reply": last_reply.map(|(_, text)| text),
         "news": news,
         // ^ The project's main chat (null when the owner set none), whose route is the project's
-        // manager: the rows of Home mark it (docs/web-client-tasks.md "Home").
+        // lead: the rows of Home mark it (docs/web-client-tasks.md "Home").
         "main_chat": store::main_chat(&scope.store),
         // ^ The agent the New chat sheet's Default runs on.
         "default_agent": settings.map(view::default_agent),
@@ -407,7 +406,7 @@ fn build_overview(
     })
 }
 
-/// What the owner or the manager settled, newest first, one line each ("#4 may reach
+/// What the owner or the lead settled, newest first, one line each ("#4 may reach
 /// crates.io (owner)", "Approved land #3"): the chat shows a resolved card as this line.
 fn resolutions(
     check_items: &[checks::CheckItem],
@@ -529,7 +528,7 @@ fn decisions(lines: &[ApprovalLine]) -> Value {
     json!(rows)
 }
 
-/// The project brief: the ledger the manager reads (open and recent tasks, deploys and
+/// The project brief: the ledger the lead reads (open and recent tasks, deploys and
 /// how far behind, the main checkout). The page writes it in words.
 pub fn brief(scope: &Scope) -> Outcome<Value> {
     ledger::build(&scope.name, &scope.path).map_err(internal)
@@ -742,7 +741,7 @@ fn progress(
     })
 }
 
-/// The messages the owner or the manager added or steered after the prompt, in order.
+/// The messages the owner or the lead added or steered after the prompt, in order.
 fn talk(log: &[task::LogEntry]) -> Value {
     let rows: Vec<Value> = log
         .iter()
@@ -757,7 +756,7 @@ fn talk(log: &[task::LogEntry]) -> Value {
     json!(rows)
 }
 
-/// The manager conversation, or the chat `chat`'s, after message `after`, and whether it
+/// The lead conversation, or the chat `chat`'s, after message `after`, and whether it
 /// runs or thinks.
 /// `find`: from the oldest entry that shows these words, for a find over the whole history
 /// (docs/web-client-chat.md "Find"). `around`: the part around message `around`, at any age
@@ -771,7 +770,7 @@ pub fn chat(
 ) -> Outcome<Value> {
     // ^ The name the owner reads (docs/tasks.md "Config"); the first chat stays `manager` inside.
     let settings = load_task_config(&scope.path).unwrap_or_default();
-    let shown = settings.manager_shown_name(&scope.name);
+    let shown = settings.lead_shown_name(&scope.name);
     let mut manager = json!({ "name": chat.unwrap_or(shown) });
     let dir = match chat {
         None => ChatDir::main(&scope.store).map_err(internal)?,
@@ -795,8 +794,8 @@ pub fn chat(
     manager["goal"] = task::chats::goal(&dir).into();
     // ^ The lead's replies carry a "lead" tag (docs/web-client-tasks.md "Project screen").
     manager["lead"] = task::chats::is_lead(&dir).into();
-    // ^ The agent in use now, a fallback's while one runs; a chat's own, else the manager's.
-    manager["agent"] = view::manager_agent(&dir, &settings);
+    // ^ The agent in use now, a fallback's while one runs; a chat's own, else the lead's.
+    manager["agent"] = view::chat_agent(&dir, &settings);
     let window = task::chat::Window::new(find, after, around);
     // ^ An owner message's files show as attachments, not as their paths.
     let mut attachments: HashMap<u64, Value> = HashMap::new();
@@ -848,7 +847,7 @@ pub fn chat(
             value
         })
         .collect();
-    let status = manager_status(&dir);
+    let status = chat_status(&dir);
     let busy = status.as_ref().is_some_and(|status| status.busy);
     Ok(json!({
         "manager": manager,
@@ -881,7 +880,10 @@ fn newest_news(tail: &[ChatEntry]) -> Option<(u64, String)> {
             text, quiet: false, ..
         } => Some((
             entry.unix_ms,
-            view::clip(task::manager::split_quote(text).1.trim(), LAST_REPLY_CHARS),
+            view::clip(
+                task::chat_host::split_quote(text).1.trim(),
+                LAST_REPLY_CHARS,
+            ),
         )),
         _ => None,
     })
@@ -917,7 +919,7 @@ fn chat_contacts(
             row["asks"] = json!(own["asks"].as_array().map_or(0, Vec::len));
             row["first"] = own["needs"].get(0).cloned().unwrap_or(Value::Null);
             row["busy"] = json!(false);
-            // ^ The name that types while `busy`: the project's manager name, else the chat's own.
+            // ^ The name that types while `busy`: the project's lead name, else the chat's own.
             row["manager"] = match row["main"] == true {
                 true => main_body["manager"].clone(),
                 false => row["shown"].clone(),
@@ -928,7 +930,7 @@ fn chat_contacts(
                 .rev()
                 .find_map(|entry| match entry.event {
                     ChatEvent::Reply { text, .. } => Some(view::clip(
-                        task::manager::split_quote(&text)
+                        task::chat_host::split_quote(&text)
                             .1
                             .lines()
                             .next()
@@ -1015,11 +1017,11 @@ pub fn chat_agents() -> Value {
         .collect::<Vec<_>>())
 }
 
-/// A project's manager name as the owner reads it (`TaskConfig::manager_shown_name`).
+/// A project's lead name as the owner reads it (`TaskConfig::lead_shown_name`).
 fn lead_name(scope: &Scope) -> String {
     load_task_config(&scope.path)
         .unwrap_or_default()
-        .manager_shown_name(&scope.name)
+        .lead_shown_name(&scope.name)
         .to_string()
 }
 
@@ -1073,7 +1075,7 @@ pub fn routine_act(scope: &Scope, name: &str, action: &str) -> Outcome<Value> {
 
 /// What happened since `after` (ms): the tasks that started, blocked, conflicted or got a new
 /// revision, those that entered a reported state (`view::REPORTED_STATES`: ready, failed,
-/// landed), and the manager's replies.
+/// landed), and the lead's replies.
 pub fn since(scope: &Scope, after: u64) -> Value {
     let mut found: HashMap<&'static str, Vec<u32>> = HashMap::new();
     for (dir, record) in view::project_tasks(&scope.store).unwrap_or_default() {
@@ -1120,7 +1122,7 @@ pub fn since(scope: &Scope, after: u64) -> Value {
     json!({ "after": after, "tasks": found, "replies": replies })
 }
 
-/// What the manager composer lists: the owner's skills (`/`) and the open chats of every granted
+/// What the lead composer lists: the owner's skills (`/`) and the open chats of every granted
 /// project (`@`) but the one the owner writes in (`chat`, else this project's main chat), each as
 /// `{id, name, project}`: `id` is what `wsx chat say --to` takes, `name` the shown name. The
 /// rows are the Home list's (`chat_contacts`). ref: docs/web-client-tasks.md "Project screen"
@@ -1178,7 +1180,7 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
             }
         }
         // ^ `run_task` runs the hand session; a child's host alone sends
-        // `ChildLanded`; add and steer are the manager's, through `wsx task`.
+        // `ChildLanded`; add and steer are the lead's, through `wsx task`.
         _ => return Err(Fault::new(400, "unsupported", "not a web action")),
     }
     let dir = open_task(scope, task)?;
@@ -1311,7 +1313,7 @@ pub fn check(scope: &Scope, id: &str, decision: &str, note: Option<String>) -> O
         ("fail", id) => {
             argv.extend(["fail".into(), id.into()]);
             // ^ A note starts the task that fixes it; none closes the item as failed, and the
-            // owner's reply to the item is the manager's cue.
+            // owner's reply to the item is the lead's cue.
             if let Some(note) = note.as_deref().filter(|note| !note.trim().is_empty()) {
                 let note = message(note, "the note")
                     .map_err(|_| Fault::new(400, "note_invalid", "the note is too large"))?;
@@ -1324,7 +1326,7 @@ pub fn check(scope: &Scope, id: &str, decision: &str, note: Option<String>) -> O
 }
 
 /// The owner dismisses an open question: `wsx chat dismiss <id>` without `WSX_TASK_ACTOR`
-/// (docs/tasks.md "Manager"); a reply that is not an open question is a 409.
+/// (docs/tasks.md "Chat host"); a reply that is not an open question is a 409.
 pub fn dismiss(scope: &Scope, id: u64) -> Outcome<Value> {
     run_wsx(scope, vec!["chat".into(), "dismiss".into(), id.to_string()])
 }
@@ -1342,7 +1344,7 @@ fn run_wsx(scope: &Scope, argv: Vec<String>) -> Outcome<Value> {
         .map_err(|said| Fault::new(409, "refused", view::clip(&said, SUMMARY_CHARS)))
 }
 
-/// Start a session in the main checkout for a manager or chat host.
+/// Start a session in the main checkout for a chat or chat host.
 /// ^ The session is created with this server's client, which never starts wsxd.
 fn launcher<'a>(
     app: &'a App,
@@ -1374,7 +1376,7 @@ fn launcher<'a>(
     }
 }
 
-/// Give the manager, or the open chat `chat`, an owner message, starting it when it does not
+/// Give the lead, or the open chat `chat`, an owner message, starting it when it does not
 /// run.
 pub fn say(app: &App, scope: &Scope, chat: Option<&str>, text: &str) -> Outcome<Value> {
     let text = message(text, "the message")?;
@@ -1451,9 +1453,9 @@ pub struct Watch {
     signed_out: HashMap<(u64, u32), u64>,
     /// Approval requests already seen, by project.
     requests: HashMap<u64, HashSet<String>>,
-    /// The last reply id seen, by project and chat (`manager` for the manager).
+    /// The last reply id seen, by project and chat (`manager` for the lead).
     replies: HashMap<(u64, String), u64>,
-    /// New items for "Manager needs me" that wait for the merge window.
+    /// New items for "Needs you" that wait for the merge window.
     pending: crate::events::Pending<(u64, Key)>,
     /// New posts with a level, by project; each is a push of its own.
     alerts: crate::events::Pending<(u64, Alert)>,
@@ -1470,13 +1472,13 @@ impl Watch {
     }
 }
 
-/// One item of "Manager needs me".
+/// One item of "Needs you".
 #[derive(Clone, PartialEq, Eq)]
 enum Key {
     Task(u32),
     Approval(String),
     Checks,
-    /// A reply the manager or a chat started on its own: its line `<name> wrote to you`, or the
+    /// A reply the lead or a chat started on its own: its line `<name> wrote to you`, or the
     /// lines of one wsx wrote, and the chat it opens.
     Wrote(String, String),
 }
@@ -1500,7 +1502,7 @@ struct Open {
     count: usize,
 }
 
-/// The items of "Manager needs me" in an overview, in its order (docs/web-client.md
+/// The items of "Needs you" in an overview, in its order (docs/web-client.md
 /// "Notifications"): `#4 Fix the login: Waiting for your answer`, `Approve land #5`, `2 to check`.
 fn attention(project: u64, overview: &Value) -> Vec<Open> {
     let mut open = Vec::new();
@@ -1545,7 +1547,7 @@ fn attention(project: u64, overview: &Value) -> Vec<Open> {
     open
 }
 
-/// Note new tasks that wait on the owner and new approval requests for "Manager needs me".
+/// Note new tasks that wait on the owner and new approval requests for "Needs you".
 fn notice(scope: &Scope, watch: &mut Watch) {
     let land_auto = load_task_config(&scope.path).is_ok_and(|settings| settings.land_auto);
     let first = !watch.seen.contains_key(&scope.project);
@@ -1581,9 +1583,9 @@ fn notice(scope: &Scope, watch: &mut Watch) {
     }
 }
 
-/// Note a reply the manager or a chat started on its own for "Manager needs me": one that is
+/// Note a reply the lead or a chat started on its own for "Needs you": one that is
 /// a message (not quiet) to a turn of only wsx's events or a recap request, as after a
-/// routine's result. A reply to the owner or another manager is no news (docs/web-client.md
+/// routine's result. A reply to the owner or another lead is no news (docs/web-client.md
 /// "Notifications"). Another chat's names it and opens it. A `post` came from wsx, not
 /// the agent, so the push shows its text.
 fn wrote(scope: &Scope, watch: &mut Watch) {
@@ -1657,7 +1659,7 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
 }
 
 /// Once the merge window of new items passed: one push of its own for each post with a level
-/// (`wsx task post --level warn|bad`), and one "Manager needs me" push that names every
+/// (`wsx task post --level warn|bad`), and one "Needs you" push that names every
 /// open item, replacing the one before (its tag). A device whose page shows the project of
 /// every new item is skipped. `badge` is what needs the owner now, for the app badge.
 pub fn flush(app: &Arc<App>, watch: &mut Watch, badge: usize) {
@@ -1682,13 +1684,13 @@ fn flush_alerts(app: &Arc<App>, alerts: Vec<(u64, Alert)>, badge: usize) {
             "tag": format!("wsx-{}-alert-{project}-{}", app.site.id, alert.reply),
             "badge": badge,
         });
-        crate::events::deliver(app, crate::push::Switch::Manager, |device| {
+        crate::events::deliver(app, crate::push::Switch::Needs, |device| {
             (!showing.contains(&device.device_id)).then(|| payload.clone())
         });
     }
 }
 
-/// The "Manager needs me" push for `new`, once per merge window.
+/// The "Needs you" push for `new`, once per merge window.
 fn flush_needs(app: &Arc<App>, watch: &Watch, new: Vec<(u64, Key)>, badge: usize) {
     // ^ An item answered within the window is no news.
     let new: Vec<(u64, Key)> = new
@@ -1709,7 +1711,7 @@ fn flush_needs(app: &Arc<App>, watch: &Watch, new: Vec<(u64, Key)>, badge: usize
         let showing = app.showing(*project);
         skip.retain(|device| showing.contains(device));
     }
-    // ^ A reply the manager wrote is an item of this push only: it waits on nothing.
+    // ^ A reply the lead wrote is an item of this push only: it waits on nothing.
     let wrote: Vec<(u64, Open)> = new
         .iter()
         .filter_map(|(project, key)| match key {
@@ -1776,7 +1778,7 @@ fn flush_needs(app: &Arc<App>, watch: &Watch, new: Vec<(u64, Key)>, badge: usize
         "tag": format!("wsx-{}-manager", app.site.id),
         "badge": badge,
     });
-    crate::events::deliver(app, crate::push::Switch::Manager, |device| {
+    crate::events::deliver(app, crate::push::Switch::Needs, |device| {
         (!skip.contains(&device.device_id)).then(|| payload.clone())
     });
 }
@@ -1845,7 +1847,7 @@ fn publish_changes(app: &Arc<App>, scope: &Scope, changed: Vec<&PathBuf>) {
         {
             crate::events::publish_json(app, "page", json!({ "project": scope.project }));
         } else if let Some(chat) = store::chat_of(path) {
-            // ^ Another chat's page reads its folder, the manager's its contacts.
+            // ^ Another chat's page reads its folder, the lead's its contacts.
             let event = match store::main_chat(&scope.store).as_deref() == Some(chat) {
                 false => json!({ "project": scope.project, "chat": chat }),
                 true => json!({ "project": scope.project }),
@@ -1893,7 +1895,7 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
         }
         // ^ A working agent appends a progress line about every second. Only a ready task's
         // log can change the overview (a landing that stopped), and the overview reads those
-        // logs whole. The manager's log is `log.jsonl` too, outside a task's folder: its turn
+        // logs whole. The lead's log is `log.jsonl` too, outside a task's folder: its turn
         // changes `busy` and `last_reply`, so it is never progress only.
         let ready = |id: u32| {
             watch

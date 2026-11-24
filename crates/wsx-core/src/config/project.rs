@@ -230,7 +230,7 @@ struct TaskLeadFile {
     rotate_tokens: Option<u64>,
 }
 
-/// `[tasks.prune]`: days a session or a worktree stands idle before the manager host acts;
+/// `[tasks.prune]`: days a session or a worktree stands idle before the chat host acts;
 /// 0 is off. ref: docs/tasks.md "Stale worktrees"
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]

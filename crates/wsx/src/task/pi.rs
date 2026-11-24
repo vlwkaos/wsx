@@ -140,7 +140,7 @@ impl PiAgent {
         events: Sender<E>,
         wrap: impl Fn(Option<AgentLine>) -> E + Send + Sync + 'static,
     ) -> Result<Self> {
-        // ^ A worker's check or a manager's quiet hour outlasts Pi's default 5-minute cache, and
+        // ^ A worker's check or a chat's quiet hour outlasts Pi's default 5-minute cache, and
         // then the whole context is written again.
         let source = owner_dir();
         let home = LaunchHome::create(&source, &launch.model)?;
@@ -223,7 +223,7 @@ impl PiAgent {
 
 /// Read Pi's stderr to its end. The lean runner writes one JSON line per refused tool call
 /// (`{"projp":"deny","tool","path","reason"}`) and one when its policy fails to load
-/// (`{"projp":"policy","reason"}`); each becomes a progress line of the task or manager,
+/// (`{"projp":"policy","reason"}`); each becomes a progress line of the task or lead,
 /// never the agent's words. Any other line goes to the host's stderr, as before.
 /// ref: projp `runner/README.md`
 fn read_stderr(stderr: impl Read, mut send: impl FnMut(AgentLine) -> bool) -> std::io::Result<()> {

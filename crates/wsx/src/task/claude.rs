@@ -47,7 +47,7 @@ pub(super) fn config_root(project: &Path) -> Result<Option<PathBuf>> {
 /// `$CLAUDE_CONFIG_DIR/skills` or `~/.claude/skills`. None when the owner has none.
 /// `only` (`tasks.skillsOnly`) non-empty: `skills/` is a folder of links to just those skills;
 /// one the owner lacks is skipped with a warning.
-/// ref: docs/tasks.md "Manager", "Workflow"
+/// ref: docs/tasks.md "Chat host", "Workflow"
 pub(super) fn skills_plugin(
     folder: &Path,
     root: Option<&Path>,
@@ -124,8 +124,8 @@ pub(super) fn skills_plugin(
     Ok(Some(plugin))
 }
 
-/// The names of the skills in the plugin's `skills` folder, sorted: the manager's instructions
-/// list them, as the manager reads `<plugin>/skills/<name>/SKILL.md` by hand.
+/// The names of the skills in the plugin's `skills` folder, sorted: the lead's instructions
+/// list them, as the lead reads `<plugin>/skills/<name>/SKILL.md` by hand.
 pub(super) fn skill_names(plugin: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(plugin.join("skills"))
         .into_iter()
@@ -198,7 +198,7 @@ impl Launch {
 }
 
 impl Launch {
-    /// A review job of a ready task: the project's manager agent (`tasks.chats.adapter`,
+    /// A review job of a ready task: the project's lead agent (`tasks.chats.adapter`,
     /// `model`, `effort`), a fresh conversation, read-only on the working copy, ending with
     /// `review_schema` (or that JSON as its last text, for Pi). `folder`: its own folder.
     /// ref: docs/tasks.md "Review"
@@ -466,7 +466,7 @@ impl ClaudeAgent {
 /// Tool schemas no wsx agent calls. Each one rides in every model call of every conversation:
 /// a disallowed tool leaves the request's tool list, and these with Agent were 7.4k of a fresh
 /// request's 32k tokens (a `claude -p` call with and without `--disallowedTools`, 2026-11-15).
-/// Agent stays: the worker and the manager instructions send searches to subagents.
+/// Agent stays: the worker and the lead instructions send searches to subagents.
 const NEVER_TOOLS: &str = "Workflow,ScheduleWakeup,ReportFindings";
 /// The longest Bash output Claude keeps in the conversation (characters; Claude Code's own default
 /// is 30,000): a file read or a log through Bash is a third of a conversation's growth, and every
@@ -483,11 +483,11 @@ fn claude_args(launch: &Launch, session: &str, resume: bool) -> Vec<std::ffi::Os
     // ^ No agent loads Claude's auto memory: its index of past tasks was 27% of a worker's first
     // call, and 7 of 20 workers read one of its files (measured 2026-11; docs/tasks.md "Agents").
     settings["autoMemoryEnabled"] = json!(false);
-    let manager = launch.boundary.policy().role == Role::Manager;
+    let manager = launch.boundary.policy().role == Role::Chat;
     if manager {
         // ^ The owner's CLAUDE.md files (user, project and the folders above it) are 7K to 14K
         // tokens at the start of every fresh conversation; the instructions carry the rules a
-        // manager needs. A 12-turn blind replay judged its decisions no worse.
+        // lead needs. A 12-turn blind replay judged its decisions no worse.
         settings["claudeMdExcludes"] =
             json!(["**/CLAUDE.md", "**/CLAUDE.local.md", "**/AGENTS.md"]);
     }
@@ -519,7 +519,7 @@ fn claude_args(launch: &Launch, session: &str, resume: bool) -> Vec<std::ffi::Os
     if let Some(schema) = &launch.schema {
         args.extend(["--json-schema".into(), schema.to_string().into()]);
     }
-    // ^ A manager reads a skill's SKILL.md by hand: the flag drops the Skill tool and the
+    // ^ A chat reads a skill's SKILL.md by hand: the flag drops the Skill tool and the
     // 30 KB skill listing from every fresh conversation, and with them a plugin's skills.
     if manager {
         args.push("--disable-slash-commands".into());

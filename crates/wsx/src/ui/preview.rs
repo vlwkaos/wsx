@@ -655,7 +655,7 @@ pub fn render_routine_preview(
         if matches!(message, Some(Some(_))) {
             lines.push(Line::from(vec![
                 Span::styled("Message: ", label),
-                Span::raw("Enter opens it in the manager chat"),
+                Span::raw("Enter opens it in the lead chat"),
             ]));
         }
         lines.extend([

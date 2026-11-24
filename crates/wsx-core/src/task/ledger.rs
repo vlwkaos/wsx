@@ -1,8 +1,8 @@
-//! The ledger: the bounded project state the manager reads before it acts, and the web
+//! The ledger: the bounded project state the lead reads before it acts, and the web
 //! client's project brief. ref: docs/tasks.md "Ledger"
 
 use super::chains::Chains;
-use super::manager::ApprovalLine;
+use super::chat_host::ApprovalLine;
 use super::store::TaskDir;
 use super::view::{
     check_outcomes, clip, overlaps, project_tasks, read_result, task_agent, task_summary,
@@ -73,8 +73,8 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         .filter_map(|(_, record)| record.as_ref().ok())
         .collect();
     let approvals = super::store::read_approvals(&project_id).unwrap_or_default();
-    let pending = super::manager::pending_approvals(&approvals);
-    let waiting = super::manager::waiting_approvals(&approvals);
+    let pending = super::chat_host::pending_approvals(&approvals);
+    let waiting = super::chat_host::waiting_approvals(&approvals);
     let now = super::now_unix_ms();
     let chains = Chains::of(&tasks, settings.land_auto);
     let mut git = Git::default();
@@ -157,7 +157,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         "to_check": checks::open_items(&project_id).map_or(0, |items| items.len()),
         // ^ Everything that waits for the owner in the project's chats (the TUI's For you list).
         "for_you": super::needs::for_you(&project_id, settings.land_auto),
-        // ^ Spend today and in 7 days, workers and manager apart (docs/tasks.md "Usage").
+        // ^ Spend today and in 7 days, workers and lead apart (docs/tasks.md "Usage").
         "usage": usage::project(&project_id, now),
         "main": main_checkout,
         "stray_worktrees": strays,

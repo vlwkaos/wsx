@@ -28,7 +28,7 @@ use app::App;
 use clap::Parser;
 
 fn main() -> Result<()> {
-    // ^ The manager agent's commands go to its host before anything else runs (broker.rs).
+    // ^ The lead agent's commands go to its host before anything else runs (broker.rs).
     task::broker::forward_if_brokered();
     // ^ A `wsx task` command that moved to `wsx chat` or `wsx project` is refused with its new form.
     if let Some(refusal) = task::moved(&std::env::args().skip(1).collect::<Vec<_>>()) {

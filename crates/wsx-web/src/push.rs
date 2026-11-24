@@ -38,7 +38,7 @@ enum OldTopic {
 /// The two switches (docs/web-client.md "Notifications").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Switch {
-    Manager,
+    Needs,
     Agents,
 }
 
@@ -94,13 +94,13 @@ pub struct Subscription {
 impl Subscription {
     pub fn wants(&self, switch: Switch) -> bool {
         match switch {
-            Switch::Manager => self.choices.manager,
+            Switch::Needs => self.choices.manager,
             Switch::Agents => self.choices.agents,
         }
     }
 
     /// Earlier topics as switches: blocked and error are "An agent needs me", tasks is
-    /// "Manager needs me", and done maps to nothing.
+    /// "Needs you", and done maps to nothing.
     fn migrate(&mut self) {
         let topics = std::mem::take(&mut self.topics);
         let choices = &mut self.choices;

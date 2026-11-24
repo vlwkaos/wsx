@@ -1,7 +1,7 @@
-//! Token use and cost summed from the task and manager logs' `usage`, for `task show`, the
+//! Token use and cost summed from the task and lead logs' `usage`, for `task show`, the
 //! ledger, the TUI and the web client. ref: docs/tasks.md "Usage"
 
-use super::manager::{ChatEntry, ChatEvent};
+use super::chat_host::{ChatEntry, ChatEvent};
 use super::store::{self, ChatDir, TaskDir};
 use super::view::project_tasks;
 use super::{LogEvent, TurnUsage};
@@ -64,7 +64,7 @@ impl Usage {
 }
 
 /// What a project's spend is split into per day: the usual workflow steps, any other worker
-/// turn, and the manager. The web client gives each one fixed color. ref: docs/tasks.md "Usage"
+/// turn, and the lead. The web client gives each one fixed color. ref: docs/tasks.md "Usage"
 const PARTS: [&str; 7] = [
     "build", "plan", "context", "review", "memo", "other", "manager",
 ];
@@ -82,7 +82,7 @@ pub struct Turn {
     pub usage: Usage,
 }
 
-/// Who ran a turn: a task's worker or the project's manager.
+/// Who ran a turn: a task's worker or the project's lead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Who {
@@ -283,15 +283,15 @@ pub fn task(dir: &TaskDir) -> Usage {
     Usage::since(&task_turns(dir), 0)
 }
 
-/// The manager's turns: its replies and pings in both log files. A line from before `adapter`
-/// is `unknown`: no record tells which agent the manager ran then.
-pub fn manager_turns(dir: &ChatDir) -> Turns {
+/// The lead's turns: its replies and pings in both log files. A line from before `adapter`
+/// is `unknown`: no record tells which agent the lead ran then.
+pub fn chat_turns(dir: &ChatDir) -> Turns {
     cached(&dir.log_files(), || {
-        manager_log_turns(&dir.read_log().unwrap_or_default())
+        chat_log_turns(&dir.read_log().unwrap_or_default())
     })
 }
 
-pub fn manager_log_turns(log: &[ChatEntry]) -> Vec<Turn> {
+pub fn chat_log_turns(log: &[ChatEntry]) -> Vec<Turn> {
     let lines = log.iter().filter_map(|entry| match &entry.event {
         ChatEvent::Reply { usage, .. } => {
             Some((entry.unix_ms, PART_MANAGER, usage.as_ref(), false))
@@ -339,7 +339,7 @@ fn start(filter: &Filter, now_ms: u64, limits: &Value) -> u64 {
     since.max(now_ms.saturating_sub(SINCE_MAX_MS))
 }
 
-/// Workers and manager apart, over one window.
+/// Workers and lead apart, over one window.
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 struct Window {
     workers: Usage,
@@ -464,14 +464,14 @@ fn spend(project_id: &str, now_ms: u64, filter: &Filter, since: u64) -> Spend {
     let manager = ChatDir::main(project_id)
         .ok()
         .flatten()
-        .map(|dir| manager_turns(&dir))
+        .map(|dir| chat_turns(&dir))
         .unwrap_or_default();
     (sum.today.manager, sum.week.manager) = add(&mut sum, &manager);
     sum
 }
 
 /// The project's spend today (since local midnight) and in the last 7 days from a local
-/// midnight, workers and manager apart, and per day (newest first) by `PARTS`.
+/// midnight, workers and lead apart, and per day (newest first) by `PARTS`.
 pub fn project(project_id: &str, now_ms: u64) -> Value {
     spend(project_id, now_ms, &Filter::default(), week_start(now_ms)).json()
 }

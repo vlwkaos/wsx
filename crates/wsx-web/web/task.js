@@ -17,7 +17,7 @@ import { usageLine } from "./usage.js";
 const TRIAL_WORDS = {
   preparing: "Going live: rebasing onto the default branch and checking",
   deploying: "Going live: deploying",
-  live: "On the live site now: try it, then Pass, or tell the manager what is wrong",
+  live: "On the live site now: try it, then Pass, or tell the chat what is wrong",
 };
 
 const MESSAGE_WORDS = { prompt: "Asked", steer: "Steered", add: "Added" };
@@ -186,7 +186,7 @@ export function TaskPage({ project, task, onClose, onMention, onReply, grip }) {
     actions.includes("answer") && button("Answer", (event) => {
       event.currentTarget.closest("dialog").close();
       onMention(task);
-    }, { "aria-label": `Answer #${task}: mention it to the manager`, decides: decision === "answer" }),
+    }, { "aria-label": `Answer #${task}: mention it in the chat`, decides: decision === "answer" }),
     actions.includes("land") && button(action.busy === "land" ? "Landing…" : "Land", () => action.run("land"), { decides: decision === "land" }),
     // ^ By hand: the owner's own session in the task's copy, with the worker's conversation.
     // ^ The tooltip says the rest (docs/web-client-tasks.md "Task sheet").

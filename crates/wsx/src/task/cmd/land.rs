@@ -5,7 +5,7 @@ use crate::task::args::OwnerSaidAfter;
 use crate::task::{actor, asks_owner, open, outward_said, send};
 use anyhow::{bail, Result};
 use wsx_core::config::project::load_task_config;
-use wsx_core::task::manager::ApprovalAction;
+use wsx_core::task::chat_host::ApprovalAction;
 use wsx_core::task::{AfterKind, HostRequest};
 
 /// `wsx task after <n> <m> "<then>"`, or `<n> --off`: task `n` waits for task `m` to land,
@@ -45,7 +45,7 @@ pub(crate) fn after_command(
     send(&dir, request, json)
 }
 
-/// `wsx task land`: asks the owner first when the manager lands onto a project that approves
+/// `wsx task land`: asks the owner first when the lead lands onto a project that approves
 /// lands.
 pub(crate) fn land_command(
     task: String,

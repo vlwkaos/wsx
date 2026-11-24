@@ -12,7 +12,7 @@ use super::record::{self, Record, Status, EXCERPT_CHARS};
 use super::store::{Error, Store};
 use crate::config::global::{GlobalConfig, MemoryConfig, MemoryEngine};
 use crate::process::{run_bounded, Bound, Options, Stderr};
-use crate::task::manager::QUOTE_REF;
+use crate::task::chat_host::QUOTE_REF;
 use crate::task::text::first_line;
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
@@ -234,7 +234,7 @@ pub(super) fn record_hit(store: &Store, r: &Record, score: f64) -> Hit {
 }
 
 /// A transcript line as a hit: the slug is its `reference`, and its other keys ride along.
-/// `current`: the project the asker works in, whose manager chat a hit can quote by id.
+/// `current`: the project the asker works in, whose chat a hit can quote by id.
 pub(super) fn line_hit(
     scope: &str,
     target: &Target,
@@ -243,7 +243,7 @@ pub(super) fn line_hit(
     current: Option<&str>,
 ) -> Hit {
     let project = target.name.as_str();
-    // ^ The repo's main chat is the manager's: its hits carry no chat name and can be quoted by id.
+    // ^ The repo's main chat is the lead's: its hits carry no chat name and can be quoted by id.
     let main = crate::task::store::main_chat(&target.project_id);
     let chat =
         Some(doc.chat.as_str()).filter(|chat| !chat.is_empty() && main.as_deref() != Some(chat));

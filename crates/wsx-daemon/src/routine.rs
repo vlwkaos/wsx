@@ -738,7 +738,7 @@ fn spawn_supervisor(project: &Path, spec: &RunSpec) -> io::Result<Child> {
     let mut child = Command::new(std::env::current_exe()?)
         .arg(wsx_core::runtime::ROUTINE_RUN_ARG)
         .current_dir(project)
-        // ^ Its routines run as the owner, also when a manager's command started wsxd.
+        // ^ Its routines run as the owner, also when a chat's command started wsxd.
         .env_remove(wsx_core::task::owner::ACTOR_ENV)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())

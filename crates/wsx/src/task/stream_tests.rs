@@ -4,7 +4,7 @@
 //! idea of it. ref: docs/tasks.md "Agent stream recordings"
 
 use super::agent::{AgentLine, TurnResult};
-use wsx_core::task::manager::says_nothing;
+use wsx_core::task::chat_host::says_nothing;
 
 fn recording(adapter: &str, name: &str) -> Vec<u8> {
     let path = format!(

@@ -16,7 +16,7 @@ One command surface for stored knowledge: `wsx memory <command>` (wsx, projects 
 | `text`, `title` | the claim, at most `limits.text_bytes` bytes of the store (see "Limits"); optional title, one line |
 | `source` | required on every write: `msg:<id>`, `task:<n>`, `path:<file>`, `url:<URL>`, `transcript:<ref>` |
 | `updated` | unix ms of the last write; a store that has no write time may give its file's time |
-| `verified_by` | required for `rule` and `fact`, else exit 2. Forms: `owner:<msg id>` (digits, a wsx message), `owner:transcript:<ref>` (the owner's words outside wsx), or a relative path with no `..` that exists under the project root. `url:<URL>` (a page that says it: `http` or `https` only, a host name or IPv4 address, no user name, no spaces, at most 2048 bytes; it is checked as text and never fetched). wsx also takes `task:<n>` (a landed task of the project), `task:<project>#<n>` (a landed task of another registered project, which the manager of this one ran there) and `check:<id>` (a passed check item of the project). `episode` needs none |
+| `verified_by` | required for `rule` and `fact`, else exit 2. Forms: `owner:<msg id>` (digits, a wsx message), `owner:transcript:<ref>` (the owner's words outside wsx), or a relative path with no `..` that exists under the project root. `url:<URL>` (a page that says it: `http` or `https` only, a host name or IPv4 address, no user name, no spaces, at most 2048 bytes; it is checked as text and never fetched). wsx also takes `task:<n>` (a landed task of the project), `task:<project>#<n>` (a landed task of another registered project, which the lead of this one ran there) and `check:<id>` (a passed check item of the project). `episode` needs none |
 | `commit` | facts: the commit it was true at |
 | `superseded_by` | in the answer of `supersede`: slug of the newer record |
 | `lesson` | why a `failed` record failed |
@@ -35,7 +35,7 @@ A reader ignores fields it does not know, and a program keeps the fields of its 
 
 `slug`, `scope`, `path` (the file the record lives in), `kind`, `status`, `score` 0..1 (higher is better), `excerpt` (at most 240 characters), and `description` and `keywords` when the record has them.
 
-wsx also searches the transcripts of a project scope (a chat message or reply, a task's prompt, result and story, the manager's decision and memo lines; "Search" in [tasks.md](tasks.md)) and returns them as hits: `slug` is the line's `reference` (`<project>:<id>`, `<project>#<task>`, `<project>:notes/decisions.md`), `kind` one of `message`, `reply`, `task`, `result`, `history`, `decision`, `memo`, `status` `active`, `path` the log or note file it was read from, and the keys of a `wsx chat search` hit (`project`, `chat`, `id`, `task`, `unix_ms`, `by`, `line`, `reference`, `quote`, `outcome`); both commands print the same `Hit`. A reader ignores the keys it does not know and treats a `kind` it does not know as opaque. `--kind` takes any of these kinds.
+wsx also searches the transcripts of a project scope (a chat message or reply, a task's prompt, result and story, the lead's decision and memo lines; "Search" in [tasks.md](tasks.md)) and returns them as hits: `slug` is the line's `reference` (`<project>:<id>`, `<project>#<task>`, `<project>:notes/decisions.md`), `kind` one of `message`, `reply`, `task`, `result`, `history`, `decision`, `memo`, `status` `active`, `path` the log or note file it was read from, and the keys of a `wsx chat search` hit (`project`, `chat`, `id`, `task`, `unix_ms`, `by`, `line`, `reference`, `quote`, `outcome`); both commands print the same `Hit`. A reader ignores the keys it does not know and treats a `kind` it does not know as opaque. `--kind` takes any of these kinds.
 
 ## Commands
 
@@ -90,7 +90,7 @@ backend = ["python3", "/path/to/ir-memory.py"]   # a program and its arguments; 
 
 ## Notes
 
-The manager's notes are views of the project scope's records ([tasks.md](tasks.md) "Notes budget"). The records are the truth; `chats/<name>/notes/` holds two files that wsx writes from them after each write, so the manager prompt reads the same text as before.
+The lead's notes are views of the project scope's records ([tasks.md](tasks.md) "Notes budget"). The records are the truth; `chats/<name>/notes/` holds two files that wsx writes from them after each write, so the lead prompt reads the same text as before.
 
 | File | Holds |
 |---|---|
@@ -98,12 +98,12 @@ The manager's notes are views of the project scope's records ([tasks.md](tasks.m
 | `context.md` | the active `fact` records whose slug starts `section-` (the project section, in order), then the memos: records whose slug is `memo-<task>-<hash>`, as `- #<task>: <text>`. No size ceiling: the deletion rule keeps it short, and a fresh conversation names the lines it leaves out |
 
 - **Old notes**: notes files from before the memory store are not read any more. A rule or fact write (`add`, `update`, `supersede`) is refused while a view file exists that no render has hashed (no entry in `views.json`), and no view is written; an episode is stored (no view is written either); run `wsx memory import` with wsx v0.43.0 once. The files stay as they are.
-- **Write path**, records first: `wsx memory add|update|supersede` store the record and then write the two files, under the store's lock. A memo is stored by the manager host when a task leaves. A view that cannot be written is a notice on stderr; the record stays and the next write renders again.
-- **Owner's words**: `add --kind rule --words W` needs `--source msg:<id>` and `--verified-by owner:<id>`, and W must stand in that message, which the owner wrote (white space ignored), else exit 2. Message ids are per chat: the message is read in the calling chat (`WSX_TASK_ACTOR=chat:<name>`), else in the repo's home chat. The record still goes to the project scope, and a chat records a rule only in the scope of a repo it is part of (its `chat.json` `repos`), else exit 2. The manager's own wording may be the `text`.
+- **Write path**, records first: `wsx memory add|update|supersede` store the record and then write the two files, under the store's lock. A memo is stored by the chat host when a task leaves. A view that cannot be written is a notice on stderr; the record stays and the next write renders again.
+- **Owner's words**: `add --kind rule --words W` needs `--source msg:<id>` and `--verified-by owner:<id>`, and W must stand in that message, which the owner wrote (white space ignored), else exit 2. Message ids are per chat: the message is read in the calling chat (`WSX_TASK_ACTOR=chat:<name>`), else in the repo's home chat. The record still goes to the project scope, and a chat records a rule only in the scope of a repo it is part of (its `chat.json` `repos`), else exit 2. The lead's own wording may be the `text`.
 - **Top 5**: a new `rule` or `fact` first searches the active records of its kind (built-in index, records only, no model). The close ones (top 5, score 0.09 or more) come back as `similar` in the JSON, or as lines in the text form. They are never replaced by score alone: `add --supersedes <old>` stores the new record and supersedes `<old>` in one call, `supersede` does it later. An unknown `<old>` is exit 1 and stores nothing.
-- **Threshold, measured** on a copy of the manager's real notes (28 active rules, 121 replaced, 28 facts): 10 rules restated in other words and 10 on new topics, each added to a fresh copy. The restated rule scored 0.05 to 0.17 (top hit for 8 of 10, a rank 2 and a miss for the rest); an unrelated rule's best hit scored up to 0.08. At 0.09: 5 of 10 restatements name their rule, none names another, 0 of 10 new rules get a hit. At 0.07: 6 of 10 and 2 of 10 false. At 0.05 every new rule gets 5 false hits. The restatements shared few words with the old rules; a rule restated with its own terms scores higher. A lexical check misses a restatement that shares no terms: the owner's words and `wsx memory search` stay the second look.
+- **Threshold, measured** on a copy of the lead's real notes (28 active rules, 121 replaced, 28 facts): 10 rules restated in other words and 10 on new topics, each added to a fresh copy. The restated rule scored 0.05 to 0.17 (top hit for 8 of 10, a rank 2 and a miss for the rest); an unrelated rule's best hit scored up to 0.08. At 0.09: 5 of 10 restatements name their rule, none names another, 0 of 10 new rules get a hit. At 0.07: 6 of 10 and 2 of 10 false. At 0.05 every new rule gets 5 false hits. The restatements shared few words with the old rules; a rule restated with its own terms scores higher. A lexical check misses a restatement that shares no terms: the owner's words and `wsx memory search` stay the second look.
 - **Areas**: a `## <area>` line of the old `decisions.md` is no rule. The views have no headers (the start text lists the rules newest first, so a header would label the wrong group); the area is kept as a keyword of its rules, shown in `get` and searched.
-- **Drift**: wsx keeps the hash of each file it wrote (`views.json` in the store's folder). A file that differs is a hand edit. `wsx memory status` lists it under `drift` (`view`, `added` lines the records do not hold, `removed` lines they do), the manager host says so once in its progress, and the next write keeps the edited file as `<file>.drift`, prints a notice, and writes the file again from the records. Nothing is merged and nothing is lost.
+- **Drift**: wsx keeps the hash of each file it wrote (`views.json` in the store's folder). A file that differs is a hand edit. `wsx memory status` lists it under `drift` (`view`, `added` lines the records do not hold, `removed` lines they do), the chat host says so once in its progress, and the next write keeps the edited file as `<file>.drift`, prints a notice, and writes the file again from the records. Nothing is merged and nothing is lost.
 - A search of the project no longer reads the lines of a file that is a view: the records are searched themselves.
 
 ## Start set
@@ -111,7 +111,7 @@ The manager's notes are views of the project scope's records ([tasks.md](tasks.m
 The first prompt of a worker holds a block from the memory, built by `wsx_core::memory::start` for every adapter (`host.rs` `task_context`; `wsx memory start` prints the same block). No other start loads memory: a Claude chat outside wsx gets nothing. In order, within 4 KiB:
 
 1. **Area briefs**: `memory.areas` of the project's `wsx.config.yml` is `{"<glob>": "<brief file>"}`. Each brief whose glob meets one of the task's `--files` is read from the project (a relative path inside it, at most 8 KiB) and shown whole.
-2. **Rules**: each active `rule` whose `paths` meet one of the task's `--files` (the same match as for areas), newest decision first, as `Rule <slug> (paths …), the owner's words: "…"` and the record text. Rules are the owner's decisions, few, and stay until the owner replaces them; a rule is shown whole or named, never cut. A rule with no `paths` joins no block: it would crowd out the briefs and the rules that fit the task (a store holds about 40, more than the budget), and the manager already reads them all in `decisions.md`. `--paths '**'` makes a rule project-wide: it joins every block, so give it only to a rule every task needs (`add` of a rule with no paths says this on stderr). A failed rule never joins (a superseded one is deleted).
+2. **Rules**: each active `rule` whose `paths` meet one of the task's `--files` (the same match as for areas), newest decision first, as `Rule <slug> (paths …), the owner's words: "…"` and the record text. Rules are the owner's decisions, few, and stay until the owner replaces them; a rule is shown whole or named, never cut. A rule with no `paths` joins no block: it would crowd out the briefs and the rules that fit the task (a store holds about 40, more than the budget), and the lead already reads them all in `decisions.md`. `--paths '**'` makes a rule project-wide: it joins every block, so give it only to a rule every task needs (`add` of a rule with no paths says this on stderr). A failed rule never joins (a superseded one is deleted).
 
 No fact records: the paid evaluation (#392) found that records in the start block gave no gain and likely harm (plan cost +11% median, inside noise; recall -0.05; about 3 extra calls to check records, 92% of them marked stale), and baseline plans already name 0.81 of the landed files by reading. A worker finds records on demand with `wsx memory recall` and `search`.
 
@@ -119,25 +119,25 @@ Nothing is cut silently: a piece that does not fit is named on a last line (`Not
 
 ## Capture
 
-When a task leaves, the manager host (`manager.rs` `fold_memo`) stores its result memo, with no model turn:
+When a task leaves, the repo host (`repo.rs` `fold_memo`) stores its result memo, with no model turn:
 
 | Task | Record |
 |---|---|
 | landed | `fact`, `verified_by` and `source` `task:<n>`, `commit` = the landed commit (the log's `landed`), `paths` = the files of its diff (the task record's `paths`, capped) |
-| landed, run by another project's manager | the same fact in the scope of that manager's project: `verified_by` and `source` `task:<project>#<n>`, slug `memo-in-<project>-<n>-<digest>` (no number, so the notes views skip it). Its paths are the other project's, so the deletion rule of this scope leaves it. Its own scope keeps the usual record. |
+| landed, run by another project's lead | the same fact in the scope of that lead's project: `verified_by` and `source` `task:<project>#<n>`, slug `memo-in-<project>-<n>-<digest>` (no number, so the notes views skip it). Its paths are the other project's, so the deletion rule of this scope leaves it. Its own scope keeps the usual record. |
 | closed or failed | `episode`, no `commit`, no `paths` |
 
-The slug is `memo-<n>-<digest>`, so the same memo is one record. A memo is one line of at most 240 characters. `wsx memory capture` does the same for a replay. A task created by a chat keeps its memo in the chat's own notes (not captured). When a worker's conversation ends for its size, its host also stores the handoff notes as an episode `rotation-<n>-<digest>` (cut at the text limit, with the path of the whole), with no turn of its own; it is deleted when the task ends (see "Deletion"). The handover a manager's fresh conversation opens with is not stored: its lines are the chat log's, which search reads.
+The slug is `memo-<n>-<digest>`, so the same memo is one record. A memo is one line of at most 240 characters. `wsx memory capture` does the same for a replay. A task created by a chat keeps its memo in the chat's own notes (not captured). When a worker's conversation ends for its size, its host also stores the handoff notes as an episode `rotation-<n>-<digest>` (cut at the text limit, with the path of the whole), with no turn of its own; it is deleted when the task ends (see "Deletion"). The handover a chat's fresh conversation opens with is not stored: its lines are the chat log's, which search reads.
 
 ## Deletion
 
-wsx deletes what is past by rule; no manager decides. One function holds the rule (`wsx_core::memory::manage::sweep`); the repo's service (`wsx task repo-host`) runs it at its start and each time a task of the repo ends (lands or closes). A store with nothing past is read, not written.
+wsx deletes what is past by rule; no lead decides. One function holds the rule (`wsx_core::memory::manage::sweep`); the repo's service (`wsx task repo-host`) runs it at its start and each time a task of the repo ends (lands or closes). A store with nothing past is read, not written.
 
 | What | Deleted when |
 |---|---|
 | `supersede`'s `<old>` (also `add --supersedes`) | at once, by `supersede` |
 | A task's handoff notes record (`rotation-<n>-…`) | the task has ended. `rotate-notes.md` in the task folder stays |
-| A record an older release kept: a `superseded` rule, a manager handover (`handover-…`) | the next sweep |
+| A record an older release kept: a `superseded` rule, a chat handover (`handover-…`) | the next sweep |
 | A fact of an earlier task of this project (`verified_by` `task:<n>`) with `paths` | a land: every path is gone from the tree of the landed commit (`git ls-tree`; git that cannot answer in 10 s deletes nothing), or the land's own memo fact holds every path |
 | Files no code reads: `notes/decisions-archive.md`, `notes/context-archive.md`, `notes/*.pre-memory` and `threads-placed` of a chat of the repo; `batch-check-*.log`, `trial.lock` and `grants.json` of the repo's folder | the next sweep |
 | A file in a chat's `notes/` (not a view) whose name holds a task number (2 to 4 digits, a `YYYY-MM-DD` date left out) of a repo of the chat, where every task it names has ended | the next sweep |
@@ -170,17 +170,17 @@ A task agent calls `wsx memory` through its host's broker (`WSX_TASK_BROKER`), w
 | Command | Who |
 |---|---|
 | `search`, `recall`, `status`, `list`, `get` | every agent, also an untrusted one; a read may name any scope |
-| `add`, `update`, `supersede`, `reindex` | the manager, a named chat and a worker, in the agent's own project scope only (`--scope` defaults to it, another one is refused) |
-| a `rule` record (add, change, replace) | the manager and a named chat: it needs `owner:<id>`, and a worker's call is refused by the store |
+| `add`, `update`, `supersede`, `reindex` | the lead, a named chat and a worker, in the agent's own project scope only (`--scope` defaults to it, another one is refused) |
+| a `rule` record (add, change, replace) | the lead and a named chat: it needs `owner:<id>`, and a worker's call is refused by the store |
 | any write | not an untrusted agent (strict profile): read only |
 
-The host, not the agent, writes the fact of a task that its manager ran in another project, in that manager's scope ("Capture"); an agent's own writes stay in its own scope. A read may name any scope, but an agent's search finds the transcripts (chats, task stories, notes) of its own project only; of another project's scope it finds the records. (The host sets `WSX_TASK_FROM` to the agent's project; the owner's own call sets none.)
+The host, not the agent, writes the fact of a task that its lead ran in another project, in that lead's scope ("Capture"); an agent's own writes stay in its own scope. A read may name any scope, but an agent's search finds the transcripts (chats, task stories, notes) of its own project only; of another project's scope it finds the records. (The host sets `WSX_TASK_FROM` to the agent's project; the owner's own call sets none.)
 
 A refusal exits 2 and names the cause. The host sets `WSX_MEMORY_RULES=deny` for an agent without `decide`; the owner's own call sets none.
 
 ## Proof
 
-`scripts/test-task.py` sections 23m and 27m run the broker cases (a worker, an untrusted worker, the manager) and the `task:<n>` and `check:<id>` forms of `verified_by` with a landed task and a passed item.
+`scripts/test-task.py` sections 23m and 27m run the broker cases (a worker, an untrusted worker, the lead) and the `task:<n>` and `check:<id>` forms of `verified_by` with a landed task and a passed item.
 
 `python3 -B scripts/test-memory.py "<command prefix>"` runs the same scenario against any program, for example `"target/debug/wsx memory"` or `"python3 memory.py"`. It runs every call in a temp home (`HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`) and drops `NOTEVAULT_ROOT` and every `WSX_*` variable of the caller, so a run against `memory.py` or `wsx` never touches the owner's vault or stores. It checks, for any program, `limits.text_bytes` (the limit exact, one byte over is exit 2), the `owner:transcript:` and `url:` forms (a bad URL is exit 2 and nothing is fetched), a scope with `_`, `get`, `description` and `keywords` (stored, shown, searched, replaced by `update`), and a slug with `.`. For wsx it also runs the notes of a project (old notes refused, the views byte for byte, `--words` from the home chat and from a topic chat, `similar` and `--supersedes` deleting the old record, no ceiling or archive, a hand edit as `drift`), the sweep of the repo's service on a real store (the records and files of "Deletion" go, the notes record of a working task stays, a second start writes nothing), the transcripts of a project scope and the backend cases against `scripts/fake-memory-backend.py` (a program that follows `search`, `reindex` and `status` and can exit 3, exit 1, print garbage or hang): merge by score, the kind filter, exit 3, the 10 s stop, `status` flags, `reindex` and `recall`.
 

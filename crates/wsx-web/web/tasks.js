@@ -129,7 +129,7 @@ export function NeedRow({ project, item, index, onActing, onFailed, onMention, o
   if (acting && item.kind === "ask") {
     actions = html`${button("Reply", "reply", null, () => onReply(item.label, item.id), { "aria-label": `Reply: ${item.label}` })}${button("Dismiss", "fail", null, () => run("dismiss"), { "aria-label": `Dismiss: ${item.label}` })}`;
   } else if (acting && ["waiting", "failed"].includes(item.kind)) {
-    actions = button("Answer", "reply", null, () => onMention(item.task), { "aria-label": `Answer #${item.task}: mention it to the manager` });
+    actions = button("Answer", "reply", null, () => onMention(item.task), { "aria-label": `Answer #${item.task}: mention it in the chat` });
   } else if (acting && item.kind === "approval" && status.running) {
     // ^ The approved action runs until its decision settles the row; it may take minutes.
     actions = html`<span class="row-context" role="status">Running…</span>`;
@@ -140,7 +140,7 @@ export function NeedRow({ project, item, index, onActing, onFailed, onMention, o
     };
     actions = html`${button("Deny", "fail", "danger", () => run("deny"), { "aria-label": `Deny: ${item.label}` })}${button("Approve", "pass", "accent", approve, { "aria-label": item.label })}`;
   } else if (acting && item.kind === "land" && trial?.stage === "live") {
-    actions = html`${button("Fail: tell the manager", "reply", "danger", () => onMention(item.task), { "aria-label": `Fail #${item.task}: tell the manager what is wrong` })}${button("Pass and land", "pass", "accent", () => run("pass"), { "aria-label": `Pass #${item.task} and land it` })}`;
+    actions = html`${button("Fail: tell the chat", "reply", "danger", () => onMention(item.task), { "aria-label": `Fail #${item.task}: tell the manager what is wrong` })}${button("Pass and land", "pass", "accent", () => run("pass"), { "aria-label": `Pass #${item.task} and land it` })}`;
   } else if (acting && item.kind === "land" && trial) {
     actions = html`<span class="row-context" role="status">Going live…</span>`;
   } else if (acting && item.kind === "land") {
@@ -368,7 +368,7 @@ const emptyNote = (mark, tasks, mentions, failed, retry) => mark === "#" ? (task
     <button class="link-action" type="button" onPointerDown=${(event) => event.preventDefault()} onClick=${retry}>Retry</button>`
   : !mentions ? "Loading…"
   : mark === "@" ? (mentions.chats.length ? "No chat matches that." : "There is no other chat.")
-  : (mentions.skills.length ? "No skill matches that." : "You have no skills to lend the manager.");
+  : (mentions.skills.length ? "No skill matches that." : "You have no skills to lend the agents.");
 
 // The `#` picker's tasks: the title first, the number after it. A task done or closed more than
 // a day ago folds away until the text after `#` names it (docs/web-client-tasks.md "Project screen").
@@ -457,7 +457,7 @@ function ManagerComposer({ project, room, busy: thinking, reply, onReply, onSent
     try {
       const attachments = files.attachments.map((item) => item.hash);
       const text = withQuote(reply?.line, body);
-      // ^ A say may start the manager first: up to about 40 s (docs/tasks.md "Manager").
+      // ^ A say may start the manager first: up to about 40 s (docs/tasks.md "Chat host").
       const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text: reply?.id != null || reply?.check ? body : text, attachments, ...(room && { chat: room }), ...(reply?.id != null && { quote_id: reply.id }), ...(reply?.check && { check: reply.check }) }, timeout: 60_000 });
       field.current.value = "";
       files.attachments = [];
@@ -489,7 +489,7 @@ function ManagerComposer({ project, room, busy: thinking, reply, onReply, onSent
         <${AttachButton} onFiles=${upload} />
         ${pills}
         <div class="composer-input">
-          <textarea class="composer-field" ref=${field} rows="1" aria-label=${`Message to ${room ?? "the manager"}`}
+          <textarea class="composer-field" ref=${field} rows="1" aria-label=${`Message to ${room ?? "the lead"}`}
             placeholder="Message · # task @ chat / skill" role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
             aria-controls=${listOpen ? "slash-list" : null} aria-activedescendant=${listOpen && options.length ? `slash-${active}` : null}
             onInput=${changed} onKeyDown=${keydown} onPaste=${pasteFiles(upload)} onKeyUp=${() => setCaret(field.current.selectionStart)}
@@ -1074,11 +1074,11 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
         ${!room && html`<${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "message" && row.author !== "owner")?.at} sent=${sent} />`}
         ${around != null && html`<p class="note around" role="status">Showing an earlier part of the conversation. <button class="link-action" type="button" onClick=${newest}>Back to newest</button></p>`}
         <div class="log-wrap">
-          <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label=${`Conversation with ${room ?? "the manager"}`} tabindex="0" ...${gestures}>
+          <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label=${`Conversation with ${room ?? "the lead"}`} tabindex="0" ...${gestures}>
             ${cut ? html`<p class="note">Older messages are not shown.</p>` : null}
             ${ready && !rows.length ? html`<p class="empty">${room
               ? `No messages yet. Ask ${room} about its work; it answers from the ledger.`
-              : "No messages yet. Ask the manager for a task or a status; it answers from the ledger."}</p>` : null}
+              : "No messages yet. Ask for a task or a status; the answer comes from the ledger."}</p>` : null}
             ${earlier}
             ${withNewLine(recent, firstNew, show)}
             ${typing && html`<${Typing} name=${names.manager} plain=${plain} lead=${lead} />`}
@@ -1087,7 +1087,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
         </div>
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
         ${waiting.length > 0 && html`
-          <ul class="queue" aria-label=${`Messages waiting for ${room ?? "the manager"}`}>
+          <ul class="queue" aria-label=${`Messages waiting for ${room ?? "the lead"}`}>
             ${waiting.map((row) => html`<li key=${row.key} class="queued" data-key=${row.key}><span class="queued-text">${row.text || `${row.attachments?.length ?? 0} files`}</span></li>`)}
           </ul>`}
         <${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${waitingForYou} tasks=${overview?.tasks ?? []} waiting=${overview?.waiting ?? []} checks=${overview?.check_items ?? []} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${replyTo} onShow=${goToReply} onOpenList=${setTray} />

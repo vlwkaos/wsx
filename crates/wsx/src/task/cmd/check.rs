@@ -39,7 +39,7 @@ pub(crate) fn check(action: Option<CheckAction>, project: Option<&str>, json: bo
             return Ok(());
         }
         Some(CheckAction::Pass { chosen, said }) => {
-            // ^ The manager passes only the items it names, on the owner's message of this turn.
+            // ^ The lead passes only the items it names, on the owner's message of this turn.
             let owner_said = if acting_as_chat() {
                 match crate::task::owner_said(said.owner_said) {
                     Some(said) if !chosen.all => {
@@ -47,7 +47,7 @@ pub(crate) fn check(action: Option<CheckAction>, project: Option<&str>, json: bo
                         Some(said)
                     }
                     _ => bail!(
-                        "wsx project check pass is for the owner; the manager names each item with --owner-said <message>"
+                        "wsx project check pass is for the owner; a chat names each item with --owner-said <message>"
                     ),
                 }
             } else {
@@ -92,7 +92,7 @@ pub(crate) fn check(action: Option<CheckAction>, project: Option<&str>, json: bo
     Ok(())
 }
 
-/// Pass or skip the chosen items; `owner_said` is the manager's pass on that owner message.
+/// Pass or skip the chosen items; `owner_said` is the lead's pass on that owner message.
 pub(crate) fn close_checks(
     project_id: &str,
     chosen: Chosen,
