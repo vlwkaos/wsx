@@ -965,7 +965,7 @@ fn message_row(entry: &ManagerEntry, from: &Author, text: &str) -> Option<ChatRo
 
 /// The row of what another chat and the manager said to each other: the muted line `Talked to
 /// <name>` that opens to the words (`push_row` joins a run with one chat). Empty words (`-`) show
-/// nothing. ref: docs/design/transcript.md
+/// nothing. ref: docs/transcript.md
 fn talk(
     key: String,
     entry: &ManagerEntry,
@@ -1053,7 +1053,7 @@ fn event_rows(rows: &mut Vec<ChatRow>, entry: &ManagerEntry, text: &str, short: 
 /// owner message or a recap (or none the window knows), asks, carries an approval or is a post.
 /// Any other reply, one to events or to another chat, is a muted line (`Quiet`) with the marks of
 /// the events it answers; its words open under it. A reply that says nothing (`-`) has no row.
-/// ref: docs/design/transcript.md
+/// ref: docs/transcript.md
 fn reply_row(
     entry: &ManagerEntry,
     approvals: Vec<String>,

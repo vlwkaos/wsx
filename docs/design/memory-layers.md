@@ -1,6 +1,8 @@
 # Memory layers: one resolution per reader, kept by wsx
 
 Status: plan, accepted 2026-11-19 (task 525); the writer was picked by simulation (task 527, 2026-11-19); no step is built yet. `(est.)` marks a number I did not measure.
+
+**Owner, 2026-11-24 (overrides where it differs):** structure is injected, facts are not. A task gets the area models its files meet (with the commit they were checked at); rules and facts come by search only, as orchestration.md section 1 measured. Memory is a part of wsx that runs by itself: it cleans up, supersedes and looks up records on a robust index (like `ir`), and a user's own memory system plugs in behind it. `memory recall|update|reindex` stay (lean step 5's deletion is cancelled). The model owner and agent share for working on a project is the owner's own project knowledge, not this store.
 Owner words: "abstracted mental-model notes made in advance; memory resolution kept in separate layers; if the manager cannot, wsx does it" (wsx 5457); "check code, history and memory before acting" (5455); "reorganize the internals, delete what that makes unneeded, update the mental model" (5461).
 
 **Problem.** A manager guessed why the scenario slot is one. A design doc already said why. Nothing pointed it there: `context.md` was cut ("NOT SHOWN lines 13-119 of 127"), `docs/design` has 67 files and no index, and `wsx.config.yml` sets no `memory.areas`.
