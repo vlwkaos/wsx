@@ -154,11 +154,6 @@ pub fn say(
     )
 }
 
-/// Close the open chat `name` of the repo (`wsx task chat close`, the web's and the TUI's Close
-/// chat) and hand it back: its goal, open tasks and last decisions go to the repo's main chat
-/// as one message of wsx, which the main chat reads with its next turn. The open tasks are the
-/// main chat's from then on (`chats::owner`). True when a main chat took it; closing the main
-/// chat leaves the repo with none, and its open tasks have no chat. ref: docs/tasks.md "Chats"
 /// How a chat closed: its hand-back reached the main chat, there is no main chat to take its
 /// open tasks, or it was a fork that owned no task and the fork is undone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +163,12 @@ pub enum Closed {
     ForkUndone,
 }
 
+/// Close the open chat `name` of the repo (`wsx task chat close`, the web's and the TUI's Close
+/// chat) and hand it back: its goal, open tasks and last decisions go to the repo's main chat
+/// as one message of wsx, which the main chat reads with no turn. The open tasks are the main
+/// chat's from then on (`chats::owner`). Closing the main chat leaves the repo with none, and
+/// its open tasks have no chat (`NoMain`). A fork that owned no task is undone instead
+/// (`ForkUndone`). ref: docs/tasks.md "Chats", "Lead and forks"
 pub fn close_chat(
     project: (&str, &Path),
     wsx: &Path,
@@ -176,17 +177,22 @@ pub fn close_chat(
 ) -> Result<Closed> {
     // ^ A fork closed before it owned a task is undone: the chat it came from is told in a note
     // that no turn reads, and nothing is handed back (its goal would be forked again).
-    let fork = super::chats::unstarted_fork(&super::chats::open_chat(name)?)?;
-    let (main, text) = super::chats::close(name)?;
+    let dir = super::chats::open_chat(name)?;
+    let fork = super::chats::unstarted_fork(&dir)?;
+    let text = fork.is_none().then(|| super::chats::hand_back(&dir));
+    let main = super::chats::close(name)?;
     if let Some(from) = fork {
+        // ^ Both logs note it: the fork's own, so a reopen of the name closes as any chat.
+        let undone = super::manager::ManagerEvent::ForkUndone {
+            to: name.to_string(),
+        };
+        dir.append(undone.clone())?;
         if let Some(origin) = ManagerDir::existing(&from)? {
-            origin.append(super::manager::ManagerEvent::ForkUndone {
-                to: name.to_string(),
-            })?;
+            origin.append(undone)?;
         }
         return Ok(Closed::ForkUndone);
     }
-    let Some(main) = main else {
+    let (Some(main), Some(text)) = (main, text) else {
         return Ok(Closed::NoMain);
     };
     let short = super::manager::Short::event(

@@ -465,10 +465,7 @@ fn fork(
     {
         bail!("only the lead forks: the project's main chat with no goal; nothing was done");
     }
-    // ^ Any folder of that name, also one with no repo recorded, is a used name.
-    if ManagerDir::existing(name)?.is_some() || store::chats_root().join(name).exists() {
-        bail!("chat {name} was opened before: a fork needs a new name; nothing was done");
-    }
+    let name = chats::checked_name(name)?;
     let log = origin.read_log()?;
     if log.iter().any(
         |entry| matches!(&entry.event, ManagerEvent::Forked { message, .. } if *message == said),
@@ -496,6 +493,28 @@ fn fork(
         .chars()
         .take(200)
         .collect();
+    // ^ The name is taken by making its folder, which fails when any folder of that name is
+    // there: two forks at once cannot both take it, and a used name never reopens a log.
+    // ^ Private as every chat folder (`store::create_private_dir`).
+    let made = {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(store::chats_root().join(name))
+    };
+    if let Err(error) = made {
+        match error.kind() {
+            std::io::ErrorKind::AlreadyExists => {
+                bail!("chat {name} was opened before: a fork needs a new name; nothing was done")
+            }
+            _ => bail!("cannot make the folder of chat {name}: {error}; nothing was done"),
+        }
+    }
+    // ^ The lead notes the fork before the message goes, so the same message forks once.
+    origin.append(ManagerEvent::Forked {
+        to: name.to_string(),
+        message: said,
+    })?;
     let dir = chats::create(&project_id, name, Some(&goal), agent)?;
     let sent = dir
         .append(ManagerEvent::ForkedFrom {
@@ -515,32 +534,47 @@ fn fork(
                 Vec::new(),
             )
         });
-    let response = match sent {
-        Ok(response) if response.ok => response,
+    // ^ The fork stands once the message is in the new chat's log, also when the answer did not
+    // come back in time (a host that took it, then was slow).
+    let arrived = || {
+        dir.read_log().ok().and_then(|log| {
+            log.into_iter().find_map(|entry| match entry.event {
+                ManagerEvent::Message {
+                    id,
+                    from: Author::Owner,
+                    ..
+                } => Some(id),
+                _ => None,
+            })
+        })
+    };
+    let brief_id = match sent {
+        Ok(response) if response.ok => response.id,
         failed => {
-            let why = match failed {
-                Ok(response) => response.message,
-                Err(error) => format!("{error:#}"),
+            let Some(id) = arrived() else {
+                let why = match failed {
+                    Ok(response) => response.message,
+                    Err(error) => format!("{error:#}"),
+                };
+                // ^ No half fork runs: its host stops, the chat closes (its name stays used) and
+                // both logs say the fork is undone.
+                let _ = wsx_core::task::replace::stop_host(&dir, main);
+                let _ = chats::close(name);
+                let undone = ManagerEvent::ForkUndone {
+                    to: name.to_string(),
+                };
+                let _ = dir.append(undone.clone());
+                let _ = origin.append(undone);
+                bail!("the fork to {name} did not start: {why}; chat {name} is closed");
             };
-            // ^ No half fork runs: its host stops and the chat closes (its name stays used).
-            let _ = wsx_core::task::replace::stop_host(&dir, main);
-            let _ = chats::close(name);
-            bail!("the fork to {name} did not start: {why}; chat {name} is closed");
+            Some(id)
         }
     };
-    // ^ The fork stands once the message is in; a lead note that fails is said, not undone.
-    let noted = origin.append(ManagerEvent::Forked {
-        to: name.to_string(),
-        message: said,
-    });
-    let message = match &noted {
-        Ok(()) => format!("forked message {said} to chat {name}; it starts on it"),
-        Err(error) => format!("forked message {said} to chat {name}; it starts on it, but the lead's note failed: {error:#}"),
-    };
+    let message = format!("forked message {said} to chat {name}; it starts on it");
     if json {
         return print_json(&json!({
             "chat": name, "state": "open", "forked_from": asker, "message_id": said,
-            "brief_id": response.id, "goal": goal, "message": message,
+            "brief_id": brief_id, "goal": goal, "message": message,
         }));
     }
     println!("{message}");

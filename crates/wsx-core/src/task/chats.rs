@@ -542,16 +542,15 @@ fn write_goal(dir: &ManagerDir, goal: &str) -> Result<()> {
 /// An unknown or a closed name is refused. Returns the repo's main chat that is left, which gets
 /// the hand-back (`hand_back`, the caller says it there); closing the main chat clears the
 /// pointer, so the repo has none and the text is not handed to anyone.
-pub fn close(name: &str) -> Result<(Option<String>, String)> {
+pub fn close(name: &str) -> Result<Option<String>> {
     let dir = open_chat(name)?;
-    let text = hand_back(&dir);
     store::write_atomic(&dir.path.join(CLOSED_FILE), b"closed by the owner")?;
     let main = store::main_chat(&dir.project_id);
     if main.as_deref() == Some(name) {
         store::clear_main_chat(&dir.project_id)?;
-        return Ok((None, text));
+        return Ok(None);
     }
-    Ok((main, text))
+    Ok(main)
 }
 
 /// The repo's main chat, which must be open: the one that hears what no chat owns and that
@@ -575,29 +574,34 @@ pub fn set_main(name: &str, project_id: &str) -> Result<()> {
 }
 
 /// The chat that `dir` was forked from (`ForkedFrom`), while `dir` has never owned a task (open
-/// or ended): closing it then undoes the fork. ref: docs/tasks.md "Lead and forks"
+/// or ended) and its fork was not undone before (a fork reopened by name and closed again is
+/// only closed): closing it then undoes the fork. ref: docs/tasks.md "Lead and forks"
 pub fn unstarted_fork(dir: &ManagerDir) -> Result<Option<String>> {
-    let from = dir
-        .read_log()?
-        .into_iter()
-        .find_map(|entry| match entry.event {
-            super::manager::ManagerEvent::ForkedFrom { from, .. } => Some(from),
-            _ => None,
-        });
+    use super::manager::ManagerEvent;
+    let mut from = None;
+    for entry in dir.read_log()? {
+        match entry.event {
+            ManagerEvent::ForkedFrom { from: chat, .. } => from = Some(chat),
+            ManagerEvent::ForkUndone { .. } => return Ok(None),
+            _ => {}
+        }
+    }
     let Some(from) = from else {
         return Ok(None);
     };
     // ^ A chat's tasks can be in any repo it names; a record that cannot be read counts as
     // owned, so a doubt keeps the hand-back.
-    let mut owned = false;
     for project_id in repos(dir) {
         for id in store::task_numbers(&project_id)? {
-            owned |= store::TaskDir::open(&project_id, id)
+            let owned = store::TaskDir::open(&project_id, id)
                 .and_then(|task| task.read_record())
                 .map_or(true, |record| record.owner_chat() == Some(dir.name()));
+            if owned {
+                return Ok(None);
+            }
         }
     }
-    Ok((!owned).then_some(from))
+    Ok(Some(from))
 }
 
 /// How many of the closed chat's last decisions lines the hand-back carries.
@@ -605,7 +609,7 @@ const HAND_BACK_DECISIONS: usize = 5;
 
 /// What a closing chat hands to the main chat: its goal, its open tasks, its last decisions.
 /// The open tasks belong to the main chat from then on (`owner`).
-fn hand_back(dir: &ManagerDir) -> String {
+pub fn hand_back(dir: &ManagerDir) -> String {
     let goal = goal(dir);
     let goal = goal.lines().map(str::trim).find(|line| !line.is_empty());
     let tasks: Vec<String> = store::task_numbers(&dir.project_id)

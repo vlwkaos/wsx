@@ -210,6 +210,22 @@ fn closing_a_fork_before_it_owns_a_task_undoes_it_and_no_later() {
         turns_before
     );
 
+    // ^ Undone once: the name reopened by the owner and closed again is only closed.
+    let reopened = fixture.wsx(&["task", "chat", "new", "docs-fix"]);
+    assert!(reopened.status.success(), "{reopened:?}");
+    let closed = fixture.wsx(&["task", "chat", "close", "docs-fix"]);
+    let said = String::from_utf8_lossy(&closed.stdout);
+    assert!(
+        closed.status.success() && said.contains("open tasks are the main chat's"),
+        "{closed:?}"
+    );
+    let lead = entries(&fixture, "demo");
+    assert_eq!(kinds(&lead, "fork_undone").len(), 1, "{lead:?}");
+    assert!(
+        handed(&lead, "docs-fix"),
+        "no hand-back on the second close: {lead:?}"
+    );
+
     // ^ A fork that owned a task is only closed: its hand-back reaches the lead, no undo note.
     let asked = ask_the_lead(&fixture, "worker-fork", "Do the work", "");
     reply_to(&fixture, "demo", asked);
