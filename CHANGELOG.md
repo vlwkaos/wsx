@@ -6,7 +6,7 @@ Releases 0.40.4 and older are in [docs/changelog-archive.md](docs/changelog-arch
 
 ### Changed
 
-- TUI: from 130 columns the chat has a rail of chats on its left (the manager, the open chats with their counts, For you). `^g` gives it the keys; `Enter` opens a chat. `tab` goes chat, task, rail.
+- TUI: from 130 columns the chat has a rail of chats on its left (the manager, the open chats with their counts, For you). `^g` gives it the keys; `Enter` opens a chat. With a task open, `tab` goes chat, task, rail.
 - TUI: `⌥Enter` in the chat's message line starts a new line; the line grows to 5 rows.
 - TUI: a `#N` in a chat message is a link. `Enter` opens that task beside the chat (from 120 columns; narrower, it fills the pane) with its detail and actions; `tab` moves the keys between the chat and the task, and `Esc` closes it.
 - TUI: a mermaid block in the chat or the project overview is drawn as a Unicode diagram when it fits the width (the `mermaid-text` crate). Otherwise it is one link, `▸ diagram not drawn`, and `Enter` shows its source.

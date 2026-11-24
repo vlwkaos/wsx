@@ -5,13 +5,15 @@ use super::{
     theme,
 };
 use crate::task_chat::ManagerChat;
-use crate::task_list::{Overview, RailTarget, Region, Section, TaskList, TaskRow};
+use crate::task_list::{
+    Overview, RailTarget, Region, Section, TaskList, TaskRow, BESIDE_MIN, RAIL_WIDTH,
+};
 use ratatui::{
     layout::Rect,
     prelude::Stylize,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
     Frame,
 };
 use serde::Deserialize;
@@ -215,29 +217,19 @@ pub fn detail_hints(list: &TaskList) -> Vec<String> {
     hints
 }
 
-/// The rail's width, and the pane width from which it shows beside the chat: the chat keeps
-/// its own 100 columns and more (docs/tasks.md "TUI").
-const RAIL_WIDTH: u16 = 24;
-const RAIL_MIN: u16 = 130;
-/// The pane width from which a task shows beside the chat, the chat at 40% of the rest.
-const BESIDE_MIN: u16 = 120;
-
 /// The open chat with the rail and a task opened from it (docs/tasks.md "TUI"). The rail shows
 /// from `RAIL_MIN` columns, the task beside the chat from `BESIDE_MIN`; narrower, the region with
-/// the keys fills the pane.
+/// the keys fills the pane. The width is kept for the keys (`TaskList::width`).
 pub fn render_chat_view(frame: &mut Frame, area: Rect, list: &TaskList, chat: &ManagerChat) {
-    let rail_shown = area.width >= RAIL_MIN;
-    list.rail_shown.set(rail_shown);
-    let beside = list.task_beside();
-    match list.region {
-        Region::Rail if !rail_shown => return render_rail(frame, area, list),
-        Region::Task if beside && area.width < BESIDE_MIN => {
-            return render_task_beside(frame, area, list)
-        }
+    list.width.set(area.width);
+    let wide = area.width >= BESIDE_MIN;
+    match list.focus() {
+        Region::Rail if !list.rail_shown() => return render_rail(frame, area, list),
+        Region::Task if !wide => return render_task_beside(frame, area, list),
         _ => {}
     }
     let mut rest = area;
-    if rail_shown {
+    if list.rail_shown() {
         render_rail(
             frame,
             Rect {
@@ -252,7 +244,7 @@ pub fn render_chat_view(frame: &mut Frame, area: Rect, list: &TaskList, chat: &M
             ..area
         };
     }
-    if beside && area.width >= BESIDE_MIN {
+    if list.task_beside() && wide {
         let chat_width = rest.width * 2 / 5;
         super::task_chat::render(
             frame,
@@ -276,12 +268,30 @@ pub fn render_chat_view(frame: &mut Frame, area: Rect, list: &TaskList, chat: &M
     }
 }
 
+/// A chat's name, then the marks of its counts, in `width` cells: the list's chat rows and the
+/// rail draw it alike.
+fn named_with_marks(
+    name: &str,
+    counts: &wsx_core::task::needs::ChatCounts,
+    width: usize,
+    style: Style,
+) -> Vec<Span<'static>> {
+    let marks = super::workspace_tree::tray_marks(counts.running, counts.needs, counts.check);
+    let marks_width: usize = marks.iter().map(|mark| mark.content.chars().count()).sum();
+    let mut spans = vec![Span::styled(
+        fit(name, width.saturating_sub(1 + marks_width)),
+        style,
+    )];
+    spans.extend(marks);
+    spans
+}
+
 /// The chat rail: "Chats", then an item a row, the open chat marked `▸` and the selected one
-/// reversed while the rail has the keys; each item's marks after its name, as the list's chat
-/// rows show them. A rule on its right side, in the accent while it has the keys.
+/// reversed while the rail has the keys, kept in view; each item's marks after its name. A rule
+/// on its right side, in the accent while it has the keys.
 fn render_rail(frame: &mut Frame, area: Rect, list: &TaskList) {
     frame.render_widget(Clear, area);
-    let focused = list.region == Region::Rail;
+    let focused = list.focus() == Region::Rail;
     let color = if focused {
         theme::ACCENT
     } else {
@@ -289,47 +299,42 @@ fn render_rail(frame: &mut Frame, area: Rect, list: &TaskList) {
     };
     let block = Block::default()
         .borders(Borders::RIGHT)
-        .border_style(Style::default().fg(color));
+        .border_style(Style::default().fg(color))
+        .padding(Padding::left(1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let inner = Rect {
-        x: inner.x.saturating_add(1),
-        width: inner.width.saturating_sub(1),
-        ..inner
-    };
     let width = inner.width as usize;
     let items = list.rail_items();
-    let current = list.rail_current(&items);
-    let mut lines = vec![
+    let current = list.rail_current();
+    let selected = list.rail.min(items.len().saturating_sub(1));
+    let heading = vec![
         Line::styled("Chats", Style::default().fg(color).bold()),
         Line::raw(""),
     ];
+    let (mut lines, mut selected_line) = (Vec::new(), 0);
     for (index, item) in items.iter().enumerate() {
         if item.target == RailTarget::ForYou {
             lines.push(Line::raw(""));
         }
-        let marks = super::workspace_tree::tray_marks(
-            item.counts.running,
-            item.counts.needs,
-            item.counts.check,
-        );
-        let marks_width: usize = marks.iter().map(|mark| mark.content.chars().count()).sum();
         let mark = if current == Some(index) { "▸ " } else { "  " };
         let mut style = Style::default().fg(theme::TEXT);
-        if focused && index == list.rail.min(items.len().saturating_sub(1)) {
+        if focused && index == selected {
             style = style.add_modifier(Modifier::REVERSED);
+            selected_line = lines.len();
         }
-        let mut spans = vec![Span::styled(
-            fit(
-                &format!("{mark}{}", item.title),
-                width.saturating_sub(marks_width + 1),
-            ),
+        lines.push(Line::from(named_with_marks(
+            &format!("{mark}{}", item.title),
+            &item.counts,
+            width,
             style,
-        )];
-        spans.extend(marks);
-        lines.push(Line::from(spans));
+        )));
     }
-    frame.render_widget(Paragraph::new(lines), inner);
+    let heading_height = heading.len() as u16;
+    frame.render_widget(Paragraph::new(heading), inner);
+    // ^ More chats than rows: the selected one stays in view, as the chat's items do.
+    let body = below(inner, usize::from(heading_height));
+    let offset = (selected_line + 1).saturating_sub(usize::from(body.height)) as u16;
+    frame.render_widget(Paragraph::new(lines).scroll((offset, 0)), body);
 }
 
 /// The task beside the chat (`TaskList::open_task`): its number and title, the action line,
@@ -339,7 +344,7 @@ pub fn render_task_beside(frame: &mut Frame, area: Rect, list: &TaskList) {
         return;
     };
     frame.render_widget(Clear, area);
-    let color = if list.region == Region::Task {
+    let color = if list.focus() == Region::Task {
         theme::ACCENT
     } else {
         theme::TEXT_SUBTLE
@@ -595,23 +600,15 @@ fn task_lines(
             _ => String::new(),
         };
         // ^ A chat's pill counts follow its name, inside the title's width.
-        let marks = super::workspace_tree::tray_marks(
-            row.counts.running,
-            row.counts.needs,
-            row.counts.check,
-        );
-        let marks_width: usize = marks.iter().map(|mark| mark.content.chars().count()).sum();
-        let mut spans = vec![Span::styled(
-            fit(
-                &format!("{tree}{}", row.title),
-                title_width.saturating_sub(1 + marks_width),
-            ),
+        let mut spans = named_with_marks(
+            &format!("{tree}{}", row.title),
+            &row.counts,
+            title_width,
             Style::default().fg(match row.section {
                 Section::Entry => theme::TEXT_MUTED,
                 _ => theme::TEXT,
             }),
-        )];
-        spans.extend(marks);
+        );
         spans.push(Span::raw(" "));
         if number_width > 0 {
             // ^ A chat has no number: its column stays empty.

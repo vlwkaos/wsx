@@ -1029,40 +1029,49 @@ fn composer(
         let on = text[..at].matches('\n').count();
         let lines: Vec<&str> = text.split('\n').collect();
         let first = (on + 1).saturating_sub(most);
+        // ^ The cursor's line keeps its end in view, as one line does; the others their start.
+        let start = text[..at].rfind('\n').map_or(0, |newline| newline + 1);
+        let end = text[at..]
+            .find('\n')
+            .map_or(text.len(), |newline| at + newline);
+        let (cursor_line, column) = keep_cursor(&text[start..at], &text[at..end], width);
         let shown = lines[first..lines.len().min(first + most)]
             .iter()
-            .map(|line| Line::raw(truncate_to_width(line, width)))
+            .enumerate()
+            .map(|(index, line)| match first + index == on {
+                true => Line::raw(cursor_line.clone()),
+                false => Line::raw(truncate_to_width(line, width)),
+            })
             .collect();
-        let start = text[..at].rfind('\n').map_or(0, |newline| newline + 1);
-        let column = cells(&text[start..at]).min(width.saturating_sub(1)) as u16;
         return (shown, Some((column, (on - first) as u16)));
     }
     let (line, cursor) = composer_line(chat, width);
     (vec![line], cursor.map(|column| (column, 0)))
 }
 
+/// `before` and `after` the cursor in `width` cells, and the cursor's column: a long line shows
+/// its end, where the cursor is. One pass back from the cursor keeps the longest end that is
+/// narrower than the line.
+fn keep_cursor(before: &str, after: &str, width: usize) -> (String, u16) {
+    let (mut kept, mut used) = (Vec::new(), 0);
+    for char in before.chars().rev() {
+        let size = cells(char.encode_utf8(&mut [0; 4]));
+        if used + size >= width {
+            break;
+        }
+        used += size;
+        kept.push(char);
+    }
+    let shown: String = kept.into_iter().rev().collect::<String>() + after;
+    (truncate_to_width(&shown, width), used as u16)
+}
+
 /// The bottom line by focus, and the cursor's column when it takes typing.
 fn composer_line(chat: &ManagerChat, width: usize) -> (Line<'static>, Option<u16>) {
     let typed = |state: &crate::ui::input::InputState| {
-        // ^ A long line shows its end, where the cursor is: one pass back from the cursor
-        // keeps the longest end that is narrower than the line.
-        let (mut kept, mut used) = (Vec::new(), 0);
-        for char in state.buffer[..state.cursor]
-            .chars()
-            .rev()
-            .chain(state.prompt.chars().rev())
-        {
-            let size = cells(char.encode_utf8(&mut [0; 4]));
-            if used + size >= width {
-                break;
-            }
-            used += size;
-            kept.push(char);
-        }
-        let before: String = kept.into_iter().rev().collect();
-        let column = used as u16;
-        let shown = before + &state.buffer[state.cursor..];
-        (Line::raw(truncate_to_width(&shown, width)), Some(column))
+        let before = format!("{}{}", state.prompt, &state.buffer[..state.cursor]);
+        let (shown, column) = keep_cursor(&before, &state.buffer[state.cursor..], width);
+        (Line::raw(shown), Some(column))
     };
     // ^ The find's count after its text: `2/5`, from the oldest match (docs/tasks.md "TUI").
     let count = || {

@@ -14,6 +14,13 @@ use wsx_core::task::{
     usage, view, TaskState, WaitOn,
 };
 
+/// The chat rail's width, and the pane width from which it shows beside the chat: the chat
+/// alone keeps its 100 columns and more (docs/tasks.md "TUI").
+pub const RAIL_WIDTH: u16 = 24;
+pub const RAIL_MIN: u16 = 130;
+/// The pane width from which a task shows beside the chat, the chat at 40% of the rest.
+pub const BESIDE_MIN: u16 = 120;
+
 /// Where the keys go while the chat is open (docs/tasks.md "TUI"): the chat (its timeline or
 /// its message line, `task_chat::Focus`), the task beside it, or the chat rail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,9 +177,12 @@ pub struct TaskList {
     pub detail: Option<u64>,
     /// Where the keys go while the chat is open.
     pub region: Region,
-    /// The rail's selected item, and whether the last frame drew the rail beside the chat.
+    /// The rail's items (`rail_list`) and the selected one.
+    rail_list: Vec<RailItem>,
     pub rail: usize,
-    pub rail_shown: Cell<bool>,
+    /// The Tasks pane's width at the last frame: the chat view's layout follows it
+    /// (`rail_shown`, `task_drawn`), and so do the keys that depend on what shows.
+    pub width: Cell<u16>,
     /// Unsent message lines of the chats left (`stash_draft`), by chat; none is the manager.
     drafts: std::collections::HashMap<Option<String>, String>,
     pub scroll: u16,
@@ -233,7 +243,8 @@ impl TaskList {
             confirm: None,
             region: Region::Chat,
             rail: 0,
-            rail_shown: Cell::new(false),
+            rail_list: rail_list(None),
+            width: Cell::new(0),
             drafts: Default::default(),
             close_chat: None,
             acting: None,
@@ -263,9 +274,11 @@ impl TaskList {
             agent: self.agent.clone(),
             ..usage::Filter::default()
         };
-        let usage_due = self
-            .usage_at
-            .is_none_or(|at| self.usage_stale && at.elapsed() >= USAGE_INTERVAL);
+        // ^ The chat shows no spend lines: their sum waits until it closes.
+        let usage_due = self.chat.is_none()
+            && self
+                .usage_at
+                .is_none_or(|at| self.usage_stale && at.elapsed() >= USAGE_INTERVAL);
         self.pending = Some(rx);
         self.last_check = Instant::now();
         std::thread::spawn(move || {
@@ -319,7 +332,7 @@ impl TaskList {
         self.stash_draft();
         let mut open =
             crate::task_chat::ManagerChat::new(self.project.clone(), self.main.clone(), chat);
-        if let Some(draft) = self.drafts.remove(&open.chat) {
+        if let Some(draft) = self.drafts.remove(&self.chat_key(open.chat.as_deref())) {
             open.composer = crate::ui::input::InputState::with_value("> ", draft);
         }
         self.chat = Some(Box::new(open));
@@ -327,11 +340,13 @@ impl TaskList {
 
     /// Keep the open chat's unsent message line for its next open, in this view.
     pub fn stash_draft(&mut self) {
-        if let Some(chat) = &self.chat {
-            let draft = chat.composer.value();
-            if !draft.is_empty() {
-                self.drafts.insert(chat.chat.clone(), draft.to_string());
-            }
+        let Some(chat) = &self.chat else {
+            return;
+        };
+        let draft = chat.composer.value().to_string();
+        if !draft.is_empty() {
+            let key = self.chat_key(chat.chat.as_deref());
+            self.drafts.insert(key, draft);
         }
     }
 
@@ -554,6 +569,7 @@ impl TaskList {
                     .unwrap_or(self.selected)
                     .min(self.rows.len().saturating_sub(1));
                 self.ledger = Some(ledger);
+                self.rail_list = rail_list(self.ledger.as_ref());
                 // ^ The ledger's open and recent tasks, not the rows: the For you rows list fewer.
                 if let Some(id) = self.detail.filter(|_| self.detail_task().is_none()) {
                     self.task_gone(id);
@@ -583,7 +599,8 @@ impl TaskList {
     /// pane, else the main checkout when the chat is open or no task is listed.
     pub fn shell_target(&self) -> Result<(PathBuf, Option<u64>), String> {
         let task = match &self.chat {
-            Some(_) => None,
+            // ^ With the chat open, `S` is the task's shell while the task has the keys.
+            Some(_) => self.detail.filter(|_| self.focus() == Region::Task),
             None => self
                 .detail
                 .or_else(|| self.rows.get(self.selected).map(|row| row.id)),
@@ -697,8 +714,31 @@ impl TaskList {
         self.chat.is_some() && self.detail_task().is_some()
     }
 
-    /// One key on the task beside the chat: `Esc` closes it, `tab` gives the keys to the
-    /// chat, `j`/`k` scroll, and the detail's actions run (`detail_key`).
+    /// The region that takes the keys while the chat is open: the rail, the task (once its row
+    /// is read), else the chat.
+    pub fn focus(&self) -> Region {
+        match self.region {
+            Region::Rail => Region::Rail,
+            Region::Task if self.task_beside() => Region::Task,
+            _ => Region::Chat,
+        }
+    }
+
+    /// The rail shows beside the chat (the pane is `RAIL_MIN` wide).
+    pub fn rail_shown(&self) -> bool {
+        self.width.get() >= RAIL_MIN
+    }
+
+    /// The task beside the chat is drawn: beside it from `BESIDE_MIN`, else in the chat's place
+    /// while it has the keys.
+    pub fn task_drawn(&self) -> bool {
+        self.task_beside() && (self.width.get() >= BESIDE_MIN || self.focus() == Region::Task)
+    }
+
+    /// One key on the task beside the chat: `Esc` closes it, `tab` gives the keys on, `j`/`k`
+    /// scroll, and the detail's actions run (`detail_key`). The chat takes typing (its input
+    /// mode), so the detail's letters come as characters: `L`, `H`, `a`, and `y`/`n` for a
+    /// question.
     pub fn task_key(&mut self, action: &Action) {
         if self.confirm.is_none() {
             match action {
@@ -709,7 +749,7 @@ impl TaskList {
                 }
                 // ^ The cycle of `tab`: chat, task, rail (when drawn), chat.
                 Action::InputTab => {
-                    self.region = if self.rail_shown.get() {
+                    self.region = if self.rail_shown() {
                         Region::Rail
                     } else {
                         Region::Chat
@@ -727,94 +767,75 @@ impl TaskList {
                 _ => {}
             }
         }
+        let action = match action {
+            Action::InputChar('L') => &Action::Land,
+            Action::InputChar('H') => &Action::ConfirmHalt,
+            Action::InputChar('a') => &Action::NextActive,
+            Action::InputChar('y') => &Action::ConfirmYes,
+            Action::InputChar('n') => &Action::NextAttention,
+            action => action,
+        };
         self.detail_key(action);
     }
 
-    /// The chat rail (docs/tasks.md "TUI"): the manager, the open chats as the list orders them
-    /// with their counts, and For you with the number that waits.
-    pub fn rail_items(&self) -> Vec<RailItem> {
-        let mut items = vec![RailItem {
-            title: "Manager".into(),
-            counts: Default::default(),
-            target: RailTarget::Manager,
-        }];
-        let Some(ledger) = &self.ledger else {
-            return items;
-        };
-        let main = self.main_chat();
-        for row in rows(ledger) {
-            if row.section != Section::Chats || row.chat.is_empty() || row.state != "open" {
-                continue;
-            }
-            if Some(row.chat.as_str()) == main {
-                items[0].counts = row.counts;
-                continue;
-            }
-            items.push(RailItem {
-                title: row.title,
-                counts: row.counts,
-                target: RailTarget::Chat(row.chat),
-            });
-        }
-        let waiting = ledger["for_you"].as_array().map_or(0, Vec::len);
-        items.push(RailItem {
-            title: "For you".into(),
-            counts: wsx_core::task::needs::ChatCounts {
-                needs: waiting,
-                ..Default::default()
-            },
-            target: RailTarget::ForYou,
-        });
-        items
+    /// The rail's items, built at each ledger read (`rail_list`).
+    pub fn rail_items(&self) -> &[RailItem] {
+        &self.rail_list
     }
 
     /// The main chat's name, as the ledger marks it.
     fn main_chat(&self) -> Option<&str> {
-        self.ledger.as_ref()?["chats"]
-            .as_array()?
-            .iter()
-            .find(|chat| chat["main"].as_bool() == Some(true))?["name"]
-            .as_str()
+        self.ledger.as_ref().and_then(main_chat)
+    }
+
+    /// A chat by its key: the main chat's name is the manager (none), as `open_chat(None)`
+    /// opens it.
+    fn chat_key(&self, chat: Option<&str>) -> Option<String> {
+        chat.filter(|name| Some(*name) != self.main_chat())
+            .map(str::to_string)
     }
 
     /// The rail item of the open chat.
-    pub fn rail_current(&self, items: &[RailItem]) -> Option<usize> {
-        let open = self.chat.as_ref()?.chat.as_deref();
-        let main = self.main_chat();
-        items.iter().position(|item| match &item.target {
-            RailTarget::Manager => open.is_none() || open == main,
-            RailTarget::Chat(name) => open == Some(name.as_str()),
+    pub fn rail_current(&self) -> Option<usize> {
+        let open = self.chat_key(self.chat.as_ref()?.chat.as_deref());
+        self.rail_list.iter().position(|item| match &item.target {
+            RailTarget::Manager => open.is_none(),
+            RailTarget::Chat(name) => open.as_deref() == Some(name.as_str()),
             RailTarget::ForYou => false,
         })
     }
 
     /// `^g`: the keys go to the rail, its open chat selected.
     pub fn focus_rail(&mut self) {
-        let items = self.rail_items();
-        self.rail = self.rail_current(&items).unwrap_or(0);
+        self.rail = self.rail_current().unwrap_or(0);
         self.region = Region::Rail;
     }
 
-    /// One key on the rail: `j`/`k` move, `Enter` opens the item, `Esc` or `tab` gives the keys
-    /// back to the chat.
+    /// One key on the rail: `j`/`k` move, `Enter` opens the item (another chat closes the task
+    /// beside this one), `Esc` or `tab` gives the keys back to the chat.
     pub fn rail_key(&mut self, action: &Action) {
-        let items = self.rail_items();
-        let last = items.len().saturating_sub(1);
+        let last = self.rail_list.len().saturating_sub(1);
         match action {
             Action::NavigateDown | Action::InputChar('j') => self.rail = (self.rail + 1).min(last),
             Action::NavigateUp | Action::InputChar('k') => self.rail = self.rail.saturating_sub(1),
             Action::InputEscape | Action::InputTab => self.region = Region::Chat,
             Action::Select => {
-                let current = self.rail_current(&items);
+                self.rail = self.rail.min(last);
                 self.region = Region::Chat;
-                match items.get(self.rail.min(last)).map(|item| &item.target) {
-                    _ if current == Some(self.rail.min(last)) => {}
+                if self.rail_current() == Some(self.rail) {
+                    return;
+                }
+                let target = self
+                    .rail_list
+                    .get(self.rail)
+                    .map(|item| item.target.clone());
+                self.detail = None;
+                match target {
                     Some(RailTarget::Manager) => self.open_chat(None),
-                    Some(RailTarget::Chat(name)) => self.open_chat(Some(name.clone())),
+                    Some(RailTarget::Chat(name)) => self.open_chat(Some(name)),
                     Some(RailTarget::ForYou) => {
                         self.stash_draft();
                         self.chat = None;
-                        self.detail = None;
                         self.set_you(true);
                     }
                     None => {}
@@ -1038,4 +1059,52 @@ pub fn run_message(
     let run = view.latest_run.as_ref()?;
     let dir = store::ManagerDir::main(&store::project_id(project, main)).ok()??;
     wsx_core::task::chat::run_messages(&dir, &[run]).pop()?
+}
+
+/// The main chat's name in `ledger`'s chats.
+fn main_chat(ledger: &Value) -> Option<&str> {
+    ledger["chats"]
+        .as_array()?
+        .iter()
+        .find(|chat| chat["main"].as_bool() == Some(true))?["name"]
+        .as_str()
+}
+
+/// The chat rail (docs/tasks.md "TUI"): the manager (with the main chat's counts), the open
+/// chats as the list orders them with their counts, and For you with the number that waits, as
+/// the list's "N wait for you" row counts it.
+fn rail_list(ledger: Option<&Value>) -> Vec<RailItem> {
+    let mut items = vec![RailItem {
+        title: "Manager".into(),
+        counts: Default::default(),
+        target: RailTarget::Manager,
+    }];
+    let mut waiting = 0;
+    if let Some(ledger) = ledger {
+        let main = main_chat(ledger);
+        for row in rows(ledger) {
+            if row.section != Section::Chats || row.chat.is_empty() || row.state != "open" {
+                continue;
+            }
+            if Some(row.chat.as_str()) == main {
+                items[0].counts = row.counts;
+                continue;
+            }
+            items.push(RailItem {
+                title: row.title,
+                counts: row.counts,
+                target: RailTarget::Chat(row.chat),
+            });
+        }
+        waiting = ledger["for_you"].as_array().map_or(0, Vec::len);
+    }
+    items.push(RailItem {
+        title: "For you".into(),
+        counts: wsx_core::task::needs::ChatCounts {
+            needs: waiting,
+            ..Default::default()
+        },
+        target: RailTarget::ForYou,
+    });
+    items
 }

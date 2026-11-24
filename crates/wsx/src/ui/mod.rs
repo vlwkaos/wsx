@@ -758,7 +758,7 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
         ),
         // ^ The rail while it has the keys.
         Mode::Tasks { list }
-            if list.chat.is_some() && list.region == crate::task_list::Region::Rail =>
+            if list.chat.is_some() && list.focus() == crate::task_list::Region::Rail =>
         {
             (
                 "CHATS",
@@ -768,14 +768,15 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
         }
         // ^ The task beside the chat while it has the keys: its actions, then how to leave it.
         Mode::Tasks { list }
-            if list.task_beside() && list.region == crate::task_list::Region::Task =>
+            if list.chat.is_some() && list.focus() == crate::task_list::Region::Task =>
         {
             let hints = match list.confirm {
                 Some(_) => vec!["(y)es".into(), "(n)o".into()],
                 None => {
                     let mut hints = tasks::detail_hints(list);
+                    hints.insert(1, "(S)hell".into());
                     hints.push(
-                        if list.rail_shown.get() {
+                        if list.rail_shown() {
                             "tab: chats"
                         } else {
                             "tab: chat"

@@ -1214,7 +1214,9 @@ def manager_up(created):
         (r'(?m)^ MANAGER +Enter: open', b'\r'),
         (r'No task #99999 in this project', b'['),
         (r'(?m)^ MANAGER +Enter: open', b'\r'),
-        (r'(?m)^ TASK +\(j/k\)scroll.*tab: chats +Esc: close', b'\t'),
+        (r'(?m)^ TASK +\(j/k\)scroll.*\(H\)and.*tab: chats +Esc: close', b'H'),
+        (r'(?m)^ TASK +\(y\)es +\(n\)o', b'n'),
+        (r'(?m)^ TASK +\(j/k\)scroll', b'\t'),
         (r'(?m)^ CHATS +\(j/k\)move', b'\x1b'),
         (r'(?m)^ MANAGER +tab: task.*\^g chats', b'\x07'),
         (r'(?m)^ CHATS +\(j/k\)move', b'\t'),
@@ -1225,14 +1227,19 @@ def manager_up(created):
         (r'Enter: send +\u2325Enter: new line', b'line one\x1b\rline two'),
         (r'> line one[^\n]*\n[^\n]*line two', b'\x1b'),
         (r'> line one \u21b5 line two', b'\x1b'), (r'\(m\)anager', b'm'),
-        (r'> line one \u21b5 line two', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], cols=130)
+        (r'> line one \u21b5 line two', b'\x07'),
+        (r'(?m)^ CHATS +\(j/k\)move', b'jjjjjjjjjjjj\r'), (r'\(m\)anager', b'')], cols=130)
     # ^ The rail (the manager marked open), the chat, and the task's number and detail beside it.
     split = beside[6]
     assert re.search(r'#%d ' % manager_task, split) and 'State' in split and 'see #%d' % manager_task in split, split
     assert 'Chats' in split and '\u25b8 Manager' in split and 'For you' in split, split
     # ^ Closed, the chat has the pane again: no detail, no tab hint. Left with Esc and opened again,
-    # the chat keeps its unsent message (steps 16 and 18).
-    assert 'State' not in beside[12] and 'tab: task' not in beside[12], beside[12]
+    # the chat keeps its unsent message (steps 18 and 20).
+    assert 'State' not in beside[14] and 'tab: task' not in beside[14], beside[14]
+    # ^ H asked its question on the task (the chat's typed `H` reaches the detail's action).
+    assert re.search(r'Take over #%d\?' % manager_task, beside[7]), beside[7]
+    # ^ Enter on For you leaves the chat for the For you list: no rail, no chat.
+    assert '\u25b8 Manager' not in beside[-1] and 'see #%d' % manager_task not in beside[-1], beside[-1]
     # ^ After the jump: the owner's Reply (web *Reply*, TUI `r`) sends `> message <id>` too: stored in the same
     # format with the id, and the agent reads the line.
     said_back = js('task', 'say', '> message 1\n\nthe owner answers')

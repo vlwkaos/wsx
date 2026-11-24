@@ -7,8 +7,8 @@ impl App {
         self.ensure_flat();
         // ^ `⌥Enter` is a new line only in the chat's message line; elsewhere it is Enter.
         let composing = matches!(&self.mode, Mode::Tasks { list }
-            if list.region == crate::task_list::Region::Chat
-                && list.chat.as_ref().is_some_and(|chat| chat.focus == crate::task_chat::Focus::Compose));
+            if list.chat.as_ref().is_some_and(|chat| chat.focus == crate::task_chat::Focus::Compose)
+                && list.focus() == crate::task_list::Region::Chat);
         let action = match action {
             Action::InputNewline if !composing => Action::Select,
             action => action,
@@ -151,34 +151,22 @@ impl App {
                 self.needs_redraw = true;
                 return Ok(());
             }
-            // ^ The region with the focus takes the keys (docs/tasks.md "TUI"): `^g` the rail from
-            // anywhere in the chat, then the rail, the task beside the chat, or the chat.
+            // ^ The region with the keys takes them (docs/tasks.md "TUI"); `^g` gives them to the
+            // rail from anywhere in the chat.
             use crate::task_list::Region;
-            if list.chat.is_some() {
-                let region = match list.region {
-                    _ if action == Action::ChatRail => {
-                        list.focus_rail();
-                        None
-                    }
-                    Region::Rail => Some(Region::Rail),
-                    Region::Task if list.task_beside() => Some(Region::Task),
-                    _ => Some(Region::Chat),
-                };
-                if region != Some(Region::Chat) {
-                    match region {
-                        Some(Region::Rail) => list.rail_key(&action),
-                        Some(Region::Task) => list.task_key(&action),
-                        _ => {}
-                    }
-                    self.needs_redraw = true;
-                    return Ok(());
-                }
+            if list.chat.is_some() && action == Action::ChatRail {
+                list.focus_rail();
+                self.needs_redraw = true;
+                return Ok(());
             }
-            // ^ `?` is text in the message line: it opens the help only where the chat types nothing.
-            let help = match &list.chat {
-                Some(chat) => {
-                    chat.focus == crate::task_chat::Focus::Chat && action == Action::InputChar('?')
-                }
+            let focus = list.chat.as_ref().map(|chat| {
+                let region = list.focus();
+                // ^ Where nothing types: the rail, the task, or the chat's messages.
+                let quiet = region != Region::Chat || chat.focus == crate::task_chat::Focus::Chat;
+                (region, quiet)
+            });
+            let help = match focus {
+                Some((_, quiet)) => quiet && action == Action::InputChar('?'),
                 None => action == Action::Help,
             };
             if help {
@@ -186,17 +174,27 @@ impl App {
                 self.needs_redraw = true;
                 return Ok(());
             }
-            let shell = match &list.chat {
-                // ^ The chat takes characters; `S` is the shell only where it types nothing.
-                Some(chat) => {
-                    chat.focus == crate::task_chat::Focus::Chat && action == Action::InputChar('S')
+            let shell = match focus {
+                // ^ `S` is a shell where nothing types: the task's while it has the keys, else the
+                // main checkout's (`shell_target`); not on the rail.
+                Some((region, quiet)) => {
+                    quiet && region != Region::Rail && action == Action::InputChar('S')
                 }
                 None => action == Action::Shell,
             };
             if shell {
                 return self.action_task_shell(terminal);
             }
-            let beside = list.task_beside();
+            match focus {
+                Some((Region::Rail, _)) => list.rail_key(&action),
+                Some((Region::Task, _)) => list.task_key(&action),
+                _ => {}
+            }
+            if matches!(focus, Some((Region::Rail | Region::Task, _))) {
+                self.needs_redraw = true;
+                return Ok(());
+            }
+            let (beside, drawn) = (list.task_beside(), list.task_drawn());
             if let Some(chat) = &mut list.chat {
                 let quiet = chat.focus == crate::task_chat::Focus::Chat;
                 // ^ `o` is the overview only where the chat types nothing; `tab` there gives the
@@ -206,8 +204,8 @@ impl App {
                 } else if quiet && action == Action::InputTab && beside {
                     list.region = Region::Task;
                 } else if !chat.key(&action) {
-                    // ^ Esc unwinds one layer: the task beside the chat, then the chat.
-                    if beside {
+                    // ^ Esc unwinds one layer: the task drawn beside the chat, then the chat.
+                    if drawn {
                         list.detail = None;
                     } else {
                         list.stash_draft();
