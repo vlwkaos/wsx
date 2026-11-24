@@ -205,8 +205,8 @@ impl Launch {
     pub fn reviewer(record: &TaskRecord, folder: &Path) -> Result<(String, Self)> {
         let settings = load_task_config(&record.project_path).map_err(anyhow::Error::msg)?;
         let root = config_root(&record.project_path)?;
-        let adapter = settings.manager_adapter.clone();
-        let model = settings.manager_model.clone();
+        let adapter = settings.chats_adapter.clone();
+        let model = settings.chats_model.clone();
         let env: Vec<(String, std::ffi::OsString)> =
             account_env(root.clone()).into_iter().collect();
         let policy = super::agent::policy(Role::Reviewer, &adapter, &model, &env);
@@ -238,7 +238,7 @@ impl Launch {
             ));
         }
         let mut launch = Self::new(&record.working_copy, boundary, &model, instructions);
-        launch.effort = settings.manager_effort.clone();
+        launch.effort = settings.chats_effort.clone();
         launch.schema = structured.then(wsx_core::task::review_schema);
         launch.env = env;
         Ok((adapter, launch))

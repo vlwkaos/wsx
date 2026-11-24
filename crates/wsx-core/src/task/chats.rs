@@ -547,24 +547,24 @@ pub fn runs_on(dir: &ChatDir, settings: &crate::model::workspace::TaskConfig) ->
             model: own.model,
             event_model: None,
             lead: false,
-            rotate_tokens: settings.manager_rotate_tokens,
+            rotate_tokens: settings.chats_rotate_tokens,
         };
     }
     let lead = is_lead(dir);
     Runs {
-        adapter: settings.manager_adapter.clone(),
+        adapter: settings.chats_adapter.clone(),
         model: if lead {
             settings.lead_model()
         } else {
-            &settings.manager_model
+            &settings.chats_model
         }
         .to_string(),
-        event_model: settings.manager_event_model.clone(),
+        event_model: settings.chats_event_model.clone(),
         lead,
         rotate_tokens: if lead {
-            settings.manager_lead_rotate_tokens
+            settings.lead_rotate_tokens
         } else {
-            settings.manager_rotate_tokens
+            settings.chats_rotate_tokens
         },
     }
 }

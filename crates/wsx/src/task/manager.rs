@@ -293,7 +293,7 @@ pub fn run(chat: &str) -> Result<()> {
         stand_in: None,
         stand_in_look: None,
         model,
-        effort: settings.manager_effort,
+        effort: settings.chats_effort,
         event_model,
         agent_model: String::new(),
         agent_goal: String::new(),
@@ -1393,7 +1393,7 @@ impl Manager {
     fn held_until(&self, until_ms: u64, now: u64) -> String {
         let time = status::resume_time(until_ms, now);
         let settings = load_task_config(&self.main).unwrap_or_default();
-        match agent::stand_in(&settings.manager_fallback, now) {
+        match agent::stand_in(&settings.chats_stand_ins, now) {
             Some(_) => time,
             None => format!("{time} ({})", floor::down_note()),
         }
@@ -1431,7 +1431,7 @@ impl Manager {
         self.stand_in_look = Some(Instant::now());
         let now = now_unix_ms();
         let settings = load_task_config(&self.main).unwrap_or_default();
-        let Some(agent) = agent::stand_in(&settings.manager_fallback, now) else {
+        let Some(agent) = agent::stand_in(&settings.chats_stand_ins, now) else {
             return;
         };
         let account = agent::account(&agent.adapter, &agent.model);

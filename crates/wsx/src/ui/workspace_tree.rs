@@ -105,17 +105,17 @@ fn folded_item<'a>(
     ListItem::new(Line::from(spans)).style(style)
 }
 
-/// `manager_name`: `TaskConfig::manager_shown_name`; the manager's row shows it in place of
+/// `lead_name`: `TaskConfig::manager_shown_name`; the manager's row shows it in place of
 /// its provider `manager` (docs/tasks.md "Config").
 fn session_line(
     sess: &SessionInfo,
     width: usize,
     port_visibility: PortVisibility,
     animation_frame: usize,
-    manager_name: Option<&str>,
+    lead_name: Option<&str>,
 ) -> Line<'static> {
     let (icon, icon_color) = session_icon(sess, animation_frame);
-    let agent = match (sess.agent.as_deref(), manager_name) {
+    let agent = match (sess.agent.as_deref(), lead_name) {
         (Some("manager"), Some(name)) => Some(name),
         (agent, _) => agent,
     };

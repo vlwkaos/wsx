@@ -98,10 +98,10 @@ pub struct TaskConfig {
     /// explicit setting, for opus workers.
     /// ref: docs/tasks.md "Agents"
     pub effort: String,
-    pub manager_effort: String,
+    pub chats_effort: String,
     /// `tasks.chats.standIns`: global agent names, in order, that may stand in for a held
     /// chat (`agent::stand_in`). ref: docs/tasks.md "Agents"
-    pub manager_fallback: Vec<String>,
+    pub chats_stand_ins: Vec<String>,
     /// Context size after which a worker's next turn starts a fresh conversation from its
     /// handoff notes (`tasks.agent.rotateTokens`). ref: docs/tasks.md "Context rotation"
     pub rotate_tokens: u64,
@@ -174,24 +174,24 @@ pub struct TaskConfig {
     pub release_command: Option<String>,
     /// The project manager (`tasks.chats`).
     /// `tasks.lead.name`: the name the owner reads instead of the project's, when set.
-    pub manager_name: Option<String>,
+    pub lead_name: Option<String>,
     /// `tasks.chats.adapter`: the manager's headless adapter (docs/tasks.md "Agents").
-    pub manager_adapter: String,
-    pub manager_model: String,
+    pub chats_adapter: String,
+    pub chats_model: String,
     /// The model of a turn with only wsx's events and no review due; `None` (`off`) keeps
-    /// `manager_model`. ref: docs/tasks.md "Manager"
-    pub manager_event_model: Option<String>,
+    /// `chats_model`. ref: docs/tasks.md "Manager"
+    pub chats_event_model: Option<String>,
     /// `tasks.chats.rotateTokens` when the owner set it; else `None`, and
     /// `manager_rotate_limit` decides by adapter.
-    pub manager_rotate_tokens: Option<u64>,
+    pub chats_rotate_tokens: Option<u64>,
     /// `tasks.lead.model`: the lead's model (the main chat with no goal), `same` for
-    /// `manager_model`; `None` takes `lead_model`'s default. ref: docs/tasks.md "Lead and forks"
-    pub manager_lead_model: Option<String>,
+    /// `chats_model`; `None` takes `lead_model`'s default. ref: docs/tasks.md "Lead and forks"
+    pub lead_model: Option<String>,
     /// `tasks.lead.rotateTokens`; `None` takes `lead_rotate_limit`'s default.
-    pub manager_lead_rotate_tokens: Option<u64>,
+    pub lead_rotate_tokens: Option<u64>,
     /// Quiet seconds after which the manager writes the owner a recap; 0 is off. The config
     /// says minutes (`recapMinutes`, a fraction allowed). ref: docs/tasks.md "Recap"
-    pub manager_recap_secs: u64,
+    pub chats_recap_secs: u64,
     /// `tasks.prune.idleDays` in seconds: a session idle this long is closed; 0 is off.
     /// ref: docs/tasks.md "Stale worktrees"
     pub prune_idle_secs: u64,
@@ -263,11 +263,11 @@ impl TaskConfig {
     /// The lead's model: `leadModel` (`same`: the manager's); unset, `sonnet` on Claude and the
     /// manager's on any other adapter. ref: docs/tasks.md "Lead and forks"
     pub fn lead_model(&self) -> &str {
-        match self.manager_lead_model.as_deref() {
-            Some("same") => &self.manager_model,
+        match self.lead_model.as_deref() {
+            Some("same") => &self.chats_model,
             Some(model) => model,
-            None if self.manager_adapter == "claude" => "sonnet",
-            None => &self.manager_model,
+            None if self.chats_adapter == "claude" => "sonnet",
+            None => &self.chats_model,
         }
     }
 
@@ -283,7 +283,7 @@ impl TaskConfig {
     /// The manager's name as the owner reads it: `tasks.lead.name`, else its project's
     /// name (docs/tasks.md "Config").
     pub fn manager_shown_name<'a>(&'a self, project: &'a str) -> &'a str {
-        self.manager_name.as_deref().unwrap_or(project)
+        self.lead_name.as_deref().unwrap_or(project)
     }
 }
 
@@ -294,8 +294,8 @@ impl Default for TaskConfig {
             model: "opus".into(),
             small_model: String::new(),
             effort: "high".into(),
-            manager_effort: "high".into(),
-            manager_fallback: Vec::new(),
+            chats_effort: "high".into(),
+            chats_stand_ins: Vec::new(),
             // ^ Claude's session limit is 5 hours: it is waited out, a weekly one is not.
             rotate_tokens: 200_000,
             rotate_idle_seconds: 3_600,
@@ -326,16 +326,16 @@ impl Default for TaskConfig {
             release_approve: true,
             deploy_command: None,
             release_command: None,
-            manager_name: None,
-            manager_adapter: "claude".into(),
-            manager_model: "opus".into(),
+            lead_name: None,
+            chats_adapter: "claude".into(),
+            chats_model: "opus".into(),
             // ^ Off: a switch writes the conversation into the other model's cache, which cost
             // more than the turn saved (scripts/bench-manager.py, docs/tasks.md "Manager").
-            manager_event_model: None,
-            manager_rotate_tokens: None,
-            manager_lead_model: None,
-            manager_lead_rotate_tokens: None,
-            manager_recap_secs: 0,
+            chats_event_model: None,
+            chats_rotate_tokens: None,
+            lead_model: None,
+            lead_rotate_tokens: None,
+            chats_recap_secs: 0,
             prune_idle_secs: 14 * 24 * 60 * 60,
             prune_remove_secs: 30 * 24 * 60 * 60,
         }

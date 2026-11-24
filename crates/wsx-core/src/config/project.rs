@@ -511,14 +511,14 @@ pub fn load_task_config(repo_path: &Path) -> Result<TaskConfig, String> {
     }
     // ^ The owner's workflow and stand-in agents apply to every project that names none of
     // its own (docs/tasks.md "Workflow", "Agents").
-    let wants_owner = tasks.workflow.steps.is_empty() || tasks.manager_fallback.is_empty();
+    let wants_owner = tasks.workflow.steps.is_empty() || tasks.chats_stand_ins.is_empty();
     if let Some(path) = owner_config_path().filter(|_| wants_owner) {
         let owner = read_tasks(&path)?;
         if tasks.workflow.steps.is_empty() {
             tasks.workflow.steps = owner.workflow.steps;
         }
-        if tasks.manager_fallback.is_empty() {
-            tasks.manager_fallback = owner.manager_fallback;
+        if tasks.chats_stand_ins.is_empty() {
+            tasks.chats_stand_ins = owner.chats_stand_ins;
         }
     }
     Ok(tasks)
@@ -944,24 +944,24 @@ fn validate_task_agent(agent: TaskAgentFile, config: &mut TaskConfig) -> Result<
 /// `tasks.chats`.
 fn validate_task_chats(chats: TaskChatsFile, config: &mut TaskConfig) -> Result<(), String> {
     if let Some(adapter) = chats.adapter {
-        config.manager_adapter = validate_adapter(adapter, "tasks.chats.adapter")?;
+        config.chats_adapter = validate_adapter(adapter, "tasks.chats.adapter")?;
     }
-    config.manager_fallback = validate_fallback(chats.stand_ins, "tasks.chats.standIns")?;
+    config.chats_stand_ins = validate_fallback(chats.stand_ins, "tasks.chats.standIns")?;
     if let Some(model) = validate_word(chats.model, "tasks.chats.model")? {
-        config.manager_model = model;
+        config.chats_model = model;
     }
     if let Some(effort) = validate_effort(chats.effort, "tasks.chats.effort")? {
-        config.manager_effort = effort;
+        config.chats_effort = effort;
     }
     if let Some(model) = validate_word(chats.event_model, "tasks.chats.eventModel")? {
-        config.manager_event_model = (model != "off").then_some(model);
+        config.chats_event_model = (model != "off").then_some(model);
     }
     if let Some(tokens) = chats.rotate_tokens {
-        config.manager_rotate_tokens =
+        config.chats_rotate_tokens =
             Some(validate_rotate_tokens(tokens, "tasks.chats.rotateTokens")?);
     }
     if let Some(minutes) = chats.recap_minutes {
-        config.manager_recap_secs = minutes_to_secs(minutes, "tasks.chats.recapMinutes")?;
+        config.chats_recap_secs = minutes_to_secs(minutes, "tasks.chats.recapMinutes")?;
     }
     Ok(())
 }
@@ -969,14 +969,14 @@ fn validate_task_chats(chats: TaskChatsFile, config: &mut TaskConfig) -> Result<
 /// `tasks.lead`.
 fn validate_task_lead(lead: TaskLeadFile, config: &mut TaskConfig) -> Result<(), String> {
     // ^ Trimmed first: an empty name is no name, and the project's name shows.
-    config.manager_name = validate_optional_text(
+    config.lead_name = validate_optional_text(
         lead.name.map(|name| name.trim().to_string()),
         "tasks.lead.name",
         MAX_MANAGER_NAME_BYTES,
     )?;
-    config.manager_lead_model = validate_word(lead.model, "tasks.lead.model")?;
+    config.lead_model = validate_word(lead.model, "tasks.lead.model")?;
     if let Some(tokens) = lead.rotate_tokens {
-        config.manager_lead_rotate_tokens =
+        config.lead_rotate_tokens =
             Some(validate_rotate_tokens(tokens, "tasks.lead.rotateTokens")?);
     }
     Ok(())

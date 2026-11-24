@@ -342,14 +342,14 @@ pub fn task_agent(record: &TaskRecord) -> Value {
 pub fn manager_agent(dir: &store::ChatDir, settings: &TaskConfig) -> Value {
     match dir.read_state().ok().and_then(|state| state.agent) {
         Some(agent) => json!({
-            "adapter": agent.adapter, "model": agent.model, "effort": settings.manager_effort,
+            "adapter": agent.adapter, "model": agent.model, "effort": settings.chats_effort,
             "fallback": true,
         }),
         None => {
             let runs = super::chats::runs_on(dir, settings);
             json!({
                 "adapter": runs.adapter, "model": runs.model,
-                "effort": settings.manager_effort, "fallback": false,
+                "effort": settings.chats_effort, "fallback": false,
             })
         }
     }
@@ -359,8 +359,8 @@ pub fn manager_agent(dir: &store::ChatDir, settings: &TaskConfig) -> Value {
 /// New chat form's Default.
 pub fn default_agent(settings: &TaskConfig) -> Value {
     json!({
-        "adapter": settings.manager_adapter, "model": settings.manager_model,
-        "effort": settings.manager_effort, "fallback": false,
+        "adapter": settings.chats_adapter, "model": settings.chats_model,
+        "effort": settings.chats_effort, "fallback": false,
     })
 }
 

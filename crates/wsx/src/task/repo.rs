@@ -182,8 +182,8 @@ pub fn run(project_id: &str) -> Result<()> {
         pruned: None,
         pruning: false,
         flagged: BTreeMap::new(),
-        recap_quiet: (settings.manager_recap_secs > 0)
-            .then(|| Duration::from_secs(settings.manager_recap_secs)),
+        recap_quiet: (settings.chats_recap_secs > 0)
+            .then(|| Duration::from_secs(settings.chats_recap_secs)),
         captures_swept: None,
         last_activity: Instant::now(),
         started: Instant::now(),
