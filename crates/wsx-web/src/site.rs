@@ -87,7 +87,7 @@ struct SiteFile {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Notify {
-    /// "Needs you": tasks that wait on the owner, approval requests, To check items.
+    /// "A chat needs me": tasks that wait on the owner, approval requests, To check items.
     pub manager: Merge,
     /// "An agent needs me": session agents that need input or stopped with an error.
     pub agents: Merge,

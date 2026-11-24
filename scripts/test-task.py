@@ -1184,22 +1184,22 @@ def manager_up(created):
     first = reply_to(js('chat', 'say', 'QUOTE 1 jump')['id'])
     assert first['text'] == '> STATUS\n\njump' and first['quote'] == 1, first
     jumped = tui_screens(wsx, env, project, [
-        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
+        (r'WORKSPACE', b't'), (r'\(m\)lead', b'm'),
         (r'(?m)^   \u258e STATUS$', b'['),
         (r'(?m)^ LEAD +Enter: open', b'\r'),
         (r'(?m)^ You +\d\d:\d\d\n   STATUS$', b'\x1b'),
-        (r'(?m)^ LEAD +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+        (r'(?m)^ LEAD +\(i\)message', b'\x1b'), (r'\(m\)lead', b'\x1b'), (r'WORKSPACE', b'')])
     assert 'jump' in jumped[2] and 'jump' not in jumped[4], jumped[4]
     # ^ A mermaid block the chat can draw shows as its diagram, its source one link under it; Enter
     # on that link shows the source. A type it does not draw is the link alone (docs/tasks.md "TUI").
     reply_to(js('chat', 'say', 'not drawn\n\n```mermaid\nzenuml\n  title Demo\n```')['id'])
     reply_to(js('chat', 'say', 'drawn\n\n```mermaid\nflowchart TD\n  Plan --> Land\n```')['id'])
     diagrams = tui_screens(wsx, env, project, [
-        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
+        (r'WORKSPACE', b't'), (r'\(m\)lead', b'm'),
         (r'(?s)▸ diagram not drawn \(mermaid, 2 lines\).*│ Plan │.*│ Land │.*▸ mermaid source \(2 lines\)', b'['),
         (r'(?m)^ LEAD +Enter: open', b'\r'),
         (r'(?s)▾ mermaid source \(2 lines\)\n +flowchart TD\n +Plan --> Land', b'\x1b'),
-        (r'(?m)^ LEAD +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+        (r'(?m)^ LEAD +\(i\)message', b'\x1b'), (r'\(m\)lead', b'\x1b'), (r'WORKSPACE', b'')])
     assert 'zenuml' not in diagrams[2] and 'flowchart TD' not in diagrams[2], diagrams[2]
     # ^ A `#N` in a message is a link: Enter shows that task beside the chat from 120 columns, keys on
     # it; a number the project does not have says so. From 130 columns the chat rail shows on the
@@ -1208,7 +1208,7 @@ def manager_up(created):
     mentioned = reply_to(js('chat', 'say', 'see #%d and #99999' % manager_task)['id'])
     assert '#' not in mentioned['text'], mentioned
     beside = tui_screens(wsx, env, project, [
-        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'see #%d and #99999' % manager_task, b'['),
+        (r'WORKSPACE', b't'), (r'\(m\)lead', b'm'), (r'see #%d and #99999' % manager_task, b'['),
         (r'(?m)^ LEAD +Enter: open', b'\r'),
         (r'No task #99999 in this project', b'['),
         (r'(?m)^ LEAD +Enter: open', b'\r'),
@@ -1224,9 +1224,9 @@ def manager_up(created):
         (r'(?m)^ LEAD +\(i\)message', b'i'),
         (r'Enter: send +\u2325Enter: new line', b'line one\x1b\rline two'),
         (r'> line one[^\n]*\n[^\n]*line two', b'\x1b'),
-        (r'> line one \u21b5 line two', b'\x1b'), (r'\(m\)anager', b'm'),
+        (r'> line one \u21b5 line two', b'\x1b'), (r'\(m\)lead', b'm'),
         (r'> line one \u21b5 line two', b'\x07'),
-        (r'(?m)^ CHATS +\(j/k\)move', b'jjjjjjjjjjjj\r'), (r'\(m\)anager', b'')], cols=130)
+        (r'(?m)^ CHATS +\(j/k\)move', b'jjjjjjjjjjjj\r'), (r'\(m\)lead', b'')], cols=130)
     # ^ The rail (the manager marked open), the chat, and the task's number and detail beside it.
     split = beside[6]
     assert re.search(r'#%d ' % manager_task, split) and 'State' in split and 'see #%d' % manager_task in split, split
@@ -2042,11 +2042,11 @@ def part_core(created=None):
         hinted = tui_screens(wsx, env, project, [
             (r'WORKSPACE', b't'),
             (r'#%d +working' % sh, b'm'),
-            (r'MANAGER', b'')], cols=cols, raw=frames)
+            (r'LEAD', b'')], cols=cols, raw=frames)
         (captures / ('tasks-%d.ans' % cols)).write_bytes(frames[1])
         (captures / ('manager-%d.ans' % cols)).write_bytes(frames[2])
         # ^ The footer keeps `(S)hell` and `Esc: close` at both widths.
-        assert re.search(r'(?m)^ TASKS +\(j/k\)move +\(enter\)detail +\(m\)anager +\(S\)hell +Esc: close ', hinted[1]), hinted[1]
+        assert re.search(r'(?m)^ TASKS +\(j/k\)move +\(enter\)detail +\(m\)lead +\(S\)hell +Esc: close ', hinted[1]), hinted[1]
         # ^ The footer line by its content: `(u)sage` follows `(a)gent`, fits at 120 columns and
         # goes before `(o)verview` at 80 (ui/mod.rs `status_bar`).
         footer = re.search(r'(?m)^ TASKS .*$', hinted[1]).group(0)
@@ -2065,7 +2065,7 @@ def part_core(created=None):
         (r'at:%s' % re.escape(copy_name), b'\x01w'),
         (shown_task, b'\x1b'),
         (r'(?m)^ TASKS ', b'm'),
-        (r'MANAGER', b'S'),
+        (r'LEAD', b'S'),
         (prompt, where),
         (r'at:%s' % re.escape(project.name), b'')])
     copy_path = show(sh)['record']['working_copy']
@@ -2080,7 +2080,7 @@ def part_core(created=None):
         (r'at:%s' % re.escape(copy_name), b'\x01w'),
         (shown_task, b'\x1b'),
         (r'(?m)^ TASKS ', b'm'),
-        (r'MANAGER', b'S'),
+        (r'LEAD', b'S'),
         (r'at:%s' % re.escape(project.name), b'')])
     assert 'TASK ' not in again[3] and 'LEAD' not in again[-1], again
     assert [label for label in sessions_at(copy_path) if label != 'task-%d' % sh] == task_shells
@@ -2089,11 +2089,11 @@ def part_core(created=None):
     # exit go back to the chat, and the next `S` makes a new one.
     exited = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b'tm'),
-        (r'MANAGER', b'S'),
+        (r'LEAD', b'S'),
         (r'at:%s' % re.escape(project.name), b'\x01w'),
-        (r'MANAGER', b'S'),
+        (r'LEAD', b'S'),
         (r'at:%s' % re.escape(project.name), b'exit\r'),
-        (r'MANAGER', b'S'),
+        (r'LEAD', b'S'),
         (prompt, b'')])
     assert '(S)hell' in exited[3] and 'at:' not in exited[-1], exited
     renewed = [i for i, label in zip(sessions_at(project, 'id'), sessions_at(project)) if not label.startswith('task-')]
@@ -2159,7 +2159,7 @@ def part_core(created=None):
         (r'#%d +waiting' % ask, rows_to(ask)),
         (r'(?m)^ TASK +\(j/k\)scroll +\(S\)hell +\(a\)nswer +\(H\)and +Esc: back', b'L'),
         (r'(?m)^ TASK .*\(a\)nswer', b'a'),
-        (r'(?s)> #%d\b.*MANAGER' % ask, b'')])
+        (r'(?s)> #%d\b.*LEAD' % ask, b'')])
     assert 'Land #' not in seen[2], seen[2]
     js('task', 'close', ask, '--discard')
 
@@ -3071,14 +3071,14 @@ def part_core(created=None):
     # reaches the board's file (an older quote link is not one `[` further), which Enter shows in place of the chat and Esc closes. A routine's post
     # (any `wsx task post`, here the retrospect's) has its bar in the secondary colour.
     tui_screens(wsx, env, project, [
-        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'MANAGER', b'S'), (r'(?m)\$ *$', b'')])
+        (r'WORKSPACE', b't'), (r'\(m\)lead', b'm'), (r'LEAD', b'S'), (r'(?m)\$ *$', b'')])
     shell_id = next(i for i, label in zip(sessions_at(project, 'id'), sessions_at(project)) if label == 'shell')
     subprocess.run([str(wsx), 'task', 'post', '-p', 'demo', '--title', 'session shell'], env=env, cwd=project,
                    input='[shell in main](session/%d) exited\n' % shell_id, text=True, check=True)
     frames = []
     linked = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
-        (r'\(m\)anager', b'm'),
+        (r'\(m\)lead', b'm'),
         (r'\(\[/\]\)link', b'['),
         (r'(?m)^ LEAD +Enter: open +\(\[/\]\)link +Esc: clear +\(i\)message', b'\r'),
         (r'(?m)\$ *$', b'\x01w'),
@@ -3087,7 +3087,7 @@ def part_core(created=None):
         (r'(?s)files/routine-out/board.html +\d+/\d+\n.*<p>board</p>', b'\x1b'),
         (r'(?m)^ LEAD +Enter: open', b'\x1b'),
         (r'(?m)^ LEAD +\(i\)message', b'\x1b'),
-        (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], raw=frames)
+        (r'\(m\)lead', b'\x1b'), (r'WORKSPACE', b'')], raw=frames)
     # ^ The chat shows the words, not `[words](session/N)`.
     assert 'shell in main exited' in linked[2] and '(session/' not in linked[2], linked[2]
     assert re.search(r'(?m)^ LEAD ', linked[5]) and 'shell in main exited' in linked[5], linked[5]
@@ -3107,8 +3107,8 @@ def part_core(created=None):
     assert bad_level.returncode == 2, bad_level
     leveled = []
     shown = tui_screens(wsx, env, project, [
-        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
-        (r'(?s)rss over 8 GB.*rss over 12 GB', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], raw=leveled)
+        (r'WORKSPACE', b't'), (r'\(m\)lead', b'm'),
+        (r'(?s)rss over 8 GB.*rss over 12 GB', b'\x1b'), (r'\(m\)lead', b'\x1b'), (r'WORKSPACE', b'')], raw=leveled)
     assert re.search(r'(?m)\d\d:\d\d +warn *$', shown[2]) and re.search(r'(?m)\d\d:\d\d +bad *$', shown[2]), shown[2]
     assert 'again' not in shown[2], shown[2]
     colored = leveled[2].decode('utf-8', 'replace')
@@ -3118,8 +3118,8 @@ def part_core(created=None):
     subprocess.run([str(wsx), 'task', 'post', '-p', 'demo', '--title', 'studio image'], env=env, cwd=project,
                    input='Thumbnail: ![trend](files/.studio-data/trend.jpg)\n', text=True, check=True)
     pictured = tui_screens(wsx, env, project, [
-        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
-        (r'Thumbnail: files/\.studio-data/trend\.jpg', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+        (r'WORKSPACE', b't'), (r'\(m\)lead', b'm'),
+        (r'Thumbnail: files/\.studio-data/trend\.jpg', b'\x1b'), (r'\(m\)lead', b'\x1b'), (r'WORKSPACE', b'')])
     assert '![' not in pictured[2] and '(files/' not in pictured[2], pictured[2]
     # ^ `m` in the chat lists the project's media (docs/tasks.md "TUI", "Media"): the To check captures
     # and the pictures and videos the posts link, newest first. Enter shows an item's details and where
@@ -3131,15 +3131,15 @@ def part_core(created=None):
     subprocess.run([str(wsx), 'task', 'post', '-p', 'demo', '--title', 'studio missing'], env=env, cwd=project,
                    input='Missing: ![gone](files/.studio-data/gone.jpg)\n', text=True, check=True)
     listed = tui_screens(wsx, env, project, [
-        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'\(m\)edia', b'm'),
+        (r'WORKSPACE', b't'), (r'\(m\)lead', b'm'), (r'\(m\)edia', b'm'),
         (r'Media +all +all tasks +1/\d+', b'\r'),
         (r'(?s)files/\.studio-data/gone\.jpg +\d+/\d+.*removed: the file is gone', b'\x1b'),
         (r'Media +all +all tasks', b'j\r'),
         (r'(?s)files/\.studio-data/trend\.jpg +\d+/\d+.*image, linked by demo.*file:.*trend\.jpg', b'\x1b'),
         (r'Media +all +all tasks', b'v'), (r'Media +images', b'v'), (r'Media +videos', b'v'),
         (r'Media +all +all tasks', b't'), (r'Media +all +#\d+', b'\x1b'),
-        (r'\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
-    # ^ `(i)message` is in the chat's bar only: the media list's bar also starts with MANAGER, and a second Esc sent
+        (r'\(i\)message', b'\x1b'), (r'\(m\)lead', b'\x1b'), (r'WORKSPACE', b'')])
+    # ^ `(i)message` is in the chat's bar only: the media list's bar also starts with LEAD, and a second Esc sent
     # before the chat is drawn joins the first.
     trend.unlink()
     (project / '.studio-data').rmdir()
@@ -3723,7 +3723,7 @@ def part_worker(created=None):
 
     shots = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
-        (r'\(m\)anager', b'm'),
+        (r'\(m\)lead', b'm'),
         # ^ The heading names the manager as the chat rows do: its shown name, `Atlas` here.
         (r'(?s)%s demo · opus high +1 to check  1 approval\n.*▸ %s' % (js('chat', 'lead')['name'], item['id']), b'i'),
         (r'Enter: send', b'hello from the tui'),
@@ -3738,7 +3738,7 @@ def part_worker(created=None):
         (r'\(n\)deny', b'n'),
         (r'Deny land #%d\? y/n' % asks, b'y'),
         (r'%s denied' % request, b'\x1b'),
-        (r'\(m\)anager', b'\x1b'),
+        (r'\(m\)lead', b'\x1b'),
         (r'WORKSPACE', b'')])
     opened, sent = shots[2], shots[5]
     assert re.search(r'(?m)^ +▸ %s +#%d +open the file' % (item['id'], seen_item), opened), opened
@@ -3753,8 +3753,8 @@ def part_worker(created=None):
     assert [r['state'] for r in rows if r['id'] == item['id']][-1] == 'passed', rows
     assert js('chat', 'ledger')['approvals'] == [] and show(asks)['state'] == 'ready'
     narrow = tui_screens(wsx, env, project, [
-        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'(?m)^ You +\d\d:\d\d$', b'\x1b'),
-        (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], cols=80)[2]
+        (r'WORKSPACE', b't'), (r'\(m\)lead', b'm'), (r'(?m)^ You +\d\d:\d\d$', b'\x1b'),
+        (r'\(m\)lead', b'\x1b'), (r'WORKSPACE', b'')], cols=80)[2]
     assert re.search(r'(?m)^ You +\d\d:\d\d$', narrow) and 'hello from the tui' in narrow, narrow
     # `/` finds in the chat (docs/tasks.md "TUI"): "quasar" is only in the 1st and 4th of 210 older
     # turns, past the newest 200 entries, so the find reads the whole log. It starts at the newer
@@ -3769,13 +3769,13 @@ def part_worker(created=None):
         {'kind': 'reply', 'id': 90002 + 2 * n, 'to': [90001 + 2 * n], 'unix_ms': long_ago + n * 20_000 + 2000,
          'text': 'The quasar notes are in docs.' if n == 3 else 'Older answer %d.' % n})))
     found = tui_screens(wsx, env, project, [
-        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'\(/\)find', b'/'),
+        (r'WORKSPACE', b't'), (r'\(m\)lead', b'm'), (r'\(/\)find', b'/'),
         (r'Enter: keep', b'QUASAR'),
         (r'(?m)^ /QUASAR 2/2', b'\r'),
         (r'n: older', b'n'),
         (r'(?m)^ /QUASAR 1/2', b'N'),
         (r'(?m)^ /QUASAR 2/2', b'\x1b'),
-        (r'\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+        (r'\(i\)message', b'\x1b'), (r'\(m\)lead', b'\x1b'), (r'WORKSPACE', b'')])
     old_log.unlink()
     assert 'The quasar notes are in docs.' in found[4], found[4]
     assert 'Where did the Quasar notes go?' in found[6], found[6]
@@ -3913,12 +3913,12 @@ def part_worker(created=None):
     # ^ In the TUI, Enter on that quote reads the part around message 1, marks it and says how to
     # go back; Esc reads the newest part again.
     rolled = tui_screens(wsx, env, project, [
-        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
+        (r'WORKSPACE', b't'), (r'\(m\)lead', b'm'),
         (r'(?m)^   \u258e STATUS$', b'['),
         (r'(?m)^ LEAD +Enter: open', b'\r'),
         (r'(?m)^ LEAD +Esc: newest', b''),
         (r'(?m)^ You +\d\d:\d\d\n   STATUS$', b'\x1b'),
-        (r'across the rolls', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+        (r'across the rolls', b'\x1b'), (r'\(m\)lead', b'\x1b'), (r'WORKSPACE', b'')])
     assert 'across the rolls' not in rolled[5], rolled[5]
     for rolled_log in ('log.1.jsonl', 'log.2.jsonl'):
         manager_log.with_name(rolled_log).unlink()
@@ -6488,7 +6488,7 @@ def part_host(created=None):
             (r'(?ms)^ Chats$.*^ billing +(?:[…!✓]\d+ +)*open +haiku · Drive the billing', b'j' * (below + above)),
             (r'\(enter\)chat', b'\r'),
             (r'(?ms)^ billing +\d\d:\d\d$.*CHAT', b'\x1b'),
-            (r'\(m\)anager', b'\x1b'),
+            (r'\(m\)lead', b'\x1b'),
             (r'WORKSPACE', b'')], cols=cols)
         talk = shots[3]
         assert 'to check' not in talk and re.search(r'(?m)^ billing +\d\d:\d\d$', talk), talk
@@ -7772,9 +7772,9 @@ def part_chats(created=None):
     # The TUI draws the same words as the chat entry's short form.
     tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
-        (r'\(m\)anager', b'm'),
+        (r'\(m\)lead', b'm'),
         (r'other #%d done' % n, b'\x1b'),
-        (r'\(m\)anager', b'\x1b'),
+        (r'\(m\)lead', b'\x1b'),
         (r'WORKSPACE', b'')])
     # Memory: the memo is a fact in demo's scope, verified by other's task, its paths checked in other.
     hit = wait(lambda: next((h for h in memory_records(cli('memory', 'search', 'reach lesson', '--json').stdout)

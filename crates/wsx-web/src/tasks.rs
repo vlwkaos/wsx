@@ -1455,7 +1455,7 @@ pub struct Watch {
     requests: HashMap<u64, HashSet<String>>,
     /// The last reply id seen, by project and chat (`manager` for the lead).
     replies: HashMap<(u64, String), u64>,
-    /// New items for "Needs you" that wait for the merge window.
+    /// New items for "A chat needs me" that wait for the merge window.
     pending: crate::events::Pending<(u64, Key)>,
     /// New posts with a level, by project; each is a push of its own.
     alerts: crate::events::Pending<(u64, Alert)>,
@@ -1472,7 +1472,7 @@ impl Watch {
     }
 }
 
-/// One item of "Needs you".
+/// One item of "A chat needs me".
 #[derive(Clone, PartialEq, Eq)]
 enum Key {
     Task(u32),
@@ -1502,7 +1502,7 @@ struct Open {
     count: usize,
 }
 
-/// The items of "Needs you" in an overview, in its order (docs/web-client.md
+/// The items of "A chat needs me" in an overview, in its order (docs/web-client.md
 /// "Notifications"): `#4 Fix the login: Waiting for your answer`, `Approve land #5`, `2 to check`.
 fn attention(project: u64, overview: &Value) -> Vec<Open> {
     let mut open = Vec::new();
@@ -1547,7 +1547,7 @@ fn attention(project: u64, overview: &Value) -> Vec<Open> {
     open
 }
 
-/// Note new tasks that wait on the owner and new approval requests for "Needs you".
+/// Note new tasks that wait on the owner and new approval requests for "A chat needs me".
 fn notice(scope: &Scope, watch: &mut Watch) {
     let land_auto = load_task_config(&scope.path).is_ok_and(|settings| settings.land_auto);
     let first = !watch.seen.contains_key(&scope.project);
@@ -1583,7 +1583,7 @@ fn notice(scope: &Scope, watch: &mut Watch) {
     }
 }
 
-/// Note a reply the lead or a chat started on its own for "Needs you": one that is
+/// Note a reply the lead or a chat started on its own for "A chat needs me": one that is
 /// a message (not quiet) to a turn of only wsx's events or a recap request, as after a
 /// routine's result. A reply to the owner or another lead is no news (docs/web-client.md
 /// "Notifications"). Another chat's names it and opens it. A `post` came from wsx, not
@@ -1659,7 +1659,7 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
 }
 
 /// Once the merge window of new items passed: one push of its own for each post with a level
-/// (`wsx task post --level warn|bad`), and one "Needs you" push that names every
+/// (`wsx task post --level warn|bad`), and one "A chat needs me" push that names every
 /// open item, replacing the one before (its tag). A device whose page shows the project of
 /// every new item is skipped. `badge` is what needs the owner now, for the app badge.
 pub fn flush(app: &Arc<App>, watch: &mut Watch, badge: usize) {
@@ -1690,7 +1690,7 @@ fn flush_alerts(app: &Arc<App>, alerts: Vec<(u64, Alert)>, badge: usize) {
     }
 }
 
-/// The "Needs you" push for `new`, once per merge window.
+/// The "A chat needs me" push for `new`, once per merge window.
 fn flush_needs(app: &Arc<App>, watch: &Watch, new: Vec<(u64, Key)>, badge: usize) {
     // ^ An item answered within the window is no news.
     let new: Vec<(u64, Key)> = new

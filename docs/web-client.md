@@ -53,7 +53,7 @@ max_file_bytes = 26214400
 quota_bytes = 1073741824
 ttl_seconds = 604800
 
-[notify.manager]                          # optional; "Needs you" ("Notifications")
+[notify.manager]                          # optional; "A chat needs me" ("Notifications")
 merge_seconds = 3                         # 1-60: new items this close go in one push
 [notify.agents]                           # optional; "An agent needs me"
 merge_seconds = 3                         # 1-60
@@ -266,10 +266,10 @@ A push reaches the owner only when the owner must act. Settings has two switches
 | An agent needs me | a listed session's agent needs input or stopped with an error | one session: `<project> › <branch>: <label>` over `Needs your input: <the question or the call it waits on>` or `Stopped with an error: <the call that failed, else the last reply>`; more: `3 agents need input: a, b, c; 1 agent stopped with an error: d`, one line per session | the session when only one, else the inbox |
 
 - Each switch is one push per device that replaces the earlier one (tag `wsx-<site>-manager`, `wsx-<site>-agents`) and counts every item still open, so a phone shows one notice per switch. It goes out once `notify.<switch>.merge_seconds` passed since the first new item; later ones in that window join it, and an item answered within the window is no news. Only a change notifies: the first sight of a session or project, as at a server start, does not. A session that blocked while wsxd was away (a restart or a live handoff) is a change from the state the server remembered, so it notifies after the reconnect. An agent that finished never pushes; the Sessions list shows it.
-- "Needs you" follows one rule for every open chat, the project's main chat and any other (`wrote` in `tasks.rs`, `test-web-client.py` "a reply the lead started" and "a reply a chat started"): only a reply it started on its own pushes; a reply to the owner never does, in any chat. The unread mark on Home follows one rule too (a reply that is not quiet or a To check item, [web-client-tasks.md](web-client-tasks.md) "Home").
+- "A chat needs me" follows one rule for every open chat, the project's main chat and any other (`wrote` in `tasks.rs`, `test-web-client.py` "a reply the lead started" and "a reply a chat started"): only a reply it started on its own pushes; a reply to the owner never does, in any chat. The unread mark on Home follows one rule too (a reply that is not quiet or a To check item, [web-client-tasks.md](web-client-tasks.md) "Home").
 - A post with a level pushes as its own notice, not as an item of the push above: the title is `<project>: <post title>` (cut at 60), the body the post's first line (cut at 160), the tag `wsx-<site>-alert-<project>-<reply>` so it replaces nothing and stays on the phone, and a tap opens the project. It follows the switch, `merge_seconds` and the presence rule of "Needs you".
 - A line is at most 160 characters with the title cut at 60; a body stops at 1500 bytes and ends `and <n> more`.
-- No "Needs you" push goes to a device while one of its visible pages shows the project of every new item ([web-client-tasks.md](web-client-tasks.md) "Task notifications").
+- No "A chat needs me" push goes to a device while one of its visible pages shows the project of every new item ([web-client-tasks.md](web-client-tasks.md) "Task notifications").
 - Mute: a session's `⋯` menu has *Mute notifications* (*Unmute notifications*) while the device has "An agent needs me" on. A muted session is left out of that device's agent pushes. Settings says "2 sessions muted" with *Unmute all*. A mute ends with its session.
 - Stored per device in `push.json`: the subscription, `choices` (`manager`, `agents`) and `muted`. Fields of earlier versions are ignored at start, also in a page's save: a device that had only the digest on has no subscription left. Their topics are read once: `blocked` and `error` turn on "An agent needs me", `tasks` "Needs you", `done` nothing.
 - `GET api/push` answers `{public_key, choices, muted}`; `POST api/push {subscription, choices: {manager, agents}}` saves (403 for `manager` without `task_view`, 400 for an endpoint off `service_origins` or bad keys); `DELETE api/push` removes the subscription; `POST api/push/mute {session, muted}` (404 for a session outside the grant, 409 `notifications_off` without a subscription).

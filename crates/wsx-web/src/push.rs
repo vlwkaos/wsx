@@ -100,7 +100,7 @@ impl Subscription {
     }
 
     /// Earlier topics as switches: blocked and error are "An agent needs me", tasks is
-    /// "Needs you", and done maps to nothing.
+    /// "A chat needs me", and done maps to nothing.
     fn migrate(&mut self) {
         let topics = std::mem::take(&mut self.topics);
         let choices = &mut self.choices;

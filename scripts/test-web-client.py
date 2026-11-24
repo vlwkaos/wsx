@@ -3346,7 +3346,7 @@ capabilities = ["terminal_view"]
             assert refused[0] == 400, endpoint
         assert owner.request('POST', '/api/push', {'subscription': {'endpoint': push_origin + '/push/1', 'keys': dict(keys, auth='AAAA')}, 'choices': agents_only})[0] == 400
         subscription = {'endpoint': push_origin + '/push/device-1', 'keys': keys, 'expirationTime': None}
-        # "Manager needs me" needs task_view.
+        # "A chat needs me" needs task_view.
         assert owner.request('POST', '/api/push', {'subscription': subscription, 'choices': dict(agents_only, manager=True)})[0] == 403
         assert pushes() == []
         # A page opened before the digest went still sends its `digest`: the save ignores it.
@@ -5087,7 +5087,7 @@ merge_seconds = 3
             assert steady(owner, 'GET', '/api/tasks/%d/checks/%s/poster' % (ids['ui'], video_item['id']))[0] == 200
             ok('a removed capture: capture_removed on the task\'s item, its route 404, the poster still served')
 
-        # --- "Manager needs me": one push per device naming every open item, replacing the one
+        # --- "A chat needs me": one push per device naming every open item, replacing the one
         # before; ready, failed and landed do not push (docs/web-client.md "Notifications").
         def pushes(kind, path='/push/tasks'):
             file = work / 'push.jsonl'
@@ -5210,9 +5210,12 @@ merge_seconds = 3
         wait(lambda: len(talk()) > replies and 'Where things stand' in talk()[-1]['text'], 'the reply to the owner')
         time.sleep(5)
         assert len(pushes('manager')) == baselines['manager'], 'a push for a reply to the owner'
-        tabled = js('task', 'new', 'NOOP TABLE', '-p', 'demo')['id']
-        wait_state(tabled, 'ready')
-        own = new_pushes('manager', 'the push of a reply the manager started')
+        # ^ A task's event starts no turn (docs/tasks.md "Chat host"); a routine's result, told to the
+        # lead only (--no-post), does: its table reply is one the lead started on its own.
+        js('project', 'routine', 'add', 'table-news', '-p', 'demo', '--cron', '0 3 1 1 *', '--no-post', '--arg=echo', '--arg=TABLE')
+        js('project', 'routine', 'run', 'table-news', '-p', 'demo')
+        own = new_pushes('manager', 'the push of a reply the lead started')
+        js('project', 'routine', 'delete', 'table-news', '-p', 'demo')
         assert len(own) == 1 and own[0] == manager_push(wrote='demo'), (own, manager_push(wrote='demo'))
         # ^ manager_push()'s badge counts the overviews' needs only.
         assert says(own[0], 'demo wrote to you'), own

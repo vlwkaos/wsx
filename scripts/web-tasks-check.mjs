@@ -2563,7 +2563,7 @@ await until("!!document.querySelector('.task-next button[aria-label=\"Approve di
 // ^ The story says what an action is for; its row holds the buttons alone.
 if ((await text(".task-next p")).length) await fail(`an action row repeats the story: ${await text(".task-next p")}`);
 told = await story();
-if (told.ask !== "The manager asks: Approve discard #4" || told.next !== "It goes on when you approve or deny it." || await sheetState() !== "Waiting for your approval") await fail(`the top of a blocked task with an approval reads ${JSON.stringify(told)}`);
+if (told.ask !== "Its chat asks: Approve discard #4" || told.next !== "It goes on when you approve or deny it." || await sheetState() !== "Waiting for your approval") await fail(`the top of a blocked task with an approval reads ${JSON.stringify(told)}`);
 // ^ No Shared files outside a conflict.
 if ((await openSections()).includes("Shared files")) await fail("a task that is not in conflict shows Shared files");
 await shot("task-blocked", ".composer-send");
@@ -2575,7 +2575,7 @@ await resize([390, 844, 2]);
 await clickNext("Deny");
 await until("!document.querySelector('.task-next button[aria-label=\"Approve discard #4\"]')", "the denied approval stayed", 300);
 told = await story();
-if (!told.ask || told.next !== "Answer the manager; the worker goes on then.") await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
+if (!told.ask || told.next !== "Answer its chat; the worker goes on then.") await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
 if (await count(".task-sheet textarea, .task-message, .task-steer")) await fail("the sheet still has a message field");
 // ^ Opened from another place, with Home under it: its Answer goes to the project's chat, and the
 // draft is there.
@@ -3300,7 +3300,7 @@ await evaluate(`${rowOf("#1")}.querySelector('.row-open').click()`);
 await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the waiting task's sheet did not open");
 await lean("the waiting sheet");
 told = await story();
-if (!told.ask || told.next !== "Answer the manager; the worker goes on then.") await fail(`the top of a waiting task reads ${JSON.stringify(told)}`);
+if (!told.ask || told.next !== "Answer its chat; the worker goes on then.") await fail(`the top of a waiting task reads ${JSON.stringify(told)}`);
 await shot("waiting-sheet", ".composer-send");
 await resize([1280, 800, 1]);
 await until("!!document.querySelector('dialog.task-sheet[open] .task-next button[aria-label^=\"Answer #1\"]')", "the waiting sheet has no Answer at 1280 px");
@@ -3402,7 +3402,7 @@ await until("document.querySelectorAll('.options input[role=switch]').length ===
 await settled("Settings opened");
 if (JSON.stringify(await switches()) !== JSON.stringify({ manager: false, agents: false })) await fail(`a new device has switches on: ${JSON.stringify(await switches())}`);
 const labels = await text(".option-row .option-text");
-if (!labels[0].startsWith("Manager needs me") || !labels[1].startsWith("An agent needs me") ) await fail(`the switch labels are ${labels}`);
+if (!labels[0].startsWith("A chat needs me") || !labels[1].startsWith("An agent needs me") ) await fail(`the switch labels are ${labels}`);
 // ^ Short hints, no "on this device" in a title, and General holds no appearance or header setting (they are in UI).
 const hints = await text(".option-row .option-hint");
 if (hints.join("|") !== "Tasks, approvals, things to check|Input needed or an error") await fail(`the notification hints are ${hints}`);
@@ -3419,7 +3419,7 @@ if ((await switches()).manager) await fail("the manager switch stayed on after t
 await shot("settings-notifications-denied");
 await evaluate("globalThis.PUSH_PERMISSION = 'granted'");
 await click("input[name=manager]");
-await until("document.querySelector('.option-status')?.textContent === 'Saved.'", "turning on Manager needs me was not saved");
+await until("document.querySelector('.option-status')?.textContent === 'Saved.'", "turning on A chat needs me was not saved");
 await settled("the manager switch");
 const stored = await evaluate("fetch('api/push').then((response) => response.json())");
 if (!stored.choices.manager || stored.choices.agents) await fail(`the server stored ${JSON.stringify(stored.choices)}`);
@@ -3557,7 +3557,7 @@ phase("Progress: the top of an open task's sheet at 390x844, for ea");
   });
   await go(plansChat);
   await open(working);
-  await shows(working, "stuck", { ...workingTop, health: "Stuck", age: "1h ago", next: "No output for 1 h 0 min. The manager hears of the stall and decides what to do." });
+  await shows(working, "stuck", { ...workingTop, health: "Stuck", age: "1h ago", next: "No output for 1 h 0 min. Its chat hears of the stall and decides what to do." });
   // ^ A stuck task stands out from a working one: its own color, no pulse, Take over on the screen.
   const stuckSignal = await signal();
   const [red, green] = stuckSignal.color.match(/\d+/g).map(Number);

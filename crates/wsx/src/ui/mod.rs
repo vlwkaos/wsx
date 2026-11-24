@@ -824,7 +824,7 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
                     Some(_) => "(enter)chat".into(),
                     None => "(enter)detail".into(),
                 },
-                "(m)anager".into(),
+                "(m)lead".into(),
             ];
             if list.selected_chat().is_some() {
                 hints.extend(["(d)close chat".into(), "(x)dismiss".into()]);

@@ -128,6 +128,25 @@ earlier wsx left away).
 | Circuit breaker | 3 undone or rejected results in a day drop one tier until it passes its eval again |
 | Provenance | every message and proof card shows its agent and tier |
 
+## Evaluation
+
+`scripts/eval-desk.py` answers one question: does desk mode keep the quality of one plain Claude Code session, and
+at what cost in tokens and minutes? Cases are this repo's commits that change `crates/*/src` and a top-level
+`crates/<crate>/tests/<name>.rs` (at most 400 lines, no merge). Each runs twice from the parent commit: `solo`
+(one `claude -p` with the commit message) and `desk` (an isolated wsx; the message goes to the lead with
+`wsx chat say`; no approval is given, so a task waiting for one is unfinished). The same judge then copies the
+commit's test files into the final tree (desk: `main` after landing) and runs `cargo nextest run -p <crate> --test <name>`.
+Results: `.work/eval/<run>/results.jsonl` and a table (pass rate, median minutes, median tokens).
+
+```sh
+scripts/eval-desk.py --dry-run --cases 1   # fake agent, no model call: the plumbing check
+scripts/eval-desk.py --cases 10            # real calls on the owner's Claude subscription
+```
+
+Read it with care: a hidden test may name an API the commit message never states, which fails both arms alike;
+the desk arm runs this checkout's wsx build, not the parent's; its project config is the harness's own (build and the
+crate's tests as checks). Ten cases show a direction, not a rate; `--model` pins both arms to one model.
+
 ## Sources
 
 Anthropic multi-agent research system; Cognition "Don't build multi-agents"; MAST (arXiv 2503.13657); Claude Code agent

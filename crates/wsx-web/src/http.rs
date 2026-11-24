@@ -2311,7 +2311,7 @@ async fn push_set(
 ) -> Outcome<Json<Value>> {
     allow(&app, Capability::Push, "notifications")?;
     if input.choices.manager {
-        allow(&app, Capability::TaskView, "Needs you notifications")?;
+        allow(&app, Capability::TaskView, "chat notifications")?;
     }
     let push = app
         .push
