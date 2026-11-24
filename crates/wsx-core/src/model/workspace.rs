@@ -99,12 +99,9 @@ pub struct TaskConfig {
     /// ref: docs/tasks.md "Agents"
     pub effort: String,
     pub manager_effort: String,
-    /// `tasks.agent.fallback` and `tasks.manager.fallback`: global agent names, in order.
-    /// ref: docs/tasks.md "Agents"
-    pub fallback: Vec<String>,
+    /// `tasks.manager.fallback`: global agent names, in order, that may stand in for a held
+    /// chat (`agent::stand_in`). ref: docs/tasks.md "Agents"
     pub manager_fallback: Vec<String>,
-    /// `tasks.agent.maxWaitMinutes`: a usage limit that lifts sooner is waited out.
-    pub max_wait_secs: u64,
     /// Context size after which a worker's next turn starts a fresh conversation from its
     /// handoff notes (`tasks.agent.rotateTokens`). ref: docs/tasks.md "Context rotation"
     pub rotate_tokens: u64,
@@ -298,10 +295,8 @@ impl Default for TaskConfig {
             small_model: String::new(),
             effort: "high".into(),
             manager_effort: "high".into(),
-            fallback: Vec::new(),
             manager_fallback: Vec::new(),
             // ^ Claude's session limit is 5 hours: it is waited out, a weekly one is not.
-            max_wait_secs: 5 * 3_600,
             rotate_tokens: 200_000,
             rotate_idle_seconds: 3_600,
             keep_warm_seconds: 3_300,

@@ -369,8 +369,8 @@ pub struct AgentEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extension: Option<PathBuf>,
     /// The capabilities this agent passed the test for (`task::policy`); its launch group is
-    /// cut down to them, and a fallback choice gives it only the jobs they cover
-    /// (`Role::filled_by`). None: all of the group's, a full fallback.
+    /// cut down to them, and only an entry whose `may` holds `answer` stands in
+    /// (`Role::filled_by`). None: all of the group's, and no stand-in job.
     /// ref: docs/tasks.md "Permissions"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub may: Option<Vec<crate::task::policy::Capability>>,

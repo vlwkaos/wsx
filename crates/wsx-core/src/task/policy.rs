@@ -160,7 +160,7 @@ const MANAGER_REACH: [&str; 8] = [
     "new", "show", "list", "add", "stop", "hold", "land", "close",
 ];
 
-/// The one role enum: a launch site's role, and the job a fallback choice fills.
+/// The one role enum: a launch site's role, and the job a stand-in fills (`filled_by`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Manager,
@@ -269,20 +269,12 @@ pub fn lend_refusal(owner_skills: bool) -> Option<&'static str> {
 }
 
 impl Role {
-    /// Whether an `[[agents]]` entry whose `may` is `may` fills this role in a fallback choice:
-    /// with no `may` it is a full fallback (the manager's turns and a task's steps); with one,
-    /// it fills each role whose own capability it lists: `create_task` the manager, `answer`
-    /// the organizer (the stand-in), `result` a worker. The reviewer runs on the project's own
-    /// manager agent and no fallback fills it (docs/design/orchestration.md section 9).
+    /// Whether an `[[agents]]` entry whose `may` is `may` fills this role for another agent: only
+    /// the organizer (the stand-in) is ever filled so, by an entry that lists `answer`. A task or
+    /// chat keeps its own agent for life (docs/design/orchestration.md section 8).
     /// ref: docs/tasks.md "Agents"
     pub fn filled_by(self, may: Option<&[Capability]>) -> bool {
-        let need = match self {
-            Self::Manager => CreateTask,
-            Self::Organizer => Answer,
-            Self::Worker => Result,
-            Self::Reviewer => return false,
-        };
-        may.map_or(self != Self::Organizer, |may| may.contains(&need))
+        self == Self::Organizer && may.is_some_and(|may| may.contains(&Answer))
     }
 }
 

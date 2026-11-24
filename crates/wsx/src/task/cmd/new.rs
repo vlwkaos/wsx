@@ -2,13 +2,13 @@
 
 use crate::cli::{load_full_workspace, resolve_project};
 use crate::runtime_util::print_json;
-use crate::task::agent;
+
 use crate::task::args::NewArgs;
 use crate::task::{actor, ask_host, ask_host_ok, wait_for_host};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use wsx_core::config::project::load_task_config;
-use wsx_core::task::policy::{self, Role};
+use wsx_core::task::policy;
 use wsx_core::task::view::checked_files;
 use wsx_core::task::{
     copy, now_unix_ms,
@@ -323,24 +323,16 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         }
     };
     let now = now_unix_ms();
-    // ^ New work starts on an available agent: a task never begins on one whose usage limit
-    // is on record. `--model` names the configured agent's model. ref: docs/tasks.md "Agents"
-    let own = agent::account(&settings.adapter, &settings.model);
-    let moved = agent::blocked_until(&own, now)
-        .and_then(|_| agent::fallback(&settings.fallback, now, Role::Worker));
-    // ^ A task born on a fallback is on one like a switched task: its own agent is its home,
-    // where it goes at its first turn with that agent free.
-    let on_fallback = moved.is_some();
+    // ^ A task runs on its own agent for life: one whose account is limited waits for it at
+    // its first turn (docs/design/orchestration.md section 8). `--model` names the configured
+    // agent's model. ref: docs/tasks.md "Agents"
     let home = Home {
         adapter: settings.adapter,
         model: model.unwrap_or(settings.model),
         session: None,
         turn: String::new(),
     };
-    let (adapter, model) = match moved {
-        Some(next) => (next.adapter, next.model),
-        None => (home.adapter.clone(), home.model.clone()),
-    };
+    let (adapter, model) = (home.adapter.clone(), home.model.clone());
     let record = TaskRecord {
         id,
         project: project.name.clone(),
@@ -354,7 +346,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         adapter,
         model,
         effort,
-        fallback: on_fallback,
+        fallback: false,
         home: Some(home),
         checks: settings.checks,
         steps,

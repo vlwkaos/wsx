@@ -603,18 +603,37 @@ pub fn sign_in_retry_ms() -> u64 {
 }
 
 /// Record that `account`'s sign-in failed at `now_ms`: every host on this machine skips the
-/// account until `sign_in_retry_ms` has passed, with no call to learn it.
+/// account until `sign_in_retry_ms` has passed, with no call to learn it. A failed retry keeps
+/// the first failure's `since_ms`: the record is one failure until a success removes it.
 pub fn mark_sign_in_failed(account: &str, now_ms: u64) -> Result<()> {
     let path = account_file(account, ".auth.json")?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
+    let since_ms = sign_in_failed_since(account).map_or(now_ms, |since| since.min(now_ms));
     write_atomic(
         &path,
-        serde_json::json!({ "since_ms": now_ms, "until_ms": now_ms + sign_in_retry_ms() })
+        serde_json::json!({ "since_ms": since_ms, "until_ms": now_ms + sign_in_retry_ms() })
             .to_string()
             .as_bytes(),
     )
+}
+
+/// When `account`'s failed sign-in began, while it is on record (also between two tries: only
+/// a success removes it).
+pub fn sign_in_failed_since(account: &str) -> Option<u64> {
+    let bytes = read_bounded_if_exists(&account_file(account, ".auth.json").ok()?, 4096).ok()??;
+    serde_json::from_slice::<serde_json::Value>(&bytes).ok()?["since_ms"].as_u64()
+}
+
+/// Whose limit and credit a turn runs on: Claude's account, or a Pi provider's
+/// (`anthropic/claude-opus-5-5` is `pi-anthropic`). Agents on one account share a limit; a local
+/// model through Pi does not share one with a paid provider. ref: docs/tasks.md "Agents"
+pub fn account(adapter: &str, model: &str) -> String {
+    match model.split_once('/') {
+        Some((provider, _)) if adapter != "claude" => format!("{adapter}-{provider}"),
+        _ => adapter.to_string(),
+    }
 }
 
 /// When `account` may be tried again, while its failed sign-in is on record.

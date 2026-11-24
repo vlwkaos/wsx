@@ -436,7 +436,7 @@ def run(wsx, wsxd, work, owned, part):
     trace_env = 'export FAKE_CLAUDE_TRACE=' + str(tmp / 'fake-claude.trace') + '\n'
     fake.write_text('#!/bin/sh\n' + trace_env + 'exec ' + sys.executable + ' ' + str(fake_script) + ' "$@"\n')
     fake.chmod(0o755)
-    # ^ The fallback agent of part 36 (docs/tasks.md "Agents").
+    # ^ The Pi agent of part 36 (docs/tasks.md "Agents").
     shutil.copy(ROOT / 'scripts/fake-pi-rpc.py', bin_dir / 'fake-pi-rpc.py')
     (bin_dir / 'pi').write_text('#!/bin/sh\n' + trace_env + 'exec ' + sys.executable + ' ' + str(bin_dir / 'fake-pi-rpc.py') + ' "$@"\n')
     (bin_dir / 'pi').chmod(0o755)
@@ -5707,7 +5707,7 @@ def chat_helpers(created):
 
 
 def part_host(created=None):
-    """Sections 32d to 39: the disk queue, stalls, chats, other projects, the fallback agent and lost hosts."""
+    """Sections 32d to 39: the disk queue, stalls, chats, other projects, agents and limits, and lost hosts."""
     if created is None:
         created = fresh_project()
         store_up(created)
@@ -7022,7 +7022,7 @@ def part_host(created=None):
 
 
 def part_agents(created=None):
-    """Sections 36 to 39c and m2: the fallback agent, lost hosts, the repo service and equal chat hosts."""
+    """Sections 36 to 39c and m2: one agent for life, lost hosts, the repo service and equal chat hosts."""
     if created is None:
         created = fresh_project()
         store_up(created)
@@ -7032,19 +7032,18 @@ def part_agents(created=None):
     norate = tmp / 'fake-claude.trace.norate'
     manager_turns = lambda: [t for t in traces() if t.get('manager') and 'message' in t]
 
-    # 36. Fallback agent (docs/tasks.md "Agents"): a usage limit that lifts after
+    # 36. One agent for life (docs/tasks.md "Agents"): a usage limit of any length is waited out on
+    # the task's own agent, and the same conversation resumes when the account's record ends; a
+    # stand-in listed in `tasks.manager.fallback` does not take the worker. The keys of the old
+    # fallback (`tasks.agent.fallback`, `tasks.agent.maxWaitMinutes`) are refused at load.
     mark('36')
     named_project.append('demo')
     # ^ The manager's events turn on claude would report `allowed` and end the fa.txt task's limit record: no rate state, as in 37.
     norate.touch()
     # ^ These tasks write other files; CONFIG's check wants a.txt, which main need not hold.
     FALLBACK_CONFIG = CONFIG.replace('    - "test -f a.txt"\n', '')
-    # maxWaitMinutes moves the worker to the first fallback of the registry, a Pi RPC agent,
-    # in a new conversation with the unfinished turn; it reports through `wsx task result -`
-    # and the task stays there. The limit is on record for the machine, so the next task
-    # starts on the fallback. A short limit is still waited out (part 27).
-    # ^ The Pi adapter (docs/tasks.md "Pi adapter"): `extension` becomes `-e`, and the launch's own
-    # PI_CODING_AGENT_DIR holds only the owner's models.json, not their settings.
+    # ^ The Pi adapter (docs/tasks.md "Pi adapter"): the registry entries below are the stand-ins and
+    # the Pi agent a record of an earlier wsx names; the launch's PI_CODING_AGENT_DIR holds only the owner's models.json.
     lean = work / 'lean-runner.js'
     lean.write_text('// the lean runner stands here\n')
     owner_pi = home / '.pi/agent'
@@ -7054,96 +7053,118 @@ def part_agents(created=None):
     with open(config_dir / 'config-v2.toml', 'a') as registry:
         registry.write('[[agents]]\nname = "fake-pi"\ncommand = ["pi"]\nadapter = "pi"\nmodel = "fake/pi-model"\n'
                        'extension = ' + json.dumps(str(lean)) + '\n')
-        # ^ An entry whose `may` holds no job's capability comes first in every list below: it is no
-        # full fallback and no stand-in, so a worker, the manager and a stand-in skip it. Were the
-        # gate open, the task would end on its model, fake/backlog.
+        # ^ An entry whose `may` holds no job's capability is no stand-in: the manager skips it.
         registry.write('[[agents]]\nname = "fake-backlog"\ncommand = ["pi"]\nadapter = "pi"\n'
                        'model = "fake/backlog"\nmay = ["note", "handoff"]\n')
-    WORKER_FALLBACK = FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-backlog, fake-pi]\n    maxWaitMinutes: 1\n')
-    configure(WORKER_FALLBACK, 'fallback agent')
-    # ^ Part 20 ran a Pi manager: only the Pi turns from here on are the worker's.
+        registry.write('[[agents]]\nname = "fake-local"\ncommand = ["pi"]\nadapter = "pi"\n'
+                       'model = "local/stand-in"\nmay = ["answer"]\n')
+        # ^ An entry with the organizer's group is a stand-in too.
+        registry.write('[[agents]]\nname = "fake-organizer"\ncommand = ["pi"]\nadapter = "pi"\n'
+                       'model = "local/organizer"\nmay = ["read", "answer", "backlog", "note"]\n')
+    with_fallback = lambda names: FALLBACK_CONFIG.replace(
+        '  checks:\n', '  manager: { fallback: [%s] }\n  checks:\n' % names)
+    agents = state / 'wsx/tasks/agents'
+    limit_file = agents / 'claude.json'
+    limit_for = lambda seconds: limit_file.write_text(json.dumps({'until_ms': int((time.time() + seconds) * 1000)}))
+    # d. The two keys are refused with their names; nothing starts under a config that sets them.
+    for gone, line in (('tasks.agent.fallback', '    fallback: [fake-pi]\n'), ('tasks.agent.maxWaitMinutes', '    maxWaitMinutes: 60\n')):
+        (project / 'wsx.config.yml').write_text(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n' + line))
+        refused = cli('task', 'new', 'WORK fa.txt', ok=False)
+        assert gone + ' is gone' in refused.stderr, refused.stderr
+    (project / 'wsx.config.yml').write_text(CONFIG)
+    # a. A limit past the old 300-minute bound, with a stand-in named for the manager: the worker
+    # waits on its own agent, no pi agent takes it, and the same conversation resumes at the record's end.
+    configure(with_fallback('fake-local'), 'a stand-in for the manager')
     traced_before = len(traces())
-    switched = js('task', 'new', 'LIMIT 600 WORK fa.txt')['id']
-    shown = wait_state(switched, 'ready', 'failed')
-    assert shown['state'] == 'ready', shown
-    assert shown['record']['adapter'] == 'pi' and shown['record']['model'] == 'fake/pi-model', shown['record']
-    assert shown['record']['fallback'] is True, shown['record']
-    # ^ The ledger row shows the fallback, from the record's flag.
-    assert {r['id']: r for r in js('task', 'ledger')['open']}[switched]['agent']['fallback'] is True
-    switch = next(e for e in log(switched) if e['kind'] == 'agent_switch')
-    assert switch['to'] == 'fake-pi (pi/fake/pi-model)' and 'claude usage limit until' in switch['reason'], switch
-    assert kinds(switched, 'agent_switch', 'rotated', 'result', 'limit_wait') == ['agent_switch', 'rotated', 'result'], log(switched)
-    assert next(e for e in log(switched) if e['kind'] == 'result')['summary'] == 'fake pi finished the turn'
-    pi_turns = [t for t in traces()[traced_before:] if t.get('adapter') == 'pi' and 'message' in t]
-    assert len(pi_turns) == 1 and 'LIMIT 600 WORK fa.txt' in pi_turns[0]['message'], pi_turns
-    assert 'could write no handoff notes' in pi_turns[0]['message'], pi_turns[0]
-    assert any(t.get('adapter') == 'pi' and t.get('reported') == 0 for t in traces()), 'the result was not kept'
-    # ^ The task's effort goes on the fallback's launch as Pi's --thinking.
-    assert any(t.get('launch') and t.get('thinking') == 'high' for t in traces() if t.get('worker')), 'no --thinking on the pi launch'
+    long_limit = js('task', 'new', 'LIMIT 20000 WORK fa.txt')['id']
+    wait(lambda: show(long_limit)['state'] == 'waiting' and show(long_limit)['record']['waiting']['on'] == 'limit',
+         lambda: 'the worker waits on its own agent: %r' % show(long_limit), 40)
+    long_record = show(long_limit)['record']
+    long_session = long_record['agent_session']
+    assert long_record['adapter'] == 'claude' and not long_record.get('fallback') and long_session, long_record
+    assert json.loads(limit_file.read_text())['until_ms'] > time.time() * 1000 + 301 * 60_000, limit_file.read_text()
+    time.sleep(3)
+    assert show(long_limit)['record']['adapter'] == 'claude' and show(long_limit)['state'] == 'waiting', show(long_limit)
+    assert not any(t.get('adapter') == 'pi' and t.get('launch') and t.get('worker') for t in traces()[traced_before:])
+    resumed_from = len(traces())
+    limit_file.unlink()
+    assert wait(lambda: show(long_limit)['state'] in ('ready', 'failed') and show(long_limit), 'the worker resumes at the record\'s end', 60)['state'] == 'ready', show(long_limit)
+    assert show(long_limit)['record']['agent_session'] == long_session and show(long_limit)['record']['adapter'] == 'claude', show(long_limit)['record']
+    assert (Path(show(long_limit)['record']['working_copy']) / 'fa.txt').exists()
+    # ^ The same session id in every launch of the task, and a turn on it after the record ended.
+    assert {t['session'] for t in traces()[traced_before:] if t.get('launch') and not t.get('manager') and t.get('adapter') != 'pi'} == {long_session}
+    assert any('message' in t and t.get('session') == long_session and not t.get('manager') for t in traces()[resumed_from:]), traces()[resumed_from:]
+    assert 'agent_switch' not in kinds(long_limit, 'agent_switch') and 'limit_wait' in kinds(long_limit, 'limit_wait'), log(long_limit)
+    assert next(e for e in log(long_limit) if e['kind'] == 'result')['status'] == 'done', log(long_limit)
+    js('task', 'close', long_limit, '--discard')
+    configure(CONFIG, 'no stand-in')
+
+    # 36b. Pi as the agent's own agent (docs/tasks.md "Pi adapter", "Agents"): a Pi worker's launch, a
+    # chat's daily budget and the backoffs in a row, each waited out on that agent with no move.
+    mark('36b')
+    pi_worker = FALLBACK_CONFIG.replace('  agent:\n    model: fake-model\n', '  agent: { adapter: pi, model: fake/pi-model }\n')
+    assert pi_worker != FALLBACK_CONFIG
+    configure(pi_worker, 'pi workers')
+    traced_before = len(traces())
+    on_pi = js('task', 'new', 'WORK fb.txt')['id']
+    assert wait_state(on_pi, 'ready', 'failed')['state'] == 'ready' and show(on_pi)['record']['adapter'] == 'pi', show(on_pi)
     pi_launch = next(t for t in traces()[traced_before:] if t.get('adapter') == 'pi' and t.get('launch') and t.get('worker'))
     argv = pi_launch['argv']
     assert argv[argv.index('-e') + 1] == str(lean) and '--no-extensions' in argv, argv
     assert argv[argv.index('--session-dir') + 1] == str(owner_pi / 'sessions/wsx'), argv
     assert pi_launch['agent_dir'] != str(owner_pi) and pi_launch['agent_dir_files'] == ['models.json', 'policy.json'], pi_launch
     assert pi_launch['models_json'] == (owner_pi / 'models.json').read_text(), pi_launch
-    limit_file = state / 'wsx/tasks/agents/claude.json'
-    assert json.loads(limit_file.read_text())['until_ms'] > time.time() * 1000 + 500_000, limit_file.read_text()
-    on_pi = js('task', 'new', 'WORK fb.txt')['id']
-    assert wait_state(on_pi, 'ready', 'failed')['record']['adapter'] == 'pi', show(on_pi)
-    assert not any(e['kind'] == 'agent_switch' for e in log(on_pi)), log(on_pi)
-    # ^ A host restarted in a wait that is now past maxWaitMinutes, here since the fallback came
-    # after the limit, moves to the fallback at once.
-    configure(FALLBACK_CONFIG, 'no fallback yet')
-    restarted = js('task', 'new', 'LIMIT 600 WORK fc.txt')['id']
-    wait(lambda: show(restarted)['state'] == 'waiting', 'the worker waits on its own agent')
-    assert show(restarted)['record']['adapter'] == 'claude', show(restarted)['record']
-    configure(WORKER_FALLBACK, 'fallback after the limit')
-    project_id = show(restarted)['record']['project_id']
-    os.kill(next(int(line.split()[0]) for line in leftovers('task host %s %d' % (project_id, restarted))
-                 if line.endswith('task host %s %d' % (project_id, restarted))), 9)
-    # ^ The pane counts as exited once the daemon sees the host gone.
-    def restart_host():
-        try:
-            return cli('session', 'restart', 'task-%d' % restarted)
-        except AssertionError:
-            return None
-    wait(restart_host, 'the host restarts')
-    assert wait_state(restarted, 'ready', 'failed')['record']['adapter'] == 'pi', show(restarted)
-    assert any(e['kind'] == 'agent_switch' for e in log(restarted)), log(restarted)
-    for n in (switched, on_pi, restarted):
-        js('task', 'close', n, '--discard')
-    limit_file.unlink()
-    configure(CONFIG, 'no fallback')
+    # ^ The task's effort goes on the launch as Pi's --thinking.
+    assert pi_launch.get('thinking') == 'high', pi_launch
+    js('task', 'close', on_pi, '--discard')
+    # ^ Backoffs in a row on the account add up from the first (`since_ms` stays); the worker waits on
+    # its own agent, no switch.
+    rate = work / 'rate-refusal.txt'
+    rate.write_text('429 Too Many Requests: rate limit exceeded\n')
+    since = int((time.time() - 7200) * 1000)
+    pi_limit = agents / 'pi-fake.json'
+    pi_limit.write_text(json.dumps({'since_ms': since, 'until_ms': int(time.time() * 1000) - 1000}))
+    backed = js('task', 'new', 'PIERROR %s WORK rate.txt' % rate)['id']
+    wait(lambda: show(backed)['state'] == 'waiting' and show(backed)['record']['waiting']['on'] == 'limit',
+         lambda: 'the worker waits out the backoff %s %s' % (show(backed)['state'], log(backed)[-3:]), 40)
+    assert show(backed)['record']['adapter'] == 'pi' and 'agent_switch' not in kinds(backed, 'agent_switch'), log(backed)
+    assert json.loads(pi_limit.read_text())['since_ms'] == since, pi_limit.read_text()
+    js('task', 'close', backed, '--discard')
+    pi_limit.unlink(missing_ok=True)
+    configure(CONFIG, 'claude workers again')
+    # ^ A daily budget: past it the account counts as limited until midnight; the chat whose own agent
+    # it is holds on that account (no move), and answers once the record is gone.
+    with open(config_dir / 'config-v2.toml', 'a') as registry:
+        registry.write('[[agents]]\nname = "fake-paid"\ncommand = ["pi"]\nadapter = "pi"\n'
+                       'model = "paid/model"\nbudget_usd_per_day = 1\n')
+    stop_manager_now()
+    configure(FALLBACK_CONFIG + '  manager: { adapter: pi, model: paid/model }\n', 'a chat on the paid account')
+    paid = js('task', 'say', 'PICOST 2 STATUS paid')
+    assert reply_to(paid['id'], 40)['text'].startswith('pi answers: '), chat()[-3:]
+    wait(lambda: (agents / 'pi-paid.json').exists(), 'the budget was spent')
+    assert json.loads((agents / 'pi-paid.spend.json').read_text())['micro_usd'] == 2_000_000
+    assert json.loads((agents / 'pi-paid.json').read_text())['until_ms'] > time.time() * 1000
+    after_budget = js('task', 'say', 'STATUS after the budget')
+    time.sleep(3)
+    assert not any(e['kind'] == 'reply' and after_budget['id'] in e['to'] for e in chat()), chat()[-3:]
+    (agents / 'pi-paid.json').unlink()
+    assert reply_to(after_budget['id'], 40)['text'].startswith('pi answers: '), chat()[-3:]
+    stop_manager_now()
+    configure(CONFIG, 'the manager on its own agent again')
+    for name in ('pi-paid.json', 'pi-paid.spend.json'):
+        (agents / name).unlink(missing_ok=True)
 
-    # 37. The manager's agent choice (docs/tasks.md "Agents"): a stand-in during a short limit, a
-    # fallback's credit running out, the return to the own agent at the next turn and a budget.
+    # 37. The manager's stand-in during a hold (docs/tasks.md "Agents"): the owner still gets words
+    # while the own agent waits out a limit, and the own agent answers after it in the same conversation.
     mark('37')
-    agents = state / 'wsx/tasks/agents'
-    limit_for = lambda seconds: limit_file.write_text(json.dumps({'until_ms': int((time.time() + seconds) * 1000)}))
     norate.touch()
     # ^ The records these sections write by hand must outlive the fake claude turns that end
     # meanwhile (the manager's events turns): a result that reports `allowed` would end them.
-    with open(config_dir / 'config-v2.toml', 'a') as registry:
-        registry.write('[[agents]]\nname = "fake-local"\ncommand = ["pi"]\nadapter = "pi"\n'
-                       'model = "local/stand-in"\nmay = ["answer"]\n')
-        registry.write('[[agents]]\nname = "fake-paid"\ncommand = ["pi"]\nadapter = "pi"\n'
-                       'model = "paid/model"\nbudget_usd_per_day = 1\n')
-        # ^ Another model on the paid account sets no budget: the account's budget still holds.
-        registry.write('[[agents]]\nname = "fake-paid-other"\ncommand = ["pi"]\nadapter = "pi"\n'
-                       'model = "paid/other"\n')
-        # ^ An entry with the organizer's group is a stand-in too, and no full fallback.
-        registry.write('[[agents]]\nname = "fake-organizer"\ncommand = ["pi"]\nadapter = "pi"\n'
-                       'model = "local/organizer"\nmay = ["read", "answer", "backlog", "note"]\n')
-        registry.write('[[agents]]\nname = "fake-pi2"\ncommand = ["pi"]\nadapter = "pi"\n'
-                       'model = "other/pi-model"\n')
-    with_fallback = lambda names: FALLBACK_CONFIG.replace(
-        '  checks:\n', '  manager: { fallback: [%s] }\n  checks:\n' % names).replace(
-        '    model: fake-model\n', '    model: fake-model\n    maxWaitMinutes: 1\n')
     # ^ A short limit is waited out, and the owner still gets words from the stand-in. The message
     # stays due: the own agent answers it after the limit and hears of the stand-in's reply.
     configure(with_fallback('fake-backlog, fake-local, fake-pi'), 'stand-in')
     # ^ The earlier fa.txt task's ready event waits for the manager: the fake takes its title
-    # (`LIMIT 600 ...`) for no trigger (fake-claude-stream.py own_words), so the limit stays 15 s.
+    # (`LIMIT 20000 ...`) for no trigger (fake-claude-stream.py own_words), so the limit stays 15 s.
     limit_for(15)
     asked = js('task', 'say', 'STATUS during the limit')
     stood_in = wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and e.get('provisional') == 'fake-local'
@@ -7161,338 +7182,145 @@ def part_agents(created=None):
     told = turn_with('a stand-in model with no tools answered these')
     assert told and 'fake-local to message %d: pi answers' % asked['id'] in told['message'], told
     assert not told.get('adapter')
-    # ^ Past maxWaitMinutes the manager moves to the first fallback that is no stand-in. When
-    # that one's credit is out, the refusal is no chat reply. The turn after the own agent's
-    # limit ends goes back to it, in a fresh conversation that holds the message.
-    refusal = work / 'credit-refusal.txt'
-    refusal.write_text('400 {"type":"error","error":{"type":"invalid_request_error","message":'
-                       '"Your credit balance is too low to access the Anthropic API."}}\n')
-    # A manager already held at a long limit moves when a fallback comes.
-    configure(with_fallback('fake-backlog, fake-organizer'), 'no fallback for the manager yet')
+    # ^ A long hold: an entry with the organizer's group answers the held message, no agent takes the
+    # manager over, and the own agent answers once the record is gone, with no new conversation.
+    configure(with_fallback('fake-backlog, fake-organizer'), 'the organizer group')
+    rotations = lambda: len([e for e in manager_entries() if e['kind'] == 'rotated'])
+    rotated_before, session_before = rotations(), manager_state()['agent_session']
     limit_for(600)
     held = js('task', 'say', 'STATUS held')
     wait(lambda: any(e['kind'] == 'reply' and e.get('provisional') and held['id'] in e['to'] for e in chat()),
          lambda: 'the stand-in answers the held message %r %r' % (
              manager_state(), [(e['kind'], e.get('reason'), e.get('text', '')[:80]) for e in manager_entries()[-10:]]))
-    configure(with_fallback('fake-backlog, fake-organizer, fake-pi'), 'manager fallback')
-    on_fallback = js('task', 'say', 'STATUS on the fallback')
-    assert reply_to(on_fallback['id'])['text'].startswith('pi answers: '), chat()[-3:]
-    assert any(e['kind'] == 'reply' and not e.get('provisional') and held['id'] in e['to']
-               and e['text'].startswith('pi answers: ') for e in chat()), chat()[-4:]
-    assert manager_state()['agent']['name'] == 'fake-pi', manager_state()
-    # ^ The Pi adapter counts `thinking` content too: the same follow-up asks for the answer once.
-    pi_thought = js('task', 'say', 'PITHINK on the fallback')
-    assert reply_to(pi_thought['id'])['text'].startswith('pi answers: ')
-    pi_ask = wait(lambda: next((e for e in chat() if e['kind'] == 'message' and e['from'] == 'recap' and e['id'] > pi_thought['id']
-                                and 'only in your thinking' in e['text']), None), 'the Pi follow-up')
-    assert reply_to(pi_ask['id'])['text'].startswith('pi answers: '), chat()[-3:]
-    # ^ The Pi manager hears the same instructions, the owner's-words rule included (pi.rs `--append-system-prompt`).
-    assert any(t.get('launch') and t.get('talk_rule') and not t.get('worker') and not t['no_tools'] for t in traces() if t.get('adapter') == 'pi'), 'no talk rule on the pi manager launch'
-    # ^ The size limit follows the adapter that runs now (docs/tasks.md "Manager"): unset, the
-    # Pi fallback rotates at 150000, where the own Claude agent keeps its conversation to 400000.
-    big_fallback = js('task', 'say', 'PICTX 200000 STATUS big on the fallback')
-    reply_to(big_fallback['id'])
-    wait(lambda: any(e['kind'] == 'rotated' and e['tokens'] == 200000 for e in manager_entries()), 'the fallback rotated at 200000')
-    pi_limit = agents / 'pi-fake.json'
-    limit_file.unlink()
-    # ^ The own agent's limit is gone: the next turn goes back to it, off the fallback.
-    back_home = reply_to(js('task', 'say', 'STATUS back home')['id'])
-    assert back_home['text'].startswith('open: '), back_home
     assert 'agent' not in manager_state(), manager_state()
-    pi_limit.unlink(missing_ok=True)
-    # ^ A daily budget: past it the account counts as limited until midnight and is left alone.
-    configure(with_fallback('fake-paid-other'), 'budget')
-    limit_for(600)
-    paid = js('task', 'say', 'PICOST 2 STATUS paid')
-    assert reply_to(paid['id'])['text'].startswith('pi answers: '), chat()[-3:]
-    wait(lambda: (agents / 'pi-paid.json').exists(), 'the budget was spent')
-    assert json.loads((agents / 'pi-paid.spend.json').read_text())['micro_usd'] == 2_000_000
-    assert json.loads((agents / 'pi-paid.json').read_text())['until_ms'] > time.time() * 1000
-    after_budget = js('task', 'say', 'STATUS after the budget')
-    time.sleep(3)
-    assert not any(e['kind'] == 'reply' and after_budget['id'] in e['to'] for e in chat()), chat()[-3:]
     limit_file.unlink()
-    assert reply_to(after_budget['id'])['text'].startswith('open: '), chat()[-3:]
-    # ^ A worker has no fallback by default and waits; on a fallback whose credit is out, it goes
-    # home as soon as its own agent is free.
-    configure(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi]\n    maxWaitMinutes: 1\n'),
-              'worker fallback')
-    limit_for(600)
-    # ^ The wait is at home, on the own account's record; the fake's LIMIT is the refusal the real
-    # Claude would give the turn that comes home while the record holds.
-    away = js('task', 'new', 'LIMIT 600 PIERROR %s WORK home.txt' % refusal)['id']
-    wait(lambda: show(away)['state'] == 'waiting' and show(away)['record']['adapter'] == 'claude', 'the worker waits at home', 40)
-    limit_file.unlink()
-    assert wait_state(away, 'ready', 'failed')['state'] == 'ready', show(away)
-    assert show(away)['record']['adapter'] == 'claude', show(away)['record']
-    away_switch = next(e for e in log(away) if e['kind'] == 'agent_switch')
-    assert away_switch['to'].startswith('claude ') and away_switch['reason'].startswith('back on claude: was refused: 400'), away_switch
-    js('task', 'close', away, '--discard')
-    # ^ A rate limit has no reset time and is backed off. Backoffs in a row on the account add up
-    # from the first: past maxWaitMinutes the worker moves on to the next fallback.
-    configure(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi, fake-pi2]\n    maxWaitMinutes: 60\n'),
-              'long rate limit')
-    limit_for(7200)
-    rate = work / 'rate-refusal.txt'
-    rate.write_text('429 Too Many Requests: rate limit exceeded\n')
-    since = int((time.time() - 7200) * 1000)
-    pi_limit.write_text(json.dumps({'since_ms': since, 'until_ms': int(time.time() * 1000) - 1000}))
-    moved = js('task', 'new', 'PIERROR %s WORK rate.txt' % rate)['id']
-    switch = wait(lambda: next((e for e in log(moved) if e['kind'] == 'agent_switch'), None), 'the long rate limit moves the worker')
-    assert switch['to'].startswith('fake-pi2 '), log(moved)
-    assert json.loads(pi_limit.read_text())['since_ms'] == since, pi_limit.read_text()
-    js('task', 'close', moved, '--discard')
-    limit_file.unlink()
-    configure(CONFIG, 'no fallback')
-    # ^ A close event names the task by its title (`PIERROR <file>`), and the host writes it late: a Pi turn in 37b
-    # that takes it along refuses for that file. A turn on the own agent here takes the events that are in the log.
-    reply_to(js('task', 'say', 'STATUS drain the close events')['id'])
-    for name in ('pi-fake.json', 'pi-paid.json', 'pi-other.json'):
+    held_answer = wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and not e.get('provisional')
+                                     and held['id'] in e['to']), None), 'the own agent answers the held message', 60)
+    assert held_answer['text'].startswith('open: '), held_answer
+    assert rotations() == rotated_before and manager_state()['agent_session'] == session_before and 'agent' not in manager_state(), manager_state()
+    configure(CONFIG, 'no stand-in')
+    for name in ('pi-fake.json', 'pi-local.json', 'pi-organizer.json'):
         (agents / name).unlink(missing_ok=True)
 
-    # 37b. A failed sign-in moves the manager and a worker to the first usable fallback at once, and
-    # both go home on the first success once the record on the account ends (docs/tasks.md "Agents").
-    # fake-claude2 is on account `claude`, which the failed sign-in rules out; fake-pi is not.
+    # 37b. A failed sign-in is waited out on the own agent (docs/tasks.md "Agents"): the manager holds
+    # and tells the owner to sign in, a worker waits with "sign-in expired; tries again at", nothing
+    # moves to another agent, and both go on by themselves at the first success. The For you push
+    # of such a waiting task (`needs::pushes`) is read only by the web's notice, so it is not asserted
+    # here: crates/wsx-core/tests/task_needs.rs holds the rule.
     mark('37b')
-    with open(config_dir / 'config-v2.toml', 'a') as registry:
-        registry.write('[[agents]]\nname = "fake-claude2"\ncommand = ["claude"]\nadapter = "claude"\nmodel = "other"\n')
-    si_both = with_fallback('fake-claude2, fake-pi').replace(
-        '    maxWaitMinutes: 1\n', '    maxWaitMinutes: 1\n    fallback: [fake-claude2, fake-pi]\n')
-    configure(si_both, 'sign-in fallback')
+    configure(FALLBACK_CONFIG, 'sign-in')
     si_auth_record = agents / 'claude.auth.json'
-    si_record_ended = lambda: json.loads(si_auth_record.read_text())['until_ms'] < time.time() * 1000
-    assert reply_to(js('task', 'say', 'STATUS before the sign-in')['id'])['text'].startswith('open: '), chat()[-3:]
-    assert 'agent' not in manager_state(), manager_state()
-    si_signed_in = work / 'signed-in-fallback'
+    si_signed_in = work / 'signed-in'
     si_signed_in.unlink(missing_ok=True)
-    def si_reply(message):
-        # ^ A reply that does not come says what the manager and the account records hold.
-        try:
-            return reply_to(message['id'])
-        except RuntimeError as error:
-            tail = [{k: (str(v)[:160]) for k, v in e.items() if k in ('kind', 'reason', 'text', 'to', 'tokens')}
-                    for e in manager_entries()[-14:]]
-            records = {f.name: f.read_text()[:200] for f in agents.iterdir() if f.suffix == '.json'}
-            pierror = [(t.get('session'), str(t['message'])[-700:]) for t in traces() if t.get('adapter') == 'pi' and 'PIERROR' in str(t.get('message', ''))]
-            raise RuntimeError('%s; log %s; state %s; records %s; env %s; turns with PIERROR %s' % (
-                error, tail, {k: manager_state().get(k) for k in ('agent', 'limit')}, records,
-                os.environ.get('WSX_TEST_SIGN_IN_RETRY_SECS'), pierror[-2:])) from None
+    assert reply_to(js('task', 'say', 'STATUS before the sign-in')['id'])['text'].startswith('open: '), chat()[-3:]
+    si_at = int(time.time() * 1000)
     si_away = js('task', 'say', 'AUTHFAIL %s STATUS away' % si_signed_in)
-    assert si_reply(si_away)['text'].startswith('pi answers: '), chat()[-3:]
-    assert manager_state()['agent']['name'] == 'fake-pi', manager_state()
-    si_moves = lambda: [e['reason'] for e in manager_entries() if e['kind'] == 'rotated' and 'sign-in expired' in e.get('reason', '')]
-    assert si_moves() == ['claude moved to fake-pi: sign-in expired'], manager_entries()[-8:]
-    assert not any(e['kind'] == 'stopped' and 'Sign in again' in e.get('reason', '') for e in manager_entries()[-8:]), manager_entries()[-8:]
+    wait(lambda: next((e for e in manager_entries() if e['kind'] == 'stopped' and 'Sign in again' in e.get('reason', '')
+                       and e['unix_ms'] >= si_at), None),
+         lambda: 'the manager holds for the sign-in %r' % manager_entries()[-8:], 40)
     assert si_auth_record.exists(), list(agents.iterdir())
-    # ^ A sign-in still missing when the record ends: the try on the own agent fails and moves it back.
-    wait(si_record_ended, 'the sign-in record ends')
-    si_again = js('task', 'say', 'AUTHFAIL %s STATUS again' % si_signed_in)
-    assert si_reply(si_again)['text'].startswith('pi answers: '), chat()[-3:]
-    assert len(si_moves()) == 2 and manager_state()['agent']['name'] == 'fake-pi', si_moves()
-    # ^ The worker: the first fallback on the failed account is skipped, the task continues on fake-pi
-    # in a new conversation, and the next task starts there with no call to Claude.
-    # ^ A task born while the record holds starts on the fallback with no switch (si_skipped below);
-    # this one must try Claude first, so the manager's record ends before it is created.
-    wait(si_record_ended, 'the sign-in record ends before the worker')
-    si_worker_in = work / 'worker-signed-in'
-    si_worker_in.unlink(missing_ok=True)
-    si_traced_before = len(traces())
-    si_sw = js('task', 'new', 'WAUTHFAIL %s WORK sa.txt' % si_worker_in)['id']
-    si_shown = wait_state(si_sw, 'ready', 'failed')
-    assert si_shown['state'] == 'ready' and si_shown['record']['adapter'] == 'pi', si_shown
-    assert si_shown['record']['fallback'] is True and si_shown['record']['home']['adapter'] == 'claude', si_shown['record']
-    si_switch = next(e for e in log(si_sw) if e['kind'] == 'agent_switch')
-    assert si_switch['to'] == 'fake-pi (pi/fake/pi-model)' and si_switch['reason'] == 'sign-in expired', si_switch
-    assert kinds(si_sw, 'agent_switch', 'rotated', 'result') == ['agent_switch', 'rotated', 'result'], log(si_sw)
-    assert not any(e['kind'] == 'result' and e['status'] == 'failed' for e in log(si_sw)), log(si_sw)
-    si_pi_turns = [t for t in traces()[si_traced_before:] if t.get('adapter') == 'pi' and 'message' in t and 'WAUTHFAIL' in t['message']]
-    assert len(si_pi_turns) == 1 and 'could write no handoff notes' in si_pi_turns[0]['message'], si_pi_turns
-    si_skipped = js('task', 'new', 'WORK sb.txt')['id']
-    assert wait_state(si_skipped, 'ready', 'failed')['record']['adapter'] == 'pi', show(si_skipped)
-    assert show(si_skipped)['record']['fallback'] is True and show(si_skipped)['record']['home'] == {'adapter': 'claude', 'model': 'fake-model'}, show(si_skipped)['record']
-    assert not any(e['kind'] == 'agent_switch' for e in log(si_skipped)), log(si_skipped)
-    # ^ Signed in again: both go home once the record ends, on the first turn they have.
+    assert 'agent' not in manager_state() and not any(e['kind'] == 'reply' and si_away['id'] in e['to'] for e in chat()), manager_state()
     si_signed_in.touch()
-    si_worker_in.touch()
-    wait(si_record_ended, 'the sign-in record ends again')
-    si_home = js('task', 'say', 'AUTHFAIL %s STATUS home' % si_signed_in)
-    assert si_reply(si_home)['text'].startswith('open: '), chat()[-3:]
-    assert 'agent' not in manager_state(), manager_state()
-    assert any(e['kind'] == 'rotated' and e.get('reason') == 'back on claude' for e in manager_entries()), manager_entries()[-6:]
-    assert not si_auth_record.exists(), 'the first success clears the record'
-    js('task', 'add', si_sw, 'WORK sc.txt')
-    wait(lambda: show(si_sw)['record']['adapter'] == 'claude', 'the worker goes home')
-    assert wait_state(si_sw, 'ready', 'failed')['state'] == 'ready', show(si_sw)
-    assert not show(si_sw)['record'].get('fallback') and show(si_sw)['record']['home'] == {'adapter': 'claude', 'model': 'fake-model'}, show(si_sw)['record']
-    si_back = [e for e in log(si_sw) if e['kind'] == 'agent_switch'][-1]
-    assert si_back['to'].startswith('claude ') and si_back['reason'] == 'back on claude', si_back
-    # ^ A task born during the record is on the fallback like a switched one and goes home the same way.
-    js('task', 'add', si_skipped, 'WORK se.txt')
-    wait(lambda: show(si_skipped)['record']['adapter'] == 'claude', 'the task born on the fallback goes home')
-    assert wait_state(si_skipped, 'ready', 'failed')['state'] == 'ready', show(si_skipped)
-    assert not show(si_skipped)['record'].get('fallback'), show(si_skipped)['record']
-    assert [e['reason'] for e in log(si_skipped) if e['kind'] == 'agent_switch'] == ['back on claude'], log(si_skipped)
-    for n in (si_sw, si_skipped):
-        js('task', 'close', n, '--discard')
-    # ^ With no usable fallback a worker does not end failed: it waits like a limit, on the sign-in
-    # record's retry time, says so in its waiting reason, and resumes by itself once a try succeeds.
-    configure(FALLBACK_CONFIG, 'sign-in without a fallback')
+    # ^ The held message goes again in full once the sign-in works (manager.rs AUTH_CONTINUE): the
+    # failed turn ended before any model call, so the conversation may not hold it.
+    si_reply = reply_to(si_away['id'], 40)
+    assert si_reply['text'].startswith('open: ') and si_reply['usage']['adapter'] == 'claude', chat()[-3:]
+    wait(lambda: not si_auth_record.exists(), 'the first success clears the record')
+    assert not any(e['kind'] == 'rotated' and e['unix_ms'] >= si_at for e in manager_entries()), manager_entries()[-6:]
+    # ^ A worker does not end failed: it waits like a limit, on the sign-in record's retry time, says
+    # so in its waiting reason, and resumes by itself once a try succeeds.
     si_alone_in = work / 'alone-signed-in'
     si_alone_in.unlink(missing_ok=True)
+    si_traced_before = len(traces())
     si_alone = js('task', 'new', 'WAUTHFAIL %s WORK sd.txt' % si_alone_in)['id']
     waiting_reason = lambda: ((show(si_alone)['record'].get('waiting') or {}).get('reason') or '')
     wait(lambda: re.fullmatch(r'sign-in expired; tries again at \d\d:\d\d', waiting_reason()), 'the worker waits for its sign-in')
     assert show(si_alone)['state'] == 'waiting' and show(si_alone)['record']['adapter'] == 'claude', show(si_alone)
     assert show(si_alone)['record']['waiting']['on'] == 'limit', show(si_alone)['record']['waiting']
     assert not any(e['kind'] == 'result' for e in log(si_alone)), log(si_alone)
+    assert not any(e['kind'] == 'agent_switch' for e in log(si_alone)) and not any(
+        t.get('adapter') == 'pi' and t.get('launch') and t.get('worker') for t in traces()[si_traced_before:]), log(si_alone)
     si_alone_in.touch()
     assert wait_state(si_alone, 'ready', 'failed')['state'] == 'ready', show(si_alone)
     assert next(e for e in log(si_alone) if e['kind'] == 'result')['status'] == 'done', log(si_alone)
-    assert 'limit_wait' in [e['kind'] for e in log(si_alone)], log(si_alone)
-    assert not (agents / 'claude.auth.json').exists(), 'the try that went through clears the record'
+    assert 'limit_wait' in [e['kind'] for e in log(si_alone)] and not any(e['kind'] == 'agent_switch' for e in log(si_alone)), log(si_alone)
+    assert not si_auth_record.exists(), 'the try that went through clears the record'
     js('task', 'close', si_alone, '--discard')
-    configure(CONFIG, 'no fallback')
+    configure(CONFIG, 'no stand-in')
 
-    # 37c. The limit lifecycle's return (docs/tasks.md "Agents"): `agent::next` is the one rule of
-    # where a host goes, asked before every turn and at every look of a wait, and home is the
-    # task's own agent on its record. S1: a fallback that refuses the prompt (Pi without an API
-    # key) makes one launch; the worker and the manager go home for the wait on their own account
-    # and resume there when its record goes. S2: a working fallback goes home at the next turn
-    # after its handoff notes: a task born on the fallback starts a fresh own conversation with the
-    # task's prompt, one switched mid-task resumes the conversation it kept. S3: a turn with no
-    # output past the bound (WSX_TEST_TURN_QUIET_FILE) ends by its own host: the worker's failed result. S5: a 403 block page is
-    # no sign-in failure. S6: home keeps the task's own model, never the project's.
+    # 37c. A record an earlier wsx left away on a fallback goes home (docs/tasks.md "Agents"):
+    # `agent::next` is the one rule of where a host goes, asked before every turn, and answers
+    # `Home` once the own account's record is gone. A task with no own conversation starts a fresh
+    # one with its prompt; a task that kept one (`home.session`) resumes it, with its own model.
+    # Then: a hung turn ends by its own host, a 403 block page is no sign-in failure, a limit's
+    # reset is the rejected window's, and a manager an older host pinned goes home.
     mark('37c')
     no_key = work / 'pi-no-key.txt'
     no_key.write_text('No API key found for anthropic.\n\nUse /login to log into a provider via OAuth or API key.\n')
-    configure(with_fallback('fake-pi').replace('    maxWaitMinutes: 1\n', '    maxWaitMinutes: 1\n    fallback: [fake-pi]\n'),
-              'lifecycle fallbacks')
+    configure(FALLBACK_CONFIG, 'stored away')
     lc_home = lambda n: show(n)['record'].get('home')
     lc_switches = lambda n: [(e['to'].split(' ')[0], e['reason']) for e in log(n) if e['kind'] == 'agent_switch']
-    lc_pi_launches = lambda since: [t for t in traces()[since:] if t.get('adapter') == 'pi' and t.get('launch') and t.get('worker')]
     lc_claude_launches = lambda since: [t for t in traces()[since:] if t.get('launch') and not t.get('manager') and t.get('adapter') != 'pi']
     lc_claude_turn = lambda since, words: next(t for t in traces()[since:] if 'message' in t and t.get('adapter') != 'pi'
                                                and not t.get('manager') and words in t['message'])
-    lc_rotated = lambda words: next((e for e in manager_entries() if e['kind'] == 'rotated' and e.get('reason', '').startswith(words)), None)
     lc_turn = lambda folder: json.loads((Path(folder) / 'turn.json').read_text())
     # ^ The alerts of failed turns posted after message `since` (docs/tasks.md "Manager").
     lc_alerts = lambda since, entries=None: [e for e in (entries or manager_entries()) if e['kind'] == 'reply' and e.get('post')
                                              and e.get('level') == 'bad' and e['id'] > since]
     for name in ('pi-fake.json', 'claude.auth.json'):
         (agents / name).unlink(missing_ok=True)
-    # S1, the worker: born on the fallback while the limit holds; the refused prompt sends it home for
-    # the wait, where the own agent's refusal (the fake's LIMIT) is waited out at home.
-    limit_for(600)
-    s1_before = len(traces())
-    s1 = js('task', 'new', 'LIMIT 600 PIREFUSE %s WORK s1.txt' % no_key)['id']
-    wait(lambda: show(s1)['state'] == 'waiting' and show(s1)['record']['adapter'] == 'claude', 'the worker waits at home', 40)
-    assert lc_home(s1) == {'adapter': 'claude', 'model': 'fake-model'} and not show(s1)['record'].get('fallback'), show(s1)['record']
-    assert (agents / 'pi-fake.json').exists(), 'the refused prompt counts as the fallback account limit'
-    assert len(lc_switches(s1)) == 1 and lc_switches(s1)[0][0] == 'claude' \
-        and lc_switches(s1)[0][1].startswith('back on claude: was refused: No API key found'), lc_switches(s1)
-    assert show(s1)['record']['waiting']['on'] == 'limit', show(s1)['record']['waiting']
-    assert len(lc_pi_launches(s1_before)) == 1, lc_pi_launches(s1_before)
-    # S1, the manager: one Pi launch, back home for the wait, the reply once the record goes.
-    (agents / 'pi-fake.json').unlink()
-    s1_say = js('task', 'say', 'PIREFUSE %s STATUS without a key' % no_key)
-    wait(lambda: lc_rotated('back on claude: pi was refused: No API key found'), 'the manager back home for the wait', 40)
-    wait(lambda: 'agent' not in manager_state() and (manager_state().get('limit') or {}).get('account') is True,
-         lambda: 'the manager state after the refusal: %r' % manager_state(), 20)
-    # ^ The refusal ended the turn's record with Pi's words, at once; a move to the own agent is
-    # no failure the owner must hear of (docs/tasks.md "Agents", "Manager").
-    s1_turn = lc_turn(manager_log.parent)
-    assert s1_turn['agent'].startswith('pi/') and s1_turn['ended']['reason'].startswith('No API key found'), s1_turn
-    assert not lc_alerts(s1_say['id']), lc_alerts(s1_say['id'])
-    assert not any(e['kind'] == 'reply' and s1_say['id'] in e['to'] for e in chat()), chat()[-3:]
-    limit_file.unlink()
-    assert reply_to(s1_say['id'], 40)['text'].startswith('open: '), chat()[-3:]
-    assert wait(lambda: show(s1)['state'] in ('ready', 'failed') and show(s1), 'the worker resumes at home', 40)['state'] == 'ready', show(s1)
-    assert show(s1)['record']['adapter'] == 'claude' and (Path(show(s1)['record']['working_copy']) / 's1.txt').exists(), show(s1)
-    assert kinds(s1, 'agent_switch', 'rotated', 'limit_wait', 'result') == ['agent_switch', 'rotated', 'limit_wait', 'result'], log(s1)
-    # S2: born on the fallback, works there, goes home at the next turn after its handoff notes, in a
-    # fresh own conversation that carries the task's prompt.
-    (agents / 'pi-fake.json').unlink()
-    limit_for(600)
-    s2 = js('task', 'new', 'born on the fallback')['id']
-    # ^ No WORK in the prompt: the home turn carries the prompt before the added text, and the
-    # fake acts on the first WORK word only.
-    assert wait_state(s2, 'ready', 'failed')['record']['adapter'] == 'pi', show(s2)
-    limit_file.unlink()
-    s2_before = len(traces())
-    js('task', 'add', s2, 'WORK s2b.txt')
-    assert wait_state(s2, 'ready', 'failed')['state'] == 'ready', show(s2)
-    assert show(s2)['record']['adapter'] == 'claude' and not show(s2)['record'].get('fallback'), show(s2)['record']
-    s2_handoff = [t for t in traces()[s2_before:] if t.get('adapter') == 'pi' and 'message' in t and '/%s/rotate-notes.md' % s2 in t['message']]
-    # ^ The task's own handoff turn: a manager turn of the repo's chat can run on Pi in the same window.
-    assert len(s2_handoff) == 1 and 'This conversation ends after this turn and its own conversation continues' in s2_handoff[0]['message'], s2_handoff
-    assert len(lc_claude_launches(s2_before)) == 1 and not lc_claude_launches(s2_before)[0]['resume'], lc_claude_launches(s2_before)
-    s2_turn = lc_claude_turn(s2_before, 'WORK s2b.txt')['message']
-    assert 'The task as it was asked' in s2_turn and 'handoff notes' in s2_turn, s2_turn[:400]
-    assert lc_switches(s2) == [('claude', 'back on claude')], lc_switches(s2)
-    assert [e.get('reason') for e in log(s2) if e['kind'] == 'rotated'] == ['back on claude'], log(s2)
-    assert (Path(show(s2)['record']['working_copy']) / 's2b.txt').exists()
-    # S2, a kept conversation: switched mid-task by a long limit, the task keeps its own conversation
-    # and the turn it could not finish on the record, and resumes that conversation on return.
-    s2r = js('task', 'new', 'kept conversation on its own agent')['id']
-    # ^ No WORK in the prompt either: the fake pi commits the first WORK word's file and exits
-    # when a second write of it leaves nothing to commit.
-    assert wait_state(s2r, 'ready', 'failed')['record']['adapter'] == 'claude', show(s2r)
-    s2r_session = show(s2r)['record']['agent_session']
-    assert s2r_session, show(s2r)['record']
-    js('task', 'add', s2r, 'LIMIT 600 WORK s2d.txt')
-    wait(lambda: show(s2r)['record']['adapter'] == 'pi', 'the long limit moves the worker', 40)
-    assert wait_state(s2r, 'ready', 'failed')['record']['adapter'] == 'pi', show(s2r)
-    assert lc_home(s2r)['session'] == s2r_session and lc_home(s2r)['turn'].startswith('The usage limit has reset'), lc_home(s2r)
-    limit_file.unlink()
-    s2r_before = len(traces())
-    js('task', 'add', s2r, 'WORK s2e.txt')
-    assert wait_state(s2r, 'ready', 'failed')['state'] == 'ready' and show(s2r)['record']['adapter'] == 'claude', show(s2r)
-    assert show(s2r)['record']['agent_session'] == s2r_session and lc_home(s2r) == {'adapter': 'claude', 'model': 'fake-model'}, show(s2r)['record']
-    assert len(lc_claude_launches(s2r_before)) == 1 and lc_claude_launches(s2r_before)[0]['resume'] \
-        and lc_claude_launches(s2r_before)[0]['session'] == s2r_session, lc_claude_launches(s2r_before)
-    s2r_turn = lc_claude_turn(s2r_before, 'WORK s2e.txt')['message']
-    assert s2r_turn.startswith('The usage limit has reset') and 'While your agent was unavailable, pi/fake/pi-model worked on the task' in s2r_turn, s2r_turn[:400]
-    assert 'the turn it could not finish' not in s2r_turn, 'the fallback finished its turn: nothing of it is unfinished'
-    assert lc_switches(s2r)[-1] == ('claude', 'back on claude') and 'claude usage limit until' in lc_switches(s2r)[0][1], lc_switches(s2r)
-    assert not any(e['kind'] == 'rotated' and e.get('reason') == 'back on claude' for e in log(s2r)), 'the own conversation is resumed, not rotated'
-    assert (Path(show(s2r)['record']['working_copy']) / 's2e.txt').exists()
-    # S2, refused after it answered: moved again by a long limit, the fallback answers one turn and
-    # is refused on the next while the own account still holds; the task goes home for the wait and
-    # resumes its own conversation with the turn the fallback could not finish.
-    js('task', 'add', s2r, 'LIMIT 600 WORK s2f.txt')
-    wait(lambda: show(s2r)['record']['adapter'] == 'pi', 'the long limit moves the worker again', 40)
-    assert wait_state(s2r, 'ready', 'failed')['state'] == 'ready' and (Path(show(s2r)['record']['working_copy']) / 's2f.txt').exists(), (show(s2r)['record'], log(s2r)[-6:])
-    js('task', 'add', s2r, 'PIERROR %s WORK s2g.txt' % refusal)
-    wait(lambda: show(s2r)['state'] == 'waiting' and show(s2r)['record']['adapter'] == 'claude', lambda: 'the refused fallback sends the worker home for the wait: %s %s; account records %s' % (show(s2r)['state'], (show(s2r)['record']['adapter'], log(s2r)[-4:]), {f.name: f.read_text()[:120] for f in agents.glob('pi-*.json')}), 90)
-    assert lc_switches(s2r)[-1][1].startswith('back on claude: was refused: 400') and show(s2r)['record']['agent_session'] == s2r_session, (lc_switches(s2r), show(s2r)['record'])
-    s2x_before = len(traces())
-    limit_file.unlink()
-    assert wait(lambda: show(s2r)['state'] in ('ready', 'failed') and show(s2r), 'the worker resumes at home', 40)['state'] == 'ready', show(s2r)
-    assert (Path(show(s2r)['record']['working_copy']) / 's2g.txt').exists() and show(s2r)['record']['agent_session'] == s2r_session, show(s2r)['record']
-    s2x_turn = lc_claude_turn(s2x_before, 'WORK s2g.txt')['message']
-    assert s2x_turn.startswith('The usage limit has reset') and 'pi/fake/pi-model was refused: 400' in s2x_turn \
-        and 'the turn it could not finish:\nPIERROR' in s2x_turn, s2x_turn[:600]
-    assert len(lc_claude_launches(s2x_before)) == 1 and lc_claude_launches(s2x_before)[0]['resume'], lc_claude_launches(s2x_before)
-    # S2, a fallback whose own account is on record as limited when a message comes, with no other
-    # fallback free: the turn is held as a wait on the own account, and the record goes home first
-    # (`agent::next` answers `Wait` for a host away on a fallback). The record is staged by hand, so
-    # no race with another host's turn is needed to make it.
-    (agents / 'pi-fake.json').unlink(missing_ok=True)
-    limit_for(600)
-    s2q = js('task', 'new', 'born on the fallback, then its account is limited')['id']
-    assert wait_state(s2q, 'ready', 'failed')['record']['adapter'] == 'pi', show(s2q)
-    (agents / 'pi-fake.json').write_text(json.dumps({'since_ms': int(time.time() * 1000), 'until_ms': int((time.time() + 600) * 1000)}))
-    js('task', 'add', s2q, 'WORK s2q.txt')
-    # ^ Born on the fallback, the task has no own conversation: home is a fresh one that starts at
-    # once (the fake claude refuses only on LIMIT words, not on the record), so no wait is asserted.
-    wait(lambda: show(s2q)['record']['adapter'] == 'claude',
-         lambda: 'the limited fallback sends the worker home: %s %s' % (show(s2q)['record']['adapter'], log(s2q)[-3:]), 40)
-    assert lc_switches(s2q)[-1][1].startswith('back on claude: could not take the turn: its account is limited'), lc_switches(s2q)
-    assert not show(s2q)['record'].get('fallback'), show(s2q)['record']
-    (agents / 'pi-fake.json').unlink()
-    limit_file.unlink()
-    assert wait_state(s2q, 'ready', 'failed')['state'] == 'ready' and (Path(show(s2q)['record']['working_copy']) / 's2q.txt').exists(), show(s2q)
-    for n in (s1, s2, s2r, s2q):
+    limit_file.unlink(missing_ok=True)
+
+    def store_away(n, session):
+        """Leave task `n` as an earlier wsx left a task it moved: on fake-pi, `fallback` set, its own agent and conversation in `home`."""
+        project_id = show(n)['record']['project_id']
+        for line in leftovers('task host %s %d' % (project_id, n)):
+            if line.endswith('task host %s %d' % (project_id, n)):
+                os.kill(int(line.split()[0]), 9)
+        wait(lambda: not show(n)['host_running'], 'the host ended')
+        record_file = Path(show(n)['log']).parent / 'task.json'
+        record = json.loads(record_file.read_text())
+        record.update(adapter='pi', model='fake/pi-model', fallback=True, agent_session=None,
+                      home={**record['home'], 'session': session, 'turn': ''})
+        record_file.write_text(json.dumps(record))
+        assert show(n)['record']['adapter'] == 'pi' and show(n)['record']['fallback'] is True, show(n)['record']
+
+    # c1. No own conversation yet: the next turn starts a fresh own one with the task's prompt.
+    c1 = js('task', 'new', 'stored away before its own conversation')['id']
+    assert wait_state(c1, 'ready', 'failed')['record']['adapter'] == 'claude', show(c1)
+    store_away(c1, None)
+    c1_before = len(traces())
+    js('task', 'add', c1, 'WORK s2b.txt')
+    wait(lambda: show(c1)['record']['adapter'] == 'claude', lambda: 'the stored-away task goes home: %s' % log(c1)[-3:], 40)
+    assert wait_state(c1, 'ready', 'failed')['state'] == 'ready', show(c1)
+    assert not show(c1)['record'].get('fallback') and lc_home(c1) == {'adapter': 'claude', 'model': 'fake-model'}, show(c1)['record']
+    assert lc_switches(c1) == [('claude', 'back on claude')], lc_switches(c1)
+    assert [e.get('reason') for e in log(c1) if e['kind'] == 'rotated'] == ['back on claude'], log(c1)
+    assert len(lc_claude_launches(c1_before)) == 1 and not lc_claude_launches(c1_before)[0]['resume'], lc_claude_launches(c1_before)
+    assert 'The task as it was asked' in lc_claude_turn(c1_before, 'WORK s2b.txt')['message']
+    assert (Path(show(c1)['record']['working_copy']) / 's2b.txt').exists()
+    assert not any(t.get('adapter') == 'pi' and 'message' in t and 'WORK s2b.txt' in t['message'] for t in traces()[c1_before:])
+    # c2. A kept conversation, on the task's own model (`--model`, never the project's): the return
+    # resumes it and the turn opens with what the fallback did.
+    c2 = js('task', 'new', '--model', 'sonnet', 'stored away with its own conversation')['id']
+    assert wait_state(c2, 'ready', 'failed')['record']['adapter'] == 'claude', show(c2)
+    c2_session = show(c2)['record']['agent_session']
+    assert c2_session and lc_home(c2) == {'adapter': 'claude', 'model': 'sonnet'}, show(c2)['record']
+    store_away(c2, c2_session)
+    c2_before = len(traces())
+    js('task', 'add', c2, 'WORK s2e.txt')
+    wait(lambda: show(c2)['record']['adapter'] == 'claude', lambda: 'the stored-away task goes home: %s' % log(c2)[-3:], 40)
+    assert wait_state(c2, 'ready', 'failed')['state'] == 'ready', show(c2)
+    c2_record = show(c2)['record']
+    assert (c2_record['adapter'], c2_record['model']) == ('claude', 'sonnet') and c2_record['agent_session'] == c2_session, c2_record
+    assert not c2_record.get('fallback') and lc_home(c2) == {'adapter': 'claude', 'model': 'sonnet'}, c2_record
+    launch = lc_claude_launches(c2_before)
+    assert len(launch) == 1 and launch[0]['resume'] and launch[0]['session'] == c2_session and launch[0]['model'] == 'sonnet', launch
+    c2_turn = lc_claude_turn(c2_before, 'WORK s2e.txt')['message']
+    assert c2_turn.startswith('The usage limit has reset') and 'While your agent was unavailable, pi/fake/pi-model worked on the task' in c2_turn, c2_turn[:400]
+    assert lc_switches(c2) == [('claude', 'back on claude')] and not any(e['kind'] == 'rotated' for e in log(c2)), log(c2)
+    assert (Path(show(c2)['record']['working_copy']) / 's2e.txt').exists()
+    for n in (c1, c2):
         js('task', 'close', n, '--discard')
     # S3, the worker: a turn with no output past the bound ends as the turn's failed result.
     turn_quiet = work / 'turn-quiet'
@@ -7507,7 +7335,6 @@ def part_agents(created=None):
     assert s3_turn['agent'].startswith('claude/') and s3_turn['quiet_ms'] == TURN_QUIET * 1000 and s3_turn['deadline_ms'] == s3_turn['output_ms'] + TURN_QUIET * 1000, s3_turn
     assert s3_turn['ended']['reason'].startswith('no output for') and s3_turn['ended']['unix_ms'] >= s3_turn['deadline_ms'], s3_turn
     js('task', 'close', s3, '--discard')
-    # ^ S2's refusal backed the fallback's account off: its record and the limit go before S5.
     limit_file.unlink(missing_ok=True)
     (agents / 'pi-fake.json').unlink(missing_ok=True)
     turn_quiet.unlink()
@@ -7519,21 +7346,9 @@ def part_agents(created=None):
     assert 'Attention Required' in lc_turn(Path(show(s5)['log']).parent)['ended']['reason'], lc_turn(Path(show(s5)['log']).parent)
     assert not (agents / 'claude.auth.json').exists() and not any(e['kind'] == 'agent_switch' for e in log(s5)), log(s5)
     js('task', 'close', s5, '--discard')
-    # S6: home is the task's own model as it started, never the project's default.
-    limit_for(600)
-    s6 = js('task', 'new', '--model', 'sonnet', 'WORK s6a.txt')['id']
-    assert wait_state(s6, 'ready', 'failed')['record']['adapter'] == 'pi', show(s6)
-    assert lc_home(s6) == {'adapter': 'claude', 'model': 'sonnet'}, show(s6)['record']
-    limit_file.unlink()
-    s6_before = len(traces())
-    js('task', 'add', s6, 'WORK s6b.txt')
-    assert wait_state(s6, 'ready', 'failed')['state'] == 'ready', show(s6)
-    assert (show(s6)['record']['adapter'], show(s6)['record']['model']) == ('claude', 'sonnet'), show(s6)['record']
-    assert len(lc_claude_launches(s6_before)) == 1 and lc_claude_launches(s6_before)[0]['model'] == 'sonnet', lc_claude_launches(s6_before)
-    js('task', 'close', s6, '--discard')
     # S7: the reset of a limit is the rejected window's. Claude Code names the representative
     # claim at the top level (here the 7-day window, 4 days ahead) while five_hour is the window
-    # that rejected: the task waits out the 45 s at home instead of moving to the fallback.
+    # that rejected: the task waits out the 45 s on its own agent.
     s7 = js('task', 'new', 'LIMIT 45 REPRESENTATIVE WORK s7.txt')['id']
     wait(lambda: show(s7)['state'] == 'waiting' and show(s7)['record']['waiting']['on'] == 'limit', 'the worker waits out the five-hour reset', 40)
     s7_record = json.loads(limit_file.read_text())

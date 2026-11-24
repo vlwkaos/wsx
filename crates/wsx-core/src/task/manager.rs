@@ -521,8 +521,8 @@ impl Seen {
 pub struct ManagerState {
     /// The conversation the next turn resumes; none after a rotation.
     pub agent_session: Option<String>,
-    /// A fallback agent in use; none: `tasks.manager.adapter` and `model`. The turn after the
-    /// own agent's limit ends starts a fresh conversation on the own agent.
+    /// A fallback agent an earlier wsx moved the manager to; none: its own agent. The turn after
+    /// the own agent's limit ends starts a fresh conversation on the own agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<ManagerAgent>,
     pub next_id: u64,
@@ -619,8 +619,8 @@ pub struct LimitHold {
     /// an older host wrote has no such mark: it counts as not events-only.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub events: bool,
-    /// The limit moved the manager to a fallback agent: the held turn goes to the new
-    /// conversation at once, with its messages in full. ref: docs/tasks.md "Agents"
+    /// The held turn goes to a new conversation (errors in a row rotated it, or an earlier wsx
+    /// moved the manager), with its messages in full. ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub switched: bool,
     /// The agent's sign-in failed: the turn retries in a new agent process every `store::sign_in_retry_ms`, and
@@ -633,7 +633,7 @@ pub struct LimitHold {
     pub account: bool,
 }
 
-/// The fallback agent the manager runs on while its own is at a long usage limit.
+/// The fallback agent an earlier wsx moved the manager to; it goes home once its own is free.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagerAgent {
     pub name: String,

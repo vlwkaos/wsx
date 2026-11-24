@@ -311,8 +311,8 @@ pub struct TaskRecord {
     /// ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub effort: String,
-    /// The task runs on a fallback agent: a usage limit or a failed sign-in switched it
-    /// (`LogEvent::AgentSwitch`). Not set on a record from before it. ref: docs/tasks.md "Agents"
+    /// The task runs on a fallback agent an earlier wsx switched it to (`LogEvent::AgentSwitch`);
+    /// it goes home once its own account is free. Not set on a record from before it. ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fallback: bool,
     /// The agent the task was made for, where it returns once that agent's limit or failed
@@ -553,8 +553,8 @@ pub enum LogEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
-    /// The agent's long usage limit or failed sign-in moved the task to a fallback agent
-    /// (`adapter`/`model`), or back to its own.
+    /// The task moved back to its own agent (`adapter`/`model`); an earlier wsx also logged a
+    /// move to a fallback.
     /// ref: docs/tasks.md "Agents"
     AgentSwitch {
         from: String,

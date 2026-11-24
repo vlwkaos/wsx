@@ -7,7 +7,7 @@
 //! host and starts the service. ref: docs/tasks.md "Manager", "Chats"
 
 use super::agent::{
-    self, new_session_id, Agent, AgentLine, Ask, Cause, Launch, Next, TurnResult, PROMPT_CACHE_MS,
+    self, new_session_id, Agent, AgentLine, Ask, Launch, Next, TurnResult, PROMPT_CACHE_MS,
 };
 use super::boundary::Boundary;
 use super::claude::{account_env, config_root, skill_names, skills_plugin, SKILLS_PLUGIN_NAME};
@@ -30,8 +30,8 @@ use wsx_core::task::manager::{
     resolve_quote, says_nothing, split_quote, Answers, ApprovalLine, QUOTE_REF,
 };
 use wsx_core::task::manager::{
-    Author, Level, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest,
-    ManagerResponse, ManagerState, Party, Seen, Short,
+    Author, Level, LimitHold, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse,
+    ManagerState, Party, Seen, Short,
 };
 use wsx_core::task::policy;
 use wsx_core::task::replace::Binary;
@@ -64,10 +64,14 @@ and old decisions go out; decisions are already in decisions.md.",
 /// The turn after a usage limit: the messages of the turn it ended got no answer yet.
 const LIMIT_CONTINUE: &str = "The usage limit has reset. Answer the messages before this one \
 that got no reply yet, then any below.";
-/// The first turn on another agent: the limit ended the earlier conversation's turn.
-const SWITCH_CONTINUE: &str = "The earlier conversation's agent stopped at a usage limit or an \
-error before it answered these messages; you continue in a new conversation. Answer them, then \
-any below.";
+/// The first turn after a failed sign-in works again; the held messages follow in full.
+const AUTH_CONTINUE: &str = "The sign-in works again. These messages got no answer because the \
+sign-in had failed (one may already be above, if the sign-in failed during its turn); answer each \
+once, then any below.";
+/// The first turn of a new conversation that takes over a held turn (errors in a row, or a move
+/// an earlier wsx made).
+const SWITCH_CONTINUE: &str = "The earlier conversation stopped before it answered these \
+messages; you continue in a new conversation. Answer them, then any below.";
 /// What a stand-in is told. ref: docs/tasks.md "Agents"
 const STAND_IN: &str = "You stand in for a project's manager for a short while, because its agent \
 is at its usage limit. You have no tools: you cannot read files, start tasks or change anything. \
@@ -1084,6 +1088,11 @@ impl Manager {
                     self.held_messages(&hold.ids)
                 )
             }
+            // ^ A failed sign-in ends the turn before any model call, and whether the conversation
+            // kept the message is the client's matter: the held messages go again in full.
+            Some(hold) if hold.auth => {
+                text = format!("{AUTH_CONTINUE}\n\n{}{text}", self.held_messages(&hold.ids))
+            }
             Some(_) => text = format!("{LIMIT_CONTINUE}\n\n{text}"),
             None => {}
         }
@@ -1181,7 +1190,8 @@ impl Manager {
     /// The model of a turn: `eventModel` for one with only events, else the manager's.
     /// ref: docs/tasks.md "Manager"
     fn turn_model(&self, events_only: bool) -> String {
-        // ^ A fallback runs its own model: the event model names one of the own agent's.
+        // ^ A chat still on a fallback from an earlier wsx runs that agent's model: the event
+        // model names one of the own agent's.
         if let Some(agent) = &self.state.agent {
             return agent.model.clone();
         }
@@ -1197,11 +1207,11 @@ impl Manager {
             .any(|(_, author, _, wakes)| *author != Author::Events || *wakes)
     }
 
-    /// Before every turn, the one rule of where the manager goes (`agent::next`): back on its
-    /// own agent as soon as that is free, in a fresh conversation that opens with the handover
-    /// and the held messages in full; down to a fallback for a failed sign-in, or a limit past
-    /// `maxWaitMinutes`; else a hold on the own account's record, which ends when the record
-    /// does. Only with a turn to run. True while the turn waits: a hold on an error's
+    /// Before every turn, the one rule of where the manager goes (`agent::next`): a hold on the
+    /// own account's record while it refuses turns (a limit or a failed sign-in), which ends
+    /// when the record does; a chat an earlier wsx left on a fallback goes back on its own agent
+    /// as soon as that is free, in a fresh conversation that opens with the handover and the
+    /// held messages in full. Only with a turn to run. True while the turn waits: a hold on an error's
     /// backoff waits on its time, one on the account on its record, and the stand-in answers
     /// the owner meanwhile. ref: docs/tasks.md "Agents"
     fn choose_agent(&mut self) -> bool {
@@ -1233,11 +1243,6 @@ impl Manager {
                 self.go_home(ids, events, None);
                 false
             }
-            Next::Move(next, cause) => {
-                let reason = self.move_words(&next, cause, now);
-                self.move_to(next, reason, ids, events);
-                false
-            }
             Next::Wait(until_ms) => {
                 let announce = self.state.limit.is_none();
                 self.hold_on_account(until_ms, 0, ids, events, false, announce, now);
@@ -1250,14 +1255,10 @@ impl Manager {
     /// Where the manager goes (`agent::next`): its own agent is `tasks.manager.adapter` and
     /// `model`, the current one `state.agent` when set.
     fn next(&self, ask: Ask, now: u64) -> Next {
-        let settings = load_task_config(&self.main).unwrap_or_default();
         let current = self.current_agent();
         agent::next(
             (&self.adapter, &self.model),
             (&current.0, &current.1),
-            &settings.manager_fallback,
-            settings.max_wait_secs,
-            policy::Role::Manager,
             ask,
             now,
         )
@@ -1271,33 +1272,15 @@ impl Manager {
         }
     }
 
-    /// The one chat line of a move: "switched to <name>: claude usage limit until 03:20", or
-    /// "claude moved to <name>: sign-in expired".
-    fn move_words(&self, next: &agent::Choice, cause: Cause, now: u64) -> String {
-        let adapter = self.current_adapter();
-        match cause {
-            Cause::Limit(_) => format!("switched to {}: {}", next.name, cause.words(&adapter, now)),
-            Cause::SignIn => format!(
-                "{adapter} moved to {}: {}",
-                next.name,
-                cause.words(&adapter, now)
-            ),
-        }
-    }
-
     /// The current account refused the turn (a usage limit or a failed sign-in, on record
     /// until `until_ms`, the `attempt`-th in a row), with `why` its words; the turn's `ids`
-    /// are held. `agent::next` says where: home when the own agent is free, to a free
-    /// fallback, else a hold on the own account, which a fallback leaves for.
+    /// are held. `agent::next` says where: a hold on the own account; a chat still away on a
+    /// fallback from an earlier wsx goes home, for the turn or for the hold.
     /// ref: docs/tasks.md "Agents"
     fn refused(&mut self, until_ms: u64, attempt: u32, ids: Vec<u64>, why: &str, now: u64) {
         let events = self.turn_events;
         let until_ms = match self.next(Ask::Refused(until_ms), now) {
             Next::Home => return self.go_home(ids, events, Some(why)),
-            Next::Move(next, cause) => {
-                let reason = self.move_words(&next, cause, now);
-                return self.move_to(next, reason, ids, events);
-            }
             Next::Wait(until_ms) => until_ms,
             Next::Stay => until_ms,
         };
@@ -1376,28 +1359,6 @@ impl Manager {
             switched: true,
             auth: false,
             account: false,
-        });
-        self.save();
-    }
-
-    /// Continue the held turn `ids` in a new conversation on `next`, which opens with the
-    /// handover; `reason` is the one chat line.
-    fn move_to(&mut self, next: agent::Choice, reason: String, ids: Vec<u64>, events: bool) {
-        self.say(&reason);
-        self.state.limit = Some(LimitHold {
-            until_ms: now_unix_ms(),
-            attempt: 0,
-            ids,
-            events,
-            switched: true,
-            auth: false,
-            account: false,
-        });
-        self.rotate(0, Some(reason));
-        self.state.agent = Some(ManagerAgent {
-            name: next.name,
-            adapter: next.adapter,
-            model: next.model,
         });
         self.save();
     }

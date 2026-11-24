@@ -7,7 +7,7 @@ use std::fs;
 use wsx_core::task::chains::{Band, Chains};
 use wsx_core::task::needs::{self, NeedKind, Needs, Stage};
 use wsx_core::task::stall;
-use wsx_core::task::store::{TaskDir, RECORD_FILE};
+use wsx_core::task::store::{self, TaskDir, RECORD_FILE};
 use wsx_core::task::view;
 
 /// What the case is, its state, its creator, extra record fields, its kind of need, whether it pushes.
@@ -218,6 +218,25 @@ fn one_rule_decides_the_stage_the_counts_the_push_and_the_band() {
             reminder.words
         );
     }
+    // ^ A limit wait pushes while its account's failed sign-in is on record: only the owner can
+    // end it. Between two tries (the retry time past, no success yet) it still does, and a failed
+    // retry keeps the first failure's start, so a reader pushes the failure once.
+    let limited = ids[cases
+        .iter()
+        .position(|case| case.0 == "waits for the limit")
+        .unwrap()];
+    let (dir, record) = tasks.iter().find(|(dir, _)| dir.id == limited).unwrap();
+    let record = record.as_ref().unwrap();
+    let pushes = || needs::pushes(needs::stage(dir, record, false), record);
+    store::mark_sign_in_failed("claude", 1_000).unwrap();
+    assert!(
+        pushes(),
+        "a failed sign-in pushes, also past its retry time"
+    );
+    store::mark_sign_in_failed("claude", 9_000).unwrap();
+    assert_eq!(needs::sign_in_failed_since(record), Some(1_000));
+    store::clear_sign_in_failed("claude");
+    assert!(!pushes() && needs::sign_in_failed_since(record).is_none());
     let counted = Needs::read(PROJECT, false).unwrap();
     assert_eq!(
         (counted.owner, counted.working),

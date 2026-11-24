@@ -342,15 +342,7 @@ pub struct Choice {
     pub model: String,
 }
 
-/// Whose limit and credit a turn runs on: Claude's account, or a Pi provider's
-/// (`anthropic/claude-opus-5-5` is `pi-anthropic`). Agents on one account share a limit; a local
-/// model through Pi does not share one with a paid provider. ref: docs/tasks.md "Agents"
-pub fn account(adapter: &str, model: &str) -> String {
-    match model.split_once('/') {
-        Some((provider, _)) if adapter != "claude" => format!("{adapter}-{provider}"),
-        _ => adapter.to_string(),
-    }
-}
+pub use store::account;
 
 /// When `account` may be tried again: its usage limit or its failed sign-in on record, the
 /// later of the two. ref: docs/tasks.md "Agents"
@@ -399,25 +391,6 @@ pub fn stand_in(names: &[String], now_ms: u64) -> Option<Choice> {
     fallback(names, now_ms, policy::Role::Organizer).or_else(|| floor::choice(now_ms))
 }
 
-/// The first available of `names` when `account`'s limit until `until_ms` is past
-/// `maxWaitMinutes`, counted from the first limit of its row on record, so a backoff that keeps
-/// failing becomes long; a shorter one is waited out. ref: docs/tasks.md "Agents"
-fn fallback_past_wait(
-    names: &[String],
-    max_wait_secs: u64,
-    account: &str,
-    role: policy::Role,
-    until_ms: u64,
-    now_ms: u64,
-) -> Option<Choice> {
-    // ^ A record without its start (an older one) counts from now.
-    let since_ms =
-        store::account_limit(account, now_ms).map_or(now_ms, |limit| limit.since_ms.min(now_ms));
-    (until_ms.saturating_sub(since_ms) > max_wait_secs * 1000)
-        .then(|| fallback(names, now_ms, role))
-        .flatten()
-}
-
 /// When a host asks where it goes next. ref: docs/tasks.md "Agents"
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ask {
@@ -431,38 +404,17 @@ pub enum Ask {
     Look,
 }
 
-/// What refused the current account. ref: docs/tasks.md "Agents"
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Cause {
-    /// A usage limit until (unix ms).
-    Limit(u64),
-    SignIn,
-}
-
-impl Cause {
-    /// The reason a switch logs: "claude usage limit until 03:20" or "sign-in expired".
-    pub fn words(self, adapter: &str, now_ms: u64) -> String {
-        match self {
-            Self::Limit(until_ms) => format!(
-                "{adapter} usage limit until {}",
-                status::resume_time(until_ms, now_ms)
-            ),
-            Self::SignIn => super::limit::SIGN_IN_WORDS.into(),
-        }
-    }
-}
-
-/// Where a host goes. ref: docs/tasks.md "Agents"
+/// Where a host goes. A host keeps its own agent for life: a limit or a failed sign-in is waited
+/// out on it, never handed to another model (docs/design/orchestration.md section 8).
+/// ref: docs/tasks.md "Agents"
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Next {
-    /// Back on the own agent: the task or manager is away on a fallback, and the own account's
-    /// record is gone.
+    /// Back on the own agent: a record an earlier wsx moved to a fallback, now that the own
+    /// account's record is gone. Nothing moves a host away any more; this is the way back for a
+    /// task or chat that was away when wsx was upgraded.
     Home,
-    /// To this fallback, in a new conversation: the current account refuses turns for a
-    /// failed sign-in, or for a limit past `maxWaitMinutes`, and this one is free.
-    Move(Choice, Cause),
-    /// On the own agent until (unix ms), looking again: no fallback can take the turn. A host
-    /// away on a fallback goes back to its own agent for the wait.
+    /// On the own agent until (unix ms), looking again. A host still away goes back to its own
+    /// agent for the wait.
     Wait(u64),
     /// The current agent takes the turn.
     Stay,
@@ -470,28 +422,18 @@ pub enum Next {
 
 /// The one rule of where a host goes, asked before every turn and at every look of a wait by
 /// the task host and the manager host: `home` is the own (adapter, model), `current` the pair
-/// in use, `fallbacks` the project's list for `role`, `max_wait_secs` `tasks.agent.maxWaitMinutes`.
-/// ref: docs/tasks.md "Agents"
-pub fn next(
-    home: (&str, &str),
-    current: (&str, &str),
-    fallbacks: &[String],
-    max_wait_secs: u64,
-    role: policy::Role,
-    ask: Ask,
-    now_ms: u64,
-) -> Next {
+/// in use. ref: docs/tasks.md "Agents"
+pub fn next(home: (&str, &str), current: (&str, &str), ask: Ask, now_ms: u64) -> Next {
     let own = account(home.0, home.1);
     let here = account(current.0, current.1);
     let away = home != current;
     if away && blocked_until(&own, now_ms).is_none() {
         return Next::Home;
     }
-    let sign_in = store::sign_in_failed_until(&here, now_ms);
     let blocked = match ask {
         Ask::Refused(until_ms) => Some(until_ms),
         Ask::Look => blocked_until(&here, now_ms),
-        Ask::Turn => sign_in.or_else(|| {
+        Ask::Turn => store::sign_in_failed_until(&here, now_ms).or_else(|| {
             (current.0 != "claude")
                 .then(|| store::limited_until(&here, now_ms))
                 .flatten()
@@ -500,22 +442,10 @@ pub fn next(
     let Some(until_ms) = blocked else {
         return Next::Stay;
     };
-    // ^ A failed sign-in moves at once: nothing says when the owner signs in again. A limit
-    // within `maxWaitMinutes` is waited out: one conversation is worth more than a switch.
-    let (moved, cause) = match sign_in {
-        Some(_) => (fallback(fallbacks, now_ms, role), Cause::SignIn),
-        None => (
-            fallback_past_wait(fallbacks, max_wait_secs, &here, role, until_ms, now_ms),
-            Cause::Limit(until_ms),
-        ),
-    };
-    match moved {
-        Some(choice) => Next::Move(choice, cause),
-        None => Next::Wait(match away {
-            true => blocked_until(&own, now_ms).unwrap_or(until_ms),
-            false => until_ms,
-        }),
-    }
+    Next::Wait(match away {
+        true => blocked_until(&own, now_ms).unwrap_or(until_ms),
+        false => until_ms,
+    })
 }
 
 /// The budget of an agent that has none set.

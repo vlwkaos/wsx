@@ -294,13 +294,11 @@ struct TaskAgentFile {
     rotate_idle_seconds: Option<u64>,
     #[serde(rename = "keepWarmSeconds", skip_serializing_if = "Option::is_none")]
     keep_warm_seconds: Option<u64>,
-    /// As the manager's `fallback`, for workers.
+    /// Gone: a task keeps its own agent (`validate_task_agent` refuses them with the reason).
     #[serde(skip_serializing_if = "Option::is_none")]
-    fallback: Option<Vec<String>>,
-    /// A usage limit that lifts within this many minutes is waited out: one conversation
-    /// is worth more than a switch.
+    fallback: Option<yaml_serde::Value>,
     #[serde(rename = "maxWaitMinutes", skip_serializing_if = "Option::is_none")]
-    max_wait_minutes: Option<u64>,
+    max_wait_minutes: Option<yaml_serde::Value>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -499,18 +497,13 @@ pub fn load_task_config(repo_path: &Path) -> Result<TaskConfig, String> {
             repo_path.join(PROJECT_CONFIG_FILE).display()
         ));
     }
-    // ^ The owner's workflow and fallback agents apply to every project that names none of
+    // ^ The owner's workflow and stand-in agents apply to every project that names none of
     // its own (docs/tasks.md "Workflow", "Agents").
-    let wants_owner = tasks.workflow.steps.is_empty()
-        || tasks.fallback.is_empty()
-        || tasks.manager_fallback.is_empty();
+    let wants_owner = tasks.workflow.steps.is_empty() || tasks.manager_fallback.is_empty();
     if let Some(path) = owner_config_path().filter(|_| wants_owner) {
         let owner = read_tasks(&path)?;
         if tasks.workflow.steps.is_empty() {
             tasks.workflow.steps = owner.workflow.steps;
-        }
-        if tasks.fallback.is_empty() {
-            tasks.fallback = owner.fallback;
         }
         if tasks.manager_fallback.is_empty() {
             tasks.manager_fallback = owner.manager_fallback;
@@ -520,7 +513,7 @@ pub fn load_task_config(repo_path: &Path) -> Result<TaskConfig, String> {
 }
 
 /// `~/.config/wsx/wsx.config.yml` (or under `$XDG_CONFIG_HOME`): only its
-/// `tasks.workflow.steps`, `tasks.agent.fallback` and `tasks.manager.fallback` are read.
+/// `tasks.workflow.steps` and `tasks.manager.fallback` are read.
 /// ref: docs/tasks.md "Workflow", "Agents"
 fn owner_config_path() -> Option<std::path::PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
@@ -886,12 +879,21 @@ fn validate_task_agent(agent: TaskAgentFile, config: &mut TaskConfig) -> Result<
     if let Some(effort) = validate_effort(agent.effort, "tasks.agent.effort")? {
         config.effort = effort;
     }
-    config.fallback = validate_fallback(agent.fallback, "tasks.agent.fallback")?;
-    if let Some(minutes) = agent.max_wait_minutes {
-        if minutes > 8 * 24 * 60 {
-            return Err("tasks.agent.maxWaitMinutes must be 0..=11520".into());
+    // ^ A task keeps its own agent for life and waits out a limit on it
+    // (docs/design/orchestration.md section 8): nothing reads these keys any more.
+    for (set, key) in [
+        (agent.fallback.is_some(), "tasks.agent.fallback"),
+        (
+            agent.max_wait_minutes.is_some(),
+            "tasks.agent.maxWaitMinutes",
+        ),
+    ] {
+        if set {
+            return Err(format!(
+                "{key} is gone: a task keeps its own agent and waits out a usage limit or a \
+                 failed sign-in (docs/tasks.md \"Agents\"); remove the key"
+            ));
         }
-        config.max_wait_secs = minutes * 60;
     }
     if let Some(tokens) = agent.rotate_tokens {
         config.rotate_tokens = validate_rotate_tokens(tokens, "tasks.agent.rotateTokens")?;

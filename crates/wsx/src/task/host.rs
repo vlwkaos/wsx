@@ -1638,19 +1638,14 @@ impl Host {
             return Ok(());
         }
         // ^ Before a turn, the one rule of where the task goes (`agent::next`): home once its
-        // own agent is free, to a fallback when the account refuses turns, or a wait. A steer
-        // into a running turn goes to that turn. ref: docs/tasks.md "Agents"
+        // own agent is free, or a wait while its account refuses turns. A steer into a running
+        // turn goes to that turn. ref: docs/tasks.md "Agents"
         let mut home = false;
         if self.turn.is_none() {
             let now = now_unix_ms();
             match self.ask(Ask::Turn, now) {
                 Next::Stay => {}
                 Next::Home => home = true,
-                Next::Move(next, cause) => {
-                    let reason = cause.words(&self.record.adapter, now);
-                    self.switch_agent(next, reason, text.to_string(), text.to_string());
-                    return Ok(());
-                }
                 Next::Wait(until_ms) => {
                     // ^ Away, the wait is on the own account: the record goes home first.
                     if self.away() {
@@ -2668,11 +2663,6 @@ impl Host {
         }
     }
 
-    /// A host that starts with a limit wait on its task record (a restart, or the exec of a
-    /// replaced binary) holds the turn `text` again. The account's record says whether it still
-    /// holds; with none the turn goes on at the next look. A sign-in wait keeps its retry time.
-    /// A long wait from an older host or from before a fallback was configured moves to the
-    /// fallback now instead of waiting days. ref: docs/tasks.md "Agents"
     /// The settings of the project, as every turn reads them.
     fn settings(&self) -> wsx_core::model::workspace::TaskConfig {
         load_task_config(&self.record.project_path).unwrap_or_default()
@@ -2696,14 +2686,10 @@ impl Host {
     /// Where the task goes (`agent::next`, the one rule): asked before every turn and at every
     /// look of a wait. ref: docs/tasks.md "Agents"
     fn ask(&self, ask: Ask, now: u64) -> Next {
-        let settings = self.settings();
         let home = self.home();
         agent::next(
             (&home.adapter, &home.model),
             (&self.record.adapter, &self.record.model),
-            &settings.fallback,
-            settings.max_wait_secs,
-            wsx_core::task::policy::Role::Worker,
             ask,
             now,
         )
@@ -2719,17 +2705,12 @@ impl Host {
 
     /// The current account refused the turn (a usage limit or a failed sign-in, on record
     /// until `until_ms`), with `why` its words: `text` continues the task where `agent::next`
-    /// says. A fallback's refusal with the own agent free goes home; one with it still blocked
-    /// goes home for the wait, since no other fallback took it. ref: docs/tasks.md "Agents"
+    /// says: a wait on the own agent; a task still away from an earlier wsx goes home, for the
+    /// turn or for the wait. ref: docs/tasks.md "Agents"
     fn refused(&mut self, text: String, why: &str, until_ms: u64, now: u64) {
         let did = format!("was refused: {}", first_line(why));
         let until_ms = match self.ask(Ask::Refused(until_ms), now) {
             Next::Home => return self.return_home(text, Some(did)),
-            Next::Move(next, cause) => {
-                let reason = cause.words(&self.record.adapter, now);
-                let unfinished = std::mem::take(&mut self.turn_text);
-                return self.switch_agent(next, reason, unfinished, text);
-            }
             Next::Wait(until_ms) => until_ms,
             Next::Stay => until_ms,
         };
@@ -2739,8 +2720,8 @@ impl Host {
         self.wait_away(&did, "", until_ms, now);
     }
 
-    /// A task on a fallback that no fallback can take goes home for the wait on the own
-    /// account: `did` is what the fallback did, `text` the message the turn adds.
+    /// A task on a fallback (from an earlier wsx) that was refused goes home for the wait on the
+    /// own account: `did` is what the fallback did, `text` the message the turn adds.
     fn wait_away(&mut self, did: &str, text: &str, until_ms: u64, now: u64) {
         let reason = format!("back on {}: {did}; waits for it", self.home().adapter);
         match self.come_home(did, reason.clone()) {
@@ -2865,8 +2846,7 @@ impl Host {
     /// (`resume_after_limit`).
     fn wait_for_limit(&mut self, text: String, until_ms: u64) {
         let now = now_unix_ms();
-        // ^ A wait looks every 10 s: for the account's record ending early, and for a fallback
-        // coming free past `maxWaitMinutes`.
+        // ^ A wait looks every 10 s, for the account's record ending early.
         self.limit_wait = Some(LimitWait {
             text,
             until_ms,
@@ -2905,8 +2885,8 @@ impl Host {
 
     /// Continue after a usage limit or a failed sign-in. The account's record decides: it ends
     /// the wait when it is gone (a probe, or another agent's call, found the account answering)
-    /// or past, and it names the reset shown meanwhile; a fallback free past `maxWaitMinutes`
-    /// takes the turn. Tasks resume one at a time, oldest wait first: each holds the limit
+    /// or past, and it names the reset shown meanwhile. Tasks resume one at a time, oldest wait
+    /// first, on their own agent: each holds the limit
     /// slot until its agent answers, so a limit that has not lifted stops only one.
     /// ref: docs/tasks.md "Claude adapter"
     fn resume_after_limit(&mut self) {
@@ -2929,13 +2909,6 @@ impl Host {
                     self.say(&reason);
                     self.wait(WaitOn::Limit, reason);
                 }
-                return;
-            }
-            Next::Move(next, cause) => {
-                let wait = self.limit_wait.take().expect("the wait is on");
-                self.limit_queue = None;
-                let reason = cause.words(&self.record.adapter, now);
-                self.switch_agent(next, reason, wait.text.clone(), wait.text);
                 return;
             }
             Next::Home | Next::Stay => {}
@@ -3019,53 +2992,6 @@ impl Host {
             ),
             None => self.record.state.as_str().into(),
         }
-    }
-
-    /// Continue the task on `next` in a new conversation, which opens with `unfinished`, the
-    /// turn the refused agent could not finish, after the usual rotation context. Leaving
-    /// home keeps the own conversation and `home_turn`, the turn its return continues, on the
-    /// record (`come_home`). ref: docs/tasks.md "Agents"
-    fn switch_agent(
-        &mut self,
-        next: agent::Choice,
-        reason: String,
-        unfinished: String,
-        home_turn: String,
-    ) {
-        let from = format!("{}/{}", self.record.adapter, self.record.model);
-        let to = format!("{} ({}/{})", next.name, next.adapter, next.model);
-        self.say(&format!("switched to {to}: {reason}"));
-        self.log(LogEvent::AgentSwitch {
-            from,
-            to,
-            reason: reason.clone(),
-        });
-        let unfinished = match self.rotating.take() {
-            Some((waiting, _)) => waiting,
-            None => unfinished,
-        };
-        if !self.away() {
-            let session = self.record.agent_session.clone();
-            let home = self
-                .record
-                .home
-                .as_mut()
-                .expect("the host fills in the record's home");
-            home.session = session;
-            home.turn = home_turn;
-        }
-        self.record.adapter = next.adapter;
-        self.record.model = next.model;
-        self.record.fallback = true;
-        self.limit_attempt = 0;
-        self.limit_wait = None;
-        self.limit_queue = None;
-        let waiting = format!(
-            "The earlier conversation's agent could not continue ({reason}) during this turn and \
-             could write no handoff notes; another agent continues. Check what the working copy \
-             already holds before you redo anything. The turn it could not finish:\n{unfinished}"
-        );
-        self.rotate(waiting, Some(reason));
     }
 
     /// Keep a reported result for the turn that ends next; the last one of a turn counts.

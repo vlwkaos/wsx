@@ -58,10 +58,19 @@ pub fn stage(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Stage {
     }
 }
 
-/// Whether a task that needs the owner is news for a push: an answer is asked of the owner.
-/// Not the limit (the host continues by itself), a ready task (the page shows it) or a failed one.
+/// Whether a task that needs the owner is news for a push: an answer is asked of the owner, or
+/// its account's sign-in failed, which only the owner can fix (the task waits on its own agent,
+/// docs/tasks.md "Agents"). Not a usage limit (the host continues by itself), a ready task (the
+/// page shows it) or a failed one.
 pub fn pushes(stage: Stage, record: &TaskRecord) -> bool {
-    stage.need() == Some(NeedKind::Waiting) && !record.waits_on(WaitOn::Limit)
+    stage.need() == Some(NeedKind::Waiting)
+        && (!record.waits_on(WaitOn::Limit) || sign_in_failed_since(record).is_some())
+}
+
+/// When the failed sign-in a waiting task's account is on record for began: one failure from
+/// the first try to the success, so a reader pushes it once (`pushes`). ref: docs/tasks.md "Agents"
+pub fn sign_in_failed_since(record: &TaskRecord) -> Option<u64> {
+    store::sign_in_failed_since(&store::account(&record.adapter, &record.model))
 }
 
 /// The kinds of need of an owner task, most urgent first (`rank`); an approval is the fourth.

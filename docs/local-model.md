@@ -34,7 +34,7 @@ Add a provider to `~/.pi/agent/models.json` (wsx copies only this file into each
 }
 ```
 
-Add an agent to `config-v2.toml`, then list its name in `tasks.manager.fallback` or `tasks.agent.fallback` ([tasks.md](tasks.md) "Registry"):
+Add an agent to `config-v2.toml`, then list its name in `tasks.manager.fallback`, the stand-ins ([tasks.md](tasks.md) "Registry"):
 
 ```toml
 [[agents]]

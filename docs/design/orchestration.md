@@ -91,13 +91,13 @@ batch, everything else in the digest.
 
 | # | Step | State | Open |
 |---|---|---|---|
-| 1 | Gate: contract files, scenarios by path, triage | partly: `tasks.contracts`, `scenarioPaths` built | triage of a red that is not the task's own (judged by code against main's last result); a failed part reruns once and is counted flaky; a nightly full run on main starts a fix task; later: web parts by area, results keyed by input hash |
+| 1 | Gate: contract files, scenarios by path, triage | partly: `tasks.contracts`, `scenarioPaths`, and a failure two tasks share told as "not yours" (`task::failure`, tasks.md "Shared failure") built | a nightly full run on main that starts a fix task, then a single task's red judged against main's last result; a failed part reruns once and is counted flaky; later: web parts by area, results keyed by input hash |
 | 2 | Workbenches, warm by copy-on-write | built (7bf75497; measured 5 builds 2.8 GB against 11 GB) | the cap per machine and the idle drop of `target/` (step 3) |
 | 3 | Chat engine on one phase table; desk as code; no event turns | partly: task events and shared failures start no turn (99a45b5d) | `next(phase, event)` in `wsx_core::task::phase` replacing about 20 state functions; approvals, deploys, routine ends and recaps still start lead turns; one test `Fixture` and the no-screen scenario sections moved into nextest; browser checks opt-in |
 | 4 | Router and fork with brief | partly: rules, optional model, fork with the owner's message as brief, undo (0d2f90c8, e2a5d669, 66b38ffc) | the model move's undo; a part's brief written by the current chat; replay accuracy 90% on hand labels |
 | 5 | Proof card, preview on a leased port, inbox | not built; mockups first | the inbox projection (`inbox`, `chat_rows`) in wsx-core, checked against a replayed day before any screen |
 | 6 | Mail between desks | built (66b38ffc) | |
-| — | Agents (section 8) | not built | remove the in-task switch; tiers; circuit breaker |
+| — | Agents (section 8) | partly: no switching | re-dispatch to a peer as a Decide item (needs the inbox); tiers; circuit breaker; provenance |
 | — | Deletions (decision 7) | partly | `manager-host` and `run_old`, `.gtrconfig` and old `config.toml` imports, old web `#/p/...` routes; merge `wsx routine` into `wsx task routine`; three ways to add a project into `ops::add_project` |
 
 ## 8. Agents, fallbacks and limits
@@ -106,9 +106,9 @@ Owner, 2026-11-23: a fallback model must not take over a running conversation; a
 run as its own role with its own permissions, for basic operations and lookups.
 
 Built: `[[agents]]` with `may`; `Policy::of(trust, role, agent)`; trusted and untrusted Seatbelt profiles; a limit
-record per account; the stand-in (`organizer` role); the local floor (`floor.rs`). **Drift:** a limit past
-`maxWaitMinutes` or a failed sign-in still moves a running task or chat to a fallback (`agent::next` `Move`,
-`agent_switch` in `host.rs`; tasks.md "Agents"). That switch goes.
+record per account; the stand-in (`organizer` role); the local floor (`floor.rs`); no switching (2026-11-24: a limit
+or a failed sign-in is waited out on the own agent, a sign-in wait pushes; `Next::Home` stays only for records an
+earlier wsx left away).
 
 | Part | Rule |
 |---|---|

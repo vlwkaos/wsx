@@ -1445,6 +1445,9 @@ pub struct Watch {
     /// Each task's (state, revision) when last seen, by project; a project seen for the
     /// first time, as at a server start, notifies nothing.
     seen: HashMap<u64, HashMap<u32, (TaskState, u32)>>,
+    /// The failed sign-in each task was pushed for, by its start (`needs::sign_in_failed_since`):
+    /// each retry moves the task through working and back, and pushes nothing new.
+    signed_out: HashMap<(u64, u32), u64>,
     /// Approval requests already seen, by project.
     requests: HashMap<u64, HashSet<String>>,
     /// The last reply id seen, by project and chat (`manager` for the manager).
@@ -1550,12 +1553,17 @@ fn notice(scope: &Scope, watch: &mut Watch) {
         let Ok(record) = record else { continue };
         let now = (record.state, record.revision);
         let before = seen.insert(record.id, now);
-        // ^ Only a task that waits for an answer pushes (`needs::pushes`).
+        // ^ Only a task that waits for an answer pushes (`needs::pushes`), a failed sign-in once.
         if !first
             && before != Some(now)
             && needs::pushes(needs::stage(&dir, &record, land_auto), &record)
         {
-            watch.pending.add((scope.project, Key::Task(record.id)));
+            let repeat = needs::sign_in_failed_since(&record).is_some_and(|since| {
+                watch.signed_out.insert((scope.project, record.id), since) == Some(since)
+            });
+            if !repeat {
+                watch.pending.add((scope.project, Key::Task(record.id)));
+            }
         }
     }
     let lines = store::read_approvals(&scope.store).unwrap_or_default();
