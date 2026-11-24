@@ -91,7 +91,7 @@ def run(wsx, wsxd, claude, model, work, owned):
 
     git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid']
     subprocess.run([*git, 'init', '-q', '-b', 'main'], cwd=project, env=env, check=True)
-    (project / 'wsx.config.yml').write_text('tasks:\n  manager: { model: %s }\n' % model)
+    (project / 'wsx.config.yml').write_text('tasks:\n  manager: { model: %s, leadModel: same }\n' % model)
     subprocess.run([*git, 'add', '.'], cwd=project, env=env, check=True)
     subprocess.run([*git, 'commit', '-q', '-m', 'start'], cwd=project, env=env, check=True)
 

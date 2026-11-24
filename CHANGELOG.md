@@ -6,6 +6,7 @@ Releases 0.40.4 and older are in [docs/changelog-archive.md](docs/changelog-arch
 
 ### Changed
 
+- Tasks: the lead runs on `tasks.manager.leadModel` (default `sonnet` on Claude) and rotates past `tasks.manager.leadRotateTokens` (default 120000); chats with a goal keep the manager's model and limit, and the web and TUI show the model the lead runs on.
 - Tasks: `tasks.router.model` (off by default) lets a small model add the `@<chat>` or `/new <name>` prefix to an owner message that has none; when unsure it leaves the message where it was written.
 - Tasks: `tasks.roles` names the areas of a large repo; `wsx task chat new <name> --role <role>` opens a chat that owns the role's paths and runs on its agent.
 - Tasks: `tasks.contracts` names the files of decided behavior; a land that changes one of their lines needs the owner, and one that only adds lines lands with a note.

@@ -518,6 +518,52 @@ pub fn agent(dir: &ManagerDir) -> Option<ChatAgent> {
     entry_agent(&chat_file(dir).agent?)
 }
 
+/// What a chat's turns run on unless a fallback holds them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Runs {
+    pub adapter: String,
+    pub model: String,
+    /// `tasks.manager.eventModel`; none for a chat with its own agent.
+    pub event_model: Option<String>,
+    /// The project's main chat with no goal: it answers and forks goals.
+    pub lead: bool,
+    /// The owner's limit: `leadRotateTokens` for the lead (`lead_rotate_limit`), else
+    /// `rotateTokens` (`manager_rotate_limit`).
+    pub rotate_tokens: Option<u64>,
+}
+
+/// The chat's own agent; else, for the lead, `tasks.manager.leadModel` and its shorter context;
+/// else `tasks.manager`'s. ref: docs/tasks.md "Lead and forks"
+pub fn runs_on(dir: &ManagerDir, settings: &crate::model::workspace::TaskConfig) -> Runs {
+    if let Some(own) = agent(dir) {
+        return Runs {
+            adapter: own.adapter,
+            model: own.model,
+            event_model: None,
+            lead: false,
+            rotate_tokens: settings.manager_rotate_tokens,
+        };
+    }
+    let lead = store::main_chat(&dir.project_id).as_deref() == Some(dir.chat.as_str())
+        && goal(dir).trim().is_empty();
+    Runs {
+        adapter: settings.manager_adapter.clone(),
+        model: if lead {
+            settings.lead_model()
+        } else {
+            &settings.manager_model
+        }
+        .to_string(),
+        event_model: settings.manager_event_model.clone(),
+        lead,
+        rotate_tokens: if lead {
+            settings.manager_lead_rotate_tokens
+        } else {
+            settings.manager_rotate_tokens
+        },
+    }
+}
+
 /// Open the chat in the repo `project_id`: a new folder, or a closed one again with its notes.
 /// A new `goal` replaces the old (`set_goal`);
 pub fn create(

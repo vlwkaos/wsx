@@ -187,6 +187,11 @@ pub struct TaskConfig {
     /// `tasks.manager.rotateTokens` when the owner set it; else `None`, and
     /// `manager_rotate_limit` decides by adapter.
     pub manager_rotate_tokens: Option<u64>,
+    /// `tasks.manager.leadModel`: the lead's model (the main chat with no goal), `same` for
+    /// `manager_model`; `None` takes `lead_model`'s default. ref: docs/tasks.md "Lead and forks"
+    pub manager_lead_model: Option<String>,
+    /// `tasks.manager.leadRotateTokens`; `None` takes `lead_rotate_limit`'s default.
+    pub manager_lead_rotate_tokens: Option<u64>,
     /// Quiet seconds after which the manager writes the owner a recap; 0 is off. The config
     /// says minutes (`recapMinutes`, a fraction allowed). ref: docs/tasks.md "Recap"
     pub manager_recap_secs: u64,
@@ -250,7 +255,25 @@ pub fn manager_rotate_limit(explicit: Option<u64>, adapter: &str) -> u64 {
     })
 }
 
+/// The lead's context limit: it answers and forks goals, so what it carries is the ledger, the
+/// notes and the handover, not a goal's work. Unset: 120000, or the adapter's manager limit when
+/// that is lower. ref: docs/tasks.md "Lead and forks"
+pub fn lead_rotate_limit(explicit: Option<u64>, adapter: &str) -> u64 {
+    explicit.unwrap_or_else(|| manager_rotate_limit(None, adapter).min(120_000))
+}
+
 impl TaskConfig {
+    /// The lead's model: `leadModel` (`same`: the manager's); unset, `sonnet` on Claude and the
+    /// manager's on any other adapter. ref: docs/tasks.md "Lead and forks"
+    pub fn lead_model(&self) -> &str {
+        match self.manager_lead_model.as_deref() {
+            Some("same") => &self.manager_model,
+            Some(model) => model,
+            None if self.manager_adapter == "claude" => "sonnet",
+            None => &self.manager_model,
+        }
+    }
+
     /// The model of a `task new --size small` task (`tasks.agent.smallModel`).
     pub fn small_model(&self) -> &str {
         match (self.small_model.is_empty(), self.adapter.as_str()) {
@@ -315,6 +338,8 @@ impl Default for TaskConfig {
             // more than the turn saved (scripts/bench-manager.py, docs/tasks.md "Manager").
             manager_event_model: None,
             manager_rotate_tokens: None,
+            manager_lead_model: None,
+            manager_lead_rotate_tokens: None,
             manager_recap_secs: 0,
             prune_idle_secs: 14 * 24 * 60 * 60,
             prune_remove_secs: 30 * 24 * 60 * 60,

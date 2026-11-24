@@ -248,3 +248,64 @@ fn closing_a_fork_before_it_owns_a_task_undoes_it_and_no_later() {
     assert_eq!(kinds(&lead, "fork_undone").len(), 1, "{lead:?}");
     assert!(handed(&lead, "worker-fork"), "no hand-back: {lead:?}");
 }
+
+/// The models the fake agent was launched with for the chats' turns, in launch order.
+fn launched_models(fixture: &Fixture) -> Vec<String> {
+    fixture
+        .traces()
+        .iter()
+        .filter(|t| t["launch"] == true && t["schema"] != true)
+        .filter_map(|t| t["model"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// The lead answers and forks goals, so it runs on `tasks.manager.leadModel` (unset on Claude:
+/// sonnet) while a chat with a goal keeps the manager's model (opus); `leadModel: same` gives
+/// the lead the manager's model again. ref: docs/tasks.md "Lead and forks"
+#[test]
+fn the_lead_runs_on_its_own_model_and_goal_chats_on_the_managers() {
+    let fixture = Fixture::new();
+    let id = fixture.json(&["task", "say", "hello", "--json"])["id"]
+        .as_u64()
+        .unwrap();
+    reply_to(&fixture, "demo", id);
+    assert_eq!(launched_models(&fixture), ["sonnet"]);
+    let goal = fixture.root.join("goal.md");
+    std::fs::write(&goal, "Invoices and VAT\n").unwrap();
+    let made = fixture.wsx(&[
+        "task",
+        "chat",
+        "new",
+        "billing",
+        "--goal",
+        goal.to_str().unwrap(),
+    ]);
+    assert!(made.status.success(), "{made:?}");
+    let id = fixture.json(&["task", "say", "--to", "billing", "hi", "--json"])["id"]
+        .as_u64()
+        .unwrap();
+    reply_to(&fixture, "billing", id);
+    assert_eq!(launched_models(&fixture), ["sonnet", "opus"]);
+    // ^ A goal set on the main chat ends its lead role: its agent starts again on the manager's model.
+    let set = fixture.wsx(&[
+        "task",
+        "chat",
+        "goal",
+        "demo",
+        "--goal",
+        goal.to_str().unwrap(),
+    ]);
+    assert!(set.status.success(), "{set:?}");
+    let id = fixture.json(&["task", "say", "again", "--json"])["id"]
+        .as_u64()
+        .unwrap();
+    reply_to(&fixture, "demo", id);
+    assert_eq!(launched_models(&fixture), ["sonnet", "opus", "opus"]);
+
+    let same = Fixture::with_tasks_config("  manager:\n    leadModel: same\n");
+    let id = same.json(&["task", "say", "hello", "--json"])["id"]
+        .as_u64()
+        .unwrap();
+    reply_to(&same, "demo", id);
+    assert_eq!(launched_models(&same), ["opus"]);
+}

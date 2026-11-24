@@ -793,7 +793,7 @@ def manager_up(created):
     (Path(created['task_dir']).parent / 'repo.json').unlink(missing_ok=True)
     configure((project / 'wsx.config.yml').read_text()
               + '  manager: { name: "  Atlas ", model: fake-manager, eventModel: fake-events, '
-                'rotateTokens: 100000 }\n'
+                'rotateTokens: 100000, leadModel: same, leadRotateTokens: 100000 }\n'
               + '  skills: owner\n  workflow:\n    build: "Run the fixture rule."\n'
                 '    review: "Check the fixture rule."\n', 'manager config')
     # ^ The owner's skills folder: the manager gets it as the `owner` plugin. It is the one of
@@ -3011,8 +3011,8 @@ def part_core(created=None):
     assert [h['kind'] for h in kept if h['by'] == 'notes'] == ['decision'], kept
     put('decisions.md', '- 2026-10-22 keep the store in sqlite\n')
     put('context.md', 'PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
-    # ^ The size limit by adapter (docs/tasks.md "Manager"): with no tasks.manager.rotateTokens a
-    # manager on Claude keeps its conversation to 400000, one on Pi to 150000; a set value wins.
+    # ^ The size limit by adapter (docs/tasks.md "Lead and forks"): with no tasks.manager.leadRotateTokens the
+    # lead keeps its conversation to 120000 (less when the adapter's manager limit is lower); a set value wins.
     # The config is read at the host's start, so each case stops the manager first.
     def rotated_entries():
         return [e for e in manager_entries() if e['kind'] == 'rotated']
@@ -3036,17 +3036,19 @@ def part_core(created=None):
     ctx_word = {'claude': 'CTX', 'pi': 'PICTX'}
     limit_config = (project / 'wsx.config.yml').read_text()
     manager_line_now = next(line for line in limit_config.splitlines() if line.startswith('  manager:'))
-    assert 'rotateTokens: 100000' in manager_line_now, manager_line_now
-    plain = manager_line_now.replace(', rotateTokens: 100000', '')
-    # ^ Claude, not set: 200000 is past 150000 and under 400000, so no rotation; 450000 rotates.
-    rotates_at(plain, 'claude', [200000], 450000, 450000)
+    assert 'rotateTokens: 100000' in manager_line_now and ', leadRotateTokens: 100000' in manager_line_now, manager_line_now
+    # ^ The main chat is the lead: `leadRotateTokens` decides, unset 120000 or the adapter's manager
+    # limit when lower (docs/tasks.md "Lead and forks"); `rotateTokens: 100000`, a goal chat's, stays set.
+    plain = manager_line_now.replace(', leadRotateTokens: 100000', '')
+    # ^ Claude, not set: 110000 is past rotateTokens and under 120000, so no rotation; 150000 rotates.
+    rotates_at(plain, 'claude', [110000], 150000, 150000)
     # ^ Claude, set to 100000: it rotates at 200000.
     rotates_at(manager_line_now, 'claude', [], 200000, 200000)
-    # ^ Pi, not set: 120000 stays, 200000 rotates (the 150000 limit).
+    # ^ Pi, not set: 110000 stays, 200000 rotates (120000, under Pi's 150000).
     pi_plain = plain.replace('{ ', '{ adapter: pi, model: fake/pi-model, ', 1).replace('eventModel: fake-events', 'eventModel: off')
-    rotates_at(pi_plain, 'pi', [120000], 200000, 200000)
+    rotates_at(pi_plain, 'pi', [110000], 200000, 200000)
     # ^ Pi, set to 250000: 200000 stays.
-    pi_set = pi_plain.replace(' }', ', rotateTokens: 250000 }', 1)
+    pi_set = pi_plain.replace(' }', ', leadRotateTokens: 250000 }', 1)
     rotates_at(pi_set, 'pi', [200000], 300000, 300000)
     # ^ Back on Claude with the fixture's config for the parts below.
     stop_manager()
@@ -6896,11 +6898,13 @@ def part_host(created=None):
     chat_reply('purpose', js('task', 'say', '--to', 'purpose', 'THIRD TURN')['id'])
     assert 'purpose for this chat' not in last_instructions('purpose') and not (chats_dir / 'purpose/goal.md').exists()
     assert last_instructions('purpose').startswith('You are purpose, a chat of the project demo.\n\n')
-    # ^ The main chat has none by default: no preamble; with one, its instructions open with it.
-    assert 'purpose for this chat' not in last_instructions('demo') and last_instructions('demo').startswith('You are the manager of the wsx project')
+    # ^ The main chat has none by default: it opens as the lead (docs/tasks.md "Lead and forks"); with one, its
+    # instructions open with the purpose and no lead preamble.
+    assert 'purpose for this chat' not in last_instructions('demo') and last_instructions('demo').startswith('You are the lead of the project demo:')
     js('task', 'chat', 'goal', 'demo', '--goal', first_goal)
     reply_to(js('task', 'say', 'HOME TURN')['id'])
     assert last_instructions('demo').startswith("The owner's purpose for this chat:\nKeep the invoices exact.\n\n"), last_instructions('demo')[:200]
+    assert 'You are the lead' not in last_instructions('demo')
     js('task', 'chat', 'goal', 'demo', '--goal', no_goal)
     reply_to(js('task', 'say', 'HOME TURN 2')['id'])
     assert 'purpose for this chat' not in last_instructions('demo')

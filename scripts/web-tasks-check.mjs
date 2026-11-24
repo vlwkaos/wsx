@@ -932,7 +932,8 @@ if (await evaluate("/line 30 of the report/.test(document.querySelector('.log').
 await managerWidth("the phone chat");
 // ^ The manager's agent in use sits by its name, from the chat's `manager.agent` (docs/web-client-tasks.md "Agent").
 const managerAgent = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((view) => view.manager.agent)`);
-if (managerAgent?.adapter !== "claude" || managerAgent.model !== "fake-manager" || managerAgent.fallback !== false) await fail(`the manager's agent field is ${JSON.stringify(managerAgent)}`);
+// ^ ui's main chat has no goal: it is the lead, on the default lead model (docs/tasks.md "Lead and forks").
+if (managerAgent?.adapter !== "claude" || managerAgent.model !== "sonnet" || managerAgent.fallback !== false) await fail(`the manager's agent field is ${JSON.stringify(managerAgent)}`);
 if ((await text(".bar-title .bar-model"))[0] !== `${managerAgent.model} ${managerAgent.effort}`) await fail("the manager chat's top row does not name the model and effort");
 await shot("project", ".composer-send");
 // The chat opens at its newest message; scrolled up, it shows Jump to latest.

@@ -3640,7 +3640,7 @@ TASK_CONFIG = '''tasks:
     model: fake-model
   checks:
     - "test ! -e broken.txt"
-  manager: { model: fake-manager, rotateTokens: 100000 }
+  manager: { model: fake-manager, rotateTokens: 100000, leadModel: same, leadRotateTokens: 100000 }
   deploy: { command: 'test -z "$FIXTURE_DEPLOY_FAIL" || { seq -f "deploy step %g" 60; exit 3; }' }
 '''
 
@@ -3741,8 +3741,10 @@ def task_journey(args):
                                          capture_output=True, text=True, timeout=20).stdout.strip()
                     assert os.path.realpath(top) == os.path.realpath(folder), ('fixture git escaped', folder, top)
                     # ^ ui's manager has a name (docs/tasks.md "Config"); the others read as their project.
+                    # ui's lead runs on the default lead model, sonnet (docs/tasks.md "Lead and forks").
                     (folder / 'wsx.config.yml').write_text(
-                        TASK_CONFIG.replace('{ model: fake-manager,', '{ name: Atlas, model: fake-manager,') if folder == other
+                        TASK_CONFIG.replace('{ model: fake-manager,', '{ name: Atlas, model: fake-manager,')
+                        .replace(' leadModel: same,', '') if folder == other
                         else TASK_CONFIG + PANEL_CONFIG if folder == calm else TASK_CONFIG)
                     if folder == calm:
                         # ^ docs/panels.md: `device` counts its runs, `broken` exits 2 after a line.
@@ -4933,7 +4935,7 @@ merge_seconds = 3
             # "Find"): every match the whole log has, as `all=true` sent before.
             whole = steady(owner, 'GET', '/api/tasks/%d/chat?find=QUASAR' % ids['plans'])[1]
             peer = lambda chat, key: {r['name'] for r in chat['rows'] if r.get('author') == 'peer:chat:' + key}
-            assert ui_chat['manager'] == {'name': 'Atlas', 'id': 'ui', 'goal': '', 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and peer(ui_chat, 'plans') == {'plans'}, (ui_chat['manager'], peer(ui_chat, 'plans'))
+            assert ui_chat['manager'] == {'name': 'Atlas', 'id': 'ui', 'goal': '', 'agent': {'adapter': 'claude', 'model': 'sonnet', 'effort': 'high', 'fallback': False}} and peer(ui_chat, 'plans') == {'plans'}, (ui_chat['manager'], peer(ui_chat, 'plans'))
             assert plans_chat['manager']['name'] == 'plans' and peer(whole, 'ui') == {'ui'}, (plans_chat['manager'], peer(whole, 'ui'))
             # ^ The window is 200 log entries; a ping, a recap request or a repeat shows no row.
             assert plans_chat['skipped'] > 0 and 0 < len(plans_chat['rows']) <= 200, (plans_chat['skipped'], len(plans_chat['rows']))

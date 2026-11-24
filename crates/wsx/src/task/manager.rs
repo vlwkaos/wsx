@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
-use wsx_core::model::workspace::manager_rotate_limit;
+use wsx_core::model::workspace::{lead_rotate_limit, manager_rotate_limit};
 use wsx_core::routine::RunRecord;
 use wsx_core::runtime;
 use wsx_core::task::chat;
@@ -138,8 +138,11 @@ struct Manager {
     agent_model: String,
     /// The chat's goal (`chats::goal`) the running agent's instructions began with.
     agent_goal: String,
-    /// `tasks.manager.rotateTokens` when set; `rotate_limit` is the size that counts.
+    /// The owner's limit (`chats::Runs`); `rotate_limit` is the size that counts.
     rotate_tokens: Option<u64>,
+    /// The lead (`chats::Runs::lead`): its own model and limit, decided again when its agent
+    /// starts again on a changed goal.
+    lead: bool,
     /// `tasks.manager.effort`, passed to every launch.
     effort: String,
     state: ManagerState,
@@ -266,15 +269,13 @@ pub fn run(chat: &str) -> Result<()> {
     let listener = hosting::bind(&dir.socket_path())?;
     let brokered = hosting::bind(&dir.broker_path())?;
     let state = dir.read_state()?;
-    // ^ A chat with its own agent runs it; the event model names one of the manager's models.
-    let (adapter, model, event_model) = match chats::agent(&dir) {
-        Some(own) => (own.adapter, own.model, None),
-        None => (
-            settings.manager_adapter,
-            settings.manager_model,
-            settings.manager_event_model,
-        ),
-    };
+    let chats::Runs {
+        adapter,
+        model,
+        event_model,
+        lead,
+        rotate_tokens,
+    } = chats::runs_on(&dir, &settings);
     let (events, receiver) = channel();
     let mut manager = Manager {
         dir,
@@ -288,7 +289,8 @@ pub fn run(chat: &str) -> Result<()> {
         event_model,
         agent_model: String::new(),
         agent_goal: String::new(),
-        rotate_tokens: settings.manager_rotate_tokens,
+        rotate_tokens,
+        lead,
         state,
         events: events.clone(),
         agent: None,
@@ -1649,7 +1651,12 @@ impl Manager {
     /// The context size past which the next turn starts a fresh conversation, for the adapter
     /// that runs now (a fallback's, not only `tasks.manager.adapter`).
     fn rotate_limit(&self) -> u64 {
-        manager_rotate_limit(self.rotate_tokens, &self.current_adapter())
+        let adapter = self.current_adapter();
+        if self.lead {
+            lead_rotate_limit(self.rotate_tokens, &adapter)
+        } else {
+            manager_rotate_limit(self.rotate_tokens, &adapter)
+        }
     }
 
     /// The held turn of a switch in full: a new conversation never saw its messages.
@@ -1783,6 +1790,18 @@ impl Manager {
 
     fn send_turn(&mut self, text: &str, events_only: bool) -> Result<()> {
         let mut text = text.to_string();
+        // ^ A goal set on the main chat, or cleared, changes whether it is the lead: its model and
+        // limit follow, with the agent that starts again on the new goal below (docs/tasks.md
+        // "Lead and forks").
+        if chats::goal(&self.dir) != self.agent_goal {
+            if let Ok(settings) = load_task_config(&self.main) {
+                let runs = chats::runs_on(&self.dir, &settings);
+                if runs.lead != self.lead {
+                    (self.lead, self.model, self.rotate_tokens) =
+                        (runs.lead, runs.model, runs.rotate_tokens);
+                }
+            }
+        }
         let model = self.turn_model(events_only);
         // ^ Claude's prompt cache lives 1 hour: a large conversation resumed later writes its
         // whole context again, so it starts afresh with the handover.

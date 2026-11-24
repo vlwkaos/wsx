@@ -206,6 +206,10 @@ struct TaskManagerFile {
     effort: Option<String>,
     #[serde(rename = "rotateTokens", skip_serializing_if = "Option::is_none")]
     rotate_tokens: Option<u64>,
+    #[serde(rename = "leadModel", skip_serializing_if = "Option::is_none")]
+    lead_model: Option<String>,
+    #[serde(rename = "leadRotateTokens", skip_serializing_if = "Option::is_none")]
+    lead_rotate_tokens: Option<u64>,
     #[serde(rename = "recapMinutes", skip_serializing_if = "Option::is_none")]
     recap_minutes: Option<f64>,
     /// Agents of the global `[[agents]]` the manager moves to when its own is at a long
@@ -936,6 +940,13 @@ fn validate_task_manager(manager: TaskManagerFile, config: &mut TaskConfig) -> R
         config.manager_rotate_tokens = Some(validate_rotate_tokens(
             tokens,
             "tasks.manager.rotateTokens",
+        )?);
+    }
+    config.manager_lead_model = validate_word(manager.lead_model, "tasks.manager.leadModel")?;
+    if let Some(tokens) = manager.lead_rotate_tokens {
+        config.manager_lead_rotate_tokens = Some(validate_rotate_tokens(
+            tokens,
+            "tasks.manager.leadRotateTokens",
         )?);
     }
     if let Some(minutes) = manager.recap_minutes {
