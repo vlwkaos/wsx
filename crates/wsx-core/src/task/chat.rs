@@ -303,7 +303,44 @@ pub fn open_asks(
     chat: &str,
     now: u64,
 ) -> Vec<OpenAsk> {
+    let (mut open, _) = walk_asks(log, approvals, chat);
+    open.retain(|ask| now.saturating_sub(ask.unix_ms) < ASKS_WITHIN_MS);
+    open
+}
+
+/// A question of a chat and the owner's message that answered it (`open_asks`'s rule).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnsweredAsk {
+    pub ask: OpenAsk,
+    /// The reply's last line, the one that asks (`asks_owner`'s rule).
+    pub question: String,
+    pub answer_id: u64,
+    /// The answer without its leading quote.
+    pub answer: String,
+}
+
+/// The questions of `chat`'s log the owner answered, oldest first: what a fresh conversation of
+/// the chat must still know when the exchanges that held them are gone (docs/tasks.md "Manager").
+/// A dismissed question has no answer and is not one.
+pub fn answered_asks(
+    log: &[ManagerEntry],
+    approvals: &[ApprovalLine],
+    chat: &str,
+) -> Vec<AnsweredAsk> {
+    walk_asks(log, approvals, chat).1
+}
+
+/// One walk of the log for `open_asks` and `answered_asks`: the questions still open, and those an
+/// owner message answered.
+fn walk_asks(
+    log: &[ManagerEntry],
+    approvals: &[ApprovalLine],
+    chat: &str,
+) -> (Vec<OpenAsk>, Vec<AnsweredAsk>) {
     let mut open: Vec<OpenAsk> = Vec::new();
+    let mut answered: Vec<AnsweredAsk> = Vec::new();
+    // ^ The asking line of each open question, by reply id: what an answer answered.
+    let mut questions: Vec<(u64, String)> = Vec::new();
     // ^ The turn began when its messages were delivered; its reply ends it.
     let mut turn_from: Option<u64> = None;
     for entry in log {
@@ -312,6 +349,8 @@ pub fn open_asks(
             ManagerEvent::Reply { id, text, asks, .. } => {
                 let from = turn_from.take();
                 if *asks && !asked_in_turn(approvals, chat, from, entry.unix_ms) {
+                    let line = text.trim_end().lines().last().unwrap_or_default().trim();
+                    questions.push((*id, line.to_string()));
                     open.push(OpenAsk {
                         id: *id,
                         unix_ms: entry.unix_ms,
@@ -320,27 +359,39 @@ pub fn open_asks(
                 }
             }
             ManagerEvent::Message {
+                id,
                 from: Author::Owner,
                 text,
                 quote,
                 ..
             } => {
                 // ^ A quote with its id answers that question; an old one, by its line.
-                let answered = match (quote, split_quote(text).0) {
+                let (quoted, body) = split_quote(text);
+                let at = match (quote, quoted) {
                     (Some(id), _) => open.iter().rposition(|ask| ask.id == *id),
                     (None, Some(quoted)) => open.iter().rposition(|ask| ask.quote == quoted.trim()),
                     (None, None) => open.len().checked_sub(1),
                 };
-                if let Some(at) = answered {
-                    open.remove(at);
+                if let Some(at) = at {
+                    let ask = open.remove(at);
+                    let question = questions
+                        .iter()
+                        .find(|(id, _)| *id == ask.id)
+                        .map(|(_, line)| line.clone())
+                        .unwrap_or_default();
+                    answered.push(AnsweredAsk {
+                        ask,
+                        question,
+                        answer_id: *id,
+                        answer: body.to_string(),
+                    });
                 }
             }
             ManagerEvent::Answered { id } => open.retain(|ask| ask.id != *id),
             _ => {}
         }
     }
-    open.retain(|ask| now.saturating_sub(ask.unix_ms) < ASKS_WITHIN_MS);
-    open
+    (open, answered)
 }
 
 /// Whether chat `chat`'s agent made a request with a Yes/No card (`said` none) between `from`, the

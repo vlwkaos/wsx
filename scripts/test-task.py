@@ -2718,6 +2718,12 @@ def part_core(created=None):
     # ^ The resumed process restored the session's spend: the reply still costs only its own turn.
     resumed_usage = late_reply['usage']
     assert resumed_usage['cost_micro_usd'] == 1000 and resumed_usage['session_cost_micro_usd'] > 5000, resumed_usage
+    # ^ An answer to the chat's question, then more exchanges than the handover's last 8: the
+    # fresh conversation still gets the question and the answer (manager.rs `handover_answers`).
+    asked_probe = reply_to(js('task', 'say', 'ASK the rename probe')['id'])
+    reply_to(js('task', 'say', 'ANSWER-PROBE yes rename all, refuse the old keys')['id'])
+    for n in range(5):
+        reply_to(js('task', 'say', 'STATUS filler %d' % n)['id'])
     # Over the budget the sweep removes the oldest decided captures: padded to 400 KiB each,
     # the three take 1.2 MB of the 1 MB budget. The skipped video (8 days old) goes before the
     # passed shot (9 days old, older), which stays with the open item's capture, as the files
@@ -2789,6 +2795,9 @@ def part_core(created=None):
     # ^ The notes come first, then the handover.
     assert opened.startswith("The owner's decisions") and '\n\nHandover (this is a new conversation' in opened and 'Owner (message ' in opened, opened
     assert 'keep the store in sqlite' in opened and 'SECRET-OUTSIDE' not in opened, opened
+    answers = opened.split("The owner's answers to your questions in this chat", 1)
+    assert len(answers) == 2 and '(reply %d): Should I land it now?' % asked_probe['id'] in answers[1] and 'ANSWER-PROBE yes rename all, refuse the old keys' in answers[1], opened
+    assert 'ANSWER-PROBE' not in answers[0].split('Handover (this is a new conversation', 1)[1], 'the answer fell out of the last exchanges, so only the answers list holds it'
     # ^ The handover is no record of the project's memory: its lines are the chat log's, which search reads (docs/memory.md "Deletion").
     handovers = [h for h in memory_records(cli('memory', 'search', 'Handover new conversation exchanges', '--json').stdout) if h['slug'].startswith('handover-')]
     assert not handovers, handovers

@@ -95,6 +95,10 @@ const HANDOVER_ENTRIES: usize = 8;
 /// A quote by id reads this much of the log's end first, more until it reaches the id.
 const QUOTE_READ_BYTES: u64 = 256 * 1024;
 const HANDOVER_CHARS: usize = 600;
+/// The owner's answers a handover carries, the newest kept first (`handover_answers`): at most
+/// this many, in at most this many bytes, a third of the notes' 24 KiB.
+const HANDOVER_ANSWERS: usize = 30;
+const HANDOVER_ANSWER_BYTES: usize = 8 * 1024;
 /// The ledger summary at the end of a turn's message: at most this many task lines.
 const SUMMARY_ROWS: usize = 12;
 const SUMMARY_TITLE_CHARS: usize = 60;
@@ -2335,6 +2339,7 @@ impl Manager {
     fn handover(&self) -> String {
         let log = self.dir.read_log().unwrap_or_default();
         let lines = recent_exchanges(&log, HANDOVER_ENTRIES);
+        let answers = handover_answers(&log, &self.dir);
         // ^ A routine's result may not have been acted on before the rotation.
         let replied = log
             .iter()
@@ -2352,7 +2357,7 @@ impl Manager {
         };
         format!(
             "Handover (this is a new conversation; the last exchanges before it, read the \
-             ledger for the state):\n{}\n{routines}\n",
+             ledger for the state):\n{}\n{answers}{routines}\n",
             lines.join("\n")
         )
     }
@@ -2401,6 +2406,41 @@ fn routine_for_owner(line: &str) -> bool {
 /// failure since its last success with how many there were), then its runs after the previous
 /// conversation's last reply (`replied`, epoch seconds) when they are more than that newest run.
 /// ref: docs/tasks.md "Manager"
+/// The questions this chat asked that the owner answered, newest `HANDOVER_ANSWERS` of them, oldest
+/// first: an answer is a decision, and the last exchanges alone lose it once a long job has moved
+/// on (docs/tasks.md "Manager"). Built by code from the log, so it holds whether or not the agent
+/// wrote a note.
+fn handover_answers(log: &[ManagerEntry], dir: &ManagerDir) -> String {
+    let approvals = store::read_approvals(&dir.project_id).unwrap_or_default();
+    let answered = chat::answered_asks(log, &approvals, &dir.chat);
+    // ^ Newest first until the count or the bytes run out, then shown oldest first.
+    let mut lines: Vec<String> = Vec::new();
+    let mut bytes = 0;
+    for pair in answered.iter().rev().take(HANDOVER_ANSWERS) {
+        let line = format!(
+            "- You asked (reply {}): {}\n  Owner (message {}): {}",
+            pair.ask.id,
+            one_line(&pair.question),
+            pair.answer_id,
+            one_line(&pair.answer)
+        );
+        bytes += line.len() + 1;
+        if bytes > HANDOVER_ANSWER_BYTES {
+            break;
+        }
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    lines.reverse();
+    format!(
+        "\nThe owner's answers to your questions in this chat (oldest first; each holds unless a \
+         later message changes it):\n{}\n",
+        lines.join("\n")
+    )
+}
+
 fn handover_routines(mut runs: Vec<RunRecord>, replied: i64) -> Vec<String> {
     runs.sort_by_key(|run| run.finished_epoch);
     let mut names: Vec<&str> = Vec::new();

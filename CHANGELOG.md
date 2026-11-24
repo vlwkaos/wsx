@@ -6,6 +6,7 @@ Releases 0.40.4 and older are in [docs/changelog-archive.md](docs/changelog-arch
 
 ### Changed
 
+- Tasks: a chat's fresh conversation after a rotation gets the owner's answers to that chat's questions (the newest 30, within 8 KiB), not only the last 8 exchanges, so an answer given early in a long job survives; a rule the owner states without being asked still needs the chat to note it.
 - Tasks: the lead runs on `tasks.manager.leadModel` (default `sonnet` on Claude) and rotates past `tasks.manager.leadRotateTokens` (default 120000); chats with a goal keep the manager's model and limit, and the web and TUI show the model the lead runs on.
 - Web: one button system: every button draws 36 px (28 px for `.button-sm` row actions) inside a 44 px hit box, with smaller padding and type, a 10 px radius and its focus ring on the drawn shape (`size-key-sm`, `radius-key-sm`); For you actions are small, the refusing one quiet; the composer's pills end on the send button's bottom line, and a reply's quote sits inside the composer box. The `@` list shows each chat's goal.
 - Tasks: `tasks.router.model` (off by default) lets a small model add the `@<chat>` or `/new <name>` prefix to an owner message that has none; when unsure it leaves the message where it was written.
