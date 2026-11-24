@@ -309,6 +309,9 @@ def main():
         sys.exit(f"usage-report: {err}")
 
     tasks, all_turns, rotations, repeats = [], [], [], collections.Counter()
+    # ^ Tool calls the agent's own permission layer refused (Claude's `permission_denials`, kept on a
+    # worker's `result` and `blocked` events): by shape, and how many tasks each one hit.
+    denied, denied_in = collections.Counter(), collections.defaultdict(set)
     for folder in [os.path.join(d, name) for d in a.state_dir for name in os.listdir(d)]:
         name = os.path.basename(folder)
         if not name.isdigit() or not os.path.exists(os.path.join(folder, "task.json")):
@@ -328,6 +331,11 @@ def main():
         rotations += [e for e in events if e.get("kind") == "rotated"]
         tasks.append(task_row(task, events, turns))
         repeats.update(mask(e.get("text", "")) for e in events if e.get("kind") == "agent")
+        for e in events:
+            if e.get("kind") in ("result", "blocked"):
+                for denial in e.get("denials") or []:
+                    denied[mask(denial)] += 1
+                    denied_in[mask(denial)].add(name)
         if a.task == task["id"]:
             table(f"Task {task['id']} turns", ["day", "step", "trigger", "status", "cost $", "ctx", "calls", "cache w/r tok", "rot",
                                                "limit", "model"],
@@ -465,6 +473,9 @@ def main():
     repeats.update("manager: " + mask(e.get("text", "")) for e in mevents if e.get("kind") == "agent")
     table("Repeated agent commands (agent log lines, numbers and paths masked)", ["count", "command shape"],
           [[n, s] for s, n in repeats.most_common(a.top)])
+
+    table("Refused tool calls (permission denials in worker results, shapes masked)", ["count", "tasks", "call shape"],
+          [[n, len(denied_in[shape]), shape] for shape, n in denied.most_common(a.top)])
 
     # ^ Summary last: a routine's event carries the last 10 lines of its output.
     landed = [r for r in tasks if r["wall"]]
