@@ -259,8 +259,8 @@ fn launched_models(fixture: &Fixture) -> Vec<String> {
         .collect()
 }
 
-/// The lead answers and forks goals, so it runs on `tasks.manager.leadModel` (unset on Claude:
-/// sonnet) while a chat with a goal keeps the manager's model (opus); `leadModel: same` gives
+/// The lead answers and forks goals, so it runs on `tasks.lead.model` (unset on Claude:
+/// sonnet) while a chat with a goal keeps the manager's model (opus); `tasks.lead.model: same` gives
 /// the lead the manager's model again. ref: docs/tasks.md "Lead and forks"
 #[test]
 fn the_lead_runs_on_its_own_model_and_goal_chats_on_the_managers() {
@@ -302,7 +302,7 @@ fn the_lead_runs_on_its_own_model_and_goal_chats_on_the_managers() {
     reply_to(&fixture, "demo", id);
     assert_eq!(launched_models(&fixture), ["sonnet", "opus", "opus"]);
 
-    let same = Fixture::with_tasks_config("  manager:\n    leadModel: same\n");
+    let same = Fixture::with_tasks_config("  lead:\n    model: same\n");
     let id = same.json(&["task", "say", "hello", "--json"])["id"]
         .as_u64()
         .unwrap();

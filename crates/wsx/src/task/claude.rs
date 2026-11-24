@@ -198,7 +198,7 @@ impl Launch {
 }
 
 impl Launch {
-    /// A review job of a ready task: the project's manager agent (`tasks.manager.adapter`,
+    /// A review job of a ready task: the project's manager agent (`tasks.chats.adapter`,
     /// `model`, `effort`), a fresh conversation, read-only on the working copy, ending with
     /// `review_schema` (or that JSON as its last text, for Pi). `folder`: its own folder.
     /// ref: docs/tasks.md "Review"

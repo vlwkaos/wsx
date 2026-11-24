@@ -133,14 +133,14 @@ struct Manager {
     dir: ManagerDir,
     project: String,
     main: PathBuf,
-    /// `tasks.manager.adapter`: the headless adapter the manager runs on.
+    /// `tasks.chats.adapter`: the headless adapter the manager runs on.
     adapter: String,
     /// A stand-in's call runs: which agent and when it began.
     stand_in: Option<(agent::Choice, Instant)>,
     /// A hold runs for hours: looking for a stand-in reads config and log, so not every tick.
     stand_in_look: Option<Instant>,
     model: String,
-    /// `tasks.manager.eventModel`: the model of a turn with only events and no review due.
+    /// `tasks.chats.eventModel`: the model of a turn with only events and no review due.
     event_model: Option<String>,
     /// The model the running agent process uses now.
     agent_model: String,
@@ -151,7 +151,7 @@ struct Manager {
     /// The lead (`chats::Runs::lead`): its own model and limit, decided again when its agent
     /// starts again on a changed goal.
     lead: bool,
-    /// `tasks.manager.effort`, passed to every launch.
+    /// `tasks.chats.effort`, passed to every launch.
     effort: String,
     state: ManagerState,
     events: Sender<Event>,
@@ -1252,7 +1252,7 @@ impl Manager {
         }
     }
 
-    /// Where the manager goes (`agent::next`): its own agent is `tasks.manager.adapter` and
+    /// Where the manager goes (`agent::next`): its own agent is `tasks.chats.adapter` and
     /// `model`, the current one `state.agent` when set.
     fn next(&self, ask: Ask, now: u64) -> Next {
         let current = self.current_agent();
@@ -1605,7 +1605,7 @@ impl Manager {
         }
     }
 
-    /// The adapter the manager runs on now: a fallback's, else `tasks.manager.adapter`.
+    /// The adapter the manager runs on now: a fallback's, else `tasks.chats.adapter`.
     fn current_adapter(&self) -> String {
         self.state
             .agent
@@ -1614,7 +1614,7 @@ impl Manager {
     }
 
     /// The context size past which the next turn starts a fresh conversation, for the adapter
-    /// that runs now (a fallback's, not only `tasks.manager.adapter`).
+    /// that runs now (a fallback's, not only `tasks.chats.adapter`).
     fn rotate_limit(&self) -> u64 {
         let adapter = self.current_adapter();
         if self.lead {

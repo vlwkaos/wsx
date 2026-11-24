@@ -523,7 +523,7 @@ pub fn agent(dir: &ManagerDir) -> Option<ChatAgent> {
 pub struct Runs {
     pub adapter: String,
     pub model: String,
-    /// `tasks.manager.eventModel`; none for a chat with its own agent.
+    /// `tasks.chats.eventModel`; none for a chat with its own agent.
     pub event_model: Option<String>,
     /// The project's main chat with no goal: it answers and forks goals.
     pub lead: bool,
@@ -532,8 +532,8 @@ pub struct Runs {
     pub rotate_tokens: Option<u64>,
 }
 
-/// The chat's own agent; else, for the lead, `tasks.manager.leadModel` and its shorter context;
-/// else `tasks.manager`'s. ref: docs/tasks.md "Lead and forks"
+/// The chat's own agent; else, for the lead, `tasks.lead.model` and its shorter context;
+/// else `tasks.chats`'s. ref: docs/tasks.md "Lead and forks"
 pub fn runs_on(dir: &ManagerDir, settings: &crate::model::workspace::TaskConfig) -> Runs {
     if let Some(own) = agent(dir) {
         return Runs {

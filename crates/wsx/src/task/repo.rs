@@ -137,7 +137,7 @@ struct Repo {
     /// The worktrees the last sweep left for the owner, with the text posted: posted again
     /// only when the text changes.
     flagged: BTreeMap<PathBuf, String>,
-    /// `tasks.manager.recapMinutes` as a duration; `None` is off.
+    /// `tasks.chats.recapMinutes` as a duration; `None` is off.
     recap_quiet: Option<Duration>,
     /// When the host last removed old captures; `None` sweeps on the first tick.
     captures_swept: Option<Instant>,

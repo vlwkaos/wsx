@@ -924,7 +924,7 @@ if (await evaluate("document.querySelector('.manager .bar-state')?.textContent ?
 // result is a muted line ("#5 ready"), never a bubble: its report is in the task sheet.
 let shown = await bubbles();
 const ownerAsk = shown.find((bubble) => bubble.side === "out" && bubble.text.startsWith("RUN wsx task land 3"));
-// ^ ui's manager is named "Atlas" (tasks.manager.name); plans' reads "plans", its project.
+// ^ ui's manager is named "Atlas" (tasks.lead.name); plans' reads "plans", its project.
 const managerReply = shown.find((bubble) => bubble.side === "in" && bubble.author === "Atlas");
 if (!ownerAsk || ownerAsk.author || !managerReply) await fail(`the bubbles are ${JSON.stringify(shown)}`);
 await until(statusSays(5, "ready"), "#5's result left no muted line");

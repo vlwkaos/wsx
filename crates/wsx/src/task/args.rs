@@ -498,7 +498,7 @@ pub enum ChatCmd {
         /// The chat's goal, a file or - for standard input
         #[arg(long, value_name = "FILE")]
         goal: Option<PathBuf>,
-        /// The `[[agents]]` entry it runs on; default: the manager's (tasks.manager)
+        /// The `[[agents]]` entry it runs on; default: the manager's (tasks.chats)
         #[arg(long, value_name = "ENTRY")]
         agent: Option<String>,
         /// The lead (the main chat with no goal) forks the owner's message --owner-said names:

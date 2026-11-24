@@ -2167,7 +2167,7 @@ try:
     wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close the Tasks view", seconds=60)
     # The TUI's manager chat renders wsx-core `chat_rows`, the rows the web gets (docs/tasks.md
     # "TUI"): keep-me's manager is named Atlas, and its log holds each kind of row.
-    (removal["keep-me"] / "wsx.config.yml").write_text("tasks:\n  manager:\n    name: Atlas\n")
+    (removal["keep-me"] / "wsx.config.yml").write_text("tasks:\n  lead:\n    name: Atlas\n")
     at = int(time.time() * 1000) - 600_000
     chat_log = [
         {"kind": "message", "id": 10, "from": "owner", "text": "Where is #3?"},

@@ -3640,7 +3640,8 @@ TASK_CONFIG = '''tasks:
     model: fake-model
   checks:
     - "test ! -e broken.txt"
-  manager: { model: fake-manager, rotateTokens: 100000, leadModel: same, leadRotateTokens: 100000 }
+  chats: { model: fake-manager, rotateTokens: 100000 }
+  lead: { model: same, rotateTokens: 100000 }
   deploy: { command: 'test -z "$FIXTURE_DEPLOY_FAIL" || { seq -f "deploy step %g" 60; exit 3; }' }
 '''
 
@@ -3740,11 +3741,10 @@ def task_journey(args):
                     top = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=folder, env=env,
                                          capture_output=True, text=True, timeout=20).stdout.strip()
                     assert os.path.realpath(top) == os.path.realpath(folder), ('fixture git escaped', folder, top)
-                    # ^ ui's manager has a name (docs/tasks.md "Config"); the others read as their project.
+                    # ^ ui's lead has a name (docs/tasks.md "Config"); the others read as their project.
                     # ui's lead runs on the default lead model, sonnet (docs/tasks.md "Lead and forks").
                     (folder / 'wsx.config.yml').write_text(
-                        TASK_CONFIG.replace('{ model: fake-manager,', '{ name: Atlas, model: fake-manager,')
-                        .replace(' leadModel: same,', '') if folder == other
+                        TASK_CONFIG.replace('  lead: { model: same,', '  lead: { name: Atlas,') if folder == other
                         else TASK_CONFIG + PANEL_CONFIG if folder == calm else TASK_CONFIG)
                     if folder == calm:
                         # ^ docs/panels.md: `device` counts its runs, `broken` exits 2 after a line.

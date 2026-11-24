@@ -66,8 +66,14 @@ chat -> workers (subagents and tasks) -> workbench -> proof card -> inbox: Decid
 6. **Preview: designed again** in step 5; the old `task preview` is removed.
 7. **Command surface: the minimum.** Each step removes the commands its replacement makes unused.
 
-Owner, 2026-11-24: the lead runs on its own lighter model and context limit (`tasks.manager.leadModel`,
+Owner, 2026-11-24: the lead runs on its own lighter model and context limit (`tasks.lead.model`,
 `leadRotateTokens`); "manager" becomes "lead" in every name (config `tasks.chats.*`, `tasks.lead.*`; stored values stay).
+Owner, 2026-11-24: the CLI splits `wsx task` by its three parts: `wsx chat` (say, read, new, close, rename, main, search,
+approve, deny, dismiss, checkin, lead, ledger), `wsx task` (the task's own life: new, list, show, why, review, add, stop,
+after, hold, hand, move, land, close) and `wsx project` (the desk's commands: add, push, sync, commit, deploy, release,
+deployed, check, run, routine; "desk" stays the internal name, the screens and the CLI say project). Project routines
+sit at `wsx project routine` until decision 7 merges them with the machine's `wsx routine`. Reading a chat is
+`wsx chat read`. An old form is refused with its new name.
 
 ## 6. UX rules
 

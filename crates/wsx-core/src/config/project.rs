@@ -18,7 +18,7 @@ const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 const MAX_BRANCH_PREFIX_BYTES: usize = 256;
 const MAX_DEFAULT_COMMAND_BYTES: usize = 16 * 1024;
 const MAX_TASK_WORD_BYTES: usize = 256;
-/// `tasks.manager.name`: one short line the owner reads as the manager's name.
+/// `tasks.lead.name`: one short line the owner reads as the lead's name.
 const MAX_MANAGER_NAME_BYTES: usize = 64;
 const MAX_TASK_LIST_ITEMS: usize = 64;
 /// Unknown keys named in one warning, and distinct warnings one process prints.
@@ -162,7 +162,12 @@ struct TasksFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     release: Option<TaskCommandFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    manager: Option<TaskManagerFile>,
+    chats: Option<TaskChatsFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lead: Option<TaskLeadFile>,
+    /// Gone: its keys moved to `chats` and `lead`; a project that still has it is refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manager: Option<yaml_serde::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prune: Option<TaskPruneFile>,
     /// `owner` or `none`.
@@ -191,11 +196,10 @@ struct TaskWorkflowFile {
 /// At most this many workflow steps, each a turn of the worker.
 const MAX_WORKFLOW_STEPS: usize = 12;
 
+/// `tasks.chats`: the agent every chat runs on (the lead's model and limit are `tasks.lead`'s).
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
-struct TaskManagerFile {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
+struct TaskChatsFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     adapter: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -206,16 +210,24 @@ struct TaskManagerFile {
     effort: Option<String>,
     #[serde(rename = "rotateTokens", skip_serializing_if = "Option::is_none")]
     rotate_tokens: Option<u64>,
-    #[serde(rename = "leadModel", skip_serializing_if = "Option::is_none")]
-    lead_model: Option<String>,
-    #[serde(rename = "leadRotateTokens", skip_serializing_if = "Option::is_none")]
-    lead_rotate_tokens: Option<u64>,
     #[serde(rename = "recapMinutes", skip_serializing_if = "Option::is_none")]
     recap_minutes: Option<f64>,
-    /// Agents of the global `[[agents]]` the manager moves to when its own is at a long
-    /// usage limit, in order. ref: docs/tasks.md "Agents"
+    /// Agents of the global `[[agents]]` that answer lookups in a side lane while a chat's own
+    /// agent is held, in order. ref: docs/tasks.md "Agents"
+    #[serde(rename = "standIns", skip_serializing_if = "Option::is_none")]
+    stand_ins: Option<Vec<String>>,
+}
+
+/// `tasks.lead`: the project's main chat with no goal. ref: docs/tasks.md "Lead and forks"
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+struct TaskLeadFile {
     #[serde(skip_serializing_if = "Option::is_none")]
-    fallback: Option<Vec<String>>,
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(rename = "rotateTokens", skip_serializing_if = "Option::is_none")]
+    rotate_tokens: Option<u64>,
 }
 
 /// `[tasks.prune]`: days a session or a worktree stands idle before the manager host acts;
@@ -513,7 +525,7 @@ pub fn load_task_config(repo_path: &Path) -> Result<TaskConfig, String> {
 }
 
 /// `~/.config/wsx/wsx.config.yml` (or under `$XDG_CONFIG_HOME`): only its
-/// `tasks.workflow.steps` and `tasks.manager.fallback` are read.
+/// `tasks.workflow.steps` and `tasks.chats.standIns` are read.
 /// ref: docs/tasks.md "Workflow", "Agents"
 fn owner_config_path() -> Option<std::path::PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
@@ -809,8 +821,20 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         })
         .transpose()?
         .flatten();
-    if let Some(manager) = file.manager {
-        validate_task_manager(manager, &mut config)?;
+    if file.manager.is_some() {
+        return Err(
+            "tasks.manager is gone: its keys moved to tasks.chats (adapter, model, eventModel, \
+                    effort, rotateTokens, recapMinutes, and fallback as standIns) and tasks.lead \
+                    (name, and leadModel and leadRotateTokens as model and rotateTokens); \
+                    rename the block (docs/tasks.md \"Config\")"
+                .into(),
+        );
+    }
+    if let Some(chats) = file.chats {
+        validate_task_chats(chats, &mut config)?;
+    }
+    if let Some(lead) = file.lead {
+        validate_task_lead(lead, &mut config)?;
     }
     if let Some(prune) = file.prune {
         for (days, field, secs) in [
@@ -917,42 +941,43 @@ fn validate_task_agent(agent: TaskAgentFile, config: &mut TaskConfig) -> Result<
     Ok(())
 }
 
-/// `[tasks.manager]`.
-fn validate_task_manager(manager: TaskManagerFile, config: &mut TaskConfig) -> Result<(), String> {
-    // ^ Trimmed first: an empty name is no name, and the project's name shows.
-    config.manager_name = validate_optional_text(
-        manager.name.map(|name| name.trim().to_string()),
-        "tasks.manager.name",
-        MAX_MANAGER_NAME_BYTES,
-    )?;
-    if let Some(adapter) = manager.adapter {
-        config.manager_adapter = validate_adapter(adapter, "tasks.manager.adapter")?;
+/// `tasks.chats`.
+fn validate_task_chats(chats: TaskChatsFile, config: &mut TaskConfig) -> Result<(), String> {
+    if let Some(adapter) = chats.adapter {
+        config.manager_adapter = validate_adapter(adapter, "tasks.chats.adapter")?;
     }
-    config.manager_fallback = validate_fallback(manager.fallback, "tasks.manager.fallback")?;
-    if let Some(model) = validate_word(manager.model, "tasks.manager.model")? {
+    config.manager_fallback = validate_fallback(chats.stand_ins, "tasks.chats.standIns")?;
+    if let Some(model) = validate_word(chats.model, "tasks.chats.model")? {
         config.manager_model = model;
     }
-    if let Some(effort) = validate_effort(manager.effort, "tasks.manager.effort")? {
+    if let Some(effort) = validate_effort(chats.effort, "tasks.chats.effort")? {
         config.manager_effort = effort;
     }
-    if let Some(model) = validate_word(manager.event_model, "tasks.manager.eventModel")? {
+    if let Some(model) = validate_word(chats.event_model, "tasks.chats.eventModel")? {
         config.manager_event_model = (model != "off").then_some(model);
     }
-    if let Some(tokens) = manager.rotate_tokens {
-        config.manager_rotate_tokens = Some(validate_rotate_tokens(
-            tokens,
-            "tasks.manager.rotateTokens",
-        )?);
+    if let Some(tokens) = chats.rotate_tokens {
+        config.manager_rotate_tokens =
+            Some(validate_rotate_tokens(tokens, "tasks.chats.rotateTokens")?);
     }
-    config.manager_lead_model = validate_word(manager.lead_model, "tasks.manager.leadModel")?;
-    if let Some(tokens) = manager.lead_rotate_tokens {
-        config.manager_lead_rotate_tokens = Some(validate_rotate_tokens(
-            tokens,
-            "tasks.manager.leadRotateTokens",
-        )?);
+    if let Some(minutes) = chats.recap_minutes {
+        config.manager_recap_secs = minutes_to_secs(minutes, "tasks.chats.recapMinutes")?;
     }
-    if let Some(minutes) = manager.recap_minutes {
-        config.manager_recap_secs = minutes_to_secs(minutes, "tasks.manager.recapMinutes")?;
+    Ok(())
+}
+
+/// `tasks.lead`.
+fn validate_task_lead(lead: TaskLeadFile, config: &mut TaskConfig) -> Result<(), String> {
+    // ^ Trimmed first: an empty name is no name, and the project's name shows.
+    config.manager_name = validate_optional_text(
+        lead.name.map(|name| name.trim().to_string()),
+        "tasks.lead.name",
+        MAX_MANAGER_NAME_BYTES,
+    )?;
+    config.manager_lead_model = validate_word(lead.model, "tasks.lead.model")?;
+    if let Some(tokens) = lead.rotate_tokens {
+        config.manager_lead_rotate_tokens =
+            Some(validate_rotate_tokens(tokens, "tasks.lead.rotateTokens")?);
     }
     Ok(())
 }

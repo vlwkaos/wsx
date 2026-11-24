@@ -677,9 +677,9 @@ def run(wsx, wsxd, work, owned, part):
     assert 'tasks.agent.adapter' in refused.stderr and 'no task was created' in refused.stderr, refused.stderr
     # ^ The manager's name is one short line (docs/tasks.md "Config").
     for name, word in (('"At\\nlas"', 'control characters'), ('"%s"' % ('x' * 65), 'at most 64 bytes')):
-        (project / 'wsx.config.yml').write_text('tasks:\n  manager:\n    name: %s\n' % name)
+        (project / 'wsx.config.yml').write_text('tasks:\n  lead:\n    name: %s\n' % name)
         refused = cli('task', 'new', 'WORK a.txt', ok=False).stderr
-        assert 'tasks.manager.name' in refused and word in refused, refused
+        assert 'tasks.lead.name' in refused and word in refused, refused
     # ^ A known key with a wrong type still fails; tasks.skills and tasks.workflow are checked.
     for bad, word in (('  minFreeGb: lots\n', 'invalid type: string "lots"'), ('  land: { auto: maybe }\n', 'invalid type'),
                       ('  skills: everyone\n', 'tasks.skills must be owner or none'),
@@ -792,8 +792,8 @@ def manager_up(created):
     stop_repo_service()
     (Path(created['task_dir']).parent / 'repo.json').unlink(missing_ok=True)
     configure((project / 'wsx.config.yml').read_text()
-              + '  manager: { name: "  Atlas ", model: fake-manager, eventModel: fake-events, '
-                'rotateTokens: 100000, leadModel: same, leadRotateTokens: 100000 }\n'
+              + '  chats: { model: fake-manager, eventModel: fake-events, rotateTokens: 100000 }\n'
+                '  lead: { name: "  Atlas ", model: same, rotateTokens: 100000 }\n'
               + '  skills: owner\n  workflow:\n    build: "Run the fixture rule."\n'
                 '    review: "Check the fixture rule."\n', 'manager config')
     # ^ The owner's skills folder: the manager gets it as the `owner` plugin. It is the one of
@@ -3020,7 +3020,7 @@ def part_core(created=None):
     assert [h['kind'] for h in kept if h['by'] == 'notes'] == ['decision'], kept
     put('decisions.md', '- 2026-10-22 keep the store in sqlite\n')
     put('context.md', 'PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
-    # ^ The size limit by adapter (docs/tasks.md "Lead and forks"): with no tasks.manager.leadRotateTokens the
+    # ^ The size limit by adapter (docs/tasks.md "Lead and forks"): with no tasks.lead.rotateTokens the
     # lead keeps its conversation to 120000 (less when the adapter's manager limit is lower); a set value wins.
     # The config is read at the host's start, so each case stops the manager first.
     def rotated_entries():
@@ -3044,11 +3044,14 @@ def part_core(created=None):
 
     ctx_word = {'claude': 'CTX', 'pi': 'PICTX'}
     limit_config = (project / 'wsx.config.yml').read_text()
-    manager_line_now = next(line for line in limit_config.splitlines() if line.startswith('  manager:'))
-    assert 'rotateTokens: 100000' in manager_line_now and ', leadRotateTokens: 100000' in manager_line_now, manager_line_now
-    # ^ The main chat is the lead: `leadRotateTokens` decides, unset 120000 or the adapter's manager
-    # limit when lower (docs/tasks.md "Lead and forks"); `rotateTokens: 100000`, a goal chat's, stays set.
-    plain = manager_line_now.replace(', leadRotateTokens: 100000', '')
+    chats_now = next(line for line in limit_config.splitlines() if line.startswith('  chats:'))
+    lead_now = next(line for line in limit_config.splitlines() if line.startswith('  lead:'))
+    manager_line_now = chats_now + '\n' + lead_now
+    assert 'rotateTokens: 100000' in chats_now and ', rotateTokens: 100000' in lead_now, manager_line_now
+    # ^ The main chat is the lead: `tasks.lead.rotateTokens` decides, unset 120000 or the adapter's chat
+    # limit when lower (docs/tasks.md "Lead and forks"); `tasks.chats.rotateTokens: 100000`, a goal chat's, stays set.
+    lead_plain = lead_now.replace(', rotateTokens: 100000', '')
+    plain = chats_now + '\n' + lead_plain
     # ^ Claude, not set: 110000 is past rotateTokens and under 120000, so no rotation; 150000 rotates.
     rotates_at(plain, 'claude', [110000], 150000, 150000)
     # ^ Claude, set to 100000: it rotates at 200000.
@@ -3057,7 +3060,7 @@ def part_core(created=None):
     pi_plain = plain.replace('{ ', '{ adapter: pi, model: fake/pi-model, ', 1).replace('eventModel: fake-events', 'eventModel: off')
     rotates_at(pi_plain, 'pi', [110000], 200000, 200000)
     # ^ Pi, set to 250000: 200000 stays.
-    pi_set = pi_plain.replace(' }', ', leadRotateTokens: 250000 }', 1)
+    pi_set = pi_plain.replace(lead_plain, lead_plain.replace(' }', ', rotateTokens: 250000 }'))
     rotates_at(pi_set, 'pi', [200000], 300000, 300000)
     # ^ Back on Claude with the fixture's config for the parts below.
     stop_manager()
@@ -4516,7 +4519,7 @@ def part_worker(created=None):
     # A named chat (the area group) on an agent that passed answer and note may not create a task.
     def manager_as(name, *lines):
         stop_manager_now()
-        configure(LAND_CONFIG.replace('{ auto: false }', '{ auto: false, approve: false }') + '  manager: { adapter: pi, model: fake/strict-%s }\n' % name,
+        configure(LAND_CONFIG.replace('{ auto: false }', '{ auto: false, approve: false }') + '  chats: { adapter: pi, model: fake/strict-%s }\n' % name,
                   'untrusted manager ' + name)
         return reply_to(js('task', 'say', '\n'.join('RUN ' + line for line in lines))['id'])['text']
 
@@ -4526,7 +4529,7 @@ def part_worker(created=None):
                      'except PermissionError:\n    print("refused")\n    sys.exit(0)\nexcept OSError:\n    pass\nprint("passed")\n')
     tunnel = lambda host, number, kind='connect': 'python3 %s --tunnel %s %d %s' % (ROOT / 'scripts/fake-weak-model.py', host, number, kind)
     stop_manager_now()
-    configure(LAND_CONFIG + '  manager: { adapter: pi, model: remote/pi-model }\n', 'untrusted manager on a remote provider')
+    configure(LAND_CONFIG + '  chats: { adapter: pi, model: remote/pi-model }\n', 'untrusted manager on a remote provider')
     lines = ['echo $HTTPS_PROXY', tunnel(lan, provider_port), tunnel(other_ip, provider_port), 'python3 %s %s %d' % (probe, other_ip, provider_port),
              tunnel(lan, other_port), tunnel('127.0.0.1', port), tunnel(lan, provider_port, 'plain')]
     said = reply_to(js('task', 'say', '\n'.join('RUN ' + line for line in lines))['id'])['text']
@@ -4579,7 +4582,7 @@ def part_worker(created=None):
     goal.write_text('Keep the strict area.\n')
     cli('task', 'chat', 'new', 'strictarea', '--goal', str(goal), '-p', 'demo', '--json')
     stop_manager_now()
-    configure(LAND_CONFIG + '  manager: { adapter: pi, model: fake/strict-a1 }\n', 'untrusted area')
+    configure(LAND_CONFIG + '  chats: { adapter: pi, model: fake/strict-a1 }\n', 'untrusted area')
     ids_before = sorted(row['id'] for row in js('task', 'list', '--all')['tasks'])
     asked = js('task', 'say', '--to', 'strictarea', 'RUN wsx task new area-task -p demo --json\nRUN wsx task list -p demo --json')
     said = wait(lambda: next((unquoted(e) for e in js('task', 'chat', '--chat', 'strictarea')['entries']
@@ -7034,7 +7037,7 @@ def part_agents(created=None):
 
     # 36. One agent for life (docs/tasks.md "Agents"): a usage limit of any length is waited out on
     # the task's own agent, and the same conversation resumes when the account's record ends; a
-    # stand-in listed in `tasks.manager.fallback` does not take the worker. The keys of the old
+    # stand-in listed in `tasks.chats.standIns` does not take the worker. The keys of the old
     # fallback (`tasks.agent.fallback`, `tasks.agent.maxWaitMinutes`) are refused at load.
     mark('36')
     named_project.append('demo')
@@ -7062,13 +7065,16 @@ def part_agents(created=None):
         registry.write('[[agents]]\nname = "fake-organizer"\ncommand = ["pi"]\nadapter = "pi"\n'
                        'model = "local/organizer"\nmay = ["read", "answer", "backlog", "note"]\n')
     with_fallback = lambda names: FALLBACK_CONFIG.replace(
-        '  checks:\n', '  manager: { fallback: [%s] }\n  checks:\n' % names)
+        '  checks:\n', '  chats: { standIns: [%s] }\n  checks:\n' % names)
     agents = state / 'wsx/tasks/agents'
     limit_file = agents / 'claude.json'
     limit_for = lambda seconds: limit_file.write_text(json.dumps({'until_ms': int((time.time() + seconds) * 1000)}))
-    # d. The two keys are refused with their names; nothing starts under a config that sets them.
-    for gone, line in (('tasks.agent.fallback', '    fallback: [fake-pi]\n'), ('tasks.agent.maxWaitMinutes', '    maxWaitMinutes: 60\n')):
-        (project / 'wsx.config.yml').write_text(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n' + line))
+    # d. The removed keys are refused with their names, and the old `tasks.manager` block with the keys it
+    # moved to; nothing starts under a config that sets them.
+    for gone, line in (('tasks.agent.fallback', '    fallback: [fake-pi]\n'), ('tasks.agent.maxWaitMinutes', '    maxWaitMinutes: 60\n'),
+                       ('tasks.manager', '  manager: { leadModel: same }\n')):
+        at = '  checks:\n' if gone == 'tasks.manager' else '    model: fake-model\n'
+        (project / 'wsx.config.yml').write_text(FALLBACK_CONFIG.replace(at, line + at if gone == 'tasks.manager' else at + line))
         refused = cli('task', 'new', 'WORK fa.txt', ok=False)
         assert gone + ' is gone' in refused.stderr, refused.stderr
     (project / 'wsx.config.yml').write_text(CONFIG)
@@ -7138,7 +7144,7 @@ def part_agents(created=None):
         registry.write('[[agents]]\nname = "fake-paid"\ncommand = ["pi"]\nadapter = "pi"\n'
                        'model = "paid/model"\nbudget_usd_per_day = 1\n')
     stop_manager_now()
-    configure(FALLBACK_CONFIG + '  manager: { adapter: pi, model: paid/model }\n', 'a chat on the paid account')
+    configure(FALLBACK_CONFIG + '  chats: { adapter: pi, model: paid/model }\n', 'a chat on the paid account')
     paid = js('task', 'say', 'PICOST 2 STATUS paid')
     assert reply_to(paid['id'], 40)['text'].startswith('pi answers: '), chat()[-3:]
     wait(lambda: (agents / 'pi-paid.json').exists(), 'the budget was spent')
@@ -7932,7 +7938,7 @@ def part_chats(created=None):
     git('init', '-q', '-b', 'main', cwd=other)
     (other / 'README').write_text('other\n')
     # ^ A recap one quiet minute after its last message (docs/tasks.md "Recap").
-    other_config = 'tasks:\n  minFreeGb: 0\n  manager:\n    recapMinutes: 0.2\n'
+    other_config = 'tasks:\n  minFreeGb: 0\n  chats:\n    recapMinutes: 0.2\n'
     (other / 'wsx.config.yml').write_text(other_config)
     git('add', '.', cwd=other)
     git('commit', '-q', '-m', 'start', cwd=other)

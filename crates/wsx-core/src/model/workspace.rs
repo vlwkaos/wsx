@@ -93,13 +93,13 @@ pub struct TaskConfig {
     /// `tasks.agent.smallModel`: the model of a `task new --size small` task; empty is
     /// `sonnet` for the `claude` adapter, else `model`. ref: docs/tasks.md "Workflow"
     pub small_model: String,
-    /// `tasks.agent.effort` and `tasks.manager.effort`: passed to every launch as Claude's
+    /// `tasks.agent.effort` and `tasks.chats.effort`: passed to every launch as Claude's
     /// `--effort` or Pi's `--thinking`. Default `high` on every model; `medium` only by an
     /// explicit setting, for opus workers.
     /// ref: docs/tasks.md "Agents"
     pub effort: String,
     pub manager_effort: String,
-    /// `tasks.manager.fallback`: global agent names, in order, that may stand in for a held
+    /// `tasks.chats.standIns`: global agent names, in order, that may stand in for a held
     /// chat (`agent::stand_in`). ref: docs/tasks.md "Agents"
     pub manager_fallback: Vec<String>,
     /// Context size after which a worker's next turn starts a fresh conversation from its
@@ -172,22 +172,22 @@ pub struct TaskConfig {
     /// Shell commands that deploy or release one default-branch commit.
     pub deploy_command: Option<String>,
     pub release_command: Option<String>,
-    /// The project manager (`tasks.manager`).
-    /// `tasks.manager.name`: the name the owner reads instead of the project's, when set.
+    /// The project manager (`tasks.chats`).
+    /// `tasks.lead.name`: the name the owner reads instead of the project's, when set.
     pub manager_name: Option<String>,
-    /// `tasks.manager.adapter`: the manager's headless adapter (docs/tasks.md "Agents").
+    /// `tasks.chats.adapter`: the manager's headless adapter (docs/tasks.md "Agents").
     pub manager_adapter: String,
     pub manager_model: String,
     /// The model of a turn with only wsx's events and no review due; `None` (`off`) keeps
     /// `manager_model`. ref: docs/tasks.md "Manager"
     pub manager_event_model: Option<String>,
-    /// `tasks.manager.rotateTokens` when the owner set it; else `None`, and
+    /// `tasks.chats.rotateTokens` when the owner set it; else `None`, and
     /// `manager_rotate_limit` decides by adapter.
     pub manager_rotate_tokens: Option<u64>,
-    /// `tasks.manager.leadModel`: the lead's model (the main chat with no goal), `same` for
+    /// `tasks.lead.model`: the lead's model (the main chat with no goal), `same` for
     /// `manager_model`; `None` takes `lead_model`'s default. ref: docs/tasks.md "Lead and forks"
     pub manager_lead_model: Option<String>,
-    /// `tasks.manager.leadRotateTokens`; `None` takes `lead_rotate_limit`'s default.
+    /// `tasks.lead.rotateTokens`; `None` takes `lead_rotate_limit`'s default.
     pub manager_lead_rotate_tokens: Option<u64>,
     /// Quiet seconds after which the manager writes the owner a recap; 0 is off. The config
     /// says minutes (`recapMinutes`, a fraction allowed). ref: docs/tasks.md "Recap"
@@ -280,7 +280,7 @@ impl TaskConfig {
         }
     }
 
-    /// The manager's name as the owner reads it: `tasks.manager.name`, else its project's
+    /// The manager's name as the owner reads it: `tasks.lead.name`, else its project's
     /// name (docs/tasks.md "Config").
     pub fn manager_shown_name<'a>(&'a self, project: &'a str) -> &'a str {
         self.manager_name.as_deref().unwrap_or(project)

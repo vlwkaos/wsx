@@ -227,7 +227,7 @@ impl Launch {
 }
 
 /// One running agent process of a configured adapter (`tasks.agent.adapter`,
-/// `tasks.manager.adapter`). ref: docs/tasks.md "Agents"
+/// `tasks.chats.adapter`). ref: docs/tasks.md "Agents"
 pub enum Agent {
     Claude(ClaudeAgent),
     Pi(PiAgent),
