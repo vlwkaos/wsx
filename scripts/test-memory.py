@@ -588,6 +588,12 @@ def ir_part(pid, project):
     message = next((h for h in mixed if h['kind'] == 'message'), None)
     check(message and message['slug'] == 'proj:500' and message['reference'] == 'proj:500' and all(0 < h['score'] <= 1 for h in mixed),
           'ir ranks the transcripts with the records: %s' % mixed)
+    # ^ `wsx task search` ranks the same transcript lines with ir, and only them (no record).
+    done = subprocess.run([PREFIX[0], 'task', 'search', 'sqlite schema', '-p', 'proj', '--json'], capture_output=True, text=True,
+                          cwd=WORK, env={**ENV, **env}, timeout=60)
+    found = json.loads(done.stdout) if done.returncode == 0 else {}
+    check(found.get('hits') and found['hits'][0]['slug'] == 'proj:500' and all(h['kind'] != 'rule' for h in found['hits'])
+          and not found.get('notices'), (done.returncode, done.stdout, done.stderr))
     # ^ A records-only search (an agent of another project gets no transcripts) shares the corpus: it leaves the
     # transcript files to the searches that have them, and a word that starts with `-` is a word, not FTS5's NOT.
     lines = os.path.join(ENV['XDG_STATE_HOME'], 'wsx', 'tasks', pid, 'memory', 'corpus', 'lines')

@@ -311,13 +311,67 @@ pub struct Found {
     pub projects: usize,
     /// A project that could not be read, with the reason; the others are searched.
     pub problems: Vec<String>,
+    /// Why the configured engine did not answer (then the built-in did).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
 }
 
-/// The transcript hits for `words` in `targets`, best first, at most `limit`, with raw BM25
-/// scores; the words of all projects count together. `current`: the project the asker works
-/// in. `reindex` rebuilds the digests from the logs and the task files first. `only` cuts
-/// the records to one task before the ranking. ref: docs/tasks.md "Search"
+/// The transcript hits for `words` in `targets`, best first, at most `limit`, ranked by the
+/// engine: ir's scores (0..1, each project's collection apart), else the built-in's raw BM25 over
+/// all projects together. `current`: the project the asker works in. `reindex` rebuilds the
+/// digests (and ir's corpus) first. `only` cuts the records to one task. ref: docs/tasks.md "Search"
 pub fn lines(
+    engines: &Engines,
+    targets: &[Target],
+    current: Option<&str>,
+    words: &str,
+    limit: usize,
+    reindex: bool,
+    only: Option<u32>,
+) -> anyhow::Result<Found> {
+    let why = match &engines.engine {
+        Engine::Builtin => None,
+        Engine::Missing(why) => Some(why.clone()),
+        Engine::Ir(ir) => match ir_lines(ir, targets, current, words, limit, reindex, only) {
+            Ok(found) => return Ok(found),
+            Err(Error::Usage(message)) => bail!("{message}"),
+            Err(error) => Some(error.to_string()),
+        },
+    };
+    let mut found = builtin_lines(targets, current, words, limit, reindex, only)?;
+    found.notices.extend(
+        why.map(|why| format!("memory engine ir unavailable ({why}); the built-in answered")),
+    );
+    Ok(found)
+}
+
+fn ir_lines(
+    ir: &Ir,
+    targets: &[Target],
+    current: Option<&str>,
+    words: &str,
+    limit: usize,
+    reindex: bool,
+    only: Option<u32>,
+) -> Result<Found, Error> {
+    let mut found = Found::default();
+    for target in targets {
+        let store = Store::project(&target.project_id, &target.name, std::path::Path::new("/"))?;
+        if reindex {
+            index::gather(target, true, true).map_err(|e| unavailable(format!("{e:#}")))?;
+            ir.reindex(&store)?;
+        }
+        let (hits, docs) = ir.lines(&store, words, limit, only, current)?;
+        found.projects += 1;
+        found.docs += docs;
+        found.hits.extend(hits);
+    }
+    found.hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+    found.hits.truncate(limit);
+    Ok(found)
+}
+
+fn builtin_lines(
     targets: &[Target],
     current: Option<&str>,
     words: &str,

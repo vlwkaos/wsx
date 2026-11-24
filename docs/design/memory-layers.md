@@ -17,7 +17,7 @@ Owner: build wsx's memory on `ir` at its full use, apart from the owner's skills
   as a hard dependency). On, wsx checks `ir --version` at use and refuses with the install line (`brew install vlwkaos/tap/ir`).
   Off (default): the built-in BM25 as today.
 - **One engine for every reader.** It implements `memory::backend::Backend` and answers `wsx memory search|recall`, the records
-  per chat message (`notes.rs`, which before reached no backend), `wsx task search` and `similar`. Built: the first two.
+  per chat message (`notes.rs`, which before reached no backend), `wsx task search` and `similar`. Built: all but `similar`.
   Whether it replaces the external `[memory] backend` program (search only) is the owner's call.
 - **Corpus.** wsx writes markdown that ir indexes, from the truths it already keeps: `records/<slug>.md` (frontmatter
   `kind`, `status`, `paths`, `keywords`, `source`, `commit`; body the text) on each write, and one file per digest entry of
@@ -33,7 +33,7 @@ Owner: build wsx's memory on `ir` at its full use, apart from the owner's skills
 - **Scores.** ir's scores are not the built-in's (spike: 0.78 for a good hit, 1e-6 for a common word): `similar`'s 0.09
   threshold is measured again on the replay set before the engine answers `similar`.
 
-Slices: 1. BM25 (no daemon, no model): engine, corpus, every reader; open: `wsx task search` and `similar`, and the cost of
+Slices: 1. BM25 (no daemon, no model): engine, corpus, every reader; open: `similar`, and the cost of
 a search (each one gathers every truth and reads the corpus folder; a manifest keyed by the store log's and the digest's
 change would skip that), and one sync per owner message instead of one per kind (`notes.rs`). 2. Hybrid (vectors, rerank): `ir sync` in the repo
 service, and a daemon that resolves collections from the request's config file (an ir change: today a search with

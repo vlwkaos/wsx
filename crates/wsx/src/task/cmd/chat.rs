@@ -305,6 +305,7 @@ pub(crate) fn search(
     };
     let started = Instant::now();
     let found = backend::lines(
+        &backend::Engines::configured(),
         &targets,
         current.as_deref(),
         words,
@@ -336,6 +337,9 @@ pub(crate) fn search(
     }
     for problem in &found.problems {
         eprintln!("skipped {problem}");
+    }
+    for notice in &found.notices {
+        eprintln!("wsx: {notice}");
     }
     if found.hits.is_empty() {
         println!("nothing found in {} records", found.docs);

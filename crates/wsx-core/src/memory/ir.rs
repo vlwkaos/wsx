@@ -176,6 +176,82 @@ impl Ir {
         Ok(corpus)
     }
 
+    /// `wsx task search` in one project: the transcript lines of `store` that match `words`, at
+    /// most `limit`, `only` one task's; with the number of lines searched. ref: docs/tasks.md "Search"
+    pub(super) fn lines(
+        &self,
+        store: &Store,
+        words: &str,
+        limit: usize,
+        only: Option<u32>,
+        current: Option<&str>,
+    ) -> Result<(Vec<Hit>, usize), Error> {
+        let mut filters = vec!["path~lines/".to_string()];
+        if let Some(task) = only {
+            filters.push(format!("meta.task={task}"));
+        }
+        self.rank(store, words, filters, limit, current)
+    }
+
+    /// The hits of `words` in `store`'s collection under the `-f` `filters`, best first, at most
+    /// `limit`, as the contract's hits; `current` is the asker's project (its main chat's lines
+    /// can be quoted by id). Also the number of corpus files.
+    fn rank(
+        &self,
+        store: &Store,
+        words: &str,
+        mut filters: Vec<String>,
+        limit: usize,
+        current: Option<&str>,
+    ) -> Result<(Vec<Hit>, usize), Error> {
+        // ^ A word that starts with `-` is FTS5's NOT, a syntax error alone: the words are the query.
+        let words: Vec<&str> = words
+            .split_whitespace()
+            .map(|word| word.trim_start_matches('-'))
+            .filter(|word| !word.is_empty())
+            .collect();
+        if words.is_empty() {
+            return Err(Error::Usage("the query has no words".into()));
+        }
+        let words = words.join(" ");
+        let corpus = self.sync(store)?;
+        let name = Self::collection(store);
+        let limit = limit.to_string();
+        if corpus.target.is_none() {
+            filters.push("path~records/".to_string());
+        }
+        let mut args = vec![
+            "search", "-c", &name, "--mode", "bm25", "--json", "-q", "-n", &limit,
+        ];
+        for filter in &filters {
+            args.extend(["-f", filter]);
+        }
+        // ^ After `--` a query that starts with `-` is still a query.
+        args.extend(["--", &words]);
+        let out = self.call(&args)?;
+        let found: Vec<IrHit> = serde_json::from_slice(&out)
+            .map_err(|e| unavailable(format!("ir's answer is no list of hits: {e}")))?;
+        let hits = found
+            .into_iter()
+            .filter(|hit| hit.score.is_finite())
+            .filter_map(|hit| {
+                let score = hit.score.clamp(0.0, 1.0);
+                match (corpus.files.get(&hit.path)?, &corpus.target) {
+                    (Source::Record(at), _) => Some(record_hit(store, &corpus.records[*at], score)),
+                    (Source::Line(at), Some(target)) => Some(line_hit(
+                        store.scope(),
+                        target,
+                        &corpus.docs[*at],
+                        score,
+                        current,
+                    )),
+                    (Source::Line(_), None) | (Source::Gone, _) => None,
+                }
+            })
+            .collect();
+        Ok((hits, corpus.files.len()))
+    }
+
     /// Whether wsx's ir config names the collection.
     fn registered(&self, name: &str) -> Result<bool, Error> {
         let config = self.read_config()?;
@@ -231,23 +307,6 @@ impl Backend for Ir {
     }
 
     fn search(&self, store: &Store, query: &Query) -> Result<Vec<Hit>, Error> {
-        if query.words.split_whitespace().next().is_none() {
-            return Err(Error::Usage("the query has no words".into()));
-        }
-        // ^ A word that starts with `-` is FTS5's NOT, a syntax error alone: the words are the query.
-        let words: Vec<&str> = query
-            .words
-            .split_whitespace()
-            .map(|word| word.trim_start_matches('-'))
-            .filter(|word| !word.is_empty())
-            .collect();
-        if words.is_empty() {
-            return Err(Error::Usage("the query has no words".into()));
-        }
-        let words = words.join(" ");
-        let corpus = self.sync(store)?;
-        let name = Self::collection(store);
-        let limit = query.limit.to_string();
         let mut filters = Vec::new();
         if !query.include_inactive {
             filters.push("meta.status=active".to_string());
@@ -255,38 +314,15 @@ impl Backend for Ir {
         if let Some(kind) = &query.kind {
             filters.push(format!("meta.kind={}", kind.as_str()));
         }
-        if corpus.target.is_none() {
-            filters.push("path~records/".to_string());
-        }
-        let mut args = vec![
-            "search", "-c", &name, "--mode", "bm25", "--json", "-q", "-n", &limit,
-        ];
-        for filter in &filters {
-            args.extend(["-f", filter]);
-        }
-        // ^ After `--` a query that starts with `-` is still a query.
-        args.extend(["--", &words]);
-        let out = self.call(&args)?;
-        let found: Vec<IrHit> = serde_json::from_slice(&out)
-            .map_err(|e| unavailable(format!("ir's answer is no list of hits: {e}")))?;
-        Ok(found
-            .into_iter()
-            .filter(|hit| hit.score.is_finite())
-            .filter_map(|hit| {
-                let score = hit.score.clamp(0.0, 1.0);
-                match (corpus.files.get(&hit.path)?, &corpus.target) {
-                    (Source::Record(at), _) => Some(record_hit(store, &corpus.records[*at], score)),
-                    (Source::Line(at), Some(target)) => Some(line_hit(
-                        store.scope(),
-                        target,
-                        &corpus.docs[*at],
-                        score,
-                        Some(&target.name),
-                    )),
-                    (Source::Line(_), None) | (Source::Gone, _) => None,
-                }
-            })
-            .collect())
+        let current = store.transcripts_of().map(|(_, name)| name.to_string());
+        self.rank(
+            store,
+            &query.words,
+            filters,
+            query.limit,
+            current.as_deref(),
+        )
+        .map(|(hits, _)| hits)
     }
 
     /// Drops the corpus and the index, then builds both again from the truths.
