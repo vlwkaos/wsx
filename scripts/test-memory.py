@@ -558,6 +558,77 @@ def sweep_part(pid):
     check('memory: deleted' not in said and (open(log).read(), os.stat(log).st_mtime_ns) == before, 'a second sweep writes nothing: ' + said)
 
 
+def ir_part(pid, project):
+    """`memory.engine = "ir"` (docs/design/memory-layers.md "Search engine: ir"): the same contract ranked by the ir
+    command over a corpus wsx writes, in wsx's own ir folder; Korean through the owner's ko preprocessor when they
+    have one; a failed record, a superseded one and a lost index; without ir the built-in answers with a notice."""
+    import shutil
+    if not shutil.which('ir'):
+        print('skip: no ir command on PATH; the ir engine is not run')
+        return
+    config = (os.path.join(TMP, 'Library', 'Application Support') if sys.platform == 'darwin' else ENV['XDG_CONFIG_HOME'])
+    open(os.path.join(config, 'wsx', 'config-v2.toml'), 'w').write(
+        f'groups = []\n[[projects]]\nname = "proj"\npath = "{project}"\n[memory]\nengine = "ir"\n')
+    # ^ The owner's ir folder lends only its ko alias; wsx's ir runs in wsx's state.
+    owner_ir = os.path.join(os.path.expanduser('~' + os.environ.get('USER', '')), '.config', 'ir')
+    korean = 'ko:' in open(os.path.join(owner_ir, 'config.yml')).read() if os.path.exists(os.path.join(owner_ir, 'config.yml')) else False
+    env = {'IR_CONFIG_DIR': owner_ir} if korean else {}
+    call = lambda *args: run(*args, scope=pid, env=env)
+    hits = lambda *args: json.loads(call('search', *args)[1])
+    status = json.loads(call('status')[1])
+    check(status['backend'] == 'ir' and 'backend_error' not in status, status)
+    check([h['slug'] for h in hits('readme', '--kind', 'fact')] == ['readme'], 'ir ranks the records')
+    # ^ The main chat's owner messages are transcripts: ir ranks them with the records, as the same hit. A log line is
+    # written as wsx writes it (serde: no spaces), since the catch-up matches `"kind":"message"`.
+    chat_log = os.path.join(ENV['XDG_STATE_HOME'], 'wsx', 'tasks', 'chats', 'proj', 'log.jsonl')
+    say = lambda n, text: open(chat_log, 'a').write(json.dumps({'unix_ms': 5000 + n, 'kind': 'message', 'id': n, 'from': 'owner',
+                                                                'text': text}, separators=(',', ':'), ensure_ascii=False) + '\n')
+    say(500, 'Keep the readme next to the sqlite schema.')
+    mixed = hits('sqlite schema')
+    message = next((h for h in mixed if h['kind'] == 'message'), None)
+    check(message and message['slug'] == 'proj:500' and message['reference'] == 'proj:500' and all(0 < h['score'] <= 1 for h in mixed),
+          'ir ranks the transcripts with the records: %s' % mixed)
+    # ^ A records-only search (an agent of another project gets no transcripts) shares the corpus: it leaves the
+    # transcript files to the searches that have them, and a word that starts with `-` is a word, not FTS5's NOT.
+    lines = os.path.join(ENV['XDG_STATE_HOME'], 'wsx', 'tasks', pid, 'memory', 'corpus', 'lines')
+    before = sorted(os.listdir(lines))
+    code, out, err = run('search', 'schema -sqlite', scope=pid, env={**env, 'WSX_TASK_FROM': 'other-project'})
+    check(code == 0 and 'unavailable' not in err and {h['kind'] for h in json.loads(out)} <= {'rule', 'fact', 'episode'}, (code, out, err))
+    check(before and sorted(os.listdir(lines)) == before, 'a records-only search leaves the transcript files')
+    wsx_ir = os.path.join(ENV['XDG_STATE_HOME'], 'wsx', 'ir')
+    check(os.path.exists(os.path.join(wsx_ir, 'collections', 'wsx-%s.sqlite' % pid)), 'the index is in wsx\'s state')
+    if korean:
+        ok_add = run('add', '--kind', 'fact', '--slug', 'organ', '--text-file', '-', '--source', 'task:1', '--verified-by', 'README.md',
+                     text='메모리는 내부 장기처럼 정리와 대체와 검색을 알아서 한다.', scope=pid, env=env)
+        check(ok_add[0] == 0, ok_add)
+        check('organ' in [h['slug'] for h in hits('메모리 검색')], 'a Korean query finds the record through the ko preprocessor')
+        say(501, 'ir 디펜던시로 추가하게 해')
+        check('proj:501' in [h['slug'] for h in hits('디펜던시')], 'a Korean owner message is found as soon as it is logged')
+        check('preprocessor' in open(os.path.join(wsx_ir, 'config.yml')).read() or 'ko:' in open(os.path.join(wsx_ir, 'config.yml')).read(),
+              'wsx\'s ir config holds the ko alias')
+    else:
+        print('skip: the owner has no ir ko preprocessor; the Korean check is not run')
+    # ^ A failed record is left out unless asked for; a superseded one is gone from the corpus and every search.
+    for slug, text in (('quokka-old', 'Quokkas nap at noon.'), ('quokka-new', 'Quokkas nap at dusk.')):
+        check(run('add', '--kind', 'fact', '--slug', slug, '--text-file', '-', '--source', 'task:1', '--verified-by', 'README.md',
+                  text=text, scope=pid, env=env)[0] == 0, slug)
+    check(call('update', '--slug', 'quokka-new', '--status', 'failed', '--lesson', 'No.', '--source', 'task:2')[0] == 0, 'fail')
+    check([h['slug'] for h in hits('quokkas')] == ['quokka-old'], 'a failed record is left out')
+    check('quokka-new' in [h['slug'] for h in hits('quokkas', '--include-inactive')], '--include-inactive finds it')
+    check(call('supersede', 'quokka-old', 'readme', '--source', 'task:3')[0] == 0, 'supersede')
+    check([h['slug'] for h in hits('quokkas')] == [], 'a superseded record is gone')
+    # ^ A lost index is built again from the corpus by the next search, with no notice.
+    os.remove(os.path.join(wsx_ir, 'collections', 'wsx-%s.sqlite' % pid))
+    code, out, err = call('search', 'readme', '--kind', 'fact')
+    check(code == 0 and [h['slug'] for h in json.loads(out)] == ['readme'] and 'unavailable' not in err, (code, out, err))
+    check(ok('reindex', scope=pid) == {'scope': pid, 'ok': True}, 'reindex with ir')
+    # ^ Without ir on PATH the built-in answers and says why.
+    bare = {'PATH': '/usr/bin:/bin', **env}
+    code, out, err = run('search', 'readme', '--kind', 'fact', scope=pid, env=bare)
+    check(code == 0 and [h['slug'] for h in json.loads(out)] == ['readme'] and 'memory engine ir unavailable' in err, (code, out, err))
+    check(json.loads(run('status', scope=pid, env=bare)[1]).get('backend_error'), 'status names why ir is unavailable')
+
+
 def project_scope():
     """A registered project: --scope defaults to the project of the current folder."""
     import hashlib
@@ -610,6 +681,7 @@ def project_scope():
     backend_part()
     start_part(pid, project)
     sweep_part(pid)
+    ir_part(pid, project)
 
 
 # the store's log (wsx): the old text stays, a torn last line is skipped

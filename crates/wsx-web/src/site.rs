@@ -169,7 +169,7 @@ pub enum Grant<'a> {
     All,
     Projects(&'a [PathBuf]),
     /// None: wsx cannot read its config, so the profile reaches nothing.
-    Profile(&'a str, Option<GlobalConfig>),
+    Profile(&'a str, Option<Box<GlobalConfig>>),
 }
 
 impl Access {
@@ -177,7 +177,7 @@ impl Access {
         match self {
             Self::All => Grant::All,
             Self::Projects(paths) => Grant::Projects(paths),
-            Self::Profile(name) => Grant::Profile(name, global_config()),
+            Self::Profile(name) => Grant::Profile(name, global_config().map(Box::new)),
         }
     }
 }

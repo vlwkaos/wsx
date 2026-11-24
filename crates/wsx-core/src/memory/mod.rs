@@ -3,11 +3,12 @@
 
 pub mod backend;
 pub mod index;
+mod ir;
 pub mod manage;
 mod record;
 pub mod start;
 mod store;
 
-pub use backend::{Command, KindFilter, Query};
+pub use backend::{Engines, KindFilter, Query};
 pub use record::{Kind, Record, Status};
 pub use store::{known_scopes, validate_scope, validate_slug, Error, NewRecord, Patch, Store};

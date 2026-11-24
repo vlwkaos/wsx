@@ -62,7 +62,19 @@ wsx also searches the transcripts of a project scope (a chat message or reply, a
 
 ## Search backend
 
-The built-in index (`wsx_core::memory::index`, the digest both `wsx task search` and `wsx memory search` read) is the one backend wsx has. The global config can add one program that follows this contract's `search`, `reindex` and `status` (wsx names no tool):
+The engine ranks a scope. `memory.engine` in the global config picks it: `builtin` (default), the index of `wsx_core::memory::index` (the digest both `wsx task search` and `wsx memory search` read), or `ir`:
+
+```toml
+[memory]
+engine = "ir"   # needs the ir command (brew install vlwkaos/tap/ir, or cargo install ir-search), 0.19 or newer
+```
+
+- With `ir`, wsx writes the scope's records and its project's transcripts as markdown into the store folder's `corpus/` (`records/`, `lines/`; each file named by its content's digest, `kind` and `status` in its frontmatter) and runs `ir` with its own `IR_CONFIG_DIR` (`$XDG_STATE_HOME/wsx/ir`, collection `wsx-<scope>`), BM25 only: no daemon, no model. The owner's ir folder is read for its `ko` preprocessor alone, copied once into wsx's ir config.
+- Each search first brings the corpus up to the truths: it writes missing files, deletes the ones no record or transcript names (a superseded or deleted record leaves no file), registers the collection when wsx's ir has none or its index file is gone, and runs `ir update` when anything changed. `reindex` drops the corpus and the collection and builds both again.
+- It answers `wsx memory search|recall|status|reindex` and the records an owner message gets ([tasks.md](tasks.md) "Notes budget"). `wsx task search` and the `similar` check of `add` keep the built-in until ir's scores are measured for them (docs/design/memory-layers.md "Search engine: ir").
+- An ir that is missing, too old or failing leaves the answer to the built-in, with `wsx: memory engine ir unavailable (<why>); the built-in answered` on stderr; `status` names it as `backend_error`. A query with no words is exit 2 as for the built-in.
+
+The global config can also add one program that follows this contract's `search`, `reindex` and `status` (wsx names no tool):
 
 ```toml
 [memory]

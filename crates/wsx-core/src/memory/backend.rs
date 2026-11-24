@@ -1,13 +1,16 @@
-//! Search backends of the `memory` contract: the built-in BM25 index over a scope's records and
-//! its transcripts, and an external command that follows the contract's `search`, `reindex`
-//! and `status`. The built-in always answers; a backend adds hits, and a backend that fails
-//! (exit 3, 10 s, bad output) is named in a notice and left out. `lines` is the built-in
-//! over the transcripts alone, for `wsx task search`; both answer with the one `Hit`.
-//! ref: docs/memory.md "Search backend"
+//! Search backends of the `memory` contract: the engine that ranks a scope (the built-in BM25
+//! index over its records and transcripts, or `ir` with `memory.engine = "ir"`), and an external
+//! command that follows the contract's `search`, `reindex` and `status`. Some engine always
+//! answers: an ir that cannot run leaves it to the built-in with a notice; a backend adds hits,
+//! and a backend that fails (exit 3, 10 s, bad output) is named in a notice and left out.
+//! `lines` is the built-in over the transcripts alone, for `wsx task search`; all answer with
+//! the one `Hit`. ref: docs/memory.md "Search backend"
 
 use super::index::{self, Doc, Target};
+use super::ir::Ir;
 use super::record::{self, Record, Status, EXCERPT_CHARS};
 use super::store::{Error, Store};
+use crate::config::global::{GlobalConfig, MemoryConfig, MemoryEngine};
 use crate::process::{run_bounded, Bound, Options, Stderr};
 use crate::task::manager::QUOTE_REF;
 use crate::task::text::first_line;
@@ -68,6 +71,12 @@ impl FromStr for KindFilter {
             true => Ok(Self(value.into())),
             false => Err(format!("kind {value:?}: use {}", kinds.join(", "))),
         }
+    }
+}
+
+impl KindFilter {
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -226,7 +235,13 @@ pub(super) fn record_hit(store: &Store, r: &Record, score: f64) -> Hit {
 
 /// A transcript line as a hit: the slug is its `reference`, and its other keys ride along.
 /// `current`: the project the asker works in, whose manager chat a hit can quote by id.
-fn line_hit(scope: &str, target: &Target, doc: &Doc, score: f64, current: Option<&str>) -> Hit {
+pub(super) fn line_hit(
+    scope: &str,
+    target: &Target,
+    doc: &Doc,
+    score: f64,
+    current: Option<&str>,
+) -> Hit {
     let project = target.name.as_str();
     // ^ The repo's main chat is the manager's: its hits carry no chat name and can be quoted by id.
     let main = crate::task::store::main_chat(&target.project_id);
@@ -357,34 +372,110 @@ impl Command {
     /// Run it with `args` for at most 10 s; its standard output on exit 0.
     fn call(&self, args: &[&str]) -> Result<Vec<u8>, Error> {
         let mut command = std::process::Command::new(&self.argv[0]);
-        command
-            .args(&self.argv[1..])
-            .args(args)
-            .stdin(Stdio::null());
-        let options = Options {
-            timeout: BACKEND_TIMEOUT,
-            stdout: Bound::Limit(MAX_ANSWER_BYTES),
-            stderr: Stderr::Own(Bound::Tail(300)),
-            reap: true,
-        };
-        let run = run_bounded(&mut command, &options)
-            .map_err(|e| unavailable(format!("cannot run {}: {e}", self.argv[0])))?;
-        if run.timed_out {
-            return Err(unavailable(format!(
-                "no answer in {} s",
-                BACKEND_TIMEOUT.as_secs()
-            )));
+        command.args(&self.argv[1..]).args(args);
+        run(&mut command, &self.argv[0], BACKEND_TIMEOUT)
+    }
+}
+
+/// Run `command` for at most `timeout` with no input; its standard output on exit 0, else the
+/// store-unavailable error that names the exit and the tail of its stderr.
+pub(super) fn run(
+    command: &mut std::process::Command,
+    program: &str,
+    timeout: Duration,
+) -> Result<Vec<u8>, Error> {
+    command.stdin(Stdio::null());
+    let options = Options {
+        timeout,
+        stdout: Bound::Limit(MAX_ANSWER_BYTES),
+        stderr: Stderr::Own(Bound::Tail(300)),
+        reap: true,
+    };
+    let run = run_bounded(command, &options)
+        .map_err(|e| unavailable(format!("cannot run {program}: {e}")))?;
+    if run.timed_out {
+        return Err(unavailable(format!("no answer in {} s", timeout.as_secs())));
+    }
+    match run.status.code() {
+        Some(0) => Ok(run.stdout),
+        code => {
+            let said = String::from_utf8_lossy(&run.stderr);
+            Err(unavailable(match code {
+                Some(code) => format!("exit {code}: {}", said.trim()),
+                None => format!("ended by a signal: {}", said.trim()),
+            }))
         }
-        match run.status.code() {
-            Some(0) => Ok(run.stdout),
-            code => {
-                let said = String::from_utf8_lossy(&run.stderr);
-                Err(unavailable(match code {
-                    Some(code) => format!("exit {code}: {}", said.trim()),
-                    None => format!("ended by a signal: {}", said.trim()),
-                }))
+    }
+}
+
+/// What answers a search: the engine `memory.engine` names, and the external program that
+/// adds hits. ref: docs/memory.md "Search backend"
+pub struct Engines {
+    engine: Engine,
+    command: Option<Command>,
+}
+
+enum Engine {
+    Builtin,
+    Ir(Ir),
+    /// `ir` is configured and cannot run: why, said with each answer of the built-in.
+    Missing(String),
+}
+
+impl Engines {
+    /// The built-in alone.
+    pub fn builtin() -> Self {
+        Self {
+            engine: Engine::Builtin,
+            command: None,
+        }
+    }
+
+    pub fn of(config: &MemoryConfig) -> Self {
+        Self {
+            engine: match config.engine {
+                MemoryEngine::Builtin => Engine::Builtin,
+                MemoryEngine::Ir => match Ir::open() {
+                    Ok(ir) => Engine::Ir(ir),
+                    Err(error) => Engine::Missing(error.to_string()),
+                },
+            },
+            command: Command::new(config.backend.clone()),
+        }
+    }
+
+    /// The owner's global config; one that cannot be read leaves the built-in alone, with a
+    /// notice on stderr.
+    pub fn configured() -> Self {
+        match GlobalConfig::load() {
+            Ok((config, _)) => Self::of(&config.memory),
+            Err(error) => {
+                eprintln!("wsx: cannot read the config ({error:#}); the built-in index answers");
+                Self::builtin()
             }
         }
+    }
+
+    /// The engine's hits for one store; a failed ir leaves the answer to the built-in.
+    fn rank(
+        &self,
+        store: &Store,
+        query: &Query,
+        notices: &mut Vec<String>,
+    ) -> Result<Vec<Hit>, Error> {
+        let why = match &self.engine {
+            Engine::Builtin => return Builtin.search(store, query),
+            Engine::Ir(ir) => match ir.search(store, query) {
+                Ok(hits) => return Ok(hits),
+                Err(error @ Error::Usage(_)) => return Err(error),
+                Err(error) => error.to_string(),
+            },
+            Engine::Missing(why) => why.clone(),
+        };
+        notices.push(format!(
+            "memory engine ir unavailable ({why}); the built-in answered"
+        ));
+        Builtin.search(store, query)
     }
 }
 
@@ -446,14 +537,14 @@ pub struct Answer {
 
 /// The built-in's hits and the backend's, one per `(scope, slug)` with the higher score, best
 /// first, at most `query.limit`. A backend that fails costs a notice, not the answer.
-pub fn search(stores: &[Store], backend: Option<&Command>, query: &Query) -> Result<Answer, Error> {
+pub fn search(stores: &[Store], engines: &Engines, query: &Query) -> Result<Answer, Error> {
     let mut answer = Answer {
         hits: Vec::new(),
         notices: Vec::new(),
     };
     for store in stores {
-        let mut found = Builtin.search(store, query)?;
-        if let Some(backend) = backend {
+        let mut found = engines.rank(store, query, &mut answer.notices)?;
+        if let Some(backend) = &engines.command {
             match backend.search(store, query) {
                 Ok(more) => found.extend(more),
                 Err(error) => answer.notices.push(format!(
@@ -486,36 +577,43 @@ pub fn search(stores: &[Store], backend: Option<&Command>, query: &Query) -> Res
 
 /// The best few hits for a question: the top 5 by score of the top 20 of a search. A model
 /// that reads those 20 comes in a later step.
-pub fn recall(
-    stores: &[Store],
-    backend: Option<&Command>,
-    question: &str,
-) -> Result<Answer, Error> {
+pub fn recall(stores: &[Store], engines: &Engines, question: &str) -> Result<Answer, Error> {
     let query = Query {
         words: question.into(),
         limit: RECALL_POOL,
         include_inactive: false,
         kind: None,
     };
-    let mut answer = search(stores, backend, &query)?;
+    let mut answer = search(stores, engines, &query)?;
     answer.hits.truncate(RECALL_KEEP);
     Ok(answer)
 }
 
 /// The backend `status` reports for `store`: its name, what it declares, and why it cannot be
-/// reached (then the built-in alone answers).
-pub fn describe(store: &Store, backend: Option<&Command>) -> (String, Flags, Option<String>) {
-    match backend {
-        None => (Builtin.name(), Flags::default(), None),
-        Some(backend) => match backend.flags(store) {
+/// reached (then the built-in alone answers). With no external program, the engine.
+pub fn describe(store: &Store, engines: &Engines) -> (String, Flags, Option<String>) {
+    match (&engines.command, &engines.engine) {
+        (Some(backend), _) => match backend.flags(store) {
             Ok(flags) => (backend.name(), flags, None),
             Err(error) => (backend.name(), Flags::default(), Some(error.to_string())),
         },
+        (None, Engine::Builtin) => (Builtin.name(), Flags::default(), None),
+        (None, Engine::Ir(ir)) => (ir.name(), Flags::default(), None),
+        (None, Engine::Missing(why)) => ("ir".into(), Flags::default(), Some(why.clone())),
     }
 }
 
-/// `reindex` for `store`: the built-in's digest, then the backend's own index.
-pub fn reindex(store: &Store, backend: Option<&Command>) -> Result<(), Error> {
+/// `reindex` for `store`: the built-in's digest (ir's corpus reads it too), then ir's corpus and
+/// index, then the backend's own index.
+pub fn reindex(store: &Store, engines: &Engines) -> Result<(), Error> {
     Builtin.reindex(store)?;
-    backend.map_or(Ok(()), |backend| backend.reindex(store))
+    match &engines.engine {
+        Engine::Ir(ir) => ir.reindex(store)?,
+        Engine::Missing(why) => return Err(unavailable(format!("memory engine ir: {why}"))),
+        Engine::Builtin => {}
+    }
+    engines
+        .command
+        .as_ref()
+        .map_or(Ok(()), |backend| backend.reindex(store))
 }

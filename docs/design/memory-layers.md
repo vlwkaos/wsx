@@ -9,6 +9,40 @@ Owner words: "abstracted mental-model notes made in advance; memory resolution k
 
 **Answer.** Four layers. Each has one writer, one staleness rule, one budget and one reader at one moment. wsx writes L2 and L3 after a land, so nobody has to remember to.
 
+## Search engine: ir (owner 2026-11-24; slice 1 partly built, docs/memory.md "Search backend")
+
+Owner: build wsx's memory on `ir` at its full use, apart from the owner's skills; with this mode on, `ir` is a dependency.
+
+- **Mode.** Global `[memory] engine = "ir"`. wsx calls the `ir` command; it does not link the crate (`ir-search` has `llama-cpp-2`
+  as a hard dependency). On, wsx checks `ir --version` at use and refuses with the install line (`brew install vlwkaos/tap/ir`).
+  Off (default): the built-in BM25 as today.
+- **One engine for every reader.** It implements `memory::backend::Backend` and answers `wsx memory search|recall`, the records
+  per chat message (`notes.rs`, which before reached no backend), `wsx task search` and `similar`. Built: the first two.
+  Whether it replaces the external `[memory] backend` program (search only) is the owner's call.
+- **Corpus.** wsx writes markdown that ir indexes, from the truths it already keeps: `records/<slug>.md` (frontmatter
+  `kind`, `status`, `paths`, `keywords`, `source`, `commit`; body the text) on each write, and one file per digest entry of
+  the transcripts (`index::gather`: a message, a reply, a task's prompt, result and story) with `chat`, `author`, `id`,
+  `task` in its frontmatter. Filters use `meta.<field>` (`-f meta.status=active`, `-f meta.paths~<file>`).
+- **Where.** The corpus in the scope's store folder (`tasks/<project-id>/memory/corpus/`, `default` under wsx's state);
+  ir's config and index in wsx's own `IR_CONFIG_DIR` (`$XDG_STATE_HOME/wsx/ir`), one collection `wsx-<scope>`, so the
+  owner's `ir status` and searches never see them. The `ko` preprocessor alias is copied from the owner's ir config;
+  without one, Korean is tokenized by ir's default and `status` says so.
+- **Lifecycle.** A write updates its file, then `ir update` (0.11 s for one file, spike 2026-11-24). A deleted record or
+  transcript entry deletes its file (`manage::sweep`). `reindex`, or a search that finds no collection, rebuilds corpus and
+  collection from the truths. A scope whose store is gone has its collection removed by the next sweep.
+- **Scores.** ir's scores are not the built-in's (spike: 0.78 for a good hit, 1e-6 for a common word): `similar`'s 0.09
+  threshold is measured again on the replay set before the engine answers `similar`.
+
+Slices: 1. BM25 (no daemon, no model): engine, corpus, every reader; open: `wsx task search` and `similar`, and the cost of
+a search (each one gathers every truth and reads the corpus folder; a manifest keyed by the store log's and the digest's
+change would skip that), and one sync per owner message instead of one per kind (`notes.rs`). 2. Hybrid (vectors, rerank): `ir sync` in the repo
+service, and a daemon that resolves collections from the request's config file (an ir change: today a search with
+another config gets "no matching collections" and falls back to BM25). 3. ir improvement: frontmatter kept out of the
+searched text (today `kind message chat main` is searchable).
+
+Proof: `scripts/test-memory.py` runs the contract with the engine on when `ir` is on PATH, and names the skip otherwise;
+a Korean query, the active filter, a deleted record that no search finds, and a rebuild after the index is removed.
+
 ## Layers
 
 | | What | Writer, when | Stale when | Budget | Read by, at |

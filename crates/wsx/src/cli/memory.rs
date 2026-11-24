@@ -7,7 +7,7 @@ use wsx_core::config::project::load_project_config;
 use wsx_core::memory::manage::{self, Drift};
 use wsx_core::memory::start;
 use wsx_core::memory::{
-    backend, known_scopes, validate_scope, Command, Error, NewRecord, Patch, Query, Record, Store,
+    backend, known_scopes, validate_scope, Engines, Error, NewRecord, Patch, Query, Record, Store,
 };
 
 type MemResult<T> = std::result::Result<T, Error>;
@@ -36,11 +36,14 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
                 include_inactive,
                 kind,
             };
-            show_hits(backend::search(&stores, external().as_ref(), &query)?, json)?;
+            show_hits(
+                backend::search(&stores, &Engines::configured(), &query)?,
+                json,
+            )?;
         }
         MemoryCmd::Recall { question } => {
             show_hits(
-                backend::recall(&stores(&scopes)?, external().as_ref(), &question)?,
+                backend::recall(&stores(&scopes)?, &Engines::configured(), &question)?,
                 json,
             )?;
         }
@@ -194,7 +197,7 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
         }
         MemoryCmd::Reindex => {
             let store = one(&scopes)?;
-            backend::reindex(&store, external().as_ref())?;
+            backend::reindex(&store, &Engines::configured())?;
             let out = json!({ "scope": store.scope(), "ok": true });
             if json {
                 return print(&out);
@@ -204,7 +207,7 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
         MemoryCmd::Status => {
             let store = one(&scopes)?;
             let [active, superseded, failed] = store.counts()?;
-            let (name, flags, error) = backend::describe(&store, external().as_ref());
+            let (name, flags, error) = backend::describe(&store, &Engines::configured());
             let mut out = json!({
                 "scope": store.scope(),
                 "store": store.dir(),
@@ -289,18 +292,6 @@ fn show(record: &Record, json: bool, verb: &str) -> MemResult<()> {
         record.status.as_str()
     );
     Ok(())
-}
-
-/// The search backend of the global config, when one is set. A config that cannot be read is
-/// said on stderr, and the built-in answers.
-fn external() -> Option<Command> {
-    match load_config() {
-        Ok(config) => Command::new(config.memory.backend),
-        Err(error) => {
-            eprintln!("wsx: cannot read the config ({error:#}); the built-in index answers");
-            None
-        }
-    }
 }
 
 /// Print the hits (a notice for each failed backend goes to stderr).

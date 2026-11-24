@@ -6,7 +6,7 @@ use super::manager::{read_note, CONTEXT_FILE, DECISIONS_FILE};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use wsx_core::memory::backend;
-use wsx_core::memory::{KindFilter, Query, Store};
+use wsx_core::memory::{Engines, KindFilter, Query, Store};
 use wsx_core::task::text::first_line;
 
 /// The most of both files a fresh conversation's first message carries: every one of the
@@ -168,6 +168,9 @@ pub(super) fn preamble(notes: &Path) -> String {
 /// `wsx memory search` ranks them, over the records alone. ref: docs/tasks.md "Notes budget"
 pub(super) fn matching(store: Store, said: &str) -> String {
     let store = [store.without_transcripts()];
+    // ^ The configured engine, as `wsx memory search` has it: the seam where the owner's engine
+    // reaches a prompt (docs/design/seams.md "Memory").
+    let engines = Engines::configured();
     let mut hits = Vec::new();
     for kind in ["rule", "fact"] {
         let query = Query {
@@ -176,7 +179,9 @@ pub(super) fn matching(store: Store, said: &str) -> String {
             include_inactive: false,
             kind: kind.parse::<KindFilter>().ok(),
         };
-        hits.extend(backend::search(&store, None, &query).map_or_else(|_| Vec::new(), |a| a.hits));
+        hits.extend(
+            backend::search(&store, &engines, &query).map_or_else(|_| Vec::new(), |a| a.hits),
+        );
     }
     hits.sort_by(|a, b| b.score.total_cmp(&a.score));
     hits.truncate(MATCH_RECORDS);

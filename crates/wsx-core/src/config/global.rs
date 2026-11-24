@@ -269,11 +269,30 @@ pub struct MemoryConfig {
     /// `search`, `reindex` and `status`; empty is the built-in alone.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub backend: Vec<String>,
+    /// What ranks a search: the built-in BM25, or the `ir` command over a corpus wsx writes.
+    /// ref: docs/design/memory-layers.md "Search engine: ir"
+    #[serde(skip_serializing_if = "MemoryEngine::is_builtin")]
+    pub engine: MemoryEngine,
+}
+
+/// `memory.engine`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryEngine {
+    #[default]
+    Builtin,
+    Ir,
+}
+
+impl MemoryEngine {
+    fn is_builtin(&self) -> bool {
+        *self == Self::Builtin
+    }
 }
 
 impl MemoryConfig {
     fn is_empty(&self) -> bool {
-        self.backend.is_empty()
+        self.backend.is_empty() && self.engine.is_builtin()
     }
 }
 
@@ -281,6 +300,8 @@ impl MemoryConfig {
 struct MemoryWire {
     #[serde(default)]
     backend: Option<StringList>,
+    #[serde(default)]
+    engine: Option<MemoryEngine>,
 }
 
 impl Default for GlobalConfig {
@@ -684,7 +705,10 @@ impl<'de> Deserialize<'de> for GlobalConfig {
             terminal_title_position: wire.terminal_title_position,
             port_visibility: wire.port_visibility,
             attention_priority: wire.attention_priority,
-            memory: MemoryConfig { backend },
+            memory: MemoryConfig {
+                backend,
+                engine: wire.memory.engine.unwrap_or_default(),
+            },
         };
         config.migrate_reserved_names();
         Ok(config)
