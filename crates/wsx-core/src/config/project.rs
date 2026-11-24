@@ -130,6 +130,10 @@ struct TasksFile {
     check_timeout_seconds: Option<u64>,
     #[serde(rename = "minFreeGb", skip_serializing_if = "Option::is_none")]
     min_free_gb: Option<u64>,
+    #[serde(rename = "warmCopies", skip_serializing_if = "Option::is_none")]
+    warm_copies: Option<usize>,
+    #[serde(rename = "dropIdleHours", skip_serializing_if = "Option::is_none")]
+    drop_idle_hours: Option<u64>,
     /// Read from the owner config only (`owner_writable`).
     #[serde(skip_serializing_if = "Option::is_none")]
     boundary: Option<TaskBoundaryFile>,
@@ -719,6 +723,18 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
             return Err(format!("tasks.minFreeGb must be 0..={MAX_MIN_FREE_GB}"));
         }
         config.min_free_gb = gb;
+    }
+    if let Some(copies) = file.warm_copies {
+        if !(1..=64).contains(&copies) {
+            return Err("tasks.warmCopies must be 1..=64".into());
+        }
+        config.warm_copies = copies;
+    }
+    if let Some(hours) = file.drop_idle_hours {
+        if hours > 24 * 30 {
+            return Err("tasks.dropIdleHours must be 0..=720 (0: off)".into());
+        }
+        config.drop_idle_hours = hours;
     }
     if let Some(mb) = file.capture_budget_mb {
         if !(1..=MAX_CAPTURE_BUDGET_MB).contains(&mb) {

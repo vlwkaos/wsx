@@ -142,6 +142,12 @@ pub struct TaskConfig {
     /// Free disk a task needs before an agent turn or its checks; below it the task waits
     /// (docs/tasks.md "Checks, revisions and report").
     pub min_free_gb: u64,
+    /// `tasks.warmCopies`: how many of the project's task copies keep their build folder; the
+    /// longest idle of the others lose it (docs/tasks.md "Build output").
+    pub warm_copies: usize,
+    /// `tasks.dropIdleHours`: a copy idle this long loses its build folder at any free disk;
+    /// 0 is off.
+    pub drop_idle_hours: u64,
     /// `tasks.boundary.writable`, read from the owner config only: folders under `/Volumes`
     /// an agent may write (docs/tasks.md "Permissions").
     pub writable: Vec<std::path::PathBuf>,
@@ -288,6 +294,8 @@ impl Default for TaskConfig {
             env: Default::default(),
             check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
             min_free_gb: 5,
+            warm_copies: 8,
+            drop_idle_hours: 24,
             writable: Vec::new(),
             capture_budget_mb: DEFAULT_CAPTURE_BUDGET_MB,
             land_approve: false,

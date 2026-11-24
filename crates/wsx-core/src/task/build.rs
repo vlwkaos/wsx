@@ -126,6 +126,43 @@ pub fn reclaim(
     cleaned
 }
 
+/// Keep at most `warm` of the project's task copies with a build folder, and none idle for
+/// `drop_after` or longer (none when it is zero): remove the build folder of the others, the
+/// longest idle first, at any free disk; return the copies cleaned. A copy built within
+/// `IDLE_FOR` is never cleaned, so a running build keeps its folder. `reclaim` is the low-disk
+/// pass. ref: docs/tasks.md "Build output"
+pub fn trim(project_id: &str, warm: usize, drop_after: Duration) -> Vec<PathBuf> {
+    let now = SystemTime::now();
+    let mut built: Vec<(SystemTime, PathBuf)> = super::view::project_tasks(project_id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(_, record)| record.ok())
+        // ^ A copy whose worker or checks run keeps its build folder, however long they take.
+        .filter(|record| {
+            !matches!(
+                record.state,
+                super::TaskState::Working | super::TaskState::Checking
+            )
+        })
+        .map(|record| record.working_copy)
+        .filter_map(|copy| Some((built_at(&copy.join("target"))?, copy)))
+        .collect();
+    // ^ Newest first: the first `warm` stay; any older copy goes once it is idle.
+    built.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut cleaned = Vec::new();
+    for (rank, (at, copy)) in built.into_iter().enumerate() {
+        let idle = now.duration_since(at).unwrap_or_default();
+        let stale = !drop_after.is_zero() && idle >= drop_after;
+        if idle >= IDLE_FOR
+            && (rank >= warm || stale)
+            && fs::remove_dir_all(copy.join("target")).is_ok()
+        {
+            cleaned.push(copy);
+        }
+    }
+    cleaned
+}
+
 struct File {
     path: PathBuf,
     bytes: u64,

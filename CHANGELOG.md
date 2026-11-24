@@ -11,6 +11,7 @@ Releases 0.40.4 and older are in [docs/changelog-archive.md](docs/changelog-arch
 - Tasks: `tasks.contracts` names the files of decided behavior; a land that changes one of their lines needs the owner, and one that only adds lines lands with a note.
 - Tasks: `wsx task say --uses <dependency>` sends one message to the lead of every registered project whose lockfile or manifest names that dependency.
 - Tasks: `tasks.land.mode: pr` lands a task by pushing its branch and opening its pull request with `gh`, instead of moving the default branch.
+- Tasks: the repo service keeps the build folder of the 8 newest task copies (`tasks.warmCopies`) and removes it from a copy idle 24 hours (`tasks.dropIdleHours`), at any free disk.
 - Tasks: an owner message that starts with `/new <name>` forks into a new chat, and one that starts with `@<chat>` goes to that open chat, of any project; the chat it was written in takes no turn on it and notes where it went.
 - Tasks: a check failure shared by tasks reaches the main chat as an event that starts no turn; adds dropped at a land go to the chat that owns the task.
 - Web: a click outside a chat's folder sheet closes it with no change, as Escape does.

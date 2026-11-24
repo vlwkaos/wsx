@@ -79,7 +79,9 @@ enum Event {
     Request(ManagerRequest, Sender<ManagerResponse>),
     Tick,
     /// A sweep of stale worktrees and sessions ended: its notes, or why it failed.
-    Pruned(Result<Vec<stale::Note>, String>),
+    /// What a sweep did, and the stale sweep's error: the build folders it removed are told
+    /// either way.
+    Pruned(Vec<stale::Note>, Option<String>),
     /// `wsx task new` with `tasks.workflow.idle` ended: when it began, and the task number or
     /// the error.
     IdleStarted(u64, Result<u32, String>),
@@ -252,7 +254,7 @@ impl Repo {
                     let _ = reply.send(self.handle(request));
                 }
                 Event::Tick => self.tick(),
-                Event::Pruned(result) => self.pruned_done(result),
+                Event::Pruned(notes, error) => self.pruned_done(notes, error),
                 Event::IdleStarted(began, Ok(id)) => {
                     self.say(&format!("started idle task #{id}"));
                     self.state.idle_task = Some(id);
@@ -1100,6 +1102,10 @@ impl Repo {
             return;
         };
         let rules = stale::rules(&settings);
+        let (warm, drop_after) = (
+            settings.warm_copies,
+            Duration::from_secs(settings.drop_idle_hours * 3600),
+        );
         let copies = stale::open_copies(&self.project_id);
         self.pruning = true;
         let (main, project_id, events) = (
@@ -1110,6 +1116,7 @@ impl Repo {
         std::thread::spawn(move || {
             let client = wsx_core::runtime::Client::new(wsx_core::runtime::default_socket_path());
             let leaked = stale::stop_leaked(&project_id, &main);
+            let trimmed = build::trim(&project_id, warm, drop_after);
             let cleaned = build::reclaim(&project_id, None, build::RECLAIM_BELOW_MB, || {
                 store::free_mb(&main)
             });
@@ -1118,26 +1125,33 @@ impl Repo {
             } else {
                 stale::sweep(&client, &main, &copies, &rules).map_err(|e| format!("{e:#}"))
             };
-            let result = swept.map(|mut notes| {
+            let (mut notes, error) = match swept {
+                Ok(notes) => (notes, None),
+                Err(error) => (Vec::new(), Some(error)),
+            };
+            {
                 notes.extend(leaked);
                 notes.extend(cleaned.into_iter().map(|path| stale::Note {
                     text: "the free disk is under 15 GB: its build folder is removed, the next check builds again".into(),
                     path,
                     flag: false,
                 }));
-                notes
-            });
-            let _ = events.send(Event::Pruned(result));
+                notes.extend(trimmed.into_iter().map(|path| stale::Note {
+                    text: format!("idle past tasks.warmCopies ({warm}) or tasks.dropIdleHours: its build folder is removed, the next check builds again"),
+                    path,
+                    flag: false,
+                }));
+            }
+            let _ = events.send(Event::Pruned(notes, error));
         });
     }
 
     /// What a sweep did goes to the chat as events that start no turn, listed with the next one.
-    fn pruned_done(&mut self, result: Result<Vec<stale::Note>, String>) {
+    fn pruned_done(&mut self, notes: Vec<stale::Note>, error: Option<String>) {
         self.pruning = false;
-        let notes = match result {
-            Ok(notes) => notes,
-            Err(error) => return self.say(&format!("cannot sweep stale worktrees: {error}")),
-        };
+        if let Some(error) = &error {
+            self.say(&format!("cannot sweep stale worktrees: {error}"));
+        }
         let left: BTreeMap<PathBuf, String> = notes
             .iter()
             .filter(|note| note.flag)
@@ -1150,7 +1164,10 @@ impl Repo {
             let (line, short) = plain_event(format!("pruned: {}", note.text));
             self.emit("", (line, short.quiet()));
         }
-        self.flagged = left;
+        // ^ A failed sweep found no flags: the ones on record stay, so none is told twice.
+        if error.is_none() {
+            self.flagged = left;
+        }
     }
 
     /// Turn task state changes into event lines.

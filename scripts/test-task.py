@@ -1323,6 +1323,45 @@ def manager_up(created):
         git('worktree', 'remove', '--force', str(base / name))
     cli('session', 'delete', 'keep-main', '-p', 'demo')
     git('branch', '-D', 'stale-clean', 'stale-dirty', 'stale-busy', ok=False)
+    # 20w. Warm copies (docs/tasks.md "Build output"): the same sweep keeps the build folder of
+    # the `tasks.warmCopies` newest task copies and removes the others once idle, and removes one
+    # idle `tasks.dropIdleHours` at any free disk; a copy idle under the hour stays. The news
+    # start no turn.
+    mark('20w')
+    warm_config = (project / 'wsx.config.yml').read_text()
+    configure('tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent:\n    model: fake-model\n', 'tasks without checks')
+    built = {}
+    for name, hours in (('warm-a', 3), ('warm-b', 2), ('warm-c', 0.67)):
+        n = js('task', 'new', 'NOOP %s' % name)['id']
+        wait_state(n, 'ready', 'failed')
+        copy = Path(show(n)['record']['working_copy'])
+        (copy / 'target/debug/deps').mkdir(parents=True, exist_ok=True)
+        # ^ The copy's build folder is a clone of main's: every entry in it (`target/warm` too)
+        # says when it was built (build.rs `built_at`).
+        at = time.time() - hours * 3600
+        for folder, _, files in os.walk(copy / 'target'):
+            for entry in [folder, *(os.path.join(folder, name) for name in files)]:
+                os.utime(entry, (at, at))
+        built[name] = (n, copy / 'target')
+    # ^ The other open copies were built just now: they are the newest and count as warm first.
+    ours = {n for n, _ in built.values()}
+    fresh = sum(1 for row in js('task', 'list')['tasks'] if row['id'] not in ours
+                and (Path(show(row['id'])['record']['working_copy']) / 'target').is_dir())
+    trimmed = lambda: [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
+                       and 'tasks.warmCopies' in e['text']]
+    configure('tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  warmCopies: %d\n  dropIdleHours: 0\n  agent:\n    model: fake-model\n' % (fresh + 2), 'two warm copies')
+    wait(lambda: not built['warm-a'][1].exists(), 'the oldest copy past two warm loses its build folder', 60)
+    time.sleep(4)
+    assert built['warm-b'][1].is_dir() and built['warm-c'][1].is_dir(), 'the two newest copies stay warm'
+    configure('tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  warmCopies: 64\n  dropIdleHours: 1\n  agent:\n    model: fake-model\n', 'drop after an hour')
+    wait(lambda: not built['warm-b'][1].exists(), 'the copy idle two hours loses its build folder', 60)
+    time.sleep(4)
+    assert built['warm-c'][1].is_dir(), 'a copy idle 40 minutes stays'
+    news = wait(trimmed, 'the trim is posted', 30)
+    assert not any(short['wakes'] for e in news for short in e['short']), news
+    for n, _ in built.values():
+        js('task', 'close', n, '--discard')
+    configure(warm_config, 'restore the config')
     # 20k. A process that left the agent's group and cleared its environment (a daemon the worker
     # started) is found by its executable's path under the working copy: `close` stops it; the
     # manager host's sweep stops one whose copy is gone, and one left in a closed task's folder;
