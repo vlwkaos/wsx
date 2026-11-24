@@ -45,7 +45,7 @@ pub(super) fn instructions(
     };
     // ^ The project name ends the first sentence: scripts/fake-claude-stream.py reads it up to the '.'.
     format!(
-        "You are the manager of the wsx project {project}. Workers in tasks edit, build and test; you \
+        "You run a chat of the wsx project {project}. Workers in tasks edit, build and test; you \
          never do. Keep your notes in {notes}. The ledger summary under each message and `wsx chat \
          ledger -p {project}` are the truth, not your memory. `wsx chat` (talk and decide), `wsx task` \
          (one task's life) and `wsx project` (the default branch, deploys, checks, routines) take \

@@ -308,7 +308,7 @@ fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: boo
          When you cannot continue, return status blocked and say what you need; when the \
          boundary refuses something the task needs, name it. When your turn must end while \
          something outside goes on (a run you started) and you ask nobody anything, return \
-         status paused with what runs and what is left: the manager continues you. When \
+         status paused with what runs and what is left: the chat that owns the task continues you. When \
          your finished work leaves a question only the owner can answer, end the summary \
          with that question. \
          {steps}Write the summary and the report by this rule. {presentation}",
@@ -483,8 +483,8 @@ fn claude_args(launch: &Launch, session: &str, resume: bool) -> Vec<std::ffi::Os
     // ^ No agent loads Claude's auto memory: its index of past tasks was 27% of a worker's first
     // call, and 7 of 20 workers read one of its files (measured 2026-11; docs/tasks.md "Agents").
     settings["autoMemoryEnabled"] = json!(false);
-    let manager = launch.boundary.policy().role == Role::Chat;
-    if manager {
+    let chat = launch.boundary.policy().role == Role::Chat;
+    if chat {
         // ^ The owner's CLAUDE.md files (user, project and the folders above it) are 7K to 14K
         // tokens at the start of every fresh conversation; the instructions carry the rules a
         // lead needs. A 12-turn blind replay judged its decisions no worse.
@@ -521,7 +521,7 @@ fn claude_args(launch: &Launch, session: &str, resume: bool) -> Vec<std::ffi::Os
     }
     // ^ A chat reads a skill's SKILL.md by hand: the flag drops the Skill tool and the
     // 30 KB skill listing from every fresh conversation, and with them a plugin's skills.
-    if manager {
+    if chat {
         args.push("--disable-slash-commands".into());
     } else {
         for dir in &launch.plugin_dirs {

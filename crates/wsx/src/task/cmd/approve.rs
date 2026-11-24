@@ -212,14 +212,14 @@ pub(crate) fn submit(
 
 pub(crate) fn owner_only(command: &str) -> Result<()> {
     if acting_as_chat() {
-        bail!("wsx chat {command} is for the owner; a chat cannot decide its own requests");
+        bail!("wsx {command} is for the owner; a chat cannot decide its own requests");
     }
     Ok(())
 }
 
 /// Run an approved request's action as its own `wsx task` command, without the actor mark.
 pub(crate) fn approve(project: Option<&str>, id: &str, json: bool) -> Result<()> {
-    owner_only("approve")?;
+    owner_only("chat approve")?;
     let (name, main) = project_entry(project)?;
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
     let action = find_request(
@@ -258,7 +258,7 @@ pub(crate) fn deny(
     note: Option<String>,
     json: bool,
 ) -> Result<()> {
-    owner_only("deny")?;
+    owner_only("chat deny")?;
     let (name, main) = project_entry(project)?;
     owner::deny(&name, &main, id, note)?;
     if json {

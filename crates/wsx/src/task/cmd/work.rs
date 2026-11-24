@@ -394,7 +394,7 @@ pub(crate) fn hand_label(id: u32) -> String {
 /// session `task-<n>-hand` in the task's own working copy resumes a fork of the worker's
 /// conversation (docs/tasks.md "By hand").
 pub(crate) fn hand(dir: &TaskDir, json: bool) -> Result<()> {
-    owner_only("hand")?;
+    owner_only("task hand")?;
     let record = dir.read_record()?;
     if !record.working_copy.exists() {
         bail!(
@@ -465,7 +465,7 @@ pub(crate) fn hand(dir: &TaskDir, json: bool) -> Result<()> {
 /// `wsx task hand --back`: the host refuses uncommitted tracked changes, and the hand session
 /// stays; otherwise the session closes and the commits are checked as the next revision.
 pub(crate) fn handback(dir: &TaskDir, json: bool) -> Result<()> {
-    owner_only("hand --back")?;
+    owner_only("task hand --back")?;
     let response = ask_host_ok(dir, &HostRequest::Handback)?;
     let record = dir.read_record()?;
     let mut closed = Vec::new();

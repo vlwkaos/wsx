@@ -248,7 +248,7 @@ fn fake_claude_writes_the_recorded_lines() {
             "--session-id",
             "demo-session",
             "--append-system-prompt",
-            "You are the manager of wsx project demo. The project overview page.md is yours.",
+            "You run a chat of the wsx project demo. The project overview page.md is yours.",
         ],
         &scratch("claude-manager"),
         &[user("BLOCKS First, the answer.|TOOL|Then, the close.")],

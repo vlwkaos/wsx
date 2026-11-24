@@ -584,7 +584,7 @@ def main():
     if '--json-schema' in options and 'route' in (json.loads(options['--json-schema']).get('required') or []):
         return route(sys.argv[-1])
     instructions = options.get('--append-system-prompt', '')
-    project = instructions.split('wsx project ')[1].split('.')[0] if 'You are the manager' in instructions else None
+    project = instructions.split('wsx project ')[1].split('.')[0] if 'You run a chat of the wsx project' in instructions else None
     session = options.get('--resume') or options.get('--session-id')
     trace({'launch': True, 'pid': os.getpid(), 'session': session, 'resume': '--resume' in options,
            'binary': os.environ.get('FAKE_CLAUDE_BINARY'),

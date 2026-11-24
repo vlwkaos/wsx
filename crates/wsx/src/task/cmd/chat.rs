@@ -379,7 +379,7 @@ pub(crate) fn history(dir: &TaskDir, limit: usize, json: bool) -> Result<()> {
 /// `wsx chat dismiss <id>`: the owner's; the lead answers a question, it does not close it.
 /// ref: docs/tasks.md "Chat host"
 pub(crate) fn dismiss(project: Option<&str>, id: u64, json: bool) -> Result<()> {
-    owner_only("dismiss")?;
+    owner_only("chat dismiss")?;
     let (name, main) = project_entry(project)?;
     let dir = chats::open_main(&store::project_id(&name, &main))?;
     chat::dismiss(&dir, id, wsx_core::task::now_unix_ms())?;
@@ -638,7 +638,7 @@ fn lifecycle(command: &str, project: Option<&str>, said: Option<u64>) -> Result<
     let asker = actor().chat().map(str::to_string).unwrap_or_default();
     let said = crate::task::owner_said(said).with_context(|| {
         format!(
-            "wsx chat {command} is the owner's; a chat's agent runs it when the owner's message of this turn asks: pass --owner-said <id>; nothing was done"
+            "wsx {command} is the owner's; a chat's agent runs it when the owner's message of this turn asks: pass --owner-said <id>; nothing was done"
         )
     })?;
     let own = ChatDir::existing(&asker)?.context("the asking chat has no folder")?;

@@ -134,7 +134,7 @@ def skills_sentence(source, folder, names):
 def instructions(source, project, notes, page, skills=''):
     """The manager's instructions as instructions() in task/instructions.rs formats them."""
     body = source.split('fn instructions(', 1)[1]
-    literal = re.search(r'format!\(\s*"(You are the manager(?:[^"\\]|\\.)*)"', body, re.S).group(1)
+    literal = re.search(r'format!\(\s*"(You (?:are the manager|run a chat)(?:[^"\\]|\\.)*)"', body, re.S).group(1)
     # ^ The default workflow (no review) and the shared presentation rule.
     values = {'project': project, 'notes': notes, 'overview': page, 'skills': skills, 'review': '', 'reach': REACH,
               'presentation': (ROOT / 'crates/wsx-core/integrations/common/presentation.md').read_text().rstrip(),

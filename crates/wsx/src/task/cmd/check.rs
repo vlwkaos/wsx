@@ -59,14 +59,14 @@ pub(crate) fn check(action: Option<CheckAction>, project: Option<&str>, json: bo
             )
         }
         Some(CheckAction::Skip(chosen)) => {
-            owner_only("check skip")?;
+            owner_only("project check skip")?;
             (
                 close_checks(&project_id, chosen, CheckState::Skipped, None)?,
                 "skipped",
             )
         }
         Some(CheckAction::Fail { id, note }) => {
-            owner_only("check fail")?;
+            owner_only("project check fail")?;
             let failed = match note {
                 Some(note) => vec![fail_check(&name, &project_id, &id, &note)?],
                 None => checks::close(&project_id, &[id], CheckState::Failed, None)?,

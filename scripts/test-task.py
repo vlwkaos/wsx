@@ -4927,7 +4927,7 @@ def part_deploy(created=None):
     assert wait_state(lost, 'ready', 'failed')['state'] == 'ready'
     land(lost)
     lost_tip = wait(lambda: show(lost)['state'] == 'landed' and git('rev-parse', 'main'), 'the land whose waiter dies')
-    waiters = lambda: leftovers('task deploy -p demo --if-new --quiet')
+    waiters = lambda: leftovers('project deploy -p demo --if-new --quiet')
     for line in wait(waiters, 'the waiter of the land'):
         os.kill(int(line.split()[0]), 9)
     wait(lambda: not waiters(), 'the waiter killed')
@@ -5933,7 +5933,7 @@ def part_host(created=None):
         return n
 
     def manager_says(words, command):
-        said = js('chat', 'say', '%s\nRUN wsx task %s OWNER_SAID -p demo --json' % (words, command))
+        said = js('chat', 'say', '%s\nRUN wsx %s OWNER_SAID -p demo --json' % (words, command))
         return said['id'], reply_to(said['id'])['text']
 
     def decision_of(request_id):
@@ -5947,15 +5947,15 @@ def part_host(created=None):
     # and --after with no message refuse with nothing recorded.
     text = reply_to(js('chat', 'say', 'RUN wsx project release --owner-said 1 --after %d -p demo --json' % aft1)['id'])['text']
     assert 'message 1 is not in the running turn' in text and 'nothing was' in text, text
-    _, text = manager_says('release when it lands', 'release --after 99999 --owner-said')
+    _, text = manager_says('release when it lands', 'project release --after 99999 --owner-said')
     assert '--after 99999: no such task; nothing was recorded' in text, text
-    _, text = manager_says('land it after itself', 'land %d --after %d --owner-said' % (aft1, aft1))
+    _, text = manager_says('land it after itself', 'task land %d --after %d --owner-said' % (aft1, aft1))
     assert 'cannot wait for itself; nothing was recorded' in text, text
     text = reply_to(js('chat', 'say', 'RUN wsx project release --after %d -p demo --json' % aft1)['id'])['text']
     assert 'required arguments' in text and '--owner-said' in text, text
     assert len(approval_lines()) == lines_before and js('chat', 'ledger')['approvals'] == []
     # ^ The release waits: nothing runs, no card, the ledger says what waits.
-    aft_said, text = manager_says('release once #%d has landed' % aft1, 'release --after %d --owner-said' % aft1)
+    aft_said, text = manager_says('release once #%d has landed' % aft1, 'project release --after %d --owner-said' % aft1)
     assert 'runs when #%d lands' % aft1 in text and 'owner was asked' not in text, text
     aft_req = approval_lines()[-1]
     assert (aft_req['kind'], aft_req['action'], aft_req['after'], aft_req['said']) == ('request', 'release', aft1, aft_said), aft_req
@@ -5978,7 +5978,7 @@ def part_host(created=None):
     assert release_log.read_text() == aft_ran + 'released\n' and js('chat', 'ledger')['approvals'] == []
     # ^ A land waits as well: the same run as `approve`.
     aft_head, aft_tail = ready_task('WORK after-head.txt'), ready_task('WORK after-tail.txt')
-    aft_said, text = manager_says('land #%d after #%d' % (aft_tail, aft_head), 'land %d --after %d --owner-said' % (aft_tail, aft_head))
+    aft_said, text = manager_says('land #%d after #%d' % (aft_tail, aft_head), 'task land %d --after %d --owner-said' % (aft_tail, aft_head))
     aft_req = approval_lines()[-1]
     assert (aft_req['action'], aft_req['task'], aft_req['after']) == ('land', aft_tail, aft_head) and show(aft_tail)['state'] == 'ready', aft_req
     assert land(aft_head)['state'] == 'landed'
@@ -5990,9 +5990,9 @@ def part_host(created=None):
     # ^ #n closes without landing: dropped, and the manager hears why. A newer request that
     # covers it replaces it first.
     aft_gone, aft_newer = ready_task('WORK after-gone.txt'), ready_task('WORK after-newer.txt')
-    _, text = manager_says('release when #%d lands' % aft_gone, 'release --after %d --owner-said' % aft_gone)
+    _, text = manager_says('release when #%d lands' % aft_gone, 'project release --after %d --owner-said' % aft_gone)
     aft_old = approval_lines()[-1]
-    _, text = manager_says('rather when #%d lands' % aft_newer, 'release --after %d --owner-said' % aft_newer)
+    _, text = manager_says('rather when #%d lands' % aft_newer, 'project release --after %d --owner-said' % aft_newer)
     # ^ The replaced request's decision comes after the new request: take the last request.
     aft_cur = [l for l in approval_lines() if l['kind'] == 'request'][-1]
     wait(lambda: events_with('approval %s (release) dropped; replaced by %s' % (aft_old['id'], aft_cur['id'])), 'the replaced event')
@@ -6015,7 +6015,7 @@ def part_host(created=None):
     approve: true
 """, 'deploy and release order')
     ord_task = ready_task('WORK order.txt')
-    _, text = manager_says('release once #%d has landed' % ord_task, 'release --after %d --owner-said' % ord_task)
+    _, text = manager_says('release once #%d has landed' % ord_task, 'project release --after %d --owner-said' % ord_task)
     ord_req = approval_lines()[-1]
     assert (ord_req['action'], ord_req['after']) == ('release', ord_task), ord_req
     records_before = len(deploy_records())
