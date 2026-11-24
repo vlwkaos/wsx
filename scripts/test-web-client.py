@@ -5221,8 +5221,12 @@ merge_seconds = 3
         assert says(own[0], 'demo wrote to you'), own
         # ^ A chat's reply it started on its own pushes the same way, named by the chat and
         # opening it (docs/web-client-tasks.md "Chats").
-        js('chat', 'say', '--to', 'notes', 'RUN wsx task new "NOOP TABLE" -p demo --json', '-p', 'demo')
+        # ^ As above, a routine's result told to that chat (--to) starts its turn; a task's event does not.
+        js('project', 'routine', 'add', 'notes-news', '-p', 'demo', '--cron', '0 3 1 1 *', '--no-post', '--to', 'notes',
+           '--arg=echo', '--arg=TABLE')
+        js('project', 'routine', 'run', 'notes-news', '-p', 'demo')
         roled = new_pushes('manager', 'the push of a reply a chat started', timeout=60)
+        js('project', 'routine', 'delete', 'notes-news', '-p', 'demo')
         assert len(roled) == 1 and says(roled[0], 'notes wrote to you'), roled
         # ^ `wsx task post --level warn|bad` (docs/tasks.md "Routines"): a script with no WSX_* variable and
         # outside any project folder posts; the chat entry has its level and each post pushes once, in a
