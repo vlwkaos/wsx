@@ -2860,14 +2860,14 @@ def part_core(created=None):
         (r'Media +all +all tasks +1/\d+', b'\r'),
         (r'(?s)files/\.studio-data/gone\.jpg +\d+/\d+.*removed: the file is gone', b'\x1b'),
         (r'Media +all +all tasks', b'j\r'),
-        (r'(?s)files/\.studio-data/trend\.jpg +\d+/\d+.*image, linked by demo.*file:.*trend\.jpg', b'\x1b'),
+        (r'(?s)files/\.studio-data/trend\.jpg +\d+/\d+.*image, linked by demo.*file:', b'\x1b'),
         (r'Media +all +all tasks', b'v'), (r'Media +images', b'v'), (r'Media +videos', b'v'),
         (r'Media +all +all tasks', b't'), (r'Media +all +#\d+', b'\x1b'),
         (r'\(i\)message', b'\x1b'), (r'\(m\)lead', b'\x1b'), (r'WORKSPACE', b'')])
     # ^ `(i)message` is in the chat's bar only: the media list's bar also starts with LEAD, and a second Esc sent
     # before the chat is drawn joins the first.
-    trend.unlink()
-    (project / '.studio-data').rmdir()
+    # ^ The file's path wraps at the screen's width, anywhere in it: it is read with the wrapped lines joined.
+    assert str(trend) in re.sub(r'\s*\n ', '', listed[6]), listed[6]; shutil.rmtree(project / '.studio-data')
     everything, only_images, only_videos, one_task = listed[3], listed[8], listed[9], listed[11]
     assert re.search(r'img +- +removed +\.studio-data/gone\.jpg', everything) and re.search(r'img +- +demo +\.studio-data/trend\.jpg', everything), everything
     assert re.search(r'img +#%d +passed' % shot, everything) and re.search(r'vid +#%d +removed' % video, everything), everything
