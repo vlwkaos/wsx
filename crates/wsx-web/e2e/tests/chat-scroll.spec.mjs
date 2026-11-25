@@ -52,8 +52,9 @@ const still = (log) => expect.poll(() => log.evaluate((element) => new Promise((
 
 /** The diagram of the last reply drew: its image loaded and the log is still. */
 async function drawn(log) {
+  // ^ Mermaid loads and draws in the page: under three workers it took over 10 s once.
   await expect.poll(() => log.locator("img[src^='blob:']").last()
-    .evaluate((image) => image.complete && image.naturalHeight > 0).catch(() => false)).toBe(true);
+    .evaluate((image) => image.complete && image.naturalHeight > 0).catch(() => false), { timeout: 30_000 }).toBe(true);
   await still(log);
 }
 
@@ -70,6 +71,19 @@ test("a reader at the end follows a reply that grows after it shows", async ({ w
   await drawn(log);
   expect((await view(log)).fromEnd).toBeLessThan(2);
   await expect(page.getByRole("button", { name: /Jump to latest/ })).toHaveCount(0);
+});
+
+// ^ The chat shows its last 60 rows (chat.js RECENT_ROWS): past that, each row that comes drops the
+// oldest above the view, and the browser's CSS anchor moves the log up by it in the same frame.
+test("a reader at the end of a long chat stays at the end as old rows leave the top", async ({ wsx, leadChat: { log } }) => {
+  for (let n = 0; n < 31; n += 1) await wsx.say("NOOP");
+  await still(log);
+  expect((await view(log)).fromEnd).toBeLessThan(2);
+  for (const words of ["TABLE5", "NOOP", "DIAGRAM"]) {
+    await wsx.say(words);
+    await still(log);
+    expect((await view(log)).fromEnd, `after ${words}`).toBeLessThan(2);
+  }
 });
 
 test("a reader who scrolled up keeps the row read while a reply arrives and grows", async ({ wsx, leadChat: { page, log }, hasTouch }) => {

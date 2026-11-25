@@ -340,7 +340,11 @@ export function useFollowEnd(name, ready) {
     // ^ The end is kept only when the content or the box changed since the last mark: a reader who
     // scrolls down into the last 80 px flips `atEnd`, the render settles, and that must not pull the
     // log on to the end (a jump of up to 80 px in a frame while the finger is down).
-    const changed = element.scrollHeight !== full.current || element.clientHeight !== height.current;
+    // ^ Or the log moved up without the reader: rows that left the top and rows that came in at
+    // the same height change no height, and the browser's anchor moved the log up 173 px from the
+    // end (2026-11-25). A reader's move up never comes here (`readerMoved`).
+    const changed = element.scrollHeight !== full.current || element.clientHeight !== height.current
+      || element.scrollTop < top.current - 1;
     height.current = element.clientHeight;
     if (restore.current?.row.isConnected) {
       element.scrollTop = restore.current.row.offsetTop - restore.current.offset;

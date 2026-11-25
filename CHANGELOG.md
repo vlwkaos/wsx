@@ -58,6 +58,7 @@ Releases 0.40.4 and older are in [docs/changelog-archive.md](docs/changelog-arch
 
 - Landing: two tasks that land at once no longer leave one stopped with "Not possible to fast-forward". A task whose fast-forward fails because another task landed first rebases onto the new tip and checks again, as docs/tasks.md "Landing" step 3 says.
 - Context rotation: a worker conversation past `rotateTokens` rotates only between turns, and the notes a fresh conversation gets are from that rotation or none. A handoff request sent into a running turn raced the turn's end: the turn's own result could be taken as the notes, and with no new notes the fresh conversation got an earlier rotation's notes as current, which were also stored in memory again.
+- Web chat: a reader at the end of a chat longer than 60 rows stays at the end when a reply comes. The oldest shown rows that left the top moved the log up by their height when the rows that came in had the same height.
 - Web chat: a reader who scrolls up while a row changes, before the scroll event comes, keeps the place; the hold at the end no longer pulls them back (one test of who moved the log, `readerMoved` in lib.js).
 - Tasks: an agent's `wsx task -p <project> host ...` (a flag before the hidden host command) is refused like `wsx task host ...`.
 
