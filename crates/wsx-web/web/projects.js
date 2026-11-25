@@ -87,7 +87,7 @@ export function AddProject({ onClose, onAdded }) {
             onInput=${(event) => setText(event.target.value)}
             onKeyDown=${(event) => { if (listed && !(event.key === "Enter" && ready)) keys(event, options, pick); }} />
         </label>
-        ${listed && html`<${Suggestions} label="Repositories and folders" options=${options} active=${active} onHover=${setActive} onPick=${pick}
+        ${listed && html`<${Suggestions} inline label="Repositories and folders" options=${options} active=${active} onHover=${setActive} onPick=${pick}
           notes=${[found.more > 0 && `${found.more} more: type a name, or a path from / or ~`, found.scanning && !text && "Still looking under your home…"]} />`}
         ${!listed && !folder && text && html`<p class="note">${found.scanning && !/^[/~]/.test(text) ? "Still looking under your home…" : "Nothing matches. Type a path from / or ~."}</p>`}
         ${folder && html`

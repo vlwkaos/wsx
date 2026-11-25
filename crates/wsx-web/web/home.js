@@ -129,7 +129,7 @@ function ChatRow({ row, current, now, onDismiss, onFolder }) {
     <li class=${slidable ? "row row-slide" : "row"} ...${slidable ? slide : null} data-key=${main ? project.id : `${project.id}/c/${chat.name}`} data-news=${news ? "" : null}
       onPointerDown=${down} onPointerMove=${move} onPointerUp=${release} onPointerCancel=${release} onClickCapture=${click}
       onContextMenu=${(event) => { if (press.current.touch) event.preventDefault(); }}>
-      <a class=${main ? "row-link home-row" : "row-link chat-row"} href=${chatHash(chat.name)} aria-current=${current ? "page" : null}
+      <a class=${main ? "row-link list-row home-row" : "row-link list-row chat-row"} href=${chatHash(chat.name)} aria-current=${current ? "page" : null}
         aria-label=${main ? null : [`Chat ${chat.shown} of ${projects}`, news && "unread", ...shownTrays(counts).map((tray) => trayWords(tray, counts))].filter(Boolean).join(", ")}>
         <${RowText} name=${main ? project.name : chat.shown} lead=${main && !chat.goal} projects=${main ? null : projects} asks=${chat.asks > 0} counts=${counts}
           last=${row.last} now=${now} line=${line} news=${Boolean(news)} typing=${chat.busy ? chat.manager : null} />
@@ -201,7 +201,7 @@ function ForYouRow({ chats }) {
   const counts = trayCounts({ counts: { running: 0, open: 0, needs: total, check: 0 } });
   return html`
     <li class="row" data-key="for-you">
-      <a class="row-link chat-row" href="#/for-you" aria-label=${`For you, ${words}`}>
+      <a class="row-link list-row chat-row" href="#/for-you" aria-label=${`For you, ${words}`}>
         <span class="row-main">
           <span class="row-head"><span class="row-work"><span class="row-label">For you</span></span><${TrayIcons} counts=${counts} /></span>
           <span class="row-context">${words}</span>
@@ -372,7 +372,7 @@ export function Home({ rail }) {
       // ^ The chats of no folder get a heading of their own once a folder exists, folded like any folder (its id is "").
       const headed = sections.some((section) => section.name);
       body = html`
-        <ul class="rows home-rows" aria-label="Chats" ref=${list}>
+        <ul class="rows home-rows list" aria-label="Chats" ref=${list}>
           ${forYou && html`<${ForYouRow} chats=${forYou} />`}
           ${sections.map(({ name, rows: inside }) => (headed
             ? [html`<${FolderHead} key=${`folder/${name ?? ""}`} id=${name ?? ""} name=${name ?? "No folder"} folded=${Boolean(folded[name ?? ""])} dot=${inside.some(waiting)} onFold=${fold} />`,

@@ -372,11 +372,12 @@ function tokenOf(listing, text) {
 // A list of suggestions above a composer: the `/` commands and the `#` tasks. Each option
 // is `{ key, name, description, source }`, a task's also its `number` after its title as the
 // name; `notes` are muted lines at the end of its box.
-export const Suggestions = ({ label, options, active, onPick, onHover, notes }) => html`
-  <div class="slash">
+// ^ `inline`: every row on one line on every width (names and paths, as Add project lists them); else a phone puts the description under the name.
+export const Suggestions = ({ label, options, active, onPick, onHover, notes, inline }) => html`
+  <div class="slash list-box" data-inline=${inline ? "" : null}>
     <ul class="slash-list" id="slash-list" role="listbox" aria-label=${label}>
       ${options.map((option, index) => html`
-        <li key=${option.key} id=${`slash-${index}`} class="slash-option" role="option" aria-selected=${index === active}
+        <li key=${option.key} id=${`slash-${index}`} class="slash-option list-row" role="option" aria-selected=${index === active}
           onPointerDown=${(event) => event.preventDefault()} onPointerEnter=${() => onHover(index)} onClick=${() => onPick(option)}>
           <span class="slash-name" data-title=${option.number ? "" : null}>${option.name}</span>
           ${option.number && html`<span class="task-number">${option.number}</span>`}

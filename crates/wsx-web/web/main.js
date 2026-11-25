@@ -94,9 +94,9 @@ const Tabs = ({ current, rail }) => {
     return () => { observer.disconnect(); root.removeProperty("--tabbar-space"); };
   }, [rail]);
   return rail ? html`
-  <nav class="rail-tabs" aria-label="Screens">
+  <nav class="rail-tabs segmented segmented-fill" aria-label="Screens">
     ${tabs().map(([name, href, label]) => html`
-      <a href=${href} aria-current=${current === name ? "page" : null} onClick=${(event) => replaceRoute(event, href)}>${label}</a>`)}
+      <a class="button button-quiet button-sm" href=${href} aria-current=${current === name ? "page" : null} onClick=${(event) => replaceRoute(event, href)}>${label}</a>`)}
   </nav>` : html`
   <nav class="tabbar" aria-label="Screens" ref=${bar}>
     <div class="tabbar-pill">

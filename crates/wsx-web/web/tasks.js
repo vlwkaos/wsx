@@ -70,7 +70,7 @@ function ListRow({ rowKey, leaving, task = null, icon, tone, glyph, label, conte
   const body = html`${title}${line}`;
   return html`
     <li class="need" data-key=${rowKey} data-leaving=${leaving ? "" : null} data-nest=${nest || null} data-group=${group} inert=${Boolean(leaving)}>
-      <div class="row-link">
+      <div class="row-link list-row">
         ${href ? html`<a class="row-main row-open" href=${href}>${body}</a>`
           : onOpen ? html`<button class="row-main row-open" type="button" aria-label=${openLabel} onClick=${onOpen}>${body}</button>`
           : html`<span class="row-main">${body}</span>`}
@@ -301,7 +301,7 @@ function Reservoir({ project, open, items, tasks, waiting, checks, routines, onR
   return html`
     <section class="reservoir" ref=${node} aria-label=${label}>
       <div class="reservoir-reveal" key=${open}>
-        <div class="reservoir-body" id="reservoir-list">
+        <div class="reservoir-body list-box" id="reservoir-list">
           <div class="reservoir-head">
             <span class="reservoir-title">${label}</span>
             <button class="icon-button reservoir-close" type="button" aria-label=${`Close ${label}`} title=${`Close ${label}`} onClick=${close}><${Icon} name="down" /></button>
@@ -1051,7 +1051,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
       <div class="bar-title">
         <span class="bar-label" data-role=${!room && lead ? "lead" : null}>${room ? chat?.manager.name ?? room : project.name}</span>
         ${room && chat?.manager.projects && html`<span class="bar-projects">${chat.manager.projects.join(", ")}</span>`}
-        ${!managerWord && chat?.manager.agent && html`<span class="bar-model" title="Model">${agentWords(chat.manager.agent)}</span>`}
+        ${!managerWord && chat?.manager.agent && html`<span class="bar-model tag" title="Model">${agentWords(chat.manager.agent)}</span>`}
         ${managerWord && html`<span class="bar-state" key=${managerWord} data-tone=${typing ? "working" : "danger"}>${typing
           ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><${Dots} /></span>`
           : managerWord}</span>`}

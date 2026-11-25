@@ -43,14 +43,12 @@ p, h1, h2 { margin: 0; }
 .app[data-wide] { flex-direction: row; }
 .rail {
   position: relative; flex: 0 0 var(--size-rail); width: var(--size-rail); min-width: 0; min-height: 0; display: flex; flex-direction: column;
-  border-right: var(--border-width) solid var(--color-hairline);
+  border-right: var(--border-width) solid var(--color-hairline); background: var(--color-surface);
 }
 .rail-head { padding: var(--space-3) var(--space-4) 0; display: flex; flex-direction: column; gap: var(--space-2); }
 .rail-name { font-weight: var(--font-weight-strong); }
 .rail-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.rail-tabs { display: flex; gap: var(--space-4); border-bottom: var(--border-width) solid var(--color-hairline); }
-.rail-tabs a { text-decoration: none; color: var(--color-muted); font-size: var(--font-size-sm); padding: var(--space-2) 0; }
-.rail-tabs a[aria-current="page"] { color: var(--color-text); font-weight: var(--font-weight-medium); box-shadow: inset 0 calc(-1 * var(--focus-width)) 0 var(--color-text); }
+
 /* Hook: .tabbar — the phone's bottom bar: a floating pill of equal-width tabs, an icon over its
    label, the current one on a highlight, a count on the icon. The nav overlays the screen foot
    (the body is its containing block): it is transparent and takes no pointer, so what scrolls
@@ -105,16 +103,7 @@ body[data-keyboard] .tabbar { padding-bottom: var(--space-2); }
 .rail-name { padding-right: var(--size-control); }
 .sheet .error { margin-top: var(--space-2); }
 /* Add project (projects.js): the composer's list under the field, then what the typed folder is. */
-/* Its list, as the Add project board draws it: a padded box of rounded rows, names in the body font,
-   a project already added dimmed with "added" in the accent, the notes inside the box. */
-.add-project .slash { margin: var(--space-3) 0 0; padding: var(--space-1); max-height: calc(var(--size-control) * 5.5); border-radius: var(--radius-key); }
-/* ^ Words of two sizes on one baseline; the padding centres the line in the 44 px row. */
-.add-project .slash-option { min-height: var(--size-control); align-items: baseline; padding: var(--space-3) var(--space-key-sm); border-radius: var(--radius-key-sm); line-height: 1.25; box-sizing: border-box; }
-.add-project .slash-name { font-family: inherit; font-weight: var(--font-weight-strong); }
-.add-project .slash-source { color: var(--color-muted); }
-.add-project .slash-option:has(.slash-source[data-tone="faint"]) { opacity: 0.55; }
-.add-project .slash-source[data-tone="faint"] { color: var(--color-accent); }
-.add-project .slash-note { padding: var(--space-1) var(--space-key-sm); }
+.add-project .slash { margin: var(--space-3) 0 0; }
 .folder-card { display: flex; flex-direction: column; gap: var(--space-1); margin-top: var(--space-3); padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-key); background: var(--color-raised); font-size: var(--font-size-sm); }
 .folder-card p { margin: 0; overflow-wrap: anywhere; }
@@ -169,6 +158,7 @@ div.row-link { cursor: default; }
 .row-more:focus-visible { color: var(--color-text); }
 @media (hover: hover) { .row-more:hover { color: var(--color-text); } }
 .home-rows .row-head { padding-right: calc(var(--size-control) - var(--space-3)); }
+
 .home-rows .row-link { -webkit-touch-callout: none; }
 /* Hook: .folder-head — a folder's heading on Home: the band of the Tasks list with a fold arrow (open turns it down) and a dot while folded. */
 .folder-head { list-style: none; padding-inline: var(--column-inset, var(--space-4)); }
@@ -321,6 +311,28 @@ button.row-open { padding: var(--space-2) 0; border: 0; background: none; text-a
     padding-inline: var(--space-2); margin: calc((var(--size-control) - 1lh) / -2) calc(-1 * var(--space-2));
   }
 }
+/* Components built on the button (docs/web-themes.md "Components"; the Screens boards). Containers place them; they
+   never restyle them. */
+/* Hook: .segmented — one choice among a few: a track holding .button.button-quiet.button-sm items, the chosen one raised
+   (the quiet button's chosen state). .segmented-fill shares the width equally. */
+.segmented {
+  display: inline-flex; flex-wrap: wrap; gap: calc(var(--space-1) / 2); padding: var(--space-1); max-width: 100%; box-sizing: border-box;
+  border: var(--border-width) solid var(--color-hairline); border-radius: calc(var(--radius-key-sm) + var(--space-1)); background: var(--color-bg);
+}
+.segmented-fill { display: flex; }
+.segmented-fill > * { flex: 1 1 0; min-width: 0; }
+/* Hook: .list, .list-row, .list-box — rows of one kind: rounded, 44 px at least, the active, chosen or open one raised, no
+   hairline between them. .list-box puts a list in a box on the surface, inset 4 px (a picker, the list over the composer). */
+.list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: calc(var(--space-1) / 2); }
+.list > .row + .row::before { display: none; }
+.list-row { box-sizing: border-box; min-height: var(--size-control); padding-inline: var(--space-2); border-radius: var(--radius-key); }
+.list-row:is([aria-selected="true"], [aria-current="page"]), a.list-row:active { background-color: var(--color-raised); }
+.list-box {
+  padding: var(--space-1); box-sizing: border-box; border: var(--border-width) solid var(--color-hairline);
+  border-radius: calc(var(--radius-key) + var(--space-1)); background: var(--color-surface);
+}
+/* Hook: .tag — a short muted label beside a name (a model, a kind): the raised fill, the small radius. */
+.tag { display: inline-block; width: fit-content; max-width: 100%; box-sizing: border-box; padding: calc(var(--space-1) / 2) var(--space-2); border-radius: var(--radius-key-sm); background: var(--color-raised); color: var(--color-muted); font-size: var(--font-size-label); font-weight: var(--font-weight-normal, 400); white-space: nowrap; }
 .input {
   width: 100%; min-height: var(--size-control); padding: 0 var(--space-3);
   border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);
@@ -339,6 +351,7 @@ textarea.input { padding: var(--space-2) var(--space-3); resize: vertical; }
 .bar-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--font-weight-medium); }
 .bar-state { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--font-size-sm); color: var(--color-muted); white-space: nowrap; }
 .bar-model, .bar-projects { color: var(--color-muted); }
+
 .bar-title .bar-model, .bar-title .bar-projects { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-sm); }
 /* Without the rail the label keeps the row's free width and the state word goes under it. */
 .app:not([data-wide]) .bar-title { flex-direction: column; align-items: stretch; gap: 0; }
@@ -685,22 +698,22 @@ div.steps .steps-summary { cursor: default; }
 /* The `/` list: one row per command, the name in the terminal font, the active row raised.
    Its notes are muted single lines at the end of the same box, not between it and the field. */
 .slash {
-  margin-bottom: var(--space-2); max-height: calc(var(--size-key) * 5.5); overflow-y: auto;
-  overscroll-behavior: contain; border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);
-  background: var(--color-bg); scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent;
+  margin-bottom: var(--space-2); max-height: calc(var(--size-control) * 5.5); overflow-y: auto;
+  overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent;
 }
 .slash-list { list-style: none; margin: 0; padding: 0; }
-.slash-option {
-  min-height: var(--size-key); padding: var(--space-1) var(--space-3); display: flex; align-items: baseline; gap: var(--space-3);
-  cursor: pointer; font-size: var(--font-size-sm);
-}
-.slash-option[aria-selected="true"] { background: var(--color-raised); }
+.slash-option { padding-block: var(--space-3); display: flex; align-items: baseline; gap: var(--space-3); cursor: pointer; font-size: var(--font-size-sm); line-height: 1.25; }
+/* ^ A row that cannot be picked for real (Add project's "added") is dimmed, its word in the accent. */
+.slash-option:has(.slash-source[data-tone="faint"]) { opacity: 0.55; }
+.slash-source[data-tone="faint"] { color: var(--color-accent); }
+/* ^ Names (not commands) in the body font: the one-line variant. */
+.slash[data-inline] .slash-name { font-family: inherit; font-weight: var(--font-weight-strong); }
 .slash-name { flex: 0 0 auto; font-family: var(--font-terminal); color: var(--color-text); }
 .slash-description { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-muted); }
 .slash-source { flex: 0 0 auto; color: var(--color-faint); font-size: var(--font-size-label); }
 .slash-name[data-title] { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: inherit; }
 .slash-note {
-  margin: 0; padding: var(--space-1) var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted);
+  margin: 0; padding: var(--space-1) var(--space-2); font-size: var(--font-size-sm); color: var(--color-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 /* A failed read of the list: its error, wrapped, and Retry at the right as a full tap target. */
@@ -751,7 +764,7 @@ div.steps .steps-summary { cursor: default; }
 /* The `/` list on a phone: the name and its source, then the description on one muted line.
    With the keyboard up, or on a short screen, it keeps to 3.5 rows so the conversation shows. */
 .app:not([data-wide]) .slash { max-height: calc(var(--size-control) * 5.5); }
-.app:not([data-wide]) .slash-option {
+.app:not([data-wide]) .slash:not([data-inline]) .slash-option {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name source" "description description";
   align-items: baseline; gap: 0 var(--space-3); min-height: var(--size-control);
 }
@@ -762,8 +775,6 @@ div.steps .steps-summary { cursor: default; }
 .app:not([data-wide]) .slash-option:has(.task-number) { grid-template-columns: minmax(0, auto) auto minmax(0, 1fr) auto; grid-template-areas: "name number . source"; }
 .app:not([data-wide]) .slash-option .task-number { grid-area: number; }
 .app:not([data-wide]) .slash-option:has(.task-number) .slash-description { display: none; }
-/* Add project keeps its board's one line on a phone too: the name, the path cut short, its source. */
-.app:not([data-wide]) .add-project .slash-option { display: flex; align-items: baseline; gap: var(--space-3); }
 body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-control) * 3.5); }
 /* A blocked agent takes its answer in the terminal: this row stands where the composer was. */
 .attention {
@@ -930,7 +941,9 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 /* The open list over the composer: Running, Needs you or To check, one at a time, opened by
    the pills in the composer row. */
 .reservoir {
-  flex: 0 0 auto; max-height: calc(100% * var(--strip-share)); position: relative; display: flex; flex-direction: column; border-top: var(--border-width) solid var(--color-hairline); }
+  flex: 0 0 auto; max-height: calc(100% * var(--strip-share)); position: relative; display: flex; flex-direction: column; }
+/* ^ The list box keeps its rows' text on the column's inset: the box's border and padding and the row's padding are taken off. */
+.reservoir-body { margin: var(--space-1) max(var(--space-2), calc(var(--column-inset, var(--space-4)) - var(--space-3) - var(--border-width))) var(--space-2); }
 .tick { display: inline-block; font-variant-numeric: tabular-nums; }
 .typing-dots { display: inline-flex; align-items: center; gap: var(--space-1); }
 /* The list opens by its height (a grid row from 0fr to 1fr). */
@@ -939,7 +952,7 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 /* The list's header stays while the rows scroll under it: its name and the button that closes it,
    one line of the key size (the 44 px button's hit area overflows it). */
 .reservoir-list { list-style: none; margin: 0; padding: 0; }
-.reservoir-head { flex: 0 0 auto; min-height: var(--size-key); padding-inline: var(--column-inset, var(--space-4)); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.reservoir-head { flex: 0 0 auto; min-height: var(--size-key); padding-inline: var(--space-2); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .reservoir-title { font-size: var(--font-size-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-faint); }
 /* ^ A + or a close at the end of a heading: its drawn square ends on the gutter. */
 .reservoir-close { margin-right: calc(-1 * var(--button-hit)); }
@@ -951,7 +964,7 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
    a line of their own at the right. The full width is text, from the left edge; no column. */
 .reservoir .row-link, .reservoir .row-link:has(> .row-open) {
   display: grid; grid-template-columns: minmax(0, 1fr); align-items: start;
-  font-size: var(--font-size-sm); padding: var(--space-1) var(--column-inset, var(--space-4));
+  font-size: var(--font-size-sm); padding-block: var(--space-1);
 }
 .reservoir .row-link > .row-main, .reservoir .row-link > .row-open { align-self: stretch; padding-block: var(--space-2); min-height: var(--size-control); box-sizing: border-box; gap: calc(var(--space-1) / 2); }
 /* ^ The title is one line, cut with an ellipsis, its number never cut; the reason and the relations of a task
@@ -971,16 +984,15 @@ a.bubble-author { align-self: flex-start; display: flex; align-items: center; mi
 .row-glyph { display: inline-block; margin-right: var(--space-1); vertical-align: middle; }
 .row-glyph .icon { display: block; width: var(--space-3); height: var(--space-3); }
 .row-glyph[data-tone="working"] { color: var(--color-working); }
-.reservoir .need + .need { border-top: var(--border-width) solid var(--color-hairline); }
 /* Actions: small icon buttons, the word in the title. The accepting one has the raised fill and the accent; the refusing one
    (danger) and a quiet one (Dismiss) have no fill. */
 .need-action:is([data-tone="accent"], :not([data-tone])) { background-color: var(--color-raised); }
 .need-action[data-tone="quiet"] { color: var(--color-muted); }
 /* The bands of the Tasks list: who has the ball (the server's `place.band`). */
-.reservoir-band { list-style: none; display: flex; align-items: center; min-height: var(--size-key); padding-inline: var(--column-inset, var(--space-4)); font-size: var(--font-size-label); font-weight: var(--font-weight-strong); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-muted); }
+.reservoir-band { list-style: none; display: flex; align-items: center; min-height: var(--size-key); padding-inline: var(--space-2); font-size: var(--font-size-label); font-weight: var(--font-weight-strong); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-muted); }
 .reservoir-band[data-band="chat"] { color: var(--color-attention); }
 /* The For you page: the list is the screen's own, not pinned over a composer. */
-.reservoir.foryou { max-height: none; border-top: 0; }
+.reservoir.foryou { max-height: none; }
 .reservoir-band[data-band="moving"] { color: var(--color-working); }
 /* A chain is one card; a task that waits for another sits under it behind a rail. */
 .reservoir .need[data-group] { margin-inline: var(--space-2); background: var(--color-raised); }
@@ -1084,7 +1096,9 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .boot-name { margin: 0; font-size: var(--font-size-title); font-weight: var(--font-weight-medium); }
 .boot .row-typing { margin: 0; }
 .notice-timer { display: none; }
-.home-rows { position: relative; }
+.home-rows { position: relative; padding-inline: var(--space-2); }
+.home-rows .row-more { right: var(--space-1); }
+.rail-tabs { margin-bottom: var(--space-2); }
 .home-rows > [data-ghost] { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; }
 .row-typing { display: inline-flex; align-items: center; gap: var(--space-1); margin-inline-end: var(--space-2); vertical-align: middle; }
 
@@ -1188,9 +1202,9 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .usage-chart[data-chart="tokens"] :is(.usage-total, .usage-day) { grid-template-columns: calc(var(--space-4) * 4) minmax(0, 1fr) calc(var(--space-4) * 3) calc(var(--space-4) * 2.5); }
 .usage-rate { text-align: right; color: var(--color-muted); font-variant-numeric: tabular-nums; }
 /* The Cost / Tokens / Projects tabs over one panel (usage.js). */
-.usage-view { display: flex; gap: var(--space-1); margin-bottom: var(--space-2); }
+.usage-view { margin-bottom: var(--space-2); }
 /* Hook: .subtabs — a screen's routed sections (Settings: General, UI, Usage), as the chart switch. */
-.subtabs { display: flex; gap: var(--space-1); padding: 0 var(--space-4) var(--space-2); }
+.subtabs { margin: 0 var(--space-4) var(--space-2); }
 .usage-total { display: grid; grid-template-columns: calc(var(--space-4) * 4) minmax(0, 1fr) calc(var(--space-4) * 4.5); align-items: center; gap: var(--space-2); min-height: var(--size-control); font-weight: var(--font-weight-medium); }
 .usage-amount { color: var(--color-text); font-variant-numeric: tabular-nums; }
 /* The limit state above the filters (usage.js Limits): a meter per window, its text over a thin track. */
@@ -1284,7 +1298,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .option-hint { font-size: var(--font-size-sm); color: var(--color-muted); }
 .option-row input[type="checkbox"] { flex: none; margin: 0; }
 /* A pair of choices (settings.js Segmented): the chart switch's look over native radios, which stay the whole hit area. */
-.segmented { display: flex; gap: var(--space-1); padding: 0 var(--space-4); }
+.settings .segmented { margin-inline: var(--space-4); }
 .segment { position: relative; flex: 1 1 0; }
 .segment input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
 .segment:has(input:focus-visible) { outline: var(--focus-width) solid var(--color-accent); outline-offset: var(--focus-width); }
@@ -1405,7 +1419,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 /* A project's panel (panels.js): the command's output as written, in the monospace face, or a
    JSON panel's document as cards. A level is the theme's state colour plus its word. */
 .panels { padding: var(--space-3) var(--space-4) var(--space-4); }
-.panel-tabs { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-3); }
+.panel-tabs { margin-bottom: var(--space-3); }
 /* The status words, muted, then Refresh as a button at the row's end, a gap between them. */
 .panel-state { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin: 0 0 var(--space-2); }
 .panel-state-text { flex: 1 1 auto; min-width: 0; margin: 0; color: var(--color-muted); font-size: var(--font-size-sm); overflow-wrap: anywhere; }
