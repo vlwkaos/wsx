@@ -61,6 +61,14 @@ async function resize(next) {
     && (${!sheet} || !!document.querySelector('dialog.task-sheet[open]'))`, `the layout did not follow the resize to ${next[0]}x${next[1]}`);
 }
 const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+// ^ A header tool: its icon on a wide window, the item of ⋯ on a phone (the Screens board).
+const tool = async (name) => {
+  const item = `[...document.querySelectorAll('.more-menu [role=menuitem]')].find((item) => item.textContent === ${JSON.stringify(name)})`;
+  if (await evaluate(`(() => { const icon = document.querySelector('.bar-tools [aria-label=${JSON.stringify(name)}]'); icon?.click(); return !!icon; })()`)) return;
+  await click(".bar-tools .more-button");
+  await until(`!!${item}`, `the header's ⋯ has no ${name}`);
+  await evaluate(`${item}.click()`);
+};
 // Type into the focused-to-be field as an input event does, the caret at the end.
 const typeInto = (selector, value) => evaluate(`(() => { const field = document.querySelector(${JSON.stringify(selector)}); field.focus();
   field.value = ${JSON.stringify(value)}; field.setSelectionRange(field.value.length, field.value.length);
@@ -1349,11 +1357,9 @@ phase("The Overview button in the chat header (icon only), and Sett");
 {
   try {
     await go(chat);
-    await until(`location.hash === '${chat}' && !!document.querySelector('.manager a.icon-button[href$="/page"]')`, "the chat header has no overview item");
-    // Overview: one tap opens the project overview.
-    const overview = await evaluate(`(() => { const node = document.querySelector('.manager a.icon-button[href$="/page"]'); return node && { label: node.getAttribute('aria-label'), title: node.title }; })()`);
-    if (!overview || overview.label !== "Overview" || overview.title !== "Overview") await fail(`the Overview button is ${JSON.stringify(overview)}`);
-    await click('.manager a.icon-button[href$="/page"]');
+    await until(`location.hash === '${chat}' && !!document.querySelector('.manager .bar-tools .more-button')`, "the chat header has no ⋯");
+    // Overview: one tap on its icon (wide) or its item of ⋯ (phone) opens the project overview.
+    await tool("Overview");
     await until(`location.hash === '${chat}/page' && !!document.querySelector('dialog.task-sheet[open] .project-overview h1')`, "a tap on the Overview button did not open the overview");
     await closeSheet("the overview sheet", chat);
   } finally {
@@ -1845,7 +1851,7 @@ async function followEnd(where) {
     }
     await barAt("top");
     // (f) A find's match: a row with a match that arrives does not move a reader who scrolled away.
-    await click('.manager button[aria-label="Find in chat"]');
+    await tool("Find in chat");
     await until("document.activeElement === document.querySelector('.find-field')", `${where}: the find bar did not open`);
     await evaluate(`(() => { const field = document.querySelector('.find-field'); field.value = 'DIAGRAM'; field.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await until("/^[1-9]\\d*\\/\\d+$/.test(document.querySelector('.find-count').textContent)", `${where}: the find did not count its matches`, 200);
@@ -2678,7 +2684,7 @@ await sameBack("a project's chat", opens(`a.home-row[href="${chat}"]`, "!!docume
 await go(chat);
 await until("!!document.querySelector('.composer-field')", "the chat did not open");
 const sheetOpen = (part) => `!!document.querySelector('dialog.task-sheet[open]') && location.hash.startsWith(${JSON.stringify(chat + part)})`;
-await sameBack("the overview", opens(`.manager > .bar a[href="${chat}/page"]`, sheetOpen("/page"), "the overview"), sheetBack);
+await sameBack("the overview", async () => { await tool("Overview"); await until(sheetOpen("/page"), "the overview did not open"); }, sheetBack);
 await sameBack("the task sheet", opens(`.log a.task-chip[href^="${chat}/task/"]`, sheetOpen("/task/"), "the task sheet"), sheetBack);
 await sameBack("the usage sheet", fromMenu(`a[href="${chat}/usage"]`, sheetOpen("/usage"), "the usage sheet"), sheetBack);
 await sameBack("the project's sessions", fromMenu(`a[href="${repoBase}/sessions"]`, "!!document.querySelector('#main .worktree')", "the project's sessions"), topBack);
@@ -2804,10 +2810,9 @@ phase("Find (docs/web-client-chat.md Find): the header's icon opens");
 // --- Find (docs/web-client-chat.md "Find"): the header's icon opens the bar and loads the whole
 // chat; "quasar" is only in plans' 1st and 4th older turns, past the newest 400 entries
 // (test-web-client.py). It starts at the newer match; Previous goes to the older one, Next back.
-const findButton = "document.querySelector('.bar-tools button[aria-label=\"Find in chat\"]')";
-if (await evaluate(`!${findButton}`)) await fail("the header has no Find button");
+if (await evaluate("!document.querySelector('.bar-tools [aria-label=\"Find in chat\"], .bar-tools .more-button')")) await fail("the header has no Find");
 if (await evaluate("[...document.querySelectorAll('.log .bubble')].some((node) => /quasar/i.test(node.textContent))")) await fail("the oldest turns show before a find");
-await evaluate(`${findButton}.click()`);
+await tool("Find in chat");
 await until("document.activeElement === document.querySelector('.find-field')", "the find bar did not open with its field focused");
 await typeInto(".find-field", "QUASAR");
 const found = () => evaluate(`(() => { const current = CSS.highlights.get('find-current'); const range = current && [...current][0];
@@ -3532,7 +3537,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await inScheme("dark");
   // ^ Rename chat in the ⋯ menu, before Close chat: the sheet, then the room and Home read the new name.
   await click(".bar .more-button");
-  if ((await evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].map((item) => item.textContent.trim()).join()")) !== "PurposeWork out the fee table.,Rename chat,Close chat") await fail("the chat's ⋯ menu is not Purpose, Rename chat, Close chat");
+  if ((await evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].map((item) => item.textContent.trim()).filter((name) => name !== 'Find in chat').join()")) !== "PurposeWork out the fee table.,Rename chat,Close chat") await fail("the chat's ⋯ menu is not Purpose, Rename chat, Close chat");
   await evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].find((item) => item.textContent.trim() === 'Rename chat').click()");
   await until("!!document.querySelector('dialog[open] input[name=title]')", "Rename chat opened no sheet");
   for (const scheme of ["dark", "light"]) { await inScheme(scheme); await shot(`rename-chat-${scheme}`); }
@@ -3797,7 +3802,8 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await until("!document.querySelector('dialog.sheet')", "the New chat sheet stayed open");
   // ^ Close chat (docs/tasks.md "Chats"): the chat's ⋯ menu, one confirm, then Home without its
   // row; `wsx chat list` has it closed. The first chat's top row has no Close chat.
-  const menuItems = () => evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].map((item) => item.textContent.trim())");
+  // ^ A phone's ⋯ also holds the header's tools (Find in chat, Overview, Panels, Shell); these checks read the chat's own items.
+  const menuItems = () => evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].map((item) => item.textContent.trim()).filter((name) => !['Find in chat', 'Overview', 'Panels', 'Shell'].includes(name))");
   await go(`#/p/${project}`);
   await until(`location.hash === '${chat}'`, "the old route #/p/<id> did not redirect to the main chat");
   await go(`#/p/${project}/t/2`);
@@ -3814,7 +3820,7 @@ if (await count(".chat-row .news-mark")) await fail("a chat read on this device 
   await until(`import(new URL('store.js', [...document.scripts].find((script) => script.type === 'module').src)).then(({ state }) => state.tasks['${project}']?.chats?.find((item) => item.name === 'qa')?.goal === 'Check the release notes.')`, "the page's overview has no goal for the qa chat", 30);
   await click(".bar .more-button");
   // ^ The open menu renders after the click: wait for its items, not one read.
-  await until("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].map((item) => item.textContent.trim()).join() === 'PurposeCheck the release notes.,Rename chat,Close chat'", async () => `the qa chat's menu is ${await menuItems()}`);
+  await until("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].map((item) => item.textContent.trim()).filter((name) => name !== 'Find in chat').join() === 'PurposeCheck the release notes.,Rename chat,Close chat'", async () => `the qa chat's menu is ${await menuItems()}`);
   await evaluate("[...document.querySelectorAll('.bar .more-menu [role=menuitem]')].find((item) => item.textContent.trim() === 'Close chat').click()");
   await until(`!!document.querySelector('${sheet} #dialog-title')`, "Close chat asked nothing");
   const asks = await evaluate(`({ title: document.querySelector('${sheet} #dialog-title').textContent, text: document.querySelector('${sheet} p').textContent,

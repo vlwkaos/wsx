@@ -20,12 +20,14 @@ const linter = designLint({ evaluate, captures, file: "panels" });
 const run = () => evaluate("/device run (\\d+)/.exec(document.querySelector('.panel-output')?.textContent ?? '')?.[1] ?? null");
 
 await viewport(390, 844, 2);
-// A site without the right to run commands has no Panels icon.
+// A site without the right to run commands has no Panels; at 390 px Panels is an item of the header's ⋯.
+const panelsItem = "[...document.querySelectorAll('.more-menu [role=menuitem]')].find((item) => item.textContent === 'Panels')";
 await open(ownerUrl, ownerCode);
 await send("Page.navigate", { url: `${ownerUrl}#/p/${project}` });
 await until("!!document.querySelector('.bar-tools')", "the project screen did not render on the owner site");
 await new Promise((resolve) => setTimeout(resolve, 1500));
-if (await evaluate("!!document.querySelector('[aria-label=\"Panels\"]')")) await fail("a site without terminal_input shows the Panels icon");
+await evaluate("document.querySelector('.bar-tools .more-button').click()");
+if (await evaluate(`!!document.querySelector('[aria-label="Panels"]') || !!${panelsItem}`)) await fail("a site without terminal_input shows Panels");
 
 // ... and no Machine tab.
 await send("Page.navigate", { url: `${ownerUrl}#/` });
@@ -36,9 +38,11 @@ if ((await labels()) !== "Home,Sessions,Settings") await fail(`a site without te
 
 await open(adminUrl, adminCode);
 await send("Page.navigate", { url: `${adminUrl}#/p/${project}` });
-await until("!!document.querySelector('a[aria-label=\"Panels\"]')", "the project screen shows no Panels icon");
+await until("!!document.querySelector('.bar-tools .more-button')", "the project screen has no ⋯");
 await capture("390x844-project-header");
-await evaluate("document.querySelector('a[aria-label=\"Panels\"]').click()");
+await evaluate("document.querySelector('.bar-tools .more-button').click()");
+await until(`!!${panelsItem}`, "the project screen's ⋯ has no Panels");
+await evaluate(`${panelsItem}.click()`);
 await until("!!document.querySelector('dialog[open] .panel-output') && /device run \\d+/.test(document.querySelector('.panel-output').textContent)", "the panel did not show the command's output");
 const first = Number(await run());
 // The status row: the words as one line and a Refresh button.

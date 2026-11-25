@@ -7,7 +7,7 @@ import { html, Icon, render, useEffect, useLayoutEffect, useRef, useState } from
 import { can, chatHash, events, leaveFor, noteBuild, parseRoute, replaceRoute, restorePlace, shownTabs, shows, sheetSuffix, stackUnder, state, tabs, trackHistory, update, useRoute, useStore } from "./store.js";
 import { Home } from "./home.js";
 import { ForYou } from "./foryou.js";
-import { applyBar, applyScheme, applyTabs, Notices, toast } from "./ui.js";
+import { applyBar, applyScheme, applyTabs, Notices, toast, useWide } from "./ui.js";
 import { Pair, takePairCode } from "./pair.js";
 import { Inbox } from "./inbox.js";
 import { Project, Projects, ProjectSessions } from "./projects.js";
@@ -19,16 +19,6 @@ import { MachineScreen, PanelsScreen } from "./panels.js";
 import { Settings } from "./settings.js";
 import { viewImageLinks } from "./viewer.js";
 
-function useWide() {
-  const query = matchMedia("(min-width: 900px)");
-  const [wide, setWide] = useState(query.matches);
-  useEffect(() => {
-    const changed = () => setWide(query.matches);
-    query.addEventListener("change", changed);
-    return () => query.removeEventListener("change", changed);
-  }, []);
-  return wide;
-}
 
 // ^ iOS Safari and an installed PWA keep the layout viewport when the keyboard opens:
 // only the visual viewport shrinks, and it can move down the page. While a field takes

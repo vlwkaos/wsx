@@ -56,6 +56,15 @@ test("buttons have two drawn sizes in one hit box, and the For you rows line up"
   // ^ The lead (the main chat, no goal) reads "demo lead" in its top row and on Home, as its replies do.
   const tag = (selector) => page.locator(selector).evaluate((node) => `${node.textContent} ${getComputedStyle(node, "::after").content.replaceAll('"', "")}`);
   expect(await tag(".bar-label")).toBe("demo lead");
+  // ^ A phone's top row is back, the name and ⋯; ⋯ holds Find and Overview (the Screens board). A wide window shows them as icons.
+  const phone = testInfo.project.name === "phone";
+  await expect(page.locator('.bar-tools [aria-label="Find in chat"]')).toHaveCount(phone ? 0 : 1);
+  if (phone) {
+    await page.locator(".bar-tools .more-button").click();
+    await expect(page.locator(".more-menu [role=menuitem]").first()).toHaveText("Find in chat");
+    await expect(page.locator(".more-menu").getByRole("menuitem", { name: "Overview" })).toBeVisible();
+    await page.locator(".bar-tools .more-button").click();
+  }
   await page.locator("button.pill[data-kind='you']").click();
   await expect(page.locator(".reservoir .need")).toHaveCount(4, { timeout: 60_000 });
   await expect(page.locator(".reservoir .need-action")).toHaveCount(5);

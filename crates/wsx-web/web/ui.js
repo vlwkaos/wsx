@@ -152,6 +152,18 @@ export function Back({ fallback }) {
 }
 
 // A top row's ⋯ menu. A tap outside or Escape closes it, and so does choosing an item.
+// ^ A window 900 px wide or wider: the rail beside the screen (main.js), and every header tool shown (tasks.js).
+export function useWide() {
+  const query = matchMedia("(min-width: 900px)");
+  const [wide, setWide] = useState(query.matches);
+  useEffect(() => {
+    const changed = () => setWide(query.matches);
+    query.addEventListener("change", changed);
+    return () => query.removeEventListener("change", changed);
+  }, []);
+  return wide;
+}
+
 export function MoreMenu({ children }) {
   const [open, setOpen] = useState(false);
   const menu = useRef();

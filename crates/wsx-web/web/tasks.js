@@ -5,7 +5,7 @@
 import { api } from "./api.js";
 import { html, Icon, keepIn, plural, readMap, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, chatHash, goBack, leaveFor, sheetHash, shows, state, touch, update, useEventLoad, useStore } from "./store.js";
-import { Back, confirmDialog, MoreMenu, toast } from "./ui.js";
+import { Back, confirmDialog, MoreMenu, toast, useWide } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, useDraft, useListKeys, useRecent, withNewLine } from "./chat.js";
 import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, TalkLine, Typing } from "./bubbles.js";
 import { FindBar, FindButton } from "./find.js";
@@ -17,7 +17,7 @@ import { UsagePage } from "./usage.js";
 import { MediaPage } from "./media.js";
 import { RoutineActions, routineAct, routineRow, useRoutines } from "./routines.js";
 import { present, shownTrays, TRAYS, trayCounts, trayWords } from "./trays.js";
-import { PanelsButton, PanelsPage } from "./panels.js";
+import { PanelsButton, PanelsPage, usePanelsLink } from "./panels.js";
 import { loadTasks, act } from "./task-api.js";
 import { agentWords, BANDS, calm, KIND_TONE, LEAVE_MS, needing, rowLine, taskLink, taskStage, TaskTitle, withChips } from "./task-words.js";
 
@@ -583,10 +583,9 @@ function SinceLine({ project, reply, sent }) {
     </div>`;
 }
 
-// The top row's ⋯: the project overview, sessions and files.
 // The project's one shell in its main checkout, the one the TUI's `S` opens: the live one,
-// else a new one (docs/web-client-tasks.md "Project screen").
-function ProjectShell({ project }) {
+// else a new one (docs/web-client-tasks.md "Project screen"). `null` when the site gives no terminal.
+function useShell(project) {
   const [busy, setBusy] = useState(false);
   if (!shows("terminal") || !can("session_start") || !can("terminal_input")) return null;
   const open = async () => {
@@ -599,17 +598,32 @@ function ProjectShell({ project }) {
     }
     setBusy(false);
   };
-  return html`<button class="icon-button project-shell" type="button" disabled=${busy} onClick=${open}
+  return { busy, open };
+}
+
+function ProjectShell({ project }) {
+  const shell = useShell(project);
+  return shell && html`<button class="icon-button project-shell" type="button" disabled=${shell.busy} onClick=${shell.open}
     aria-label="Shell" title="Shell"><${Icon} name="terminal" /></button>`;
 }
 
-function More({ project, manager, onSaved }) {
+// The top row's ⋯: the project's sessions, usage, media and files. On a phone it also holds the header's
+// tools (find, overview, panels, shell), so the top row is back, the name and ⋯ (the Screens board).
+function More({ project, manager, onSaved, onFind }) {
+  const phone = !useWide();
+  const panels = usePanelsLink(project.id);
+  const shell = useShell(project);
   const files = shows("files") && can("files_read");
   const [editing, setEditing] = useState(false);
   // ^ The first chat's Purpose, once its folder exists (the page reads `goal` only then).
   const purpose = typeof manager?.goal === "string" && can("task_act");
   return html`
     <${MoreMenu}>
+      ${phone && html`
+        <button type="button" role="menuitem" onClick=${onFind}>Find in chat</button>
+        <a role="menuitem" href=${sheetHash(project.id, "page")}>Overview</a>
+        ${panels && html`<a role="menuitem" href=${panels}>Panels</a>`}
+        ${shell && html`<button type="button" role="menuitem" disabled=${shell.busy} onClick=${shell.open}>Shell</button>`}`}
       ${purpose && html`<${PurposeItem} goal=${manager.goal} onClick=${() => setEditing(true)} />`}
       <a role="menuitem" href=${`#/p/${project.id}/sessions`}>Sessions</a>
       <a role="menuitem" href=${sheetHash(project.id, "usage")}>Usage</a>
@@ -623,7 +637,8 @@ function More({ project, manager, onSaved }) {
 // (the name Home and the room show; its id, its links and `say --to` stay) and closes it
 // (docs/tasks.md "Chats", `chats::close`), after one confirm, and the page goes to Home, where its
 // row is gone. The first chat has Purpose in the project's menu (`More`).
-function ChatMore({ project, chat, shown, goal, onRenamed }) {
+function ChatMore({ project, chat, shown, goal, onRenamed, onFind }) {
+  const phone = !useWide();
   const [editing, setEditing] = useState("");
   const close = async () => {
     const sure = await confirmDialog({ title: `Close ${shown}?`, text: "Its log and notes stay; New chat with the same name opens it again.", confirm: "Close chat" });
@@ -637,6 +652,7 @@ function ChatMore({ project, chat, shown, goal, onRenamed }) {
   };
   return html`
     <${MoreMenu}>
+      ${phone && html`<button type="button" role="menuitem" onClick=${onFind}>Find in chat</button>`}
       <${PurposeItem} goal=${goal} onClick=${() => setEditing("goal")} />
       <button type="button" role="menuitem" onClick=${() => setEditing("title")}>Rename chat</button>
       <button type="button" role="menuitem" onClick=${close}>Close chat</button>
@@ -1006,6 +1022,8 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
   const firstNew = since == null ? null : rows.find((row) => row.kind === "message" && row.author !== "owner" && !row.pending && row.at > since);
   const [recent, earlier] = useRecent(place, rows, firstNew, { all: finding || around != null, away });
   const find = () => setFinding(!finding);
+  // ^ A phone keeps back, the name and ⋯ in the top row; ⋯ holds the other tools (the Screens board).
+  const wide = useWide();
   // ^ A question's label: its reply is among the rows and shows marked, else the chat reads
   // around it as a quote jump does (`jump`, a log without it says so in a toast).
   // A line inside a closed fold opens it (`wanted`, read by `Fold`).
@@ -1057,12 +1075,15 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
           : managerWord}</span>`}
       </div>
       <div class="bar-tools">
-        <${FindButton} open=${finding} onClick=${find} />
+        ${wide && html`<${FindButton} open=${finding} onClick=${find} />`}
         ${!room && html`
-          <a class="icon-button" href=${sheetHash(id, "page")} aria-label="Overview" title="Overview"><${Icon} name="overview" /></a>
-          <${PanelsButton} project=${id} />
-          <${ProjectShell} project=${project} /><${More} project=${project} manager=${chat?.manager} onSaved=${reread} />`}
-        ${room && can("task_act") && html`<${ChatMore} project=${id} chat=${room} shown=${chat?.manager.name ?? room} goal=${chat?.manager.goal ?? ""} onRenamed=${reread} />`}
+          ${wide && html`
+            <a class="icon-button" href=${sheetHash(id, "page")} aria-label="Overview" title="Overview"><${Icon} name="overview" /></a>
+            <${PanelsButton} project=${id} />
+            <${ProjectShell} project=${project} />`}
+          <${More} project=${project} manager=${chat?.manager} onSaved=${reread} onFind=${find} />`}
+        ${room && can("task_act") && html`<${ChatMore} project=${id} chat=${room} shown=${chat?.manager.name ?? room} goal=${chat?.manager.goal ?? ""} onRenamed=${reread} onFind=${find} />`}
+        ${room && !can("task_act") && !wide && html`<${FindButton} open=${finding} onClick=${find} />`}
       </div>
     </header>`;
   // ^ The header sits at the bottom, above the composer, when this device chose it (settings.js).

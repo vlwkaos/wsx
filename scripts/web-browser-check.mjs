@@ -175,12 +175,12 @@ if (mode === "restart") {
   process.exit(0);
 }
 
-// The project screen's shell icon (docs/web-client-tasks.md "Project screen"): it opens the
-// project's shell in the terminal, and again the same session.
+// The project screen's shell (docs/web-client-tasks.md "Project screen"): an icon on a wide window, an item of ⋯
+// on a phone; it opens the project's shell in the terminal, and again the same session.
 //   shell <site-url> <code> <capture-dir> <slop-audit.js or ""> <project-id>
 if (mode === "shell") {
   const project = Number(rest[2]);
-  const button = ".bar-tools .project-shell";
+  const button = ".bar-tools :is(.project-shell, .more-button)";
   await resize(SIZES[1]);
   await pairForm(siteUrl, code);
   const opened = [];
@@ -188,15 +188,15 @@ if (mode === "shell") {
     await resize(next);
     await go(`#/p/${project}`);
     await until(`!!document.querySelector(${JSON.stringify(button)})`, `the project screen has no shell button at ${size[0]} px`);
-    const words = await evaluate(`document.querySelector(${JSON.stringify(button)}).textContent.trim()`);
-    if (words) await fail(`the shell button shows words: ${words}`);
+    const wide = await evaluate("!!document.querySelector('.bar-tools .project-shell')");
     await capture(`project-shell-header-${size[0]}`);
     await evaluate(`document.querySelector(${JSON.stringify(button)}).click()`);
+    if (!wide) await evaluate("[...document.querySelectorAll('.more-menu [role=menuitem]')].find((item) => item.textContent === 'Shell').click()");
     await until("/^#\\/s\\/\\d+\\/terminal$/.test(location.hash) && !!document.querySelector('.terminal-host')", `the shell button did not open a terminal at ${size[0]} px`);
     opened.push(Number(await evaluate("location.hash.split('/')[2]")));
   }
   if (opened[0] !== opened[1]) await fail(`the shell button opened sessions ${opened.join(" and ")}`);
-  console.log(`project shell button: an icon that opens session ${opened[0]} in the terminal at 390 and 1280 px, the same both times`);
+  console.log(`project shell: the ⋯ item at 390 px and the icon at 1280 px; it opens session ${opened[0]} in the terminal, the same both times`);
   await cleanup();
   process.exit(0);
 }
