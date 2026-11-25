@@ -476,6 +476,10 @@ def arm_desk(case, arm_dir, args, evidence, arm='desk'):
     minutes = (time.monotonic() - started) / 60
     open_tasks = [t for t in task_items(wsx_json(wsx, env, arm_dir, 'task', 'list'))
                   if t.get('state') not in DONE_TASK]
+    for task in open_tasks:
+        # ^ What each open task waits on, for the row's reading: its status sentence and `waiting`.
+        shown = run([wsx, 'task', 'show', str(task['id']), '--json'], cwd=arm_dir, env=env, check=False)
+        (evidence / ('task-%s.json' % task['id'])).write_text(shown.stdout + shown.stderr)
     row = {'minutes': round(minutes, 2), 'timed_out': outcome == 'limit', 'finished': outcome == 'done',
            'outcome': outcome, 'open_tasks': len(open_tasks), 'owner_turns': goes}
     chat = wsx_json(wsx, env, arm_dir, 'chat', 'read')
@@ -687,6 +691,10 @@ def main():
     work = WORK_ROOT / run_id
     results = out / 'results.jsonl'
     signal.signal(signal.SIGTERM, on_signal)
+    if sys.platform == 'darwin':
+        # ^ A sleeping Mac stops every agent and time.monotonic(): a review of a few minutes took 36.
+        # caffeinate ends with this process (-w).
+        subprocess.Popen(['caffeinate', '-i', '-s', '-w', str(os.getpid())])
     rows = []
     try:
         if not args.no_build:
