@@ -92,7 +92,7 @@ function Push() {
 const Segmented = ({ name, label, value, items, onChange }) => html`
   <div class="segmented" role="radiogroup" aria-label=${label}>
     ${items.map(([item, label]) => html`
-      <label class="segment" key=${item}>
+      <label class="button button-quiet segment" key=${item}>
         <input type="radio" name=${name} value=${item} checked=${value === item} onChange=${() => onChange(item)} />${label}</label>`)}
   </div>`;
 
@@ -246,7 +246,7 @@ export function Settings({ sub }) {
       <nav class="subtabs" aria-label="Settings sections">
         ${subs.map(([name, label]) => {
           const href = name === "general" ? "#/settings" : `#/settings/${name}`;
-          return html`<a key=${name} href=${href} aria-current=${current === name ? "page" : null} onClick=${(event) => replaceRoute(event, href)}>${label}</a>`;
+          return html`<a class="button button-quiet" key=${name} href=${href} aria-current=${current === name ? "page" : null} onClick=${(event) => replaceRoute(event, href)}>${label}</a>`;
         })}
       </nav>
       <div class="scroll settings">

@@ -19,7 +19,7 @@ theme = "/abs/path/to/my-theme"   # a theme directory, or the path of a theme .t
 | Type scale | `font-size-md` `font-size-sm` `font-size-label` `font-size-badge` (count badges) `font-size-title`, `font-size-field` (text fields on a touch device; keep it at 16px or more, or iOS zooms the page on focus) | length |
 | Type weight, leading, tracking | `font-weight-medium` `font-weight-strong`, `line-height` `line-height-prose`, `tracking-label` `tracking-title` | 100-900; 1-3; length, may be negative |
 | Spacing | `space-1` … `space-4` (4 px grid; `space-4` is the screen gutter and row inset) | length |
-| Sizes | `size-control` (touch target) `size-row` `size-bar` (top row, tab bar) `size-tab` (one bottom-bar tab's width) `size-badge` (count badge height) `size-key` (composer and list rows; a button's drawn height) `size-key-sm` (the small button: an action inside a row or a card) `size-rail` `size-prose` (longest text line) | length |
+| Sizes | `size-control` (touch target) `size-row` `size-bar` (top row, tab bar) `size-tab` (one bottom-bar tab's width) `size-badge` (count badge height) `size-key` (composer and list rows; a button's drawn height) `size-key-sm` (the small button: an action inside a row or a card) `size-icon-sm` (the icon in a small button) `size-rail` `size-prose` (longest text line) | length |
 | Radius, border | `radius-control` `radius-key` (a button and a key) `radius-key-sm` (the small button) `radius-sheet` `border-width` | length |
 | Motion | `motion-duration`, `motion-easing` | `ms` or `s`; `linear` `ease` `ease-in` `ease-out` `ease-in-out` |
 | Focus, opacity | `focus-width`, `opacity-disabled` | length; 0-1 |
@@ -61,7 +61,7 @@ Shared parts carry a stable class. Component CSS in a theme should style these c
 |---|---|
 | Layout | `.app` `.rail` (left column at 900 px and wider) `.tabbar` (bottom bar on a phone; current link: `[aria-current="page"]`) |
 | Screen | `.title` `.label` (section label) `.rows` `.row` (state mark: `.mark`; `[data-tone="accent|attention|danger"]` repeats a state word in color) |
-| Controls | `.button` `.button-primary` `.button-danger` `.link-action` `.icon-button` `.input` |
+| Controls | `.button` (secondary: raised fill) `.button-primary` (one filled accent control at most on a screen) `.button-quiet` (no fill; raised when it is the chosen one of a set: `aria-selected`, `aria-pressed`, `aria-current` or a checked radio inside) `.button-danger` `.button-sm` `.icon-button` (quiet and square) `[data-tone="accent\|danger"]` (the word's color) `.link-action` `.input`. A button is drawn `size-key` high (`size-key-sm` for `.button-sm`, with `space-key-sm` sides) with `radius-key` (`radius-key-sm`), inside a `size-control` hit box whose block margins give the difference back, so it takes its drawn height in a line. Set a button's fill with `background-color`: the `background` shorthand resets the clip, and the fill then covers the hit box. |
 | Session top row | `.bar` `.switch` (Chat or Terminal) |
 | Conversation | `.chat` `.log` `.message` `.steps` `.working` `.composer` `.queue` |
 | Files | `.code` `.crumbs` |

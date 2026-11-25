@@ -631,7 +631,7 @@ function Question({ session, question, onAnswered }) {
       <div class="question-keys">
         ${sent === question.stamp ? html`<span class="note" role="status">Sent</span>` : null}
         ${ANSWER_KEYS.map(([key, label, name]) => html`
-          <button key=${key} class="button question-keycap" type="button" aria-label=${name} disabled=${waiting} onClick=${() => answer(key)}>${label}</button>`)}
+          <button key=${key} class="button button-sm question-keycap" type="button" aria-label=${name} disabled=${waiting} onClick=${() => answer(key)}>${label}</button>`)}
         <button class="link-action" type="button" aria-expanded=${typing} onClick=${() => setTyping(!typing)}>Type an answer</button>
         ${openTerminal(session.id)}
       </div>

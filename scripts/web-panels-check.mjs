@@ -48,8 +48,8 @@ const stateRow = async (where, words) => {
   const row = await evaluate(`(() => { const text = document.querySelector('.panel-state-text'); const button = document.querySelector('.panel-state .panel-refresh');
     const range = document.createRange(); range.selectNodeContents(text); const words = [...range.getClientRects()]; const box = button.getBoundingClientRect(); const row = document.querySelector('.panel-state').getBoundingClientRect();
     return { text: text.textContent, button: button.textContent, gap: Math.round(box.left - Math.max(...words.map((rect) => rect.right))), height: Math.round(box.height), end: Math.round(row.right - box.right),
-      inRow: box.top >= row.top - 1 && box.bottom <= row.bottom + 1, muted: getComputedStyle(text).color !== getComputedStyle(button).color, wide: document.documentElement.scrollWidth > innerWidth }; })()`);
-  // ^ 44 px is --size-control, the touch target (docs/web-client.md "Screens").
+      inRow: box.top + parseFloat(getComputedStyle(button).borderTopWidth) >= row.top - 1 && box.bottom - parseFloat(getComputedStyle(button).borderBottomWidth) <= row.bottom + 1, muted: getComputedStyle(text).color !== getComputedStyle(button).color, wide: document.documentElement.scrollWidth > innerWidth }; })()`);
+  // ^ 44 px is --size-control, the touch target (docs/web-client.md "Screens"); the drawn button sits in the row, its hit box reaches past it (docs/web-themes.md).
   if (!words.test(row.text) || /·/.test(row.text) || !/^(Refresh|Running…)$/.test(row.button) || row.gap < 8 || row.height < 44 || row.end > 1 || !row.inRow || !row.muted || row.wide) {
     await fail(`the status row ${where}: ${JSON.stringify(row)}`);
   }

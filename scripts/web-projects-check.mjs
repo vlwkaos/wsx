@@ -21,8 +21,10 @@ const rowOf = (project) => `${listed}.find((row) => row.querySelector('.row-labe
 const open = (url, code) => pair(cdp, url, code, { ready: ".home-row" });
 // A swipe left: the browser's own scroll, as a finger moves it.
 const slide = (project) => evaluate(`(() => { const row = ${rowOf(project)}; row.scrollLeft = row.scrollWidth; })()`);
-const submit = (value) => evaluate(`(() => { const field = document.querySelector('dialog.sheet input[name=path]'); field.value = ${JSON.stringify(value)};
-  field.form.requestSubmit(); })()`);
+// ^ Typed as a person types: the sheet reads the folder for the text it is given.
+const type = (value) => evaluate(`(() => { const field = document.querySelector('dialog.add-project input[name=path]'); field.value = ${JSON.stringify(value)};
+  field.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+const addButton = "document.querySelector('dialog.add-project button[type=submit]')";
 
 await viewport(390, 844, 2);
 await open(viewerUrl, viewerCode);
@@ -48,7 +50,7 @@ if (all.box.width < 44 || all.box.height < 44) await fail(`the + is ${all.box.wi
 await linter.lint("home");
 await capture("390x844-home");
 
-// A refusal stays in the sheet; the sheet stays open with the field focused.
+// A folder that cannot be added keeps Add off and says why in the sheet; the sheet stays open.
 await evaluate("document.querySelector('[aria-label=\"New chat\"]').click()");
 await until("!!document.querySelector('dialog.sheet[open] select[name=project]')", "the + opened no New chat sheet");
 {
@@ -57,13 +59,17 @@ await until("!!document.querySelector('dialog.sheet[open] select[name=project]')
 }
 await capture("390x844-new-chat");
 await evaluate(`(() => { const field = document.querySelector('dialog.sheet[open] select[name=project]'); field.value = 'add'; field.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-await until("document.querySelector('dialog.sheet[open] input[name=path]') === document.activeElement", "the add sheet did not take the focus");
-await submit(`${repo}-missing`);
-await until("/does not exist/.test(document.querySelector('dialog.sheet .error')?.textContent ?? '')", "the sheet shows no refusal for a missing path");
-if (!(await evaluate("document.querySelector('dialog.sheet').open"))) await fail("a refusal closed the sheet");
+await until("document.querySelector('dialog.add-project[open] input[name=path]') === document.activeElement", "the add sheet did not take the focus");
+await type(`${repo}-missing`);
+await until("/Nothing matches/.test(document.querySelector('dialog.add-project .note')?.textContent ?? '')", "the sheet does not say a missing path matches nothing", 20);
+if (!(await evaluate(`${addButton}.disabled`))) await fail("Add is on for a missing path");
 await capture("390x844-add-refused");
-await submit(repo);
-await until("!document.querySelector('dialog.sheet[open]')", "the sheet stayed open after the add", 20);
+await type(repo);
+await until(`${addButton}.disabled === false && document.querySelector('dialog.add-project .folder-card')?.textContent.includes(${JSON.stringify(name)})`, "the sheet does not offer the repository", 20);
+await evaluate(`${addButton}.click()`);
+// ^ From New chat, the sheet goes back to New chat with the new project chosen; it is closed here.
+await until(`!document.querySelector('dialog.add-project') && document.querySelector('dialog.sheet[open] select[name=project] option:checked')?.textContent === ${JSON.stringify(name)}`, "New chat did not come back with the added project", 20);
+await evaluate("document.querySelector('dialog.sheet[open]').close()");
 // ^ An added project has no chat, so Home has no row for it until a chat is made (docs/tasks.md "Chats").
 if (await evaluate(`!!${homeRow(name)}`)) await fail("Home lists a project that has no chat");
 
@@ -113,10 +119,10 @@ await pause(300);
 if (!(await evaluate("!!document.querySelector('.rail [aria-label=\"New chat\"]')"))) await fail("the rail shows no + at 1280 px");
 await linter.lint("home");
 await capture("1280x800-home");
-// ^ The refusals are the point: 401 before pairing, 409 for the missing path.
-const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/status of 409 .*\/api\/projects$/.test(problem));
+// ^ The refusal is the point: 401 before pairing.
+const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`page problems: ${defects.join("; ")}`);
 await linter.finish(fail);
-console.log("projects page: the + opens New chat and its project list ends with Add project… only on the managing site, a refusal stays in the sheet, Remove asks first (Cancel keeps the row; halt sessions is a box, off by default) and takes effect, a project with an open task is removed too");
+console.log("projects page: the + opens New chat and its project list ends with Add project… only on the managing site, a folder that cannot be added keeps Add off and New chat comes back with the added one, Remove asks first (Cancel keeps the row; halt sessions is a box, off by default) and takes effect, a project with an open task is removed too");
 await cleanup();
 process.exit(0);

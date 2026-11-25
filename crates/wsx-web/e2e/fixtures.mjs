@@ -78,7 +78,7 @@ async function setUp(root, undo, stop) {
   fs.chmodSync(root, 0o700);
   fs.writeFileSync(path.join(config, "config-v2.toml"), "resume_agents_on_restore = false\n");
   fs.writeFileSync(path.join(project, "wsx.config.yml"),
-    "tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent:\n    model: fake-model\n  chats: { model: fake-lead }\n");
+    "tasks:\n  minFreeGb: 0\n  land: { auto: false, approve: true }\n  agent:\n    model: fake-model\n  chats: { model: fake-lead }\n");
   const fake = path.join(root, "bin/claude");
   fs.writeFileSync(fake, `#!/bin/sh\nexec python3 ${JSON.stringify(path.join(ROOT, "scripts/fake-claude-stream.py"))} "$@"\n`, { mode: 0o755 });
 
@@ -131,8 +131,9 @@ async function setUp(root, undo, stop) {
     origin = `http://127.0.0.1:${port}`;
     // ^ docs/web-client.md "Site file": owner-only, mode 600.
     fs.writeFileSync(site, [
-      'id = "e2e"', 'name = "wsx e2e"', `port = ${port}`, `public_origin = "${origin}"`, 'panels = ["chat"]', 'theme = "default"',
-      "[access]", `projects = [${JSON.stringify(project)}]`, 'capabilities = ["chat_send", "media_upload", "task_view", "task_act"]', "",
+      'id = "e2e"', 'name = "wsx e2e"', `port = ${port}`, `public_origin = "${origin}"`, 'panels = ["chat", "terminal"]', 'theme = "default"',
+      // ^ Every project and a terminal: the site manages projects (docs/web-client.md "Projects").
+      "[access]", 'projects = "all"', 'capabilities = ["chat_send", "media_upload", "task_view", "task_act", "terminal_view", "terminal_input"]', "",
     ].join("\n"), { mode: 0o600 });
     const server = spawn(path.join(BIN, "wsx"), ["web", "serve", "--site", site], { cwd: project, env, stdio: ["ignore", log, log] });
     undo.push(() => ended(server));
@@ -142,7 +143,7 @@ async function setUp(root, undo, stop) {
   }
 
   return {
-    root, project, origin, cli, json,
+    root, home: path.join(root, "home"), project, origin, cli, json, run,
     /** A one-time code that pairs one browser with the site. */
     pairCode: () => cli("web", "pair", "--site", site).split("\n")[0].trim().split(" ").at(-1),
     /** The owner says `text` to the lead; resolves with the lead's reply entry. */

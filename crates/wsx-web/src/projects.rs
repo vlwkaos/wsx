@@ -9,7 +9,7 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::sync::Mutex;
-use wsx_core::{config::global::GlobalConfig, ops};
+use wsx_core::{config::global::GlobalConfig, ops, project_search};
 
 /// Load, change and save of the config run one at a time: two calls would lose one change.
 static CONFIG: Mutex<()> = Mutex::new(());
@@ -33,6 +33,85 @@ fn save_and_sync(app: &App, config: &GlobalConfig) -> Outcome<()> {
     ops::synchronize_discovery(&app.client, &discovery)
         .map_err(|error| Fault::new(503, "daemon_unavailable", format!("{error:#}")))?;
     Ok(())
+}
+
+/// The repositories the background scan found under home (`project_search::scan_git_repos`),
+/// kept for this server's life and scanned again when older than `RESCAN`.
+struct Scan {
+    repos: Vec<String>,
+    done: bool,
+    started: std::time::Instant,
+}
+static SCAN: Mutex<Option<Scan>> = Mutex::new(None);
+const RESCAN: std::time::Duration = std::time::Duration::from_secs(600);
+/// At most this many rows; the rest is a count ("12 more").
+const SHOWN: usize = 40;
+
+/// The scanned repositories so far, and whether the scan still runs. The first call starts it.
+fn scanned() -> (Vec<String>, bool) {
+    let mut scan = crate::locked(&SCAN);
+    let stale = scan
+        .as_ref()
+        .is_none_or(|scan| scan.done && scan.started.elapsed() > RESCAN);
+    if stale {
+        // ^ A rescan keeps listing the last scan's repositories until it has them all; the first
+        // scan lists them as they come.
+        let first = scan.is_none();
+        let last = scan.take().map(|scan| scan.repos).unwrap_or_default();
+        *scan = Some(Scan {
+            repos: last,
+            done: false,
+            started: std::time::Instant::now(),
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || project_search::scan_git_repos(tx));
+        std::thread::spawn(move || {
+            let mut found = Vec::new();
+            for repo in rx {
+                if first {
+                    if let Some(scan) = crate::locked(&SCAN).as_mut() {
+                        scan.repos.push(repo.clone());
+                    }
+                }
+                found.push(repo);
+            }
+            if let Some(scan) = crate::locked(&SCAN).as_mut() {
+                scan.repos = found;
+                scan.done = true;
+            }
+        });
+    }
+    let scan = scan.as_ref().expect("set above");
+    (scan.repos.clone(), !scan.done)
+}
+
+/// What the Add project sheet lists for `query` (the TUI's `p` list, `project_search::suggestions`):
+/// each row's path, name, whether it is a git repository and the project that already has it;
+/// and, when the text names a folder, what that folder is.
+pub fn suggest(app: &App, query: &str) -> Outcome<Value> {
+    gate(app)?;
+    let config = config_or_fault()?;
+    let (repos, scanning) = scanned();
+    let all = project_search::suggestions(query.trim_start(), &repos);
+    let rows: Vec<Value> = all
+        .iter()
+        .take(SHOWN)
+        .map(|shown| {
+            let path = project_search::expand(shown);
+            json!({
+                "path": shown,
+                "name": path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
+                "git": path.join(".git").exists(),
+                "added": project_search::added(&config, &path),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "rows": rows,
+        "more": all.len().saturating_sub(SHOWN),
+        "scanning": scanning,
+        "folder": project_search::folder(query, &config),
+    }))
 }
 
 pub fn add(app: &App, path: &str) -> Outcome<Value> {

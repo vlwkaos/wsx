@@ -1,12 +1,11 @@
-// Input box with cursor movement, unicode support, and path/project completion.
-
-use std::path::{Path, PathBuf};
+// Input box with cursor movement, unicode support, and project completion (wsx_core::project_search).
 
 use crate::ui::{popup_block, popup_upper, theme};
 use ratatui::{
     prelude::*,
     widgets::{Clear, Paragraph},
 };
+use wsx_core::project_search::suggestions;
 
 pub struct InputState {
     pub buffer: String,
@@ -15,7 +14,6 @@ pub struct InputState {
     pub completions: Vec<String>,
     pub completion_idx: Option<usize>,
     typed: String, // last text the user typed (before completion navigation)
-    path_mode: bool,
     project_search: bool,
     // Snapshot of the app's repo cache at modal open. Stays static for the
     // lifetime of the modal; the App owns the live scanner and refreshes
@@ -25,7 +23,7 @@ pub struct InputState {
 
 impl InputState {
     pub fn new(prompt: impl Into<String>) -> Self {
-        Self::make(prompt.into(), String::new(), false)
+        Self::make(prompt.into(), String::new())
     }
 
     /// Open with a pre-populated snapshot from the app's repo cache. The
@@ -33,18 +31,18 @@ impl InputState {
     /// captured at open time. Type a path with `/` or `~` to bypass the
     /// cache entirely and use live filesystem completion.
     pub fn new_project_search(prompt: impl Into<String>, cached_repos: Vec<String>) -> Self {
-        let mut s = Self::make(prompt.into(), String::new(), false);
+        let mut s = Self::make(prompt.into(), String::new());
         s.project_search = true;
-        s.completions = project_search_completions("", &cached_repos);
+        s.completions = suggestions("", &cached_repos);
         s.scan_dirs = cached_repos;
         s
     }
 
     pub fn with_value(prompt: impl Into<String>, value: String) -> Self {
-        Self::make(prompt.into(), value, false)
+        Self::make(prompt.into(), value)
     }
 
-    fn make(prompt: String, value: String, path_mode: bool) -> Self {
+    fn make(prompt: String, value: String) -> Self {
         let cursor = value.len();
         Self {
             buffer: value.clone(),
@@ -53,7 +51,6 @@ impl InputState {
             completions: vec![],
             completion_idx: None,
             typed: value,
-            path_mode,
             project_search: false,
             scan_dirs: vec![],
         }
@@ -65,9 +62,7 @@ impl InputState {
         self.typed = self.buffer.clone();
         self.completion_idx = None;
         if self.project_search {
-            self.completions = project_search_completions(&self.buffer, &self.scan_dirs);
-        } else if self.path_mode {
-            self.completions = path_completions(&self.buffer);
+            self.completions = suggestions(&self.buffer, &self.scan_dirs);
         }
     }
 
@@ -83,9 +78,7 @@ impl InputState {
             self.typed = self.buffer.clone();
             self.completion_idx = None;
             if self.project_search {
-                self.completions = project_completions(&self.buffer, &self.scan_dirs);
-            } else if self.path_mode {
-                self.completions = path_completions(&self.buffer);
+                self.completions = suggestions(&self.buffer, &self.scan_dirs);
             }
         }
     }
@@ -146,143 +139,6 @@ impl InputState {
     pub fn display_cursor(&self) -> usize {
         self.buffer[..self.cursor].chars().count()
     }
-}
-
-// ── Completion logic ──────────────────────────────────────────────────────────
-
-/// Subsequence fuzzy match. Returns score if all query chars appear in order
-/// in target (case-insensitive). Higher score = better match.
-fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
-    if query.is_empty() {
-        return Some(0);
-    }
-    let q: Vec<char> = query.chars().map(|c| c.to_ascii_lowercase()).collect();
-    let t: Vec<char> = target.chars().map(|c| c.to_ascii_lowercase()).collect();
-    let mut qi = 0;
-    let mut score = 0i32;
-    let mut consecutive = 0i32;
-    for (ti, &tc) in t.iter().enumerate() {
-        if qi < q.len() && tc == q[qi] {
-            consecutive += 1;
-            score += 1 + consecutive; // base + consecutive bonus
-            if ti == 0 {
-                score += 4;
-            } // prefix match bonus
-            qi += 1;
-        } else {
-            consecutive = 0;
-        }
-    }
-    if qi == q.len() {
-        Some(score)
-    } else {
-        None
-    }
-}
-
-/// Path-like input (contains `/` or starts with `~`) gets filesystem
-/// completion — the background scanner can miss repos outside `~`, below
-/// `MAX_SCAN_DEPTH`, or under `SKIP_DIRS`. Bare names stay on fuzzy match
-/// against the cached scan. `register_project` validates "is a git repo"
-/// on submit, so filesystem suggestions can include any directory.
-fn project_search_completions(query: &str, dirs: &[String]) -> Vec<String> {
-    if query.contains('/') || query.starts_with('~') {
-        path_completions(query)
-    } else {
-        project_completions(query, dirs)
-    }
-}
-
-fn project_completions(query: &str, dirs: &[String]) -> Vec<String> {
-    if query.is_empty() {
-        let mut refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
-        refs.sort_unstable();
-        return refs.iter().map(|s| s.to_string()).collect();
-    }
-    let mut scored: Vec<(i32, &str)> = dirs
-        .iter()
-        .filter_map(|d| {
-            let rel = d.strip_prefix("~/").unwrap_or(d);
-            let rel = rel.strip_suffix('/').unwrap_or(rel);
-            fuzzy_score(query, rel).map(|s| (s, d.as_str()))
-        })
-        .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
-    scored.into_iter().map(|(_, d)| d.to_string()).collect()
-}
-
-fn path_completions(input: &str) -> Vec<String> {
-    let (expanded, tilde) = expand_input(input);
-
-    let (parent, prefix) = if input.ends_with('/') {
-        (expanded.clone(), String::new())
-    } else {
-        let p = expanded
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| expanded.clone());
-        let pfx = expanded
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        (p, pfx)
-    };
-
-    let Ok(rd) = std::fs::read_dir(&parent) else {
-        return vec![];
-    };
-
-    let mut scored: Vec<(i32, String)> = rd
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') && !prefix.starts_with('.') {
-                return None;
-            }
-            let score = fuzzy_score(&prefix, &name)?;
-            Some((score, display_path(&parent.join(&name), tilde)))
-        })
-        .collect();
-
-    if prefix.is_empty() {
-        scored.sort_by(|a, b| a.1.cmp(&b.1));
-    } else {
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    }
-
-    scored.into_iter().map(|(_, path)| path).collect()
-}
-
-fn expand_input(input: &str) -> (PathBuf, bool) {
-    if let Some(home) = dirs::home_dir() {
-        if let Some(stripped) = input.strip_prefix("~/") {
-            return (home.join(stripped), true);
-        }
-        if input == "~" {
-            return (home, true);
-        }
-    }
-    (
-        PathBuf::from(if input.is_empty() { "." } else { input }),
-        false,
-    )
-}
-
-fn display_path(path: &Path, prefer_tilde: bool) -> String {
-    if prefer_tilde {
-        if let Some(home) = dirs::home_dir() {
-            if let Ok(rel) = path.strip_prefix(&home) {
-                let rel_str = rel.to_string_lossy();
-                return if rel_str.is_empty() {
-                    "~/".to_string()
-                } else {
-                    format!("~/{}/", rel_str)
-                };
-            }
-        }
-    }
-    format!("{}/", path.to_string_lossy())
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────────

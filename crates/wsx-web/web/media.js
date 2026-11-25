@@ -71,7 +71,7 @@ function MediaView({ project }) {
   return html`
     <div class="media-filters">
       <div class="media-kinds" role="group" aria-label="Kind">
-        ${KINDS.map(([value, name]) => html`<button key=${value} type="button" class="media-chip" aria-pressed=${filter.kind === value} onClick=${() => setFilter({ ...filter, kind: value })}>${name}</button>`)}
+        ${KINDS.map(([value, name]) => html`<button key=${value} type="button" class="button button-quiet media-chip" aria-pressed=${filter.kind === value} onClick=${() => setFilter({ ...filter, kind: value })}>${name}</button>`)}
       </div>
       ${tasks.length > 0 && html`
         <label class="media-task"><span class="visually-hidden">Task</span>

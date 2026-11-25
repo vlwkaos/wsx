@@ -311,7 +311,7 @@ async function viewImages(name, links, many = 2, saves = false) {
   await shot(`viewer-${name}`);
   // ^ Touch: the bar is under the stage at the screen's bottom and the link is Share; wide: the bar is on top and it is Download.
   const readBar = () => evaluate(`(() => { const node = document.querySelector('.viewer-bar'); const bar = node.getBoundingClientRect(); const stage = document.querySelector('.viewer-stage').getBoundingClientRect();
-    const link = node.querySelector('a[download]'); return { top: Math.round(bar.top), bottom: Math.round(bar.bottom), stageTop: Math.round(stage.top), stageBottom: Math.round(stage.bottom), height: innerHeight, buttonsEnd: Math.round(Math.max(...[...node.children].map((child) => child.getBoundingClientRect().bottom))),
+    const link = node.querySelector('a[download]'); return { top: Math.round(bar.top), bottom: Math.round(bar.bottom), stageTop: Math.round(stage.top), stageBottom: Math.round(stage.bottom), height: innerHeight, buttonsEnd: Math.round(Math.max(...[...node.children].map((child) => child.getBoundingClientRect().bottom - parseFloat(getComputedStyle(child).borderBottomWidth)))),
       download: link?.getAttribute('href') ?? null, label: link?.getAttribute('aria-label') ?? null, title: link?.title ?? null, icon: link?.querySelector('path')?.getAttribute('d')?.startsWith('M10 12.5V3.5') ?? false }; })()`);
   const bar = await readBar();
   if (saves !== (bar.download !== null)) await fail(`${what}: the viewer ${saves ? "has no" : "has a"} download control`);
@@ -1119,11 +1119,11 @@ await click(".pill[data-kind=tasks]");
 await until("!!document.querySelector('.reservoir-list[aria-label=Tasks]')", "a tap on Tasks did not switch back");
 await click(".pill[data-kind=you]");
 await until("!!document.querySelector('.reservoir-list[aria-label=\"For you\"]') && !document.querySelector('.reservoir-list[aria-label=Tasks]')", "a tap on For you did not switch the list");
-// ^ A row's actions are in a line of their own under its words on a phone, beside them on a wide window (owner 5622).
-const checkRoom = await evaluate(`(() => { const wide = document.querySelector('.app').hasAttribute('data-wide');
-  return [...document.querySelectorAll('.reservoir-list .need')].filter((row) => row.querySelector('.row-actions')).map((row) => { const [main, actions] = [row.querySelector('.row-main'), row.querySelector('.row-actions')].map((node) => node.getBoundingClientRect());
-    return wide ? actions.top < main.bottom : main.bottom <= actions.top + 1; }); })()`);
-if (!checkRoom.length || checkRoom.includes(false)) await fail(`a row's actions are not under its text on a phone, or beside it on a wide window: ${JSON.stringify(checkRoom)}`);
+// ^ A row's actions are icons beside its words on every width (owner 2026-11-25; buttons.spec.mjs measures the sizes).
+const checkRoom = await evaluate(`[...document.querySelectorAll('.reservoir-list .need')].filter((row) => row.querySelector('.row-actions')).map((row) => {
+  const [main, actions] = [row.querySelector('.row-main'), row.querySelector('.row-actions')].map((node) => node.getBoundingClientRect());
+  return actions.top < main.bottom && actions.left >= main.right; })`);
+if (!checkRoom.length || checkRoom.includes(false)) await fail(`a row's actions are not beside its text: ${JSON.stringify(checkRoom)}`);
 await shot("pills-check-open", ".composer-send");
 await click(".pill[data-kind=you]");
 await until("!document.querySelector('.reservoir')", "a tap on the open pill did not close its list");
@@ -1678,7 +1678,7 @@ phase("The Overview button in the chat header (icon only), and Sett");
     const low = await place();
     if (low.bar[0] < low.log || low.bar[1] > low.composer + 1 || low.composer - low.bar[1] > 2) await fail(`the chat's bar is not just above the composer (${wide ? "wide" : "phone"}): ${JSON.stringify(low)}`);
     await click(".more-button");
-    const opens = await evaluate("(() => { const menu = document.querySelector('.more-menu').getBoundingClientRect(), button = document.querySelector('.more-button').getBoundingClientRect(); return menu.bottom <= button.top + 1 && menu.top >= 0; })()");
+    const opens = await evaluate("(() => { const menu = document.querySelector('.more-menu').getBoundingClientRect(), more = document.querySelector('.more-button'), button = more.getBoundingClientRect(); return menu.bottom <= button.top + parseFloat(getComputedStyle(more).borderTopWidth) + 1 && menu.top >= 0; })()");
     if (!opens) await fail("the ⋯ menu does not open upward from the bottom bar");
     await click(".more-button");
     await shot(wide ? "header-bottom-wide" : "header-bottom");

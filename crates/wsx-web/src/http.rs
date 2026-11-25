@@ -70,6 +70,7 @@ pub fn router(app: Shared) -> Router {
             .route("/api/sessions", post(session_start))
             .route("/api/sessions/{session}", delete(session_remove))
             .route("/api/projects", post(project_add))
+            .route("/api/projects/suggest", get(project_suggest))
             .route("/api/projects/{project}", delete(project_remove))
             .route("/api/projects/{project}/shell", post(project_shell))
             .route(
@@ -906,6 +907,22 @@ async fn session_start(
 #[serde(deny_unknown_fields)]
 struct ProjectInput {
     path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SuggestQuery {
+    #[serde(default)]
+    q: String,
+}
+
+/// The Add project sheet's list for what the owner typed (docs/web-client.md "Projects").
+async fn project_suggest(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    Query(query): Query<SuggestQuery>,
+) -> Outcome<Json<Value>> {
+    blocking(|| crate::projects::suggest(&app, &query.q).map(Json))
 }
 
 /// Registers a git repository of the host as `p` does in the TUI (docs/web-client.md "Projects").

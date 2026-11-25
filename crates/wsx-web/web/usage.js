@@ -217,7 +217,7 @@ function UsageView({ url, all = false }) {
       <${AgentSelect} agents=${usage.agents ?? []} value=${filters.agent} onChange=${(agent) => choose({ agent })} />
     </div>
     <div class="usage-view" role="tablist" aria-label="Usage sections">
-      ${tabs.map(([name, title]) => html`<button key=${name} type="button" role="tab" id=${`usage-tab-${name}`} aria-selected=${tab === name} aria-controls="usage-panel" onClick=${() => setTab(name)}>${title}</button>`)}
+      ${tabs.map(([name, title]) => html`<button class="button button-quiet" key=${name} type="button" role="tab" id=${`usage-tab-${name}`} aria-selected=${tab === name} aria-controls="usage-panel" onClick=${() => setTab(name)}>${title}</button>`)}
     </div>
     <div id="usage-panel" role="tabpanel" aria-labelledby=${`usage-tab-${tab}`}>
       ${chart ? html`<${DayRows} key=${chart.name} days=${usage.days ?? []} chart=${chart} label=${label}/>` : html`<${ProjectRows} projects=${usage.projects ?? []} label=${label} />`}

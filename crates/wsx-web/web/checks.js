@@ -100,11 +100,11 @@ export function CheckRow({ project, item: listed, revision, onChanged, onReply, 
         </div>
         ${acting && html`
           <span class="check-acts">
-            ${onReply && html`<button class="icon-button check-act" type="button" disabled=${busy} title="Reply"
+            ${onReply && html`<button class="icon-button button-sm check-act" type="button" disabled=${busy} title="Reply"
               aria-label=${`Reply: ${item.check}`} onClick=${reply}><${Icon} name="reply" /></button>`}
-            <button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy} title="Fail"
+            <button class="icon-button button-sm check-act" type="button" data-tone="danger" disabled=${busy} title="Fail"
               aria-label=${`Fail: ${item.check}`} onClick=${() => decide("fail")}><${Icon} name="fail" /></button>
-            <button class="icon-button check-act" type="button" data-tone="accent" disabled=${busy} title="Pass"
+            <button class="icon-button button-sm check-act" type="button" data-tone="accent" disabled=${busy} title="Pass"
               aria-label=${`Pass: ${item.check}`} onClick=${() => decide("pass")}><${Icon} name="pass" /></button>
           </span>`}
       </div>

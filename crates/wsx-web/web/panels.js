@@ -192,7 +192,7 @@ export function PanelsPage({ project, onClose, grip }) {
       ${!panels.length ? html`<p class="empty">No panels</p>`
         : html`
           ${panels.length > 1 && html`<div class="panel-tabs" role="tablist" aria-label="Panels">
-            ${panels.map((panel) => html`<button type="button" role="tab" key=${panel.name} aria-selected=${shown === panel.name} onClick=${() => setOpen(panel.name)}>${panel.name}</button>`)}
+            ${panels.map((panel) => html`<button class="button button-quiet" type="button" role="tab" key=${panel.name} aria-selected=${shown === panel.name} onClick=${() => setOpen(panel.name)}>${panel.name}</button>`)}
           </div>`}
           ${shown && html`<${Panel} key=${shown} base=${projectPanels(project)} name=${shown} project=${project} />`}`}
     </${SheetPage}>`;

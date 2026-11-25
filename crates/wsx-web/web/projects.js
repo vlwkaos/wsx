@@ -7,6 +7,7 @@ import { NewSession, SessionRow } from "./inbox.js";
 import { Back } from "./ui.js";
 import { slide } from "./swipe.js";
 import { PanelsButton } from "./panels.js";
+import { Suggestions, useListKeys } from "./chat.js";
 
 const counted = (count) => plural(count, "session");
 // How many task items wait for the owner in a project, after its session count.
@@ -17,24 +18,54 @@ const waiting = (store, project) => {
 const filesLink = (project) => shows("files") && can("files_read") && html`
   <a class="link-action" href=${`#/p/${project.id}/files`} aria-label=${`Files of ${project.name}`}>Files</a>`;
 
-// ^ A sheet with one path field registers a git repository of the host, as the TUI's `p` does
-// (docs/web-client.md "Projects"). The server's refusal stays in the sheet; the row comes with
-// the next workspace event.
-export function AddProject({ onClose }) {
+// ^ Add project (docs/web-client.md "Projects"): one field that lists what the TUI's `p` lists, in the
+// composer's list (`Suggestions`): the git repositories wsx found under the host's home, newest
+// first, or, once the text starts with / or ~, the folders of that path. Tab, Enter or a tap puts
+// a row in the field and lists its folders. When the field names a folder, a line under it says
+// what it is and where it will show, or why Add is off. The server's refusal stays in the sheet;
+// the row comes with the next workspace event. `onAdded(name)` hears of the new project.
+export function AddProject({ onClose, onAdded }) {
   const dialog = useRef();
   const field = useRef();
+  const [text, setText] = useState("");
+  // ^ `q` is the text the answer is for: a folder named by an older text is never added.
+  const [found, setFound] = useState({ rows: [], more: 0, scanning: true, folder: null, q: null });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const { active, setActive, shut, keys } = useListKeys(text);
   useEffect(() => {
     dialog.current.showModal();
     field.current.focus();
   }, []);
+  // ^ Read on each change of the text, the newest answer wins; while the scan runs, again each second.
+  useEffect(() => {
+    let live = true;
+    const read = (first) => api(`api/projects/suggest?q=${encodeURIComponent(text)}`).then((answer) => {
+      if (!live) return;
+      setFound({ ...answer, q: text });
+      setError("");
+      if (first) setActive(0);
+      if (answer.scanning && !text) timer = setTimeout(read, 1000, false);
+    }, (failure) => { if (live) setError(failure.message); });
+    let timer = setTimeout(read, text ? 120 : 0, true);
+    return () => { live = false; clearTimeout(timer); };
+  }, [text]);
+  const options = found.rows.map((row) => ({ key: row.path, name: row.name, description: row.path,
+    source: row.added ? "added" : row.git ? "git" : "folder", tone: row.added ? "faint" : null, row }));
+  const pick = (option) => {
+    setText(option.row.path);
+    field.current.focus();
+  };
+  const folder = found.q === text ? found.folder : null;
+  const ready = folder?.git && !folder.added;
   const submit = async (event) => {
     event.preventDefault();
+    if (!ready) return;
     setBusy(true);
     setError("");
     try {
-      await api("api/projects", { method: "POST", json: { path: field.current.value } });
+      const answer = await api("api/projects", { method: "POST", json: { path: folder.path } });
+      onAdded?.(answer.added);
       dialog.current.close();
     } catch (failure) {
       setError(failure.message);
@@ -42,18 +73,35 @@ export function AddProject({ onClose }) {
       field.current.focus();
     }
   };
+  // ^ Enter adds a folder that is ready; otherwise it picks the active row, as Tab does.
+  const listed = !shut && options.length > 0;
+  const facts = folder && [folder.git ? "git" : "folder", folder.branch, folder.git && plural(folder.worktrees, "worktree")].filter(Boolean).join(" · ");
   return html`
-    <dialog class="sheet" ref=${dialog} aria-labelledby="add-project-title" onClose=${onClose}>
+    <dialog class="sheet add-project" ref=${dialog} aria-labelledby="add-project-title" onClose=${onClose}>
       <form onSubmit=${submit}>
         <h2 class="sheet-title" id="add-project-title">Add project</h2>
-        <label class="field">Path of a git repository
-          <input class="input" type="text" name="path" ref=${field} placeholder="~/code/app" required autocomplete="off"
-            autocapitalize="none" autocorrect="off" spellcheck=${false} enterkeyhint="go" />
+        <label class="field">Name or path
+          <input class="input" type="text" name="path" ref=${field} value=${text} placeholder="Name or ~/path" autocomplete="off"
+            role="combobox" aria-expanded=${listed} aria-controls="slash-list" aria-activedescendant=${listed ? `slash-${active}` : null}
+            autocapitalize="none" autocorrect="off" spellcheck=${false} enterkeyhint="go"
+            onInput=${(event) => setText(event.target.value)}
+            onKeyDown=${(event) => { if (listed && !(event.key === "Enter" && ready)) keys(event, options, pick); }} />
         </label>
+        ${listed && html`<${Suggestions} label="Repositories and folders" options=${options} active=${active} onHover=${setActive} onPick=${pick}
+          notes=${[found.more > 0 && `${found.more} more: type a name, or a path from / or ~`, found.scanning && !text && "Still looking under your home…"]} />`}
+        ${!listed && !folder && text && html`<p class="note">${found.scanning && !/^[/~]/.test(text) ? "Still looking under your home…" : "Nothing matches. Type a path from / or ~."}</p>`}
+        ${folder && html`
+          <div class="folder-card" data-tone=${ready ? null : "danger"} role="status">
+            ${ready ? html`
+              <p class="folder-what"><${Icon} name="pass" /><strong>${folder.name}</strong><span class="muted">${facts}</span></p>
+              <p class="muted">Shows in Sessions with its worktrees, and on Home as its lead chat.</p>`
+            : html`<p class="folder-what"><${Icon} name="fail" />${folder.added ? `${folder.path} is already the project ${folder.added}.`
+                : `${folder.path} is not a git repository: pick one, or run git init there.`}</p>`}
+          </div>`}
         <p class="error" role="alert">${error}</p>
         <div class="actions sheet-actions">
           <button class="button" type="button" onClick=${() => dialog.current.close()}>Cancel</button>
-          <button class="button button-primary" type="submit" disabled=${busy}>Add</button>
+          <button class="button button-primary" type="submit" disabled=${busy || !ready}>Add</button>
         </div>
       </form>
     </dialog>`;
@@ -106,6 +154,13 @@ export function Projects({ rail }) {
   const manage = store.site.manage_projects;
   const [sheet, setSheet] = useState(null);
   const [removing, setRemoving] = useState(null);
+  // ^ The project just added: its row is marked (the found tint) when the workspace lists it.
+  const [fresh, setFresh] = useState(null);
+  useEffect(() => {
+    if (!fresh || !store.projects.some((project) => project.name === fresh)) return undefined;
+    const timer = setTimeout(() => setFresh(null), 2500);
+    return () => clearTimeout(timer);
+  }, [fresh, store.projects.some((project) => project.name === fresh)]);
   let body;
   if (!store.daemon) body = html`<p class="empty">wsx is not running on the host.</p>`;
   else if (!store.loaded) body = html`<${Loading} />`;
@@ -114,7 +169,7 @@ export function Projects({ rail }) {
     body = html`
       <ul class="rows">
         ${store.projects.map((project) => html`
-          <li class=${manage ? "row row-slide" : "row"} ...${manage ? slide : null} key=${project.id}>
+          <li class=${manage ? "row row-slide" : "row"} ...${manage ? slide : null} key=${project.id} data-found=${project.name === fresh ? "" : null}>
             <div class="row-link" aria-current=${rail && Number(open) === project.id ? "page" : null}>
               <a class="row-main row-open" href=${can("task_view") ? `#/p/${project.id}/sessions` : `#/p/${project.id}`}>
                 <span class="row-label">${project.name}</span>
@@ -137,7 +192,7 @@ export function Projects({ rail }) {
           ${!rail && html`<h1 class="title">Projects</h1>`}
           ${manage && html`<button class="icon-button new-chat" type="button" onClick=${() => setSheet("project")} aria-label="Add project" title="Add project"><${Icon} name="plus" /></button>`}
         </div>`}
-      ${sheet === "project" && html`<${AddProject} onClose=${() => setSheet(null)} />`}
+      ${sheet === "project" && html`<${AddProject} onAdded=${setFresh} onClose=${() => setSheet(null)} />`}
       ${removing && html`<${RemoveProject} project=${removing} onClose=${() => setRemoving(null)} />`}
       <div class="scroll">${body}</div>
     </div>`;

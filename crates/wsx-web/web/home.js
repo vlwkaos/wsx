@@ -225,10 +225,13 @@ function nameProblem(name, taken) {
 // `[[agents]]` entry; Default is the manager's). The project's first chat is its row. The project
 // list ends with "Add project…" where the site manages projects, which hands over to AddProject
 // (docs/web-client-tasks.md "Home").
-function NewChat({ projects, tasks, project, manage, onAdd, onClose }) {
+function NewChat({ projects, tasks, project, manage, added, onAdd, onClose }) {
   const dialog = useRef();
   const field = useRef();
   const [chosen, setChosen] = useState(project);
+  // ^ Back from Add project: the new project is chosen once the workspace lists it.
+  const fresh = added && projects.find((each) => each.name === added);
+  useEffect(() => { if (fresh) setChosen(fresh.id); }, [fresh?.id]);
   const [name, setName] = useState("");
   const [asked, setAsked] = useState(false);
   const [error, setError] = useState("");
@@ -273,6 +276,7 @@ function NewChat({ projects, tasks, project, manage, onAdd, onClose }) {
             ${projects.map((each) => html`<option key=${each.id} value=${each.id}>${each.name}</option>`)}
             ${manage && html`<option value="add">Add project…</option>`}
           </select>
+          ${fresh && chosen === fresh.id && html`<span class="field-note">Added just now</span>`}
         </label>
         <label class="field">Name
           <input class="input" type="text" name="name" ref=${field} value=${name} placeholder="research" maxlength="24"
@@ -324,6 +328,8 @@ export function Home({ rail }) {
   const list = useRef();
   useFlip(list);
   const [sheet, setSheet] = useState(null);
+  // ^ The project Add project made last, which New chat chooses when it comes back.
+  const [added, setAdded] = useState(null);
   // ^ The folders folded on this device (name -> 1), and the row whose folder sheet is open.
   const [folded, setFolded] = useState(() => readMap(FOLDED_KEY));
   const [moving, setMoving] = useState(null);
@@ -383,9 +389,11 @@ export function Home({ rail }) {
           ${!rail && html`<h1 class="title">Home</h1>`}
           ${plus && html`<button class="icon-button new-chat" type="button" onClick=${() => setSheet(plus)} aria-label=${plus === "chat" ? "New chat" : "Add project"} title=${plus === "chat" ? "New chat" : "Add project"}><${Icon} name="plus" /></button>`}
         </div>`}
-      ${sheet === "chat" && html`<${NewChat} projects=${store.projects} tasks=${store.tasks} project=${store.projects.some((each) => each.id === open) ? open : store.projects[0].id}
-        manage=${manage} onAdd=${() => setSheet("project")} onClose=${() => setSheet(null)} />`}
-      ${sheet === "project" && html`<${AddProject} onClose=${() => setSheet(null)} />`}
+      ${(sheet === "chat" || sheet === "project-for-chat") && html`<${NewChat} projects=${store.projects} tasks=${store.tasks} project=${store.projects.some((each) => each.id === open) ? open : store.projects[0].id}
+        manage=${manage} added=${added} onAdd=${() => setSheet("project-for-chat")} onClose=${() => { setSheet(null); setAdded(null); }} />`}
+      ${/* ^ From New chat, Add project opens over it: the typed name stays. */ ""}
+      ${sheet?.startsWith("project") && html`<${AddProject} onAdded=${setAdded}
+        onClose=${() => setSheet(sheet === "project-for-chat" ? "chat" : null)} />`}
       <div class="scroll">
         ${body}
       </div>

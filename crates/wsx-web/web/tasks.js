@@ -81,10 +81,11 @@ function ListRow({ rowKey, leaving, task = null, icon, tone, glyph, label, conte
 }
 
 // ^ An icon and its word, in the row's own line: the title and what the item waits for keep the
-// row's width. The label is the button's title and, with what it acts on, its accessible name.
+// row's width. An icon only (owner, 2026-11-25): the label is the button's title and, with what it
+// acts on, its accessible name. `quiet` draws no fill (Dismiss); `danger` is the refusing one.
 const rowButton = (busy, label, icon, tone, onClick, extra = {}) => html`
-  <button class="button button-sm need-action" type="button" title=${label} data-tone=${tone} disabled=${busy}
-    onClick=${onClick} ...${extra}><${Icon} name=${icon} />${label.split(":")[0]}</button>`;
+  <button class="icon-button button-sm need-action" type="button" title=${label.split(":")[0]} aria-label=${label} data-tone=${tone} disabled=${busy}
+    onClick=${onClick} ...${extra}><${Icon} name=${icon} /></button>`;
 
 // The state of the action a row runs, kept across renders: `run` starts it, `onActing` says an
 // action started and `onFailed` that it failed (the reservoir moves the focus on when the row
@@ -127,9 +128,9 @@ export function NeedRow({ project, item, index, onActing, onFailed, onMention, o
   const button = (...args) => rowButton(status.busy, ...args);
   let actions = null;
   if (acting && item.kind === "ask") {
-    actions = html`${button("Reply", "reply", null, () => onReply(item.label, item.id), { "aria-label": `Reply: ${item.label}` })}${button("Dismiss", "fail", null, () => run("dismiss"), { "aria-label": `Dismiss: ${item.label}` })}`;
+    actions = html`${button("Dismiss", "fail", "quiet", () => run("dismiss"), { "aria-label": `Dismiss: ${item.label}` })}${button("Reply", "reply", "accent", () => onReply(item.label, item.id), { "aria-label": `Reply: ${item.label}` })}`;
   } else if (acting && ["waiting", "failed"].includes(item.kind)) {
-    actions = button("Answer", "reply", null, () => onMention(item.task), { "aria-label": `Answer #${item.task}: mention it in the chat` });
+    actions = button("Answer", "reply", "accent", () => onMention(item.task), { "aria-label": `Answer #${item.task}: mention it in the chat` });
   } else if (acting && item.kind === "approval" && status.running) {
     // ^ The approved action runs until its decision settles the row; it may take minutes.
     actions = html`<span class="row-context" role="status">Running…</span>`;
@@ -182,7 +183,7 @@ export function CheckingRow({ project, item, index, onActing, onFailed, onReply,
   const button = (...args) => rowButton(status.busy, ...args);
   const decide = (decision) => run(() => decideCheck(project, item.id, decision));
   const actions = can("task_act") && html`
-    ${button("Reply", "reply", null, () => onReply(checkQuote(item), item.id), { "aria-label": `Reply: ${item.check}` })}
+    ${button("Reply", "reply", "accent", () => onReply(checkQuote(item), item.id), { "aria-label": `Reply: ${item.check}` })}
     ${button("Fail", "fail", "danger", () => decide("fail"), { "aria-label": `Fail: ${item.check}` })}
     ${button("Pass", "pass", "accent", () => decide("pass"), { "aria-label": `Pass: ${item.check}` })}`;
   return html`

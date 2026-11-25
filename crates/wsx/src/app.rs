@@ -1595,7 +1595,7 @@ impl App {
         }
         let (tx, rx) = mpsc::channel();
         self.repo_scan_rx = Some(rx);
-        std::thread::spawn(move || crate::repo_scan::scan_git_repos(tx));
+        std::thread::spawn(move || wsx_core::project_search::scan_git_repos(tx));
     }
 
     fn set_status(&mut self, msg: impl Into<String>) {
