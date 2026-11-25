@@ -94,9 +94,10 @@ stop_web() {
 }
 
 start() {
+  # ^ The exports first: cargo finds the toolchain through RUSTUP_HOME and CARGO_HOME, not this shell's HOME.
+  eval "$(exports)"
   (cd "$REPO" && cargo build -q -p wsx -p wsx-daemon)
   setup
-  eval "$(exports)"
   # ^ `web serve` never starts wsxd; `daemon recover` starts it through the normal bootstrap.
   # `daemon status` exits 0 also when wsxd is stopped: its Runtime line says which.
   daemon_running || wsx daemon recover >/dev/null
