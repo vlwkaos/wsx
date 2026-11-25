@@ -4282,13 +4282,28 @@ impl Host {
         if pr {
             return self.open_pr(&head);
         }
-        let cleared = copy::move_branch(
+        let cleared = match copy::move_branch(
             &self.record.project_path,
             &self.record.default_branch,
             &tip,
             &head,
             false,
-        )?;
+        ) {
+            Ok(cleared) => cleared,
+            // ^ Each task has its own host: another task can land between `land_on_tip`'s
+            // check and this move. A tip HEAD no longer contains is rebased onto and checked
+            // like a tip that moved during the checks (docs/tasks.md "Landing" 3).
+            Err(_)
+                if !copy::is_ancestor(
+                    &self.record.working_copy,
+                    &self.default_tip()?,
+                    &head,
+                )? =>
+            {
+                return self.land_on_tip();
+            }
+            Err(error) => return Err(error),
+        };
         if let Some(lock) = cleared {
             self.log(LogEvent::LockCleared {
                 path: lock.path.display().to_string(),
