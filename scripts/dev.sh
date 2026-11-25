@@ -35,8 +35,9 @@ setup() {
   mkdir -p "$DEV"/{state,cache,project} "$DEV/config/wsx/web" "$DEV/home/Library/Application Support/wsx"
   chmod 700 "$DEV" "$DEV/state" "$DEV/config/wsx/web"
   # ^ Claude, its `~/bin/claude` wrapper (it runs $HOME/.local/bin/claude) and git read the real home.
+  # Claude's sign-in is in the login keychain, which macOS finds under $HOME/Library/Keychains.
   local item
-  for item in .claude .claude.json .claude-work bin .local/bin .gitconfig; do
+  for item in .claude .claude.json .claude-work bin .local/bin .gitconfig Library/Keychains; do
     if [ -e "$REAL_HOME/$item" ]; then
       mkdir -p "$(dirname "$DEV/home/$item")"
       ln -sfn "$REAL_HOME/$item" "$DEV/home/$item"
