@@ -228,6 +228,8 @@ export function useFollowEnd(name, ready) {
   // may still grow (a diagram draws) after the log opens, while the log is too short to
   // scroll there yet.
   const restore = useRef(null);
+  // ^ The reader's wheel, touch, pointer or key on the log since the last mark.
+  const touched = useRef(false);
   // ^ The observers keep the first render's functions: they read the props through refs.
   const loaded = useRef(ready);
   loaded.current = ready;
@@ -269,6 +271,7 @@ export function useFollowEnd(name, ready) {
     anchor.current = row ? { row, top: onScreen(row) } : null;
     top.current = element.scrollTop;
     full.current = element.scrollHeight;
+    touched.current = false;
     if (placed.current) seen();
   };
   // ^ Read from the log as it is: a chat that closes still has its rows when its hooks clean up.
@@ -304,27 +307,44 @@ export function useFollowEnd(name, ready) {
     readEnd();
     mark();
   };
-  const settle = () => {
+  // ^ The one test of who moved the log. Its own moves are all marked, so a move since the mark
+  // that comes with its scroll event is the reader's, and so is one after the reader's input before
+  // that event came (a row or the box changed in the same task: the end-hold pinned such a reader
+  // back to the end, 2026-11-24). Without either it is the browser's: its CSS anchor follows a row
+  // that changed above the view, also up while the rows grow below; read as the reader's, it left
+  // the log 37 px short of the end (2026-11-25). A box that changed height moves it by up to that
+  // change without the reader. The browser's anchor moves it to keep the reader's row in place, so
+  // marking there on its scroll event is right too.
+  const readerMoved = (element, scrolled) => {
+    if (!scrolled && !touched.current) return false;
+    const moved = element.scrollTop - top.current;
+    const resized = Math.abs(element.clientHeight - height.current);
+    if (Math.abs(moved) <= (resized ? resized + 1 : 1)) return false;
+    // ^ Only scrolling up leaves the end. A move down there is the browser's CSS anchor (a row
+    // above grew) or the pin's own late event, also while a row below grows in the same frame:
+    // read as the reader's, it left a late diagram 353 px above the end (2026-11-25).
+    return !(atEnd.current && moved > 0);
+  };
+  // Every change and, with `scrolled`, every scroll event: the reader's move first, then the hold.
+  const settle = (scrolled = false) => {
     const element = node.current;
     // A change may still arrive after the view closed.
     if (!element) return;
+    if (!placed.current && loaded.current) return open();
+    if (placed.current && readerMoved(element, scrolled)) {
+      height.current = element.clientHeight;
+      restore.current = null;
+      readEnd();
+      return mark();
+    }
     // ^ The end is kept only when the content or the box changed since the last mark: a reader who
     // scrolls down into the last 80 px flips `atEnd`, the render settles, and that must not pull the
     // log on to the end (a jump of up to 80 px in a frame while the finger is down).
     const changed = element.scrollHeight !== full.current || element.clientHeight !== height.current;
     height.current = element.clientHeight;
-    if (!placed.current && loaded.current) return open();
-    if (restore.current) {
-      // ^ The reader's scroll ends the hold, also when its event has not come yet (a row changed
-      // size in the same task): the log's own moves are all marked, so a move since the mark is theirs.
-      if (Math.abs(element.scrollTop - top.current) > 1) {
-        restore.current = null;
-        return mark();
-      }
-      if (restore.current.row.isConnected) {
-        element.scrollTop = restore.current.row.offsetTop - restore.current.offset;
-        return mark();
-      }
+    if (restore.current?.row.isConnected) {
+      element.scrollTop = restore.current.row.offsetTop - restore.current.offset;
+      return mark();
     }
     if (atEnd.current) {
       if (changed) element.scrollTop = element.scrollHeight;
@@ -337,35 +357,15 @@ export function useFollowEnd(name, ready) {
     }
     mark();
   };
-  const scrolled = () => {
-    const element = node.current;
-    if (!element) return;
-    // ^ The log's own move to the row the reader left is not the reader's scroll.
-    if (restore.current) {
-      if (Math.abs(element.scrollTop - top.current) <= 1) return;
-      restore.current = null;
-    }
-    // ^ An event that moved nothing since the last mark is the log's own move, delivered late
-    // (settle sets the scroll, the event comes with the next frame). A row that changed size
-    // before it came is still to be corrected: marking now would take the moved row as the place.
-    if (Math.abs(element.scrollTop - top.current) < 1) settle();
-    // ^ A box that changed height scrolls without the reader. The event can come before the
-    // resize observer. A scroll farther than the change is the reader's, in the same frame.
-    const resized = element.clientHeight - height.current;
-    if (resized && Math.abs(element.scrollTop - top.current) <= Math.abs(resized) + 1) return settle();
-    height.current = element.clientHeight;
-    // ^ Only the reader scrolling up leaves the end. The event of the log's own pin can come
-    // after a row grew again (a diagram drew), before the resize observer pins once more.
-    if (atEnd.current && element.scrollTop >= top.current - 1) return settle();
-    readEnd();
-    mark();
-  };
   const log = useCallback((element) => {
     for (const watcher of watchers.current) watcher.disconnect();
     watchers.current = [];
     node.current = element;
     if (!element) return;
     height.current = element.clientHeight;
+    const input = () => { touched.current = true; };
+    const kinds = ["wheel", "touchstart", "touchmove", "pointerdown", "keydown"];
+    for (const kind of kinds) element.addEventListener(kind, input, { passive: true });
     // ^ A classic scrollbar takes its width from the log once the log scrolls: wide blocks leave it
     // out (app.css .markdown). An overlay scrollbar takes none. Its coming and going resizes the
     // log's content box, so the log's own entry sets the variable on `.log-wrap`.
@@ -383,7 +383,8 @@ export function useFollowEnd(name, ready) {
       settle();
     });
     rows.observe(element, { childList: true });
-    watchers.current = [sizes, rows];
+    const inputs = { disconnect: () => { for (const kind of kinds) element.removeEventListener(kind, input); } };
+    watchers.current = [sizes, rows, inputs];
   }, []);
   // ^ Goes there itself: settle keeps the end only for content or a box that changed.
   const toEnd = () => {
@@ -403,7 +404,7 @@ export function useFollowEnd(name, ready) {
     readEnd();
     mark();
   };
-  useLayoutEffect(settle);
+  useLayoutEffect(() => settle());
   // ^ A tap on a quote (reply.js) shows its message through `reveal`, not by a scroll of its own.
   useEffect(() => {
     const show = (event) => { if (node.current?.contains(event.detail)) reveal(event.detail); };
@@ -425,7 +426,10 @@ export function useFollowEnd(name, ready) {
       keep();
     };
   }, []);
-  return { log, node, away, unread, since: entered.current.opened?.read ?? null, scrolled, toEnd, reveal };
+  // ^ `scrolled` is the log's scroll handler: the same settle. An event that moved nothing since the
+  // last mark is the log's own move, delivered late; a row that changed size before it came is
+  // corrected, not taken as the place. An event that moved it is the reader's (`readerMoved`).
+  return { log, node, away, unread, since: entered.current.opened?.read ?? null, scrolled: () => settle(true), toEnd, reveal };
 }
 
 // Motion that script drives (a list that reorders, a view that leaves) reads the same tokens

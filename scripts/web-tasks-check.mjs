@@ -837,9 +837,9 @@ await until("!!document.querySelector('.home-row') && !document.querySelector('.
 await go(chat);
 await until("!!document.querySelector('.log .bubble') && !!document.querySelector('.pill')", "the chat did not come back");
 // ^ The reader's own scroll wins over the saved place: a chat left in the middle and reopened holds that
-// place until the first scroll, and a scroll in the task of a row change (the observer settles before
-// the event) must not be taken back to it. Read at once and again after two frames: the scroll event
-// comes with the next frame.
+// place until the first scroll, and a scroll after the reader's wheel in the task of a row change (the
+// observer settles before the scroll event, lib.js `readerMoved`) must not be taken back to it. Read at
+// once and again after two frames: the scroll event comes with the next frame.
 {
   await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = (log.scrollHeight - log.clientHeight) / 2; log.dispatchEvent(new Event('scroll')); })()");
   await until("!!document.querySelector('.jump')", "no jump button after the chat scrolled to its middle");
@@ -849,8 +849,8 @@ await until("!!document.querySelector('.log .bubble') && !!document.querySelecto
   await until("!!document.querySelector('.log .bubble') && !!document.querySelector('.pill')", "the chat did not come back at its saved place");
   const moved = await evaluate(`(async () => {
     const log = document.querySelector('.log'), saved = log.scrollTop;
-    log.scrollTop = saved >= 150 ? saved - 120 : saved + 120;
-    const reader = log.scrollTop;
+    log.dispatchEvent(new WheelEvent('wheel', { deltaY: saved >= 150 ? -120 : 120 }));
+    log.scrollTop = saved >= 150 ? saved - 120 : saved + 120; const reader = log.scrollTop;
     const row = document.createElement('div');
     log.append(row);
     await Promise.resolve();
