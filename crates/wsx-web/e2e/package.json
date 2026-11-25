@@ -1,0 +1,12 @@
+{
+  "name": "wsx-web-e2e",
+  "private": true,
+  "type": "module",
+  "description": "The web client's browser tests: a real wsxd, `wsx web serve` and the fake agent per worker (README.md)",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1"
+  }
+}
