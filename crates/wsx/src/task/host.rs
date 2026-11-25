@@ -1697,6 +1697,8 @@ impl Host {
         // ^ Going home: a fallback whose conversation answered writes its handoff notes first
         // (`Handoff::Home`); else the own agent takes the turn now. ref: docs/tasks.md "Agents"
         if home && !(self.record.agent_session.is_some() && self.context_tokens > 0) {
+            // ^ No request went: a notes file here is an earlier rotation's.
+            self.clear_notes();
             self.return_home(text.to_string(), None);
             return Ok(());
         }
@@ -1705,16 +1707,20 @@ impl Host {
             true => Some(Handoff::Home),
             false => self.rotation_due(trigger),
         };
-        let text = match why {
+        let (sent, rotating) = match why {
             Some(why) => {
+                // ^ The notes the next conversation gets are this request's or none.
+                self.clear_notes();
                 handoff = self.handoff_request(&why);
-                self.rotating = Some((text.to_string(), why));
-                handoff.as_str()
+                (handoff.as_str(), Some((text.to_string(), why)))
             }
-            None => text,
+            None => (text, None),
         };
-        self.send_to_agent(text)?;
-        self.turn_text = text.to_string();
+        self.send_to_agent(sent)?;
+        // ^ Only once the request went: a failed send left it set, and the next real result was
+        // taken as the notes.
+        self.rotating = rotating;
+        self.turn_text = sent.to_string();
         self.trigger = trigger;
         self.pings = 0;
         self.set_state(TaskState::Working);
@@ -1879,10 +1885,10 @@ impl Host {
                 }
                 self.on_result(*result)
             }
-            Some(AgentLine::Context(tokens)) => {
-                self.context_tokens = tokens;
-                self.rotate_inside_turn();
-            }
+            // ^ Read at the next turn's start (`rotation_due`), never inside a turn: a steer with
+            // the handoff request raced the turn's end, so a turn's own result was taken as the
+            // notes, or the notes answer as the task's result (2026-11-25).
+            Some(AgentLine::Context(tokens)) => self.context_tokens = tokens,
             None => {
                 self.agent = None;
                 // ^ A handoff turn that never ended leaves no notes: no later result is one.
@@ -2358,27 +2364,9 @@ impl Host {
             .then(|| Handoff::Idle(format!("idle {} min", idle_ms / 60_000)))
     }
 
-    /// A turn whose context passes `tasks.agent.rotateTokens` gets the handoff request as a
-    /// steer: the worker writes its notes at its next tool boundary and ends the turn, and the
-    /// turn's message goes on in a fresh conversation (`rotate`). The size is checked after each
-    /// model call, not only when a turn starts. ref: docs/tasks.md "Context rotation"
-    fn rotate_inside_turn(&mut self) {
-        if self.turn.is_none()
-            || self.pinging()
-            || !matches!(self.rotation_due(self.trigger), Some(Handoff::Size))
-        {
-            return;
-        }
-        let request = self.handoff_request(&Handoff::Size);
-        let Some(agent) = self.agent.as_mut() else {
-            return;
-        };
-        match agent.send(&request) {
-            Ok(()) => self.rotating = Some((self.turn_text.clone(), Handoff::Size)),
-            Err(error) => self.say(&format!("cannot ask for the handoff notes: {error:#}")),
-        }
-    }
-
+    /// The message of the turn before a rotation: the worker writes its notes and ends the old
+    /// conversation; the waiting turn goes on in a fresh one (`rotate`). Sent as a turn of its
+    /// own, never into a running turn. ref: docs/tasks.md "Context rotation"
     fn handoff_request(&self, why: &Handoff) -> String {
         let context = format!("context {}k", self.context_tokens / 1000);
         let (said, why, next) = match why {
@@ -2409,6 +2397,17 @@ impl Host {
             self.context_tokens / 1000,
             self.dir.file(ROTATE_NOTES).display()
         )
+    }
+
+    /// Remove `rotate-notes.md`: before each handoff request and once a conversation change took
+    /// the notes in, so no later change reads them as current. A file left from an earlier
+    /// rotation was fed to a fresh conversation and stored in memory again (2026-11-25).
+    fn clear_notes(&self) {
+        if let Err(error) = std::fs::remove_file(self.dir.file(ROTATE_NOTES)) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                self.say(&format!("cannot clear the handoff notes: {error}"));
+            }
+        }
     }
 
     /// The handoff notes of a conversation that ends, as an episode of the project's memory.
@@ -2450,6 +2449,9 @@ impl Host {
             Ok(Some(bytes)) if !bytes.trim_ascii().is_empty() => {
                 let text = String::from_utf8_lossy(&bytes).into_owned();
                 self.remember_rotation(&text);
+                // ^ Inlined: the file has done its job. Notes too long to inline stay for the
+                // fresh conversation to read; the next request clears them.
+                self.clear_notes();
                 format!("The earlier conversation's handoff notes:\n{text}")
             }
             Ok(_) => "The earlier conversation wrote no handoff notes.".into(),
@@ -2738,7 +2740,11 @@ impl Host {
         let reason = format!("back on {}", self.home().adapter);
         let did = did.unwrap_or_else(|| self.notes_did());
         match self.come_home(&did, reason.clone()) {
-            Some(opening) => self.start_turn(&join_turn(opening, &text), TurnTrigger::Limit),
+            Some(opening) => {
+                // ^ `did` carries the notes on.
+                self.clear_notes();
+                self.start_turn(&join_turn(opening, &text), TurnTrigger::Limit)
+            }
             None => self.rotate(self.fresh_turn(&did, &text), Some(reason)),
         }
     }
@@ -4294,11 +4300,7 @@ impl Host {
             // check and this move. A tip HEAD no longer contains is rebased onto and checked
             // like a tip that moved during the checks (docs/tasks.md "Landing" 3).
             Err(_)
-                if !copy::is_ancestor(
-                    &self.record.working_copy,
-                    &self.default_tip()?,
-                    &head,
-                )? =>
+                if !copy::is_ancestor(&self.record.working_copy, &self.default_tip()?, &head)? =>
             {
                 return self.land_on_tip();
             }

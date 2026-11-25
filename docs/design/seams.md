@@ -8,7 +8,7 @@ G = goal chat, W = worker. Plan of record: [orchestration.md](orchestration.md).
 
 | Seam | Agents | Trigger | Carries over | Lost |
 |---|---|---|---|---|
-| Size rotation | W | `host.rs` `rotation_due`: context >= `rotateTokens` (200k), also inside a turn on Claude | `rotate-notes.md` (asked 12 KB, read 16 KiB), task prompt, step, waiting turn | the conversation; the start block (rules, area briefs) is not given again |
+| Size rotation | W | `host.rs` `rotation_due`: context >= `rotateTokens` (200k), read at the next turn's start, never inside a turn | `rotate-notes.md` (asked 12 KB, read 16 KiB), task prompt, step, waiting turn | the conversation; the start block (rules, area briefs) is not given again |
 | Size rotation | L, G | after a reply: context > 120k (L) or 400k (G) | notes (24 KiB), last 8 exchanges x 600 chars, the owner's answers (30, 8 KiB, built 2026-11-24), routines | everything else; **a chat's turn is never checked inside the turn** (`chat_runner.rs:1969`) |
 | Idle rotation | all | idle > 60 min and context > 150k (chat) or > rotateTokens/2 (worker) | as above | as above. The lead (limit 120k) resumes cold instead, by the measured rule: below 150k a cold resume keeps what a fresh start loses (`IDLE_ROTATE_TOKENS`) |
 | Instructions changed | L, G | digest differs | warm: a message, same conversation; cold: rotation | cold: the conversation |

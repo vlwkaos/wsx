@@ -49,9 +49,8 @@ Each user message is a small script of words:
   MHANG <file>  (manager) write nothing in the turn until <file> exists, so the host ends it by its quiet
                bound (WSX_TEST_TURN_QUIET_FILE); WHANG for a worker
   DRIP <file>  (worker) write a text line every second of the turn until <file> exists: a long turn with output
-  BIG          a model call of 400k tokens (two lines of one call), past the worker's rotateTokens, then a
-               tool boundary where a message the host sends during the turn (its handoff request) is
-               taken, as Claude takes a steer; none in a conversation that opens with handoff notes
+  BIG          a model call of 400k tokens (two lines of one call), past the worker's rotateTokens; none
+               in a conversation that opens with handoff notes
   OWNERQ       (worker) the summary's last line is a question for the owner
   THREEQ       (worker) end the turn blocked, the summary three numbered questions on lines of their own
   SIMPLIFY     (worker) a Skill tool call of owner:simplify in the turn; SIMPLIFYLATE does it only in
@@ -930,15 +929,9 @@ def main():
             for _ in range(2):
                 model_call(model, {'input_tokens': 10, 'cache_read_input_tokens': 399990, 'output_tokens': 5},
                            call='msg_big')
-            ready, _, _ = select.select([stdin], [], [], 2.0)
-            if ready:
-                extra = stdin.readline()
-                if not extra:
-                    return
-                text = json.loads(extra)['message']['content']
-                trace({'steer_in_turn': text, 'session': session})
         handoff = re.search(r'Write (\S+) for that (?:fresh )?conversation', text)
-        if handoff:
+        if handoff and not os.path.exists(os.path.join(os.path.dirname(handoff.group(1)), 'no-notes')):
+            # ^ A `no-notes` file in the task folder: the worker answers without writing notes.
             with open(handoff.group(1), 'w') as out:
                 out.write('NOTES from the fixture\n')
         summary = 'did: ' + text + (' | steers: ' + '; '.join(steers) if steers else '')

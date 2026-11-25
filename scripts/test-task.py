@@ -1725,9 +1725,10 @@ def part_core(created=None):
     # ^ A check's timeout, loud output and leftover process: crates/wsx/tests/task_checks.rs.
 
     # ^ Workflow steps, --skip, --size and the start set of the first turn: crates/wsx/tests/task_workflow.rs.
-    # 13r. Context rotation inside a turn: a model call past tasks.agent.rotateTokens gets the
-    # handoff request as a steer at its tool boundary; the worker writes its notes there, and the
-    # same step goes on in a fresh conversation that opens with the task's prompt and those notes.
+    # 13r. Context rotation between turns: the plan step grows past tasks.agent.rotateTokens and ends
+    # with its own result; before the build step the worker writes its notes in a turn of their own,
+    # and the build step opens a fresh conversation with the task's prompt and those notes.
+    # ^ Notes cleared before each request and a turn's own result kept: crates/wsx/tests/task_rotation.rs.
     mark('13r')
     owner_config.write_text('tasks:\n  workflow:\n    steps:\n'
                             '      - name: plan\n        prompt: BIG PLAN\n'
@@ -1746,18 +1747,10 @@ def part_core(created=None):
     tree_gone(first[0], 'rotated agent tree')
     assert not zombies(rotated), zombies(rotated)
     assert [e['tokens'] for e in log(rotated) if e['kind'] == 'rotated'] == [400000], log(rotated)
-    sent = [t for t in traces() if 'message' in t and t.get('manager') is False]
-    asked = [t for t in traces() if "past this task's limit" in t.get('steer_in_turn', '')]
-    fresh = [t for t in sent if 'handoff notes:\nNOTES from the fixture' in t['message']]
-    assert len(asked) == 1 and len(fresh) == 1, [t['message'][:80] for t in sent[-4:]]
-    assert not [t for t in sent if "past this task's limit" in t['message']], 'no turn of its own'
-    assert asked[0]['session'] != fresh[0]['session'], (asked, fresh)
-    # ^ The step that grew goes on in the fresh conversation; the build step follows it there.
-    opening = fresh[0]['message']
-    assert 'The task as it was asked:\nNOOP' in opening and 'BIG PLAN' in opening, opening
-    assert any('Step 2 of 2, build: WORK r.txt' in t['message'] and t['session'] == fresh[0]['session'] for t in sent), sent[-3:]
-    # ^ The handoff turn is not a result: one per step.
-    assert len([e for e in log(rotated) if e['kind'] == 'result']) == 2, log(rotated)
+    # ^ The build step opens the fresh conversation with the task's prompt and the notes; the
+    # handoff turn and its answer: crates/wsx/tests/task_rotation.rs.
+    opening = next(t['message'] for t in traces() if 'handoff notes:\nNOTES from the fixture' in t.get('message', ''))
+    assert 'The task as it was asked:\nNOOP' in opening and 'Step 2 of 2, build: WORK r.txt' in opening, opening
     # ^ The notes are also an episode of the project's memory, written by the host (docs/memory.md "Capture");
     # the repo service deletes it when the task has ended (checked in section 22, "Deletion").
     episodes = [h for h in memory_records(cli('memory', 'search', 'NOTES fixture', '--json').stdout) if h['slug'].startswith('rotation-%s-' % rotated)]

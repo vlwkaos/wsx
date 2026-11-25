@@ -57,6 +57,7 @@ Releases 0.40.4 and older are in [docs/changelog-archive.md](docs/changelog-arch
 ### Fixed
 
 - Landing: two tasks that land at once no longer leave one stopped with "Not possible to fast-forward". A task whose fast-forward fails because another task landed first rebases onto the new tip and checks again, as docs/tasks.md "Landing" step 3 says.
+- Context rotation: a worker conversation past `rotateTokens` rotates only between turns, and the notes a fresh conversation gets are from that rotation or none. A handoff request sent into a running turn raced the turn's end: the turn's own result could be taken as the notes, and with no new notes the fresh conversation got an earlier rotation's notes as current, which were also stored in memory again.
 - Tasks: an agent's `wsx task -p <project> host ...` (a flag before the hidden host command) is refused like `wsx task host ...`.
 
 ## [0.43.0] - 2026-11-16

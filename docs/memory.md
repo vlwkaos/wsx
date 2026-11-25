@@ -136,7 +136,7 @@ wsx deletes what is past by rule; no lead decides. One function holds the rule (
 | What | Deleted when |
 |---|---|
 | `supersede`'s `<old>` (also `add --supersedes`) | at once, by `supersede` |
-| A task's handoff notes record (`rotation-<n>-…`) | the task has ended. `rotate-notes.md` in the task folder stays |
+| A task's handoff notes record (`rotation-<n>-…`) | the task has ended. `rotate-notes.md` in the task folder is deleted once inline or by the next request |
 | A record an older release kept: a `superseded` rule, a chat handover (`handover-…`) | the next sweep |
 | A fact of an earlier task of this project (`verified_by` `task:<n>`) with `paths` | a land: every path is gone from the tree of the landed commit (`git ls-tree`; git that cannot answer in 10 s deletes nothing), or the land's own memo fact holds every path |
 | Files no code reads: `notes/decisions-archive.md`, `notes/context-archive.md`, `notes/*.pre-memory` and `threads-placed` of a chat of the repo; `batch-check-*.log`, `trial.lock` and `grants.json` of the repo's folder | the next sweep |
