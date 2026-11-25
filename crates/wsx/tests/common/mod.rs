@@ -1,5 +1,4 @@
-//! The isolated HOME, state and wsxd of the task integration tests (`task_launch.rs`,
-//! `task_lifecycle.rs`), with the stream-json fake Claude (`scripts/fake-claude-stream.py`).
+//! The isolated HOME, state and wsxd of the task and chat integration tests, with the stream-json fake Claude (`scripts/fake-claude-stream.py`).
 
 #![allow(dead_code)]
 
@@ -167,6 +166,36 @@ impl Fixture {
             .as_str()
             .and_then(|path| fs::read_to_string(path).ok())
             .unwrap_or_default()
+    }
+
+    /// The task's log as JSON entries (docs/tasks.md "Store": `log.jsonl`).
+    pub fn entries(&self, task: &Value) -> Vec<Value> {
+        self.log(task)
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()
+    }
+
+    /// `wsx task new <prompt>`: the new task's id.
+    pub fn new_task(&self, prompt: &str) -> String {
+        self.json(&["task", "new", prompt, "--json"])["id"]
+            .as_u64()
+            .expect("task id")
+            .to_string()
+    }
+
+    /// Wait for task `id` to end its turn: `ready` or `failed`.
+    pub fn settled(&self, id: &str) -> Value {
+        self.wait_task(id, "the task settles", |task| {
+            matches!(task["state"].as_str(), Some("ready" | "failed")).then(|| task.clone())
+        })
+    }
+
+    /// Run wsx, expect a refusal and return its stderr.
+    pub fn refusal(&self, args: &[&str]) -> String {
+        let output = self.wsx(args);
+        assert!(!output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8_lossy(&output.stderr).to_string()
     }
 
     /// Poll `test` on task 1 for up to 30 s; on a timeout fail with what the task host logged.

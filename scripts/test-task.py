@@ -1724,110 +1724,7 @@ def part_core(created=None):
 
     # ^ A check's timeout, loud output and leftover process: crates/wsx/tests/task_checks.rs.
 
-    # 13b. Workflow steps: the owner's own steps apply to a project that names none; the host
-    mark('13b')
-    # sends each step as its own turn and runs the checks after the last.
-    owner_config.write_text('tasks:\n  workflow:\n    steps:\n'
-                            '      - name: plan\n        prompt: PLAN only\n'
-                            '      - name: build\n        prompt: WORK s.txt\n')
-    (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  checks: ["test -f s.txt"]\n')
-    stepped = js('task', 'new', 'BGRESULT NOOP')['id']
-    done = wait_state(stepped, 'ready', 'failed')
-    assert done['state'] == 'ready' and done['record']['step'] == 1, done
-    assert [step['name'] for step in done['record']['steps']] == ['plan', 'build'], done['record']
-    turns = [entry for entry in log(stepped) if entry['kind'] == 'result']
-    assert len(turns) == 2 and 'Step 1 of 2, plan: PLAN only' in turns[0]['summary'], turns
-    assert 'Step 2 of 2, build: WORK s.txt' in turns[1]['summary'], turns
-    # ^ Each step asks to end its background jobs first; the last asks for the memo too, so
-    # no step of its own writes it.
-    assert all('wait for or stop each background job' in t['summary'] for t in turns), turns
-    assert 'return your final result, with its memo' in turns[1]['summary'], turns
-    # ^ A result while a job still runs is logged once: its notice wakes another turn.
-    early = [e for e in log(stepped) if e['kind'] == 'agent' and 'the result came while 1 background job(s) run' in e['text']]
-    assert len(early) == 1, log(stepped)
-    js('task', 'close', stepped, '--discard')
-    # `--skip` leaves a step out for a prompt that carries its plan; the model goes with it.
-    skipped = js('task', 'new', '--skip', 'plan', '--model', 'sonnet', 'NOOP')['id']
-    done = wait_state(skipped, 'ready', 'failed')
-    assert done['state'] == 'ready' and done['record']['model'] == 'sonnet', done
-    assert any(t.get('model') == 'sonnet' for t in traces()), 'the worker did not start on sonnet'
-    assert [step['name'] for step in done['record']['steps']] == ['build'], done['record']
-    turns = [entry for entry in log(skipped) if entry['kind'] == 'result']
-    assert len(turns) == 1 and 'Step 1 of 1, build: WORK s.txt' in turns[0]['summary'], turns
-    js('task', 'close', skipped, '--discard')
-    assert 'has no such step (steps: plan, build)' in cli('task', 'new', '--skip', 'review', 'NOOP', ok=False).stderr
-    assert '--skip leaves no step' in cli('task', 'new', '--skip', 'plan', '--skip', 'build', 'NOOP', ok=False).stderr
-    # A `context` step folds into the first other step and a `memo` step into the one before
-    # it: no turn of their own. The first turn opens with the host's task context: the files,
-    # the open tasks that share them and the manager's memo lines that name them.
-    owner_config.write_text('tasks:\n  workflow:\n    steps:\n'
-                            '      - name: context\n        prompt: CTX recall\n'
-                            '      - name: plan\n        prompt: PLAN only\n'
-                            '      - name: build\n        prompt: WORK s.txt\n'
-                            '      - name: memo\n        prompt: MEMO words\n')
-    sharing = js('task', 'new', '--files', 's.txt', '--title', 'Sharer', 'WAIT %s' % (work / 'release-13b'))
-    sharer = sharing['id']
-    # ^ The host's start set (docs/memory.md "Start set"): the area brief whose glob meets s.txt reaches the
-    # prompt; an area brief of another glob and every fact record (here about s.txt too) do not.
-    area_text = (project / 'wsx.config.yml').read_text()
-    (project / 'briefs').mkdir(exist_ok=True)
-    (project / 'briefs' / 's.md').write_text('Area brief: s.txt keeps the flag; do not rename it.\n')
-    (project / 'wsx.config.yml').write_text(area_text + 'memory:\n  areas:\n    "s.*": briefs/s.md\n    "zz/**": briefs/zz.md\n')
-    head = git('rev-parse', 'HEAD')
-    for slug, path, text in (('start-s', 's.txt', 'The fixture flag lives in s.txt.'), ('start-other', 'other.rs', 'other.rs is unrelated.')):
-        cli('memory', 'add', '--kind', 'fact', '--slug', slug, '--text-file', '-', '--source', 'task:1', '--verified-by', 'wsx.config.yml',
-            '--commit', head, '--paths', path, stdin=text)
-    # ^ A rule whose paths meet the files reaches the prompt; one for other files does not.
-    for slug, path, text in (('gate-s', 's.txt', 'Keep the s.txt flag as it is.'), ('gate-other', 'other.rs', 'Rename other.rs freely.')):
-        cli('memory', 'add', '--kind', 'rule', '--slug', slug, '--text-file', '-', '--source', 'msg:1', '--verified-by', 'owner:1',
-            '--paths', path, stdin=text)
-    folded = js('task', 'new', '--files', 's.txt', 'NOOP')['id']
-    done = wait_state(folded, 'ready', 'failed')
-    assert done['state'] == 'ready', done
-    assert [step['name'] for step in done['record']['steps']] == ['plan', 'build'], done['record']
-    assert done['record']['effort'] == 'high', done
-    assert {r['id']: r for r in js('chat', 'ledger')['open']}[folded]['agent']['effort'] == 'high'
-    assert [t for t in traces() if t.get('launch')][-1]['effort'] == 'high', traces()[-1]
-    turns = [entry for entry in log(folded) if entry['kind'] == 'result']
-    assert len(turns) == 2, turns
-    first = turns[0]['summary']
-    assert 'Task context from the host:\nFiles: s.txt' in first, first
-    assert 'Open task #%s "Sharer" (working) shares: s.txt' % sharer in first, first
-    assert 'start-s' not in first and 'The fixture flag lives in s.txt.' not in first, first
-    assert 'start-other' not in first and 'zz.md' not in first, first
-    assert 'Area brief briefs/s.md (files s.*):\nArea brief: s.txt keeps the flag; do not rename it.' in first, first
-    assert 'Rule gate-s (paths s.txt)\nKeep the s.txt flag as it is.' in first and 'gate-other' not in first, first
-    assert 'data from earlier work' not in first, first
-    assert 'PLAN only\n\nIf the task context above is not enough: CTX recall' in first, first
-    assert 'WORK s.txt\n\nFor the memo: MEMO words' in turns[1]['summary'], turns[1]
-    js('task', 'close', folded, '--discard')
-    js('task', 'close', sharer, '--discard')
-    # `--size small` runs only the build step, with the folded words, on the small model;
-    # `--model` still wins, and `--skip` does not go with it.
-    small = js('task', 'new', '--size', 'small', 'NOOP')['id']
-    done = wait_state(small, 'ready', 'failed')
-    assert done['state'] == 'ready' and done['record']['model'] == 'sonnet', done
-    assert [step['name'] for step in done['record']['steps']] == ['build'], done['record']
-    # ^ The effort goes with the size: on the record, in the launch argv and in the view.
-    assert done['record']['effort'] == 'high', done
-    assert {r['id']: r for r in js('chat', 'ledger')['open']}[small]['agent']['effort'] == 'high'
-    assert [t for t in traces() if t.get('launch')][-1]['effort'] == 'high', traces()[-1]
-    turns = [entry for entry in log(small) if entry['kind'] == 'result']
-    assert len(turns) == 1 and 'If the task context above is not enough: CTX recall' in turns[0]['summary'], turns
-    assert 'For the memo: MEMO words' in turns[0]['summary'], turns
-    js('task', 'close', small, '--discard')
-    chosen = js('task', 'new', '--size', 'small', '--model', 'haiku', 'NOOP')['id']
-    assert show(chosen)['record']['model'] == 'haiku', show(chosen)
-    js('task', 'close', chosen, '--discard')
-    assert 'cannot be used with' in cli('task', 'new', '--size', 'small', '--skip', 'plan', 'NOOP', ok=False).stderr
-    (project / 'wsx.config.yml').write_text(area_text)
-    shutil.rmtree(project / 'briefs')
-    sharing_store = Path(sharing['task_dir']).parent
-    sharing_notes = (home_dir(sharing_store) or sharing_store) / 'notes'
-    shutil.rmtree(sharing_notes, ignore_errors=True)
-    # ^ demo's chat exists since section 0: its notes folder starts as it was with no chat.
-    forget_notes(sharing_store, sharing_notes)
+    # ^ Workflow steps, --skip, --size and the start set of the first turn: crates/wsx/tests/task_workflow.rs.
     # 13r. Context rotation inside a turn: a model call past tasks.agent.rotateTokens gets the
     # handoff request as a steer at its tool boundary; the worker writes its notes there, and the
     # same step goes on in a fresh conversation that opens with the task's prompt and those notes.
@@ -2181,213 +2078,48 @@ def part_core(created=None):
     for n in (p, q):
         wait_closed(n)
 
-    # 16. Auto land (the default; docs/tasks.md "Landing", "Review"): a ready task goes to its review
+    # 16. Auto land (docs/tasks.md "Landing", "Review"): the review job's land, the To check items, their
+    # captures and the owner's pass, fail and skip are in crates/wsx/tests/task_review_items.rs. What the
+    # sections after this read stays: a passed capture item (shot), a skipped video item and a skipped capture
+    # item (video, recent: the capture sweep of part 21) and one open item that stops section 17's release.
     mark('16')
-    # job, whose land needs no other step, its Human Verify items join the To check list, and a
-    # landing that conflicts lands by itself after the worker's fix. With main not checked out, the
-    # ref moves with the old tip as guard.
     configure(LAND_CONFIG.replace('  land: { auto: false }\n', ''), 'auto land')
-
-    # ^ The task records main as its default branch at `new`; main is left during the turn.
-    hv = js('task', 'new', 'SLOW WORK z.txt HV')['id']
-    git('switch', '-q', '-c', 'parking')
-    assert reviewed(hv)['state'] == 'landed' and main_has('z.txt')
-    assert git('rev-parse', '--abbrev-ref', 'HEAD') == 'parking'
-    assert [e['kind'] for e in log(hv)].count('landed') == 1
-    item = js('project', 'check')['open']
-    assert [(i['id'], i['task'], i['check'], i['pass_if'], i['state']) for i in item] == [
-        ('c1', hv, 'open the file', 'it has text', 'open')], item
-    assert item[0]['commit'] == git('rev-parse', 'main') and item[0]['revision'] == 1
-    assert show(hv)['to_check'][0]['id'] == 'c1'
-    report = Path(show(hv)['report']).read_text()
-    assert '## To check\n\n- [ ] open the file (pass if: it has text)' in report and 'State `landed`' in report, report
-    git('switch', '-q', 'main')
-    # Two tasks on one file: the second land conflicts, the worker resolves it, and it lands by
-    # itself without a second review.
-    a1 = js('task', 'new', 'WORK x.txt alpha HV')['id']
-    a2 = js('task', 'new', 'WORK x.txt beta HV')['id']
-    for n in (a1, a2):
-        reviewed(n)
-    conflicts = [n for n in (a1, a2) if any(e['kind'] == 'conflict' for e in log(n))]
-    assert len(conflicts) == 1 and git('show', 'main:x.txt') == 'resolved', conflicts
-    assert [e['kind'] for e in log(conflicts[0])].count('review') == 1, log(conflicts[0])
-    assert len(js('project', 'check')['open']) == 3
-    # An item keeps where to look and its capture, copied into the task folder before the copy
-    # goes. An item that names a command and one about a page without a capture go back to the
-    # worker once, in one message; its next result has none.
-    shot = js('task', 'new', 'WORK cap.txt HV CAPTURE')['id']
-    command = js('task', 'new', 'WORK cmd.txt CMDHV BAREHV')['id']
-    assert reviewed(shot)['state'] == 'landed', show(shot)
-    # ^ command branched before shot landed: its land rebases, reruns the checks and lands when
-    # they pass (docs/tasks.md "Landing" 3).
-    assert reviewed(command)['state'] == 'landed', show(command)
-    assert [e['kind'] for e in log(command)].count('revision') >= 2, log(command)
-    for n in (shot, command):
-        wait_closed(n)
-    assert [e['kind'] for e in log(command)].count('result') == 2, log(command)
-    # ^ A review job's message quotes the task's messages: not a send-back of its own.
-    sent = [t['message'] for t in traces() if 'yours to prove' in str(t.get('message'))
-            and not str(t.get('message')).startswith('Review round')]
-    assert len(sent) == 1 and 'wsx task list' in sent[0] and 'the page reads well' in sent[0], sent
-    kept = [i for i in js('project', 'check')['open'] if i['task'] in (shot, command)]
-    assert [(i['task'], i['where'], i['captures']) for i in kept] == [(shot, '/#/x', ['captures/r1-1-1.png'])], kept
-    stored = Path(show(shot)['report']).parent / 'captures' / 'r1-1-1.png'
-    assert stored.read_bytes().startswith(b'\x89PNG'), stored
-    assert stored.parent.stat().st_mode & 0o777 == 0o700, oct(stored.parent.stat().st_mode)
-    js('project', 'check', 'pass', kept[0]['id'])
-    # A video capture (MP4 by its `ftyp` box) and its poster are kept as r<k>-<n>.mp4 and
-    # r<k>-<n>.poster.png; a video over 25 MiB and a text file named .mp4 are dropped, their
-    # items kept without a capture (docs/tasks.md "To check").
-    video = js('task', 'new', 'WORK v.txt HV VIDEO BIGVIDEO NOTVIDEO')['id']
-    assert reviewed(video)['state'] == 'landed', show(video)
-    wait_closed(video)
-    folder = Path(show(video)['report']).parent
-    clip = (ROOT / 'scripts/fixtures/check-clip.mp4').read_bytes()
-    assert (folder / 'captures/r1-1-1.mp4').read_bytes() == clip, folder
-    assert (folder / 'captures/r1-1.poster.png').read_bytes().startswith(b'\x89PNG'), folder
-    assert sorted(p.name for p in (folder / 'captures').iterdir()) == ['r1-1-1.mp4', 'r1-1.poster.png'], folder
-    rows = [json.loads(line) for line in (folder.parent / 'checks.jsonl').read_text().splitlines()]
-    rows = [{k: row.get(k) for k in ('check', 'captures', 'poster')} for row in rows if row['task'] == video]
-    assert rows == [{'check': 'open the file', 'captures': ['captures/r1-1-1.mp4'], 'poster': 'captures/r1-1.poster.png'},
-                    {'check': 'the long video plays', 'captures': None, 'poster': None},
-                    {'check': 'the text video plays', 'captures': None, 'poster': None}], rows
-    # Several captures: one item keeps three files as r<k>-<n>-<m>.png and lists three in
-    # `wsx project check --json`. An item whose words name an image file it has no capture of is
-    # reported in the log (docs/tasks.md "To check"); the ready event names it too (part 32ak).
-    multi = js('task', 'new', 'WORK m.txt CAPTURES3 NAMEDHV')['id']
-    assert reviewed(multi)['state'] == 'landed', show(multi)
-    said = "a To check item names tasks-390x844-home-dark.png but has no capture of it"
-    assert any(said in str(e) for e in log(multi)), log(multi)
-    wait_closed(multi)
-    three = [i for i in js('project', 'check')['open'] if i['task'] == multi and i['check'] == 'the three sizes']
-    folder = Path(show(multi)['report']).parent
-    assert [i['captures'] for i in three] == [['captures/r1-1-%d.png' % n for n in (1, 2, 3)]], three
-    assert sorted(p.name for p in (folder / 'captures').iterdir()) == ['r1-1-%d.png' % n for n in (1, 2, 3)], folder
-    js('project', 'check', 'skip', *[i['id'] for i in js('project', 'check')['open'] if i['task'] == multi])
-    # ^ A third item with a capture for the capture sweep (part 20).
-    recent = js('task', 'new', 'WORK r.txt HV CAPTURE')['id']
-    assert reviewed(recent)['state'] == 'landed', show(recent)
-    wait_closed(recent)
-    # ^ Skipped, so the capture sweep (part 20) frees a skipped item's files like a passed one's.
-    js('project', 'check', 'skip', *[i['id'] for i in js('project', 'check')['open'] if i['task'] in (video, recent)])
-    # No checks: nothing proves the work, so a ready task waits for a land by hand.
-    configure(LAND_CONFIG.replace('  land: { auto: false }\n', '').replace(
-        '  checks:\n    - "test ! -e broken.txt"\n', ''), 'no checks')
-    unchecked = js('task', 'new', 'WORK n.txt')['id']
-    assert wait_state(unchecked, 'ready', 'landed', 'failed')['state'] == 'ready'
-    time.sleep(1)
-    assert show(unchecked)['state'] == 'ready' and land(unchecked)['state'] == 'landed'
-    # Pass one item, then fail one: the fail starts a linked fix task.
-    passed = js('project', 'check', 'pass', 'c1')
-    assert [c['state'] for c in passed['changed']] == ['passed'] and passed['open'] == 2, passed
-    assert 'already passed' in cli('project', 'check', 'pass', 'c1', '--json', ok=False).stderr
-    assert 'no item c99' in cli('project', 'check', 'pass', 'c99', ok=False).stderr
-    refused = subprocess.run([str(wsx), 'project', 'check', 'pass', '--all'], cwd=project, env=manager_env,
-                             capture_output=True, text=True)
-    assert refused.returncode != 0 and 'for the owner' in refused.stderr, refused.stderr
-    assert 'needs --note' in cli('project', 'check', 'fail', 'c2', '--note', ' ', ok=False).stderr
-    failed = js('project', 'check', 'fail', 'c2', '--note', 'the text is cut off')
-    (failed_item,) = failed['changed']
-    fix = failed_item['fix_task']
-    assert failed_item['state'] == 'failed' and failed_item['note'] == 'the text is cut off' and fix, failed
-    fixing = show(fix)
-    assert fixing['record']['fixes'] == 'c2' and fixing['title'] == 'Fix: open the file', fixing
-    prompt = next(e['text'] for e in log(fix) if e.get('mode') == 'prompt')
-    task_of_c2 = failed_item['task']
-    assert 'the text is cut off' in prompt and show(task_of_c2)['report'] in prompt and 'Pass if: it has text' in prompt, prompt
-    wait_state(fix, 'ready', 'landed', 'failed')
-    assert [i['id'] for i in js('project', 'check')['open']] == ['c3']
-    for n in (hv, a1, a2, unchecked):
-        wait_closed(n)
-    # ^ No checks prove the fix, so it waits ready; it has no commits and closes plainly.
-    js('task', 'close', fix)
+    left = {}
+    for name, words in (('shot', 'WORK cap.txt HV CAPTURE'), ('video', 'WORK v.txt HV VIDEO BIGVIDEO NOTVIDEO'),
+                        ('recent', 'WORK r.txt HV CAPTURE'), ('open', 'WORK o.txt HV')):
+        left[name] = js('task', 'new', words)['id']
+        assert reviewed(left[name])['state'] == 'landed', show(left[name])
+        wait_closed(left[name])
+    shot, video, recent = left['shot'], left['video'], left['recent']
+    items = js('project', 'check')['open']
+    js('project', 'check', 'pass', *[i['id'] for i in items if i['task'] == shot])
+    # ^ Skipped, so the capture sweep (part 21) frees a skipped item's files like a passed one's.
+    js('project', 'check', 'skip', *[i['id'] for i in items if i['task'] in (video, recent)])
+    assert len(js('project', 'check')['open']) == 1, js('project', 'check')
     configure(LAND_CONFIG, 'land by hand')
-
-    # 17. Deploy and release records. Each runs in a temporary copy of a default-branch commit.
+    # 17. Deploy and release records. Each runs in a temporary copy of a default-branch commit. The
+    # refusals, the records, the orphaned copy and the skip rules are in crates/wsx/tests/task_deploy_records.rs;
+    # what stays needs this fixture's wsxd (no ssh agent of its own) and leaves the records that 18 and 21 read.
     mark('17')
     store_up(created)
-
-    unset = cli('project', 'deploy', ok=False)
-    assert 'tasks.deploy.command is not set' in unset.stderr and 'nothing was run' in unset.stderr
     configure(DEPLOY_CONFIG, 'deploy config')
-    assert js('project', 'deployed')['deploy']['commit'] is None
-    # Open items stop only public output: a release, and a deploy marked public.
-    refused = cli('project', 'release', '--json', ok=False)
-    assert '1 item(s) to check are open' in refused.stderr and 'Nothing was run' in refused.stderr, refused.stderr
-    (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text().replace(
-        '  deploy:\n', '  deploy:\n    public: true\n'))
-    assert 'to check are open' in cli('project', 'deploy', ok=False).stderr
-    git('checkout', '--', 'wsx.config.yml')
-    assert not (base / 'deploy.log').exists()
-    deployed = ran('deploy')
-    assert deployed['message'].endswith('; 1 to check on the deployed site'), deployed
-    (base / 'deploy.log').unlink()
-    # A skip closes the item without a verdict: it is recorded as skipped, starts no task, refuses
-    # the manager, and the release below runs (docs/tasks.md "To check").
-    tasks_before = len(js('task', 'list', '--all')['tasks'])
-    refused = subprocess.run([str(wsx), 'project', 'check', 'skip', '--all'], cwd=project, env=manager_env,
-                             capture_output=True, text=True)
-    assert refused.returncode != 0 and 'check skip is for the owner' in refused.stderr, refused.stderr
-    # ^ A dismiss of a question is the owner's too (docs/tasks.md "Questions" under "Chat host").
-    refused = subprocess.run([str(wsx), 'chat', 'dismiss', '1'], cwd=project, env=manager_env,
-                             capture_output=True, text=True)
-    assert refused.returncode != 0 and 'dismiss is for the owner' in refused.stderr, refused.stderr
-    skipped = js('project', 'check', 'skip', '--all')
-    assert [c['state'] for c in skipped['changed']] == ['skipped'] and skipped['open'] == 0, skipped
-    assert skipped['message'] == '1 skipped. 0 to check', skipped
-    (skipped_item,) = skipped['changed']
-    assert skipped_item.get('fix_task') is None and skipped_item.get('note') is None, skipped_item
-    assert 'already skipped' in cli('project', 'check', 'pass', skipped_item['id'], ok=False).stderr
-    assert next(i for i in show(skipped_item['task'])['to_check'] if i['id'] == skipped_item['id'])['state'] == 'skipped'
-    assert len(js('task', 'list', '--all')['tasks']) == tasks_before
-    # ^ A release whose process was killed left its copy; the next deploy removes it. A pid
-    # above macOS's 99998 is never alive.
-    orphan = base / 'project-release-999999'
-    git('worktree', 'add', '-q', '--detach', str(orphan))
-    # ^ A worktree on a branch with the same name shape is someone's work: it stays.
-    owned = base / 'project-deploy-999998'
-    git('worktree', 'add', '-q', '-b', 'owned-999998', str(owned))
-    deployed = ran('deploy')
-    assert not orphan.exists() and str(orphan) not in git('worktree', 'list')
-    assert owned.is_dir() and str(owned) in git('worktree', 'list')
-    git('worktree', 'remove', '--force', str(owned))
-    git('branch', '-D', 'owned-999998')
-    tip = git('rev-parse', 'main')
-    assert deployed['commit'] == tip and deployed['exit'] == 0, deployed
-    commit_line, where = (base / 'deploy.log').read_text().split()
-    assert commit_line == tip and Path(where) != project and not Path(where).exists()
-    assert git('worktree', 'list', '--porcelain').count('worktree ') == 1
+    # ^ The one open item of section 16 would stop the release below; a skip closes it.
+    js('project', 'check', 'skip', '--all')
+    ran('deploy')
     # ^ The fixture's wsxd has no SSH_AUTH_SOCK, as one first started from an ssh login has: the
     # command gets the login session's agent socket (macOS), else none (Linux CI has no login agent).
     assert 'SSH_AUTH_SOCK' not in env
     login_sock = login_agent_socket()
     assert (base / 'deploy-agent.log').read_text() == (login_sock or ''), (base / 'deploy-agent.log').read_text()
-    assert js('project', 'deployed')['deploy']['behind'] == 0
-    later = js('task', 'new', 'WORK w.txt')['id']
-    assert wait_state(later, 'ready', 'failed')['state'] == 'ready'
-    assert land(later)['state'] == 'landed'
-    wait_closed(later)
-    status = js('project', 'deployed')
-    assert status['deploy']['commit'] == tip and status['deploy']['behind'] == 1, status
     assert ran('release')['exit'] == 3
-    release_log = (project_store / 'follow-up.log').read_text()
-    assert 'release broke here' in release_log and 'the failure is recorded' in release_log, release_log[-2000:]
-    # ^ A failed attempt keeps the end of its output: the ledger's deploys show its last 40 lines.
-    release_status = js('project', 'deployed')['release']
-    failed = release_status.pop('failed')
-    assert release_status == {'commit': None, 'failed_since': 1, 'configured': True}, release_status
-    assert failed['exit'] == 3 and failed['commit'] == git('rev-parse', 'main'), failed
-    # ^ The output says which agent ssh asked, or why there was none, as a refused push does.
-    *printed, agent_words = failed['output'].splitlines()
-    assert printed == [str(n) for n in range(23, 61)] + ['release broke here: Permission denied (publickey).'], failed
+    # ^ The failed release's output says which agent ssh asked, or why there was none, as a refused push does.
+    agent_words = js('project', 'deployed')['release']['failed']['output'].splitlines()[-1]
     if login_sock:
         assert agent_words.startswith("ssh offered the keys of the login session's ssh agent at %s " % login_sock), agent_words
     else:
         assert agent_words.startswith('ssh had no agent: SSH_AUTH_SOCK is not set'), agent_words
-    assert js('chat', 'ledger')['deploys']['release']['failed'] == failed
     older = git('rev-parse', 'main~3')
     assert ran('deploy', '--commit', older)['commit'] == older
-    assert js('project', 'deployed')['deploy']['behind'] == 3
 
     # 18. The ledger: open tasks by attention order, recent ones, deploys, the main checkout.
     mark('18')
@@ -5285,27 +5017,7 @@ def part_deploy(created=None):
     assert newer.startswith(second + ':') and 'ran-on-' + second in newer and first not in newer, sent[0]
     assert older.startswith(first + ':') and 'ran-on-' + first in older and second not in older, sent[0]
     js('task', 'close', two, '--discard')
-    # 32t5. A scenario's `--part` (docs/tasks.md "Scenarios"): the command gets WSX_SCENARIO_PART, a
-    # repeat of the same part runs again, the full run and a bad part or a plain check are
-    # refused, and the part's pass is no full pass: no evidence. A full run records its own.
-    mark('32t5')
-    configure(LAND_CONFIG + '  scenarios:\n    parted: "echo part=[$WSX_SCENARIO_PART]"\n', 'a scenario with parts')
-    parted = js('task', 'new', 'CHECKRUN_PART parted tasks WORK part.txt')['id']
-    done = wait_state(parted, 'ready', 'failed')
-    assert done['state'] == 'ready', log(parted)
-    first, again, full_run, bad, plain_check = next(t for t in traces() if 'check_run_part' in t)['check_run_part']
-    assert first[0] == again[0] == 0 and "WSX_SCENARIO_PART='tasks'" in first[1] and "WSX_SCENARIO_PART='tasks'" in again[1] and 'not a full pass' in first[1], (first, again)
-    assert full_run[0] == 0 and 'export WSX_SCENARIO_PART' not in full_run[1] and 'not a full pass' not in full_run[1], full_run
-    assert bad[0] != 0 and '--part takes one name' in bad[1], bad
-    assert plain_check[0] != 0 and '--part needs exactly one scenario' in plain_check[1], plain_check
-    ran = next(e for e in log(parted) if e['kind'] == 'check_run')['results']
-    assert len(ran) == 1 and ran[0]['command'].startswith("export WSX_SCENARIO_PART='tasks'; ") and 'part=[tasks]' in ran[0]['output'], ran
-    assert not [e for e in done['result']['result']['evidence'] if 'recorded by the host' in e['check']], done['result']
-    full = js('task', 'new', 'CHECKRUN_LATER parted WORK full.txt')['id']
-    done = wait_state(full, 'ready', 'failed')
-    assert done['state'] == 'ready', log(full)
-    for n in (parted, full):
-        js('task', 'close', n, '--discard')
+    # ^ A scenario's --part: crates/wsx/tests/task_check_run.rs.
     # 32v. Two lanes (docs/tasks.md "Check slot"): a scenario check-run holds the scenarios lane, a
     # task's result checks still run at once in the checks lane, and a second scenario run waits
     # with the scenarios reason.
@@ -6086,47 +5798,8 @@ def part_host(created=None):
         fake.write_text('#!/bin/sh\nexport FAKE_CLAUDE_TRACE=' + str(tmp / 'fake-claude.trace') + '\nexec ' + sys.executable + ' ' + str(fake_script) + ' "$@"\n')
         configure(LAND_CONFIG, 'fake claude')
 
-    # 32h. A dirty main checkout (docs/tasks.md "Landing"): a changed file the land does not
-    # touch stays dirty and the land goes on; one the land changes too refuses it, naming only
-    # that file, and the ledger named it before the press. The message keeps the path's '/'.
-    mark('32h2')
-    (project / '.gitignore').write_text('target/\nunrelated/\n')
-    free = js('task', 'new', 'WORK free.txt')['id']
-    wait_state(free, 'ready', 'failed')
-    assert next(row for row in json.loads(cli('chat', 'ledger').stdout)['open'] if row['id'] == free)['land_blocked_by'] == []
-    assert land(free)['state'] == 'landed' and main_has('free.txt')
-    assert git('status', '--porcelain', '--', '.gitignore') == 'M .gitignore'
-    wait_closed(free)
-    (project / 'README').write_text('dirty\n')
-    overlap = js('task', 'new', 'WORK README')['id']
-    wait_state(overlap, 'ready', 'failed')
-    row = next(row for row in json.loads(cli('chat', 'ledger').stdout)['open'] if row['id'] == overlap)
-    assert row['land_blocked_by'] == ['README'], row
-    refused = land(overlap, ok=False)['message']
-    assert 'uncommitted changes in README that this land changes too' in refused, refused
-    assert '.gitignore' not in refused and 'scratch.txt' not in refused, refused
-    named = re.search(r'stash them in (\S+), then land again', refused)
-    assert named and named.group(1).startswith('/') and os.path.realpath(named.group(1)) == os.path.realpath(project), refused
-    assert show(overlap)['state'] == 'ready' and (project / 'README').read_text() == 'dirty\n'
-    js('task', 'close', overlap, '--discard')
-    git('checkout', '--', 'README', '.gitignore')
-
-    # 32o. A check-run of a check that prints more than the broker's 3 MiB answer (docs/tasks.md
-    mark('32o')
-    # "Checks, revisions and report"): the worker gets its exit code and the end of its output,
-    # whose first line names the log in the task folder that holds all of it.
-    configure(LAND_CONFIG + '  scenarios:\n    loud: yes check-line | head -c 4000000; echo loud-end; exit 3\n', 'a loud scenario')
-    loud = js('task', 'new', 'CHECKRUN_WITH loud WORK loud.txt')['id']
-    assert wait_state(loud, 'ready', 'failed')['state'] == 'ready'
-    code, said = [t for t in traces() if 'check_run_with' in t][-1]['check_run_with'][0]
-    assert code == 1 and 'check 2 `yes check-line' in said and ': exit 3' in said, said
-    assert said.rstrip().endswith('check-line\nchecloud-end') and len(said) < 16 * 1024, said[-300:]
-    cut = re.search(r'\[the first (\d+) bytes are cut; the whole output is in (\S+)\]', said)
-    whole = Path(show(loud)['log']).parent / 'check-run-2.log'
-    assert cut and os.path.samefile(cut.group(2), whole) and whole.stat().st_size == 4000000 + len('loud-end\n'), said[:300]
-    js('task', 'close', loud, '--discard')
-    configure(LAND_CONFIG, 'no loud scenario')
-
+    # ^ A dirty main checkout and a land: crates/wsx/tests/land_dirty_main.rs.
+    # ^ A check-run that prints more than the broker holds: crates/wsx/tests/task_check_run.rs.
     # 32oa. The same failure in two tasks (docs/tasks.md "Checks, revisions and report", "Shared
     # failure"): the second task's check-run answer says it is likely on main, the manager gets
     # one event naming both, a third task adds none, and a different line posts nothing.
@@ -6220,25 +5893,7 @@ def part_host(created=None):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'no path scenarios')
 
-    # 32p. A turn with no result (docs/tasks.md "Claude adapter"): Claude's own 0-token turn for
-    mark('32p')
-    # a background-task notification is ignored; a model turn without a result is asked once.
-    def result_retries(n):
-        session = show(n)['record']['agent_session']
-        return [t for t in traces() if t.get('session') == session
-                and t.get('message', '').startswith('Your turn ended without a result.')]
-    once = js('task', 'new', 'NORESULT 1 WORK once.txt')['id']
-    assert wait_state(once, 'ready', 'failed')['state'] == 'ready', show(once)['result']
-    assert len(result_retries(once)) == 1
-    assert [(e['status'], e.get('trigger')) for e in log(once) if e['kind'] == 'result'] == [('done', 'result_retry')]
-    assert any(e.get('text') == 'claude ended its own turn with no result: ignored' for e in log(once))
-    twice = js('task', 'new', 'NORESULT 2 WORK twice.txt')['id']
-    assert wait_state(twice, 'ready', 'failed')['state'] == 'failed'
-    assert len(result_retries(twice)) == 1
-    assert show(twice)['result']['result']['summary'] == 'the agent ended with success and no result'
-    js('task', 'close', once, '--discard')
-    js('task', 'close', twice, '--discard')
-
+    # ^ A turn with no result: crates/wsx/tests/task_turns.rs.
     # 32q. Parent tasks (docs/tasks.md "Parent tasks"): children land into a held parent, which
     mark('32q')
     # checks each child's commits and lands on main once, with the children's To check items.
@@ -6525,28 +6180,7 @@ def part_host(created=None):
     for n in (manager_task, chat_task):
         js('task', 'close', n, '--discard')
 
-    # 32v. A turn that ends while a background job runs is no missing result (docs/tasks.md
-    # "Claude adapter"): the host waits for Claude's own turn after the job's notice.
-    mark('32v2')
-    waiting = 'the turn ended while 1 background job(s) run: waiting for their notice'
-    bg = js('task', 'new', 'BACKGROUND 2 WORK background.txt')['id']
-    assert wait_state(bg, 'ready', 'failed')['state'] == 'ready', show(bg)['result']
-    assert result_retries(bg) == []
-    assert [e['status'] for e in log(bg) if e['kind'] == 'result'] == ['done']
-    assert [e.get('text') for e in log(bg)].count(waiting) == 1
-    # ^ A job that never reports waits at most tasks.checkTimeoutSeconds, then the result is
-    # asked for once.
-    configure(LAND_CONFIG + '  checkTimeoutSeconds: 2\n', 'short background wait')
-    stuck = js('task', 'new', 'BACKGROUND never WORK stuck.txt')['id']
-    assert wait_state(stuck, 'ready', 'failed')['state'] == 'ready', show(stuck)['result']
-    assert len(result_retries(stuck)) == 1
-    texts = [e.get('text') for e in log(stuck)]
-    assert waiting in texts and 'no notice from 1 background job(s) in 2 s: the turn ended without a result' in texts, texts
-    assert texts.index(waiting) < texts.index('no notice from 1 background job(s) in 2 s: the turn ended without a result')
-    configure(LAND_CONFIG, 'background wait back to default')
-    js('task', 'close', bg, '--discard')
-    js('task', 'close', stuck, '--discard')
-
+    # ^ A turn that ends while a background job runs: crates/wsx/tests/task_turns.rs.
     # 32r. Usage fields and idle rotation (docs/tasks.md "Usage", "Context rotation"): each result
     mark('32r2')
     # names its step, what started its turn and its main-conversation calls; a turn after the agent
@@ -6594,47 +6228,7 @@ def part_host(created=None):
     js('task', 'close', idler, '--discard')
     configure(LAND_CONFIG, 'no idle rotation')
 
-    # 32r3. A chat's purpose (docs/tasks.md "Chats"): `chat goal` shows, sets and clears it, for the
-    mark('32r3')
-    # main chat too; the agent's instructions read it at the next turn (the running agent is
-    # dropped, the digest decides the rest); a chat's agent changes it only on the owner's word.
-    first_goal, second_goal, no_goal = base / 'purpose-1.md', base / 'purpose-2.md', base / 'purpose-none.md'
-    first_goal.write_text('Keep the invoices exact.\n')
-    second_goal.write_text('Own the refunds.\n')
-    no_goal.write_text('')
-
-    def last_instructions(chat):
-        return [t for t in traces() if t.get('launch') and t.get('actor') == 'chat:' + chat][-1]['instructions']
-    js('chat', 'new', 'purpose', '--goal', first_goal)
-    assert js('chat', 'goal', 'purpose')['goal'] == first_goal.read_text()
-    chat_reply('purpose', js('chat', 'say', '--to', 'purpose', 'FIRST TURN')['id'])
-    assert "The owner's purpose for this chat:\nKeep the invoices exact." in last_instructions('purpose')
-    asked = js('chat', 'say', '--to', 'purpose', 'RUN wsx chat goal purpose --goal %s -p demo --json' % second_goal)
-    assert "chat goal is the owner's" in chat_reply('purpose', asked['id'])['text']
-    assert (chats_dir / 'purpose/goal.md').read_text() == first_goal.read_text()
-    said = js('chat', 'say', '--to', 'purpose', 'change your purpose\nRUN wsx chat goal purpose --goal %s --owner-said OWNER_SAID -p demo --json' % second_goal)
-    assert '-> 0 ' in chat_reply('purpose', said['id'])['text']
-    assert (chats_dir / 'purpose/goal.md').read_text() == second_goal.read_text()
-    chat_reply('purpose', js('chat', 'say', '--to', 'purpose', 'SECOND TURN')['id'])
-    assert "The owner's purpose for this chat:\nOwn the refunds." in last_instructions('purpose') and 'invoices' not in last_instructions('purpose')
-    js('chat', 'goal', 'purpose', '--goal', no_goal)
-    chat_reply('purpose', js('chat', 'say', '--to', 'purpose', 'THIRD TURN')['id'])
-    assert 'purpose for this chat' not in last_instructions('purpose') and not (chats_dir / 'purpose/goal.md').exists()
-    assert last_instructions('purpose').startswith('You are purpose, a chat of the project demo.\n\n')
-    # ^ The main chat has none by default: it opens as the lead (docs/tasks.md "Lead and forks"); with one, its
-    # instructions open with the purpose and no lead preamble.
-    assert 'purpose for this chat' not in last_instructions('demo') and last_instructions('demo').startswith('You are the lead of the project demo:')
-    js('chat', 'goal', 'demo', '--goal', first_goal)
-    reply_to(js('chat', 'say', 'HOME TURN')['id'])
-    assert last_instructions('demo').startswith("The owner's purpose for this chat:\nKeep the invoices exact.\n\n"), last_instructions('demo')[:200]
-    assert 'You are the lead' not in last_instructions('demo')
-    js('chat', 'goal', 'demo', '--goal', no_goal)
-    reply_to(js('chat', 'say', 'HOME TURN 2')['id'])
-    assert 'purpose for this chat' not in last_instructions('demo')
-    (base / 'purpose-big.md').write_text('x' * 9000)
-    assert 'larger than 8192 bytes' in cli('chat', 'goal', 'purpose', '--goal', base / 'purpose-big.md', ok=False).stderr
-    js('chat', 'close', 'purpose')
-
+    # ^ A chat's purpose (`chat goal`): crates/wsx/tests/chat_goal.rs.
     # 32s. Keep-warm pings (docs/tasks.md "Context rotation", "Chat host"): a worker that waits on
     mark('32s2')
     # its checks gets a no-op turn tasks.agent.keepWarmSeconds after its last answer, at most 3 in
