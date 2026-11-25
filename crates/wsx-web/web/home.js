@@ -73,12 +73,13 @@ function statusLine({ chat, news }) {
 // its projects on a line of their own (`projects`, muted); then the status line, or, while the chat
 // has a message this device has not read, that message in bold (docs/web-client-tasks.md "Home").
 // `typing`: the manager's name while its turn runs.
-function RowText({ name, projects, asks, counts, last, now, line, news, typing }) {
+// ^ `lead`: the project's main chat with no goal, its lead; the name reads "<project> lead" as the lead's replies do.
+function RowText({ name, lead, projects, asks, counts, last, now, line, news, typing }) {
   return html`
     <span class="row-main">
       <span class="row-head">
         <span class="row-work">
-          ${news ? html`<span class="news-mark" role="img" aria-label="New message"></span>` : null}<span class="row-label" data-tone=${asks ? "accent" : null}>${name}${asks ? html`<span class="visually-hidden">, Asks you</span>` : null}</span>
+          ${news ? html`<span class="news-mark" role="img" aria-label="New message"></span>` : null}<span class="row-label" data-tone=${asks ? "accent" : null} data-role=${lead ? "lead" : null}>${name}${asks ? html`<span class="visually-hidden">, Asks you</span>` : null}</span>
         </span>
         <${TrayIcons} counts=${counts} />
         ${last ? html`<span class="time">${ago(now - last)}</span>` : null}
@@ -130,7 +131,7 @@ function ChatRow({ row, current, now, onDismiss, onFolder }) {
       onContextMenu=${(event) => { if (press.current.touch) event.preventDefault(); }}>
       <a class=${main ? "row-link home-row" : "row-link chat-row"} href=${chatHash(chat.name)} aria-current=${current ? "page" : null}
         aria-label=${main ? null : [`Chat ${chat.shown} of ${projects}`, news && "unread", ...shownTrays(counts).map((tray) => trayWords(tray, counts))].filter(Boolean).join(", ")}>
-        <${RowText} name=${main ? project.name : chat.shown} projects=${main ? null : projects} asks=${chat.asks > 0} counts=${counts}
+        <${RowText} name=${main ? project.name : chat.shown} lead=${main && !chat.goal} projects=${main ? null : projects} asks=${chat.asks > 0} counts=${counts}
           last=${row.last} now=${now} line=${line} news=${Boolean(news)} typing=${chat.busy ? chat.manager : null} />
       </a>
       ${slidable && html`<button class="row-more" type="button" aria-label=${`Folder of chat ${chat.shown}`} aria-haspopup="dialog" onClick=${() => onFolder(row)}><span aria-hidden="true">⋯</span></button>`}

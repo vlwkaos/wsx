@@ -1049,7 +1049,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, c
     <header class="bar">
       <${Back} fallback=${room ? `#/p/${id}` : "#/"} />
       <div class="bar-title">
-        <span class="bar-label">${room ? chat?.manager.name ?? room : project.name}</span>
+        <span class="bar-label" data-role=${!room && lead ? "lead" : null}>${room ? chat?.manager.name ?? room : project.name}</span>
         ${room && chat?.manager.projects && html`<span class="bar-projects">${chat.manager.projects.join(", ")}</span>`}
         ${!managerWord && chat?.manager.agent && html`<span class="bar-model" title="Model">${agentWords(chat.manager.agent)}</span>`}
         ${managerWord && html`<span class="bar-state" key=${managerWord} data-tone=${typing ? "working" : "danger"}>${typing

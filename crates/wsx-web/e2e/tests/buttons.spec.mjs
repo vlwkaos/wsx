@@ -53,6 +53,9 @@ test("buttons have two drawn sizes in one hit box, and the For you rows line up"
   // ^ The lead lands #3: a land needs the owner's approval (land.auto is off in the fixture).
   wsx.json("chat", "say", "RUN wsx task land 3 --json");
 
+  // ^ The lead (the main chat, no goal) reads "demo lead" in its top row and on Home, as its replies do.
+  const tag = (selector) => page.locator(selector).evaluate((node) => `${node.textContent} ${getComputedStyle(node, "::after").content.replaceAll('"', "")}`);
+  expect(await tag(".bar-label")).toBe("demo lead");
   await page.locator("button.pill[data-kind='you']").click();
   await expect(page.locator(".reservoir .need")).toHaveCount(4, { timeout: 60_000 });
   await expect(page.locator(".reservoir .need-action")).toHaveCount(5);
