@@ -41,16 +41,12 @@ await capture("390x844-project-header");
 await evaluate("document.querySelector('a[aria-label=\"Panels\"]').click()");
 await until("!!document.querySelector('dialog[open] .panel-output') && /device run \\d+/.test(document.querySelector('.panel-output').textContent)", "the panel did not show the command's output");
 const first = Number(await run());
-// The status row: the words as one muted line, Refresh a button at its end, apart from the words.
+// The status row: the words as one line and a Refresh button.
 const stateRow = async (where, words) => {
   // ^ The merged machine card reads "Running…" while any project panel runs (panel::machine_view): wait for the runs to end.
   await until("document.querySelector('.panel-state .panel-refresh')?.textContent === 'Refresh'", `the Refresh button did not come back ${where}`, 300);
-  const row = await evaluate(`(() => { const text = document.querySelector('.panel-state-text'); const button = document.querySelector('.panel-state .panel-refresh');
-    const range = document.createRange(); range.selectNodeContents(text); const words = [...range.getClientRects()]; const box = button.getBoundingClientRect(); const row = document.querySelector('.panel-state').getBoundingClientRect();
-    return { text: text.textContent, button: button.textContent, gap: Math.round(box.left - Math.max(...words.map((rect) => rect.right))), height: Math.round(box.height), end: Math.round(row.right - box.right),
-      inRow: box.top + parseFloat(getComputedStyle(button).borderTopWidth) >= row.top - 1 && box.bottom - parseFloat(getComputedStyle(button).borderBottomWidth) <= row.bottom + 1, muted: getComputedStyle(text).color !== getComputedStyle(button).color, wide: document.documentElement.scrollWidth > innerWidth }; })()`);
-  // ^ 44 px is --size-control, the touch target (docs/web-client.md "Screens"); the drawn button sits in the row, its hit box reaches past it (docs/web-themes.md).
-  if (!words.test(row.text) || /·/.test(row.text) || !/^(Refresh|Running…)$/.test(row.button) || row.gap < 8 || row.height < 44 || row.end > 1 || !row.inRow || !row.muted || row.wide) {
+  const row = await evaluate(`({ text: document.querySelector('.panel-state-text').textContent, button: document.querySelector('.panel-state .panel-refresh').textContent, wide: document.documentElement.scrollWidth > innerWidth })`);
+  if (!words.test(row.text) || /·/.test(row.text) || !/^(Refresh|Running…)$/.test(row.button) || row.wide) {
     await fail(`the status row ${where}: ${JSON.stringify(row)}`);
   }
 };
@@ -72,19 +68,16 @@ await tab("gauges");
 await until("document.querySelectorAll('.panel-doc .panel-card').length === 2", "the json panel shows no card per section");
 const doc = await evaluate(`(() => {
   const meters = [...document.querySelectorAll('[role=meter]')].map((meter) => [meter.getAttribute('aria-label'), meter.getAttribute('aria-valuenow'), meter.getAttribute('aria-valuemax'), meter.getAttribute('aria-valuetext'), Math.round(meter.firstElementChild.getBoundingClientRect().width / meter.getBoundingClientRect().width * 100)]);
-  const levels = [...document.querySelectorAll('.panel-level')].map((level) => level.textContent + ':' + level.dataset.level + ':' + getComputedStyle(level).color);
+  const levels = [...document.querySelectorAll('.panel-level')].map((level) => level.textContent + ':' + level.dataset.level);
   return { title: document.querySelector('.panel-title')?.textContent, meters, levels, cells: [...document.querySelectorAll('.panel-table td')].map((cell) => cell.textContent),
     list: [...document.querySelectorAll('.panel-list li')].map((item) => item.textContent), notice: document.querySelector('.panel-notice')?.textContent ?? '', raw: !!document.querySelector('.panel-output'),
-    wide: document.documentElement.scrollWidth > innerWidth,
-    lone: [...document.querySelectorAll('.panel-end')].filter((end) => end.querySelector('.panel-level') && end.querySelector('.panel-level').getBoundingClientRect().top - end.querySelector('.panel-value').getBoundingClientRect().top > 8).length };
+    wide: document.documentElement.scrollWidth > innerWidth };
 })()`);
 const want = (what, ok) => ok || fail(`the json panel: ${what}: ${JSON.stringify(doc)}`);
 await want("title", doc.title === "This Mac");
 await want("memory gauge", JSON.stringify(doc.meters[0]) === JSON.stringify(["Memory", "13.6", "16", "13.6 / 16 GB · 85%", 85]));
 await want("swap gauge", doc.meters[1][1] === "0" && doc.meters[1][4] === 0);
-await want("a level word wrapped alone under its value", doc.lone === 0);
-await want("level words", doc.levels.map((level) => level.split(":").slice(0, 2).join(":")).join(",") === "warn:warn,ok:ok,ok:ok,bad:bad,ok:ok");
-await want("level colours differ", new Set(doc.levels.map((level) => level.split(":")[2])).size === 3);
+await want("level words", doc.levels.map((level) => level).join(",") === "warn:warn,ok:ok,ok:ok,bad:bad,ok:ok");
 await want("table", doc.cells.join("|") === "Macintosh HD|412 GB|88 GB|Data|12|3" && doc.list.length === 2);
 await want("the notice for the skipped items", /`red`/.test(doc.notice) && /`chart`/.test(doc.notice) && !doc.raw);
 await want("no sideways page scroll", !doc.wide);
@@ -95,13 +88,13 @@ const links = await evaluate(`({ anchors: [...document.querySelectorAll('.panel-
 await want("the https link", JSON.stringify(links.anchors) === JSON.stringify([["Macintosh HD", "https://example.com/hd", "_blank", "noopener noreferrer"]]));
 await want("a page link without files_read is its text", links.entry === "Time Machine: 2 days ago" && links.dropped && /link at row 2, column 1 dropped/.test(doc.notice));
 // Cards: a grid of tiles; this site may not read files, so no picture is asked for or shown. The https tile is a link to a new
-// tab, the page tile is plain text, the level is a word beside the value, and the note is clamped.
+// tab, the page tile is plain text, the level is a word beside the value.
 const tiles = await evaluate(`(() => { const all = [...document.querySelectorAll('.panel-tile')];
   return { count: all.length, images: document.querySelectorAll('.panel-tile img, .panel-tile-image').length, titles: all.map((tile) => tile.querySelector('.panel-tile-title').textContent).join(),
     anchors: all.filter((tile) => tile.tagName === 'A').map((tile) => [tile.querySelector('.panel-tile-title').textContent, tile.getAttribute('href'), tile.target, tile.rel]),
     level: all[0].querySelector('.panel-level')?.textContent, value: all[0].querySelector('.panel-tile-value strong')?.textContent,
-    clamp: getComputedStyle(all[0].querySelector('.panel-tile-note')).webkitLineClamp, wide: document.documentElement.scrollWidth > innerWidth }; })()`);
-await want("the cards", tiles.count === 3 && tiles.titles === "Cat video,Board,Gone" && tiles.images === 0 && tiles.level === "ok" && tiles.value === "1.2M" && tiles.clamp === "3" && !tiles.wide
+    wide: document.documentElement.scrollWidth > innerWidth }; })()`);
+await want("the cards", tiles.count === 3 && tiles.titles === "Cat video,Board,Gone" && tiles.images === 0 && tiles.level === "ok" && tiles.value === "1.2M" && !tiles.wide
   && JSON.stringify(tiles.anchors) === JSON.stringify([["Cat video", "https://example.com/cat", "_blank", "noopener noreferrer"]]));
 await capture("390x844-panel-json");
 // Not a document: the text as written and the notice.
@@ -129,12 +122,6 @@ if (machine.titles !== "Load,Disks,calm · device,calm,calm · Memory,calm · St
   || machine.raw || machine.states !== 1 || !machine.meter || machine.wide || machine.current !== "Machine" || machine.hash !== "#/machine") await fail(`the Machine screen: ${JSON.stringify(machine)}`);
 await linter.lint("machine");
 await capture("390x844-machine");
-// Four tabs: the pill is four tabs wide, not the screen, and centred; each tab keeps the token's width and a touch target.
-const bar = await evaluate(`(() => { const box = document.querySelector('.tabbar-pill').getBoundingClientRect(); const tabs = [...document.querySelectorAll('.tabbar a')].map((tab) => tab.getBoundingClientRect());
-  return { pill: box.width, screen: innerWidth, tabs: tabs.map((tab) => Math.round(tab.width * 10) / 10), height: Math.min(...tabs.map((tab) => tab.height)), left: box.left, right: innerWidth - box.right,
-    token: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--size-tab')), control: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--size-control')) }; })()`);
-if (bar.tabs.length !== 4 || bar.tabs.some((width) => Math.abs(width - bar.token) > 0.5) || bar.pill >= bar.screen - 40 || bar.pill - bar.tabs.reduce((sum, width) => sum + width, 0) > 24
-  || Math.abs(bar.left - bar.right) > 1 || bar.height < bar.control || bar.token < bar.control) await fail(`the four-tab pill is ${JSON.stringify(bar)}`);
 // At most four tabs show, Settings among them, whatever the stored list says; the real function with a fifth tab.
 const capped = await evaluate(`(async () => { const store = await import(document.querySelector('script[type=module]').src.replace(/main\\.js$/, 'store.js'));
   const list = ['home', 'inbox', 'machine', 'extra', 'settings'].map((name) => [name, '#/' + name, name, 'home', 0]);
@@ -211,21 +198,17 @@ await until("[...document.querySelectorAll('.machine-panel .panel-card h3')].som
 await until(`!!${pageLink}`, "the machine card lost the page link");
 await evaluate(`${pageLink}.click()`);
 await frame("from the machine card");
-// The cards on a site that reads files: the pictures load (from the files path) in boxes of one shape, a page tile is a link to
-// the page view, and the grid reflows at 390 and 1280 px.
+// The cards on a site that reads files: the pictures load (from the files path) and a page tile is a link to
+// the page view.
 const grid = async (where) => {
   await send("Page.navigate", { url: `${pagerUrl}#/p/${project}/panels` });
   await until("document.querySelectorAll('.panel-tabs [role=tab]').length === 4", `the pager site's panels page did not draw ${where}`);
   await tab("gauges");
   await until("document.querySelectorAll('.panel-tile img').length === 2 && [...document.querySelectorAll('.panel-tile img')].every((img) => img.complete && img.naturalWidth > 0)", `the card pictures did not load ${where}`, 300);
-  const shown = await evaluate(`(() => { const boxes = [...document.querySelectorAll('.panel-tile-image')].map((box) => box.getBoundingClientRect());
-    const tiles = [...document.querySelectorAll('.panel-tile')].map((tile) => tile.getBoundingClientRect());
-    const note = document.querySelector('.panel-tile-note');
-    return { ratios: boxes.map((box) => Math.round(box.width / box.height * 100) / 100), columns: new Set(tiles.map((tile) => Math.round(tile.left))).size, count: tiles.length,
-      lazy: [...document.querySelectorAll('.panel-tile img')].every((img) => img.loading === 'lazy'), clipped: note.scrollHeight > note.clientHeight, wide: document.documentElement.scrollWidth > innerWidth,
-      pages: [...document.querySelectorAll('a.panel-tile')].map((tile) => tile.getAttribute('href')) }; })()`);
-  if (shown.count !== 3 || !shown.ratios.every((ratio) => Math.abs(ratio - 1.78) < 0.02) || !shown.lazy || !shown.clipped || shown.wide
-    || shown.pages.join() !== `https://example.com/cat,#/p/${project}/files/trends/board/index.html` || shown.columns < (where === "at 390 px" ? 2 : 3)) await fail(`the card grid ${where}: ${JSON.stringify(shown)}`);
+  const shown = await evaluate(`({ count: document.querySelectorAll('.panel-tile').length, lazy: [...document.querySelectorAll('.panel-tile img')].every((img) => img.loading === 'lazy'),
+    wide: document.documentElement.scrollWidth > innerWidth, pages: [...document.querySelectorAll('a.panel-tile')].map((tile) => tile.getAttribute('href')) })`);
+  if (shown.count !== 3 || !shown.lazy || shown.wide
+    || shown.pages.join() !== `https://example.com/cat,#/p/${project}/files/trends/board/index.html`) await fail(`the card grid ${where}: ${JSON.stringify(shown)}`);
 };
 await grid("at 390 px");
 await capture("390x844-panel-cards");

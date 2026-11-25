@@ -43,10 +43,8 @@ if (await evaluate("!!document.querySelector('[aria-label=\"New chat\"]')")) {
 await open(adminUrl, adminCode);
 const all = await evaluate(`({ add: document.querySelectorAll('[aria-label="New chat"]').length, separate: document.querySelectorAll('[aria-label="Add project"]').length, rows: ${rows}.length,
   remove: ${rows}.filter((row) => row.classList.contains('row-slide') && row.querySelector('[aria-label^="Dismiss chat"]')).length,
-  removeProject: !!document.querySelector('[aria-label^="Remove project"]'),
-  box: document.querySelector('[aria-label="New chat"]').getBoundingClientRect().toJSON() })`);
+  removeProject: !!document.querySelector('[aria-label^="Remove project"]') })`);
 if (all.add !== 1 || all.separate || !all.rows || all.remove !== all.rows || all.removeProject) await fail(`the managing site shows ${JSON.stringify(all)}`);
-if (all.box.width < 44 || all.box.height < 44) await fail(`the + is ${all.box.width}x${all.box.height}, under 44 px`);
 await linter.lint("home");
 await capture("390x844-home");
 

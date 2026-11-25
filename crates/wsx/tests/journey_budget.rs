@@ -11,9 +11,9 @@ use std::path::Path;
 const JOURNEYS: [(&str, usize); 5] = [
     ("scripts/test-task.py", 7751),
     ("scripts/test-web-client.py", 5560),
-    ("scripts/web-tasks-check.mjs", 4979),
+    ("scripts/web-tasks-check.mjs", 4509),
     ("scripts/runtime-smoke.py", 3410),
-    ("scripts/web-browser-check.mjs", 1530),
+    ("scripts/web-browser-check.mjs", 1339),
 ];
 
 /// How far under its ceiling a journey may fall before the ceiling must come down.
