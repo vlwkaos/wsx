@@ -565,13 +565,9 @@ pub fn files() -> Result<Vec<PathBuf>> {
         .collect())
 }
 
-/// `${XDG_CONFIG_HOME:-$HOME/.config}/wsx/web`, like the plugin folder.
+/// `<user config>/web` (`${XDG_CONFIG_HOME:-$HOME/.config}/wsx/web`, or `$WSX_HOME/config/web`), like the plugin folder.
 fn site_folder() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|root| !root.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .map(|root| root.join("wsx/web"))
+    wsx_core::folders::user_config_dir().map(|root| root.join("web"))
 }
 
 /// A `*.toml` regular file of the site folder and the id it declares, if readable.

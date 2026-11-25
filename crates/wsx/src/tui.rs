@@ -46,11 +46,11 @@ fn record_mode_event_at(
     error: Option<&io::Error>,
     source: &std::panic::Location<'_>,
 ) {
-    let Some(cache) = dirs::cache_dir() else {
+    let Some(cache) = wsx_core::folders::cache_dir() else {
         return;
     };
     let _ = append_mode_event_at(
-        &cache.join("wsx/ui-terminal-diagnostics-v1.jsonl"),
+        &cache.join("ui-terminal-diagnostics-v1.jsonl"),
         event,
         error,
         source,
@@ -182,7 +182,7 @@ fn stderr_log() -> Option<(std::os::fd::OwnedFd, File)> {
     if !io::stderr().is_terminal() {
         return None;
     }
-    let log = open_private_append(&dirs::cache_dir()?.join("wsx/ui-stderr.log")).ok()?;
+    let log = open_private_append(&wsx_core::folders::cache_dir()?.join("ui-stderr.log")).ok()?;
     if log.metadata().ok()?.len() > 1024 * 1024 {
         log.set_len(0).ok()?;
     }

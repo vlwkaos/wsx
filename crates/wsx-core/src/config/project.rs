@@ -528,11 +528,7 @@ pub fn load_task_config(repo_path: &Path) -> Result<TaskConfig, String> {
 /// `tasks.workflow.steps` and `tasks.chats.standIns` are read.
 /// ref: docs/tasks.md "Workflow", "Agents"
 fn owner_config_path() -> Option<std::path::PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
-        .map(|dir| dir.join("wsx").join(PROJECT_CONFIG_FILE))
+    crate::folders::user_config_dir().map(|dir| dir.join(PROJECT_CONFIG_FILE))
 }
 
 fn read_tasks(path: &Path) -> Result<TaskConfig, String> {

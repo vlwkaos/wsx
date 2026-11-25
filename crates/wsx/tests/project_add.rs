@@ -82,3 +82,30 @@ fn a_git_url_alone_clones_beside_the_current_project() {
         "{refused:?}"
     );
 }
+
+// ref: docs/daemon-discovery.md "Folders"
+#[test]
+fn wsx_home_keeps_a_second_wsx_config_apart_from_the_owners() {
+    let fixture = Fixture::new();
+    let home = fixture.root.join("home");
+    let second = fixture.root.join("second");
+    let gamma = home.join("ws-b/gamma");
+    fixture.git(&["clone", "-q", ".", gamma.to_str().unwrap()]);
+    // ^ HOME stays the owner's: only `WSX_HOME` moves wsx's own folders.
+    let added = fixture
+        .command(Path::new(env!("CARGO_BIN_EXE_wsx")))
+        .env("WSX_HOME", &second)
+        .args(["project", "add", gamma.to_str().unwrap(), "--json"])
+        .output()
+        .expect("run wsx");
+    assert!(added.status.success(), "{added:?}");
+    let own = std::fs::read_to_string(second.join("config/config-v2.toml"))
+        .expect("the second wsx's config");
+    assert!(own.contains("gamma"), "{own}");
+    let owner = home.join("Library/Application Support/wsx/config-v2.toml");
+    let owners = std::fs::read_to_string(&owner).unwrap_or_default();
+    assert!(
+        !owners.contains("gamma"),
+        "the owner's config got the project: {owners}"
+    );
+}

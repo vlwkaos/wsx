@@ -470,17 +470,9 @@ impl Boundary {
     }
 }
 
-/// Where wsx keeps its configuration: the platform folder and the XDG one.
+/// Where wsx keeps its configuration (`folders::all_config_dirs`).
 fn config_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = dirs::config_dir().into_iter().collect();
-    let xdg = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".config")));
-    dirs.extend(xdg);
-    let mut dirs: Vec<PathBuf> = dirs.into_iter().map(|dir| dir.join("wsx")).collect();
-    dirs.dedup();
-    dirs
+    wsx_core::folders::all_config_dirs()
 }
 
 /// The path as Seatbelt matches it: symlinks resolved (`/var` is `/private/var` on macOS),

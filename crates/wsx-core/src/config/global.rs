@@ -803,11 +803,11 @@ impl GlobalConfig {
     }
 
     pub(crate) fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|directory| directory.join("wsx").join(CONFIG_V2_FILE))
+        crate::folders::config_dir().map(|directory| directory.join(CONFIG_V2_FILE))
     }
 
     fn legacy_config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|directory| directory.join("wsx").join(LEGACY_CONFIG_FILE))
+        crate::folders::config_dir().map(|directory| directory.join(LEGACY_CONFIG_FILE))
     }
 
     /// Returns `(config, warning)`. The v2 path isolates wsx 0.20 from older

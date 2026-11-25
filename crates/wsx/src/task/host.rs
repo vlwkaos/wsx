@@ -4993,10 +4993,11 @@ pub(super) fn light(command: &str) -> bool {
 }
 
 /// A project command's environment: no `WSX_*` variable from the caller, so its tests act as
-/// the owner, not as the worker or lead that started it. Checks and deploys share it.
+/// the owner, not as the worker or lead that started it. Checks and deploys share it. `WSX_HOME`
+/// stays: it names which wsx this is, not who acts (docs/daemon-discovery.md "Folders").
 pub(super) fn clean_env(process: &mut std::process::Command) {
     for (name, _) in std::env::vars_os() {
-        if name.to_string_lossy().starts_with("WSX_") {
+        if name.to_string_lossy().starts_with("WSX_") && name != wsx_core::folders::WSX_HOME_ENV {
             process.env_remove(name);
         }
     }

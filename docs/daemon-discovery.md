@@ -1,18 +1,31 @@
 # Daemon discovery
 
 How `wsx` (TUI and CLI), the agent hook reporter and `wsxd` find each other.
-Code: `crates/wsx-core/src/runtime/protocol.rs` (`state_dir`, `default_socket_path`). The same rule is copied where Rust cannot run: the agent hook reporters (`integrations/common/wsx-reporter.py`, `.mjs`). Change them together; a reporter change bumps every integration version.
+Code: `crates/wsx-core/src/folders.rs` (`state_dir` and the other folders) and `crates/wsx-core/src/runtime/protocol.rs` (`default_socket_path`). The same rule is copied where Rust cannot run: the agent hook reporters (`integrations/common/wsx-reporter.py`, `.mjs`). Change them together; a reporter change bumps every integration version.
 
 ## The socket is the daemon
 
 | Path | Rule |
 |---|---|
-| State folder | `$XDG_STATE_HOME/wsx`, else `$HOME/.local/state/wsx`, else the temp dir. An empty or relative value is ignored (XDG base directory spec), so the folder never depends on the current directory. The task store lives here. |
+| State folder | `$WSX_HOME/state`, else `$XDG_STATE_HOME/wsx`, else `$HOME/.local/state/wsx`, else the temp dir. An empty or relative value is ignored (XDG base directory spec), so the folder never depends on the current directory. The task store lives here. |
 | Socket | `$WSX_SOCKET` when set and not empty, else `<state folder>/wsx.sock`. |
 | Daemon state, singleton lock, routine store | `state.json`, `state.lock`, `routines/` beside the socket (`routine/store.rs:23`). |
 | Bootstrap lock, lifecycle marker, reporter | `<socket>.bootstrap.lock`, `<socket>.lifecycle`, `<socket>.reporter`. |
 
 One socket path is one daemon with one state. Two socket paths are two daemons with their own `state.json`, `state.lock`, `routines/` and `<socket>.*` files, so they never fight over a lock. They do share the state folder: the task store and the project shell records in `shells/` (`ops.rs:701-704`) live there, not beside the socket. Before, the state followed `XDG_STATE_HOME` while the socket followed `WSX_SOCKET`: a second socket on the same state root started a wsxd that found the first one's lock and exited, and its client waited for a socket that never came.
+
+## Folders
+
+`WSX_HOME`, an absolute path, holds all of wsx's own folders, so a second wsx on one machine needs no other variable and leaves `HOME` alone; its agents keep the owner's settings and sign-ins (`scripts/dev.sh` sets only it). Without it, each folder is where it was:
+
+| Folder | With `WSX_HOME` | Without |
+|---|---|---|
+| Config (`config-v2.toml`) | `$WSX_HOME/config` | the platform's: `~/Library/Application Support/wsx` |
+| Web sites (`web/`), plugins (`plugins/`), the owner's `wsx.config.yml` | `$WSX_HOME/config` | `${XDG_CONFIG_HOME:-$HOME/.config}/wsx` |
+| State (task store, socket) | `$WSX_HOME/state` | as above |
+| Cache | `$WSX_HOME/cache` | the platform's: `~/Library/Caches/wsx` |
+
+wsxd gives its panes `WSX_HOME` too, so a `wsx` in a pane reads the same config, and a project check or deploy keeps it. An agent's boundary denies the owner's config folders as well as this wsx's. The agent hook reporters do not read `WSX_HOME`: they take `WSX_SOCKET`, which wsxd sets in every pane; a shell outside a pane sets both (`scripts/dev.sh env`).
 
 ## Panes keep their daemon
 

@@ -724,6 +724,13 @@ pub(crate) fn terminal_agent_environment(
     // directory; the pane's clients keep the socket of the daemon that owns the pane.
     let socket = default_socket_path();
     environment.push(("WSX_SOCKET".into(), socket.to_string_lossy().into_owned()));
+    // ^ A second wsx (`WSX_HOME`, docs/daemon-discovery.md "Folders"): its panes' clients read its config too.
+    if let Some(root) = wsx_core::folders::root() {
+        environment.push((
+            wsx_core::folders::WSX_HOME_ENV.into(),
+            root.to_string_lossy().into_owned(),
+        ));
+    }
     environment.push((
         "WSX_AGENT_REPORT_BIN".into(),
         socket

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # A separate wsx of this checkout's debug build, beside the installed one: its own wsxd, projects,
-# chats, tasks and local web site under .work/dev. Your Claude login and git identity are linked in.
+# chats, tasks and local web site under .work/dev (`WSX_HOME`, docs/daemon-discovery.md "Folders"). HOME stays
+# yours, so every agent keeps its own settings and sign-in, and git its identity.
 #   scripts/dev.sh          build, start wsxd and the web site, open the TUI
 #   scripts/dev.sh web      the same, then open the web page in the browser (paired)
 #   scripts/dev.sh env      print the exports; `eval "$(scripts/dev.sh env)"` runs wsx commands here
@@ -15,16 +16,11 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEV="$REPO/.work/dev"
 PORT="${WSX_DEV_PORT:-4699}"
 SITE=dev
-# ^ The account's home folder, not $HOME: a shell may already run with another HOME (the dev one, a
-# try-out folder), and Claude, git and the Rust toolchain live in the real one.
-REAL_HOME="${WSX_DEV_REAL_HOME:-$(id -P | cut -d: -f9)}"
-[ -d "$REAL_HOME" ] || { echo "dev.sh: no home folder for $(id -un)" >&2; exit 1; }
 
 exports() {
   cat <<EOF
-export HOME="$DEV/home" XDG_CONFIG_HOME="$DEV/config" XDG_STATE_HOME="$DEV/state" XDG_CACHE_HOME="$DEV/cache"
-export WSX_SOCKET="$DEV/state/wsx.sock" WSX_DAEMON_BIN="$REPO/target/debug/wsxd" WSX_DEV_REAL_HOME="$REAL_HOME"
-export RUSTUP_HOME="${RUSTUP_HOME:-$REAL_HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$REAL_HOME/.cargo}"
+# ^ WSX_SOCKET too: an agent hook started from this shell, outside a pane, finds the dev wsxd by it.
+export WSX_HOME="$DEV" WSX_SOCKET="$DEV/state/wsx.sock" WSX_DAEMON_BIN="$REPO/target/debug/wsxd"
 export PATH="$REPO/target/debug:$PATH"
 unset WSX_PANE_ID
 EOF
@@ -32,18 +28,9 @@ EOF
 
 # One-time layout; each run repairs what is missing.
 setup() {
-  mkdir -p "$DEV"/{state,cache,project} "$DEV/config/wsx/web" "$DEV/home/Library/Application Support/wsx"
-  chmod 700 "$DEV" "$DEV/state" "$DEV/config/wsx/web"
-  # ^ Claude, its `~/bin/claude` wrapper (it runs $HOME/.local/bin/claude) and git read the real home.
-  # Claude's sign-in is in the login keychain, which macOS finds under $HOME/Library/Keychains.
-  local item
-  for item in .claude .claude.json .claude-work bin .local/bin .gitconfig Library/Keychains; do
-    if [ -e "$REAL_HOME/$item" ]; then
-      mkdir -p "$(dirname "$DEV/home/$item")"
-      ln -sfn "$REAL_HOME/$item" "$DEV/home/$item"
-    fi
-  done
-  local config="$DEV/home/Library/Application Support/wsx/config-v2.toml"
+  mkdir -p "$DEV"/{state,cache,project} "$DEV/config/web"
+  chmod 700 "$DEV" "$DEV/state" "$DEV/config/web"
+  local config="$DEV/config/config-v2.toml"
   [ -f "$config" ] || printf '[[projects]]\nname = "scratch"\npath = "%s"\n' "$DEV/project" >"$config"
   if [ ! -d "$DEV/project/.git" ]; then
     git -C "$DEV/project" init -q -b main
@@ -51,7 +38,7 @@ setup() {
     git -C "$DEV/project" add README.md
     git -C "$DEV/project" commit -q -m start
   fi
-  local site="$DEV/config/wsx/web/$SITE.toml"
+  local site="$DEV/config/web/$SITE.toml"
   cat >"$site" <<EOF
 id = "$SITE"
 name = "wsx dev"
@@ -95,10 +82,9 @@ stop_web() {
 }
 
 start() {
-  # ^ The exports first: cargo finds the toolchain through RUSTUP_HOME and CARGO_HOME, not this shell's HOME.
-  eval "$(exports)"
   (cd "$REPO" && cargo build -q -p wsx -p wsx-daemon)
   setup
+  eval "$(exports)"
   # ^ `web serve` never starts wsxd; `daemon recover` starts it through the normal bootstrap.
   # `daemon status` exits 0 also when wsxd is stopped: its Runtime line says which.
   daemon_running || wsx daemon recover >/dev/null

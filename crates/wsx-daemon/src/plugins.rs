@@ -3,7 +3,7 @@ pub mod review;
 use serde::Serialize;
 use std::{
     collections::HashSet,
-    env, fs, io,
+    fs, io,
     os::unix::fs::MetadataExt,
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
@@ -27,10 +27,7 @@ pub fn discover() -> Vec<PluginManifest> {
 }
 
 fn plugin_dir() -> Option<PathBuf> {
-    env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .map(|root| root.join("wsx/plugins"))
+    wsx_core::folders::user_config_dir().map(|root| root.join("plugins"))
 }
 
 fn discover_in(dir: &Path) -> io::Result<Vec<PluginManifest>> {

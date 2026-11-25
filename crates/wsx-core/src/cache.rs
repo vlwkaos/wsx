@@ -272,9 +272,9 @@ fn legacy_seeded_touch_cohort(cache: &WorkspaceCache) -> Option<u64> {
 // `$HOME/.cache` fallback could never apply: report the missing directory instead of
 // writing the cache to a shared, fixed `/tmp` path.
 fn cache_file(name: &str) -> anyhow::Result<PathBuf> {
-    let directory = dirs::cache_dir()
+    let directory = crate::folders::cache_dir()
         .ok_or_else(|| anyhow::anyhow!("no cache directory: the home directory is unknown"))?;
-    Ok(directory.join("wsx").join(name))
+    Ok(directory.join(name))
 }
 
 /// The TUI's cache, `workspace-v3.toml` in the platform cache directory. A client resolves it
