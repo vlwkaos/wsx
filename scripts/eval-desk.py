@@ -10,7 +10,9 @@ crates/*/src/** and a top-level Rust integration test crates/<crate>/tests/<name
 A case is the parent commit, the request (the commit message) and the hidden tests (the commit's changed
 crates/*/tests/**/*.rs files, absent or older in the parent).
 
-Each case runs in two arms, each in its own copy of the parent at .work/eval/<run>/<case>/<arm>:
+Each case runs in two arms, each in its own copy of the parent at ~/.cache/eval-desk/<run>/<case>/<arm letter>: outside
+this checkout, whose path an agent would otherwise read off its own folder and open (`git log` there shows the
+answer). A row whose agents named this checkout or the answer commit in a tool call is void (`leaks`).
   solo  one `claude -p "<request>" --output-format json` in an isolated copy (`isolated_copy`), edits and
         Bash allowed, --minutes wall limit.
   desk  an isolated wsx (own HOME, XDG folders, socket and wsxd; built binaries of this checkout) with the
@@ -62,6 +64,10 @@ SCAN = 800  # commits looked at for cases
 DONE_TASK = ('landed', 'closed')
 OWNER_WAIT = ('asks', 'land_stopped', 'owner', 'paused', 'plan')  # waits that only the owner ends
 POLL = 5
+WORK_ROOT = Path.home() / '.cache/eval-desk'  # the arms' folders; see the docstring
+ARM_FOLDER = {'solo': 's', 'desk': 'd', 'desk-opus-lead': 'o'}
+# ^ Short names: tests bind Unix sockets under <workbench>/target/routine-it-<pid>-<n>/a/, and a socket path
+# has at most 103 bytes (crates/wsx/tests/routine_wsxd_lifecycle.rs); a longer one fails every desk check.
 
 STARTED = []  # Popen objects of this run
 CLEANUPS = []  # removals, newest last; skipped with --keep
@@ -374,13 +380,21 @@ def wsx_json(wsx, env, cwd, *argv, timeout=60):
 
 def arm_desk(case, arm_dir, args, evidence, arm='desk'):
     started = time.monotonic()
-    wsx = Path(args.wsx).resolve()
-    wsxd = wsx.with_name('wsxd')
     base = arm_dir.parent
     home, state, cfg, cache, tmp, bindir = (base / n for n in ('dh', 'ds', 'dc', 'dk', 'dt', 'db'))
     CLEANUPS.append(lambda: [shutil.rmtree(p, ignore_errors=True) for p in (home, state, cfg, cache, tmp, bindir)])
-    for folder in (home, state, cfg, cache, tmp):
+    for folder in (home, state, cfg, cache, tmp, bindir):
         folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # ^ Copies of the built binaries: PATH and WSX_DAEMON_BIN would otherwise name this checkout.
+    built = Path(args.wsx).resolve()
+    for name in ('wsx', 'wsxd'):
+        run(['cp', '-c', str(built.with_name(name)), str(bindir / name)])
+    wsx, wsxd = bindir / 'wsx', bindir / 'wsxd'
+    # ^ Zig's global cache follows XDG_CACHE_HOME: without a copy of the owner's, the libghostty-vt build
+    # in each workbench fetches its packages again, which the network refuses, and every check fails.
+    zig = Path(os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache') / 'zig'
+    if zig.is_dir():
+        run(['cp', '-cR', str(zig), str(cache / 'zig')], timeout=600)
     # ^ An isolated copy, not a worktree: wsx makes branches, workbenches and landings in the project, and
     # none of that may reach this repository.
     isolated_copy(case, arm_dir)
@@ -406,7 +420,6 @@ def arm_desk(case, arm_dir, args, evidence, arm='desk'):
         claude = shutil.which('claude')
         if not claude:
             raise RuntimeError('claude is not on PATH')
-        bindir.mkdir(parents=True, exist_ok=True)
         prefix = bindir / 'shell-prefix'
         prefix.write_text('#!/bin/sh\nHOME=%s exec /bin/zsh -c "$1"\n' % shlex.quote(str(home)))
         prefix.chmod(0o755)
@@ -503,18 +516,28 @@ def goal_chats(wsx, env, cwd):
     return [row for row in rows if row.get('state') == 'open' and not row.get('main')]
 
 
+def goal_chat_working(wsx, env, cwd, row):
+    """A goal chat in a turn, or one that has not answered yet: a chat just forked is neither busy nor done."""
+    if row.get('busy'):
+        return True
+    entries = wsx_json(wsx, env, cwd, 'chat', 'read', '--chat', row['name']).get('entries', [])
+    return not any(e.get('kind') == 'reply' for e in entries)
+
+
 def owner_should_answer(wsx, env, cwd):
     """The chat the owner would answer now, None for the lead's, or False for none: a goal chat's or the
-    lead's open question, else the lead when no task was ever started."""
+    lead's open question, else the lead when it started neither a task nor a goal chat."""
     try:
         for row in goal_chats(wsx, env, cwd):
             if wsx_json(wsx, env, cwd, 'chat', 'read', '--chat', row['name']).get('asks'):
                 return row['name']
         chat = wsx_json(wsx, env, cwd, 'chat', 'read')
         tasks = task_items(wsx_json(wsx, env, cwd, 'task', 'list', '--all'))
+        chats = goal_chats(wsx, env, cwd)
     except (RuntimeError, ValueError, subprocess.TimeoutExpired):
         return False
-    return None if chat.get('asks') or not tasks else False
+    # ^ A lead that forked the work to a goal chat started it: no second go.
+    return None if chat.get('asks') or not (tasks or chats) else False
 
 
 def desk_state(wsx, env, cwd, said_id):
@@ -522,7 +545,7 @@ def desk_state(wsx, env, cwd, said_id):
     things on (an open approval or question, or every open task waits on the owner or failed); 'busy'
     otherwise, also when one command fails."""
     try:
-        if any(row.get('busy') for row in goal_chats(wsx, env, cwd)):
+        if any(goal_chat_working(wsx, env, cwd, row) for row in goal_chats(wsx, env, cwd)):
             return 'busy'
         tasks = task_items(wsx_json(wsx, env, cwd, 'task', 'list'))
         chat = wsx_json(wsx, env, cwd, 'chat', 'read')
@@ -610,6 +633,29 @@ def judge(case, tree, args):
     return {'files': files, 'passed': ok}
 
 
+def leaks(arm_dir, case):
+    """Tool calls of the arm's agents that name this checkout or the answer commit. Claude Code keeps each
+    session under ~/.claude/projects/<its folder, every other character as ->; workbenches add -t1."""
+    key = re.sub(r'[^A-Za-z0-9]', '-', str(arm_dir))
+    needles = (str(ROOT), case['sha'][:7])
+    found = []
+    projects = Path.home() / '.claude/projects'
+    for folder in [*projects.glob(key), *projects.glob(key + '-t*')]:
+        for path in folder.glob('*.jsonl'):
+            for line in path.open(errors='replace'):
+                if '"tool_use"' not in line:
+                    continue
+                try:
+                    content = (json.loads(line).get('message') or {}).get('content')
+                except ValueError:
+                    continue
+                for block in content if isinstance(content, list) else []:
+                    text = json.dumps(block.get('input')) if block.get('type') == 'tool_use' else ''
+                    if any(needle in text for needle in needles):
+                        found.append(text[:200])
+    return found
+
+
 # ---- main --------------------------------------------------------------------------------------------------
 
 def main():
@@ -638,6 +684,7 @@ def main():
     run_id = time.strftime('%y%m%d-%H%M%S') + ('d' if args.dry_run else '')
     out = ROOT / '.work/eval' / run_id
     out.mkdir(parents=True)
+    work = WORK_ROOT / run_id
     results = out / 'results.jsonl'
     signal.signal(signal.SIGTERM, on_signal)
     rows = []
@@ -649,11 +696,11 @@ def main():
         log('run', run_id, 'cases', ' '.join(c['short'] for c in cases))
         for case in cases:
             for arm in arms:
-                folder = out / case['short']
-                folder.mkdir(exist_ok=True)
+                folder = work / case['short'][:4]
+                folder.mkdir(parents=True, exist_ok=True)
                 evidence = out / 'evidence' / case['short'] / arm
                 evidence.mkdir(parents=True)
-                arm_dir = folder / arm
+                arm_dir = folder / ARM_FOLDER[arm]
                 row = {'run': run_id, 'case': case['short'], 'arm': arm, 'dry_run': args.dry_run,
                        'request': case['request'].splitlines()[0][:120], 'parent': case['parent'][:8]}
                 mark = len(CLEANUPS)
@@ -662,6 +709,7 @@ def main():
                     body, tree = (arm_solo(case, arm_dir, args, evidence) if arm == 'solo'
                                   else arm_desk(case, arm_dir, args, evidence, arm))
                     row.update(body)
+                    row['leaks'] = leaks(arm_dir, case)
                     row['tests'] = judge(case, tree, args)
                     row['passed'] = row['tests']['passed']
                 except KeyboardInterrupt:
@@ -681,6 +729,8 @@ def main():
         log('interrupted; cleaning up')
     finally:
         cleanup_all()
+        if not KEEP:
+            shutil.rmtree(work, ignore_errors=True)
     print(summary(rows))
     print('results:', results)
 
@@ -694,7 +744,7 @@ def summary(rows):
     lines = ['| arm | cases | pass | pass rate | finished | median min | median tokens | median cost $ |',
              '|---|---|---|---|---|---|---|---|']
     for arm in ('solo', *DESK_ARMS):
-        mine = [r for r in rows if r['arm'] == arm]
+        mine = [r for r in rows if r['arm'] == arm and not r.get('leaks')]
         if not mine:
             continue
         passed = sum(1 for r in mine if r.get('passed'))
@@ -703,6 +753,9 @@ def summary(rows):
             median(r.get('minutes') for r in mine),
             median((r.get('tokens') or {}).get('total') for r in mine),
             median(r.get('cost_usd') for r in mine)))
+    void = sum(1 for r in rows if r.get('leaks'))
+    if void:
+        lines.append('void (an agent read this checkout or the answer commit): %d rows, left out above' % void)
     return '\n'.join(lines)
 
 
