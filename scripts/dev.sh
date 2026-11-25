@@ -15,7 +15,10 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEV="$REPO/.work/dev"
 PORT="${WSX_DEV_PORT:-4699}"
 SITE=dev
-REAL_HOME="${WSX_DEV_REAL_HOME:-$HOME}"
+# ^ The account's home folder, not $HOME: a shell may already run with another HOME (the dev one, a
+# try-out folder), and Claude, git and the Rust toolchain live in the real one.
+REAL_HOME="${WSX_DEV_REAL_HOME:-$(id -P | cut -d: -f9)}"
+[ -d "$REAL_HOME" ] || { echo "dev.sh: no home folder for $(id -un)" >&2; exit 1; }
 
 exports() {
   cat <<EOF
