@@ -465,14 +465,17 @@ pub(crate) fn chat_command(action: ChatCmd, project: Option<&str>, json: bool) -
                     .transpose()?
                     .flatten()
                     .map(|dir| dir.socket_path());
-                row["running"] = json!(socket.is_some_and(|socket| {
+                let answer = socket.and_then(|socket| {
                     wsx_core::task::call_socket::<_, ChatResponse>(
                         &socket,
                         &ChatRequest::Status,
                         Duration::from_secs(2),
                     )
-                    .is_ok()
-                }));
+                    .ok()
+                });
+                // ^ `running`: its host answers; `busy`: a turn of its agent runs now.
+                row["running"] = json!(answer.is_some());
+                row["busy"] = json!(answer.is_some_and(|answer| answer.busy));
             }
             if json {
                 return print_json(&json!({ "chats": rows }));

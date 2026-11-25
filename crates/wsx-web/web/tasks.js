@@ -611,7 +611,7 @@ function ProjectShell({ project }) {
 // tools (find, overview, panels, shell), so the top row is back, the name and ⋯ (the Screens board).
 function More({ project, manager, onSaved, onFind }) {
   const phone = !useWide();
-  const panels = usePanelsLink(project.id);
+  const panels = usePanelsLink(phone ? project.id : null);
   const shell = useShell(project);
   const files = shows("files") && can("files_read");
   const [editing, setEditing] = useState(false);

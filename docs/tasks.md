@@ -604,7 +604,7 @@ A chat is a chat with a name and a goal. A project has several: a repo has a cha
 ```sh
 wsx chat new <name> [--goal <file>] [--agent <entry>] [--owner-said <id>] -p <project> --json   # --goal - reads stdin
 wsx chat new <name> --brief --owner-said <id> -p <project> --json   # the lead forks the owner's message <id> of its turn ("Lead and forks")
-wsx chat list -p <project> --json          # open and closed chats, each with its `shown` name, `title`, `projects` (the names of the projects it runs in, its own first), `agent` entry, `adapter`, `model`, `main` and `running`
+wsx chat list -p <project> --json          # open and closed chats, each with its `shown` name, `title`, `projects` (the names of the projects it runs in, its own first), `agent` entry, `adapter`, `model`, `main`, `running` (its host answers) and `busy` (a turn runs now)
 wsx chat close <name> [--owner-said <id>] -p <project> --json  # its notes and log stay; the web's and the TUI's Close chat too
 wsx chat goal <name> [--goal <file>|-] [--owner-said <id>] -p <project> --json  # no --goal shows the chat's purpose (the owner's); --goal sets it (the owner's, or a chat's agent on the owner's message of its turn), an empty one clears it. Every chat has one, the main chat too; its agent reads it in the preamble of its instructions at its next turn
 wsx chat main <name> [--owner-said <id>] -p <project> --json   # the repo's main chat is <name>, an open chat that runs in it (the owner's, or a chat's agent on the owner's word)

@@ -16,11 +16,11 @@ const url = (base, name = "", run = false) => `${base}${name ? `/${encodeURIComp
 // ^ The clock tick can be older than the read that was just made: never below 0 s.
 const age = (ms) => (ms < 60000 ? `${Math.max(0, Math.floor(ms / 1000))} s ago` : `${Math.floor(ms / 60000)} min ago`);
 
-// ^ The project's panels sheet, when the project has a panel: its link, or none.
+// ^ The project's panels sheet, when the project has a panel: its link, or none. No project asks nothing.
 export function usePanelsLink(project) {
   const [names, setNames] = useState([]);
   useEffect(() => {
-    if (!can("terminal_input")) return;
+    if (project == null || !can("terminal_input")) return;
     api(url(projectPanels(project))).then((value) => setNames(value.panels ?? []), () => {});
   }, [project]);
   return names.length ? sheetHash(project, "panels") : null;

@@ -347,13 +347,21 @@ def diff_size(tree, parent, tip=None):
     return {'files': files, 'added': added, 'deleted': deleted}
 
 
-def desk_config(case, args):
+# ^ The desk arms differ only in models: `desk` keeps each agent's default (docs/tasks.md "Cost": a sonnet lead,
+# workers on the chats' model); `desk-opus-lead` puts the lead on opus and the workers on sonnet.
+DESK_ARMS = {'desk': None, 'desk-opus-lead': ('opus', 'sonnet')}
+
+
+def desk_config(case, args, arm='desk'):
     crate = case['targets'][0][0]
     checks = args.desk_check or (['true'] if args.dry_run else ['cargo build -p wsx -p wsx-daemon --locked', 'cargo nextest run -p {crate} --locked'])
     lines = ['tasks:', '  minFreeGb: 0', '  env:', '    CARGO_INCREMENTAL: "0"', '  checks:']
     lines += ['    - %s' % json.dumps(c.replace('{crate}', crate)) for c in checks]
     lines += ['  checkTimeoutSeconds: 1800', '  land: { auto: true }']
-    if args.model:
+    if DESK_ARMS[arm]:
+        lead, workers = DESK_ARMS[arm]
+        lines += ['  agent: { model: %s }' % workers, '  lead: { model: %s }' % lead]
+    elif args.model:
         lines += ['  agent: { model: %s }' % args.model, '  chats: { model: %s }' % args.model,
                   '  lead: { model: same }']
     return '\n'.join(lines) + '\n'
@@ -364,7 +372,7 @@ def wsx_json(wsx, env, cwd, *argv, timeout=60):
     return json.loads(done.stdout)
 
 
-def arm_desk(case, arm_dir, args, evidence):
+def arm_desk(case, arm_dir, args, evidence, arm='desk'):
     started = time.monotonic()
     wsx = Path(args.wsx).resolve()
     wsxd = wsx.with_name('wsxd')
@@ -376,11 +384,11 @@ def arm_desk(case, arm_dir, args, evidence):
     # ^ An isolated copy, not a worktree: wsx makes branches, workbenches and landings in the project, and
     # none of that may reach this repository.
     isolated_copy(case, arm_dir)
-    CLEANUPS.append(lambda: [shutil.rmtree(p, ignore_errors=True) for p in [arm_dir, *base.glob('desk-t*')]])
+    CLEANUPS.append(lambda: [shutil.rmtree(p, ignore_errors=True) for p in [arm_dir, *base.glob(arm_dir.name + '-t*')]])
     # ^ wsx puts each task's workbench beside the project folder: desk-t1, desk-t2.
     seed_target(arm_dir, args)
     ident = ['-c', 'user.name=eval', '-c', 'user.email=eval@example.invalid']
-    (arm_dir / 'wsx.config.yml').write_text(desk_config(case, args))
+    (arm_dir / 'wsx.config.yml').write_text(desk_config(case, args, arm))
     git(*ident, 'add', '-f', 'wsx.config.yml', cwd=arm_dir)
     git(*ident, 'commit', '-q', '-m', 'eval: project config', cwd=arm_dir)
     (home / '.gitconfig').write_text('[user]\n\tname = eval\n\temail = eval@example.invalid\n')
@@ -434,8 +442,10 @@ def arm_desk(case, arm_dir, args, evidence):
         verdict = desk_state(wsx, env, arm_dir, said)
         # ^ The owner's go, as in a real session: the lead sizes a request and asks before it starts
         # work. A question or a reply that started nothing gets one plain yes, at most --owner-turns times.
-        if verdict in ('done', 'owner') and goes < args.owner_turns and owner_should_answer(wsx, env, arm_dir):
-            said = wsx_json(wsx, env, arm_dir, 'chat', 'say', OWNER_GO, '-p', 'eval')['id']
+        to = owner_should_answer(wsx, env, arm_dir) if verdict in ('done', 'owner') and goes < args.owner_turns else False
+        if to is not False:
+            reply = wsx_json(wsx, env, arm_dir, 'chat', 'say', OWNER_GO, *(['--to', to] if to else []), '-p', 'eval')
+            said = said if to else reply['id']
             goes, quiet = goes + 1, 0
             continue
         if verdict == 'done':
@@ -487,21 +497,33 @@ def find_key(obj, key):
 OWNER_GO = 'Yes, go ahead: do it as you proposed, and decide the open points yourself.'
 
 
+def goal_chats(wsx, env, cwd):
+    """The open chats besides the lead's (`chat list`): a goal chat the lead forked works on its own."""
+    rows = wsx_json(wsx, env, cwd, 'chat', 'list', '-p', 'eval').get('chats', [])
+    return [row for row in rows if row.get('state') == 'open' and not row.get('main')]
+
+
 def owner_should_answer(wsx, env, cwd):
-    """Whether the owner would answer now: a question of the lead is open, or no task was ever started."""
+    """The chat the owner would answer now, None for the lead's, or False for none: a goal chat's or the
+    lead's open question, else the lead when no task was ever started."""
     try:
+        for row in goal_chats(wsx, env, cwd):
+            if wsx_json(wsx, env, cwd, 'chat', 'read', '--chat', row['name']).get('asks'):
+                return row['name']
         chat = wsx_json(wsx, env, cwd, 'chat', 'read')
         tasks = task_items(wsx_json(wsx, env, cwd, 'task', 'list', '--all'))
     except (RuntimeError, ValueError, subprocess.TimeoutExpired):
         return False
-    return bool(chat.get('asks')) or not tasks
+    return None if chat.get('asks') or not tasks else False
 
 
 def desk_state(wsx, env, cwd, said_id):
-    """'done': the lead answered and no task is open; 'owner': only the owner can move things on (an open
-    approval or question, or every open task waits on the owner or failed); 'busy' otherwise, also when one
-    command fails."""
+    """'done': the lead answered, no chat is in a turn and no task is open; 'owner': only the owner can move
+    things on (an open approval or question, or every open task waits on the owner or failed); 'busy'
+    otherwise, also when one command fails."""
     try:
+        if any(row.get('busy') for row in goal_chats(wsx, env, cwd)):
+            return 'busy'
         tasks = task_items(wsx_json(wsx, env, cwd, 'task', 'list'))
         chat = wsx_json(wsx, env, cwd, 'chat', 'read')
         open_tasks = [t for t in tasks if t.get('state') not in DONE_TASK]
@@ -595,7 +617,7 @@ def main():
     ap.add_argument('--cases', type=int, default=10, help='the N most recent eligible commits (default 10)')
     ap.add_argument('--case', help='one commit (sha or ref) instead of --cases')
     ap.add_argument('--ref', default='main', help='history to take cases from (default main)')
-    ap.add_argument('--arms', default='solo,desk', help='comma list (default solo,desk)')
+    ap.add_argument('--arms', default='solo,desk', help='comma list of solo, desk, desk-opus-lead (default solo,desk)')
     ap.add_argument('--minutes', type=float, default=40, help='wall limit of one arm (default 40)')
     ap.add_argument('--owner-turns', type=int, default=2, help='desk: times the owner answers a question or a reply that started nothing with a plain go (default 2)')
     ap.add_argument('--test-minutes', type=float, default=45, help='wall limit of one judged test file')
@@ -610,8 +632,8 @@ def main():
     global KEEP
     KEEP = args.keep
     arms = args.arms.split(',')
-    if not set(arms) <= {'solo', 'desk'}:
-        raise SystemExit('eval-desk: --arms takes solo and desk')
+    if not set(arms) <= {'solo', *DESK_ARMS}:
+        raise SystemExit('eval-desk: --arms takes solo, ' + ', '.join(DESK_ARMS))
     cases = pick_cases(args)
     run_id = time.strftime('%y%m%d-%H%M%S') + ('d' if args.dry_run else '')
     out = ROOT / '.work/eval' / run_id
@@ -637,7 +659,8 @@ def main():
                 mark = len(CLEANUPS)
                 log('case', case['short'], 'arm', arm)
                 try:
-                    body, tree = (arm_solo if arm == 'solo' else arm_desk)(case, arm_dir, args, evidence)
+                    body, tree = (arm_solo(case, arm_dir, args, evidence) if arm == 'solo'
+                                  else arm_desk(case, arm_dir, args, evidence, arm))
                     row.update(body)
                     row['tests'] = judge(case, tree, args)
                     row['passed'] = row['tests']['passed']
@@ -670,7 +693,7 @@ def median(values):
 def summary(rows):
     lines = ['| arm | cases | pass | pass rate | finished | median min | median tokens | median cost $ |',
              '|---|---|---|---|---|---|---|---|']
-    for arm in ('solo', 'desk'):
+    for arm in ('solo', *DESK_ARMS):
         mine = [r for r in rows if r['arm'] == arm]
         if not mine:
             continue
