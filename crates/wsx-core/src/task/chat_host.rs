@@ -301,9 +301,9 @@ impl Short {
     }
 
     /// A task's event: `#<task> <words>`. It wakes no chat: code acts on a task's own events
-    /// (its host, its review job) and the owner hears of what needs them, so a chat takes a
-    /// turn only for a message (docs/design/orchestration.md "The owner's decisions" 1).
-    /// ref: docs/tasks.md "Chat host"
+    /// (its host, its review job) and the owner hears of what needs them. The one exception is
+    /// set by the caller: a worker that stopped on a need wakes the chat that owns the task
+    /// (`status::wakes_its_chat`). ref: docs/tasks.md "Chat host"
     pub fn task(task: u32, words: &str) -> Self {
         Self {
             task: Some(task),

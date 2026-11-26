@@ -449,17 +449,32 @@ fn status_of(
     status
 }
 
-/// Why the task stopped without the worker's answer: the reason of its last `stopped`, none when
-/// the worker answered last (blocked, or a result).
-fn stop_reason(dir: &TaskDir) -> Option<String> {
+/// How the task's last turn ended: stopped without the worker's answer (a stop, a host restart),
+/// or the worker's own `blocked` or result.
+enum TurnEnd {
+    Stopped(String),
+    Blocked,
+    Result,
+}
+
+fn turn_end(dir: &TaskDir) -> Option<TurnEnd> {
     dir.last_event(|event| match event {
-        LogEvent::Stopped { reason } => Some(Some(reason.clone())),
-        LogEvent::Blocked { .. } | LogEvent::Result { .. } => Some(None),
+        LogEvent::Stopped { reason } => Some(TurnEnd::Stopped(reason.clone())),
+        LogEvent::Blocked { .. } => Some(TurnEnd::Blocked),
+        LogEvent::Result { .. } => Some(TurnEnd::Result),
         _ => None,
     })
     .ok()
     .flatten()
-    .flatten()
+}
+
+/// Why the task stopped without the worker's answer: the reason of its last `stopped`, none when
+/// the worker answered last (blocked, or a result).
+fn stop_reason(dir: &TaskDir) -> Option<String> {
+    match turn_end(dir)? {
+        TurnEnd::Stopped(reason) => Some(reason),
+        TurnEnd::Blocked | TurnEnd::Result => None,
+    }
 }
 
 /// Whether the task is stopped by request and a check-run of its worker ended after the stop:
@@ -489,6 +504,43 @@ pub fn owner_waits_after(dir: &TaskDir, record: &TaskRecord) -> bool {
         && record.state == TaskState::Waiting
         && record.waits_on(WaitOn::Owner)
         && stop_reason(dir).is_none()
+}
+
+/// How many times the chat that owns a task hears its worker stop on a need; from the next
+/// stop the owner decides, as after the review's rounds.
+pub const CHAT_ANSWERS: usize = 2;
+
+/// Whether a task's new state starts a turn of the chat that owns it: its worker stopped on a
+/// need (a `blocked` result, or a done one that ends with a question, `WaitOn::Asks`) on a task
+/// a chat owns, at most `CHAT_ANSWERS` times. The chat answers with `add` or asks the owner. A
+/// stop, a host restart, a wait for another task and a task of the owner's own wake nobody. A
+/// closed owner's lines go to the main chat (`chats::owner`), which then answers in its place.
+/// ref: docs/tasks.md "Chat host"
+pub fn wakes_its_chat(dir: &TaskDir, record: &TaskRecord) -> bool {
+    let stopped_on_a_need = match (record.state, record.waiting.as_ref().map(|w| w.on)) {
+        (TaskState::Ready, Some(WaitOn::Asks)) => true,
+        (TaskState::Waiting, Some(WaitOn::Owner)) if record.after.is_none() => {
+            matches!(turn_end(dir), Some(TurnEnd::Blocked))
+        }
+        _ => false,
+    };
+    if !stopped_on_a_need || record.owner_chat().is_none() {
+        return false;
+    }
+    // ^ Each stop counts: a `blocked` event, or a done result whose summary asks (host.rs
+    // `on_result`), also one that went on to a next step; a miscount only wakes less.
+    let stops = dir
+        .read_log()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| match &entry.event {
+            LogEvent::Blocked { .. } => true,
+            LogEvent::Result {
+                status, summary, ..
+            } => status == "done" && super::chat_host::asks_owner(summary),
+            _ => false,
+        });
+    stops.count() <= CHAT_ANSWERS
 }
 
 /// The word for a task's state in a line or a count: "paused" for a worker that ended its turn

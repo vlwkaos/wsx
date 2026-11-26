@@ -1327,7 +1327,9 @@ impl Repo {
                 _ => state_word,
             };
             let counts = (!checks.is_empty()).then_some([passed as u32, checks.len() as u32]);
-            let short = Short::task(record.id, words).with_state(state_word, counts);
+            let mut short = Short::task(record.id, words).with_state(state_word, counts);
+            // ^ A worker that stopped on a need is the owning chat's to answer first.
+            short.wakes = wsx_core::task::status::wakes_its_chat(&dir, &record);
             self.task_event(&record, &open_chats, line, short);
             let state = record.state.as_str();
             self.fire(

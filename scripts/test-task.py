@@ -7677,6 +7677,58 @@ def part_chats(created=None):
     js('chat', 'close', 'upd', '-p', 'demo')
     js('task', 'close', updated, '--discard')
 
+    # 33w. A worker's stop wakes its chat (docs/tasks.md "Chat host"): a blocked worker of a task the main
+    # chat made starts that chat's turn, whose `add` answers it, and the task goes on to ready. A blocked task
+    # the owner made, a stopped one and a third stop wake nobody: they stay the owner's.
+    mark('33w')
+
+    def stop_events(n, word='waiting'):
+        """Whether each `#n <word>` event line started a turn of the main chat."""
+        return [short.get('wakes', True) for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
+                for short in e.get('short') or [] if short['text'] == '#%d %s' % (n, word)]
+
+    def adds(n):
+        return [e['text'] for e in log(n) if e['kind'] == 'message' and e['mode'] == 'add']
+
+    def lead_task(prompt):
+        made = js('chat', 'say', 'RUN wsx task new "%s" -p demo --json' % prompt)
+        reply_to(made['id'], 60)
+        n = max(t['id'] for t in js('task', 'list', '--all')['tasks'])
+        assert show(n)['record']['created_by'] == 'chat:demo', show(n)['record']
+        return n
+
+    answered = lead_task('NEEDS WebSearch ANSWERME')
+    wait(lambda: adds(answered), 'the main chat answers its blocked worker', 90)
+    assert adds(answered) == ['WORK answered.txt'], log(answered)
+    assert wait_state(answered, 'ready', 'failed')['state'] == 'ready'
+    assert stop_events(answered) == [True], stop_events(answered)
+    # ^ A done result that asks the owner wakes its chat too.
+    asked = lead_task('WORK asked.txt OWNERQ')
+    wait_state(asked, 'ready')
+    wait(lambda: stop_events(asked, 'ready'), 'the asking task reaches the main chat', 60)
+    assert show(asked)['record']['waiting']['on'] == 'asks', show(asked)['record']
+    assert stop_events(asked, 'ready') == [True], stop_events(asked, 'ready')
+    # ^ The owner's own task: its wait is the owner's, and its line starts no turn.
+    owned = js('task', 'new', 'NEEDS WebSearch')['id']
+    wait_state(owned, 'waiting')
+    wait(lambda: stop_events(owned), 'the owner task reaches the main chat', 60)
+    assert stop_events(owned) == [False] and not adds(owned), (stop_events(owned), log(owned))
+    # ^ A stop is the owner's word, not the worker's need.
+    gate = base / 'wake-gate'
+    stopped = lead_task('WAIT %s WORK stop.txt' % gate)
+    wait_state(stopped, 'working')
+    js('task', 'stop', stopped)
+    wait(lambda: stop_events(stopped), 'the stopped task reaches the main chat', 60)
+    assert stop_events(stopped) == [False] and not adds(stopped), (stop_events(stopped), log(stopped))
+    # ^ The bound: two answers that block again, then the third stop is the owner's.
+    looping = lead_task('NEEDS WebSearch ANSWERLOOP')
+    wait(lambda: len(stop_events(looping)) == 3, 'three stops of the looping task', 120)
+    time.sleep(EVENT_QUIET * 2)
+    assert stop_events(looping) == [True, True, False], stop_events(looping)
+    assert adds(looping) == ['SLOW NEEDS WebSearch'] * 2 and show(looping)['state'] == 'waiting', log(looping)
+    for n in (answered, asked, owned, stopped, looping):
+        js('task', 'close', n, '--discard')
+
     # 33n. No chat of its own (docs/tasks.md "Chats"): a repo gets a chat only from `chat new`. Registering it and
     # starting its service make none; the first chat is its main chat unless the owner chooses another; closing
     # the main chat works and leaves none, and what waits for a chat then waits for nobody.

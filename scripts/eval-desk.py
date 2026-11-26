@@ -23,7 +23,8 @@ answer). A row whose agents named this checkout or the answer commit in a tool c
         never given: that counts as unfinished), or at the limit. Both arms work in a copy that holds only the
         parent's history (`isolated_copy`): no ref, tag or object of the answer commit, and nothing reaches this repo.
         Project config (wsx.config.yml) is replaced by a small one: auto land, checks = build + the crate's
-        visible tests (--desk-check, repeatable; {crate} is replaced).
+        visible tests (--desk-check, repeatable; {crate} is replaced), and the parent's own `scenarios`
+        without paths, which a worker runs outside its boundary by name.
 
 The judge is the same for both arms and runs outside them: the hidden test files of the commit are copied into
 the final tree (desk: main after landing) and `cargo nextest run -p <crate> --test <name> --locked` runs per test
@@ -364,6 +365,7 @@ def desk_config(case, args, arm='desk'):
     lines = ['tasks:', '  minFreeGb: 0', '  env:', '    CARGO_INCREMENTAL: "0"', '  checks:']
     lines += ['    - %s' % json.dumps(c.replace('{crate}', crate)) for c in checks]
     lines += ['  checkTimeoutSeconds: 1800', '  land: { auto: true }']
+    lines += parent_scenarios(case)
     if DESK_ARMS[arm]:
         lead, workers = DESK_ARMS[arm]
         lines += ['  agent: { model: %s }' % workers, '  lead: { model: %s }' % lead]
@@ -371,6 +373,23 @@ def desk_config(case, args, arm='desk'):
         lines += ['  agent: { model: %s }' % args.model, '  chats: { model: %s }' % args.model,
                   '  lead: { model: same }']
     return '\n'.join(lines) + '\n'
+
+
+def parent_scenarios(case):
+    """The `tasks.scenarios` block of the parent's own wsx.config.yml, without `scenarioPaths`: the
+    host runs a scenario outside the agents' boundary when a worker names it (`wsx task check-run
+    <name>`), so a run its boundary refuses (a nested sandbox, `ps`) has a way, as in the owner's
+    project; with no paths none runs by itself. ref: docs/tasks.md "Scenarios" """
+    shown = git('show', '%s:wsx.config.yml' % case['parent'], check=False)
+    lines, block = [], False
+    for line in shown.stdout.splitlines() if shown.returncode == 0 else []:
+        if line.split('#', 1)[0].rstrip() == '  scenarios:':
+            block = True
+        elif block and line.strip() and not line.lstrip().startswith('#') and not line.startswith('    '):
+            break
+        if block and line.strip() and not line.lstrip().startswith('#'):
+            lines.append(line)
+    return lines
 
 
 def wsx_json(wsx, env, cwd, *argv, timeout=60):

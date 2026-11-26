@@ -305,8 +305,12 @@ fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: boo
          the work needs, listen on 127.0.0.1, open a PTY. The boundary refuses the owner's \
          secrets, wsx's config and state, other tasks' copies and the default branch's ref \
          (wsx lands). Keep your work in this working copy. \
-         When you cannot continue, return status blocked and say what you need; when the \
-         boundary refuses something the task needs, name it. When your turn must end while \
+         When you cannot continue, return status blocked and say what you need: the chat that \
+         owns the task answers, else the owner. A run the boundary refuses because it is a sandbox (a \
+         nested `sandbox-exec`, other processes in `ps`, a test that starts its own boundary) \
+         blocks nothing: the host runs a declared scenario outside it (`wsx task check-run \
+         <name>`); with none declared, put the unproved part in `left_open` and go on. When \
+         the boundary refuses something else the task needs, name it. When your turn must end while \
          something outside goes on (a run you started) and you ask nobody anything, return \
          status paused with what runs and what is left: the chat that owns the task continues you. When \
          your finished work leaves a question only the owner can answer, end the summary \

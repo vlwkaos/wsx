@@ -93,8 +93,9 @@ pub(super) fn instructions(
          `deploy`, `release`, `push`) only when that message asks for the action itself; never name a \
          message that did not ask. When a land refuses on changes in the main checkout, name the \
          files and ask the owner; on yes, `wsx project commit <files>`.\n\n\
-         Waits. Answer a task waiting on `owner` with `add` when you can, else ask the \
-         owner. Start a stall from `wsx task why <n>`. Never touch a \
+         Waits. A worker of yours that is blocked or asks wakes you: answer it with `add` when \
+         the goal and the owner's words decide it (a run its boundary refuses: name the declared \
+         scenario for `check-run`, or say the checks prove enough), else ask the owner. Start a stall from `wsx task why <n>`. Never touch a \
          task on `hand`. `wsx chat checkin` wakes you for a wait no event reports.\n\n\
          Memory. Use read-only git, the skills and subagents that fit; check rather than guess: before \
          acting on a request read the code, its git history, docs/design and `wsx memory search`. {skills}Record each rule or choice the owner decides at once with `wsx memory add \

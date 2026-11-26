@@ -79,6 +79,8 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   PAGE <section> <words>  replace that section of the project overview (its instructions name it)
   OVERLONG <n>   write an overview of n lines (over the cap when n > 60); the host's follow-up leaves it
   STATUS         answer from `wsx chat ledger`
+  (an event line `#<n> waiting r<k>: ... ANSWERME`) answer the blocked task with `wsx task add <n>
+                 "WORK answered.txt"`; ANSWERLOOP adds "SLOW NEEDS WebSearch", which blocks it again
   (the host's request "<path>/context.md is <n> lines / <n> bytes ...") compact that file to its
                  project section, its lines that name Claude.app and its last 5 memos, unless its
                  first line is "# stubborn"
@@ -448,6 +450,14 @@ def manager_turn(text, project, page):
             with open(compact.group(1), 'w') as notes:
                 notes.write('\n'.join(keep) + '\n')
         replies.append('I compacted context.md.')
+    # ^ A turn a worker's stop woke (docs/tasks.md "Chat host"): the task's title says the answer.
+    # ANSWERME adds the work; ANSWERLOOP adds the block again, so the stops reach the bound.
+    for task, word in re.findall(r'^#(\d+) waiting r\d+: .*?\b(ANSWERME|ANSWERLOOP)\b', text, re.M):
+        # ^ SLOW: a real turn outlasts the repo service's 1 s look, which sees it working.
+        add = 'WORK answered.txt' if word == 'ANSWERME' else 'SLOW NEEDS WebSearch'
+        done = subprocess.run(['wsx', 'task', 'add', task, add] + (['-p', project] if project else []),
+                              capture_output=True, text=True)
+        replies.append('answered #%s -> %d %s' % (task, done.returncode, (done.stdout + done.stderr).strip()[:300]))
     # ^ This turn's own words, not the ledger summary's titles or a handover's earlier messages.
     asks = re.search(r'^(ASK\b|#\d+ ready r\d+: NOOP ASK\b)', text, re.M)
     if asks:
