@@ -2159,7 +2159,7 @@ try:
     remove_tui.send(b"[t")
     wait_for(lambda: "All projects" in remove_tui.text(), "the Tasks view showed no all-projects usage", seconds=60)
     all_projects = next(row.strip() for row in remove_tui.text().splitlines() if "All projects" in row)
-    assert re.search(r"All projects Today \$0\.04 \(manager \$0\.04\) · 7 days \$0\.04 \(manager \$0\.04\)", all_projects), all_projects
+    assert re.search(r"All projects Today \$0\.04 \(chats \$0\.04\) · 7 days \$0\.04 \(chats \$0\.04\)", all_projects), all_projects
     limit = next((row.strip() for row in remove_tui.text().splitlines() if "Claude limit" in row), "")
     assert re.search(r"Claude limit 5 hours 25%, resets \d\d:\d\d · 7 days 47%", limit), remove_tui.text()
     # ^ `a` counts the first agent of the 7 days, `claude`: only halt-me's 0.03 USD.
@@ -2270,7 +2270,7 @@ try:
     # ^ The open question's row under the chat leaves no room for the first rows; they are
     # read after the scroll to the top below.
     rows_in_order([r"^New conversation: the launch changed; the ledger carries the state\.$",
-                   r"^Atlas\s+\d\d:\d\d", r"^Should I land #4\?", r"^Shall I deploy it too\?",
+                   r"^Atlas\s+lead\s+\d\d:\d\d", r"^Should I land #4\?", r"^Shall I deploy it too\?",
                    r"^Atlas stopped 2 times: agent exited$", r"^You\s+waiting\s+Not yet\.$"])
     # ^ Two questions, then an owner message with no quote: it answers the newer one only; the
     # older one waits under the chat, counted in the heading. `r` starts a reply that quotes
@@ -2307,8 +2307,8 @@ try:
     # up one line at a time to the top.
     remove_tui.send(b"k" * 200)
     wait_for(chat_top_shown, lambda: f"k did not scroll the TUI chat to its top:\n{remove_tui.text()}", seconds=60)
-    rows_in_order([r"^You\s+\d\d:\d\d", r"^Where is #3\?", r"^#3 landed 4 of 4 checks$", r"^Atlas$",
-                   r"^#3 landed 4 of 4 checks\s+#3 is on main\.$", r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.",
+    rows_in_order([r"^You\s+\d\d:\d\d", r"^Where is #3\?", r"^#3 landed 4 of 4 checks$", r"^Atlas\s+lead$",
+                   r"^#3 landed 4 of 4 checks\s+#3 is on main\.$", r"^Atlas\s+lead\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.",
                    r"^Talked to elsewhere\s+Show$", r"^Talked to peer0\s+Show$"])
     # ^ What another chat said folds to one line per chat that opens to the words; there is no peer
     # key: a chat names its peer in `wsx chat say`. The two messages of "elsewhere" are one line.

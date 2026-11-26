@@ -5359,7 +5359,8 @@ def part_host(created=None):
     configure(LAND_CONFIG, 'land gate over')
     # 32ah. A worker that is idle or blocked while its task waits for another to land asks nobody:
     # the status is the wait, the manager's event wakes no turn, the agent is idle, and the
-    # overview lists no need. The same worker with no wait is "Waiting for your answer".
+    # overview lists no need. The same worker with no wait is "Waiting for your answer", and its
+    # event wakes the manager that made the task (section 33w).
     mark('32ah')
     idle_gate = base / 'idle-gate'
     wanted = manager_new('WORK ah-w.txt')
@@ -5380,7 +5381,7 @@ def part_host(created=None):
     line = [x for x in quiet['text'].split('\n') if x.startswith('#%d waiting' % idle)][0]
     assert 'waits on owner' not in line and 'waits for #%d to land' % wanted in line, line
     loud = wait(lambda: events_with('#%d waiting r' % asking, 'waits on owner: '), 'the asking worker event')[0]
-    assert [x for x in loud['short'] if x.get('task') == asking] == [{'text': '#%d waiting' % asking, 'task': asking, 'wakes': False, 'state': 'waiting'}], loud
+    assert [x for x in loud['short'] if x.get('task') == asking] == [{'text': '#%d waiting' % asking, 'task': asking, 'state': 'waiting'}], loud
     # ^ The landing of the task it waits for sends its text, as before.
     assert land(wanted)['state'] == 'landed'
     wait(lambda: kinds(idle, 'after_ended'), 'the idle wait ends', 40)
@@ -5458,8 +5459,8 @@ def part_host(created=None):
     assert 'waits on owner' not in [x for x in quiet['text'].split('\n') if x.startswith('#%d paused' % pausing)][0], quiet
     assert [x for x in quiet['short'] if x.get('task') == pausing] == [{'text': '#%d paused' % pausing, 'task': pausing, 'wakes': False, 'state': 'paused'}], quiet
     loud = wait(lambda: events_with('#%d waiting r' % questioning, 'waits on owner: Waiting for your answer'), 'the question event')[0]
-    assert [x for x in loud['short'] if x.get('task') == questioning] == [{'text': '#%d waiting' % questioning, 'task': questioning, 'wakes': False, 'state': 'waiting'}], loud
-    # ^ No task event starts a turn: the owner's next message takes them.
+    assert [x for x in loud['short'] if x.get('task') == questioning] == [{'text': '#%d waiting' % questioning, 'task': questioning, 'state': 'waiting'}], loud
+    # ^ The paused event starts no turn; the blocked one wakes the manager that made it (section 33w).
     reply_to(js('chat', 'say', 'STATUS after the paused event')['id'])
     turn = turn_with('#%d paused r' % pausing)
     assert re.search(r'- open: [^\n]*\b1 paused', turn['message']), turn['message']
@@ -5512,9 +5513,10 @@ def part_host(created=None):
     js('task', 'close', paused, '--discard')
     wait_state(paused, 'closed')
     configure(LAND_CONFIG, 'scenario for 32ap over')
-    # 32wk. One wake rule (docs/tasks.md "Chat host"): no task event starts a manager turn, here a
-    # ready task parked behind another, a ready result that asks the owner and a plain ready task;
-    # they go along with the owner's next message. The asking task waits ready on the owner.
+    # 32wk. One wake rule (docs/tasks.md "Chat host"): a task event starts no manager turn, here a
+    # ready task parked behind another and a plain ready task; they go along with the owner's next
+    # message. The one exception is a worker's stop on a need: a ready result that asks the owner wakes
+    # the manager that made the task, once, and the task waits ready on the owner meanwhile.
     mark('32wk')
     hold_gate, quiet_gate, review_gate = (base / ('wk-%s-gate' % name) for name in ('hold', 'quiet', 'review'))
     holder = manager_new('WAIT %s WORK wk-h.txt' % hold_gate)
@@ -5532,20 +5534,24 @@ def part_host(created=None):
     assert asked['status']['kind'] == 'owner' and asked['status']['label'] == 'Waiting for your answer', asked['status']
     assert asked['status']['waits_on']['kind'] == 'owner', asked['status']
     assert show(parked)['status']['waits_on']['kind'] == 'task', show(parked)['status']
-    for n in (parked, asking):
-        event = wait(lambda: events_with('#%d ready r' % n), 'the quiet ready event of #%d' % n)[0]
-        assert unmarked(x for x in event['short'] if x.get('task') == n) == [{'text': '#%d ready' % n, 'task': n, 'wakes': False}], event
-    manager_settled('after the quiet events')
-    assert len(chat_turns()) == before, chat_turns()[before:]
+    for n, wakes in ((parked, {'wakes': False}), (asking, {})):
+        event = wait(lambda: events_with('#%d ready r' % n), 'the ready event of #%d' % n)[0]
+        assert unmarked(x for x in event['short'] if x.get('task') == n) == [{'text': '#%d ready' % n, 'task': n, **wakes}], event
+    manager_settled('after the events')
+    assert len(chat_turns()) == before + 1 and '#%d ready r' % asking in chat_turns()[before]['message'], chat_turns()[before:]
     review_gate.touch()
     assert wait_state(review, 'ready', 'failed')['state'] == 'ready', log(review)
     wait(lambda: events_with('#%d ready r' % review), 'the plain ready event')
     manager_settled('after the plain ready event')
-    assert len(chat_turns()) == before, [t['message'][:120] for t in chat_turns()[before:]]
+    assert len(chat_turns()) == before + 1, [t['message'][:120] for t in chat_turns()[before:]]
     reply_to(js('chat', 'say', 'STATUS after the burst')['id'])
     turn = turn_with('STATUS after the burst')
-    assert all('#%d ready r' % n in turn['message'] for n in (parked, asking, review)), turn['message']
-    assert len(chat_turns()) == before + 1, [t['message'][:120] for t in chat_turns()[before:]]
+    # ^ The woken turn took every event line waiting then (the parked one too, when it had come);
+    # the plain one that came later waits for this one.
+    woken = chat_turns()[before]['message']
+    assert '#%d ready r' % review in turn['message'] and '#%d ready r' % review not in woken, turn['message']
+    assert '#%d ready r' % parked in woken + turn['message'], (woken, turn['message'])
+    assert len(chat_turns()) == before + 2, [t['message'][:120] for t in chat_turns()[before:]]
     for n in (holder, parked, asking, review):
         js('task', 'close', n, '--discard')
     for n in (holder, parked, asking, review):
@@ -6270,10 +6276,12 @@ def part_host(created=None):
                              str(Path(show(held)['log']).parent.parent), '--task', str(held)],
                             capture_output=True, text=True, check=True).stdout
     assert len(re.findall(r'\| ping +\| ping ', report)) == 3, report[-600:]
-    # ^ The manager turns by trigger: a task's events (ready, stopped) wake no turn, the owner's
-    # words do (docs/tasks.md "Chat host").
+    # ^ The manager turns by trigger: the owner's words wake one; of a task's events only a worker's
+    # stop on a need does (32ah, 32aj, 32wk: `ready` with a question, `waiting:owner`), a stop by
+    # request never (docs/tasks.md "Chat host").
     triggers = report.split('Manager turns by trigger', 1)[1].split('\n## ', 1)[0]
-    assert re.search(r'\| owner +\| [1-9]', triggers) and '| ready ' not in triggers and '| stopped ' not in triggers, triggers
+    assert re.search(r'\| owner +\| [1-9]', triggers) and '| stopped ' not in triggers, triggers
+    assert re.search(r'\| ready +\| [1-9]', triggers) and re.search(r'\| waiting:owner +\| [1-9]', triggers), triggers
     # ^ The manager has no ping: its conversation is rotated or left to the idle rotation.
     entries = manager_entries()
     assert not [e for e in entries if e['kind'] == 'ping'], entries[-12:]
@@ -7677,31 +7685,34 @@ def part_chats(created=None):
     js('chat', 'close', 'upd', '-p', 'demo')
     js('task', 'close', updated, '--discard')
 
-    # 33w. A worker's stop wakes its chat (docs/tasks.md "Chat host"): a blocked worker of a task the main
-    # chat made starts that chat's turn, whose `add` answers it, and the task goes on to ready. A blocked task
-    # the owner made, a stopped one and a third stop wake nobody: they stay the owner's.
+    # 33w. A worker's stop wakes its chat (docs/tasks.md "Chat host"): a blocked worker of a task a goal chat
+    # made starts that chat's turn, whose `add` answers it, and the task goes on to ready; a question to the
+    # owner wakes the main chat that made its task. A blocked task the owner made, a stopped one and a third
+    # stop wake nobody: they stay the owner's.
     mark('33w')
 
-    def stop_events(n, word='waiting'):
-        """Whether each `#n <word>` event line started a turn of the main chat."""
-        return [short.get('wakes', True) for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
+    def stop_events(n, word='waiting', entries=None):
+        """Whether each `#n <word>` event line started a turn of its chat (the main chat's by default)."""
+        return [short.get('wakes', True) for e in (entries or manager_entries)() if e['kind'] == 'message' and e['from'] == 'events'
                 for short in e.get('short') or [] if short['text'] == '#%d %s' % (n, word)]
 
     def adds(n):
         return [e['text'] for e in log(n) if e['kind'] == 'message' and e['mode'] == 'add']
 
-    def lead_task(prompt):
-        made = js('chat', 'say', 'RUN wsx task new "%s" -p demo --json' % prompt)
-        reply_to(made['id'], 60)
+    def lead_task(prompt, to=None):
+        made = js('chat', 'say', *(['--to', to] if to else []), 'RUN wsx task new "%s" -p demo --json' % prompt)
+        (chat_reply(to, made['id']) if to else reply_to(made['id'], 60))
         n = max(t['id'] for t in js('task', 'list', '--all')['tasks'])
-        assert show(n)['record']['created_by'] == 'chat:demo', show(n)['record']
+        assert show(n)['record']['created_by'] == 'chat:%s' % (to or 'demo'), show(n)['record']
         return n
 
-    answered = lead_task('NEEDS WebSearch ANSWERME')
-    wait(lambda: adds(answered), 'the main chat answers its blocked worker', 90)
+    cli('chat', 'new', 'wake', '--goal', str(m2_goal), '-p', 'demo', '--json')
+    answered = lead_task('NEEDS WebSearch ANSWERME', to='wake')
+    wait(lambda: adds(answered), 'the goal chat answers its blocked worker', 90)
     assert adds(answered) == ['WORK answered.txt'], log(answered)
     assert wait_state(answered, 'ready', 'failed')['state'] == 'ready'
-    assert stop_events(answered) == [True], stop_events(answered)
+    assert stop_events(answered, entries=lambda: chat_entries('wake')) == [True], chat_entries('wake')
+    assert not stop_events(answered), 'the main chat hears nothing of the goal chat task'
     # ^ A done result that asks the owner wakes its chat too.
     asked = lead_task('WORK asked.txt OWNERQ')
     wait_state(asked, 'ready')
@@ -7728,6 +7739,7 @@ def part_chats(created=None):
     assert adds(looping) == ['SLOW NEEDS WebSearch'] * 2 and show(looping)['state'] == 'waiting', log(looping)
     for n in (answered, asked, owned, stopped, looping):
         js('task', 'close', n, '--discard')
+    js('chat', 'close', 'wake', '-p', 'demo')
 
     # 33n. No chat of its own (docs/tasks.md "Chats"): a repo gets a chat only from `chat new`. Registering it and
     # starting its service make none; the first chat is its main chat unless the owner chooses another; closing

@@ -220,8 +220,8 @@ def task_row(task, events, turns):
 
 
 # ^ Event kinds that start no turn, for a message logged before its lines carried `short[].wakes`
-# (docs/tasks.md "Chat host"; since the review job, no task event starts one): a turn they join is
-# named by its other events.
+# (docs/tasks.md "Chat host"; since then only a worker's stop on a need starts one): a turn they
+# join is named by its other events.
 ALONG = ("landed", "closed", "stopped", "waiting:limit", "waiting:disk")
 # ^ `wsx task` verbs that only read.
 READ_VERBS = ("ledger", "show", "chat", "log", "status")
