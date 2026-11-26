@@ -5491,7 +5491,8 @@ def part_host(created=None):
     wait_state(three, 'closed')
     # 32ap. A worker whose turn ends `paused` while its scenario check-run is out (docs/tasks.md
     # "Status", "Check-run"): the run does not hold the result, so the task waits on the manager
-    # (`paused`) at once; an add starts a turn at once; the run's pass starts no turn.
+    # (`paused`) at once; an add starts a turn at once; the run's pass starts no turn. Without an
+    # add the paused worker waited for its run, not for the owner: the pass is its next turn.
     mark('32ap')
     ap_gate, ap_started = base / 'ap-gate', base / 'ap-started.log'
     (base / 'ap-ci.sh').write_text('echo started >> %s\n%s\necho scenario-passed\n'
@@ -5508,10 +5509,23 @@ def part_host(created=None):
     ap_gate.touch()
     wait(lambda: kinds(paused, 'check_run'), 'the run answers in the background', 60)
     time.sleep(1)
-    assert not [t for t in traces() if 'Your check-run ended' in t.get('message', '') and str(ap_gate) in t['message']]
+    answered = lambda: [t for t in traces() if 'Your check-run ended' in t.get('message', '') and 'ap-ci.sh' in t['message']]
+    assert not answered(), answered()
     assert show(paused)['state'] == 'ready' and ap_started.read_text() == 'started\n', log(paused)
     js('task', 'close', paused, '--discard')
     wait_state(paused, 'closed')
+    ap2_gate, ap2_started = base / 'ap2-gate', base / 'ap2-started.log'
+    (base / 'ap-ci.sh').write_text('echo started >> %s\n%s\n' % (ap2_started, gate_cmd(ap2_gate)))
+    waiting = manager_new('WORK ap2.txt CHECKRUN_LATER pausecheck PAUSE')
+    wait(lambda: (show(waiting)['record'].get('waiting') or {}).get('on') == 'paused', 'the second paused result', 60)
+    wait(lambda: ap2_started.exists(), 'the second check-run is out', 30)
+    assert not answered(), answered()
+    ap2_gate.touch()
+    assert wait_state(waiting, 'ready', 'failed')['state'] == 'ready', log(waiting)
+    assert len(answered()) == 1, log(waiting)
+    assert [e['status'] for e in log(waiting) if e['kind'] == 'result'] == ['paused', 'done'], log(waiting)
+    js('task', 'close', waiting, '--discard')
+    wait_state(waiting, 'closed')
     configure(LAND_CONFIG, 'scenario for 32ap over')
     # 32wk. One wake rule (docs/tasks.md "Chat host"): a task event starts no manager turn, here a
     # ready task parked behind another and a plain ready task; they go along with the owner's next
@@ -5758,11 +5772,12 @@ def part_host(created=None):
     assert kinds(planned, 'checks', 'revision') == ['checks', 'revision']
     js('task', 'close', planned, '--discard')
     # 32h. The real Claude in wsx's boundary (docs/tasks.md "Permissions"): with no prompt it
-    # runs part 23's probe and gets the same answers. Skipped, and said so, when no claude is on PATH.
+    # runs part 23's probe and gets the same answers. It spends a model call, so it runs only with
+    # WSX_REAL_CLAUDE=1 and a claude on PATH; skipped, and said so, otherwise (a worker's or CI's run).
     mark('32h')
-    real = shutil.which('claude')
+    real = shutil.which('claude') if os.environ.get('WSX_REAL_CLAUDE') == '1' else None
     if real is None:
-        print('32h skipped: no real claude on PATH', file=sys.stderr)
+        print('32h skipped: no WSX_REAL_CLAUDE=1 or no real claude on PATH', file=sys.stderr)
     else:
         probe_up(created)
         # ^ `tasks.env` reaches the worker's launch: the wrapper runs the real claude, signed in

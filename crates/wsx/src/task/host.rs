@@ -3527,7 +3527,16 @@ impl Host {
         let label = short_commit(commit).to_string();
         let current = self.record.state.is_open()
             && head(&self.record.working_copy).is_some_and(|head| head == commit);
-        if !answer.fails {
+        // ^ A worker that paused while its run went on waits for this answer, not for the
+        // owner: a pass continues it as a failure does, unless a turn (an add's) already did.
+        // ref: docs/tasks.md "Check-run"
+        let paused = current
+            && self.turn.is_none()
+            && self
+                .last_result
+                .as_ref()
+                .is_some_and(|result| result.status == "paused");
+        if !answer.fails && !paused {
             let done = self
                 .last_result
                 .as_mut()
@@ -3548,7 +3557,10 @@ impl Host {
                 "check-run on {label} failed, but the task moved on: no turn for it"
             ));
         }
-        self.say(&format!("check-run on {label} failed: the task reopens"));
+        self.say(&format!(
+            "check-run on {label} {}: the task reopens",
+            if answer.fails { "failed" } else { "ended" }
+        ));
         // ^ The checks of a result run now: the failure is the turn after them.
         if self.record.state == TaskState::Checking {
             self.pending.push_back(answer.text);
