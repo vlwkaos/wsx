@@ -583,6 +583,13 @@ def owner_should_answer(wsx, env, cwd):
     return None if chat.get('asks') or not (tasks or chats) else False
 
 
+def owner_waits(shown):
+    """A task that waits on the owner, with no check-run out: a worker that paused for its run goes on
+    when the run answers (docs/tasks.md "Check-run"), and the host keeps `check-run.json` until then."""
+    out = shown.get('log') and (Path(shown['log']).parent / 'check-run.json').exists()
+    return (find_key(shown, 'waiting') or {}).get('on') in OWNER_WAIT and not out
+
+
 def desk_state(wsx, env, cwd, said_id):
     """'done': the lead answered, no chat is in a turn and no task is open; 'owner': only the owner can move
     things on (an open approval or question, or every open task waits on the owner or failed); 'busy'
@@ -594,8 +601,7 @@ def desk_state(wsx, env, cwd, said_id):
         chat = wsx_json(wsx, env, cwd, 'chat', 'read')
         open_tasks = [t for t in tasks if t.get('state') not in DONE_TASK]
         stuck = [t for t in open_tasks if t.get('state') == 'failed' or (
-            t.get('state') == 'waiting' and (find_key(wsx_json(wsx, env, cwd, 'task', 'show', str(t['id'])),
-                                                     'waiting') or {}).get('on') in OWNER_WAIT)]
+            t.get('state') == 'waiting' and owner_waits(wsx_json(wsx, env, cwd, 'task', 'show', str(t['id']))))]
     except (RuntimeError, ValueError, subprocess.TimeoutExpired):
         return 'busy'
     answered = any(e.get('kind') == 'reply' and said_id in e.get('to', []) for e in chat.get('entries', []))
