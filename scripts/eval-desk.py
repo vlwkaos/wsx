@@ -72,6 +72,10 @@ ARM_FOLDER = {'solo': 's', 'desk': 'd', 'desk-opus-lead': 'o'}
 # workbench `~/.cache/ed/115025/154b/o-t1` is 17 bytes longer than this checkout's path; a longer one
 # failed every check or scenario that binds one.
 
+EXTRA_SCENARIOS = {'tests': 'cargo nextest run --workspace --locked'}
+# ^ Added to the parent's scenarios: the crate tests outside the boundary, for a worker whose own run
+# the boundary refuses (a nested sandbox, `ps`). Solo has no boundary, so this keeps the arms even.
+
 STARTED = []  # Popen objects of this run
 CLEANUPS = []  # removals, newest last; skipped with --keep
 STOPS = []  # daemon stops, always run
@@ -367,7 +371,7 @@ def desk_config(case, args, arm='desk'):
     lines = ['tasks:', '  minFreeGb: 0', '  env:', '    CARGO_INCREMENTAL: "0"', '  checks:']
     lines += ['    - %s' % json.dumps(c.replace('{crate}', crate)) for c in checks]
     lines += ['  checkTimeoutSeconds: 1800', '  land: { auto: true }']
-    lines += parent_scenarios(case)
+    lines += (parent_scenarios(case) or ['  scenarios:']) + ['    %s: %s' % kv for kv in EXTRA_SCENARIOS.items()]
     if DESK_ARMS[arm]:
         lead, workers = DESK_ARMS[arm]
         lines += ['  agent: { model: %s }' % workers, '  lead: { model: %s }' % lead]
@@ -751,7 +755,8 @@ def main():
                 evidence.mkdir(parents=True)
                 arm_dir = folder / ARM_FOLDER[arm]
                 row = {'run': run_id, 'case': case['short'], 'arm': arm, 'dry_run': args.dry_run,
-                       'request': case['request'].splitlines()[0][:120], 'parent': case['parent'][:8]}
+                       'request': case['request'].splitlines()[0][:120], 'parent': case['parent'][:8],
+                       'extra_scenarios': [] if arm == 'solo' else sorted(EXTRA_SCENARIOS)}
                 mark = len(CLEANUPS)
                 log('case', case['short'], 'arm', arm)
                 try:
