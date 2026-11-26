@@ -10,7 +10,7 @@ crates/*/src/** and a top-level Rust integration test crates/<crate>/tests/<name
 A case is the parent commit, the request (the commit message) and the hidden tests (the commit's changed
 crates/*/tests/**/*.rs files, absent or older in the parent).
 
-Each case runs in two arms, each in its own copy of the parent at ~/.cache/eval-desk/<run>/<case>/<arm letter>: outside
+Each case runs in two arms, each in its own copy of the parent at ~/.cache/ed/<run time>/<case>/<arm letter>: outside
 this checkout, whose path an agent would otherwise read off its own folder and open (`git log` there shows the
 answer). A row whose agents named this checkout or the answer commit in a tool call is void (`leaks`).
   solo  one `claude -p "<request>" --output-format json` in an isolated copy (`isolated_copy`), edits and
@@ -65,10 +65,12 @@ SCAN = 800  # commits looked at for cases
 DONE_TASK = ('landed', 'closed')
 OWNER_WAIT = ('asks', 'land_stopped', 'owner', 'paused', 'plan')  # waits that only the owner ends
 POLL = 5
-WORK_ROOT = Path.home() / '.cache/eval-desk'  # the arms' folders; see the docstring
+WORK_ROOT = Path.home() / '.cache/ed'  # the arms' folders, <run time>/<case>/<arm letter>; see the docstring
 ARM_FOLDER = {'solo': 's', 'desk': 'd', 'desk-opus-lead': 'o'}
-# ^ Short names: tests bind Unix sockets under <workbench>/target/routine-it-<pid>-<n>/a/, and a socket path
-# has at most 103 bytes (crates/wsx/tests/routine_wsxd_lifecycle.rs); a longer one fails every desk check.
+# ^ Short names: tests and scenarios bind Unix sockets under the workbench (target/routine-it-<pid>-<n>/a/,
+# .work/runtime-smoke/home/.local/state/wsx/wsx.sock), and a socket path has at most 103 bytes. The
+# workbench `~/.cache/ed/115025/154b/o-t1` is 17 bytes longer than this checkout's path; a longer one
+# failed every check or scenario that binds one.
 
 STARTED = []  # Popen objects of this run
 CLEANUPS = []  # removals, newest last; skipped with --keep
@@ -465,7 +467,7 @@ def arm_desk(case, arm_dir, args, evidence, arm='desk'):
 
     run([wsx, 'chat', 'new', 'lead', '-p', 'eval'], cwd=arm_dir, env=env)
     # ^ The project's first chat is its main chat: the lead (docs/tasks.md "Lead and forks").
-    request = DRY_REQUEST if args.dry_run else case['request']
+    request = args.dry_request if args.dry_run else case['request']
     asked = wsx_json(wsx, env, arm_dir, 'chat', 'say', request, '-p', 'eval')
     deadline = time.monotonic() + args.minutes * 60
     outcome, quiet, said, goes = 'limit', 0, asked['id'], 0
@@ -503,6 +505,20 @@ def arm_desk(case, arm_dir, args, evidence, arm='desk'):
            'outcome': outcome, 'open_tasks': len(open_tasks), 'owner_turns': goes}
     chat = wsx_json(wsx, env, arm_dir, 'chat', 'read')
     (evidence / 'chat.json').write_text(json.dumps(chat, indent=1))
+    # ^ Who moved each task on: every goal chat's conversation and every task's log (woken turns, adds,
+    # check-runs), so a row says whether its chat answered a stop or the owner's go did.
+    try:
+        for goal in goal_chats(wsx, env, arm_dir):
+            read = run([wsx, 'chat', 'read', '--chat', goal['name'], '--json'], cwd=arm_dir, env=env, check=False)
+            (evidence / ('chat-%s.json' % goal['name'])).write_text(read.stdout + read.stderr)
+        for task in task_items(wsx_json(wsx, env, arm_dir, 'task', 'list', '--all')):
+            shown = run([wsx, 'task', 'show', str(task['id']), '--json'], cwd=arm_dir, env=env, check=False)
+            log_path = json.loads(shown.stdout or '{}').get('log') if shown.returncode == 0 else None
+            if log_path and Path(log_path).is_file():
+                shutil.copyfile(log_path, evidence / ('task-%s.log.jsonl' % task['id']))
+    except Exception as err:
+        # ^ Evidence only: a failed read of any kind leaves the row as measured.
+        log('evidence incomplete:', err)
     replies = [e.get('text', '') for e in chat.get('entries', []) if e.get('kind') == 'reply']
     row['lead_last_reply'] = replies[-1][:400] if replies else None
     row['open_asks'] = len(chat.get('asks') or [])
@@ -696,6 +712,8 @@ def main():
     ap.add_argument('--no-build', action='store_true', help='skip `cargo build -p wsx -p wsx-daemon`')
     ap.add_argument('--cold', action='store_true', help='do not clone target/ into each arm')
     ap.add_argument('--dry-run', action='store_true', help='fake agent, no model call')
+    ap.add_argument('--dry-request', default=DRY_REQUEST,
+                    help='--dry-run: what the owner says to the fake lead (scripts/fake-claude-stream.py words)')
     ap.add_argument('--keep', action='store_true', help='keep the run folder (arms and isolated wsx) for a look')
     args = ap.parse_args()
     global KEEP
@@ -706,8 +724,12 @@ def main():
     cases = pick_cases(args)
     run_id = time.strftime('%y%m%d-%H%M%S') + ('d' if args.dry_run else '')
     out = ROOT / '.work/eval' / run_id
+    work = WORK_ROOT / run_id.split('-', 1)[1]
+    if work.exists():
+        # ^ A kept run of another day at the same time: never reuse its folders.
+        raise SystemExit('eval-desk: %s exists (a kept run?); remove it or wait a second' % work)
     out.mkdir(parents=True)
-    work = WORK_ROOT / run_id
+    work.mkdir(parents=True)
     results = out / 'results.jsonl'
     signal.signal(signal.SIGTERM, on_signal)
     if sys.platform == 'darwin':
