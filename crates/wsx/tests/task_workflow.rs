@@ -75,7 +75,7 @@ fn ledger_effort(fixture: &Fixture, id: &str) -> Value {
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["id"].to_string() == id)
+        .find(|row| row["id"].as_u64() == id.parse().ok())
         .map(|row| row["agent"]["effort"].clone())
         .expect("the task in the ledger")
 }

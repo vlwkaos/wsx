@@ -148,7 +148,7 @@ pub fn trim(project_id: &str, warm: usize, drop_after: Duration) -> Vec<PathBuf>
         .filter_map(|copy| Some((built_at(&copy.join("target"))?, copy)))
         .collect();
     // ^ Newest first: the first `warm` stay; any older copy goes once it is idle.
-    built.sort_by(|a, b| b.0.cmp(&a.0));
+    built.sort_by_key(|b| std::cmp::Reverse(b.0));
     let mut cleaned = Vec::new();
     for (rank, (at, copy)) in built.into_iter().enumerate() {
         let idle = now.duration_since(at).unwrap_or_default();

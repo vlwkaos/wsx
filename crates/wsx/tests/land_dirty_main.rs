@@ -25,7 +25,7 @@ fn blocked_by(fixture: &Fixture, id: &str) -> Value {
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["id"].to_string() == id)
+        .find(|row| row["id"].as_u64() == id.parse().ok())
         .unwrap_or_else(|| panic!("task {id} is not in the ledger: {ledger}"))
         .clone();
     row["land_blocked_by"].clone()

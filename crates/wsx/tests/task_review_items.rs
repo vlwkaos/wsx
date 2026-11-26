@@ -72,7 +72,7 @@ fn open_items(fixture: &Fixture) -> Vec<Value> {
 fn items_of(fixture: &Fixture, id: &str) -> Vec<Value> {
     open_items(fixture)
         .into_iter()
-        .filter(|item| item["task"].to_string() == id)
+        .filter(|item| item["task"].as_u64() == id.parse().ok())
         .collect()
 }
 
@@ -242,7 +242,7 @@ fn video_and_several_captures_are_kept_as_files_and_big_or_fake_ones_are_dropped
         .expect("checks.jsonl")
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|row| row["task"].to_string() == video)
+        .filter(|row| row["task"].as_u64() == video.parse().ok())
         .map(|row| json!({"check": row["check"], "captures": row["captures"], "poster": row["poster"]}))
         .collect();
     assert_eq!(
