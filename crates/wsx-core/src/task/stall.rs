@@ -107,15 +107,7 @@ fn running(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
     let waiting = record.waiting.as_ref();
     let hosted = match record.state {
         TaskState::Working | TaskState::Checking => true,
-        TaskState::Waiting => {
-            // ^ A wait on a check-run is the host's to end with the run's answer.
-            waiting.is_some_and(|w| {
-                matches!(
-                    w.on,
-                    WaitOn::Disk | WaitOn::Limit | WaitOn::Load | WaitOn::CheckRun
-                )
-            })
-        }
+        TaskState::Waiting => waiting.is_some_and(|w| w.on.by_host()),
         // ^ Its host runs the review job (docs/tasks.md "Review").
         TaskState::Ready => status::under_review(dir, record, status::land_auto(record)),
         _ => false,

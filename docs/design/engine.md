@@ -95,7 +95,7 @@ and the turn end with its type. The eval reads these, not `task show` text.
 
 | # | Step | Removes |
 |---|---|---|
-| 1 | Typed turn end, `waits_on`, the no-orphan invariant and its log entries. Built: `waits_on`, `orphan`; open: `phase` and `wait` entries | the `paused` resume and the eval's `check-run.json` check (both removed) |
+| 1 | Typed turn end, `waits_on`, the no-orphan invariant and its log entries. Built: `waits_on`, `orphan` for every wait the host ends (`WaitOn::by_host`: check-run, disk, load, limit); open: `phase` and `wait` entries | the `paused` resume and the eval's `check-run.json` check (both removed) |
 | 2 | `next(phase, wait, event)` in core; the host only executes effects. Built: `wsx_core::task::phase::answer_to`, where a check-run's answer goes (one rule for the run's end and the result after it); open: the settle, the waits and the resume | about 20 state functions in `host.rs` (orchestration.md step 3); built: the four places that routed an answer |
 | 3 | Eval: 15-case suite, serial, code labeller on the new log entries | reading logs by hand |
 | 4 | Paid round 1, Pareto, one fix, round 2 | |

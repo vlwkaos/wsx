@@ -5178,7 +5178,32 @@ def part_host(created=None):
     assert len(joined) == 1 and 'WORK disk2.txt' in joined[0], joined
     for n in (older, newer):
         js('task', 'close', n, '--discard')
+    # ^ A host that restarts during a disk wait has lost the held turn: nothing ends the wait, so
+    # it is an orphan and waits on the owner (docs/tasks.md "No orphan").
+    # A limit wait is rebuilt from the record: it ends by itself, with no orphan.
+    def restart_host(n):
+        marker = 'task host %s %d' % (show(n)['record']['project_id'], n)
+        for line in leftovers(marker):
+            if line.endswith(marker):
+                os.kill(int(line.split()[0]), 9)
+        wait(lambda: not show(n)['host_running'], 'the host of t%s ended' % n, 30)
+        # ^ `hold` changes no state here: it only wakes a new host.
+        assert js('task', 'hold', n, 'back from 32d')['ok']
+
+    configure(roomy.replace('minFreeGb: 0', 'minFreeGb: 100000'), 'no disk for a restart')
+    lost = js('task', 'new', 'WORK disk3.txt')['id']
+    wait(lambda: (show(lost)['record'].get('waiting') or {}).get('on') == 'disk', 'the third disk wait')
+    restart_host(lost)
+    wait(lambda: kinds(lost, 'orphan'), 'the new host finds the disk orphan', 30)
+    assert show(lost)['record']['waiting']['on'] == 'owner', show(lost)['record']
+    js('task', 'close', lost, '--discard')
     configure(LAND_CONFIG, 'disk as before')
+    capped = js('task', 'new', 'LIMIT 6 WORK limit3.txt')['id']
+    wait(lambda: (show(capped)['record'].get('waiting') or {}).get('on') == 'limit', 'the limit wait to restart')
+    restart_host(capped)
+    assert wait_state(capped, 'ready', 'failed')['state'] == 'ready', log(capped)
+    assert not kinds(capped, 'orphan'), log(capped)
+    js('task', 'close', capped, '--discard')
     # 32af. A task waits for another to land (docs/tasks.md "After another task"): the status
     # says so on a ready task and a working one, the stall check skips it, the landing ends the
     # wait with the text as an add, a close ends it with one event, and a wait past 24 h is one

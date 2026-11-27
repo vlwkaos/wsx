@@ -173,6 +173,16 @@ impl WaitOn {
             Self::Asks => "asks",
         }
     }
+
+    /// Whether the host ends this wait by itself (its run's answer, a disk, load or limit
+    /// timer, the check slot); the others wait on a person. A wait the host ends whose mover
+    /// is gone is an orphan. ref: docs/tasks.md "No orphan"
+    pub fn by_host(self) -> bool {
+        match self {
+            Self::Disk | Self::Load | Self::Limit | Self::CheckRun | Self::CheckSlot => true,
+            Self::Owner | Self::Plan | Self::Hand | Self::LandStopped | Self::Asks => false,
+        }
+    }
 }
 
 /// The wait of `wsx task after`: not a state, so it holds for a ready task and a working one.

@@ -25,8 +25,8 @@ use wsx_core::memory::{manage as memory_manage, Store};
 use wsx_core::model::workspace::WorkflowStep;
 use wsx_core::runtime;
 use wsx_core::task::chat_host::asks_owner;
-use wsx_core::task::replace::{Binary, HANDOFF_FILE};
 use wsx_core::task::phase::{self, AnswerTo};
+use wsx_core::task::replace::{Binary, HANDOFF_FILE};
 use wsx_core::task::schedule;
 use wsx_core::task::status::{self, STOPPED_BY_REQUEST};
 use wsx_core::task::text::question;
@@ -2999,16 +2999,42 @@ impl Host {
         self.wait(WaitOn::Owner, reason);
     }
 
-    /// The no-orphan check of each loop: a wait on a check-run with no run out and no turn.
-    /// A host that restarted and did not run it again, or a run dropped, ends here.
+    /// The no-orphan check of each loop: a wait the host ends (`WaitOn::by_host`) whose mover is
+    /// gone. A host that restarted without the run or the held work, or a run dropped, ends here.
     fn check_orphan(&mut self) {
-        if self.turn.is_none()
-            && self.check_run.is_none()
-            && self.record.state == TaskState::Waiting
-            && self.record.waits_on(WaitOn::CheckRun)
-        {
-            self.orphan("the check-run the worker waits on is no longer out".into());
+        let Some(on) = self.record.waiting.as_ref().map(|w| w.on) else {
+            return;
+        };
+        if self.turn.is_some() || self.record.state != TaskState::Waiting {
+            return;
         }
+        let reason = match on {
+            WaitOn::CheckRun if self.check_run.is_none() => {
+                "the check-run the worker waits on is no longer out".to_string()
+            }
+            // ^ Either timer moves either wait: a turn a limit wait resumes joins the held disk
+            // turn when one waits too, so the record shows `limit` while only `disk_wait` holds it.
+            WaitOn::Disk | WaitOn::Load | WaitOn::Limit
+                if self.disk_wait.is_none() && self.limit_wait.is_none() =>
+            {
+                format!(
+                    "nothing ends its {} wait: the work it held is gone",
+                    on.as_str()
+                )
+            }
+            // ^ Moved, or a person's to end; a check slot's never holds in `waiting` (`TaskRecord::move_to`).
+            WaitOn::CheckRun
+            | WaitOn::Disk
+            | WaitOn::Load
+            | WaitOn::Limit
+            | WaitOn::CheckSlot
+            | WaitOn::Owner
+            | WaitOn::Plan
+            | WaitOn::Hand
+            | WaitOn::LandStopped
+            | WaitOn::Asks => return,
+        };
+        self.orphan(reason);
     }
 
     /// "ready", "waiting (the owner works on it by hand)" or "checking (queued for ...)".
@@ -3590,7 +3616,9 @@ impl Host {
                 });
             }
             AnswerTo::Turn => {
-                self.say(&format!("check-run on {on}: its answer is the worker's next turn"));
+                self.say(&format!(
+                    "check-run on {on}: its answer is the worker's next turn"
+                ));
                 self.pending.push_back(answer.text);
                 // ^ The checks of a result run now: it is the turn after them, never after a ping.
                 if self.record.state == TaskState::Checking {
@@ -3610,7 +3638,9 @@ impl Host {
                     let kept = result.clone();
                     self.write_result(&kept, &[]);
                 }
-                self.say(&format!("check-run on {on} ended with no failure of the task's own"));
+                self.say(&format!(
+                    "check-run on {on} ended with no failure of the task's own"
+                ));
                 // ^ The scenarios its change touches waited for this run: they start now.
                 self.run_touched_scenarios();
             }
