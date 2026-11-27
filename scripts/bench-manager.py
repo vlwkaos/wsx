@@ -867,6 +867,7 @@ def event_kind(text):
     for line in text.splitlines():
         if re.match(r'#\d+ failed|deploy of \S+ failed|checks? fail', line):
             found.add('failure')
+        # ^ `paused` is the state word of logs written before c7256c97, which this replays.
         elif re.match(r'#\d+ (waiting|paused)', line) and re.search(r'waits on (plan|owner|manager)|\?$', line):
             found.add('question')
         elif re.match(r'#\d+ ready', line):
