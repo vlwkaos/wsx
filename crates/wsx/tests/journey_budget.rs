@@ -9,7 +9,7 @@ use std::path::Path;
 
 /// Each journey and its ceiling in lines.
 const JOURNEYS: [(&str, usize); 5] = [
-    ("scripts/test-task.py", 7870),
+    ("scripts/test-task.py", 7872),
     ("scripts/test-web-client.py", 5560),
     ("scripts/web-tasks-check.mjs", 4515),
     ("scripts/runtime-smoke.py", 3410),

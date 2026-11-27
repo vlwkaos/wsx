@@ -5547,6 +5547,8 @@ def part_host(created=None):
         time.sleep(1)
         assert [e['status'] for e in log(held) if e['kind'] == 'result'] == statuses, log(held)
         assert len(answered()) == turns and not kinds(held, 'orphan'), log(held)
+        # ^ The answer is handled: a restart runs no check-run again.
+        assert not (Path(show(held)['log']).parent / 'check-run.json').exists(), log(held)
         js('task', 'close', held, '--discard')
         wait_state(held, 'closed')
     # ^ A host that comes back without the run (no `check-run.json`) leaves the wait with no mover.

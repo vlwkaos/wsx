@@ -1,6 +1,6 @@
 # Orchestration engine: one typed state machine, measured by a suite
 
-Status: proposal 2026-11-27; owner decisions 1 and 2 taken the same day (section 7), step 1 partly built. Made with `/agentic-dev-guide` (its Optimization evaluation). It builds
+Status: proposal 2026-11-27; owner decisions 1 and 2 taken the same day (section 7), step 1 partly built, step 2 started. Made with `/agentic-dev-guide` (its Optimization evaluation). It builds
 [orchestration.md](orchestration.md) step 3 ("one phase table; no event turns") and changes the contract in
 [tasks.md](../tasks.md) only where section 3 says so.
 
@@ -96,7 +96,7 @@ and the turn end with its type. The eval reads these, not `task show` text.
 | # | Step | Removes |
 |---|---|---|
 | 1 | Typed turn end, `waits_on`, the no-orphan invariant and its log entries. Built: `waits_on`, `orphan`; open: `phase` and `wait` entries | the `paused` resume and the eval's `check-run.json` check (both removed) |
-| 2 | `next(phase, wait, event)` in core; the host only executes effects | about 20 state functions in `host.rs` (orchestration.md step 3) |
+| 2 | `next(phase, wait, event)` in core; the host only executes effects. Built: `wsx_core::task::phase::answer_to`, where a check-run's answer goes (one rule for the run's end and the result after it); open: the settle, the waits and the resume | about 20 state functions in `host.rs` (orchestration.md step 3); built: the four places that routed an answer |
 | 3 | Eval: 15-case suite, serial, code labeller on the new log entries | reading logs by hand |
 | 4 | Paid round 1, Pareto, one fix, round 2 | |
 | 5 | GEPA on instructions and briefs | |
