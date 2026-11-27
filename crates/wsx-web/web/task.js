@@ -29,6 +29,8 @@ function described(entry) {
     case "message": return [MESSAGE_WORDS[entry.mode] ?? "Message", entry.text];
     case "steps": return [plural(entry.count, "step"), entry.last];
     case "blocked": return ["Blocked", entry.denials.length ? `denied: ${entry.denials.join(", ")}` : "", "attention"];
+    // ^ Nothing moves the task on any more: it waits for the owner (docs/tasks.md "No orphan").
+    case "orphan": return ["Waiting for you", entry.reason, "attention"];
     case "result": return [`Result: ${entry.status}`, entry.summary, entry.status === "done" ? null : "danger"];
     case "checks": {
       const failed = entry.results.filter((check) => check.exit !== 0);
