@@ -1021,7 +1021,7 @@ impl ChatRunner {
                     .iter()
                     .filter_map(|(_, record)| record.as_ref().ok())
                     .find(|record| record.id == *id)?;
-                let now = wsx_core::task::status::state_word(record);
+                let now = record.state.as_str();
                 if (now, record.revision) == (word.as_str(), *revision) {
                     return None;
                 }
@@ -1695,7 +1695,7 @@ impl ChatRunner {
                 format!(
                     "#{} {} r{}: {}",
                     record.id,
-                    wsx_core::task::status::state_word(record),
+                    record.state.as_str(),
                     record.revision,
                     clip(
                         &view::title(dir, record).unwrap_or_default(),
@@ -2539,7 +2539,7 @@ pub(super) fn read_note(path: &Path) -> String {
 fn open_counts<'a>(records: impl IntoIterator<Item = &'a TaskRecord>) -> (usize, String) {
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for record in records.into_iter().filter(|record| record.state.is_open()) {
-        *counts.entry(status::state_word(record)).or_default() += 1;
+        *counts.entry(record.state.as_str()).or_default() += 1;
     }
     let states = counts
         .iter()

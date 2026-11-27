@@ -70,7 +70,7 @@ fn a_cut_question_is_restored_once_from_the_result() {
     let saved: Value = serde_json::from_slice(&fs::read(dir.file(RECORD_FILE)).unwrap()).unwrap();
     assert_eq!(saved["waiting"]["reason"], SUMMARY);
 
-    // A pause is restored the same way.
+    // A `paused` wait of an older record reads as one on the owner and is restored the same way.
     let (dir, mut record) = task("paused", "Three questions for you:", SUMMARY);
     assert!(dir.restore_question(&mut record));
 

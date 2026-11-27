@@ -429,7 +429,7 @@ fn resolutions(
         // ^ A log past the tail is cut at its start: an answer whose block is older is not listed.
         for entry in dir.read_log_tail(RESOLUTION_LOG_BYTES).unwrap_or_default() {
             let text = match &entry.event {
-                LogEvent::Blocked { .. } => {
+                LogEvent::Blocked { .. } | LogEvent::Orphan { .. } => {
                     blocked = true;
                     continue;
                 }
@@ -1094,7 +1094,7 @@ pub fn since(scope: &Scope, after: u64) -> Value {
             }
             match entry.event {
                 LogEvent::Created { .. } => kinds.insert("started"),
-                LogEvent::Blocked { .. } => kinds.insert("blocked"),
+                LogEvent::Blocked { .. } | LogEvent::Orphan { .. } => kinds.insert("blocked"),
                 LogEvent::Conflict { .. } => kinds.insert("conflict"),
                 LogEvent::Revision { .. } => kinds.insert("revised"),
                 _ => false,

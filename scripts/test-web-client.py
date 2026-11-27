@@ -4334,15 +4334,15 @@ merge_seconds = 3
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         kinds = [(item['kind'], item.get('task')) for item in overview['needs']]
         assert kinds == [('land', 3), ('land', 1)], kinds  # oldest first within a kind; landed #2 is no need
-        # ^ A worker whose turn ends on a status, not a question, is paused: the owner's waiting need,
-        # first; an add ends it (docs/tasks.md "Status").
-        js('task', 'add', 1, 'PAUSE NOOP', '-p', 'demo')
+        # ^ A worker that waits on a check-run while none is out is an orphan: the owner's waiting
+        # need, first; an add ends it (docs/tasks.md "Check-run").
+        js('task', 'add', 1, 'WAITS_ON NOOP', '-p', 'demo')
         wait_state(1, 'waiting')
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         assert [(item['kind'], item.get('task')) for item in overview['needs']] == [('waiting', 1), ('land', 3)], overview['needs']
-        paused = next(row for row in overview['tasks'] if row['id'] == 1)
-        assert paused['stage'] == 'needs_you' and paused['waiting']['on'] == 'paused' and paused['status']['kind'] == 'paused', paused
-        assert paused['status']['label'] == 'Paused, waiting for you' and 'Tell it to go on' in paused['status']['sentence'], paused['status']
+        lost = next(row for row in overview['tasks'] if row['id'] == 1)
+        assert lost['stage'] == 'needs_you' and lost['waiting']['on'] == 'owner' and lost['status']['kind'] == 'owner', lost
+        assert lost['status']['label'] == 'Waiting for your answer' and 'none is out' in lost['status']['sentence'], lost['status']
         js('task', 'add', 1, 'NOOP', '-p', 'demo')
         wait_state(1, 'ready')
         # A steer reaches the running turn.

@@ -1312,7 +1312,7 @@ impl Repo {
                 }
                 summary
             };
-            let state_word = wsx_core::task::status::state_word(&record);
+            let state_word = record.state.as_str();
             let line = format!(
                 "#{} {} r{}: {}; {}",
                 record.id,

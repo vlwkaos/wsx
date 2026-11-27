@@ -63,7 +63,6 @@ USAGE_REPORT = ROOT / 'scripts/usage-report.py'
 MAX_LINES = 400
 SCAN = 800  # commits looked at for cases
 DONE_TASK = ('landed', 'closed')
-OWNER_WAIT = ('asks', 'land_stopped', 'owner', 'paused', 'plan')  # waits that only the owner ends
 POLL = 5
 WORK_ROOT = Path.home() / '.cache/ed'  # the arms' folders, <run time>/<case>/<arm letter>; see the docstring
 ARM_FOLDER = {'solo': 's', 'desk': 'd', 'desk-opus-lead': 'o'}
@@ -539,17 +538,6 @@ def task_items(listing):
     return listing.get('tasks', []) if isinstance(listing, dict) else listing
 
 
-def find_key(obj, key):
-    if isinstance(obj, dict):
-        if key in obj:
-            return obj[key]
-        for value in obj.values():
-            found = find_key(value, key)
-            if found is not None:
-                return found
-    return None
-
-
 OWNER_GO = 'Yes, go ahead: do it as you proposed, and decide the open points yourself.'
 
 
@@ -584,10 +572,9 @@ def owner_should_answer(wsx, env, cwd):
 
 
 def owner_waits(shown):
-    """A task that waits on the owner, with no check-run out: a worker that paused for its run goes on
-    when the run answers (docs/tasks.md "Check-run"), and the host keeps `check-run.json` until then."""
-    out = shown.get('log') and (Path(shown['log']).parent / 'check-run.json').exists()
-    return (find_key(shown, 'waiting') or {}).get('on') in OWNER_WAIT and not out
+    """A task only the owner moves on, by the core's one rule (`status.waits_on`, docs/tasks.md "Status"):
+    a worker that waits on its check-run is held by the check, not the owner."""
+    return ((shown.get('status') or {}).get('waits_on') or {}).get('kind') == 'owner'
 
 
 def desk_state(wsx, env, cwd, said_id):

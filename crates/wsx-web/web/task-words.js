@@ -32,8 +32,8 @@ export const taskStage = (task) => STAGES[task?.stage] ?? [task?.stage ?? "", "m
 export const taskLink = (project, task) => sheetHash(project, "task", task);
 
 // ^ A task whose worker's turn runs: nothing else holds it (the server's `status.waits_on`,
-// wsx-core `status::waits_on`, holder `host`). Its dot pulses; a ready task, a plan, a paused
-// worker, a hand-off, a limit or its checks keep a calm dot.
+// wsx-core `status::waits_on`, holder `host`). Its dot pulses; a ready task, a plan, a worker
+// that waits on its check-run, a hand-off, a limit or its checks keep a calm dot.
 export const live = (task) => task?.status?.waits_on?.kind === "host";
 
 // A task's row in a list or a chain: the glyph (play while its worker or its checks run, else

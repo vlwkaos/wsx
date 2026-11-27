@@ -5436,40 +5436,22 @@ def part_host(created=None):
     for n in (follower, freed, orphan, base_b):
         js('task', 'close', n, '--discard')
     wait_closed(base_a)
-    # 32aj. A worker whose turn ends on a status (`status: paused`, the fake's PAUSE) asks no
-    # question: the task reads paused in the event, the ledger count, `show`, `list` and the ledger
-    # row, the agent is idle, it waits for the owner, and an add continues it. A worker that asks a real question
-    # (`blocked`) still reads "Waiting for your answer" (docs/tasks.md "Status").
+    # 32aj. A worker that returns `waits_on` (the fake's WAITS_ON) with no check-run out waits on
+    # nothing: the host logs an `orphan`, the task waits on the owner, and its event wakes the manager
+    # that made it, as a blocked worker's does (docs/tasks.md "Check-run", "Chat host").
     mark('32aj')
-    pausing, questioning = manager_new('PAUSE WORK aj-p.txt'), manager_new('NEEDS WebSearch WORK aj-q.txt')
-    for n in (pausing, questioning):
-        wait_state(n, 'waiting')
-    status = show(pausing)['status']
-    assert status['kind'] == 'paused' and status['label'] == 'Paused, waiting for you', status
-    assert 'Waiting for your answer' not in status['sentence'] and 'Tell it to go on' in status['sentence'], status
-    assert show(pausing)['record']['waiting']['on'] == 'paused' and show(questioning)['status']['kind'] == 'owner', show(pausing)
-    assert re.search(r'^t%d paused ' % pausing, cli('task', 'show', str(pausing)).stdout), cli('task', 'show', str(pausing)).stdout
-    assert re.search(r'^t%d +paused ' % pausing, cli('task', 'list').stdout, re.M), cli('task', 'list').stdout
-    assert re.search(r'^t%d +waiting ' % questioning, cli('task', 'list').stdout, re.M), cli('task', 'list').stdout
-    row_of = {r['id']: r for r in js('chat', 'ledger')['open']}
-    assert row_of[pausing]['status']['kind'] == 'paused' and row_of[pausing]['waiting']['on'] == 'paused', row_of[pausing]
-    wait(lambda: (pane_agent(pausing) or {}).get('state') == 'idle', 'the paused worker reports idle')
-    wait(lambda: (pane_agent(questioning) or {}).get('state') == 'blocked', 'the asking worker reports blocked')
-    quiet = wait(lambda: events_with('#%d paused r' % pausing, 'waits on paused: Paused, waiting for you'), 'the paused event')[0]
-    assert 'waits on owner' not in [x for x in quiet['text'].split('\n') if x.startswith('#%d paused' % pausing)][0], quiet
-    assert [x for x in quiet['short'] if x.get('task') == pausing] == [{'text': '#%d paused' % pausing, 'task': pausing, 'wakes': False, 'state': 'paused'}], quiet
-    loud = wait(lambda: events_with('#%d waiting r' % questioning, 'waits on owner: Waiting for your answer'), 'the question event')[0]
-    assert [x for x in loud['short'] if x.get('task') == questioning] == [{'text': '#%d waiting' % questioning, 'task': questioning, 'state': 'waiting'}], loud
-    # ^ The paused event starts no turn; the blocked one wakes the manager that made it (section 33w).
-    reply_to(js('chat', 'say', 'STATUS after the paused event')['id'])
-    turn = turn_with('#%d paused r' % pausing)
-    assert re.search(r'- open: [^\n]*\b1 paused', turn['message']), turn['message']
-    assert js('task', 'add', pausing, 'WORK aj-p2.txt')['ok']
-    assert wait_state(pausing, 'ready', 'failed')['state'] == 'ready', log(pausing)
-    for n in (pausing, questioning):
-        js('task', 'close', n, '--discard')
-    for n in (pausing, questioning):
-        wait_state(n, 'closed')
+    lost = manager_new('WAITS_ON WORK aj-p.txt')
+    wait_state(lost, 'waiting')
+    shown = show(lost)
+    assert shown['record']['waiting']['on'] == 'owner' and 'none is out' in shown['record']['waiting']['reason'], shown['record']
+    assert shown['status']['kind'] == 'owner' and shown['status']['label'] == 'Waiting for your answer', shown['status']
+    assert [e['kind'] for e in log(lost) if e['kind'] in ('orphan', 'blocked')] == ['orphan'], log(lost)
+    assert re.search(r'^t%d +waiting ' % lost, cli('task', 'list').stdout, re.M), cli('task', 'list').stdout
+    woke = wait(lambda: events_with('#%d waiting r' % lost), 'the orphan event')[0]
+    assert [x.get('wakes', True) for x in woke['short'] if x.get('task') == lost] == [True], woke
+    wait(lambda: turn_with('#%d waiting r' % lost), 'the orphan wakes the manager', 60)
+    js('task', 'close', lost, '--discard')
+    wait_state(lost, 'closed')
     # 32aq. A worker blocks with a three-line summary: the task keeps all of it as `waiting.reason`
     # (record, ledger row, `why`), while the status sentence and `list` stay one line.
     mark('32aq')
@@ -5489,43 +5471,101 @@ def part_host(created=None):
     assert len([l for l in listed.splitlines() if l.startswith('t%d ' % three)]) == 1 and '15 or 13' not in listed, listed
     js('task', 'close', three, '--discard')
     wait_state(three, 'closed')
-    # 32ap. A worker whose turn ends `paused` while its scenario check-run is out (docs/tasks.md
-    # "Status", "Check-run"): the run does not hold the result, so the task waits on the manager
-    # (`paused`) at once; an add starts a turn at once; the run's pass starts no turn. Without an
-    # add the paused worker waited for its run, not for the owner: the pass is its next turn.
+    # 32ap. A worker that returns `waits_on` while its scenario check-run is out (docs/tasks.md
+    # "Check-run"): the run does not hold the result, so the task waits on the run (`check_run`, no
+    # owner need) at once. An add starts a turn at once, and the run's pass then starts none. Without
+    # an add the run's answer is the next turn. A stop puts the wait on the owner; the answer then
+    # waits for the next add.
     mark('32ap')
     ap_gate, ap_started = base / 'ap-gate', base / 'ap-started.log'
     (base / 'ap-ci.sh').write_text('echo started >> %s\n%s\necho scenario-passed\n'
                                    % (ap_started, gate_cmd(ap_gate)))
     configure(LAND_CONFIG + '  scenarios:\n    pausecheck: "sh %s"\n' % (base / 'ap-ci.sh'), 'a scenario for 32ap')
-    paused = manager_new('WORK ap.txt CHECKRUN_LATER pausecheck PAUSE')
-    wait(lambda: (show(paused)['record'].get('waiting') or {}).get('on') == 'paused', 'the paused result waits on the manager', 60)
+    on_run = lambda n: (show(n)['record'].get('waiting') or {}).get('on') == 'check_run'
+    waits = manager_new('WORK ap.txt CHECKRUN_LATER pausecheck WAITS_ON')
+    wait(lambda: on_run(waits), 'the waits_on result waits on its run', 60)
     wait(lambda: ap_started.exists(), 'the check-run is out', 30)
-    assert [e['status'] for e in log(paused) if e['kind'] == 'result'] == ['paused'], log(paused)
-    said = js('task', 'add', paused, 'NOOP go on ap')['message']
+    shown = show(waits)
+    assert shown['status']['kind'] == 'checking' and shown['status']['waits_on']['kind'] == 'check', shown['status']
+    assert 'pausecheck' in shown['record']['waiting']['reason'], shown['record']['waiting']
+    assert not any(i['task'] == waits for i in js('chat', 'ledger')['for_you']), js('chat', 'ledger')['for_you']
+    assert [e['status'] for e in log(waits) if e['kind'] == 'result'] == ['waits_on'], log(waits)
+    said = js('task', 'add', waits, 'NOOP go on ap')['message']
     assert 'started a new turn' in said, said
     wait(lambda: any('go on ap' in str(t.get('message', '')) for t in traces()), 'the add starts its turn', 30)
-    assert wait_state(paused, 'ready', 'failed')['state'] == 'ready', log(paused)
+    assert wait_state(waits, 'ready', 'failed')['state'] == 'ready', log(waits)
     ap_gate.touch()
-    wait(lambda: kinds(paused, 'check_run'), 'the run answers in the background', 60)
+    wait(lambda: kinds(waits, 'check_run'), 'the run answers in the background', 60)
     time.sleep(1)
     answered = lambda: [t for t in traces() if 'Your check-run ended' in t.get('message', '') and 'ap-ci.sh' in t['message']]
     assert not answered(), answered()
-    assert show(paused)['state'] == 'ready' and ap_started.read_text() == 'started\n', log(paused)
-    js('task', 'close', paused, '--discard')
-    wait_state(paused, 'closed')
+    assert show(waits)['state'] == 'ready' and ap_started.read_text() == 'started\n', log(waits)
+    js('task', 'close', waits, '--discard')
+    wait_state(waits, 'closed')
     ap2_gate, ap2_started = base / 'ap2-gate', base / 'ap2-started.log'
     (base / 'ap-ci.sh').write_text('echo started >> %s\n%s\n' % (ap2_started, gate_cmd(ap2_gate)))
-    waiting = manager_new('WORK ap2.txt CHECKRUN_LATER pausecheck PAUSE')
-    wait(lambda: (show(waiting)['record'].get('waiting') or {}).get('on') == 'paused', 'the second paused result', 60)
+    waiting = manager_new('WORK ap2.txt CHECKRUN_LATER pausecheck WAITS_ON')
+    wait(lambda: on_run(waiting), 'the second waits_on result', 60)
     wait(lambda: ap2_started.exists(), 'the second check-run is out', 30)
     assert not answered(), answered()
     ap2_gate.touch()
     assert wait_state(waiting, 'ready', 'failed')['state'] == 'ready', log(waiting)
     assert len(answered()) == 1, log(waiting)
-    assert [e['status'] for e in log(waiting) if e['kind'] == 'result'] == ['paused', 'done'], log(waiting)
+    assert [e['status'] for e in log(waiting) if e['kind'] == 'result'] == ['waits_on', 'done'], log(waiting)
+    assert not [e for e in log(waiting) if e['kind'] == 'orphan'], log(waiting)
     js('task', 'close', waiting, '--discard')
     wait_state(waiting, 'closed')
+    ap3_gate, ap3_started = base / 'ap3-gate', base / 'ap3-started.log'
+    (base / 'ap-ci.sh').write_text('echo started >> %s\n%s\n' % (ap3_started, gate_cmd(ap3_gate)))
+    halted = manager_new('WORK ap3.txt CHECKRUN_LATER pausecheck WAITS_ON')
+    wait(lambda: on_run(halted), 'the third waits_on result', 60)
+    wait(lambda: ap3_started.exists(), 'the third check-run is out', 30)
+    js('task', 'stop', halted)
+    assert show(halted)['record']['waiting'] == {'on': 'owner', 'reason': 'stopped by request'}, show(halted)['record']
+    ap3_gate.touch()
+    wait(lambda: kinds(halted, 'check_run'), 'the stopped task records its run', 60)
+    time.sleep(1)
+    assert show(halted)['record']['waiting']['reason'] == 'stopped by request', show(halted)['record']
+    assert len(answered()) == 1 and not [e for e in log(halted) if e['kind'] == 'orphan'], log(halted)
+    js('task', 'close', halted, '--discard')
+    wait_state(halted, 'closed')
+    # ^ An add's turn that starts while the run is out: the answer that comes in that turn waits
+    # for its result, which decides again. A `waits_on` gets it as the next turn; a `done` keeps
+    # the pass as an event, with no turn.
+    for n, (again, statuses, turns) in enumerate([('WAITS_ON', ['waits_on', 'waits_on', 'done'], 2),
+                                                  ('NOOP', ['waits_on', 'done'], 2)]):
+        ap5_gate, ap5_turn = base / ('ap5-gate-%d' % n), base / ('ap5-turn-%d' % n)
+        (base / 'ap-ci.sh').write_text('%s\n' % gate_cmd(ap5_gate))
+        held = manager_new('WORK ap5-%d.txt CHECKRUN_LATER pausecheck WAITS_ON' % n)
+        wait(lambda: on_run(held), 'a waits_on result for the add', 60)
+        js('task', 'add', held, 'WAIT %s %s' % (ap5_turn, again))
+        wait(lambda: show(held)['state'] == 'working', 'the add turn runs', 30)
+        ap5_gate.touch()
+        wait(lambda: kinds(held, 'check_run'), 'the run ends during the add turn', 60)
+        ap5_turn.touch()
+        assert wait_state(held, 'ready', 'failed')['state'] == 'ready', log(held)
+        time.sleep(1)
+        assert [e['status'] for e in log(held) if e['kind'] == 'result'] == statuses, log(held)
+        assert len(answered()) == turns and not kinds(held, 'orphan'), log(held)
+        js('task', 'close', held, '--discard')
+        wait_state(held, 'closed')
+    # ^ A host that comes back without the run (no `check-run.json`) leaves the wait with no mover.
+    ap4_gate = base / 'ap4-gate'
+    (base / 'ap-ci.sh').write_text('%s\n' % gate_cmd(ap4_gate))
+    gone = manager_new('WORK ap4.txt CHECKRUN_LATER pausecheck WAITS_ON')
+    wait(lambda: on_run(gone), 'the fourth waits_on result', 60)
+    marker = 'task host %s %d' % (show(gone)['record']['project_id'], gone)
+    for line in leftovers(marker):
+        if line.endswith(marker):
+            os.kill(int(line.split()[0]), 9)
+    wait(lambda: not show(gone)['host_running'], 'the host ended', 30)
+    (Path(show(gone)['log']).parent / 'check-run.json').unlink()
+    assert js('task', 'hold', gone, 'back from 32ap')['ok']
+    wait(lambda: [e for e in log(gone) if e['kind'] == 'orphan'], 'the new host finds the orphan', 30)
+    assert show(gone)['record']['waiting']['on'] == 'owner', show(gone)['record']
+    ap4_gate.touch()
+    js('task', 'close', gone, '--discard')
+    wait_state(gone, 'closed')
     configure(LAND_CONFIG, 'scenario for 32ap over')
     # 32wk. One wake rule (docs/tasks.md "Chat host"): a task event starts no manager turn, here a
     # ready task parked behind another and a plain ready task; they go along with the owner's next

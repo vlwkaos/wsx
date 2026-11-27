@@ -310,9 +310,9 @@ fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: boo
          nested `sandbox-exec`, other processes in `ps`, a test that starts its own boundary) \
          blocks nothing: the host runs a declared scenario outside it (`wsx task check-run \
          <name>`); with none declared, put the unproved part in `left_open` and go on. When \
-         the boundary refuses something else the task needs, name it. When your turn must end while \
-         something outside goes on (a run you started) and you ask nobody anything, return \
-         status paused with what runs and what is left: the chat that owns the task continues you. When \
+         the boundary refuses something else the task needs, name it. When you need the answer of \
+         a `check-run` that is still out to go on, return status waits_on with what is left: its \
+         answer, pass or failure, is your next turn. When \
          your finished work leaves a question only the owner can answer, end the summary \
          with that question. \
          {steps}Write the summary and the report by this rule. {presentation}",

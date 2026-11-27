@@ -112,7 +112,8 @@ pub struct WaitsOn {
 /// `after`; none for a landed or closed task. A ready task waits for its review job while the
 /// project lands by itself (`land_auto`, `tasks.land.auto`), checks prove it and no review of
 /// this revision has ended (`under_review`); else it waits on the owner, as a held one, a
-/// stopped landing, a result that asks the owner, a plan, a pause and a failed task do. One
+/// stopped landing, a result that asks the owner, a plan and a failed task do; a wait on its
+/// check-run is the check's. One
 /// that waits for another task (`after`) waits on that task.
 /// ref: docs/tasks.md "Status", "Landing", "Review"
 pub fn waits_on(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Option<WaitsOn> {
@@ -140,11 +141,12 @@ pub fn waits_on(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> Option<W
                     None => on(Holder::Check),
                 }
             }
+            (_, Some(WaitOn::CheckRun)) => on(Holder::Check),
             (_, Some(WaitOn::Disk)) => on(Holder::Disk),
             (_, Some(WaitOn::Load)) => on(Holder::Queue),
             (_, Some(WaitOn::Limit)) => on(Holder::Limit),
             (_, Some(WaitOn::Hand | WaitOn::LandStopped | WaitOn::Asks)) => on(Holder::Owner),
-            (_, Some(WaitOn::Plan | WaitOn::Paused)) => after.unwrap_or(on(Holder::Owner)),
+            (_, Some(WaitOn::Plan)) => after.unwrap_or(on(Holder::Owner)),
             (_, Some(WaitOn::Owner)) if owner_waits_after(dir, record) => {
                 after.unwrap_or(on(Holder::Owner))
             }
@@ -454,6 +456,7 @@ fn status_of(
 enum TurnEnd {
     Stopped(String),
     Blocked,
+    Orphan,
     Result,
 }
 
@@ -461,6 +464,7 @@ fn turn_end(dir: &TaskDir) -> Option<TurnEnd> {
     dir.last_event(|event| match event {
         LogEvent::Stopped { reason } => Some(TurnEnd::Stopped(reason.clone())),
         LogEvent::Blocked { .. } => Some(TurnEnd::Blocked),
+        LogEvent::Orphan { .. } => Some(TurnEnd::Orphan),
         LogEvent::Result { .. } => Some(TurnEnd::Result),
         _ => None,
     })
@@ -473,7 +477,7 @@ fn turn_end(dir: &TaskDir) -> Option<TurnEnd> {
 fn stop_reason(dir: &TaskDir) -> Option<String> {
     match turn_end(dir)? {
         TurnEnd::Stopped(reason) => Some(reason),
-        TurnEnd::Blocked | TurnEnd::Result => None,
+        TurnEnd::Blocked | TurnEnd::Orphan | TurnEnd::Result => None,
     }
 }
 
@@ -511,8 +515,8 @@ pub fn owner_waits_after(dir: &TaskDir, record: &TaskRecord) -> bool {
 pub const CHAT_ANSWERS: usize = 2;
 
 /// Whether a task's new state starts a turn of the chat that owns it: its worker stopped on a
-/// need (a `blocked` result, or a done one that ends with a question, `WaitOn::Asks`) on a task
-/// a chat owns, at most `CHAT_ANSWERS` times. The chat answers with `add` or asks the owner. A
+/// need (a `blocked` result, or a done one that ends with a question, `WaitOn::Asks`) or its
+/// wait lost its mover (`LogEvent::Orphan`), on a task a chat owns, at most `CHAT_ANSWERS` times. The chat answers with `add` or asks the owner. A
 /// stop, a host restart, a wait for another task and a task of the owner's own wake nobody. A
 /// closed owner's lines go to the main chat (`chats::owner`), which then answers in its place.
 /// ref: docs/tasks.md "Chat host"
@@ -520,7 +524,7 @@ pub fn wakes_its_chat(dir: &TaskDir, record: &TaskRecord) -> bool {
     let stopped_on_a_need = match (record.state, record.waiting.as_ref().map(|w| w.on)) {
         (TaskState::Ready, Some(WaitOn::Asks)) => true,
         (TaskState::Waiting, Some(WaitOn::Owner)) if record.after.is_none() => {
-            matches!(turn_end(dir), Some(TurnEnd::Blocked))
+            matches!(turn_end(dir), Some(TurnEnd::Blocked | TurnEnd::Orphan))
         }
         _ => false,
     };
@@ -534,7 +538,7 @@ pub fn wakes_its_chat(dir: &TaskDir, record: &TaskRecord) -> bool {
         .unwrap_or_default()
         .into_iter()
         .filter(|entry| match &entry.event {
-            LogEvent::Blocked { .. } => true,
+            LogEvent::Blocked { .. } | LogEvent::Orphan { .. } => true,
             LogEvent::Result {
                 status, summary, ..
             } => status == "done" && super::chat_host::asks_owner(summary),
@@ -543,21 +547,12 @@ pub fn wakes_its_chat(dir: &TaskDir, record: &TaskRecord) -> bool {
     stops.count() <= CHAT_ANSWERS
 }
 
-/// The word for a task's state in a line or a count: "paused" for a worker that ended its turn
-/// with a status (`WaitOn::Paused`), else the state's own. ref: docs/tasks.md "Status"
-pub fn state_word(record: &TaskRecord) -> &'static str {
-    match record.waits_on(WaitOn::Paused) {
-        true => "paused",
-        false => record.state.as_str(),
-    }
-}
-
 /// The tone a chat draws a state word in (`Short::state`): the web's `data-tone` and the TUI's
 /// color. A word with none is drawn plain.
 pub fn tone(word: &str) -> Option<&'static str> {
     match word {
         "working" | "checking" => Some("working"),
-        "ready" | "waiting" | "paused" => Some("attention"),
+        "ready" | "waiting" => Some("attention"),
         "failed" => Some("danger"),
         "landed" => Some("accent"),
         _ => None,
@@ -621,12 +616,13 @@ fn waiting_on(
                 ),
             }
         }
-        WaitOn::Paused => words(
-            "paused",
-            "Paused, waiting for you",
+        // ^ The worker's turn ended on its run: no question, and no owner need.
+        WaitOn::CheckRun => words(
+            "checking",
+            "Running checks",
             Some(entered),
             &waiting.reason,
-            "The turn ended with a status, not a question. Tell it to go on or what to change.",
+            "Its answer is the worker's next turn.",
             now_ms,
         ),
         WaitOn::Plan => words(

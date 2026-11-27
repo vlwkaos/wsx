@@ -842,7 +842,7 @@ fn detail(task: &Value, rows: &[TaskRow]) -> Vec<Line<'static>> {
         )
     };
     let row = |name: &str, text: String| Line::from(vec![label(name), Span::raw(text)]);
-    let state = crate::task_list::state_word(task);
+    let state = task["state"].as_str().unwrap_or_default().to_string();
     let flow = &task["flow"];
     let mut lines = vec![
         Line::from(vec![

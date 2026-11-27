@@ -50,7 +50,7 @@ pub(crate) fn list(project: Option<&str>, all: bool, json: bool) -> Result<()> {
                 if record.state.is_open() {
                     row["overlaps"] = overlaps(record, &records, false);
                 }
-                rows.push((row, wsx_core::task::status::state_word(record)));
+                rows.push((row, record.state.as_str()));
             }
             Ok(_) => {}
             // ^ The ledger lists it too (`broken`); the error names the file and the parse failure.
@@ -125,7 +125,7 @@ pub(crate) fn show(dir: &TaskDir, json: bool) -> Result<()> {
     println!(
         "t{} {}  r{}  {}",
         record.id,
-        wsx_core::task::status::state_word(&record),
+        record.state.as_str(),
         record.revision,
         summary["title"].as_str().unwrap_or_default()
     );
@@ -210,7 +210,7 @@ pub(crate) fn why(dir: &TaskDir, json: bool) -> Result<()> {
     println!(
         "t{} {}  r{}  {}",
         record.id,
-        wsx_core::task::status::state_word(&record),
+        record.state.as_str(),
         record.revision,
         history.title
     );

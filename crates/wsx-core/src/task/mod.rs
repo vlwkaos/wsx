@@ -120,9 +120,12 @@ impl TaskState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitOn {
-    /// An answer: the worker asked, was stopped, or its host restarted during a turn.
-    /// ^ `permission` is a record from before wsx's own boundary replaced the grants.
-    #[serde(alias = "permission")]
+    /// An answer: the worker asked, was stopped, or its host restarted during a turn, or a wait
+    /// lost its mover (an orphan, `LogEvent::Orphan`).
+    /// ^ `permission` is a record from before wsx's own boundary replaced the grants; `paused`
+    /// one from before `CheckRun`, which the owner continued. Each goes once no stored task
+    /// record has it (an owner's open tasks of wsx 0.43 or older).
+    #[serde(alias = "permission", alias = "paused")]
     Owner,
     /// `tasks.minFreeGb` of free disk; the host resumes by itself.
     Disk,
@@ -142,10 +145,9 @@ pub enum WaitOn {
     /// The agent's usage limit: the host continues its session at `until_ms`, one task at a
     /// time. ref: docs/tasks.md "Claude adapter"
     Limit,
-    /// The worker's turn ended with `status: paused`: something outside goes on and nothing is
-    /// asked. The owner (or the lead on the owner's word) continues it with an `add`.
-    /// ref: docs/tasks.md "Status"
-    Paused,
+    /// The worker's turn ended with `status: waits_on` while its check-run is out: the run's
+    /// answer, pass or failure, is its next turn. ref: docs/tasks.md "Check-run"
+    CheckRun,
     /// A landing that started stopped (a dirty main checkout): the task stays `ready` and the
     /// owner lands it again once that is fixed; `reason` says why. ref: docs/tasks.md "Landing"
     LandStopped,
@@ -165,7 +167,7 @@ impl WaitOn {
             Self::Hand => "hand",
             Self::CheckSlot => "check_slot",
             Self::Limit => "limit",
-            Self::Paused => "paused",
+            Self::CheckRun => "check_run",
             Self::LandStopped => "land_stopped",
             Self::Asks => "asks",
         }
@@ -457,6 +459,12 @@ pub enum LogEvent {
     },
     Blocked {
         denials: Vec<String>,
+    },
+    /// An open task lost the one who moves it on (a `waits_on` with no check-run out, a run
+    /// that ended unanswered): it waits on the owner, and the chat that owns it hears it first.
+    /// ref: docs/tasks.md "Check-run"
+    Orphan {
+        reason: String,
     },
     Result {
         status: String,
@@ -996,7 +1004,7 @@ pub fn call_task_host(
             || (record.state == TaskState::Waiting
                 && (record.waits_on(WaitOn::Owner)
                     || record.waits_on(WaitOn::Plan)
-                    || record.waits_on(WaitOn::Paused)));
+                    || record.waits_on(WaitOn::CheckRun)));
         if !at_rest {
             anyhow::bail!(
                 "{error:#}: the host of task t{} started before this wsx and cannot read the request while the task is {}; repeat it when the task is ready or waits for the owner",
@@ -1358,7 +1366,7 @@ pub fn worker_result_schema() -> serde_json::Value {
         "additionalProperties": false,
         "required": ["status", "summary", "decisions", "evidence", "human_verify", "left_open", "notes", "memo"],
         "properties": {
-            "status": { "type": "string", "enum": ["done", "blocked", "paused", "failed"] },
+            "status": { "type": "string", "enum": ["done", "blocked", "waits_on", "failed"] },
             "summary": text,
             "decisions": { "type": "array", "items": pair("choice", "reason") },
             "evidence": { "type": "array", "items": pair("check", "proof") },

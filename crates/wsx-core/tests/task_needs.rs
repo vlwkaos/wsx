@@ -97,7 +97,8 @@ fn one_rule_decides_the_stage_the_counts_the_push_and_the_band() {
             None,
             false,
         ),
-        // ^ A plan and a pause are the owner's to answer (docs/tasks.md "Status").
+        // ^ A plan is the owner's to answer; a worker that waits on its check-run is not
+        // (docs/tasks.md "Status", "Check-run").
         (
             "a plan",
             "waiting",
@@ -107,7 +108,16 @@ fn one_rule_decides_the_stage_the_counts_the_push_and_the_band() {
             true,
         ),
         (
-            "paused",
+            "waits on its check-run",
+            "waiting",
+            "chat:plans",
+            waiting("check_run"),
+            None,
+            false,
+        ),
+        // ^ A record from before `check_run` reads as a wait on the owner.
+        (
+            "paused, an older record",
             "waiting",
             "owner",
             waiting("paused"),

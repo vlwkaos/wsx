@@ -747,7 +747,7 @@ impl TaskDir {
         serde_json::from_value(value).ok()
     }
 
-    /// A wait on the owner or a pause that an older host recorded as the first line of the
+    /// A wait on the owner that an older host recorded as the first line of the
     /// worker's summary gets the whole summary again, taken from the newest `result` event. A
     /// reason that is not that first line (a stop, a disk wait) or already whole stays.
     /// Returns whether `record` changed.
@@ -755,7 +755,7 @@ impl TaskDir {
         let Some(waiting) = record
             .waiting
             .as_mut()
-            .filter(|waiting| matches!(waiting.on, WaitOn::Owner | WaitOn::Paused))
+            .filter(|waiting| waiting.on == WaitOn::Owner)
         else {
             return false;
         };

@@ -879,16 +879,6 @@ impl TaskList {
     }
 }
 
-/// The state word of a ledger entry: "paused" for a worker whose turn ended with a status
-/// (`status.kind`), else its state (docs/tasks.md "Status").
-pub fn state_word(task: &Value) -> String {
-    match task["status"]["kind"].as_str() {
-        Some("paused") => "paused",
-        _ => task["state"].as_str().unwrap_or_default(),
-    }
-    .to_string()
-}
-
 /// The open tasks as the ledger has them (wsx-core `task::chains`: bands, then chains, a task
 /// before the tasks that wait for it), each under its band's heading; then the listed chats and
 /// the dismissed count; then the recent landed and closed tasks, newest first. Nothing here sorts
@@ -900,7 +890,7 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         id: task["id"].as_u64().unwrap_or_default(),
         chat: String::new(),
         title: task["title"].as_str().unwrap_or_default().to_string(),
-        state: state_word(task),
+        state: task["state"].as_str().unwrap_or_default().to_string(),
         // ^ The words of wsx-core `task::status` (docs/tasks.md "Status").
         // ^ With where it goes (`flow.phrase`: held, after, step, children, into), as the web's row.
         status: [&task["status"]["label"], &task["flow"]["phrase"]]

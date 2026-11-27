@@ -19,7 +19,7 @@ pub fn first_line(text: &str) -> String {
     }
 }
 
-/// A worker's blocked or paused summary as the reason its task waits: all of it, trimmed, cut
+/// A worker's blocked summary as the reason its task waits: all of it, trimmed, cut
 /// only past `QUESTION_CHARS` so the record stays far under its size limit. A place with room
 /// for one line shortens it with `first_line` or `view::clip`.
 pub fn question(summary: &str) -> String {

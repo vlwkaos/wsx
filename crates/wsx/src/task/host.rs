@@ -225,7 +225,8 @@ struct CheckAnswer {
 /// background job of the agent dies long before a 20-90 min queue ends. ref: docs/tasks.md "Check-run"
 const CHECK_RUN_QUEUED: &str = "its answer comes after your result. Do not wait or poll for it: \
 finish this step and return its result now. A pass is recorded; a failure comes back to you \
-as a turn.\n";
+as a turn. When you need its answer to go on, return status waits_on: its answer, pass or \
+failure, is then your next turn.\n";
 
 /// The scenario names and numbers of a `check-run`, and its `--part <p>` (or `--part=<p>`).
 /// ref: docs/tasks.md "Scenarios"
@@ -565,6 +566,7 @@ impl Host {
                 std::thread::sleep(Duration::from_millis(200));
                 return Ok(());
             }
+            self.check_orphan();
             // ^ The limit slot is held only while the agent runs a turn.
             // ref: docs/tasks.md "Claude adapter"
             if self.turn.is_none() {
@@ -789,6 +791,21 @@ impl Host {
             Some(_) if self.stopped => {
                 self.say("check-run ended while stopped: its answer joins the next turn");
                 self.notices.push(answer.text);
+            }
+            // ^ The worker waits on this run and a turn (an add's) runs: that turn's result gets
+            // the answer, as a queued run's, and decides again.
+            Some(run)
+                if run.background
+                    && self.awaits_run()
+                    && self.turn.is_some()
+                    && !self.pinging() =>
+            {
+                self.say("check-run ended: its answer waits for the turn's result");
+                self.check_run = Some(CheckRun {
+                    answer: Some(answer),
+                    queued: true,
+                    ..run
+                });
             }
             Some(run) if run.background => self.answer_in_background(answer, &run.commit),
             Some(run) if run.queued && self.turn.is_none() => self.send_check_answer(answer.text),
@@ -1782,7 +1799,9 @@ impl Host {
     /// `KEEP_WARM_PINGS` came since its last turn. Never in a usage limit, a disk wait, by
     /// hand, or when the next turn rotates by size anyway. ref: docs/tasks.md "Context rotation"
     fn ping_due(&self) -> Option<u64> {
-        let waits = self.record.state == TaskState::Checking;
+        // ^ A known wait: its checks, or the check-run a `waits_on` result waits on.
+        let waits = self.record.state == TaskState::Checking
+            || (self.record.state == TaskState::Waiting && self.record.waits_on(WaitOn::CheckRun));
         // ^ Claude's cache lives 1 hour; Pi's default lives 5 minutes, which no ping keeps.
         if !waits
             || self.stopped
@@ -2068,6 +2087,9 @@ impl Host {
         // settle before it. Any other answer follows the settle.
         let on_head = |commit: &str| head(&self.record.working_copy).is_some_and(|h| h == commit);
         match ended {
+            // ^ The worker waited for this run, which ended in its turn: the answer is its
+            // next turn, pass or failure.
+            Some((answer, _)) if result.status == "waits_on" => self.send_check_answer(answer.text),
             Some((answer, commit)) if answer.fails && on_head(&commit) => {
                 self.answer_in_background(answer, &commit)
             }
@@ -2172,11 +2194,10 @@ impl Host {
         if let Some((_, newer)) = &mut self.gate {
             *newer = true;
         }
-        // ^ A status is no question: the task waits for the owner, whose add continues it. No
-        // checks run. ref: docs/tasks.md "Status"
-        if result.status == "paused" {
-            self.wait(WaitOn::Paused, question(&result.summary));
-            return;
+        // ^ A worker that waits on its check-run asks nobody: the run's answer is its next
+        // turn. With no run out, nobody would move it on. ref: docs/tasks.md "Check-run"
+        if result.status == "waits_on" {
+            return self.wait_on_check_run();
         }
         // ^ Only the worker's own word blocks a task. Denials it worked around are evidence.
         if result.status == "blocked" {
@@ -2989,6 +3010,61 @@ impl Host {
         self.move_to(TaskState::Waiting, Some(waiting));
     }
 
+    /// A `waits_on` result: the task waits for its check-run, whose answer is the worker's next
+    /// turn; with no run out it is an orphan. ref: docs/tasks.md "Check-run"
+    fn wait_on_check_run(&mut self) {
+        let reason = self.check_run.as_ref().map(|run| {
+            format!(
+                "the worker waits on the check-run {} on {}",
+                run.label,
+                short_commit(&run.commit)
+            )
+        });
+        // ^ A message queued during the turn is the next turn, whose result decides again.
+        if !self.pending.is_empty() {
+            return self.deliver_pending(TurnTrigger::Message);
+        }
+        match reason {
+            Some(reason) => self.wait(WaitOn::CheckRun, reason),
+            None => self.orphan("the worker waits on a check-run, and none is out".into()),
+        }
+    }
+
+    /// Whether the worker waits on its check-run: its last result is `waits_on` (also while a
+    /// turn that started meanwhile, an add's, has not answered), or the record's `check_run`
+    /// wait says so after a restart. A stop or the owner's hands end it.
+    fn awaits_run(&self) -> bool {
+        let waits = self
+            .last_result
+            .as_ref()
+            .is_some_and(|result| result.status == "waits_on")
+            || self.record.waits_on(WaitOn::CheckRun);
+        waits && self.record.state.is_open() && !self.stopped && !self.record.waits_on(WaitOn::Hand)
+    }
+
+    /// No orphan: an open task always has a mover (a turn, a run, a timer, the owner). One that
+    /// lost it is logged and waits on the owner; the chat that owns it hears it first
+    /// (`status::wakes_its_chat`). ref: docs/design/engine.md "The engine"
+    fn orphan(&mut self, reason: String) {
+        self.say(&format!("orphan: {reason}"));
+        self.log(LogEvent::Orphan {
+            reason: reason.clone(),
+        });
+        self.wait(WaitOn::Owner, reason);
+    }
+
+    /// The no-orphan check of each loop: a wait on a check-run with no run out and no turn.
+    /// A host that restarted and did not run it again, or a run dropped, ends here.
+    fn check_orphan(&mut self) {
+        if self.turn.is_none()
+            && self.check_run.is_none()
+            && self.record.state == TaskState::Waiting
+            && self.record.waits_on(WaitOn::CheckRun)
+        {
+            self.orphan("the check-run the worker waits on is no longer out".into());
+        }
+    }
+
     /// "ready", "waiting (the owner works on it by hand)" or "checking (queued for ...)".
     fn state_words(&self) -> String {
         match &self.record.waiting {
@@ -3008,16 +3084,22 @@ impl Host {
                 "`wsx task result -` takes the result JSON on stdin during a turn".into(),
             );
         };
+        // ^ A `waits_on` with no run out waits on nothing: refused while the worker can still
+        // correct it. ref: docs/tasks.md "Check-run"
+        let run_out = self.check_run.is_some();
         match serde_json::from_str::<serde_json::Value>(&text).map(|value| {
             let valid = serde_json::from_value::<WorkerResult>(value.clone()).map(|result| {
-                matches!(
-                    result.status.as_str(),
-                    "done" | "blocked" | "paused" | "failed"
-                )
+                match result.status.as_str() {
+                    "done" | "blocked" | "failed" => Ok(()),
+                    "waits_on" if run_out => Ok(()),
+                    "waits_on" => Err("status waits_on needs a check-run out, and none is: \
+                         return done, blocked or failed"),
+                    _ => Err("status must be done, blocked, waits_on or failed"),
+                }
             });
             (value, valid)
         }) {
-            Ok((value, Ok(true))) => {
+            Ok((value, Ok(Ok(())))) => {
                 self.reported = Some(value);
                 broker::Response {
                     stdout: "result kept: it counts when this turn ends; end the turn now\n".into(),
@@ -3025,9 +3107,7 @@ impl Host {
                     code: 0,
                 }
             }
-            Ok((_, Ok(false))) => {
-                broker::refused("status must be done, blocked, paused or failed".into())
-            }
+            Ok((_, Ok(Err(why)))) => broker::refused(why.into()),
             Ok((_, Err(error))) | Err(error) => {
                 broker::refused(format!("the result is not valid: {error}"))
             }
@@ -3163,6 +3243,18 @@ impl Host {
         let refuse = |message: String| {
             let _ = reply.send(broker::refused(message));
         };
+        // ^ A run that ended with its answer held for the result is pending no more: another
+        // call starts anew, and the held answer joins the next turn.
+        let other =
+            |run: &CheckRun| run.commit != commit || run.indexes != indexes || run.part != *part;
+        if let Some(run) = self
+            .check_run
+            .take_if(|run| run.answer.is_some() && other(run))
+        {
+            self.notices.extend(run.answer.map(|answer| answer.text));
+            self.drop_check_run_mark();
+            return Some(reply);
+        }
         if let Some(run) = self.check_run.as_ref().filter(|run| run.commit != commit) {
             let _ = reply.send(broker::Response {
                 stdout: format!(
@@ -3527,16 +3619,16 @@ impl Host {
         let label = short_commit(commit).to_string();
         let current = self.record.state.is_open()
             && head(&self.record.working_copy).is_some_and(|head| head == commit);
-        // ^ A worker that paused while its run went on waits for this answer, not for the
-        // owner: a pass continues it as a failure does, unless a turn (an add's) already did.
-        // ref: docs/tasks.md "Check-run"
-        let paused = current
-            && self.turn.is_none()
-            && self
-                .last_result
-                .as_ref()
-                .is_some_and(|result| result.status == "paused");
-        if !answer.fails && !paused {
+        // ^ A worker that waits on its run (`waits_on`) gets this answer as its next turn, pass
+        // or failure, also on a moved head and after a turn that started meanwhile.
+        if self.awaits_run() {
+            self.say(&format!(
+                "check-run on {label} {}: the waiting worker goes on",
+                if answer.fails { "failed" } else { "ended" }
+            ));
+            return self.send_check_answer(answer.text);
+        }
+        if !answer.fails {
             let done = self
                 .last_result
                 .as_mut()
@@ -3557,10 +3649,7 @@ impl Host {
                 "check-run on {label} failed, but the task moved on: no turn for it"
             ));
         }
-        self.say(&format!(
-            "check-run on {label} {}: the task reopens",
-            if answer.fails { "failed" } else { "ended" }
-        ));
+        self.say(&format!("check-run on {label} failed: the task reopens"));
         // ^ The checks of a result run now: the failure is the turn after them.
         if self.record.state == TaskState::Checking {
             self.pending.push_back(answer.text);
@@ -3651,7 +3740,7 @@ impl Host {
             let blocked = self
                 .last_result
                 .as_ref()
-                .is_some_and(|r| matches!(r.status.as_str(), "blocked" | "paused"));
+                .is_some_and(|r| matches!(r.status.as_str(), "blocked" | "waits_on"));
             if blocked || self.turn.is_some() {
                 self.log(LogEvent::Checks {
                     results: results.to_vec(),
@@ -4822,7 +4911,8 @@ impl Host {
             self.record.state,
             self.record.waiting.as_ref().map(|w| w.on),
         ) {
-            (TaskState::Working | TaskState::Checking, _) => runtime::AgentState::Working,
+            (TaskState::Working | TaskState::Checking, _)
+            | (TaskState::Waiting, Some(WaitOn::CheckRun)) => runtime::AgentState::Working,
             (TaskState::Waiting, Some(WaitOn::Owner)) if !idle => runtime::AgentState::Blocked,
             (TaskState::Waiting, _) | (TaskState::Closed, _) => runtime::AgentState::Idle,
             (TaskState::Ready | TaskState::Landed, _) => runtime::AgentState::Done,
