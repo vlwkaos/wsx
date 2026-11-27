@@ -25,7 +25,7 @@ use wsx_core::memory::{manage as memory_manage, Store};
 use wsx_core::model::workspace::WorkflowStep;
 use wsx_core::runtime;
 use wsx_core::task::chat_host::asks_owner;
-use wsx_core::task::phase::{self, AnswerTo};
+use wsx_core::task::phase::{self, AnswerTo, SettleTo};
 use wsx_core::task::replace::{Binary, HANDOFF_FILE};
 use wsx_core::task::schedule;
 use wsx_core::task::status::{self, STOPPED_BY_REQUEST};
@@ -2140,114 +2140,109 @@ impl Host {
         if let Some((_, newer)) = &mut self.gate {
             *newer = true;
         }
-        // ^ A worker that waits on its check-run asks nobody: the run's answer is its next
-        // turn. With no run out, nobody would move it on. ref: docs/tasks.md "Check-run"
-        if result.status == "waits_on" {
-            return self.wait_on_check_run();
-        }
-        // ^ Only the worker's own word blocks a task. Denials it worked around are evidence.
-        if result.status == "blocked" {
-            self.log(LogEvent::Blocked {
-                denials: self.last_denials.clone(),
-            });
-            self.wait(WaitOn::Owner, question(&result.summary));
-            // ^ A worker stopped by a full disk continues once there is space again.
-            self.wait_for_disk(DiskWait::Turn(
-                "The disk was full; there is space again. Continue the task where it stopped."
-                    .into(),
-            ));
-            return;
-        }
-        // ^ A plan has nothing to check: the lead reads it and continues the task with an
-        // add. ref: docs/tasks.md "Workflow"
-        if self.record.plan {
-            self.record.plan = false;
-            self.wait(WaitOn::Plan, "the worker wrote its plan".into());
-            return;
-        }
-        // ^ A done step that is not the last starts the next one, with any queued message.
-        // ref: docs/tasks.md "Workflow"
-        if result.status == "done" && (self.record.step as usize) + 1 < self.record.steps.len() {
-            self.record.step += 1;
-            self.save();
-            if let (Some(build), Some(after)) = (self.build_step(), &self.record.after) {
-                if build == self.record.step as usize {
-                    let reason = format!("planned; its build waits for #{} to land", after.task);
-                    self.wait(WaitOn::Owner, reason);
-                    return;
-                }
-            }
-            let mut text: Vec<String> = self.pending.drain(..).collect();
-            text.extend(self.step_text());
-            self.start_turn(&text.join("\n\n"), TurnTrigger::Step);
-            return;
-        }
-        // ^ A full task whose worker was lent the simplify skill and never loaded it goes back
-        // once; a second miss shows in the ready event. Claude's stream is the only record of a
-        // loaded skill. ref: docs/tasks.md "Workflow"
-        if result.status == "done"
-            && !self.record.small
-            && !self.record.steps.is_empty()
-            && self.record.adapter == "claude"
-            && !self.record.simplified
-            && !self.record.simplify_asked
-            && self.pending.is_empty()
-            && super::claude::lends_simplify(&self.dir.path)
-        {
-            self.record.simplify_asked = true;
-            self.save();
-            self.say("simplify did not run: sent back to the worker");
-            let text = format!(
-                "The simplify skill did not run in this task. Run {}:simplify \
-                 on your changes now, commit what it changes, then finish as before.",
-                super::claude::SKILLS_PLUGIN_NAME
-            );
-            self.start_turn(&text, TurnTrigger::Simplify);
-            return;
-        }
-        // ^ What a test, an assert or a capture shows is the worker's to prove: such an item
-        // goes back once, within the check retries. ref: docs/tasks.md "To check"
-        let unattached = result.unattached_images();
-        if !unattached.is_empty() {
-            self.say(&unattached);
-            self.log(LogEvent::Agent {
-                text: unattached,
-                said: false,
-            });
-        }
         let items: Vec<&str> = result
             .human_verify
             .iter()
             .filter(|item| item.is_for_worker())
             .map(|item| item.check.as_str())
             .collect();
-        if result.status == "done"
-            && !items.is_empty()
-            && self.pending.is_empty()
-            && self.check_retries < MAX_CHECK_RETRIES
-        {
-            self.check_retries += 1;
-            self.say("human_verify has items the worker proves: sent back to the worker");
-            let text = format!(
-                "These human_verify items are yours to prove: {}. A command, a test, an assert \
-                 or a capture is yours: stage the state it needs in a fixture, run it and put \
-                 what it shows in evidence. Keep in human_verify only how a screen looks or \
-                 feels, with a capture of that state; an item without a capture is only for a \
-                 real device or the owner's real data, and its where says so. Then finish as \
-                 before.",
-                items.join(" | ")
-            );
-            self.start_turn(&text, TurnTrigger::Verify);
-            return;
-        }
-        if self.gate.is_some() {
-            self.say("the checks of an earlier result still run: they answer this one");
-            if self.record.state != TaskState::Checking {
-                self.set_state(TaskState::Checking);
+        let step = self.record.step as usize;
+        let to = phase::settle_to(&phase::Settle {
+            status: &result.status,
+            plan: self.record.plan,
+            more_steps: step + 1 < self.record.steps.len(),
+            build_waits: self.build_step() == Some(step + 1),
+            // ^ Claude's stream is the only record of a loaded skill; a second miss shows in
+            // the ready event.
+            simplify_unrun: !self.record.small
+                && !self.record.steps.is_empty()
+                && self.record.adapter == "claude"
+                && !self.record.simplified
+                && !self.record.simplify_asked
+                && self.pending.is_empty()
+                && super::claude::lends_simplify(&self.dir.path),
+            // ^ What a test, an assert or a capture shows is the worker's to prove: such an
+            // item goes back once, within the check retries. ref: docs/tasks.md "To check"
+            verify_unproven: !items.is_empty()
+                && self.pending.is_empty()
+                && self.check_retries < MAX_CHECK_RETRIES,
+            checks_out: self.gate.is_some(),
+        });
+        if matches!(
+            to,
+            SettleTo::Verify | SettleTo::JoinChecks | SettleTo::Checks
+        ) {
+            let unattached = result.unattached_images();
+            if !unattached.is_empty() {
+                self.say(&unattached);
+                self.log(LogEvent::Agent {
+                    text: unattached,
+                    said: false,
+                });
             }
-            return;
         }
-        self.start_checks();
+        match to {
+            // ^ With no run out, nobody would move it on. ref: docs/tasks.md "Check-run"
+            SettleTo::CheckRun => self.wait_on_check_run(),
+            SettleTo::Blocked => {
+                self.log(LogEvent::Blocked {
+                    denials: self.last_denials.clone(),
+                });
+                self.wait(WaitOn::Owner, question(&result.summary));
+                // ^ A worker stopped by a full disk continues once there is space again.
+                self.wait_for_disk(DiskWait::Turn(
+                    "The disk was full; there is space again. Continue the task where it stopped."
+                        .into(),
+                ));
+            }
+            SettleTo::Plan => {
+                self.record.plan = false;
+                self.wait(WaitOn::Plan, "the worker wrote its plan".into());
+            }
+            SettleTo::Step | SettleTo::BuildWaits => {
+                self.record.step += 1;
+                self.save();
+                if let (SettleTo::BuildWaits, Some(after)) = (to, &self.record.after) {
+                    let reason = format!("planned; its build waits for #{} to land", after.task);
+                    return self.wait(WaitOn::Owner, reason);
+                }
+                let mut text: Vec<String> = self.pending.drain(..).collect();
+                text.extend(self.step_text());
+                self.start_turn(&text.join("\n\n"), TurnTrigger::Step);
+            }
+            SettleTo::Simplify => {
+                self.record.simplify_asked = true;
+                self.save();
+                self.say("simplify did not run: sent back to the worker");
+                let text = format!(
+                    "The simplify skill did not run in this task. Run {}:simplify \
+                     on your changes now, commit what it changes, then finish as before.",
+                    super::claude::SKILLS_PLUGIN_NAME
+                );
+                self.start_turn(&text, TurnTrigger::Simplify);
+            }
+            SettleTo::Verify => {
+                self.check_retries += 1;
+                self.say("human_verify has items the worker proves: sent back to the worker");
+                let text = format!(
+                    "These human_verify items are yours to prove: {}. A command, a test, an assert \
+                     or a capture is yours: stage the state it needs in a fixture, run it and put \
+                     what it shows in evidence. Keep in human_verify only how a screen looks or \
+                     feels, with a capture of that state; an item without a capture is only for a \
+                     real device or the owner's real data, and its where says so. Then finish as \
+                     before.",
+                    items.join(" | ")
+                );
+                self.start_turn(&text, TurnTrigger::Verify);
+            }
+            SettleTo::JoinChecks => {
+                self.say("the checks of an earlier result still run: they answer this one");
+                if self.record.state != TaskState::Checking {
+                    self.set_state(TaskState::Checking);
+                }
+            }
+            SettleTo::Checks => self.start_checks(),
+        }
     }
 
     /// A turn without a result that ends while its background jobs run is no missing result:
